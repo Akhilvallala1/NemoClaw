@@ -27,8 +27,10 @@ import {
   readPendingHostLocalVllmRetirement,
 } from "../../inference/local-model-profile/cleanup";
 import {
+  discoverOllamaModelOwnership,
   isLocalOllamaRouteOwner,
   loadPersistedOllamaHost,
+  matchingOllamaModelPeers,
   type OllamaUnloadResult,
   withOllamaModelOwnershipTransaction,
 } from "../../inference/ollama/proxy";
@@ -205,11 +207,17 @@ export function requireSandboxDestructiveCleanupAuthority(
   return requireRuntimeProviderDestructiveCleanupAuthority(sandboxName, sandbox, providers);
 }
 
-type RunOpenshell = (args: string[], opts?: Record<string, unknown>) => { status: number | null };
+type RunOpenshell = (
+  args: string[],
+  opts?: Record<string, unknown>,
+) => {
+  status: number | null;
+  stdout?: string;
+  stderr?: string;
+};
 
 export type CleanupSandboxServicesDeps = {
   getSandbox?: typeof registry.getSandbox;
-  listSandboxes?: typeof registry.listSandboxes;
   stopAll?: (opts: {
     sandboxName: string;
     channelStopTransport?: RuntimeProviderChannelStopTransport;
@@ -229,6 +237,15 @@ export type CleanupSandboxServicesDeps = {
   ) => void;
   loadPersistedOllamaHost?: () => "127.0.0.1" | "host.docker.internal" | null;
   withOllamaModelOwnershipLock?: <T>(operation: () => T) => T;
+  listOllamaModelOwnershipPeers?: () => readonly registry.SandboxEntry[];
+  discoverOllamaModelOwnership?: typeof discoverOllamaModelOwnership;
+  captureSandboxOwnershipPhases?: (
+    gatewayName: string,
+    environment: NodeJS.ProcessEnv,
+  ) => { readonly output: string; readonly status: number | null };
+  resolvePersistedSandboxOwnershipGateway?: (
+    sandbox: Pick<registry.SandboxEntry, "name" | "gatewayName" | "gatewayPort">,
+  ) => string;
   ollamaModelRefsMatch?: (left: string, right: string) => boolean;
   runOpenshell?: RunOpenshell;
   rmSync?: typeof fs.rmSync;
@@ -309,7 +326,6 @@ export async function cleanupSandboxServices(
   const validatedSandboxName = validateName(sandboxName, "sandbox name");
   const servicesPidDir = path.resolve("/tmp", `nemoclaw-services-${validatedSandboxName}`);
   const getSandbox = deps.getSandbox ?? registry.getSandbox;
-  const listSandboxes = deps.listSandboxes ?? registry.listSandboxes;
   const stopAll =
     deps.stopAll ??
     ((opts: {
@@ -440,25 +456,93 @@ export async function cleanupSandboxServices(
   }
 
   let ollamaCleanup: OllamaUnloadResult | void = undefined;
+  const cleanupScopedOllamaModels = () => {
+    const sb = getSandbox(validatedSandboxName);
+    const selectedHost = loadPersistedOllamaHost();
+    const pending = loadPendingOllamaModelCleanup(validatedSandboxName);
+    const currentModel = String(sb?.model ?? "").trim();
+    const candidates = [
+      ...pending,
+      ...(sb && isLocalOllamaRouteOwner(sb, selectedHost) && currentModel ? [currentModel] : []),
+    ].filter(
+      (model, index, models) =>
+        models.findIndex((candidate) => ollamaModelRefsMatch(candidate, model)) === index,
+    );
+    if (candidates.length === 0) return;
+
+    const owners = deps.listOllamaModelOwnershipPeers ?? listInferenceRouteOwnersAcrossGatewayRoots;
+    const ownerRows = owners();
+    const captureOwnershipPhases =
+      deps.captureSandboxOwnershipPhases ??
+      ((gatewayName, environment) => {
+        const result = runOpenshell(["sandbox", "list", "-g", gatewayName], {
+          env: environment,
+          ignoreError: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          maxBuffer: 1024 * 1024,
+          timeout: 10_000,
+        });
+        return {
+          status: result.status,
+          output: [result.stdout ?? "", result.stderr ?? ""].join("\n"),
+        };
+      });
+    const resolveOwnerGateway =
+      deps.resolvePersistedSandboxOwnershipGateway ??
+      ((owner: Pick<registry.SandboxEntry, "name" | "gatewayName" | "gatewayPort">) => {
+        if (owner.gatewayName == null && owner.gatewayPort == null) {
+          throw new Error(`gateway identity is unavailable for sibling sandbox '${owner.name}'`);
+        }
+        return resolveSandboxDestroyGatewayName(owner.name, owner as registry.SandboxEntry);
+      });
+    const releasable: string[] = [];
+    for (const model of candidates) {
+      const holder = {
+        name: validatedSandboxName,
+        gatewayName: sb?.gatewayName ?? null,
+        gatewayPort: sb?.gatewayPort ?? gatewayPort ?? null,
+        provider: "ollama-local",
+        model,
+        endpointUrl: null,
+      };
+      const matchingPeers = matchingOllamaModelPeers(holder, ownerRows, selectedHost);
+      const discovery = (deps.discoverOllamaModelOwnership ?? discoverOllamaModelOwnership)(
+        matchingPeers,
+        process.env,
+        captureOwnershipPhases,
+        { resolvePersistedSandboxOwnershipGateway: resolveOwnerGateway },
+      );
+      if (!discovery.ok) {
+        throw new Error(
+          `Ollama model ownership could not be verified for '${model}': ${discovery.message}. ` +
+            "No model was unloaded; retry destroy after restoring gateway access.",
+        );
+      }
+      const activePeers = discovery.activePeers
+        ? matchingPeers.filter((peer) => discovery.activePeers?.has(peer))
+        : matchingPeers.filter((peer) => discovery.activeSandboxNames.has(peer.name));
+      if (activePeers.length === 0) releasable.push(model);
+    }
+    if (releasable.length === 0) return;
+    ollamaCleanup = unloadOllamaModels(releasable);
+    if (!ollamaCleanup || ollamaCleanup.ok) {
+      clearPendingOllamaModelCleanup(validatedSandboxName, releasable);
+    }
+  };
+
   if (stopHostServices) {
-    // `stopAll()` owns the host-wide unload when this sandbox has an Ollama
-    // route or retained cleanup work. The dashboard tunnel has independent
-    // host lifetime and must survive every sandbox destroy (#11628).
+    // Stopping host services must not unload models owned by another gateway
+    // or unrelated models resident on the shared host Ollama daemon.
     try {
       ollamaCleanup = withOllamaModelOwnershipLock(() => {
-        const sandbox = getSandbox(validatedSandboxName);
-        const pending = loadPendingOllamaModelCleanup(validatedSandboxName);
-        const selectedHost = loadPersistedOllamaHost();
-        const cleanupOllamaModels = Boolean(
-          (sandbox && isLocalOllamaRouteOwner(sandbox, selectedHost)) || pending.length > 0,
-        );
-        return stopAll({
+        const result = stopAll({
           sandboxName: validatedSandboxName,
           ...(channelStopTransport ? { channelStopTransport } : {}),
-          cleanupOllamaModels,
+          cleanupOllamaModels: false,
           stopCloudflared: false,
-          unloadOllamaModels: () => unloadOllamaModels(),
         });
+        cleanupScopedOllamaModels();
+        return ollamaCleanup ?? result;
       });
     } catch (error) {
       const detail = (error instanceof Error ? error.message : String(error))
@@ -473,35 +557,7 @@ export async function cleanupSandboxServices(
       );
     }
   } else {
-    // No global stop, so `stopAll()` did not run; explicitly free Ollama
-    // models for this sandbox if its provider used Ollama. Without this
-    // branch a single-sandbox destroy would leave models loaded on the GPU.
-    withOllamaModelOwnershipLock(() => {
-      const sb = getSandbox(validatedSandboxName);
-      const selectedHost = loadPersistedOllamaHost();
-      const peers = listSandboxes().sandboxes.filter(
-        (candidate) =>
-          candidate.name !== validatedSandboxName &&
-          isLocalOllamaRouteOwner(candidate, selectedHost),
-      );
-      const pending = loadPendingOllamaModelCleanup(validatedSandboxName);
-      const currentModel = String(sb?.model ?? "").trim();
-      const candidates = [
-        ...pending,
-        ...(sb && isLocalOllamaRouteOwner(sb, selectedHost) && currentModel ? [currentModel] : []),
-      ].filter(
-        (model, index, models) =>
-          models.findIndex((candidate) => ollamaModelRefsMatch(candidate, model)) === index &&
-          !peers.some(
-            (candidate) => candidate.model && ollamaModelRefsMatch(model, candidate.model),
-          ),
-      );
-      if (candidates.length === 0) return;
-      ollamaCleanup = unloadOllamaModels(candidates);
-      if (!ollamaCleanup || ollamaCleanup.ok) {
-        clearPendingOllamaModelCleanup(validatedSandboxName, candidates);
-      }
-    });
+    withOllamaModelOwnershipLock(cleanupScopedOllamaModels);
   }
   if (ollamaCleanup && !ollamaCleanup.ok) {
     const recoveryAction =
@@ -1156,7 +1212,6 @@ async function destroySandboxUnlocked(
       },
       {
         getSandbox: getRegisteredSandbox,
-        listSandboxes: listRegisteredSandboxes,
         runOpenshell: cleanupRunOpenshell,
       },
     );

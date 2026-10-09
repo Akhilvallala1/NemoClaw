@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { OpenShellProviderAdapter } from "../adapters/openshell/provider-adapter";
 import type { OllamaModelHolder } from "../inference/ollama/model-ownership";
+import type { OllamaUnloadResult } from "../inference/ollama/proxy";
 import type { SandboxEntry } from "../state/registry";
 import { setupOllamaLocalInference } from "./inference-providers/ollama-local";
 import {
@@ -32,6 +33,7 @@ function createOllamaCleanupHarness(
     activeSandboxNames?: ReadonlySet<string>;
     discovery?: SetupInferenceDeps["discoverActiveOllamaSandboxNames"];
     pendingModels?: readonly string[];
+    unloadResult?: OllamaUnloadResult;
   } = {},
 ) {
   let pendingModels = [...(options.pendingModels ?? [])];
@@ -46,14 +48,17 @@ function createOllamaCleanupHarness(
     }),
     clearPersistedOllamaHostIfUnused: vi.fn(),
   };
-  const unloadOllamaModels = vi.fn(() => ({
-    ok: true,
-    outcome: "released" as const,
-    endpoint: "http://127.0.0.1:11434",
-    selectedModels: ["qwen2.5:1.5b"],
-    discoveries: [],
-    requests: [],
-  }));
+  const unloadOllamaModels = vi.fn(
+    () =>
+      options.unloadResult ?? {
+        ok: true,
+        outcome: "released" as const,
+        endpoint: "http://127.0.0.1:11434",
+        selectedModels: ["qwen2.5:1.5b"],
+        discoveries: [],
+        requests: [],
+      },
+  );
   const discoverActiveOllamaSandboxNames = vi.fn(
     options.discovery ??
       (() => ({
@@ -325,6 +330,36 @@ describe("releaseSupersededOllamaModel", () => {
       expect(harness.localInference.clearPendingOllamaModelCleanup).toHaveBeenCalledWith("alpha", [
         "qwen2.5:1.5b",
       ]);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("keeps the retry record when unloading the superseded model fails", () => {
+    const harness = createOllamaCleanupHarness({
+      unloadResult: {
+        ok: false,
+        outcome: "still-resident",
+        endpoint: "http://127.0.0.1:11434",
+        selectedModels: ["qwen2.5:1.5b"],
+        discoveries: [],
+        requests: [],
+      },
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      releaseToNvidia(previousLocalOllamaRoute, harness.deps);
+
+      expect(harness.unloadOllamaModels).toHaveBeenCalledExactlyOnceWith(["qwen2.5:1.5b"]);
+      expect(harness.localInference.persistPendingOllamaModelCleanup).toHaveBeenCalledWith(
+        "alpha",
+        ["qwen2.5:1.5b"],
+      );
+      expect(harness.localInference.clearPendingOllamaModelCleanup).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("Re-run onboarding or destroy 'alpha' to retry only"),
+      );
     } finally {
       warning.mockRestore();
     }

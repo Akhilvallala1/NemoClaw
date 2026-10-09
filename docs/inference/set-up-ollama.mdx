@@ -400,7 +400,7 @@ Windows-host Ollama does not receive this Linux recovery guidance.
 
 ## Release GPU Memory
 
-When you destroy an Ollama-backed sandbox or stop host services, NemoClaw asks Ollama to unload each currently loaded model by sending `keep_alive: 0`.
+When you destroy a sandbox or stop host services, NemoClaw asks Ollama to unload only that sandbox's current model and any models recorded for cleanup retry. Other models resident on the shared host daemon are left alone.
 When you stop a single Ollama-backed sandbox, NemoClaw unloads only that sandbox's own model.
 It leaves the model loaded only when OpenShell reports that another matching Ollama-backed sandbox is active.
 Stopped or incomplete sibling registry rows do not retain the model.
@@ -409,6 +409,7 @@ When you re-onboard an Ollama-backed sandbox from the host Ollama route to a dif
 If another active sandbox uses the same local Ollama model, NemoClaw keeps it loaded.
 If NemoClaw cannot verify whether another sandbox uses the model, it keeps the model, records it for retry, and leaves the new route active.
 If the new route uses the same model through the same local daemon, NemoClaw keeps the model loaded.
+If the unload cleanup fails, the new route remains active and NemoClaw keeps the model recorded for cleanup retry; rerun onboarding or run `$$nemoclaw <name> destroy` to retry the recorded cleanup.
 This cleanup is best-effort and does not delete downloaded model files.
 
 ## Related Topics
