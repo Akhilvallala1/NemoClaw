@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Regression guard for #2717: cleanupSandboxServices must invoke
-// `unloadOllamaModels()` exactly once across both branches when the sandbox
-// owns Ollama cleanup work, and never for an unrelated provider. This avoids
-// both orphaned GPU memory and the original duplicate-call bug.
+// Regression guard for #2717 and #12677: destroy cleanup must release each
+// exclusively owned Ollama model once, preserve models held by active peers,
+// and keep host-service teardown separate from model release.
 
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -12,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CleanupSandboxServicesDeps } from "../../../src/lib/actions/sandbox/destroy.js";
 import { cleanupSandboxServices } from "../../../src/lib/actions/sandbox/destroy.js";
 import { ollamaModelRefsMatch } from "../../../src/lib/inference/ollama/model-discovery.js";
-import type { OllamaUnloadResult } from "../../../src/lib/inference/ollama/proxy.js";
+import type { OllamaModelHolder } from "../../../src/lib/inference/ollama/model-ownership.js";
 import { SANDBOX_PROVIDER_SUFFIXES } from "../../../src/lib/onboard/sandbox-provider-cleanup.js";
 
 type SandboxLike = { name?: string; model?: string | null; provider?: string | null } | null;
@@ -20,7 +19,6 @@ type StopAllOptions = {
   sandboxName: string;
   cleanupOllamaModels?: boolean;
   stopCloudflared?: boolean;
-  unloadOllamaModels?: () => OllamaUnloadResult | void;
 };
 
 function buildDeps(
@@ -31,7 +29,8 @@ function buildDeps(
     Pick<
       CleanupSandboxServicesDeps,
       | "getSandbox"
-      | "listSandboxes"
+      | "listOllamaModelOwnershipPeers"
+      | "discoverOllamaModelOwnership"
       | "stopAll"
       | "migrateLegacyCloudflaredState"
       | "unloadOllamaModels"
@@ -63,13 +62,15 @@ function buildDeps(
     },
     deps: {
       getSandbox: vi.fn(() => target as never),
-      listSandboxes: vi.fn(() => ({
-        sandboxes: [...(target ? [target] : []), ...peers] as never,
-        defaultSandbox: null,
+      listOllamaModelOwnershipPeers: vi.fn(() => [...(target ? [target] : []), ...peers] as never),
+      discoverOllamaModelOwnership: vi.fn((matchingPeers: readonly OllamaModelHolder[]) => ({
+        ok: true as const,
+        activeSandboxNames: new Set<string>(matchingPeers.map((peer) => peer.name)),
+        activePeers: new Set(matchingPeers),
+        gatewayChecks: [],
       })),
       stopAll: vi.fn((opts: StopAllOptions) => {
         stopAllCalls.push(opts);
-        return opts.cleanupOllamaModels === false ? undefined : opts.unloadOllamaModels?.();
       }),
       migrateLegacyCloudflaredState: vi.fn(() => false),
       unloadOllamaModels: vi.fn((onlyModels?: readonly string[]) => {
@@ -88,7 +89,7 @@ function buildDeps(
   };
 }
 
-describe("cleanupSandboxServices Ollama unload (#2717)", () => {
+describe("cleanupSandboxServices Ollama unload", () => {
   const cleanupFailure = {
     ok: false as const,
     outcome: "discovery-failed" as const,
@@ -99,7 +100,7 @@ describe("cleanupSandboxServices Ollama unload (#2717)", () => {
     message: "could not connect",
   };
 
-  it("delegates GPU unload to stopAll() exactly once when stopHostServices=true", async () => {
+  it("runs host-service stop and scoped model release separately", async () => {
     const harness = buildDeps({ provider: "ollama-local" });
 
     await cleanupSandboxServices("regression-2717", { stopHostServices: true }, harness.deps);
@@ -108,16 +109,15 @@ describe("cleanupSandboxServices Ollama unload (#2717)", () => {
     expect(harness.stopAllCalls[0]).toEqual(
       expect.objectContaining({
         sandboxName: "regression-2717",
-        cleanupOllamaModels: true,
+        cleanupOllamaModels: false,
         stopCloudflared: false,
-        unloadOllamaModels: expect.any(Function),
       }),
     );
     expect(harness.deps.unloadOllamaModels).toHaveBeenCalledOnce();
     expect(harness.unloadCalls).toBe(1);
   });
 
-  it("skips host-wide Ollama discovery for a final sandbox with no Ollama ownership", async () => {
+  it("skips Ollama discovery for a final sandbox with no Ollama ownership", async () => {
     const harness = buildDeps({ provider: "nvidia-prod" });
 
     await cleanupSandboxServices("regression-2717", { stopHostServices: true }, harness.deps);
@@ -127,13 +127,12 @@ describe("cleanupSandboxServices Ollama unload (#2717)", () => {
         sandboxName: "regression-2717",
         cleanupOllamaModels: false,
         stopCloudflared: false,
-        unloadOllamaModels: expect.any(Function),
       }),
     ]);
     expect(harness.deps.unloadOllamaModels).not.toHaveBeenCalled();
   });
 
-  it("keeps host-wide Ollama cleanup enabled for retained model recovery", async () => {
+  it("uses scoped Ollama cleanup for retained model recovery", async () => {
     const harness = buildDeps({ provider: "nvidia-prod" });
     vi.mocked(harness.deps.loadPendingOllamaModelCleanup).mockReturnValue(["old-model"]);
 
@@ -142,9 +141,8 @@ describe("cleanupSandboxServices Ollama unload (#2717)", () => {
     expect(harness.stopAllCalls).toEqual([
       expect.objectContaining({
         sandboxName: "regression-2717",
-        cleanupOllamaModels: true,
+        cleanupOllamaModels: false,
         stopCloudflared: false,
-        unloadOllamaModels: expect.any(Function),
       }),
     ]);
     expect(harness.deps.unloadOllamaModels).toHaveBeenCalledOnce();
