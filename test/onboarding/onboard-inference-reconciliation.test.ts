@@ -650,7 +650,9 @@ const { onboard } = require(${onboardPath});
               : undefined,
           overrides: { applyLocalInferenceRoute },
         });
-        await harness.setupInference("test-box", "meta-llama", "vllm-local");
+        await harness.setupInference("test-box", "meta-llama", "vllm-local", null, null, null, [], {
+          agentName: "langchain-deepagents-code",
+        });
         const providerRequest = harness.native.adapter.createProvider.mock.calls[0]?.[0];
         assert.ok(providerRequest, "expected native local vLLM provider creation");
         assert.deepEqual(providerRequest.credentials, [
@@ -693,7 +695,9 @@ const { onboard } = require(${onboardPath});
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      await harness.setupInference("test-box", "qwen3.5:9b", "ollama-local");
+      await harness.setupInference("test-box", "qwen3.5:9b", "ollama-local", null, null, null, [], {
+        agentName: "openclaw",
+      });
     } finally {
       warn.mockRestore();
     }
@@ -754,7 +758,9 @@ const { onboard } = require(${onboardPath});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await assert.rejects(
-        harness.setupInference("test-box", "qwen3.5:9b", "ollama-local"),
+        harness.setupInference("test-box", "qwen3.5:9b", "ollama-local", null, null, null, [], {
+          agentName: "openclaw",
+        }),
         /native provider registration denied/,
       );
     } finally {
@@ -799,7 +805,9 @@ const { onboard } = require(${onboardPath});
       error: { kind: "command", reason: "failed", message: "native provider registration denied" },
     });
     await assert.rejects(
-      harness.setupInference("test-box", "meta-llama", "vllm-local"),
+      harness.setupInference("test-box", "meta-llama", "vllm-local", null, null, null, [], {
+        agentName: "openclaw",
+      }),
       /native provider registration denied/,
     );
 
@@ -1441,7 +1449,6 @@ describe("re-onboard Ollama GPU release (#9110)", () => {
     expect(events).toEqual([
       "read-prior-route", // Agent support admission; cleanup reads the route again under the lock.
       "lock-enter",
-      "read-prior-route",
       "read-prior-route",
       "ownership-lock-enter",
       "peer-scan",

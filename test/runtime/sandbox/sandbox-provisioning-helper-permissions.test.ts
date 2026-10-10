@@ -192,13 +192,6 @@ it.each([
     file: "/src/lib/inference/native-local/agent-config.ts",
   },
   {
-    agent: "Hermes",
-    marker: "# Keep the config generator",
-    dockerfile: "agents/hermes/Dockerfile",
-    start: "chmod 444 /src/lib/hermes-managed-route.ts",
-    file: "/src/lib/inference/native-local/agent-config.ts",
-  },
-  {
     agent: "DCode",
     marker: "# Copy the managed-startup entrypoint",
     dockerfile: "agents/langchain-deepagents-code/Dockerfile",

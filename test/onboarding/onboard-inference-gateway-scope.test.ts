@@ -89,7 +89,7 @@ describe("onboarding inference gateway scope", () => {
             "COMPATIBLE_API_KEY",
             null,
             [],
-            { gatewayName: GATEWAY },
+            { gatewayName: GATEWAY, agentName: "langchain-deepagents-code" },
           ),
         ).resolves.toEqual({ ok: true });
 
@@ -173,6 +173,7 @@ describe("onboarding inference gateway scope", () => {
           [],
           {
             gatewayName: GATEWAY,
+            agentName: "langchain-deepagents-code",
             reuseGatewayCredentialWithoutLocalKey: true,
             skipHostInferenceSmoke: true,
           },
