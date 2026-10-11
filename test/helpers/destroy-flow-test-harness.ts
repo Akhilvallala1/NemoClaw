@@ -426,7 +426,7 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
   if (registryGatewayPort !== undefined) {
     const { resolveNemoclawStateDir } = requireSource("../../state/paths.js");
     vi.spyOn(destroyPreflight, "resolveSandboxDestroyRegistryAuthority").mockImplementation(
-      (name: string) => ({
+      (name: unknown) => ({
         entry: registry.getSandbox(name),
         gatewayPort: registryGatewayPort,
         stateDir: resolveNemoclawStateDir(undefined, registryGatewayPort),
