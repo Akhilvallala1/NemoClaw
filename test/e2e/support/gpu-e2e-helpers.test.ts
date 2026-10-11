@@ -17,6 +17,7 @@ import { CleanupRegistry } from "../fixtures/cleanup.ts";
 import type { LifecyclePhaseFixture } from "../fixtures/phases/lifecycle.ts";
 import {
   assertAgentExecutionSucceeded,
+  captureManagedRuntimeLogArtifact,
   cleanupGpu,
   createGpuPrivateHome,
   env,
@@ -170,6 +171,35 @@ const invalidExecutionProofs: Array<{
 ];
 
 describe("GPU E2E helpers", () => {
+  it("retains a failed managed runtime log capture for agent failure diagnosis", async () => {
+    const writeJson = vi.fn().mockResolvedValue("artifact");
+    const capture = vi.fn(() => ({
+      status: 125,
+      error: { message: "container unavailable" },
+      stdout: "",
+      stderr: "runtime log capture failed",
+    }));
+    await captureManagedRuntimeLogArtifact(
+      { writeJson },
+      "pre-approval-agent",
+      "docker",
+      "managed-runtime",
+      capture,
+    );
+    expect(capture).toHaveBeenCalledOnce();
+    expect(writeJson).toHaveBeenCalledExactlyOnceWith(
+      "managed-runtime-logs-pre-approval-agent.json",
+      {
+        providerId: "docker",
+        runtimeId: "managed-runtime",
+        status: 125,
+        error: "container unavailable",
+        stdout: "",
+        stderr: "runtime log capture failed",
+      },
+    );
+  });
+
   it.each([
     { name: "waits through refused connections and curl timeouts", codes: [7, 28, 0], attempts: 3 },
     { name: "stops after 20 curl timeouts", codes: [28], attempts: 20, reason: "exhausted" },
