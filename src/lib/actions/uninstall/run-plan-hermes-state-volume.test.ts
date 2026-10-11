@@ -12,7 +12,7 @@ import { removeManagedStateVolumesForUninstall } from "./managed-state-uninstall
 import { prepareManagedStateVolumes } from "../../onboard/managed-workload/managed-state-volumes";
 import { cleanupMigrationHarness } from "../../onboard/managed-workload/managed-state-volume-migration.test-fixture";
 import * as sandboxProviderCleanup from "../../onboard/sandbox-provider-cleanup";
-import { runManagedHermesVolumeUninstall } from "./run-plan-state-volume.test-fixture";
+import { runManagedHermesVolumeUninstall } from "../../../../test/support/uninstall-state-volume";
 
 afterEach(cleanupMigrationHarness);
 

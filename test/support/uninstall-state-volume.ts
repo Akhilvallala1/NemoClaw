@@ -5,18 +5,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { vi } from "vitest";
-import { createDockerRuntimeProviderBundle } from "../../onboard/runtime-provider/docker";
-import { createRuntimeProviderBundleRegistry } from "../../onboard/runtime-provider/registry";
-import { managedStartupStateRoots } from "../../onboard/managed-startup/state-roots";
-import { prepareManagedStateVolumes } from "../../onboard/managed-workload/managed-state-volumes";
-import { createMigrationHarness } from "../../onboard/managed-workload/managed-state-volume-migration.test-fixture";
-import { withSuccessfulPreUninstallBackup } from "../../../../test/support/uninstall-managed-gateway-test-support";
+import { createDockerRuntimeProviderBundle } from "../../src/lib/onboard/runtime-provider/docker";
+import { createRuntimeProviderBundleRegistry } from "../../src/lib/onboard/runtime-provider/registry";
+import { managedStartupStateRoots } from "../../src/lib/onboard/managed-startup/state-roots";
+import { prepareManagedStateVolumes } from "../../src/lib/onboard/managed-workload/managed-state-volumes";
+import { createMigrationHarness } from "../../src/lib/onboard/managed-workload/managed-state-volume-migration.test-fixture";
+import { withSuccessfulPreUninstallBackup } from "./uninstall-managed-gateway-test-support";
 import {
   type RunResult,
   runUninstallPlanProduction as runUninstallPlanBase,
   type UninstallRunDeps,
   type UninstallRunOptions,
-} from "./run-plan";
+} from "../../src/lib/actions/uninstall/run-plan";
 
 function ok(stdout = ""): RunResult {
   return { status: 0, stdout, stderr: "" };
