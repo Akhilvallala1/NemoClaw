@@ -39,7 +39,6 @@ type Journal = {
   helperId?: string;
   sourceFingerprint: string;
   destinationFingerprint: string | null;
-  copySha256: string | null;
 };
 const HASH = /^[a-f0-9]{64}$/u;
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/u;
@@ -112,10 +111,6 @@ function readJournal(root: Root, context: ManagedVolumeMigrationContext): Journa
         value.destinationFingerprint === null ||
         (typeof value.destinationFingerprint === "string" &&
           HASH.test(value.destinationFingerprint))
-      ) ||
-      !(
-        value.copySha256 === null ||
-        (typeof value.copySha256 === "string" && HASH.test(value.copySha256))
       ) ||
       (value.phase === "verified" && value.destinationFingerprint === null) ||
       (["retryable", "retired"].includes(value.phase) && value.destinationFingerprint !== null)
@@ -384,7 +379,6 @@ export function reconcileManagedStateVolumeMigration(
         ...journal,
         phase: "retryable",
         destinationFingerprint: null,
-        copySha256: null,
       });
     } catch (error) {
       throw migrationError(root, context, journal, error);
@@ -452,7 +446,6 @@ export function commitManagedStateVolumeReplacement(
       ...journal,
       phase: "verified",
       destinationFingerprint: fingerprint(destination),
-      copySha256: null,
     });
   });
 }
@@ -518,7 +511,6 @@ export function migrateManagedStateVolume(
         helper,
         sourceFingerprint: fingerprint(source),
         destinationFingerprint: null,
-        copySha256: null,
       };
       attempt = journal;
       save(root, context, journal);
@@ -627,7 +619,6 @@ export function migrateManagedStateVolume(
         ...journal,
         phase: "verified",
         destinationFingerprint: fingerprint(destination),
-        copySha256: copied.sha256,
       });
       return resolveMigratedManagedStateRoot(root, context);
     });

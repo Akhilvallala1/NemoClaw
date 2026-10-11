@@ -5,13 +5,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PodmanBoundContainerEngine } from "../../adapters/podman";
 import { createHermesStateVolumeDockerHarness } from "../../onboard/__test-helpers__/hermes-state-volume";
 import { createDockerRuntimeProviderBundle } from "../../onboard/runtime-provider/docker";
 import { createPodmanRuntimeProviderBundle } from "../../onboard/runtime-provider/podman";
 import { createRuntimeProviderBundleRegistry } from "../../onboard/runtime-provider/registry";
-import { removeManagedHermesStateVolumes } from "./hermes-uninstall-cleanup";
+import {
+  managedAgentStateVolumeContext,
+  removeManagedStateVolumesForUninstall,
+} from "./managed-state-uninstall-cleanup";
+import { managedStartupStateRoots } from "../../onboard/managed-startup/state-roots";
+import { prepareManagedStateVolumes } from "../../onboard/managed-workload/managed-state-volumes";
+import {
+  createMigrationHarness,
+  cleanupMigrationHarness,
+} from "../../onboard/managed-workload/managed-state-volume-migration.test-fixture";
 import * as sandboxProviderCleanup from "../../onboard/sandbox-provider-cleanup";
 import { withSuccessfulPreUninstallBackup } from "../../../../test/support/uninstall-managed-gateway-test-support";
 
@@ -22,12 +31,7 @@ import {
   type UninstallRunOptions,
 } from "./run-plan";
 
-const MANAGED_HERMES_VOLUME_LABELS = {
-  "io.nvidia.nemoclaw.hermes-state.managed": "true",
-  "io.nvidia.nemoclaw.hermes-state.sandbox": "hermes",
-  "io.nvidia.nemoclaw.hermes-state.schema": "1",
-  "io.nvidia.nemoclaw.hermes-state.target": "/sandbox/.hermes",
-};
+afterEach(cleanupMigrationHarness);
 
 function ok(stdout = ""): RunResult {
   return { status: 0, stdout, stderr: "" };
@@ -56,11 +60,17 @@ async function runManagedHermesVolumeUninstall(
   mode: "foreign" | "owned" | "remove-fails" | "remove-fails-once",
   destroyUserData: boolean,
   containerMode: "absent" | "foreign" | "owned" = "absent",
+  agent: "hermes" | "openclaw" = "hermes",
 ) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-uninstall-hermes-volume-"));
   const stateDir = path.join(home, ".nemoclaw");
   const registryFile = path.join(stateDir, "sandboxes.json");
-  const volumeName = "nemoclaw-hermes-state-v1-hermes";
+  const root = managedStartupStateRoots({
+    agent,
+    sandboxName: "hermes",
+    agentIdentity: { uid: 1000, gid: 1000 },
+  })[0]!;
+  const volumeName = root.resourceIdentity;
   fs.mkdirSync(stateDir, { recursive: true });
   fs.writeFileSync(
     registryFile,
@@ -68,7 +78,7 @@ async function runManagedHermesVolumeUninstall(
       defaultSandbox: "hermes",
       sandboxes: {
         hermes: {
-          agent: "hermes",
+          agent,
           gatewayName: "nemoclaw",
           gatewayPort: 8080,
           name: "hermes",
@@ -128,9 +138,7 @@ async function runManagedHermesVolumeUninstall(
           ? ok(
               `${JSON.stringify({
                 Labels:
-                  mode === "foreign"
-                    ? { "com.example.owner": "foreign" }
-                    : MANAGED_HERMES_VOLUME_LABELS,
+                  mode === "foreign" ? { "com.example.owner": "foreign" } : root.ownershipLabels,
                 Name: volumeName,
               })}\n`,
             )
@@ -211,18 +219,18 @@ async function runManagedHermesVolumeUninstall(
   };
 }
 
-describe("managed Hermes state volume uninstall", () => {
+describe("managed agent state volume uninstall", () => {
   it.each(["removed", "absent"] as const)(
     "reports the retained migration source when the selected volume is %s",
     (status) => {
       const retainedVolumeName = "nemoclaw-hermes-state-v1-hermes";
       const remove = vi
-        .spyOn(sandboxProviderCleanup, "removeManagedHermesStateVolume")
-        .mockReturnValue({ status, retainedVolumeName });
+        .spyOn(sandboxProviderCleanup, "removeManagedAgentStateVolumes")
+        .mockReturnValue([{ status, retainedVolumeName }]);
       const warn = vi.fn();
       try {
         expect(
-          removeManagedHermesStateVolumes(
+          removeManagedStateVolumesForUninstall(
             [
               {
                 agentName: "hermes",
@@ -291,7 +299,7 @@ describe("managed Hermes state volume uninstall", () => {
     });
 
     expect(
-      removeManagedHermesStateVolumes(
+      removeManagedStateVolumesForUninstall(
         [
           {
             agentName: "hermes",
@@ -318,21 +326,78 @@ describe("managed Hermes state volume uninstall", () => {
   });
 
   it.each([
-    ["local uninstall", false],
-    ["destructive uninstall", true],
-  ])("removes an owned volume during %s", async (_label, destroyUserData) => {
-    const harness = await runManagedHermesVolumeUninstall("owned", destroyUserData);
-    try {
-      expect(harness.result.exitCode, harness.errors.join("\n")).toBe(0);
-      expect(harness.volumePresent()).toBe(false);
-      expect(harness.dockerCalls).toContainEqual(["volume", "rm", harness.volumeName]);
-      expect(harness.events.indexOf("openshell sandbox delete --all")).toBeLessThan(
-        harness.events.indexOf(`docker volume rm ${harness.volumeName}`),
+    ["hermes", false],
+    ["hermes", true],
+    ["openclaw", false],
+    ["openclaw", true],
+  ] as const)(
+    "removes an owned %s volume with destroy-user-data=%s",
+    async (agent, destroyUserData) => {
+      const harness = await runManagedHermesVolumeUninstall(
+        "owned",
+        destroyUserData,
+        "absent",
+        agent,
       );
-      expect(harness.logs).toContain("Removed managed Hermes state volume for 'hermes'.");
-    } finally {
-      harness.cleanup();
-    }
+      try {
+        expect(harness.result.exitCode, harness.errors.join("\n")).toBe(0);
+        expect(harness.volumePresent()).toBe(false);
+        expect(harness.dockerCalls).toContainEqual(["volume", "rm", harness.volumeName]);
+        expect(harness.events.indexOf("openshell sandbox delete --all")).toBeLessThan(
+          harness.events.indexOf(`docker volume rm ${harness.volumeName}`),
+        );
+        expect(harness.logs).toContain("Removed managed agent state volume for 'hermes'.");
+      } finally {
+        harness.cleanup();
+      }
+    },
+  );
+
+  it("uninstall retains migrated OpenClaw originals and foreign volumes", () => {
+    const h = createMigrationHarness("openclaw");
+    const scope = prepareManagedStateVolumes(h.input, h.deps)!;
+    scope.commit();
+    const selected = scope.mounts[0]!.source;
+    const foreign = { ...h.source, Name: "foreign", Labels: { owner: "other" } };
+    h.volumes.set(foreign.Name, foreign);
+    const original = JSON.stringify(h.source);
+    const warn = vi.fn();
+    const capture = (_command: string, args: readonly string[]) => {
+      const result = h.run(args);
+      return {
+        status: result.status ?? 1,
+        stdout: String(result.stdout ?? ""),
+        stderr: String(result.stderr ?? ""),
+      };
+    };
+    expect(
+      removeManagedStateVolumesForUninstall(
+        [
+          managedAgentStateVolumeContext("alpha", {
+            agent: "openclaw",
+            openshellDriver: "docker",
+            workload: { kind: "managed-image" },
+          }),
+        ],
+        {
+          env: {},
+          error: vi.fn(),
+          log: vi.fn(),
+          warn,
+          runDocker: vi.fn(),
+          runtimeProviders: createRuntimeProviderBundleRegistry([
+            ["docker", createDockerRuntimeProviderBundle({ captureHostCommand: capture })],
+          ]),
+        },
+        h.stateDir,
+      ),
+    ).toBe(true);
+    expect(h.volumes.has(selected)).toBe(false);
+    expect(JSON.stringify(h.volumes.get(h.source.Name))).toBe(original);
+    expect(h.volumes.get(foreign.Name)).toEqual(foreign);
+    expect(warn.mock.calls.flat().join("\n")).toContain(
+      `Retained pre-migration state volume '${h.source.Name}'`,
+    );
   });
 
   it("keeps a same-name foreign volume", async () => {
@@ -357,7 +422,7 @@ describe("managed Hermes state volume uninstall", () => {
       expect(fs.existsSync(harness.registryFile)).toBe(true);
       expect(harness.events.some((event) => event.startsWith("npm "))).toBe(false);
       expect(harness.errors).toContain(
-        `Managed Hermes state volume '${harness.volumeName}' could not be removed.`,
+        `Managed agent state volume '${harness.volumeName}' could not be removed.`,
       );
       expect(harness.errors).toContain("Preserved NemoClaw state so exact cleanup can be retried.");
     } finally {

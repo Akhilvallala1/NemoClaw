@@ -1,16 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { ManagedHermesStateVolumeContext } from "../../onboard/managed-workload/hermes-state-volume";
+import type { ManagedHermesStateVolumeContext as ManagedAgentStateVolumeContext } from "../../onboard/managed-workload/hermes-state-volume";
 import { normalizeRuntimeProviderIdentity } from "../../onboard/runtime-provider/access";
 import { CURRENT_RUNTIME_PROVIDER_BUNDLES } from "../../onboard/runtime-provider/current";
 import type { RuntimeProviderBundleRegistry } from "../../onboard/runtime-provider/contract";
-import { removeManagedHermesStateVolume } from "../../onboard/sandbox-provider-cleanup";
+import { removeManagedAgentStateVolumes } from "../../onboard/sandbox-provider-cleanup";
 
-export { requiresManagedHermesStateVolume } from "../../onboard/managed-workload/hermes-state-volume";
-export type { ManagedHermesStateVolumeContext };
+export type { ManagedAgentStateVolumeContext };
 
-export interface ManagedHermesStateVolumeRuntime {
+export interface ManagedAgentStateVolumeRuntime {
   env: NodeJS.ProcessEnv;
   error(message: string): void;
   log(message: string): void;
@@ -26,10 +25,10 @@ export interface ManagedHermesStateVolumeRuntime {
   warn(message: string): void;
 }
 
-export function managedHermesStateVolumeContext(
+export function managedAgentStateVolumeContext(
   sandboxName: string,
   entry: Readonly<Record<string, unknown>>,
-): ManagedHermesStateVolumeContext {
+): ManagedAgentStateVolumeContext {
   const agent = entry["agent"];
   const openshellDriver = entry["openshellDriver"];
   const workload = entry["workload"];
@@ -50,12 +49,14 @@ export function managedHermesStateVolumeContext(
   };
 }
 
-export function removeManagedHermesStateVolumes(
-  contexts: readonly ManagedHermesStateVolumeContext[],
-  runtime: ManagedHermesStateVolumeRuntime,
+export function removeManagedStateVolumesForUninstall(
+  contexts: readonly ManagedAgentStateVolumeContext[],
+  runtime: ManagedAgentStateVolumeRuntime,
+  migrationStateDir?: string,
 ): boolean {
   for (const context of contexts) {
-    const result = removeManagedHermesStateVolume(context, {
+    const results = removeManagedAgentStateVolumes(context, {
+      migrationStateDir,
       runtimeProviders: runtime.runtimeProviders ?? CURRENT_RUNTIME_PROVIDER_BUNDLES,
       runDocker: (args, options) =>
         runtime.runDocker(["volume", ...args], {
@@ -64,22 +65,24 @@ export function removeManagedHermesStateVolumes(
           timeout: options?.timeout,
         }),
     });
-    if (result.status === "failed") {
-      runtime.error(`Managed Hermes state volume '${result.volumeName}' could not be removed.`);
-      runtime.error("Preserved NemoClaw state so exact cleanup can be retried.");
-      return false;
-    }
-    if ("retainedVolumeName" in result && result.retainedVolumeName) {
-      runtime.warn(
-        `Retained pre-migration state volume '${result.retainedVolumeName}' with user data. It is not deleted automatically; preserve it for administrator-reviewed recovery or retirement.`,
-      );
-    }
-    if (result.status === "not-owned") {
-      runtime.warn(
-        `Left managed state volume '${result.volumeName}' untouched because ${result.detail}.`,
-      );
-    } else if (result.status === "removed") {
-      runtime.log(`Removed managed Hermes state volume for '${context.sandboxName}'.`);
+    for (const result of results) {
+      if (result.status === "failed") {
+        runtime.error(`Managed agent state volume '${result.volumeName}' could not be removed.`);
+        runtime.error("Preserved NemoClaw state so exact cleanup can be retried.");
+        return false;
+      }
+      if ("retainedVolumeName" in result && result.retainedVolumeName) {
+        runtime.warn(
+          `Retained pre-migration state volume '${result.retainedVolumeName}' with user data. It is not deleted automatically; preserve it for administrator-reviewed recovery or retirement.`,
+        );
+      }
+      if (result.status === "not-owned") {
+        runtime.warn(
+          `Left managed state volume '${result.volumeName}' untouched because ${result.detail}.`,
+        );
+      } else if (result.status === "removed") {
+        runtime.log(`Removed managed agent state volume for '${context.sandboxName}'.`);
+      }
     }
   }
   return true;
