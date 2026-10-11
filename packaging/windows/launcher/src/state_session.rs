@@ -16,6 +16,18 @@ fn validate_agent(agent: &str) -> Result<(), String> {
     }
 }
 
+fn validate_session_agent(agent: &str, configuration: bool) -> Result<(), String> {
+    validate_agent(agent)?;
+    if configuration {
+        if !matches!(agent, "openclaw" | "hermes") {
+            return Err("Select a supported native agent to configure.".into());
+        }
+    } else if !matches!(agent, "openclaw" | "hermes" | "inference") {
+        return Err("Select a supported native agent or shared inference session.".into());
+    }
+    Ok(())
+}
+
 fn state_location(drive: char, sid: &str, agent: &str) -> Result<String, String> {
     validate_agent(agent)?;
     if !drive.is_ascii_alphabetic()
@@ -475,10 +487,7 @@ mod native {
     }
 
     pub(super) fn run(agent: &str, configuration: bool) -> Result<(), String> {
-        super::validate_agent(agent)?;
-        if configuration && !matches!(agent, "openclaw" | "hermes") {
-            return Err("Select a supported native agent to configure.".into());
-        }
+        super::validate_session_agent(agent, configuration)?;
         let sid = current_sid()?;
         let drive = windows_drive()?;
         let root = super::state_location(drive, &sid, agent)?;
@@ -648,6 +657,32 @@ pub fn remove(agent: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_agents_are_cleanup_only_and_inference_is_session_only() {
+        for agent in ["openclaw", "hermes"] {
+            assert!(validate_session_agent(agent, false).is_ok());
+            assert!(validate_session_agent(agent, true).is_ok());
+        }
+        assert!(validate_session_agent("inference", false).is_ok());
+        assert!(validate_session_agent("inference", true).is_err());
+        for agent in ["pi", "nemocua", "langchain-deepagents-code"] {
+            assert!(
+                validate_agent(agent).is_ok(),
+                "Historical cleanup must remain available"
+            );
+            for configuration in [false, true] {
+                assert!(validate_session_agent(agent, configuration).is_err());
+                #[cfg(windows)]
+                assert!(
+                    run(agent, configuration)
+                        .unwrap_err()
+                        .contains("supported native agent")
+                );
+            }
+        }
+        assert!(validate_session_agent("unknown", false).is_err());
+    }
 
     #[test]
     fn distinct_accounts_and_agents_keep_stable_drive_root_state() {

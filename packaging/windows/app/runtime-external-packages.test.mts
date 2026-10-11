@@ -211,21 +211,102 @@ test("process facades initialize the compiled owner and load only the selected e
   publishPluginFacades(app, [
     { path: entry, exports: ["answer"], sourceSha256: "fixture", processEntry: true },
   ]);
-  const result = spawnSync(
-    process.execPath,
-    [path.join(app, entry), "owned-child", "path with spaces"],
-    {
+  const roots = [app, app + path.sep + "."];
+  if (process.platform === "win32") roots.push(app.toUpperCase());
+  for (const root of roots) {
+    const result = spawnSync(
+      process.execPath,
+      [path.join(app, entry), "owned-child", "path with spaces"],
+      {
+        env: { ...process.env, OPENCLAW_COMPILED_ASSET_ROOT: root },
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      key: entry,
+      args: ["owned-child", "path with spaces"],
+    });
+  }
+});
+
+test("process facades locate their sealed owner in an empty Worker environment", async (t) => {
+  const { app, write } = fixture(t);
+  const entry = "node_modules/openclaw/dist/state/owned.worker.js";
+  write("app/package.json", '{"type":"module"}');
+  write(
+    "app/openclaw-app.cjs",
+    `
+    exports.registerPrebuiltPlugins = async () => {
+      if(process.env.OPENCLAW_COMPILED_ASSET_ROOT !== __dirname)
+        throw Error("The sealed OpenClaw asset root is required.");
+      globalThis[Symbol.for("nemoclaw.compiled-openclaw.plugins.v1")] = {load(key){
+        if(key !== ${JSON.stringify(entry)}) throw Error("Wrong entry");
+        require("node:worker_threads").parentPort.postMessage({
+          assetRoot:process.env.OPENCLAW_COMPILED_ASSET_ROOT,
+          environmentKeys:Object.keys(process.env)
+        });
+        return {};
+      }};
+    };`,
+  );
+  publishPluginFacades(app, [
+    { path: entry, exports: [], sourceSha256: "fixture", processEntry: true },
+  ]);
+  const worker = new Worker(path.join(app, entry), {
+    env: {},
+    execArgv: [],
+    stdout: true,
+    stderr: true,
+  });
+  const messages: unknown[] = [];
+  worker.on("message", (message) => messages.push(message));
+  let failure: Error | undefined;
+  worker.on("error", (error) => {
+    failure = error;
+  });
+  const exited = new Promise<number>((resolve) => worker.once("exit", resolve));
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    void worker.terminate();
+  }, 10_000);
+  try {
+    assert.equal(await exited, 0, failure?.message);
+    assert.equal(expired, false);
+    assert.equal(failure, undefined);
+    assert.deepEqual(messages, [
+      { assetRoot: app, environmentKeys: ["OPENCLAW_COMPILED_ASSET_ROOT"] },
+    ]);
+  } finally {
+    clearTimeout(timer);
+    await worker.terminate();
+  }
+});
+
+test("process facades reject a conflicting asset root before loading the owner", (t) => {
+  const { app, write } = fixture(t);
+  write("app/package.json", '{"type":"module"}');
+  write("app/openclaw-app.cjs", 'throw Error("Owner must not load for a conflicting root");');
+  publishPluginFacades(app, [
+    { path: "worker.js", exports: [], sourceSha256: "fixture", processEntry: true },
+  ]);
+  for (const root of ["relative-root", path.join(app, "other"), ""]) {
+    const result = spawnSync(process.execPath, [path.join(app, "worker.js")], {
+      env: { ...process.env, OPENCLAW_COMPILED_ASSET_ROOT: root },
       encoding: "utf8",
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
       windowsHide: true,
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
-    key: entry,
-    args: ["owned-child", "path with spaces"],
-  });
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /asset root does not match its compiled owner/);
+    assert.doesNotMatch(result.stderr, /Owner must not load/);
+    assert.equal(result.stdout, "");
+  }
 });
 
 test("ordinary plugin facades do not initialize an absent owner", (t) => {

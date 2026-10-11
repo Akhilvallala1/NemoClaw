@@ -1137,6 +1137,7 @@ jobs:
             --output "$env:RUNNER_TEMP\compiled-windows-app\controls\compiled-openclaw"
           if ($LASTEXITCODE -ne 0) { throw 'The compiled Windows application controls failed.' }
       - name: Exercise compiled provider, tools and all packaged onboarding choices
+        id: configured_choices
         if: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' }}
         shell: pwsh
         run: |
@@ -1165,6 +1166,27 @@ jobs:
           if ($checks.Count -ne 3 -or @($checks | Where-Object exitCode -NE 0).Count -ne 0) {
             throw 'A packaged onboarding choice did not complete its configured gateway checks.'
           }
+      - name: Prepare the compiler for failure-only readonly-worker diagnostics
+        id: readonly_diagnostic_compiler
+        if: ${{ failure() && steps.configured_choices.outcome == 'failure' }}
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.419
+      - name: Diagnose the compiled readonly worker without changing acceptance
+        if: ${{ failure() && steps.configured_choices.outcome == 'failure' && steps.readonly_diagnostic_compiler.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $work = "$env:RUNNER_TEMP\compiled-windows-app"
+          $ownerRoot = "$work\readonly-process-owner"
+          & dotnet publish packaging/windows/tests/gateway-process/Gateway.Process.Controls.csproj `
+            --configuration Release --runtime win-arm64 --self-contained true --output $ownerRoot
+          if ($LASTEXITCODE -ne 0) { throw 'The diagnostic process owner did not build.' }
+          & "$work\node\node.exe" --experimental-strip-types `
+            packaging/windows/app/diagnose-compiled-sqlite-readonly.mts `
+            --app-root "$work\build\app" --process-owner "$ownerRoot\Gateway.Process.Controls.exe" `
+            --output "$work\build\diagnostics\readonly-worker"
+          if ($LASTEXITCODE -ne 0) { throw 'The readonly worker diagnostic failed; acceptance remains failed.' }
       - name: Verify the compiled dashboard and packaged resources in a real browser
         if: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' }}
         shell: pwsh
@@ -1222,6 +1244,17 @@ jobs:
           & "$work\node\node.exe" --experimental-strip-types `
             packaging/windows/distribution/build-native-workers.mts "$work\workers"
           if ($LASTEXITCODE -ne 0) { throw 'Static application worker compilation failed.' }
+      - name: Migrate synthetic history with the compiled OpenClaw importer
+        if: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' }}
+        shell: pwsh
+        run: |
+          $env:GITHUB_SHA = $env:CANDIDATE_SHA
+          $work = "$env:RUNNER_TEMP\compiled-windows-app"
+          & "$work\node\node.exe" --experimental-strip-types `
+            packaging/windows/app/test-compiled-openclaw-migration.mts `
+            --app-root "$work\build\app" --runtime-root $work `
+            --output "$work\controls\compiled-migration"
+          if ($LASTEXITCODE -ne 0) { throw 'The compiled OpenClaw history migration failed.' }
       - name: Build and execute the Windows application EXE
         shell: pwsh
         run: |
@@ -1280,6 +1313,7 @@ jobs:
             "$work\controls\compiled-openclaw\direct-version.log",
             "$work\controls\compiled-openclaw\worker-version.log",
             "$work\controls\compiled-openclaw\config-validate.log",
+            "$work\controls\compiled-migration\migration-controls.json",
             "$work\first-run-consent-control\gateway-control.json",
             "$work\first-run-consent-control\stdout.log", "$work\first-run-consent-control\stderr.log",
             "$work\gateway-control\gateway-control.json",
@@ -1287,6 +1321,9 @@ jobs:
             "$work\workers\build.json", "$work\workers\source-adaptation.json",
             "$work\executable-tools\tools-input.json",
             "$work\build\diagnostics\configured-choice-results.json",
+            "$work\build\diagnostics\readonly-worker\readonly-diagnostic.json",
+            "$work\build\diagnostics\readonly-worker\delete-closed.trace.log",
+            "$work\build\diagnostics\readonly-worker\wal-held.trace.log",
             "$work\build\diagnostics\local-model-tools\result.json",
             "$work\build\diagnostics\local-model-tools\undici-instances.json",
             "$work\build\diagnostics\local-model-tools\stdout.log",
@@ -2273,7 +2310,7 @@ jobs:
             $result = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           $text = [string](Get-Content -LiteralPath $log -Raw)
-          if ($result -ne 0 -or $text -notmatch '(?m)^test result: ok\. 14 passed; 0 failed; 0 ignored;') {
+          if ($result -ne 0 -or $text -notmatch '(?m)^test result: ok\. 15 passed; 0 failed; 0 ignored;') {
             throw 'The shared configuration and per-agent state ownership controls did not all pass.'
           }
 

@@ -5,6 +5,8 @@ import { spawn } from "node:child_process";
 import { createNativeDiagnosticCapture } from "./native-session-diagnostics.mts";
 
 export async function acquireNativeStateSession(launcher: string, purpose: string) {
+  if (!["openclaw", "hermes", "inference"].includes(purpose))
+    throw new Error("Select a supported native agent or shared inference session.");
   return await acquireStateOwner(launcher, purpose, "session");
 }
 

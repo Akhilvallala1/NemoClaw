@@ -467,10 +467,16 @@ export function publishPluginFacades(app: string, entries: Entry[]) {
       portablePath(
         path.relative(path.dirname(path.join(app, entry.path)), path.join(app, "openclaw-app.cjs")),
       );
-    // A new process/Worker has no parent registry. Load the same compiled owner
-    // before selecting its entry; ordinary plugin facades still require their owner.
+    // A Worker may intentionally have env:{}. Derive only its asset root from
+    // the sealed owner; never copy the parent's environment into the Worker.
+    // Ordinary plugin facades still require an initialized owner.
     const bootstrap = entry.processEntry
-      ? `import {createRequire} from "node:module";const owner=createRequire(import.meta.url)(${JSON.stringify(owner)});await owner.registerPrebuiltPlugins({});\n`
+      ? `import {createRequire} from "node:module";import {dirname,isAbsolute,relative} from "node:path";
+const requireOwner=createRequire(import.meta.url);const ownerPath=requireOwner.resolve(${JSON.stringify(owner)});const assetRoot=dirname(ownerPath);
+const suppliedRoot=process.env.OPENCLAW_COMPILED_ASSET_ROOT;
+if(suppliedRoot!==undefined&&(!isAbsolute(suppliedRoot)||relative(assetRoot,suppliedRoot)!==""))throw Error("The OpenClaw asset root does not match its compiled owner.");
+process.env.OPENCLAW_COMPILED_ASSET_ROOT=assetRoot;
+const owner=requireOwner(ownerPath);await owner.registerPrebuiltPlugins({});\n`
       : "";
     const content =
       bootstrap +

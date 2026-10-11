@@ -41,3 +41,33 @@ export const choiceInspectChildDiagnostics = String.raw`
   require("node:module").syncBuiltinESMExports();
 })();
 `;
+
+// Only the separate, synthetic readonly-worker probe loads this preload.
+// Acceptance workers keep their original arguments and environment.
+export const sqliteReadonlyWorkerDiagnostics =
+  choiceInspectChildDiagnostics +
+  String.raw`
+(() => {
+  const sqlite = require("node:sqlite"), original = sqlite.backup;
+  const started = performance.now();
+  let records = 0;
+  const mark = stage => {
+    if (records++ >= 128) return;
+    try {
+      process.stderr.write("[nemoclaw-snapshot-backup] " + JSON.stringify({
+        stage, elapsedMs: Math.round(performance.now() - started)
+      }) + "\n");
+    } catch {}
+  };
+  mark("preload-started");
+  sqlite.backup = function(...args) {
+    mark("start");
+    let result;
+    try { result = original.apply(this, args); }
+    catch (error) { mark("threw"); throw error; }
+    result.then(() => mark("finished"), () => mark("rejected"));
+    return result;
+  };
+  require("node:module").syncBuiltinESMExports();
+})();
+`;

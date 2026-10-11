@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
 
 import {
+  acquireNativeStateConfiguration,
   acquireNativeStateRemoval,
   acquireNativeStateSession,
 } from "../../packaging/windows/runtime/native-state.mts";
@@ -35,6 +36,83 @@ const receipt = {
 beforeEach(() => mocks.spawn.mockReset());
 
 describe("native Windows state protocol", () => {
+  it.each(["pi", "nemocua", "langchain-deepagents-code"])(
+    "rejects new %s sessions and configuration before starting the owner",
+    async (agent) => {
+      await expect(acquireNativeStateSession("launcher.exe", agent)).rejects.toThrow(
+        "supported native agent",
+      );
+      await expect(acquireNativeStateConfiguration("launcher.exe", agent)).rejects.toThrow(
+        "supported native agent",
+      );
+      expect(mocks.spawn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["openclaw", "inference"])("retains %s session ownership", async (agent) => {
+    const child = fixture();
+    const pending = acquireNativeStateSession("launcher.exe", agent);
+    child.stdout.emit(
+      "data",
+      Buffer.from(
+        JSON.stringify({
+          ...receipt,
+          agent,
+          stateRoot: receipt.stateRoot.replace(/-hermes$/u, `-${agent}`),
+        }) + "\n",
+      ),
+    );
+    const session = await pending;
+    expect(mocks.spawn.mock.calls[0][1]).toEqual(["--state-session", agent]);
+    session.assertHeld();
+    await session.release();
+  });
+
+  it.each(["openclaw", "hermes"])("retains %s configuration ownership", async (agent) => {
+    const child = fixture();
+    const pending = acquireNativeStateConfiguration("launcher.exe", agent);
+    child.stdout.emit(
+      "data",
+      Buffer.from(
+        JSON.stringify({
+          ...receipt,
+          kind: "native-state-configuration",
+          agent,
+          stateRoot: receipt.stateRoot.replace(/-hermes$/u, `-${agent}`),
+        }) + "\n",
+      ),
+    );
+    const configuration = await pending;
+    expect(mocks.spawn.mock.calls[0][1]).toEqual(["--state-configure", agent]);
+    configuration.assertHeld();
+    await configuration.release();
+  });
+
+  it.each(["pi", "nemocua", "langchain-deepagents-code"])(
+    "retains explicit removal of historical %s state",
+    async (agent) => {
+      const child = fixture();
+      const pending = acquireNativeStateRemoval("launcher.exe", agent);
+      child.stdout.emit(
+        "data",
+        Buffer.from(
+          JSON.stringify({
+            ...receipt,
+            kind: "native-state-remove",
+            agent,
+            removed: true,
+            stateRoot: receipt.stateRoot.replace(/-hermes$/u, `-${agent}`),
+          }) + "\n",
+        ),
+      );
+      const removal = await pending;
+      expect(mocks.spawn.mock.calls[0][1]).toEqual(["--state-remove", agent]);
+      expect(removal.removed).toBe(true);
+      removal.assertHeld();
+      await removal.release();
+    },
+  );
+
   it("holds removal ownership during metadata cleanup without creating absent agent data", async () => {
     const child = fixture();
     const pending = acquireNativeStateRemoval("launcher.exe", "hermes");

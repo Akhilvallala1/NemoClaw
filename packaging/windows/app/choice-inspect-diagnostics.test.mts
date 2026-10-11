@@ -5,7 +5,10 @@ import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { choiceInspectChildDiagnostics } from "./choice-inspect-diagnostics.mts";
+import {
+  choiceInspectChildDiagnostics,
+  sqliteReadonlyWorkerDiagnostics,
+} from "./choice-inspect-diagnostics.mts";
 
 function fixture(invoke: (...args: unknown[]) => unknown) {
   const methods = ["spawn", "spawnSync", "execFile", "execFileSync"];
@@ -121,4 +124,58 @@ test("inspect diagnostics retain the package-manager trap and real Node callback
   assert.match(result.stderr, /"stage":"threw"/);
   assert.match(result.stderr, /"category":"node","stage":"closed"/);
   assert.doesNotMatch(result.stderr, /retained-output|package-manager refusal|process\.stdout/);
+});
+
+test("readonly diagnostic preserves backup arguments, receiver, promise and failures without leaking data", async () => {
+  for (const outcome of ["success", "reject", "throw"] as const) {
+    const secret = new Error("private database failure");
+    const args = [{ privateDatabase: true }, "private-destination"];
+    const receiver = {};
+    const promise =
+      outcome === "reject" ? Promise.reject(secret) : Promise.resolve("private-result");
+    const lines: string[] = [];
+    const sqlite = {
+      backup(this: unknown, ...actual: unknown[]) {
+        assert.equal(this, receiver);
+        assert.equal(actual[0], args[0]);
+        assert.equal(actual[1], args[1]);
+        if (outcome === "throw") throw secret;
+        return promise;
+      },
+    };
+    const cp = Object.fromEntries(
+      ["spawn", "spawnSync", "execFile", "execFileSync"].map((name) => [name, () => {}]),
+    );
+    runInNewContext(sqliteReadonlyWorkerDiagnostics, {
+      require(name: string) {
+        if (name === "node:child_process") return cp;
+        if (name === "node:sqlite") return sqlite;
+        assert.equal(name, "node:module");
+        return { syncBuiltinESMExports() {} };
+      },
+      process: { execPath: "/private/node", stderr: { write: (line: string) => lines.push(line) } },
+      performance: { now: () => 10 },
+    });
+    if (outcome === "throw")
+      assert.throws(
+        () => sqlite.backup.call(receiver, ...args),
+        (error) => error === secret,
+      );
+    else {
+      const actual = sqlite.backup.call(receiver, ...args);
+      assert.equal(actual, promise);
+      if (outcome === "reject") await assert.rejects(actual, (error) => error === secret);
+      else assert.equal(await actual, "private-result");
+    }
+    const records = lines.map((line) => JSON.parse(line.slice(line.indexOf("{"))));
+    assert.deepEqual(records, [
+      { stage: "preload-started", elapsedMs: 0 },
+      { stage: "start", elapsedMs: 0 },
+      {
+        stage: outcome === "success" ? "finished" : outcome === "reject" ? "rejected" : "threw",
+        elapsedMs: 0,
+      },
+    ]);
+    assert.doesNotMatch(lines.join(""), /private|destination|database|result/);
+  }
 });
