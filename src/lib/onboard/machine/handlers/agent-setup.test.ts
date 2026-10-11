@@ -193,6 +193,31 @@ describe("handleAgentSetupState", () => {
     },
   );
 
+  it("preserves native custom authority in the Hermes setup context (#12636)", async () => {
+    const attachment = await nativeAttachment();
+    const context = {
+      gatewayName: "nemoclaw-19090",
+      nativeCustomProviderAttachment: attachment,
+    };
+    const { deps, calls } = createDeps({ agentSetupContext: () => context });
+    const agent = { name: "hermes", displayName: "Hermes" };
+    const options = { ...baseOptions(deps, agent), provider: "compatible-endpoint" };
+
+    await handleAgentSetupState(options);
+
+    expect(calls.handleAgentSetup).toHaveBeenCalledExactlyOnceWith(
+      "my-assistant",
+      "model",
+      "compatible-endpoint",
+      agent,
+      false,
+      options.session,
+      context,
+    );
+    expect(calls.setupOpenclaw).not.toHaveBeenCalled();
+    expect(calls.initializeOpenclawInferenceRoute).not.toHaveBeenCalled();
+  });
+
   it("delegates non-OpenClaw agent setup and skips openclaw", async () => {
     const { deps, calls } = createDeps();
     const agent = { name: "hermes", displayName: "Hermes" };

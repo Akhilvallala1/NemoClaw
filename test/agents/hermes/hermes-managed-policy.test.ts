@@ -15,6 +15,11 @@ import {
   buildHermesManagedPolicy,
   HERMES_MANAGED_POLICY_SCHEMA_VERSION,
 } from "../../../agents/hermes/config/managed-policy.ts";
+import { getSandboxInferenceConfig } from "../../../src/lib/inference/config";
+import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../../../src/lib/inference/native-custom";
 
 const READER_PATH = path.join(
   import.meta.dirname,
@@ -209,14 +214,47 @@ describe("Hermes managed policy", () => {
 
 describe("native custom Hermes policy (#12636)", () => {
   it.each([
-    ["compatible-endpoint", "COMPATIBLE_API_KEY"],
-    ["compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
-  ])("accepts %s only with its owned credential reference", (provider, key) => {
+    [
+      "compatible-endpoint",
+      "COMPATIBLE_API_KEY",
+      "openai-completions",
+      "https://api.example.com/v1",
+    ],
+    [
+      "compatible-anthropic-endpoint",
+      "COMPATIBLE_ANTHROPIC_API_KEY",
+      "anthropic-messages",
+      "https://api.example.com",
+    ],
+  ])("accepts %s only with its owned credential reference", async (provider, key, api, baseUrl) => {
+    const prepared = await prepareNativeCustomProfile({
+      sandboxName: "hermes-custom",
+      provider,
+      endpointUrl: "https://api.example.com/v1",
+      api,
+      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    });
+    const attachment = customAttachmentFromPrepared(prepared, {
+      schemaVersion: 1,
+      profileId: prepared.profile.id,
+      providerName: prepared.providerName,
+      providerId: "native-provider-id",
+    });
+    const inference = getSandboxInferenceConfig("test-model", provider, api, attachment);
     const policy = buildHermesManagedPolicy(
-      { ...SETTINGS, upstreamProvider: provider, baseUrl: "https://api.example.com/v1" },
+      {
+        ...SETTINGS,
+        upstreamProvider: provider,
+        baseUrl: inference.inferenceBaseUrl,
+        inferenceApi: inference.inferenceApi,
+      },
       {},
     );
     expect(loadWithPython(policy).status).toBe(0);
+    expect(policy.config.model).toMatchObject({
+      base_url: baseUrl,
+      api_key: `sk-OPENSHELL-RESOLVE-ENV-${key}`,
+    });
     const serialized = JSON.stringify(policy);
     expect(serialized).toContain(`sk-OPENSHELL-RESOLVE-ENV-${key}`);
     const malformed = {
