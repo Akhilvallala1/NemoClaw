@@ -228,12 +228,18 @@ describe("OpenShell supervisor manifest trust", () => {
   it.each([false, true])(
     "accepts the thread-group runtime with selectedRelease=%s (#12928)",
     (selectedRelease) => {
-      const result = runParser({
-        selectedRelease,
-        transformSupervisor: selectThreadGroupExecutableRuntime,
-        allowUnchangedSupervisor: true,
-      });
+      const result = runParser({ selectedRelease });
       expect(result.status, result.stderr).toBe(0);
+
+      const missingReader = runParser({
+        selectedRelease,
+        transformSupervisor: (source) =>
+          source.replace('return readGatewayProcEntry(pid, "exe");', "return null;"),
+      });
+      expect(missingReader.status).toBe(1);
+      expect(missingReader.stderr).toContain(
+        "supervisor runtime operational template is not base-trusted",
+      );
     },
   );
 
