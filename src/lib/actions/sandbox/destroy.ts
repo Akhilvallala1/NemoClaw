@@ -1137,6 +1137,9 @@ async function destroySandboxUnlocked(
         },
         {
           runtimeProviders: CURRENT_RUNTIME_PROVIDER_BUNDLES,
+          workspace:
+            destroyRuntimeSelection?.workspace ?? initialContainerIdentities?.[0]?.workspace,
+          migrationStateDir: registryAuthority.stateDir,
         },
       ),
     );

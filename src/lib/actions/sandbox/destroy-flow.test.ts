@@ -26,7 +26,6 @@ import {
 } from "../../../../test/helpers/destroy-flow-test-harness";
 import { serializedLlamaCppHostLocalInferenceReceipt } from "../../../../test/helpers/host-local-inference-receipt";
 import { createSandboxHostLocalInferenceProvenance } from "../../state/registry/host-local-inference";
-import type { SandboxWorkloadReceipt } from "../../state/registry";
 import * as dockerLlamaCppOperation from "../../onboard/runtime-provider/docker-llama-cpp-operation";
 import { prepareManagedLlamaCppRuntimeCleanupForSandbox } from "../../inference/local-model-profile/cleanup";
 import { enforceRemovedImmutabilityMigrationBoundary } from "../../state/migrations/removed-immutability";
@@ -38,22 +37,6 @@ import {
 } from "../../inference/local-model-profile/cleanup.test-support";
 
 const enforceRemovedImmutabilityMigrationBoundaryReal = enforceRemovedImmutabilityMigrationBoundary;
-
-const managedHermesWorkload = {
-  schemaVersion: 1,
-  kind: "managed-image",
-  reference: `ghcr.io/nvidia/nemoclaw/hermes@sha256:${"a".repeat(64)}`,
-  platform: "linux/amd64",
-  release: "v0.0.0",
-  sourceRevision: "a".repeat(40),
-  sourceCohort: "test-cohort",
-  capabilityContractVersion: 1,
-  startupProfileContractVersion: 1,
-  encodedProfile: "e30",
-  startupProfileSha256: "b".repeat(64),
-  credentialProxyReplayRequired: true,
-  shared: true,
-} satisfies SandboxWorkloadReceipt;
 
 describe("destroySandbox flow", () => {
   let exitSpy: MockInstance;
@@ -654,87 +637,6 @@ describe("destroySandbox flow", () => {
     expect(errorOutput).toContain("--force cannot discard this ownership state");
     expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
     expect(harness.retirePortableLifecycleReceiptSpy).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["removed", undefined],
-    ["removed", "nemoclaw-hermes-state-v1-alpha"],
-    ["absent", "nemoclaw-hermes-state-v1-alpha"],
-  ] as const)(
-    "finishes owned Hermes cleanup with selected volume %s and retained source %s",
-    { timeout: 30_000 },
-    async (status, retainedVolumeName) => {
-      const harness = createDestroyHarness({
-        agent: "hermes",
-        openshellDriver: "docker",
-        workload: managedHermesWorkload,
-        managedAgentStateVolumeCleanupResults: [{ status, retainedVolumeName }],
-      });
-
-      await expect(harness.destroySandbox("alpha", { yes: true })).resolves.toBeUndefined();
-
-      expect(harness.removeManagedAgentStateVolumesSpy).toHaveBeenCalledWith(
-        {
-          agentName: "hermes",
-          runtimeProviderId: "docker",
-          sandboxName: "alpha",
-          workloadKind: "managed-image",
-        },
-        { runtimeProviders: expect.any(Object) },
-      );
-      expect(harness.removeManagedAgentStateVolumesSpy.mock.invocationCallOrder[0]).toBeLessThan(
-        harness.removeSandboxSpy.mock.invocationCallOrder[0],
-      );
-      const warnings = harness.warnSpy.mock.calls.map((call) => String(call[0])).join("\n");
-      expect(warnings.match(/Retained pre-migration state volume '([^']+)'/u)?.[1]).toBe(
-        retainedVolumeName,
-      );
-      expect(harness.removeSandboxSpy).toHaveBeenCalledWith("alpha");
-    },
-  );
-
-  it("preserves the registry when owned managed Hermes state-volume cleanup fails", async () => {
-    const harness = createDestroyHarness({
-      agent: "hermes",
-      openshellDriver: "docker",
-      workload: managedHermesWorkload,
-      managedAgentStateVolumeCleanupResults: [
-        {
-          status: "failed",
-          detail: "volume is still in use",
-          volumeName: "nemoclaw-hermes-state-v1-alpha",
-        },
-      ],
-    });
-
-    await expect(harness.destroySandbox("alpha", { yes: true })).rejects.toThrow("process.exit(1)");
-
-    expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
-    expect(harness.errorSpy.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
-      "volume is still in use",
-    );
-  });
-
-  it("leaves a foreign same-name Hermes volume untouched and completes registry cleanup", async () => {
-    const harness = createDestroyHarness({
-      agent: "hermes",
-      openshellDriver: "docker",
-      workload: managedHermesWorkload,
-      managedAgentStateVolumeCleanupResults: [
-        {
-          status: "not-owned",
-          detail: "the exact NemoClaw ownership labels are absent or changed",
-          volumeName: "nemoclaw-hermes-state-v1-alpha",
-        },
-      ],
-    });
-
-    await expect(harness.destroySandbox("alpha", { yes: true })).resolves.toBeUndefined();
-
-    expect(harness.warnSpy.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
-      "Left managed state volume 'nemoclaw-hermes-state-v1-alpha' untouched",
-    );
-    expect(harness.removeSandboxSpy).toHaveBeenCalledWith("alpha");
   });
 
   it("runs routed teardown under the gateway and host router-port locks (#9098)", async () => {

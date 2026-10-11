@@ -28,7 +28,7 @@ import {
   listHostGatewayRegistryEntries,
   registryEntryGatewayPort,
 } from "../../state/gateway-registry";
-import { resolveNemoclawStateGatewayPort } from "../../state/paths";
+import { resolveNemoclawStateDir, resolveNemoclawStateGatewayPort } from "../../state/paths";
 import type {
   acquireOnboardLock,
   compareAndSwapSession,
@@ -70,6 +70,7 @@ export type SandboxDestroyPreflight = {
 export type SandboxDestroyRegistryAuthority = {
   entry: SandboxEntry | null;
   gatewayPort: number;
+  stateDir: string;
   getSandbox: typeof registry.getSandbox;
   listSandboxes: typeof registry.listSandboxes;
   removeSandbox: typeof registry.removeSandbox;
@@ -84,6 +85,7 @@ export function resolveSandboxDestroyRegistryAuthority(
     return {
       entry: registry.getSandbox(sandboxName),
       gatewayPort: resolveNemoclawStateGatewayPort(),
+      stateDir: resolveNemoclawStateDir(),
       getSandbox: registry.getSandbox,
       listSandboxes: registry.listSandboxes,
       removeSandbox: registry.removeSandbox,
@@ -92,6 +94,10 @@ export function resolveSandboxDestroyRegistryAuthority(
   return {
     entry: hit.entry,
     gatewayPort: hit.registryGatewayPort ?? sandboxGatewayPort(hit.entry),
+    stateDir: resolveNemoclawStateDir(
+      undefined,
+      hit.registryGatewayPort ?? sandboxGatewayPort(hit.entry),
+    ),
     getSandbox: getSandboxAcrossGatewayRoots,
     listSandboxes: () => ({
       sandboxes: listPublishedSandboxesAcrossGatewayRoots(),

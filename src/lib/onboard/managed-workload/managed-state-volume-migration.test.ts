@@ -3,12 +3,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   migrateManagedStateVolume,
   managedStateVolumeMigrationPhase,
   resolveMigratedManagedStateRoot,
   verifyMigratedManagedStateRoot,
+  withManagedStateVolumeLock,
 } from "./managed-state-volume-migration";
 import {
   prepareManagedStateVolumes,
@@ -29,6 +30,50 @@ import {
 afterEach(cleanupMigrationHarness);
 
 describe("retained managed volume migration", () => {
+  it("shares the source-volume lease across workspace selections", () => {
+    const h = harness();
+    const acquisition = vi.spyOn(fs, "linkSync");
+    withManagedStateVolumeLock(h.root, h.context, () => {
+      expect(acquisition).toHaveBeenCalledTimes(1);
+      withManagedStateVolumeLock(h.root, { ...h.context, workspace: "other" }, () => {
+        expect(acquisition).toHaveBeenCalledTimes(1);
+      });
+    });
+    withManagedStateVolumeLock(h.root, h.context, () => {
+      expect(acquisition).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it.each([
+    {
+      operation: "onboard",
+      run: (h: MigrationHarness) =>
+        prepareManagedStateVolumes(h.input, { ...h.deps, workspace: "other" }),
+    },
+    {
+      operation: "snapshot",
+      run: (h: MigrationHarness) =>
+        resolveMigratedManagedStateRoot(h.root, { ...h.context, workspace: "other" }),
+    },
+    {
+      operation: "cleanup",
+      run: (h: MigrationHarness) =>
+        removeManagedStateVolumes(h.input, { ...h.deps, workspace: "other" }),
+    },
+  ])(
+    "rejects $operation in a different workspace without falling back to the retained original",
+    ({ run }) => {
+      const h = harness();
+      const scope = prepareManagedStateVolumes(h.input, h.deps)!;
+      scope.commit();
+      const volumesBefore = JSON.stringify([...h.volumes]);
+      const callsBefore = h.calls.length;
+      expect(() => run(h)).toThrow("another scope");
+      expect(JSON.stringify([...h.volumes])).toBe(volumesBefore);
+      expect(h.calls.slice(callsBefore)).toEqual([]);
+    },
+  );
+
   it.each(["docker", "podman"])(
     "defers %s copying until materialization after source deletion",
     async (providerId) => {

@@ -73,13 +73,12 @@ function identity(root: Root, context: ManagedVolumeMigrationContext) {
     ),
   };
 }
-function readJournal(root: Root, context: ManagedVolumeMigrationContext): Journal | null {
-  const expected = identity(root, context);
-  rejectSymlinksOnPath(expected.file);
-  requirePrivateDirectory(path.dirname(expected.file));
+function readJournalFile(file: string): Journal | null {
+  rejectSymlinksOnPath(file);
+  requirePrivateDirectory(path.dirname(file));
   let descriptor: number;
   try {
-    descriptor = fs.openSync(expected.file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -94,32 +93,58 @@ function readJournal(root: Root, context: ManagedVolumeMigrationContext): Journa
       (process.getuid && stat.uid !== process.getuid())
     )
       fail("unsafe migration journal");
-    const value = JSON.parse(fs.readFileSync(descriptor, "utf8")) as Journal;
-    if (
-      !value ||
-      value.schemaVersion !== 1 ||
-      value.binding !== expected.binding ||
-      value.source !== root.resourceIdentity ||
-      value.destination !== expected.destination ||
-      !["copying", "retryable", "verified", "retired"].includes(value.phase) ||
-      typeof value.helper !== "string" ||
-      !NAME.test(value.helper) ||
-      (value.helperId !== undefined && !HASH.test(value.helperId)) ||
-      typeof value.sourceFingerprint !== "string" ||
-      !HASH.test(value.sourceFingerprint) ||
-      !(
-        value.destinationFingerprint === null ||
-        (typeof value.destinationFingerprint === "string" &&
-          HASH.test(value.destinationFingerprint))
-      ) ||
-      (value.phase === "verified" && value.destinationFingerprint === null) ||
-      (["retryable", "retired"].includes(value.phase) && value.destinationFingerprint !== null)
-    )
+    const value: unknown = JSON.parse(fs.readFileSync(descriptor, "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value))
       fail("invalid migration journal");
-    return value;
+    return value as Journal;
   } finally {
     fs.closeSync(descriptor);
   }
+}
+function readJournal(root: Root, context: ManagedVolumeMigrationContext): Journal | null {
+  const expected = identity(root, context);
+  const value = readJournalFile(expected.file);
+  if (value === null) {
+    // A missing journal in this workspace is not proof that the original was never migrated.
+    let files: string[];
+    try {
+      files = fs.readdirSync(path.dirname(expected.file));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    for (const file of files) {
+      if (!/^[a-f0-9]{64}\.json$/u.test(file)) continue;
+      const other = readJournalFile(path.join(path.dirname(expected.file), file));
+      if (other?.source === root.resourceIdentity) {
+        fail(
+          "this volume has a migration in another scope; select its recorded workspace before retrying",
+        );
+      }
+    }
+    return null;
+  }
+  if (
+    !value ||
+    value.schemaVersion !== 1 ||
+    value.binding !== expected.binding ||
+    value.source !== root.resourceIdentity ||
+    value.destination !== expected.destination ||
+    !["copying", "retryable", "verified", "retired"].includes(value.phase) ||
+    typeof value.helper !== "string" ||
+    !NAME.test(value.helper) ||
+    (value.helperId !== undefined && !HASH.test(value.helperId)) ||
+    typeof value.sourceFingerprint !== "string" ||
+    !HASH.test(value.sourceFingerprint) ||
+    !(
+      value.destinationFingerprint === null ||
+      (typeof value.destinationFingerprint === "string" && HASH.test(value.destinationFingerprint))
+    ) ||
+    (value.phase === "verified" && value.destinationFingerprint === null) ||
+    (["retryable", "retired"].includes(value.phase) && value.destinationFingerprint !== null)
+  )
+    fail("invalid migration journal");
+  return value;
 }
 function requirePrivateDirectory(directory: string): void {
   let stat: fs.Stats;
@@ -243,8 +268,10 @@ export function withManagedStateVolumeLock<T>(
   context: ManagedVolumeMigrationContext,
   operation: () => T,
 ): T {
+  identity(root, context);
   return withMcpLifecycleLockSync(
-    `volume-migration-${identity(root, context).binding}`,
+    // Workspaces share the engine's volume namespace and must serialize source access.
+    `volume-migration-${hash(JSON.stringify([context.providerId, root.resourceIdentity]))}`,
     operation,
     {
       stateDir: context.stateDir ?? resolveNemoclawStateDir(),

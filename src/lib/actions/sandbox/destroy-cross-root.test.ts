@@ -69,6 +69,10 @@ describe("destroySandbox cross-root registry authority", () => {
       undefined,
     );
     expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
+    expect(harness.removeManagedAgentStateVolumesSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ sandboxName: "alpha" }),
+      expect.objectContaining({ migrationStateDir: path.join(registryDir, "state") }),
+    );
   });
 
   it("preserves the gateway when another sibling-root sandbox remains", async () => {
