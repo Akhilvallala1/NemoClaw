@@ -265,6 +265,9 @@ describe.each([
     vi.mocked(ensureNativeLocalProviderAttached).mockRejectedValueOnce(
       new Error("restore unavailable"),
     );
-    await expect(execute(input)).rejects.toThrow("restore unavailable");
+    await expect(execute(input)).rejects.toMatchObject({
+      message: expect.stringMatching(/detach readback unavailable[\s\S]*restore unavailable/),
+      cause: expect.objectContaining({ message: "detach readback unavailable" }),
+    });
   });
 });

@@ -236,6 +236,7 @@ async function cleanupSandbox(
     );
   }
 
+  let destroyFailed = false;
   try {
     const destroy = await host.command(
       process.execPath,
@@ -247,13 +248,20 @@ async function cleanupSandbox(
       },
     );
     cleanupEvidence.push(probeSummary("nemoclaw destroy", destroy));
+    destroyFailed = destroy.exitCode !== 0 || destroy.timedOut || destroy.signal !== null;
   } catch (error) {
+    destroyFailed = true;
     cleanupEvidence.push(
       `nemoclaw destroy threw: ${error instanceof Error ? error.message : String(error)}`,
     );
+  } finally {
+    clearOnboardState();
   }
-
-  clearOnboardState();
+  if (destroyFailed) {
+    throw new Error(
+      `sandbox '${sandboxName}' local cleanup was not confirmed\n${cleanupEvidence.join("\n")}`,
+    );
+  }
 }
 
 async function expectNoActiveSandbox(host: HostCliClient, sandboxName: string): Promise<void> {

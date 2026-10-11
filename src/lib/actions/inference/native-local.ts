@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { redactInferenceSetRouteDiagnostic } from "../inference-set-provider-diagnostics";
 import { requireNativeProviderPolicy } from "../../adapters/openshell/provider-policy";
 import { InferenceSetError } from "../inference-set-error";
 import type { SandboxEntry } from "../../state/registry";
@@ -22,6 +23,26 @@ import {
 } from "../../inference/native-local/profile";
 import { prepareNativeLocalSelection } from "../../inference/native-local/selection";
 import type { InferenceSetProviderBinding } from "../inference-set-route-containment";
+
+async function restorePreviousNativeLocalProvider(
+  input: Parameters<typeof ensureNativeLocalProviderAttached>[0],
+  originalError: unknown,
+): Promise<void> {
+  try {
+    await ensureNativeLocalProviderAttached(input);
+  } catch (restoreError) {
+    const originalDetail =
+      originalError instanceof Error ? originalError.message : String(originalError);
+    const restoreDetail =
+      restoreError instanceof Error ? restoreError.message : String(restoreError);
+    throw new Error(
+      redactInferenceSetRouteDiagnostic(
+        `${originalDetail}\nRestoring the previous native local provider failed: ${restoreDetail}`,
+      ),
+      { cause: originalError },
+    );
+  }
+}
 
 export async function prepareNativeLocalSwitch(input: {
   local: Pick<
@@ -112,11 +133,14 @@ export async function prepareNativeLocalSwitch(input: {
         { cause: error },
       );
     if (previousDetached)
-      await ensureNativeLocalProviderAttached({
-        adapter: input.adapter,
-        sandboxName: input.sandboxName,
-        expected: input.previous!,
-      });
+      await restorePreviousNativeLocalProvider(
+        {
+          adapter: input.adapter,
+          sandboxName: input.sandboxName,
+          expected: input.previous!,
+        },
+        error,
+      );
     throw error;
   }
 }
@@ -212,11 +236,14 @@ export async function detachPreviousNativeLocalBeforePublish(input: {
       expected: input.previous,
     });
   } catch (error) {
-    await ensureNativeLocalProviderAttached({
-      adapter: input.adapter,
-      sandboxName: input.sandboxName,
-      expected: input.previous,
-    });
+    await restorePreviousNativeLocalProvider(
+      {
+        adapter: input.adapter,
+        sandboxName: input.sandboxName,
+        expected: input.previous,
+      },
+      error,
+    );
     throw error;
   }
   return true;

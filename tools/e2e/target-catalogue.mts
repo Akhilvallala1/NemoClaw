@@ -291,6 +291,7 @@ const OPEN_SHELL_FORWARD_ADAPTER_OWNING_PATHS = [
 // test/e2e/support/pi-agent-qualification-events.test.ts verifies this list against the
 // real Dockerfiles so a new COPY instruction cannot silently reuse a stale image receipt.
 const PI_IMAGE_SOURCE_OWNING_PATHS = [
+  "src/lib/inference/native-local/agent-config.ts",
   ".dockerignore",
   "agents/pi/",
   "ci/reviewed-npm-audit.json",

@@ -29,6 +29,8 @@ function result(stdout = "", exitCode = 0): ShellProbeResult {
 }
 function fixture(listing: ShellProbeResult) {
   fs.mkdirSync(path.join(home, ".nemoclaw"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".nemoclaw", "onboard.lock"), "fixture");
+  fs.writeFileSync(path.join(home, ".nemoclaw", "onboard-session.json"), "{}");
   const calls: string[] = [];
   const sandbox = new SandboxClient({
     run: async (command) => {
@@ -71,6 +73,24 @@ describe("inference routing strict cleanup", () => {
     const f = fixture(response);
     await expect(f.run()).rejects.toThrow("absence was not verified");
     expect(f.host.command).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["nonzero exit", result("retirement failed", 1)],
+    ["timeout", { ...result(), timedOut: true }],
+    ["signal", { ...result(), signal: "SIGTERM" as const }],
+  ])("rejects unsuccessful public destroy: %s (#12558)", async (_name, response) => {
+    const f = fixture(result("No sandboxes found.\n"));
+    f.host.command.mockResolvedValueOnce(response);
+    await expect(f.run()).rejects.toThrow("local cleanup was not confirmed");
+    expect(fs.existsSync(path.join(home, ".nemoclaw", "onboard.lock"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".nemoclaw", "onboard-session.json"))).toBe(false);
+  });
+  it("rejects a thrown public destroy failure (#12558)", async () => {
+    const f = fixture(result("No sandboxes found.\n"));
+    f.host.command.mockRejectedValueOnce(new Error("retirement unavailable"));
+    await expect(f.run()).rejects.toThrow("local cleanup was not confirmed");
+    expect(fs.existsSync(path.join(home, ".nemoclaw", "onboard.lock"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".nemoclaw", "onboard-session.json"))).toBe(false);
   });
   it("does not mistake a sibling's name for the target (#12558)", async () => {
     const f = fixture(result("fixture-sibling Ready\n"));

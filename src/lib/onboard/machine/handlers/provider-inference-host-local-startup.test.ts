@@ -242,24 +242,29 @@ function llamaCppLifecycleSelection(
 }
 
 describe("provider inference host-local startup selection", () => {
-  it("does not require host-local application support for a hosted candidate provider", () => {
-    const resolver = vi.fn();
-    const resolve = createCachedHostLocalInferenceSetupResolver({
-      resolver,
-      application: "pi",
-      provider: "nvidia-prod",
-      model: "nvidia/nemotron-3-super-120b-a12b",
-      acceleration: "cpu",
-      requireToolCalling: null,
-      freshRequireToolCalling: true,
-      allowPublishedResume: false,
-      recover: false,
-      recordToolCallingRequirement: vi.fn(),
-    });
-
-    expect(resolve("pi-sandbox")).toEqual({});
-    expect(resolver).not.toHaveBeenCalled();
-  });
+  it.each([
+    { application: "unregistered-agent", resolverCalls: 0 },
+    { application: "pi", resolverCalls: 1 },
+  ])(
+    "keeps hosted $application setup free of local authority",
+    ({ application, resolverCalls }) => {
+      const resolver = vi.fn(() => null);
+      const resolve = createCachedHostLocalInferenceSetupResolver({
+        resolver,
+        application,
+        provider: "nvidia-prod",
+        model: "nvidia/nemotron-3-super-120b-a12b",
+        acceleration: "cpu",
+        requireToolCalling: null,
+        freshRequireToolCalling: true,
+        allowPublishedResume: false,
+        recover: false,
+        recordToolCallingRequirement: vi.fn(),
+      });
+      expect(resolve("pi-sandbox")).toEqual({});
+      expect(resolver).toHaveBeenCalledTimes(resolverCalls);
+    },
+  );
 
   it.each(["openclaw", "hermes", "langchain-deepagents-code"] as const)(
     "dispatches a published %s llama.cpp route through the common lifecycle exactly once",
