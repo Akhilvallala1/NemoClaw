@@ -1128,7 +1128,11 @@ async function destroySandboxUnlocked(
   }
   if (deleteSucceededOrAlreadyGone) {
     try {
-      await retireNativeCustomProviders({ gatewayName: cleanupGatewayName, sandboxName });
+      await retireNativeCustomProviders({
+        gatewayName: cleanupGatewayName,
+        sandboxName,
+        attachment: sandbox?.nativeCustomProviderAttachment,
+      });
     } catch (error) {
       preparedManagedLlamaCppCleanup?.abort();
       throw new Error(

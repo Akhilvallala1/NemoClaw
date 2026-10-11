@@ -206,20 +206,7 @@ export async function runNativeCustomInferenceSwitch(
     agentName === "openclaw" ? expectedGatewayName : undefined,
   );
   const gatewayTarget = { kind: "named", gatewayName: expectedGatewayName } as const;
-  if (previous)
-    getSandboxInferenceConfig(
-      entry.model || "",
-      entry.provider,
-      entry.preferredInferenceApi ?? null,
-      previous,
-    );
-  if (previous)
-    await verifyNativeCustomProviderAttachment({
-      adapter: deps.providerAdapter,
-      target: gatewayTarget,
-      sandboxName,
-      expected: previous,
-    });
+  await verifyNativeCustomDeparture(entry, previous, sandboxName, expectedGatewayName, deps);
   const previousNvidia = normalizeNativeNvidiaProviderAttachment(
     entry.nativeNvidiaProviderAttachment,
   );
@@ -612,6 +599,14 @@ export async function verifyNativeCustomDeparture(
   deps: InferenceSetDeps,
 ): Promise<void> {
   if (departingCustom) {
+    const authority = normalizeNativeCustomProviderAttachment(
+      deps.getNativeCustomProviderAuthority?.(expectedGatewayName, departingCustom.providerName),
+      sandboxName,
+    );
+    if (!isDeepStrictEqual(authority, departingCustom))
+      throw new InferenceSetError(
+        "Native custom sandbox and gateway authority disagree. Reconcile ownership before switching inference.",
+      );
     if (entry.nativeNvidiaProviderAttachment !== undefined)
       throw new InferenceSetError("The selected sandbox records conflicting native attachments.");
     getSandboxInferenceConfig(

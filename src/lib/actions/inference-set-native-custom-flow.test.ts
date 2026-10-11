@@ -369,6 +369,20 @@ it("keeps the previous custom policy when departure publication is rejected (#12
   expect([...f.attachments]).toEqual([f.receipt.providerName]);
 });
 
+it.each(["openai", "compatible-endpoint"])(
+  "retains the native attachment when switching to %s without gateway authority (#12636)",
+  async (provider) => {
+    const f = await fixture();
+    f.deps.getNativeCustomProviderAuthority = () => undefined;
+    await expect(runInferenceSet({ provider, model: "new-model" }, f.deps)).rejects.toThrow(
+      "authority disagree",
+    );
+    expect(f.adapter.detachProvider).not.toHaveBeenCalled();
+    expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();
+    expect(f.entry.nativeCustomProviderAttachment).toEqual(f.receipt);
+  },
+);
+
 it("retries owned custom retirement after the departure receipt has been cleared (#12636)", async () => {
   const f = await fixture();
   const retire = vi.fn(async () => undefined);

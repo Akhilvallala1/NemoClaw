@@ -10,11 +10,14 @@ import {
   resetDestroyModuleCache,
   spyOnNativeCustomDestroyCleanup,
   nativeCustomDestroyAuthorityStore,
+  nativeCustomDestroyRegistryFile,
 } from "../../../../test/helpers/destroy-flow-test-harness";
 import {
   prepareNativeCustomProfile,
   customAttachmentFromPrepared,
 } from "../../inference/native-custom";
+import { retireNativeCustomProviders } from "../../inference/native-custom/cleanup";
+import type { OpenShellProviderAdapter } from "../../adapters/openshell/provider-adapter";
 
 let temporaryHome: string;
 let originalGateway: string | undefined;
@@ -104,7 +107,11 @@ it.each([true, false])(
     );
     await harness.destroySandbox("alpha", { yes: true, cleanupGateway: false });
     expect(session.loadSession()?.sandboxName).toBeNull();
-    expect(retire).toHaveBeenCalledWith({ gatewayName: "nemoclaw-19080", sandboxName: "alpha" });
+    expect(retire).toHaveBeenCalledWith({
+      gatewayName: "nemoclaw-19080",
+      sandboxName: "alpha",
+      attachment: attached ? receipt : undefined,
+    });
     expect(harness.events.indexOf("delete")).toBeLessThan(harness.events.indexOf("native-cleanup"));
     expect(retire.mock.invocationCallOrder[0]).toBeLessThan(
       harness.removeSandboxSpy.mock.invocationCallOrder[0]!,
@@ -128,6 +135,44 @@ it.each([true, false])(
         "alpha",
       ),
     ).toHaveLength(1);
+  },
+);
+
+it.each(["missing", "malformed"])(
+  "verifies provider absence from the sandbox receipt when gateway authority is %s (#12636)",
+  async (state) => {
+    const { harness, retire, receipt } = await fixture();
+    const file = nativeCustomDestroyRegistryFile();
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    data.nativeCustomProviderAuthorities =
+      state === "missing"
+        ? undefined
+        : {
+            "nemoclaw-19080": { [receipt.providerName]: { ...receipt, providerId: "" } },
+          };
+    fs.writeFileSync(file, JSON.stringify(data));
+    const store = nativeCustomDestroyAuthorityStore();
+    const getProvider = vi.fn(async () => ({
+      ok: false,
+      error: { kind: "command", reason: "not_found", message: "missing" },
+    }));
+    retire.mockImplementation((input) =>
+      retireNativeCustomProviders({
+        ...input,
+        receipts: store.listNativeCustomProviderAuthorities(input.gatewayName, input.sandboxName),
+        clearAuthority: store.clearNativeCustomProviderAuthority,
+        adapter: { getProvider } as unknown as OpenShellProviderAdapter,
+      }),
+    );
+    await harness.destroySandbox("alpha", { yes: true, cleanupGateway: false });
+    expect(getProvider).toHaveBeenCalledWith({
+      target: { kind: "named", gatewayName: "nemoclaw-19080" },
+      providerName: receipt.providerName,
+    });
+    expect(harness.removeSandboxSpy).toHaveBeenCalled();
+    expect(getProvider.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.removeSandboxSpy.mock.invocationCallOrder[0]!,
+    );
   },
 );
 

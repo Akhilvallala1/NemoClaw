@@ -24,6 +24,7 @@ export async function retireNativeCustomProviders(input: {
   keepProviderName?: string;
   adapter?: OpenShellProviderAdapter;
   receipts?: readonly NativeCustomProviderAttachment[];
+  attachment?: NativeCustomProviderAttachment;
   clearAuthority?: typeof clearNativeCustomProviderAuthority;
   revokeRoute?: typeof revokeHttpsPinRuntimeAdapterRoute;
 }): Promise<void> {
@@ -31,7 +32,11 @@ export async function retireNativeCustomProviders(input: {
     throw new Error("Invalid native custom cleanup scope.");
   const receipts =
     input.receipts ?? listNativeCustomProviderAuthorities(input.gatewayName, input.sandboxName);
-  const validated = receipts.map((receipt) => {
+  const validated = new Map<string, NativeCustomProviderAttachment>();
+  for (const receipt of [
+    ...receipts,
+    ...(input.attachment === undefined ? [] : [input.attachment]),
+  ]) {
     const normalized = normalizeNativeCustomProviderAttachment(receipt, input.sandboxName);
     if (
       !normalized ||
@@ -40,10 +45,13 @@ export async function retireNativeCustomProviders(input: {
       throw new Error(
         "Native custom cleanup authority does not match the selected sandbox and gateway.",
       );
-    return normalized;
-  });
+    const existing = validated.get(normalized.providerName);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(normalized))
+      throw new Error("Native custom sandbox and gateway cleanup authority disagree.");
+    validated.set(normalized.providerName, normalized);
+  }
   const adapter = input.adapter ?? createCliOpenShellProviderAdapter();
-  const keep = validated.find((receipt) => receipt.providerName === input.keepProviderName);
+  const keep = input.keepProviderName ? validated.get(input.keepProviderName) : undefined;
   const routeId = (receipt: NativeCustomProviderAttachment | undefined): string | null =>
     receipt?.transport?.kind === "https-pin"
       ? computeHttpsPinRouteId(
@@ -55,7 +63,7 @@ export async function retireNativeCustomProviders(input: {
           receipt.sandboxName,
         )
       : null;
-  for (const receipt of validated) {
+  for (const receipt of validated.values()) {
     if (receipt.providerName === input.keepProviderName) continue;
     await withNativeCustomLifecycle(profileFromCustomAttachment(receipt), (lifecycle) =>
       lifecycle.deleteOwnedProvider({

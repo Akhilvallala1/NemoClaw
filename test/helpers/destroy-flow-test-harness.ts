@@ -852,6 +852,10 @@ export function nativeCustomDestroyAuthorityStore() {
   ) as typeof import("../../src/lib/state/registry/native-custom-provider-authority");
 }
 
+export function nativeCustomDestroyRegistryFile(): string {
+  return requireSource("../../state/registry/persistence.js").REGISTRY_FILE;
+}
+
 /** Use the existing destroy-module loader so the spy observes the consumer's module identity. */
 export function spyOnNativeCustomDestroyCleanup(
   action: typeof import("../../src/lib/inference/native-custom/cleanup").retireNativeCustomProviders,

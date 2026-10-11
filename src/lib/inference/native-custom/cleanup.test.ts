@@ -65,16 +65,35 @@ async function fixture(selected?: NativeCustomProfile) {
   };
 }
 
-it("deletes only the immutable owned provider and clears authority after absence is observed (#12636)", async () => {
+it.each([true, false])(
+  "deletes the owned provider with gateway authority present %s and confirms absence (#12636)",
+  async (recorded) => {
+    const f = await fixture();
+    await retireNativeCustomProviders({
+      ...f.input,
+      receipts: recorded ? [f.receipt] : [],
+      attachment: f.receipt,
+    });
+    expect(f.adapter.deleteProvider).toHaveBeenCalledWith({
+      target: { kind: "named", gatewayName: "nemoclaw" },
+      providerName: f.receipt.providerName,
+    });
+    expect(f.adapter.getProvider).toHaveBeenCalledTimes(2);
+    expect(f.clear).toHaveBeenCalledWith("nemoclaw", f.receipt);
+    expect(f.adapter.detachProvider).not.toHaveBeenCalled();
+  },
+);
+
+it("rejects conflicting cleanup receipts before removing providers or recovery authority (#12636)", async () => {
   const f = await fixture();
-  await retireNativeCustomProviders(f.input);
-  expect(f.adapter.deleteProvider).toHaveBeenCalledWith({
-    target: { kind: "named", gatewayName: "nemoclaw" },
-    providerName: f.receipt.providerName,
-  });
-  expect(f.adapter.getProvider).toHaveBeenCalledTimes(2);
-  expect(f.clear).toHaveBeenCalledWith("nemoclaw", f.receipt);
-  expect(f.adapter.detachProvider).not.toHaveBeenCalled();
+  await expect(
+    retireNativeCustomProviders({
+      ...f.input,
+      attachment: { ...f.receipt, providerId: "conflicting-id" },
+    }),
+  ).rejects.toThrow("disagree");
+  expect(f.adapter.getProvider).not.toHaveBeenCalled();
+  expect(f.clear).not.toHaveBeenCalled();
 });
 
 it("refuses replacement identity without deleting or clearing recovery authority (#12636)", async () => {
@@ -132,12 +151,13 @@ it("retains cleanup authority after HTTPS adapter revocation fails and converges
     trustedPrivateEndpoint: false,
   };
   const f = await fixture(prepared);
+  const input = { ...f.input, receipts: [], attachment: f.receipt };
   const revoke = vi.fn(async () => true).mockResolvedValueOnce(false);
-  await expect(retireNativeCustomProviders({ ...f.input, revokeRoute: revoke })).rejects.toThrow(
+  await expect(retireNativeCustomProviders({ ...input, revokeRoute: revoke })).rejects.toThrow(
     "authority is retained",
   );
   expect(f.clear).not.toHaveBeenCalled();
-  await retireNativeCustomProviders({ ...f.input, revokeRoute: revoke });
+  await retireNativeCustomProviders({ ...input, revokeRoute: revoke });
   expect(f.adapter.deleteProvider).toHaveBeenCalledTimes(1);
   expect(revoke).toHaveBeenCalledTimes(2);
   expect(f.clear).toHaveBeenCalledTimes(1);
