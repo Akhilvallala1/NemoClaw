@@ -188,6 +188,10 @@ describe("base-image publication evidence", () => {
     ["src/lib/adapters/container-engine.ts", "src/lib/adapters/container-engine.ts"],
     ["src/lib/adapters/podman/**", "src/lib/adapters/podman/index.ts"],
     ["test/e2e/fixtures/docker-build-guard.ts", "test/e2e/fixtures/docker-build-guard.ts"],
+    [
+      "test/agents/openclaw/runtime/pi-native-consumer.mts",
+      "test/agents/openclaw/runtime/pi-native-consumer.mts",
+    ],
   ])("publishes after managed-image input %s changes", (publisherPath, changedPath) => {
     const reviewedPaths = parseBaseImagePushPaths(BASE_IMAGE_WORKFLOW_SOURCE);
 
