@@ -29,13 +29,16 @@ export function cleanupMigrationHarness() {
     fs.rmSync(directory, { recursive: true, force: true });
 }
 
-export function createMigrationHarness(agent: "openclaw" | "hermes" = "openclaw") {
+export function createMigrationHarness(
+  agent: "openclaw" | "hermes" = "openclaw",
+  sandboxName = "alpha",
+) {
   vi.stubEnv("OPENSHELL_WORKSPACE", "default");
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "managed-volume-test-"));
   temporary.push(stateDir);
   const root = managedStartupStateRoots({
     agent,
-    sandboxName: "alpha",
+    sandboxName,
     agentIdentity: { uid: 1000, gid: 1000 },
   })[0]!;
   let generation = 0;
@@ -118,7 +121,12 @@ export function createMigrationHarness(agent: "openclaw" | "hermes" = "openclaw"
           },
           Mounts: [
             { Type: "volume", Name: source.Name, Destination: "/source", RW: false },
-            { Type: "volume", Name: [...volumes.keys()][1], Destination: "/destination", RW: true },
+            {
+              Type: "volume",
+              Name: [...volumes.keys()].find((name) => name.includes("-os012-")),
+              Destination: "/destination",
+              RW: true,
+            },
           ],
           ...controls.helperOverride,
         }),
@@ -132,7 +140,7 @@ export function createMigrationHarness(agent: "openclaw" | "hermes" = "openclaw"
     }
     if (args[0] === "start") {
       if (controls.throwStart) throw new Error("transport interrupted");
-      const destination = [...volumes.values()].find((item) => item.Name !== source.Name)!;
+      const destination = [...volumes.values()].find((item) => item.Name.includes("-os012-"))!;
       destination.bytes = controls.copyStatus === 0 ? source.bytes : "partial copy";
       controls.afterCopy();
       return {

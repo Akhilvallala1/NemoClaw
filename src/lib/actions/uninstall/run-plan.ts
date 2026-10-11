@@ -486,12 +486,16 @@ function removePathExcept(
   const children = fs.readdirSync(target);
   for (const entry of children) {
     if (preserveSet.has(entry)) continue;
-    deps.rmSync(path.join(target, entry), { force: true, recursive: true });
+    const nested = preserve
+      .filter((name) => name.startsWith(`${entry}${path.sep}`))
+      .map((name) => name.slice(entry.length + 1));
+    if (nested.length === 0)
+      deps.rmSync(path.join(target, entry), { force: true, recursive: true });
+    else if (!removePathExcept(path.join(target, entry), nested, deps)) return false;
   }
   // Track preserved order against the declared allowlist so the log line is
   // stable across filesystems with non-deterministic readdir ordering.
-  const childSet = new Set(children);
-  const preserved = preserve.filter((name) => childSet.has(name));
+  const preserved = preserve.filter((name) => pathEntryExists(path.join(target, name), deps));
   if (preserved.length === 0) {
     deps.rmSync(target, { force: true, recursive: true });
     deps.log(`Removed ${target}`);
@@ -4023,6 +4027,10 @@ function stateRootPreservationEntries(
   return [
     ...preserveUnderStateDir,
     ...portableStateEntries,
+    // Retained originals must never become eligible for migration again after uninstall.
+    ...(portableStateEntries.includes("state")
+      ? []
+      : [path.join("state", "managed-volume-migrations")]),
     ...failedManagedLlamaStateDirs.flatMap((stateDir) => {
       const relative = path.relative(paths.nemoclawStateDir, stateDir);
       return relative && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
@@ -4221,6 +4229,9 @@ function recoverAbandonedInterruptedUninstallState(
       return false;
     }
     try {
+      assertGatewayStatePathSafe(runtime.env.HOME || os.homedir(), path.dirname(source));
+      assertGatewayStatePathSafe(runtime.env.HOME || os.homedir(), path.dirname(destination));
+      fs.mkdirSync(path.dirname(destination), { mode: 0o700, recursive: true });
       fs.renameSync(source, destination);
     } catch (error) {
       runtime.warn(
@@ -4398,6 +4409,9 @@ async function removeInterruptedStateRootAfterFinalCleanup(
         return false;
       }
       try {
+        assertGatewayStatePathSafe(runtime.env.HOME || os.homedir(), path.dirname(source));
+        assertGatewayStatePathSafe(runtime.env.HOME || os.homedir(), path.dirname(destination));
+        fs.mkdirSync(path.dirname(destination), { mode: 0o700, recursive: true });
         fs.renameSync(source, destination);
       } catch (error) {
         runtime.warn(
