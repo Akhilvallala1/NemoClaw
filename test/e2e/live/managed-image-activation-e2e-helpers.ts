@@ -1173,6 +1173,7 @@ export async function qualifyManagedImageActivation(fixtures: RuntimeFixtures): 
     chatContent: "PONG",
     host: "0.0.0.0",
     model: MODEL,
+    port: 8000,
     progress,
     publicHost: "host.openshell.internal",
     requireAuth: true,

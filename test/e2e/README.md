@@ -2148,6 +2148,18 @@ test, and makes `full-e2e` the source of truth for the hard cold-path contract.
 
 The explicit `dgx-station-express` target runs the local Station Express installer with cached Ultra weights, checks routed sandbox inference, and uninstalls the job runtime. See [Station dispatch](docs/dgx-station-dispatch.md) for prerequisites, workflow selection, and evidence boundaries.
 
+### Native host-local inference
+
+The first slice of #12975 supports the DCode/OpenClaw contract below. Pi and Hermes continue to use their existing shared local routes. Native-local provider attachment for those agents belongs to later slices.
+
+`managed-image-activation` owns real OpenClaw and DCode agent turns before and after restart. Its existing authenticated compatible-server fixture listens on native-local port 8000, so those turns exercise sandbox-attached providers and the server's selected-model request ledger. Hermes remains on its shared route. `double-onboard` owns two real OpenShell sandboxes; its sibling uses a native provider on port 11434, and the first sandbox must receive a policy denial when it requests that endpoint. The former TC-INF-09 managed-route curl probe is retired because these existing targets now own the native agent and local endpoint outcomes. The `inference-routing` target retains its other cases and 75-minute limit. Existing GPU qualification owns Ollama, vLLM, llama.cpp, startup, and cleanup.
+
+Profile rules, ownership collisions, credential custody, mutation reconciliation, gateway prerequisites, and generated request behavior belong to the native-local, provider-policy, gateway bootstrap, and compatible-endpoint-smoke source tests. Sibling denial remains live because a source test cannot prove OpenShell composes provider policy per sandbox. No assertion about terminal formatting is added.
+
+`gpu-e2e` and `gpu-double-onboard` retain their existing live chat assertions against the qualified Ollama proxy endpoint with the attached provider placeholder. They protect native routing after GPU startup and recreation. Request construction and credential reference selection remain in source and generator tests; these live assertions prove the real OpenShell proxy boundary. Their assertion counts are unchanged.
+
+Native Ollama and managed vLLM export reuse the existing GPU export cases. SDK metadata, exact native profile permissions, attachment identity, stable observation, credential custody, and unchanged service serialization are covered by the live-export-source Ollama/vLLM pipeline tests in the CLI lane. Export adds no live assertions.
+
 ## Fixed hosted provider qualification
 
 `live/inference-routing-provider-smoke.test.ts` owns credential-backed native inference smoke tests.
