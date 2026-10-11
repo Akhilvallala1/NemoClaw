@@ -360,7 +360,9 @@ describe("initial OpenClaw inference route", () => {
       { effort: null, explicit: false },
       false,
       undefined,
+      undefined,
       true,
+      undefined,
     );
   });
 

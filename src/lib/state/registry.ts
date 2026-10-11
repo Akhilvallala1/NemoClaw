@@ -26,6 +26,7 @@ import {
 import { withLock } from "./registry/lock";
 import { load, save } from "./registry/persistence";
 import {
+  nativeHostedReservationAttachment,
   isCurrentSandboxInferenceRouteReservation,
   isCurrentPendingSandboxCreateReservation,
   normalizeSandboxInferenceRouteSelection,
@@ -77,7 +78,9 @@ export {
   clearNativeNvidiaProviderAuthority,
   getNativeNvidiaProviderAuthority,
   setNativeNvidiaProviderAuthority,
-} from "./registry/native-nvidia-provider-authority";
+  getNativeHostedProviderAuthority,
+  setNativeHostedProviderAuthority,
+} from "./registry/native-provider-authority";
 
 import { isDcodeAutoApprovalMode } from "../onboard/dcode-auto-approval";
 import { cloneSandboxHostMounts, hasUnsafeHostMountTerminalText } from "./registry/host-mount";
@@ -506,6 +509,10 @@ export function registerSandbox(
         "Cannot register a sandbox with an invalid native custom provider attachment",
       );
     }
+    const nativeHostedProviderAttachment = nativeHostedReservationAttachment(
+      entry.nativeHostedProviderAttachment,
+      entry.provider,
+    );
     const registered: SandboxEntry = {
       name: entry.name,
       createdAt: entry.createdAt || new Date().toISOString(),
@@ -565,6 +572,7 @@ export function registerSandbox(
       ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
       ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
       ...(nativeCustomProviderAttachment ? { nativeCustomProviderAttachment } : {}),
+      ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
       lifecycleGeneration: entry.lifecycleGeneration,
       lifecycleLiveIdentityFingerprint: entry.lifecycleLiveIdentityFingerprint,
       messaging: cloneSandboxMessagingState(entry.messaging),
@@ -617,6 +625,7 @@ type SandboxInferenceRouteReservation = Pick<
   hostLocalInferenceProvenance?: SandboxEntry["hostLocalInferenceProvenance"];
   nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
   nativeCustomProviderAttachment?: SandboxEntry["nativeCustomProviderAttachment"];
+  nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
 };
 
 interface SandboxInferenceRouteReservationOptions {
@@ -658,6 +667,10 @@ export function reserveSandboxInferenceRoute(
     )
       return false;
     const normalized = normalizeInferenceSelection(route);
+    const nativeHostedProviderAttachment = nativeHostedReservationAttachment(
+      route.nativeHostedProviderAttachment,
+      normalized.provider,
+    );
     const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
       route.nativeNvidiaProviderAttachment,
     );
@@ -733,6 +746,10 @@ export function reserveSandboxInferenceRoute(
             nativeCustomProviderAttachment ?? existing.nativeCustomProviderAttachment,
           ) &&
           isDeepStrictEqual(
+            existing.nativeHostedProviderAttachment,
+            nativeHostedProviderAttachment ?? existing.nativeHostedProviderAttachment,
+          ) &&
+          isDeepStrictEqual(
             existing.nativeNvidiaProviderAttachment,
             nativeNvidiaProviderAttachment ?? existing.nativeNvidiaProviderAttachment,
           ) &&
@@ -772,6 +789,11 @@ export function reserveSandboxInferenceRoute(
       endpointSource: normalized.endpointSource,
       credentialEnv: normalized.credentialEnv,
       preferredInferenceApi: normalized.preferredInferenceApi,
+      nativeHostedProviderAttachment: nativeHostedReservationAttachment(
+        nativeHostedProviderAttachment,
+        normalized.provider,
+        existing ?? undefined,
+      ),
       nativeCustomProviderAttachment: isNativeCustomProvider(normalized.provider)
         ? (nativeCustomProviderAttachment ?? existing?.nativeCustomProviderAttachment)
         : undefined,

@@ -6,6 +6,7 @@ import {
   normalizeNativeNvidiaProviderAttachment,
   isNativeNvidiaProvider,
 } from "../../inference/native-nvidia";
+import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import { getSandboxInferenceConfig } from "../../inference/config";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -175,10 +176,11 @@ async function checkStartedSandboxInference(
   const nativeNvidia = normalizeNativeNvidiaProviderAttachment(
     sandbox.nativeNvidiaProviderAttachment,
   );
+  let fixedReceipt: ReturnType<typeof recordedNativeProviderAttachment>;
   try {
+    fixedReceipt = recordedNativeProviderAttachment(sandbox);
     if (sandbox.nativeCustomProviderAttachment !== undefined) {
-      if (!nativeCustom || sandbox.nativeNvidiaProviderAttachment !== undefined)
-        throw new Error("Invalid native inference authority.");
+      if (!nativeCustom || fixedReceipt) throw new Error("Invalid native inference authority.");
       getSandboxInferenceConfig(
         model,
         provider,
@@ -215,7 +217,8 @@ async function checkStartedSandboxInference(
     model,
     preferredInferenceApi: sandbox.preferredInferenceApi ?? null,
     ...(nativeCustom ? { nativeCustomProviderAttachment: nativeCustom } : {}),
-    ...(nativeNvidia ? { nativeProvider: true } : {}),
+    ...(fixedReceipt ? { nativeProvider: true } : {}),
+    ...(fixedReceipt?.endpointUrl ? { nativeEndpointUrl: fixedReceipt.endpointUrl } : {}),
   };
   const probe = () =>
     (deps.probeInferenceInvocation ?? probeSandboxInferenceInvocation)(

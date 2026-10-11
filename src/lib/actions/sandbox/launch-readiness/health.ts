@@ -29,6 +29,10 @@ import {
   verifyNativeNvidiaProviderAttachment,
   type NativeNvidiaProviderAttachment,
 } from "../../../inference/native-nvidia";
+import type { NativeProviderAttachment } from "../../../inference/native-provider/contract";
+import { recordedNativeProviderAttachment } from "../../../inference/native-provider/recorded-selection";
+import { fixedNativeProviderForAttachment } from "../../../inference/native-provider/fixed";
+import { nativeProviderLifecycle } from "../../../inference/native-provider";
 import { createSynchronousCliOpenShellInferenceRouteObserver } from "../../../adapters/openshell/inference-route-cli";
 import type { OpenShellInferenceRouteObserver } from "../../../adapters/openshell/inference-route";
 import {
@@ -87,6 +91,11 @@ export interface LaunchReadinessHealthDeps {
     sandboxName: string;
     gatewayName: string;
     expected: NativeNvidiaProviderAttachment;
+  }) => Promise<void>;
+  verifyNativeHostedAttachment?: (input: {
+    sandboxName: string;
+    gatewayName: string;
+    expected: NativeProviderAttachment;
   }) => Promise<void>;
   verifyNativeCustomAttachment?: (input: {
     sandboxName: string;
@@ -216,6 +225,10 @@ export function resolveTrustedLaunchAgent(
   return agent;
 }
 
+export function getNativeProviderAttachment(entry: SandboxEntry): NativeProviderAttachment | null {
+  return recordedNativeProviderAttachment(entry) ?? null;
+}
+
 export function getNativeNvidiaProviderAttachment(
   entry: SandboxEntry,
 ): NativeNvidiaProviderAttachment | null {
@@ -225,6 +238,7 @@ export function getNativeNvidiaProviderAttachment(
 /** Presence selects the native path even when damaged authority must be rejected. */
 export function hasNativeInferenceProviderAttachment(entry: SandboxEntry): boolean {
   return (
+    entry.nativeHostedProviderAttachment !== undefined ||
     entry.nativeCustomProviderAttachment !== undefined ||
     entry.nativeNvidiaProviderAttachment !== undefined
   );
@@ -239,13 +253,17 @@ export async function requireNativeInferenceHealth(
       !getNativeNvidiaProviderAttachment(input.entry)
     )
       throw new LaunchReadinessEvidenceError();
-    return requireNativeNvidiaInferenceHealth(input);
+    return requireFixedNativeInferenceHealth(input);
   }
   const expected = normalizeNativeCustomProviderAttachment(
     input.entry.nativeCustomProviderAttachment,
     input.sandboxName,
   );
-  if (!expected || input.entry.nativeNvidiaProviderAttachment !== undefined)
+  if (
+    !expected ||
+    input.entry.nativeNvidiaProviderAttachment !== undefined ||
+    input.entry.nativeHostedProviderAttachment !== undefined
+  )
     throw new LaunchReadinessEvidenceError();
   const provider = normalizedString(input.entry.provider);
   const model = normalizedString(input.entry.model);
@@ -285,26 +303,42 @@ export async function requireNativeInferenceHealth(
   return true;
 }
 
-export async function requireNativeNvidiaInferenceHealth(input: {
+async function requireFixedNativeInferenceHealth(input: {
   sandboxName: string;
   gatewayName: string;
   agentName?: string;
   entry: SandboxEntry;
   deps: LaunchReadinessHealthDeps;
 }): Promise<boolean> {
-  const expected = getNativeNvidiaProviderAttachment(input.entry);
+  const expected = getNativeProviderAttachment(input.entry);
   if (!expected) return false;
   const provider = normalizedString(input.entry.provider);
   const model = normalizedString(input.entry.model);
   if (!provider || !model) throw new LaunchReadinessEvidenceError();
-  if (input.deps.verifyNativeNvidiaAttachment) {
+  const nvidia = normalizeNativeNvidiaProviderAttachment(expected);
+  if (nvidia && input.deps.verifyNativeNvidiaAttachment) {
     await input.deps.verifyNativeNvidiaAttachment({
+      sandboxName: input.sandboxName,
+      gatewayName: input.gatewayName,
+      expected: nvidia,
+    });
+  } else if (nvidia) {
+    await verifyNativeNvidiaProviderAttachment({
+      adapter: createCliOpenShellProviderAdapter(),
+      target: { kind: "named", gatewayName: input.gatewayName },
+      sandboxName: input.sandboxName,
+      expected: nvidia,
+    });
+  } else if (input.deps.verifyNativeHostedAttachment) {
+    await input.deps.verifyNativeHostedAttachment({
       sandboxName: input.sandboxName,
       gatewayName: input.gatewayName,
       expected,
     });
   } else {
-    await verifyNativeNvidiaProviderAttachment({
+    await nativeProviderLifecycle(
+      fixedNativeProviderForAttachment(expected),
+    ).verifyNativeProviderAttachment({
       adapter: createCliOpenShellProviderAdapter(),
       target: { kind: "named", gatewayName: input.gatewayName },
       sandboxName: input.sandboxName,
@@ -321,11 +355,19 @@ export async function requireNativeNvidiaInferenceHealth(input: {
     model,
     preferredInferenceApi: normalizedString(input.entry.preferredInferenceApi),
     nativeProvider: true,
+    ...(expected.endpointUrl ? { nativeEndpointUrl: expected.endpointUrl } : {}),
   });
   if (!invocation.ok) {
     throw new LaunchReadinessObservationError("health", "inference request");
   }
   return true;
+}
+
+export async function requireNativeNvidiaInferenceHealth(
+  input: Parameters<typeof requireFixedNativeInferenceHealth>[0],
+): Promise<boolean> {
+  if (input.entry.nativeNvidiaProviderAttachment === undefined) return false;
+  return requireFixedNativeInferenceHealth(input);
 }
 
 async function probeInferenceRoute(

@@ -39,3 +39,9 @@ export function resolveNemoclawStateDir(
 export function resolveNemoclawStateGatewayPort(): number {
   return GATEWAY_PORT;
 }
+
+/** Shared registry file identity for persistence and its mutation lock. */
+export const SANDBOX_REGISTRY_FILE = path.join(
+  nemoclawStateRoot(process.env.HOME || "/tmp", GATEWAY_PORT),
+  "sandboxes.json",
+);

@@ -99,6 +99,26 @@ export function resolveNativeSelectionAuthority(input: {
   });
 }
 
+/** Verify persisted fixed-provider identity before a custom switch can retire its access. */
+export async function verifyRecordedNativeSelection(input: {
+  entry: SandboxEntry;
+  gatewayName: string;
+  sandboxName: string;
+  deps: InferenceSetDeps;
+}): Promise<NativeProviderAttachment | undefined> {
+  const receipt = recordedNativeProviderAttachment(input.entry);
+  if (!receipt) return undefined;
+  await nativeProviderLifecycle(
+    fixedNativeProviderForAttachment(receipt),
+  ).verifyNativeProviderAttachment({
+    adapter: input.deps.providerAdapter,
+    target: { kind: "named", gatewayName: input.gatewayName },
+    sandboxName: input.sandboxName,
+    expected: receipt,
+  });
+  return receipt;
+}
+
 export function nativeSelectionRegistryFields(
   attachment: NativeProviderAttachment | undefined,
   previousDetached: boolean,

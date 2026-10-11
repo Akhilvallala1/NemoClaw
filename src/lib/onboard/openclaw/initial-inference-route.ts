@@ -16,7 +16,18 @@ const initialOpenclawInferenceRouteRuntime = {
     require("../machine/finalization-deps") as typeof import("../machine/finalization-deps"),
 };
 
+export type InitialInferenceSelection = {
+  endpointUrl?: string | null;
+  nativeProvider: boolean;
+};
+
 export interface InitialOpenclawInferenceRouteDeps {
+  readInferenceSelection?(
+    sandboxName: string,
+    gatewayName: string,
+    provider: string,
+  ): InitialInferenceSelection;
+
   readOpenclawConfig(sandboxName: string, gatewayName: string): ConfigObject;
   patchOpenclawInferenceConfig(
     config: ConfigObject,
@@ -29,6 +40,8 @@ export interface InitialOpenclawInferenceRouteDeps {
     inheritPrimaryReplyBudget: false,
     nativeCustomProviderAttachment?: NativeCustomProviderAttachment,
     credentialReference?: string,
+    nativeProvider?: boolean,
+    nativeEndpointUrl?: string,
   ): { route: SandboxInferenceConfig };
   resolveNativeCustomCredentialReference?: typeof resolveNativeCustomCredentialReference;
   writeOpenclawInferenceConfigNatively(
@@ -57,7 +70,7 @@ export type InitializeOpenclawInferenceRoute = (
   preferredInferenceApi: string | null,
   gatewayName: string,
   revalidateSandboxIdentity?: (operation: string) => void,
-  nativeCustomProviderAttachment?: NativeCustomProviderAttachment,
+  selection?: NativeCustomProviderAttachment | InitialInferenceSelection,
 ) => Promise<void>;
 
 export function createOpenclawInferenceRouteWriter(
@@ -73,14 +86,22 @@ export function createOpenclawInferenceRouteWriter(
     nativeCustomProviderAttachment,
   ): Promise<void> {
     revalidateSandboxIdentity?.(`read native OpenClaw config in sandbox '${sandboxName}'`);
+    const selection = nativeCustomProviderAttachment;
+    const custom = selection && "schemaVersion" in selection ? selection : undefined;
+    const selected =
+      selection && "nativeProvider" in selection
+        ? selection
+        : custom
+          ? undefined
+          : deps.readInferenceSelection?.(sandboxName, gatewayName, provider);
     const config = deps.readOpenclawConfig(sandboxName, gatewayName);
-    const credentialReference = nativeCustomProviderAttachment
+    const credentialReference = custom
       ? await (
           deps.resolveNativeCustomCredentialReference ?? resolveNativeCustomCredentialReference
         )({
           sandboxName,
           gatewayName,
-          credentialEnv: nativeCustomProviderAttachment.credentialEnv,
+          credentialEnv: custom.credentialEnv,
         })
       : undefined;
     const patchArgs = [
@@ -93,13 +114,15 @@ export function createOpenclawInferenceRouteWriter(
       { effort: null, explicit: false },
       false,
     ] as const;
-    const patched = nativeCustomProviderAttachment
-      ? deps.patchOpenclawInferenceConfig(
+    const patched = custom
+      ? deps.patchOpenclawInferenceConfig(...patchArgs, custom, credentialReference)
+      : deps.patchOpenclawInferenceConfig(
           ...patchArgs,
-          nativeCustomProviderAttachment,
-          credentialReference,
-        )
-      : deps.patchOpenclawInferenceConfig(...patchArgs);
+          undefined,
+          undefined,
+          selected?.nativeProvider ?? true,
+          selected?.endpointUrl ?? undefined,
+        );
 
     revalidateSandboxIdentity?.(
       `apply native OpenClaw inference route in sandbox '${sandboxName}'`,
@@ -141,6 +164,21 @@ export function createInitialOpenclawInferenceRoute(
 }
 
 const nativeInferenceRouteDeps: InitialOpenclawInferenceRouteDeps = {
+  readInferenceSelection: (sandboxName, gatewayName, provider) => {
+    const { load } =
+      require("../../state/registry/persistence") as typeof import("../../state/registry/persistence");
+    const entry = load().sandboxes[sandboxName];
+    if (!entry || entry.gatewayName !== gatewayName || entry.provider !== provider) {
+      throw new Error("Initial OpenClaw inference route does not match its registered selection.");
+    }
+    return {
+      endpointUrl: entry.endpointUrl,
+      nativeProvider: Boolean(
+        entry.nativeHostedProviderAttachment || entry.nativeNvidiaProviderAttachment,
+      ),
+    };
+  },
+
   readOpenclawConfig: (sandboxName, gatewayName) => {
     const config = initialOpenclawInferenceRouteRuntime.loadSandboxConfig();
     return config.readSandboxConfig(

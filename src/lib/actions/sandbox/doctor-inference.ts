@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
+import { hostedNativeProviderForAttachment } from "../../inference/native-provider/hosted-attachment";
+import {
+  probeSandboxInferenceInvocation,
+  READINESS_INFERENCE_INVOCATION_TIMEOUT_MS,
+} from "./inference-invocation-probe";
 import { CLI_NAME } from "../../cli/branding";
 import type { NativeCustomProviderAttachment } from "../../inference/native-custom";
 import {
@@ -27,6 +33,7 @@ import {
   probeSandboxInferenceGatewayHealth,
   probeSandboxNativeNvidiaModelsHealth,
   verifyNativeNvidiaStatusAttachment,
+  verifyNativeHostedStatusAttachment,
 } from "./inference-route-health";
 
 export type DoctorInferenceRoute = {
@@ -37,6 +44,7 @@ export type DoctorInferenceRoute = {
   recordedEndpointUrl?: string | null;
   agentName?: string | null;
   nativeNvidiaProviderAttachment?: NativeNvidiaProviderAttachment;
+  nativeHostedProviderAttachment?: unknown;
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
   preferredInferenceApi?: string | null;
 };
@@ -85,6 +93,8 @@ export function collectManagedLlamaCppDoctorChecks(
 }
 
 type DoctorInferenceDeps = {
+  verifyNativeHostedStatusAttachmentImpl?: typeof verifyNativeHostedStatusAttachment;
+  probeSandboxInferenceInvocationImpl?: typeof probeSandboxInferenceInvocation;
   nativeCustomHealthDeps?: LaunchReadinessHealthDeps;
   gatewayName?: string | null;
   probeProviderHealthImpl?: typeof probeProviderHealth;
@@ -220,6 +230,69 @@ async function collectNativeNvidiaRouteProbe(
     probeLabel: "native NVIDIA",
     ...(result.ok ? {} : { failureLabel: classifyInferenceRouteFailureLabel(result.httpStatus) }),
   };
+}
+
+async function collectNativeHostedRouteProbe(
+  sandboxName: string,
+  route: DoctorInferenceRoute,
+  sandboxReachable: boolean,
+  deps: DoctorInferenceDeps,
+): Promise<ProviderHealthStatus> {
+  const failure = (detail: string): ProviderHealthStatus => ({
+    ok: false,
+    probed: false,
+    providerLabel: "Native hosted provider",
+    endpoint: "recorded native endpoint",
+    detail,
+    probeLabel: "native hosted",
+    failureLabel: "unreachable",
+  });
+  if (!sandboxReachable)
+    return failure("skipped because the sandbox is not reachable through its named gateway");
+  try {
+    const receipt = recordedNativeProviderAttachment(route);
+    const definition = hostedNativeProviderForAttachment(receipt);
+    if (!receipt || !definition || !deps.gatewayName)
+      return failure("Native provider ownership or gateway binding is missing");
+    await (deps.verifyNativeHostedStatusAttachmentImpl ?? verifyNativeHostedStatusAttachment)({
+      gatewayName: deps.gatewayName,
+      sandboxName,
+      expected: receipt,
+    });
+    const result = await (
+      deps.probeSandboxInferenceInvocationImpl ?? probeSandboxInferenceInvocation
+    )(
+      {
+        sandboxName,
+        gatewayName: deps.gatewayName,
+        provider: route.provider,
+        model: route.model,
+        agentName: route.agentName,
+        preferredInferenceApi: route.preferredInferenceApi ?? null,
+        nativeProvider: true,
+        ...(receipt.endpointUrl ? { nativeEndpointUrl: receipt.endpointUrl } : {}),
+      },
+      {},
+      READINESS_INFERENCE_INVOCATION_TIMEOUT_MS,
+    );
+    return {
+      ok: result.ok,
+      probed: true,
+      providerLabel: definition.label,
+      endpoint: definition.endpoint,
+      detail: result.ok
+        ? "The attached provider served a native inference request."
+        : formatUntrustedProbeDetail(result.detail),
+      probeLabel: "native hosted",
+      ...(result.ok
+        ? {}
+        : { failureLabel: classifyInferenceRouteFailureLabel(result.httpStatus ?? 0) }),
+    };
+  } catch (error) {
+    return failure(
+      formatUntrustedProbeDetail(error instanceof Error ? error.message : String(error)),
+    );
+  }
 }
 
 export function resolveDoctorReasoningEffort(
@@ -375,22 +448,27 @@ export async function collectInferenceChecks(
   if (effortCheck) checks.push(effortCheck);
   const nativeNvidia = isNativeNvidiaProvider(route.provider);
   const nativeCustom = route.nativeCustomProviderAttachment !== undefined;
-  const routeProbe = nativeCustom
-    ? await collectNativeCustomRouteProbe(sandboxName, route, sandboxReachable, deps)
-    : nativeNvidia
-      ? await collectNativeNvidiaRouteProbe(sandboxName, route, sandboxReachable, deps)
-      : await collectInferenceRouteProbe(
-          sandboxName,
-          sandboxReachable,
-          deps.probeSandboxInferenceGatewayHealthImpl ?? probeSandboxInferenceGatewayHealth,
-          deps.gatewayName,
-        );
-  pushInferenceHealthCheck(checks, routeProbe, {
-    label: nativeCustom
-      ? "Inference route (native custom)"
+  const nativeHosted = route.nativeHostedProviderAttachment !== undefined;
+  const routeProbe = nativeHosted
+    ? await collectNativeHostedRouteProbe(sandboxName, route, sandboxReachable, deps)
+    : nativeCustom
+      ? await collectNativeCustomRouteProbe(sandboxName, route, sandboxReachable, deps)
       : nativeNvidia
-        ? "Inference route (native NVIDIA)"
-        : "Inference route (gateway)",
+        ? await collectNativeNvidiaRouteProbe(sandboxName, route, sandboxReachable, deps)
+        : await collectInferenceRouteProbe(
+            sandboxName,
+            sandboxReachable,
+            deps.probeSandboxInferenceGatewayHealthImpl ?? probeSandboxInferenceGatewayHealth,
+            deps.gatewayName,
+          );
+  pushInferenceHealthCheck(checks, routeProbe, {
+    label: nativeHosted
+      ? "Inference route (native hosted)"
+      : nativeCustom
+        ? "Inference route (native custom)"
+        : nativeNvidia
+          ? "Inference route (native NVIDIA)"
+          : "Inference route (gateway)",
   });
   for (const diagnostic of collectProviderHealthDiagnostics(
     route,

@@ -14,7 +14,8 @@ import {
   type NativeCustomProviderAttachment,
 } from "../inference/native-custom";
 import { runInferenceSet } from "./inference-set";
-import { createDeps, HERMES_TARGET } from "./inference-set.test-support";
+import { hostedNativeProvider } from "../inference/native-provider/hosted";
+import { createDeps, HERMES_TARGET } from "../../../test/helpers/inference-set";
 
 async function fixture(agent = "openclaw") {
   const prepared = await prepareNativeCustomProfile({
@@ -151,6 +152,7 @@ async function fixture(agent = "openclaw") {
   return {
     deps,
     receipt,
+    metadata,
     entry,
     events,
     attachments,
@@ -227,7 +229,7 @@ it("restores the previous attachment when a native selected-model probe fails (#
       },
       f.deps,
     ),
-  ).rejects.toThrow(/selected native custom model request/);
+  ).rejects.toThrow("The selected native custom model request did not succeed. HTTP 401.");
   expect([...f.attachments]).toEqual([f.receipt.providerName]);
   expect(f.entry.model).toBe("old-model");
   expect(f.deps.calls.setOpenClawConfigValues).not.toHaveBeenCalled();
@@ -289,7 +291,7 @@ it("retains an observed registry commit after an uncertain write and lets the sa
 it("removes native custom access before publishing a built-in provider (#12636)", async () => {
   const f = await fixture();
   await runInferenceSet({ provider: "openai", model: "gpt-4o" }, f.deps);
-  expect(f.attachments.size).toBe(0);
+  expect([...f.attachments]).toEqual(["nemoclaw-openai-api-v1"]);
   expect(f.entry.provider).toBe("openai-api");
   expect(f.entry.nativeCustomProviderAttachment).toBeUndefined();
   expect(f.policy.network_policies.native_custom_inference).toBeUndefined();
@@ -401,3 +403,94 @@ it("retries owned custom retirement after the departure receipt has been cleared
     adapter: f.adapter,
   });
 });
+
+async function fixedHostedFixture(agent: string) {
+  const f = await fixture(agent);
+  const definition = hostedNativeProvider("openai-api")!;
+  const fixed = {
+    schemaVersion: 1 as const,
+    profileId: definition.profileId,
+    providerName: definition.providerName,
+    providerId: "11111111-2222-4333-8444-555555555555",
+  };
+  Reflect.deleteProperty(f.entry, "nativeCustomProviderAttachment");
+  Object.assign(f.entry, {
+    provider: "openai-api",
+    endpointUrl: definition.endpoint,
+    credentialEnv: definition.credentialEnv,
+    nativeHostedProviderAttachment: fixed,
+  });
+  f.attachments.clear();
+  f.attachments.add(fixed.providerName);
+  f.metadata.set(fixed.providerName, {
+    name: fixed.providerName,
+    type: fixed.profileId,
+    credentialKeys: [definition.credentialEnv],
+    configKeys: [],
+    revision: { id: fixed.providerId, resourceVersion: 1 },
+  });
+  return { ...f, fixed };
+}
+const customEndpointSelection = {
+  provider: "compatible-endpoint",
+  model: "new-model",
+  endpointUrl: "http://12.12.12.12/v1",
+  credentialEnv: "COMPATIBLE_API_KEY",
+  inferenceApi: "openai-completions",
+};
+
+it.each(["openclaw", "hermes"])(
+  "replaces the fixed hosted attachment before publishing a native custom %s selection (#12636)",
+  async (agent) => {
+    const f = await fixedHostedFixture(agent);
+    await runInferenceSet(customEndpointSelection, f.deps);
+    const selected = f.entry.nativeCustomProviderAttachment;
+    expect([...f.attachments]).toEqual([selected.providerName]);
+    expect(f.events.indexOf(`detach:${f.fixed.providerName}`)).toBeLessThan(
+      f.events.indexOf(`attach:${selected.providerName}`),
+    );
+    expect(f.entry).toMatchObject({
+      provider: "compatible-endpoint",
+      nativeHostedProviderAttachment: undefined,
+    });
+    expect(f.deps.inferenceRouteMutator.setInferenceRoute).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["openclaw", "hermes"])(
+  "restores fixed hosted authority after a failed custom %s model probe (#12636)",
+  async (agent) => {
+    const f = await fixedHostedFixture(agent);
+    f.deps.calls.probeSandboxRoute.mockResolvedValueOnce({
+      ok: false,
+      detail: "rejected",
+      httpStatus: 401,
+    });
+    await expect(runInferenceSet(customEndpointSelection, f.deps)).rejects.toThrow("HTTP 401");
+    expect([...f.attachments]).toEqual([f.fixed.providerName]);
+    expect(f.entry).toMatchObject({
+      provider: "openai-api",
+      nativeHostedProviderAttachment: f.fixed,
+    });
+    expect(f.events).toContain(`detach:${f.fixed.providerName}`);
+    expect(f.events).toContain(`attach:${f.fixed.providerName}`);
+    expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["openclaw", "hermes"])(
+  "rejects replaced fixed hosted identity before changing a native custom %s selection (#12636)",
+  async (agent) => {
+    const f = await fixedHostedFixture(agent);
+    f.metadata.set(f.fixed.providerName, {
+      ...f.metadata.get(f.fixed.providerName)!,
+      revision: { id: "22222222-2222-4333-8444-555555555555", resourceVersion: 1 },
+    });
+    await expect(runInferenceSet(customEndpointSelection, f.deps)).rejects.toThrow(
+      "changed identity",
+    );
+    expect(f.adapter.attachProvider).not.toHaveBeenCalled();
+    expect(f.adapter.detachProvider).not.toHaveBeenCalled();
+    expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();
+  },
+);

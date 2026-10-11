@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { requireHostedProviderAttachment } from "../inference/native-provider/hosted-attachment";
+import {
+  nativeInferenceProviderForSandbox,
+  normalizeNativeNvidiaProviderAttachment,
+} from "../inference/native-nvidia";
+
 import { isDeepStrictEqual } from "node:util";
 import type { AgentDefinition } from "../agent/defs";
 import { isDeferredN1xManagedVllmAcceptanceRoute } from "../domain/sandbox/n1x-managed-vllm-rebuild";
@@ -14,7 +20,6 @@ import {
   normalizeInferenceSelection,
 } from "../inference/selection";
 import { normalizeNativeCustomProviderAttachment } from "../inference/native-custom";
-import { normalizeNativeNvidiaProviderAttachment } from "../inference/native-nvidia/contract";
 import { type WebSearchConfig, webSearchProviderForConfig } from "../inference/web-search";
 import { MessagingSetupApplier } from "../messaging/applier/setup-applier";
 import * as onboardSession from "../state/onboard-session";
@@ -82,6 +87,7 @@ export interface CreatedSandboxRegistryEntryInput {
   hostLocalInferenceReceipt?: SandboxEntry["hostLocalInferenceReceipt"];
   hostLocalInferenceProvenance?: SandboxEntry["hostLocalInferenceProvenance"];
   nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+  nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
   nativeCustomProviderAttachment?: SandboxEntry["nativeCustomProviderAttachment"];
   deferredN1xManagedVllmPreviewIntent?: true;
   toolDisclosure?: ToolDisclosure;
@@ -238,6 +244,10 @@ export function buildCreatedSandboxRegistryEntry(
   const hostLocalInferenceProvenance = cloneSandboxHostLocalInferenceProvenance(
     input.hostLocalInferenceProvenance,
   );
+  const nativeHostedProviderAttachment = requireHostedProviderAttachment(
+    input.nativeHostedProviderAttachment,
+    input.inferenceSelection.provider,
+  );
   const nativeCustomProviderAttachment = normalizeNativeCustomProviderAttachment(
     input.nativeCustomProviderAttachment,
     input.sandboxName,
@@ -304,6 +314,7 @@ export function buildCreatedSandboxRegistryEntry(
     ...(hostLocalInferenceReceipt !== undefined ? { hostLocalInferenceReceipt } : {}),
     ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
     ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
+    ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
     ...(nativeCustomProviderAttachment ? { nativeCustomProviderAttachment } : {}),
     ...(deferredN1xManagedVllmAccepted ? { deferredN1xManagedVllmAccepted: true as const } : {}),
     toolDisclosure: input.toolDisclosure ?? DEFAULT_TOOL_DISCLOSURE,
@@ -384,10 +395,13 @@ export function prepareCreatedSandboxRegistration(
     input.nativeNvidiaProviderAttachment !== undefined
       ? input.nativeNvidiaProviderAttachment
       : pending?.nativeNvidiaProviderAttachment;
+  const pendingNativeHostedProviderAttachment =
+    input.nativeHostedProviderAttachment ?? pending?.nativeHostedProviderAttachment;
   const pendingNativeCustomProviderAttachment =
     input.nativeCustomProviderAttachment ?? pending?.nativeCustomProviderAttachment;
   const entry = buildCreatedSandboxRegistryEntry({
     ...input,
+    nativeHostedProviderAttachment: pendingNativeHostedProviderAttachment,
     ...(pendingNativeCustomProviderAttachment
       ? { nativeCustomProviderAttachment: pendingNativeCustomProviderAttachment }
       : {}),
@@ -505,4 +519,27 @@ export function validateSelectedNativeOpenclawAttachment(
     );
   }
   return attachment;
+}
+
+export function nativeInferenceCreateIntentFields(
+  provider: string | null | undefined,
+  entry: SandboxEntry | null,
+): {
+  inferenceProvider: string | null;
+  nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+  nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
+} {
+  const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
+    entry?.nativeNvidiaProviderAttachment,
+  );
+  const hostedAttachment = requireHostedProviderAttachment(
+    entry?.nativeHostedProviderAttachment,
+    provider,
+  );
+  return {
+    inferenceProvider:
+      hostedAttachment?.providerName ?? nativeInferenceProviderForSandbox(provider),
+    nativeHostedProviderAttachment: hostedAttachment,
+    ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
+  };
 }

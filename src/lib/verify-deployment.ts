@@ -24,6 +24,7 @@ import { parseVersionFromText } from "./adapters/openshell/client";
 import {
   runSandboxInferenceInvocationProbe,
   verifyNativeCustomStatusAttachment,
+  verifyNativeHostedStatusAttachment,
   type SandboxInferenceRouteHealthContext,
 } from "./actions/sandbox/inference-route-health";
 import { compareChannelSets, type RuntimeChannelStatus } from "./channel-runtime-status";
@@ -32,6 +33,7 @@ import { isOpenRouterRuntimeAdapterModelsRoute404 } from "./inference/openrouter
 import { listMessagingChannelsWithoutCredentials } from "./messaging/channels";
 
 import { retryUntilAsync } from "./core/retry";
+import { requireHostedProviderAttachment } from "./inference/native-provider/hosted-attachment";
 import { isNativeNvidiaProvider } from "./inference/native-nvidia";
 import {
   shouldDiagnoseCustomOpenClawRuntime,
@@ -270,6 +272,7 @@ type InferenceRouteStatus = "ok" | "unreachable" | "unhealthy";
  */
 export type InferenceRouteContext = {
   provider?: string | null;
+  nativeHostedProviderAttachment?: unknown;
   nativeCustomProviderAttachment?: SandboxInferenceInvocationInput["nativeCustomProviderAttachment"];
 };
 
@@ -399,8 +402,30 @@ async function verifyInferenceRoute(
   sleep: (ms: number) => Promise<void>,
   context: InferenceRouteContext,
 ): Promise<InferenceRouteProbe> {
-  if (isNativeNvidiaProvider(context.provider) || context.nativeCustomProviderAttachment) {
-    const label = context.nativeCustomProviderAttachment ? "native custom" : "native NVIDIA";
+  let hostedAttachment;
+  try {
+    hostedAttachment = requireHostedProviderAttachment(
+      context.nativeHostedProviderAttachment,
+      context.provider,
+    );
+  } catch {
+    return {
+      status: "unhealthy",
+      detail: "Invalid native hosted provider attachment",
+      httpCode: 0,
+      hint: "Restore the recorded provider ownership before retrying onboarding.",
+    };
+  }
+  if (
+    isNativeNvidiaProvider(context.provider) ||
+    hostedAttachment ||
+    context.nativeCustomProviderAttachment
+  ) {
+    const label = context.nativeCustomProviderAttachment
+      ? "native custom"
+      : hostedAttachment
+        ? (context.provider?.trim() ?? "native hosted")
+        : "native NVIDIA";
     const invocation = await retryUntilAsync(
       async () => (await deps.probeInferenceInvocation?.()) ?? null,
       {
@@ -744,6 +769,7 @@ export function verifyOnboardDeployment(
       ),
       inferenceRouteContext: {
         provider: context.provider,
+        nativeHostedProviderAttachment: context.nativeHostedProviderAttachment,
         nativeCustomProviderAttachment: context.nativeCustomProviderAttachment,
       },
     },
@@ -932,6 +958,7 @@ export type InferenceInvocationContext = {
   model: string | null;
   provider: string | null;
   preferredInferenceApi: string | null;
+  nativeHostedProviderAttachment?: unknown;
   nativeCustomProviderAttachment?: SandboxInferenceInvocationInput["nativeCustomProviderAttachment"];
 };
 
@@ -949,6 +976,24 @@ export async function probeOnboardInferenceInvocation(
   const { nativeCustomProviderAttachment } = context;
   if (!model || !provider) {
     return { ok: false, detail: "no provider and model were recorded for this sandbox" };
+  }
+  let hostedAttachment;
+  try {
+    hostedAttachment = requireHostedProviderAttachment(
+      context.nativeHostedProviderAttachment,
+      provider,
+    );
+    if (hostedAttachment)
+      await verifyNativeHostedStatusAttachment({
+        gatewayName: context.gatewayName,
+        sandboxName: context.sandboxName,
+        expected: hostedAttachment,
+      });
+  } catch {
+    return {
+      ok: false,
+      detail: "the recorded native hosted provider attachment could not be verified",
+    };
   }
   if (nativeCustomProviderAttachment) {
     try {
@@ -969,7 +1014,8 @@ export async function probeOnboardInferenceInvocation(
     provider,
     model,
     preferredInferenceApi: context.preferredInferenceApi,
-    ...(isNativeNvidiaProvider(provider) ? { nativeProvider: true } : {}),
+    ...(isNativeNvidiaProvider(provider) || hostedAttachment ? { nativeProvider: true } : {}),
+    ...(hostedAttachment?.endpointUrl ? { nativeEndpointUrl: hostedAttachment.endpointUrl } : {}),
   });
   return result.ok ? { ok: true } : { ok: false, detail: result.detail };
 }

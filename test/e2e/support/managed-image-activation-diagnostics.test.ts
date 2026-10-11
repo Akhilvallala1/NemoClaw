@@ -999,7 +999,7 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
           copy.mock.calls.map(() =>
             fs.readFileSync(
               artifacts.pathFor(
-                "managed-activation-onboard-failure-langchain-deepagents-code-container-1-nemoclaw-start.log",
+                "managed-activation-public-lifecycle-failure-langchain-deepagents-code-container-1-nemoclaw-start.log",
               ),
               "utf8",
             ),

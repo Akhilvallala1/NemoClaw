@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { InferenceSelection } from "../../inference/selection";
+import type { NativeProviderAttachment } from "../../inference/native-provider/contract";
+import type { NativeHostedProviderAuthorities } from "./native-provider-authority-state";
 import type { NativeCustomProviderAttachment } from "../../inference/native-custom";
 import type { NativeNvidiaProviderAttachment } from "../../inference/native-nvidia";
 import type {
@@ -150,6 +152,8 @@ export interface SandboxEntry extends Partial<InferenceSelection> {
   nativeNvidiaProviderAttachment?: NativeNvidiaProviderAttachment;
   /** Validated endpoint-specific native provider attached to this sandbox. */
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
+  /** Exact selected fixed hosted provider identity; separate from gateway ownership. */
+  nativeHostedProviderAttachment?: NativeProviderAttachment;
   /** Explicit hidden-lifecycle provenance; absence keeps llama.cpp on its legacy path. */
   hostLocalInferenceProvenance?: SandboxHostLocalInferenceProvenance;
   /** Explicit Deferred N1x managed-vLLM choice retained after successful onboarding. */
@@ -253,4 +257,5 @@ export interface SandboxRegistry {
   nativeNvidiaProviderAuthorities?: Record<string, NativeNvidiaProviderAttachment>;
   /** Endpoint-specific ownership, indexed by gateway then generated provider name. */
   nativeCustomProviderAuthorities?: Record<string, Record<string, NativeCustomProviderAttachment>>;
+  nativeHostedProviderAuthorities?: NativeHostedProviderAuthorities;
 }

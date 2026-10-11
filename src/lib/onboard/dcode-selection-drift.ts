@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getSandboxInferenceConfig } from "../inference/config";
+import type { NativeCustomProviderAttachment } from "../inference/native-custom";
 import { resolveManagedDcodeIdentity } from "../inference/managed-dcode/identity";
 import type { OpenShellSandboxBufferedCommandExecutor } from "../adapters/openshell/sandbox-command";
 import { namedOpenShellGateway } from "../adapters/openshell/sandbox-observer";
@@ -17,7 +18,7 @@ export type DcodeInferenceIdentity = {
 export type DcodeSelectionDriftDeps = {
   getGatewayName(): string;
   requestedEndpointUrl?: string | null;
-  nativeProvider: boolean;
+  nativeProvider: boolean | NativeCustomProviderAttachment;
   commandExecutor: OpenShellSandboxBufferedCommandExecutor;
 };
 
@@ -27,7 +28,7 @@ export type DcodeSelectionDriftReader = (
   requestedModel: string | null,
   preferredInferenceApi: string | null,
   requestedEndpointUrl: string | null,
-  nativeProvider: boolean,
+  nativeProvider: boolean | NativeCustomProviderAttachment,
 ) => Promise<SelectionDrift>;
 
 const IDENTITY_FIELDS = ["Route", "Provider", "Model", "Endpoint"] as const;
@@ -91,7 +92,7 @@ export function getExpectedDcodeInferenceIdentity(
   requestedModel: string | null,
   preferredInferenceApi: string | null,
   requestedEndpointUrl?: string | null,
-  nativeProvider = false,
+  nativeProvider: boolean | NativeCustomProviderAttachment = false,
 ): DcodeInferenceIdentity | null {
   if (requestedModel === null) return null;
 

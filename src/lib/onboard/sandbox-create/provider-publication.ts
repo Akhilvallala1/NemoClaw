@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  isNativeHostedProviderName,
+  hostedNativeProviderForAttachment,
+} from "../../inference/native-provider/hosted-attachment";
+import { nativeProviderLifecycle } from "../../inference/native-provider";
 import { isDeepStrictEqual } from "node:util";
 import type { SelectionDrift } from "../selection-drift";
 
@@ -108,6 +113,31 @@ export async function verifyNativeNvidiaAttachmentAfterCreate(input: {
     );
   }
   await ensureNativeNvidiaProviderAttached({
+    adapter: resolveProviderAdapter(input.deps),
+    target: namedOpenShellGateway(input.gatewayName),
+    sandboxName: input.sandboxName,
+    expected: input.expected,
+  });
+}
+
+export function usesNativeHostedProvider(inferenceProvider: string | null): boolean {
+  return isNativeHostedProviderName(inferenceProvider);
+}
+
+export async function verifyNativeHostedAttachmentAfterCreate(input: {
+  readonly sandboxName: string;
+  readonly gatewayName: string;
+  readonly inferenceProvider: string | null;
+  readonly expected: SandboxEntry["nativeHostedProviderAttachment"];
+  readonly deps: ProviderPreparationDeps;
+}): Promise<void> {
+  if (!usesNativeHostedProvider(input.inferenceProvider)) return;
+  const definition = hostedNativeProviderForAttachment(input.expected);
+  if (!input.expected || !definition || definition.providerName !== input.inferenceProvider)
+    throw new Error(
+      `Sandbox '${input.sandboxName}' is missing its native hosted provider identity receipt.`,
+    );
+  await nativeProviderLifecycle<string, string>(definition).ensureNativeProviderAttached({
     adapter: resolveProviderAdapter(input.deps),
     target: namedOpenShellGateway(input.gatewayName),
     sandboxName: input.sandboxName,

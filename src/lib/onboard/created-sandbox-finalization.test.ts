@@ -465,6 +465,7 @@ describe("created DCode sandbox finalization", () => {
       "nvidia/nemotron-3-ultra-550b-a55b",
       "openai-completions",
       endpointUrl,
+      false,
     );
     expect(register).toHaveBeenCalledOnce();
   });

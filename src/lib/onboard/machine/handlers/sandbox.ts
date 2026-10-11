@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { nativeInferenceCreateIntentFields } from "../../sandbox-registration";
 import { normalizeNativeCustomProviderAttachment } from "../../../inference/native-custom";
 import {
   type CurrentGatewayRouteCompatibilityCheck,
   formatGatewayRouteConflict,
   type GatewayRouteCompatibilityResult,
   isAdvisoryGatewayRouteConflict,
-  nativeInferenceProviderForSandbox,
   normalizeNativeNvidiaProviderAttachment,
 } from "../../../inference/gateway-route-compatibility";
 import type { InferenceEndpointSource } from "../../../inference/selection";
@@ -142,23 +142,29 @@ function nativeNvidiaCreateIntentFields(
 ): {
   inferenceProvider: string | null;
   nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+  nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
   nativeCustomProviderAttachment?: SandboxEntry["nativeCustomProviderAttachment"];
 } {
   const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
     entry?.nativeNvidiaProviderAttachment,
   );
+  const fixed = nativeInferenceCreateIntentFields(provider, entry);
   const nativeCustomProviderAttachment = normalizeNativeCustomProviderAttachment(
     entry?.nativeCustomProviderAttachment,
     entry?.name,
   );
-  if (entry?.nativeCustomProviderAttachment !== undefined && !nativeCustomProviderAttachment) {
+  if (
+    entry?.nativeCustomProviderAttachment !== undefined &&
+    (!nativeCustomProviderAttachment ||
+      fixed.nativeHostedProviderAttachment ||
+      nativeNvidiaProviderAttachment)
+  ) {
     throw new Error("The recorded native custom provider attachment is invalid.");
   }
   return {
-    inferenceProvider:
-      nativeCustomProviderAttachment?.providerName ?? nativeInferenceProviderForSandbox(provider),
+    ...fixed,
+    inferenceProvider: nativeCustomProviderAttachment?.providerName ?? fixed.inferenceProvider,
     ...(nativeCustomProviderAttachment ? { nativeCustomProviderAttachment } : {}),
-    ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
   };
 }
 
@@ -385,6 +391,7 @@ export interface SandboxStateOptions<
       sandboxName: string;
       inferenceProvider?: string | null;
       nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+      nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
       nativeCustomProviderAttachment?: SandboxEntry["nativeCustomProviderAttachment"];
       hostLocalInferenceRouteOnly?: boolean;
       enabledChannels: readonly string[];

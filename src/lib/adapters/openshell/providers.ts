@@ -40,6 +40,10 @@ import {
   NVIDIA_HOSTED_NATIVE_PROFILE_ID,
 } from "../../inference/native-nvidia/contract";
 
+import {
+  hostedNativeProfile,
+  isManagedNativeHostedProfileResponse,
+} from "./native-hosted-profile-response";
 import type { OpenShellProviderMetadata } from "./provider-adapter";
 
 const managedProfileSchemas = {
@@ -51,6 +55,7 @@ const managedProfileSchemas = {
 type ManagedProfileContract = keyof typeof managedProfileSchemas;
 type ProfileContract =
   | ManagedProfileContract
+  | "native-hosted"
   | "native-nvidia"
   | Readonly<{ kind: "native-custom"; attachment: NativeCustomProviderAttachment }>;
 
@@ -79,6 +84,8 @@ export interface Providers {
         name: string;
         configKeys: readonly string[];
         profileContract?: ProfileContract;
+        nativeHostedEndpoint?: string;
+        nativeHostedAllowedIps?: readonly string[];
       }>,
   ): Promise<Provider | null>;
 }
@@ -99,18 +106,25 @@ async function readBuiltinNvidiaEndpoint(
   return BUILD_ENDPOINT_URL;
 }
 
+function managedProfileId(
+  profileContract: ProfileContract,
+  providerType: string,
+  nativeHostedEndpoint?: string,
+): string | undefined {
+  if (typeof profileContract === "object") return profileContract.attachment.profileId;
+  else if (profileContract === "native-hosted")
+    return hostedNativeProfile(providerType, nativeHostedEndpoint)?.profileId;
+  return profileContract === "native-nvidia" ? NVIDIA_HOSTED_NATIVE_PROFILE_ID : profileContract;
+}
+
 async function readManagedProfile(
   client: OpenShellReadClient,
-  request: ReadRequest,
+  request: Parameters<Providers["get"]>[0],
   profileContract: ProfileContract,
   providerType: string,
   profileWorkspace: string | undefined,
 ): Promise<NonNullable<Provider["managedProfile"]> | null> {
-  let profileId: string;
-  if (typeof profileContract === "object") profileId = profileContract.attachment.profileId;
-  else
-    profileId =
-      profileContract === "native-nvidia" ? NVIDIA_HOSTED_NATIVE_PROFILE_ID : profileContract;
+  const profileId = managedProfileId(profileContract, providerType, request.nativeHostedEndpoint);
   if (
     providerType !== profileId ||
     (profileWorkspace !== "" && profileWorkspace !== request.workspace)
@@ -129,7 +143,14 @@ async function readManagedProfile(
     if (profileContract === "openai" && isNotFound(error)) return null;
     throw error;
   }
-  return validateManagedProfileResponse(response, profileContract, profileWorkspace);
+  return validateManagedProfileResponse(
+    response,
+    profileContract,
+    profileWorkspace,
+    providerType,
+    request.nativeHostedEndpoint,
+    request.nativeHostedAllowedIps,
+  );
 }
 
 function validateNativeManagedProfileResponse(
@@ -170,8 +191,10 @@ function validateCustomManagedProfileResponse(
       port: endpoint.port,
       allowedIps: endpoint.allowed_ips,
       path: endpoint.path,
-      modelsPath: endpoint.rules[0].allow.path,
-      operationPath: endpoint.rules[1].allow.path,
+      rules: [
+        { method: "GET", path: endpoint.rules[0].allow.path },
+        { method: "POST", path: endpoint.rules[1].allow.path },
+      ],
       binaries: expected.binaries,
     }) ||
     response.profile.scope !== (profileWorkspace === "" ? "platform" : "workspace")
@@ -185,15 +208,54 @@ function validateCustomManagedProfileResponse(
   };
 }
 
+function validateHostedManagedProfileResponse(
+  response: unknown,
+  profileWorkspace: string,
+  providerType: string,
+  nativeHostedEndpoint?: string,
+  nativeHostedAllowedIps?: readonly string[],
+): NonNullable<Provider["managedProfile"]> {
+  const validated = isManagedNativeHostedProfileResponse(
+    response,
+    providerType,
+    nativeHostedEndpoint,
+    nativeHostedAllowedIps,
+  );
+  if (
+    !validated ||
+    validated.profile.scope !== (profileWorkspace === "" ? "platform" : "workspace")
+  ) {
+    throw new OpenShellReadError("schema");
+  }
+  return {
+    id: validated.profile.id,
+    source: "user",
+    scope: validated.profile.scope,
+    resourceVersion: String(validated.profile.resourceVersion),
+  };
+}
+
 function validateManagedProfileResponse(
   response: unknown,
   profileContract: ProfileContract,
   profileWorkspace: string,
+  providerType: string,
+  nativeHostedEndpoint?: string,
+  nativeHostedAllowedIps?: readonly string[],
 ): NonNullable<Provider["managedProfile"]> {
   if (typeof profileContract === "object")
     return validateCustomManagedProfileResponse(response, profileContract, profileWorkspace);
   if (profileContract === "native-nvidia") {
     return validateNativeManagedProfileResponse(response, profileWorkspace);
+  }
+  if (profileContract === "native-hosted") {
+    return validateHostedManagedProfileResponse(
+      response,
+      profileWorkspace,
+      providerType,
+      nativeHostedEndpoint,
+      nativeHostedAllowedIps,
+    );
   }
   const { profile } = readValue(managedProfileSchemas[profileContract], response);
   const builtin = profile.source === "builtin";
@@ -216,19 +278,21 @@ function validateManagedProfileResponse(
 
 function managedInferenceEndpointFor(
   managedProfile: Provider["managedProfile"],
+  nativeHostedEndpoint?: string,
 ): string | undefined {
   return managedProfile?.id === NVIDIA_HOSTED_NATIVE_PROFILE_ID
     ? NVIDIA_HOSTED_NATIVE_ENDPOINT
-    : undefined;
+    : hostedNativeProfile(managedProfile?.id ?? "", nativeHostedEndpoint)?.endpoint;
 }
 
 function observedManagedInferenceEndpoint(
   managedProfile: Provider["managedProfile"],
   profileContract: ProfileContract | undefined,
+  nativeHostedEndpoint?: string,
 ): string | undefined {
   if (managedProfile && typeof profileContract === "object")
     return profileContract.attachment.endpointUrl;
-  return managedInferenceEndpointFor(managedProfile);
+  return managedInferenceEndpointFor(managedProfile, nativeHostedEndpoint);
 }
 
 async function readProfileEvidence(
@@ -266,6 +330,7 @@ async function readProfileEvidence(
   const managedInferenceEndpoint = observedManagedInferenceEndpoint(
     managedProfile,
     request.profileContract,
+    request.nativeHostedEndpoint,
   );
   return {
     ...(builtinInferenceEndpoint === undefined ? {} : { builtinInferenceEndpoint }),

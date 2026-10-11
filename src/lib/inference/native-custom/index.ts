@@ -23,7 +23,11 @@ import {
   type NativeCustomAdapterTransport,
 } from "./adapter-transport";
 
-export { prepareNativeCustomProfile, isNativeCustomProvider } from "./profile";
+export {
+  prepareNativeCustomProfile,
+  isNativeCustomProvider,
+  isHostLocalCustomEndpoint,
+} from "./profile";
 export type { NativeCustomProfile, NativeCustomProvider, NativeCustomApi } from "./profile";
 
 export class NativeCustomProviderError extends Error {

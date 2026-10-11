@@ -10,11 +10,18 @@ export function resolveManagedStartupInferenceRoute(
   provider: string,
   model: string,
   preferredInferenceApi: string | null,
-  nativeCustomProviderAttachment?: NativeCustomProviderAttachment,
+  nativeProviderOrAttachment?: boolean | NativeCustomProviderAttachment,
+  nativeEndpointUrl?: string | null,
 ) {
   const api =
     agentName === "langchain-deepagents-code"
       ? "openai-completions"
       : resolveAgentInferenceApi(agentName, provider, preferredInferenceApi);
-  return getSandboxInferenceConfig(model, provider, api, nativeCustomProviderAttachment);
+  return getSandboxInferenceConfig(
+    model,
+    provider,
+    api,
+    nativeProviderOrAttachment,
+    nativeEndpointUrl,
+  );
 }

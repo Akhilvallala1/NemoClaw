@@ -9,7 +9,7 @@ import type { OpenShellProviderAdapter } from "../../adapters/openshell/provider
 import type { SandboxEntry } from "../../state/registry/types";
 import type { NativeProviderAttachment } from "./contract";
 import { nativeProviderLifecycle } from "./index";
-import { hostedNativeProvider } from "./hosted";
+import { hostedNativeProvider, usesNativeHermesEndpoint } from "./hosted";
 import { requireHermesPublicPins } from "./hermes-pins";
 import { requireHostedProviderAttachment } from "./hosted-attachment";
 
@@ -96,4 +96,34 @@ export async function prepareHostedNativeProvider(input: {
     writeAuthority: (gateway, value) => input.writeAuthority(gateway, input.provider, value),
   });
   return receipt;
+}
+
+/** Resolve Hermes ownership before choosing native or explicitly configured routing. */
+export function resolveHostedNativeSetupSelection(input: {
+  provider: string;
+  endpointUrl: string | null | undefined;
+  gatewayName: string;
+  recordedSandbox: SandboxEntry | null | undefined;
+  readAuthority?: Parameters<typeof prepareHostedNativeProvider>[0]["readAuthority"];
+}) {
+  const authority =
+    input.provider === "hermes-provider"
+      ? ((input.recordedSandbox?.provider === input.provider
+          ? requireHostedProviderAttachment(
+              input.recordedSandbox.nativeHostedProviderAttachment,
+              input.provider,
+            )
+          : undefined) ??
+        input.readAuthority?.(input.gatewayName, input.provider, input.endpointUrl || undefined))
+      : undefined;
+  const hosted = hostedNativeProvider(input.provider);
+  return {
+    hosted,
+    authority,
+    native: Boolean(
+      hosted &&
+      (input.provider !== "hermes-provider" ||
+        usesNativeHermesEndpoint(input.endpointUrl, authority)),
+    ),
+  };
 }

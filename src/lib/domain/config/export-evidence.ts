@@ -73,6 +73,7 @@ export const EXPORT_REGISTRY_EVIDENCE_KEYS = [
   "messaging",
   "model",
   "name",
+  "nativeHostedProviderAttachment",
   "nativeCustomProviderAttachment",
   "nativeNvidiaProviderAttachment",
   "nimContainer",

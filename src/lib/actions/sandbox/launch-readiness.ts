@@ -65,6 +65,7 @@ import {
   type LaunchReadinessObservationStage,
   LaunchReadinessObservationError as ObservationError,
   recordLaunchReadinessObservationFailure,
+  getNativeProviderAttachment,
   hasNativeInferenceProviderAttachment,
   requireLaunchSemanticHealth,
   resolveLaunchInteractiveCommand,
@@ -571,6 +572,7 @@ export function buildLaunchReadinessRegistryProjection(
     throw new ObservationError("config");
   }
   const inference = normalizeInferenceSelection(entry);
+  const nativeAttachment = getNativeProviderAttachment(entry);
   if (
     inference.credentialEnv !== null &&
     !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(inference.credentialEnv)
@@ -646,6 +648,10 @@ export function buildLaunchReadinessRegistryProjection(
         }
       : null,
     inference,
+    ...(nativeAttachment ? { nativeProviderAttachment: nativeAttachment } : {}),
+    ...(entry.nativeCustomProviderAttachment
+      ? { nativeCustomProviderAttachment: entry.nativeCustomProviderAttachment }
+      : {}),
     ...(portableRuntimeAuthoritySha256
       ? {
           portableLifecycleReceipt: "current",

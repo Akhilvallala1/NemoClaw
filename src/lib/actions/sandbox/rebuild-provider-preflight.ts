@@ -28,11 +28,11 @@ import {
   hasBedrockRuntimeAwsAuthEnv,
   isBedrockRuntimeEndpoint,
 } from "../../inference/bedrock-runtime";
-import {
-  isNativeNvidiaProvider,
-  nativeNvidiaProviderAttachmentFromMetadata,
-  type NativeNvidiaProviderAttachment,
-} from "../../inference/native-nvidia";
+import type { NativeProviderAttachment } from "../../inference/native-provider/contract";
+import { fixedNativeProviderForAttachment } from "../../inference/native-provider/fixed";
+import { nativeProviderLifecycle } from "../../inference/native-provider";
+import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
+
 import type { GatewayProviderMetadata } from "../../onboard/gateway-provider-metadata";
 import {
   assessRecoveredProviderCredentialReuse,
@@ -164,10 +164,20 @@ export async function inspectRebuildGatewayProviderRegistration(
   runtimeSelection?: OpenShellRuntimeSelection,
   providerAdapter = rebuildProviderAdapter(runtimeSelection),
   credentialKey?: string | null,
-  nativeAttachment?: NativeNvidiaProviderAttachment | NativeCustomProviderAttachment,
+  nativeAttachment?: NativeProviderAttachment | NativeCustomProviderAttachment,
 ): Promise<RebuildGatewayProviderRegistration> {
   const custom = normalizeNativeCustomProviderAttachment(nativeAttachment);
-  if (nativeAttachment && !custom && !isNativeNvidiaProvider(provider)) return "indeterminate";
+  let nativeLifecycle: ReturnType<typeof nativeProviderLifecycle> | undefined;
+  if (nativeAttachment && !custom) {
+    try {
+      const definition = fixedNativeProviderForAttachment(nativeAttachment);
+      if (definition.logicalProvider !== provider) return "indeterminate";
+      nativeLifecycle = nativeProviderLifecycle(definition);
+    } catch {
+      return "indeterminate";
+    }
+  }
+
   if (
     custom &&
     (custom.credentialEnv === "COMPATIBLE_API_KEY"
@@ -190,7 +200,7 @@ export async function inspectRebuildGatewayProviderRegistration(
             result.value.configKeys.length !== 0 ||
             result.value.credentialKeys.length !== 1 ||
             result.value.credentialKeys[0] !== custom.credentialEnv
-          : nativeNvidiaProviderAttachmentFromMetadata(result.value).providerId !==
+          : nativeLifecycle!.nativeProviderAttachmentFromMetadata(result.value).providerId !==
             nativeAttachment.providerId
       )
         return "indeterminate";
@@ -347,13 +357,14 @@ export async function checkRebuildGatewayProviderOrBail(
   log: (msg: string) => void,
   bail: (msg: string, code?: number) => never,
   options: {
-    nativeAttachment?: NativeNvidiaProviderAttachment | NativeCustomProviderAttachment;
+    nativeAttachment?: NativeProviderAttachment | NativeCustomProviderAttachment;
     allowProviderReconfigure?: boolean;
     hostCredentialAvailable?: boolean;
     onProviderReconfigureRequired?: (provider: string, credentialEnv: string) => void;
   } = {},
 ): Promise<boolean> {
-  if (!shouldVerifyRebuildGatewayProvider(provider)) return true;
+  if (!options.nativeAttachment && !shouldVerifyRebuildGatewayProvider(provider)) return true;
+  if (!provider) return false;
 
   const registration = await inspectRebuildGatewayProviderRegistration(
     provider,
@@ -435,10 +446,10 @@ export async function checkRebuildGatewayCredentialReuseOrBail(
   bail: (msg: string, code?: number) => never,
   deps: GatewayCredentialReusePreflightDeps = defaultGatewayCredentialReusePreflightDeps(),
 ): Promise<boolean> {
-  if (config.nativeCustomProviderAttachment || config.nativeNvidiaProviderAttachment) {
+  const fixed = recordedNativeProviderAttachment(config);
+  if (config.nativeCustomProviderAttachment || fixed) {
     return checkRebuildGatewayProviderOrBail(config.provider, config.credentialEnv, log, bail, {
-      nativeAttachment:
-        config.nativeCustomProviderAttachment ?? config.nativeNvidiaProviderAttachment,
+      nativeAttachment: config.nativeCustomProviderAttachment ?? fixed,
     });
   }
   if (hostCredentialAvailable || !config.provider || !config.credentialEnv) return true;

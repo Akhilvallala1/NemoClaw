@@ -22,12 +22,10 @@ import {
   gatewayRouteIdentityConflictReasons,
   type GatewayInferenceRoute,
 } from "../inference/gateway-route-compatibility";
+import { recordedNativeProviderAttachment } from "../inference/native-provider/recorded-selection";
+import { hostedNativeProvider } from "../inference/native-provider/hosted";
 import { parseHttpsPinRouteId } from "../inference/https-pin-runtime";
-import {
-  isNativeNvidiaProvider,
-  NVIDIA_HOSTED_NATIVE_ENDPOINT,
-  normalizeNativeNvidiaProviderAttachment,
-} from "../inference/native-nvidia";
+import { NVIDIA_HOSTED_NATIVE_ENDPOINT } from "../inference/native-nvidia";
 import { inspectManagedLlamaCppOwnership } from "../inference/llama-cpp/managed-state";
 import { valueLooksLikeSecret } from "../security/credential-filter";
 import { ConfigCorruptError, ConfigPermissionError } from "../state/config-io";
@@ -375,15 +373,15 @@ export async function runInferenceGet(
     }
     return payload;
   }
-  if (
-    selectedSandbox &&
-    isNativeNvidiaProvider(selectedSandbox.provider) &&
-    normalizeNativeNvidiaProviderAttachment(selectedSandbox.nativeNvidiaProviderAttachment)
-  ) {
+  if (selectedSandbox && recordedNativeProviderAttachment(selectedSandbox)) {
     const payload: InferenceGetResult = {
       provider: selectedSandbox.provider ?? null,
       model: selectedSandbox.model ?? null,
-      endpointUrl: NVIDIA_HOSTED_NATIVE_ENDPOINT,
+      endpointUrl:
+        hostedNativeProvider(
+          selectedSandbox.provider,
+          selectedSandbox.nativeHostedProviderAttachment?.endpointUrl,
+        )?.endpoint ?? NVIDIA_HOSTED_NATIVE_ENDPOINT,
     };
     if (!options.quiet) {
       if (options.json) {
@@ -391,7 +389,7 @@ export async function runInferenceGet(
       } else {
         deps.log(`Provider: ${formatRouteValueForDisplay(payload.provider)}`);
         deps.log(`Model:    ${formatRouteValueForDisplay(payload.model)}`);
-        deps.log(`Endpoint: ${formatRouteValueForDisplay(NVIDIA_HOSTED_NATIVE_ENDPOINT)}`);
+        deps.log(`Endpoint: ${formatRouteValueForDisplay(payload.endpointUrl ?? null)}`);
       }
     }
     return payload;

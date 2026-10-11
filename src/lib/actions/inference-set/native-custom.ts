@@ -27,14 +27,12 @@ import {
   prepareInferenceSetRoute,
   usesLoopbackNoAuthProxyRoute,
 } from "../inference-set-route-containment";
+import { resolveAgentInferenceApi, getSandboxInferenceConfig } from "../../inference/config";
 import {
-  resolveAgentInferenceApi,
-  getSandboxInferenceConfig,
-  normalizeNativeNvidiaProviderAttachment,
-  detachNativeNvidiaProvider,
-  ensureNativeNvidiaProviderAttached,
-} from "../../inference/config";
-import { verifyNativeNvidiaProviderAttachment } from "../../inference/native-nvidia";
+  verifyRecordedNativeSelection,
+  detachPreviousNativeBeforePublish,
+  restorePreviousNativeAfterFailedPublish,
+} from "./native";
 import {
   prepareNativeCustomInference,
   restoreNativeCustomInference,
@@ -207,20 +205,14 @@ export async function runNativeCustomInferenceSwitch(
   );
   const gatewayTarget = { kind: "named", gatewayName: expectedGatewayName } as const;
   await verifyNativeCustomDeparture(entry, previous, sandboxName, expectedGatewayName, deps);
-  const previousNvidia = normalizeNativeNvidiaProviderAttachment(
-    entry.nativeNvidiaProviderAttachment,
-  );
-  if (entry.nativeNvidiaProviderAttachment !== undefined && !previousNvidia)
-    throw new InferenceSetError("The previous native NVIDIA attachment is invalid.");
-  if (previous && previousNvidia)
+  const previousNative = await verifyRecordedNativeSelection({
+    entry,
+    gatewayName: expectedGatewayName,
+    sandboxName,
+    deps,
+  });
+  if (previous && previousNative)
     throw new InferenceSetError("The selected sandbox records conflicting native attachments.");
-  if (previousNvidia)
-    await verifyNativeNvidiaProviderAttachment({
-      adapter: deps.providerAdapter,
-      target: gatewayTarget,
-      sandboxName,
-      expected: previousNvidia,
-    });
   const modelOnly =
     previous &&
     !input.options.endpointUrl &&
@@ -283,7 +275,7 @@ export async function runNativeCustomInferenceSwitch(
       );
   let attachment: NativeCustomProviderAttachment | undefined;
   let previousDetachAttempted = false;
-  let nvidiaDetached = false;
+  let fixedNativeDetached = false;
   let committed = false;
   let rollbackPolicy: (() => Promise<void>) | undefined;
   try {
@@ -317,13 +309,16 @@ export async function runNativeCustomInferenceSwitch(
             expected: previous,
           });
         }
-        if (previousNvidia) {
-          nvidiaDetached = true;
-          await detachNativeNvidiaProvider({
-            adapter: deps.providerAdapter,
-            target: gatewayTarget,
+        if (previousNative) {
+          // Preserve recovery authority even when detach returns an ambiguous failure.
+          fixedNativeDetached = true;
+          await detachPreviousNativeBeforePublish({
+            selectingNative: false,
+            selectedProvider: provider,
+            previousAttachment: previousNative,
+            gatewayName: expectedGatewayName,
             sandboxName,
-            expected: previousNvidia,
+            deps,
           });
         }
       },
@@ -341,8 +336,18 @@ export async function runNativeCustomInferenceSwitch(
       preferredInferenceApi: api,
       nativeCustomProviderAttachment: attachment,
     });
-    if (!probe.ok)
-      throw new InferenceSetError("The selected native custom model request did not succeed.");
+    if (!probe.ok) {
+      const status =
+        Number.isInteger(probe.httpStatus) &&
+        probe.httpStatus !== null &&
+        probe.httpStatus >= 100 &&
+        probe.httpStatus <= 599
+          ? ` HTTP ${probe.httpStatus}.`
+          : " No HTTP response was verified.";
+      throw new InferenceSetError(
+        `The selected native custom model request did not succeed.${status}`,
+      );
+    }
     const changedRoute =
       entry.provider !== provider ||
       entry.model !== model ||
@@ -397,6 +402,7 @@ export async function runNativeCustomInferenceSwitch(
       }),
       nativeCustomProviderAttachment: attachment,
       nativeNvidiaProviderAttachment: undefined,
+      nativeHostedProviderAttachment: undefined,
       ...(agentName === "openclaw" ? { openClawConfigSyncPending: true as const } : {}),
     };
     // An entered registry write may commit before throwing. Retain the new attachment until observed recovery.
@@ -415,6 +421,7 @@ export async function runNativeCustomInferenceSwitch(
           "preferredInferenceApi",
           "nativeCustomProviderAttachment",
           "nativeNvidiaProviderAttachment",
+          "nativeHostedProviderAttachment",
         ] as const;
         if (observed && keys.every((key) => isDeepStrictEqual(observed[key], entrySnapshot[key])))
           committed = false;
@@ -501,13 +508,15 @@ export async function runNativeCustomInferenceSwitch(
           sandboxName,
           expected: previous,
         });
-      if (nvidiaDetached && previousNvidia)
-        await ensureNativeNvidiaProviderAttached({
-          adapter: deps.providerAdapter,
-          target: gatewayTarget,
-          sandboxName,
-          expected: previousNvidia,
-        });
+      await restorePreviousNativeAfterFailedPublish({
+        detached: fixedNativeDetached,
+        committed: false,
+        previousAttachment: previousNative,
+        gatewayName: expectedGatewayName,
+        sandboxName,
+        error,
+        deps,
+      });
     } catch {
       throw new InferenceSetError(
         "Native custom switch failed and previous attachment recovery could not be verified. Reconcile the selected sandbox before retrying; ownership authority is retained.",
@@ -548,6 +557,7 @@ export async function restoreNativeCustomDeparture(input: {
           "preferredInferenceApi",
           "nativeCustomProviderAttachment",
           "nativeNvidiaProviderAttachment",
+          "nativeHostedProviderAttachment",
         ] as const;
         if (
           observed &&

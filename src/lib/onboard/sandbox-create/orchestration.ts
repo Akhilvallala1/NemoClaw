@@ -92,6 +92,8 @@ import {
   validateAttachedMessagingProvidersBeforeSandboxCreation,
   verifyNativeNvidiaAttachmentAfterCreate,
   verifyNativeCustomAttachmentAfterCreate,
+  verifyNativeHostedAttachmentAfterCreate,
+  usesNativeHostedProvider,
 } from "./provider-publication";
 import {
   materializeRebuildPolicyHandoff,
@@ -407,12 +409,16 @@ export function selectRebuildCreatePolicy(
     requiredNetworkPolicyKeys: [
       ...requiredNetworkPolicyKeys,
       ...(usesNativeNvidiaProvider(inferenceProvider) ? ["native_nvidia_inference"] : []),
+      ...(usesNativeHostedProvider(inferenceProvider) ? ["native_hosted_inference"] : []),
       ...(nativeCustomProviderAttachment ? ["native_custom_inference"] : []),
     ],
     removedNetworkPolicyKeys: [
       ...removedNetworkPolicyKeys,
       ...(inferenceProvider !== null && !usesNativeNvidiaProvider(inferenceProvider)
         ? ["native_nvidia_inference"]
+        : []),
+      ...(inferenceProvider !== null && !usesNativeHostedProvider(inferenceProvider)
+        ? ["native_hosted_inference"]
         : []),
       ...(inferenceProvider !== null && !nativeCustomProviderAttachment
         ? ["native_custom_inference"]
@@ -996,6 +1002,7 @@ export async function readManagedDcodeCreateSelectionDrift(
     model: string;
     preferredInferenceApi: string | null;
     createIntent: Pick<SandboxCreateIntent, "endpointUrl"> | null;
+    nativeProvider: boolean | NonNullable<SandboxEntry["nativeCustomProviderAttachment"]>;
   },
   readDcodeSelectionDrift: DcodeSelectionDriftReader,
 ) {
@@ -1005,6 +1012,7 @@ export async function readManagedDcodeCreateSelectionDrift(
     input.model,
     input.preferredInferenceApi,
     input.createIntent?.endpointUrl ?? null,
+    input.nativeProvider,
   );
 }
 
@@ -1433,6 +1441,7 @@ export function createProviderEffectBoundary(input: {
   readonly sandboxName: string;
   readonly gatewayName: string;
   readonly expectedNativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+  readonly expectedNativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
   readonly expectedNativeCustomProviderAttachment?: SandboxEntry["nativeCustomProviderAttachment"];
   readonly preparationInput: ProviderPreparationInput;
   readonly preparationDeps: ProviderPreparationDeps;
@@ -1468,6 +1477,19 @@ export function createProviderEffectBoundary(input: {
       });
       return;
     }
+    if (usesNativeHostedProvider(input.preparationInput.inferenceProvider)) {
+      context.revalidateSandboxIdentity(
+        `attaching and verifying native hosted provider for sandbox '${input.sandboxName}'`,
+      );
+      await verifyNativeHostedAttachmentAfterCreate({
+        sandboxName: input.sandboxName,
+        gatewayName: input.gatewayName,
+        inferenceProvider: input.preparationInput.inferenceProvider,
+        expected: input.expectedNativeHostedProviderAttachment,
+        deps: input.preparationDeps,
+      });
+      return;
+    }
     if (!usesNativeNvidiaProvider(input.preparationInput.inferenceProvider)) return;
     context.revalidateSandboxIdentity(
       `attaching and verifying native NVIDIA provider for sandbox '${input.sandboxName}'`,
@@ -1489,6 +1511,7 @@ export function createProviderEffectBoundary(input: {
       },
       runAfterVerifiedCreate:
         input.expectedNativeCustomProviderAttachment ||
+        usesNativeHostedProvider(input.preparationInput.inferenceProvider) ||
         usesNativeNvidiaProvider(input.preparationInput.inferenceProvider)
           ? attachAndVerifyNativeNvidiaProvider
           : undefined,
@@ -2044,6 +2067,10 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
           provider,
           preferredInferenceApi,
           endpointUrl: createIntent?.endpointUrl ?? null,
+          nativeProvider: Boolean(
+            resolvedCreateIntent.nativeHostedProviderAttachment ||
+            resolvedCreateIntent.nativeNvidiaProviderAttachment,
+          ),
           nativeCustomProviderAttachment: resolvedCreateIntent.nativeCustomProviderAttachment,
           startupProfile: {
             chatUiUrl,
@@ -2359,6 +2386,12 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
               model,
               preferredInferenceApi,
               createIntent,
+              nativeProvider:
+                existingEntry?.nativeCustomProviderAttachment ??
+                Boolean(
+                  existingEntry?.nativeHostedProviderAttachment ||
+                  existingEntry?.nativeNvidiaProviderAttachment,
+                ),
             },
             readDcodeSelectionDrift,
           )
@@ -2720,6 +2753,10 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
                 chatUiUrl,
                 provider,
                 endpointUrl: createIntent?.endpointUrl ?? null,
+                nativeProvider: Boolean(
+                  resolvedCreateIntent.nativeHostedProviderAttachment ||
+                  resolvedCreateIntent.nativeNvidiaProviderAttachment,
+                ),
                 nativeCustomProviderAttachment: resolvedCreateIntent.nativeCustomProviderAttachment,
                 compatibleEndpointReasoning: createIntent?.compatibleEndpointReasoning,
                 preferredInferenceApi,
@@ -3601,6 +3638,7 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
       sandboxName,
       gatewayName: GATEWAY_NAME,
       expectedNativeNvidiaProviderAttachment: resolvedCreateIntent.nativeNvidiaProviderAttachment,
+      expectedNativeHostedProviderAttachment: resolvedCreateIntent.nativeHostedProviderAttachment,
       expectedNativeCustomProviderAttachment: resolvedCreateIntent.nativeCustomProviderAttachment,
       preparationInput: providerPreparationInput,
       preparationDeps: providerPreparationDeps,

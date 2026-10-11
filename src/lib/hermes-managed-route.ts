@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { managedInferenceApiKey } from "./inference-credential.ts";
+import { nativeHostedAgentConfig } from "./inference/native-provider/agent-config.ts";
 
 // The inference.local route replaces this non-secret sentinel at egress.
 // Native NVIDIA routing instead expands the supervisor-issued environment handle.
@@ -85,9 +86,12 @@ export function applyHermesManagedRoute(
   const nativeCustom =
     new URL(route.baseUrl).hostname !== "inference.local" &&
     ["compatible-endpoint", "compatible-anthropic-endpoint"].includes(route.upstreamProvider);
+  const nativeHosted = nativeHostedAgentConfig(route.upstreamProvider, route.baseUrl);
   let apiKey = nativeCustom
     ? `sk-OPENSHELL-RESOLVE-ENV-${route.upstreamProvider === "compatible-endpoint" ? "COMPATIBLE_API_KEY" : "COMPATIBLE_ANTHROPIC_API_KEY"}`
-    : managedInferenceApiKey(route.baseUrl, HERMES_PROXY_REWRITE_SENTINEL);
+    : nativeHosted
+      ? `\${${nativeHosted.credentialEnv}}`
+      : managedInferenceApiKey(route.baseUrl, HERMES_PROXY_REWRITE_SENTINEL);
   if (route.credentialReference !== undefined) {
     const key =
       route.upstreamProvider === "compatible-endpoint"
@@ -117,6 +121,7 @@ export function applyHermesManagedRoute(
     provider: "custom",
     base_url: route.baseUrl,
     api_key: apiKey,
+    ...(nativeHosted?.headers ? { default_headers: nativeHosted.headers } : {}),
   };
   if (apiMode) modelConfig.api_mode = apiMode;
   if (route.contextWindow !== null && route.contextWindow !== undefined) {
@@ -128,6 +133,7 @@ export function applyHermesManagedRoute(
     name: providerName,
     api: route.baseUrl,
     api_key: apiKey,
+    ...(nativeHosted?.headers ? { default_headers: nativeHosted.headers } : {}),
     default_model: route.model,
     discover_models: true,
   };
@@ -137,6 +143,7 @@ export function applyHermesManagedRoute(
     name: providerName,
     base_url: route.baseUrl,
     api_key: apiKey,
+    ...(nativeHosted?.headers ? { default_headers: nativeHosted.headers } : {}),
     discover_models: true,
   };
   if (apiMode) customProvider.api_mode = apiMode;

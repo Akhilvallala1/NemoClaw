@@ -96,10 +96,13 @@ export function wrapOrdinarySandboxCommand(command: readonly string[]): string[]
   ];
 }
 
+/** Bind sandbox probes to the repository-owned CLI execution directory. */
+export function createRepositorySandboxCommandExecutor(): OpenShellSandboxBufferedCommandExecutor {
+  return createCliOpenShellSandboxCommandExecutor({ hostCwd: REPOSITORY_ROOT });
+}
+
 function commandTransportDependencies(
-  commandExecutor: OpenShellSandboxBufferedCommandExecutor = createCliOpenShellSandboxCommandExecutor(
-    { hostCwd: REPOSITORY_ROOT },
-  ),
+  commandExecutor: OpenShellSandboxBufferedCommandExecutor = createRepositorySandboxCommandExecutor(),
 ): CommandTransportDependencies {
   return {
     buildSandboxExecMarkedCommand,

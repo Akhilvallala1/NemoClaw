@@ -31,7 +31,7 @@ import { withGatewayRouteMutationLock } from "../../inference/gateway-route-muta
 import {
   clearNativeNvidiaProviderAuthority,
   listNativeNvidiaProviderAttachmentSandboxNames,
-} from "../../state/registry/native-nvidia-provider-authority";
+} from "../../state/registry/native-provider-authority";
 import { forgetExtraProvider } from "../global";
 
 export type CredentialsResetInput = {

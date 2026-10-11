@@ -31,7 +31,7 @@ export function hostedNativeProfileBoundary(
   profileId: string,
   endpointUrl?: string,
   allowedIps?: readonly string[],
-): NativeProfileBoundary<HostedNativeProfileId> | undefined {
+): NativeProfileBoundary | undefined {
   const definition = hostedNativeProfile(profileId, endpointUrl);
   if (!definition) return undefined;
   const endpoint = new URL(definition.endpoint);
@@ -41,16 +41,26 @@ export function hostedNativeProfileBoundary(
   if (definition.api === "anthropic-messages") paths = ["messages", "messages/count_tokens"];
   else if (definition.logicalProvider === "openai-api") paths.push("responses");
   return {
-    profileId: definition.profileId as HostedNativeProfileId,
-    ...(definition.endpointUrl ? { allowedIps: requireHermesPublicPins(allowedIps) } : {}),
+    id: definition.profileId,
+    allowedIps: definition.endpointUrl ? requireHermesPublicPins(allowedIps) : [],
     credentialEnv: definition.credentialEnv,
     authStyle: definition.api === "anthropic-messages" ? "header" : "bearer",
     headerName: definition.api === "anthropic-messages" ? "x-api-key" : "authorization",
     host: endpoint.hostname,
     port: Number(endpoint.port || 443),
+    path: "",
     rules: [
       { method: "GET", path: `${prefix}/models` },
       ...paths.map((path) => ({ method: "POST" as const, path: `${prefix}/${path}` })),
+    ],
+    binaries: [
+      "/usr/local/bin/node",
+      "/usr/bin/node",
+      "/opt/hermes/.venv/bin/python",
+      "/opt/hermes/.venv/bin/python3",
+      "/opt/venv/bin/python3",
+      "/usr/local/bin/curl",
+      "/usr/bin/curl",
     ],
   };
 }

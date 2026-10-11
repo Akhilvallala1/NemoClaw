@@ -42,8 +42,7 @@ export type NativeProfileBoundary = Readonly<{
   port: number;
   allowedIps: readonly string[];
   path: string;
-  modelsPath: string;
-  operationPath: string;
+  rules: readonly Readonly<{ method: "GET" | "POST"; path: string }>[];
   binaries: readonly string[];
 }>;
 
@@ -93,9 +92,8 @@ function nativeEndpoint(value: unknown, boundary: NativeProfileBoundary): boolea
     endpoint.enforcement === "enforce" &&
     endpoint.access === "" &&
     Array.isArray(rules) &&
-    rules.length === 2 &&
-    nativeRule(rules[0], "GET", boundary.modelsPath) &&
-    nativeRule(rules[1], "POST", boundary.operationPath) &&
+    rules.length === boundary.rules.length &&
+    boundary.rules.every((rule, index) => nativeRule(rules[index], rule.method, rule.path)) &&
     stringArrayEquals(endpoint.allowedIps, boundary.allowedIps) &&
     emptyArray(endpoint.denyRules) &&
     endpoint.allowEncodedSlash === false &&
@@ -173,8 +171,10 @@ export function isManagedNativeNvidiaProfileResponse(
     port: 443,
     allowedIps: [],
     path: "",
-    modelsPath: "/v1/models",
-    operationPath: "/v1/chat/completions",
+    rules: [
+      { method: "GET", path: "/v1/models" },
+      { method: "POST", path: "/v1/chat/completions" },
+    ],
     binaries: [
       "/usr/local/bin/node",
       "/usr/bin/node",

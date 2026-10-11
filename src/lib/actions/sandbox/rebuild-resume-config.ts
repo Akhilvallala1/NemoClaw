@@ -20,6 +20,9 @@ import {
   normalizeNativeNvidiaProviderAttachment,
   type NativeNvidiaProviderAttachment,
 } from "../../inference/native-nvidia/contract";
+import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
+import { hostedNativeProviderForAttachment } from "../../inference/native-provider/hosted-attachment";
+import type { NativeProviderAttachment } from "../../inference/native-provider/contract";
 import { normalizeInferenceSelection } from "../../inference/selection";
 import type { ReasoningEffort } from "../../onboard/reasoning-mode";
 import type { RegistryInferenceRoute } from "../../onboard/rebuild-route-handoff";
@@ -53,6 +56,7 @@ const hermesProviderAuth = require("../../hermes-provider-auth") as {
  */
 export interface RebuildResumeConfig {
   readonly nativeNvidiaProviderAttachment?: NativeNvidiaProviderAttachment;
+  readonly nativeHostedProviderAttachment?: NativeProviderAttachment;
   readonly nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
   readonly agent: string | null;
   readonly provider: string;
@@ -104,6 +108,23 @@ export function prepareRebuildResumeConfig(
   log: (msg: string) => void,
   bail: (msg: string, code?: number) => never,
 ): RebuildResumeConfig | null {
+  let nativeAttachment;
+  try {
+    nativeAttachment = recordedNativeProviderAttachment({ ...sb, provider: sb.provider });
+  } catch {
+    bail(
+      sb.nativeNvidiaProviderAttachment !== undefined
+        ? "Malformed native NVIDIA provider attachment; sandbox is untouched"
+        : "Malformed native provider attachment; sandbox is untouched",
+    );
+    return null;
+  }
+  const nativeHostedProviderAttachment = sb.nativeHostedProviderAttachment
+    ? nativeAttachment
+    : undefined;
+  const hostedDefinition = nativeHostedProviderAttachment
+    ? hostedNativeProviderForAttachment(nativeHostedProviderAttachment)
+    : undefined;
   const ambient = assessRebuildAmbientEnv(sandboxName, rebuildAgent, log);
 
   const session = onboardSession.loadSession();
@@ -243,11 +264,27 @@ export function prepareRebuildResumeConfig(
     );
     return null;
   }
-  const credentialEnv = getRebuildCredentialEnvFromRegistry(
-    trustedSelection.provider,
-    trustedSelection.credentialEnv,
-    endpointUrl,
-  );
+  if (hostedDefinition) {
+    const expectedEndpoint = hostedDefinition.endpoint;
+    if (
+      (sb.endpointUrl &&
+        sb.endpointUrl.replace(/\/+$/, "") !== expectedEndpoint.replace(/\/+$/, "")) ||
+      (sb.credentialEnv && sb.credentialEnv !== hostedDefinition.credentialEnv)
+    ) {
+      bail(
+        "Native provider selection does not match recorded credential or endpoint; sandbox is untouched",
+      );
+      return null;
+    }
+    endpointUrl = expectedEndpoint;
+  }
+  const credentialEnv =
+    hostedDefinition?.credentialEnv ??
+    getRebuildCredentialEnvFromRegistry(
+      trustedSelection.provider,
+      trustedSelection.credentialEnv,
+      endpointUrl,
+    );
 
   const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
     sb.nativeNvidiaProviderAttachment,
@@ -261,7 +298,11 @@ export function prepareRebuildResumeConfig(
     sandboxName,
   );
   if (sb.nativeCustomProviderAttachment !== undefined) {
-    if (!nativeCustomProviderAttachment || nativeNvidiaProviderAttachment) {
+    if (
+      !nativeCustomProviderAttachment ||
+      nativeNvidiaProviderAttachment ||
+      nativeHostedProviderAttachment
+    ) {
       bail("Malformed or conflicting native custom provider attachment; sandbox is untouched");
       return null;
     }
@@ -283,6 +324,7 @@ export function prepareRebuildResumeConfig(
     }
   }
   return {
+    ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
     ...(nativeCustomProviderAttachment ? { nativeCustomProviderAttachment } : {}),
     ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
     agent: rebuildAgent,

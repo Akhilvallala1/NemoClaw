@@ -6,7 +6,7 @@ import {
   type NativeCustomProviderAttachment,
 } from "../../inference/native-custom";
 import { GATEWAY_PORT } from "../../core/ports";
-import { normalizeNativeNvidiaProviderAttachment } from "../../inference/native-nvidia";
+import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import {
   resolveGatewayPortFromName,
   resolveSandboxGatewayName,
@@ -20,6 +20,7 @@ export type DcodeRebuildRegistryEntry = SandboxGatewayBinding & {
   dashboardPort?: number | null;
   name?: string;
   nativeNvidiaProviderAttachment?: unknown;
+  nativeHostedProviderAttachment?: unknown;
   nativeCustomProviderAttachment?: unknown;
 };
 
@@ -71,11 +72,12 @@ export function resolveDcodeRebuildTarget(
         `Re-run with NEMOCLAW_GATEWAY_PORT=${gatewayPort}.`,
     );
   }
+  const fixed = recordedNativeProviderAttachment({ ...entry, provider: resumeConfig.provider });
   const custom = normalizeNativeCustomProviderAttachment(
     entry.nativeCustomProviderAttachment,
     entry.name,
   );
-  if (entry.nativeCustomProviderAttachment !== undefined && !custom)
+  if (entry.nativeCustomProviderAttachment !== undefined && (!custom || fixed))
     throw new Error("DCode rebuild native custom authority is malformed.");
   return {
     ...(custom ? { nativeCustomProviderAttachment: custom } : {}),
@@ -85,8 +87,6 @@ export function resolveDcodeRebuildTarget(
     provider: requiredString(resumeConfig.provider, "inference provider"),
     model: requiredString(resumeConfig.model, "inference model"),
     preferredInferenceApi: resumeConfig.preferredInferenceApi,
-    ...(normalizeNativeNvidiaProviderAttachment(entry.nativeNvidiaProviderAttachment)
-      ? { nativeProvider: true }
-      : {}),
+    ...(fixed ? { nativeProvider: true } : {}),
   };
 }

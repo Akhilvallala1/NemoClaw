@@ -81,7 +81,9 @@ export const rebuildOnboardDependencies = {
     model: string;
     preferredInferenceApi: string | null;
     environment: NodeJS.ProcessEnv;
-    attachment: NonNullable<Parameters<typeof writeRestoredOpenclawInferenceRoute>[6]>;
+    attachment: NonNullable<
+      import("../../state/registry").SandboxEntry["nativeCustomProviderAttachment"]
+    >;
   }): Promise<void> {
     await verifyNativeCustomStatusAttachment({
       gatewayName: options.gatewayName,

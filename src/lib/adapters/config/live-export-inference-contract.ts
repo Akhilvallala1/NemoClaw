@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { type NativeCustomProviderAttachment } from "../../inference/native-custom";
 import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import { fixedNativeProviderForAttachment } from "../../inference/native-provider/fixed";
 import { isDeepStrictEqual } from "node:util";
@@ -29,7 +30,7 @@ function expectedCredentialKeys(credentialEnv: string | null, routeProvider: str
   return credentialEnv === null ? [] : [credentialEnv];
 }
 
-export type NativeInferenceReceipt = NativeProviderAttachment;
+export type NativeInferenceReceipt = NativeProviderAttachment | NativeCustomProviderAttachment;
 
 function matchesNativeProviderMetadata(
   provider: Provider,
@@ -50,7 +51,11 @@ function matchesNativeProviderMetadata(
       routeProvider,
       receipt.providerId,
       receipt.profileId,
-      [fixedNativeProviderForAttachment(receipt).credentialEnv],
+      [
+        "sandboxName" in receipt
+          ? receipt.credentialEnv
+          : fixedNativeProviderForAttachment(receipt).credentialEnv,
+      ],
       [],
       receipt.profileId,
     ],
