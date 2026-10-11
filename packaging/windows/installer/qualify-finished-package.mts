@@ -27,19 +27,17 @@ export function acceptanceProcessesStopped(
 }
 
 export function retainedAcceptance(
-  agent: "pi" | "hermes",
+  agent: "hermes",
   previous: Record<string, any>,
   identity: Record<string, any>,
   configuration: string,
   controllerRun: string,
 ) {
+  assert.equal(agent, "hermes", "Unsupported retained agent acceptance.");
   assert.match(controllerRun, /^[1-9]\d*:[1-9]\d*$/u);
   assert(
     previous?.schemaVersion === 1 &&
-      previous.classification ===
-        (agent === "pi"
-          ? "installed-pi-terminal-acceptance"
-          : "installed-canonical-hermes-acceptance") &&
+      previous.classification === "installed-canonical-hermes-acceptance" &&
       previous.verdict === "pass" &&
       previous.controllerRun === controllerRun &&
       Array.isArray(previous.cleanupErrors) &&
@@ -72,10 +70,7 @@ export function retainedAcceptance(
     createHash("sha256").update(configuration).digest("hex"),
     "Restart configuration differs from its cold run",
   );
-  assert.match(
-    previous.results.stateRoot,
-    /^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-(?:pi|hermes)$/u,
-  );
+  assert.match(previous.results.stateRoot, /^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-hermes$/u);
   assert(previous.results.stateRoot.endsWith(`-${agent}`));
   return previous.results.stateRoot as string;
 }
@@ -163,30 +158,18 @@ export function environment(installRoot: string, source: NodeJS.ProcessEnv = pro
 }
 
 export function smokeAgent(value: string = "openclaw") {
-  assert.ok(value === "openclaw" || value === "pi", "Unsupported finished-package smoke agent.");
+  assert.ok(value === "openclaw", "Unsupported finished-package smoke agent.");
   return value;
 }
 
-export function turnArguments(agent: "openclaw" | "pi", output: string) {
-  return [
-    ...(agent === "pi"
-      ? ["--runtime-host", "terminal-turn", "--agent", "pi"]
-      : ["--native-turn", "--wait"]),
-    "--qualification",
-    "--artifact-directory",
-    output,
-  ];
+export function turnArguments(agent: "openclaw", output: string) {
+  assert.equal(agent, "openclaw", "Unsupported finished-package smoke agent.");
+  return ["--native-turn", "--wait", "--qualification", "--artifact-directory", output];
 }
 
-export function validateTurn(
-  agent: "openclaw" | "pi",
-  output: string,
-  systemDriveRoot = `${process.env.SystemDrive ?? "C:"}\\`,
-) {
-  const pattern =
-    agent === "pi"
-      ? /^native-windows-pi-[a-f0-9]{10}\.json$/u
-      : /^native-windows-turn-[a-f0-9]+\.json$/u;
+export function validateTurn(agent: "openclaw", output: string) {
+  assert.equal(agent, "openclaw", "Unsupported finished-package smoke agent.");
+  const pattern = /^native-windows-turn-[a-f0-9]+\.json$/u;
   const names = fs.readdirSync(output).filter((name) => pattern.test(name));
   assert.equal(names.length, 1, "Expected exactly one completed contained-turn receipt.");
   const file = path.join(output, names[0]);
@@ -198,46 +181,9 @@ export function validateTurn(
   assert.ok(typeof content === "string", "The completed contained-turn receipt disappeared.");
   const turn = JSON.parse(content);
   assert.equal(turn.verdict, "pass");
-  if (agent === "pi") {
-    assert.equal(turn.classification, "installed-nemoclaw-native-windows-pi");
-    assert.equal(turn.piVersion, "0.84.1");
-    assert.equal(turn.architecture, "arm64");
-    assert.equal(turn.backend, "process_container");
-    assert.equal(turn.deterministicLocalModel, true);
-    assert.equal(turn.turnCount, 3);
-    assert.equal(turn.turns?.length, 3);
-    for (let index = 0; index < 3; index++) {
-      const expected = `NATIVE_PI_TURN_${index + 1}_OK`;
-      assert.equal(turn.turns[index].expected, expected);
-      assert.equal(typeof turn.turns[index].output, "string");
-      assert.ok(turn.turns[index].output.includes(expected));
-      assert.ok(
-        Array.isArray(turn.turns[index].modelRequests) &&
-          turn.turns[index].modelRequests.length > 0 &&
-          turn.turns[index].modelRequests.every((token: unknown) => token === expected),
-        "The Pi turn did not confirm its local-model request.",
-      );
-    }
-    const runId = names[0].slice("native-windows-pi-".length, -".json".length);
-    for (const prefix of [
-      "NemoClawNativeAgent",
-      "NemoClawNativeAgentShare",
-      "NemoClawNativeAgentRuntime",
-    ]) {
-      const ownedRoot = path.join(systemDriveRoot, `${prefix}-pi-${runId}`);
-      try {
-        fs.lstatSync(ownedRoot);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
-      }
-      throw new Error("The contained Pi turn retained an owned directory: " + ownedRoot);
-    }
-  } else {
-    assert.equal(turn.exactReply, "CHAT_OK");
-    assert.equal(turn.openClawExecutionMode, "embedded-worker");
-    assert.equal(turn.workloadStopped, true);
-  }
+  assert.equal(turn.exactReply, "CHAT_OK");
+  assert.equal(turn.openClawExecutionMode, "embedded-worker");
+  assert.equal(turn.workloadStopped, true);
   for (const key of [
     "createWatcherStopped",
     "gatewayStopped",

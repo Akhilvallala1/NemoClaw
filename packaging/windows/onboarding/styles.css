@@ -212,15 +212,6 @@ h1 {
   max-width: 50px;
   max-height: 36px;
 }
-.agent-mark.deepagents img {
-  width: 48px;
-}
-.agent-mark.pi img {
-  width: 42px;
-}
-.agent-mark.nemocua {
-  background: #f2f7e9;
-}
 .agent-copy {
   display: flex;
   min-width: 0;

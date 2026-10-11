@@ -5,8 +5,8 @@
 param(
     [Parameter(Mandatory)][string]$InstallRoot,
     [Parameter(Mandatory)][string]$ReceiptPath,
-    [ValidateSet('openclaw', 'hermes', 'langchain-deepagents-code', 'pi', 'nemocua')]
-    [string[]]$Agents = @('openclaw', 'hermes', 'langchain-deepagents-code', 'pi', 'nemocua'),
+    [ValidateSet('openclaw', 'hermes')]
+    [string[]]$Agents = @('openclaw', 'hermes'),
     [ValidateSet('Present', 'Absent')][string]$Expected = 'Present'
 )
 
@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
 $normalizedInstallRoot = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\', '/')
 $launcher = Join-Path $normalizedInstallRoot 'bin\NemoClaw.exe'
-$names = @{ openclaw = 'OpenClaw'; hermes = 'Hermes'; 'langchain-deepagents-code' = 'Deep Agents'; pi = 'Pi'; nemocua = 'NemoCUA' }
+$names = @{ openclaw = 'OpenClaw'; hermes = 'Hermes' }
 $expectedLinks = @([pscustomobject]@{ Name = 'NemoClaw Setup'; Arguments = '--installer'; Icon = 'NemoClaw' })
 foreach ($agent in $Agents) {
     $expectedLinks += [pscustomobject]@{ Name = "NemoClaw $($names[$agent])"; Arguments = "--configured --agent $agent"; Icon = $agent }

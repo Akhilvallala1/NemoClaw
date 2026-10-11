@@ -64,6 +64,76 @@ const webWrapper =
   );
 const executableConsole = consoleWrapper;
 
+for (const surface of ["console", "dashboard"] as const) {
+  for (const failureStage of ["admission", "configuration", "credential"] as const) {
+    test(`Hermes ${surface} holds state before settings and releases it after ${failureStage} failure`, async () => {
+      await withDiagnostics(async (diagnostics, root) => {
+        const primary = new Error("owned startup failure");
+        let held = false,
+          reads = 0,
+          releases = 0;
+        const runtimeLease = { node: "node", agentRoot: root, python: null, assertHeld() {} };
+        const source = consoleSource.slice(
+          consoleSource.indexOf("async function runNativeConsoleAgentInternal("),
+          consoleSource.indexOf("export async function runNativeConsoleAgent("),
+        );
+        const operation = wrapper(
+          source,
+          {
+            ...common(diagnostics),
+            fs,
+            process: {
+              platform: "win32",
+              arch: "arm64",
+              argv: ["--configured"],
+              env: { SystemRoot: root },
+            },
+            argumentValue: () => "hermes",
+            AGENT_ADAPTERS: { hermes: { displayName: "Hermes" } },
+            nativeHermesToolEnvironment: () => ({}),
+            nativeHermesCompatibility: () => ({}),
+            acquireNativeStateSession: async () => {
+              if (failureStage === "admission") throw primary;
+              held = true;
+              return {
+                stateRoot: root,
+                assertHeld() {
+                  assert(held);
+                },
+                async release() {
+                  assert(held);
+                  held = false;
+                  releases++;
+                },
+              };
+            },
+            readConfiguration: () => {
+              assert(held, "Settings must not precede state admission.");
+              reads++;
+              if (failureStage === "configuration") throw primary;
+              return { config: {} };
+            },
+            resolveNativeConfiguredInference: async () => {
+              assert(held, "Credential reads must remain inside the state lease.");
+              await Promise.resolve();
+              assert(held, "Awaiting inference must not release state.");
+              throw primary;
+            },
+          },
+          "runNativeConsoleAgentInternal",
+        );
+        await assert.rejects(
+          operation({ interface: surface }, diagnostics, runtimeLease),
+          (error) => error === primary,
+        );
+        assert.equal(reads, failureStage === "admission" ? 0 : 1);
+        assert.equal(releases, failureStage === "admission" ? 0 : 1);
+        assert.equal(held, false);
+      });
+    });
+  }
+}
+
 function common(diagnostics: Diagnostics) {
   const runtimeLease = { signal: new AbortController().signal, assertHeld() {} };
   return {
@@ -273,14 +343,22 @@ test("actual console wrapper saves a success record after the session control cl
   });
 });
 
-for (const failureStage of ["migration", "broker"] as const) {
-  test(`actual OpenClaw wrapper retains ${failureStage} failure when state release also fails`, async () => {
+for (const failureStage of [
+  "admission",
+  "configuration",
+  "credential",
+  "migration",
+  "broker",
+] as const) {
+  test(`actual OpenClaw wrapper preserves ${failureStage} failure and releases only acquired state`, async () => {
     await withDiagnostics(async (diagnostics, root) => {
       const primary = new Error(`${failureStage} startup ${CANARY}`);
       let released = false;
+      let held = false;
       let migrationAttempted = false;
       let brokerAttempted = false;
       let stateChecks = 0;
+      let configurationReads = 0;
       let completed: unknown;
       const operation = wrapper(
         webWrapper,
@@ -301,21 +379,34 @@ for (const failureStage of ["migration", "broker"] as const) {
               completed = values;
             },
           }),
-          readNativeAgentConfiguration: () => ({ config: { model: "native-test" } }),
-          resolveNativeConfiguredInference: async () => ({
-            configuration: { model: "native-test" },
-            credential: CANARY,
-          }),
-          acquireNativeStateSession: async () => ({
-            stateRoot: root,
-            assertHeld() {
-              stateChecks++;
-            },
-            release: async () => {
-              released = true;
-              throw new Error("state cleanup failed");
-            },
-          }),
+          readNativeAgentConfiguration: () => {
+            assert(held, "Configuration must not precede state admission.");
+            configurationReads++;
+            if (failureStage === "configuration") throw primary;
+            return { config: { model: "native-test" } };
+          },
+          resolveNativeConfiguredInference: async () => {
+            assert(held, "Credentials must not precede state admission.");
+            await Promise.resolve();
+            assert(held, "State must remain held across credential resolution.");
+            if (failureStage === "credential") throw primary;
+            return { configuration: { model: "native-test" }, credential: CANARY };
+          },
+          acquireNativeStateSession: async () => {
+            if (failureStage === "admission") throw primary;
+            held = true;
+            return {
+              stateRoot: root,
+              assertHeld() {
+                stateChecks++;
+              },
+              release: async () => {
+                held = false;
+                released = true;
+                throw new Error("state cleanup failed");
+              },
+            };
+          },
           migrateNativeOpenClawSessions: async (options: {
             home: string;
             node: string;
@@ -346,16 +437,29 @@ for (const failureStage of ["migration", "broker"] as const) {
         assert.equal(error.cause, primary);
         return true;
       });
-      assert(migrationAttempted);
-      assert.equal(stateChecks, 1);
+      const reachedMigration = failureStage === "migration" || failureStage === "broker";
+      assert.equal(migrationAttempted, reachedMigration);
+      assert.equal(configurationReads, failureStage === "admission" ? 0 : 1);
+      assert.equal(stateChecks, reachedMigration ? 3 : failureStage === "admission" ? 0 : 1);
       assert.equal(brokerAttempted, failureStage === "broker");
-      assert(released);
+      assert.equal(released, failureStage !== "admission");
+      assert.equal(held, false);
       assert.equal((completed as unknown[])[0], false);
       const saved = record(diagnostics);
       assert.equal(saved.failure.message, `${failureStage} startup [REDACTED]`);
       assert.deepEqual(saved.output, {});
-      assert.deepEqual(saved.cleanupFailures, ["private agent state"]);
-      assert.equal(saved.stage, failureStage === "migration" ? "runtime" : "broker");
+      assert.deepEqual(
+        saved.cleanupFailures,
+        failureStage === "admission" ? [] : ["private agent state"],
+      );
+      assert.equal(
+        saved.stage,
+        failureStage === "admission" || failureStage === "migration"
+          ? "runtime"
+          : failureStage === "broker"
+            ? "broker"
+            : "inference",
+      );
     });
   });
 }

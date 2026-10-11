@@ -13,7 +13,7 @@ namespace Nvidia.NemoClaw.Bootstrapper;
 internal sealed class NativeRuntimeAvailability
 {
     private const string Resource = "Nvidia.NemoClaw.NativeRuntimeAvailability.json";
-    private static readonly string[] Agents = { "openclaw", "hermes", "langchain-deepagents-code", "pi", "nemocua" };
+    private static readonly string[] Agents = { "openclaw", "hermes" };
     private readonly IReadOnlyDictionary<string, string>? statuses;
     internal bool PrebuiltLocalModelAvailable { get; private init; }
     internal bool BundledLocalInferenceAvailable { get; private init; }

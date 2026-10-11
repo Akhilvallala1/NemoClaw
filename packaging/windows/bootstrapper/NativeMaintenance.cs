@@ -111,12 +111,14 @@ internal static class NativeMaintenance
 
     internal static async Task<int> RunRelatedActionAsync(bool uninstall, CancellationToken cancellation = default)
     {
+        cancellation.ThrowIfCancellationRequested();
         var path = FindCachedBundle() ?? throw new InvalidOperationException("The registered NemoClaw installer is missing. Open its original installer to continue maintenance.");
         var action = uninstall ? "uninstall" : "repair";
         var start = new ProcessStartInfo { FileName = path, UseShellExecute = false, CreateNoWindow = true,
             WorkingDirectory = Path.GetDirectoryName(path)! };
         start.ArgumentList.Add("-" + action);
         start.ArgumentList.Add("-quiet"); start.ArgumentList.Add("-norestart");
+        cancellation.ThrowIfCancellationRequested();
         using var child = Process.Start(start) ?? throw new InvalidOperationException("The registered installer could not start.");
         return await WaitForRelatedActionAsync(child, path, action, cancellation, TimeSpan.FromMinutes(30));
     }
@@ -142,8 +144,9 @@ internal static class NativeMaintenance
         }
     }
 
-    internal static async Task RemoveAgentDataAsync(IEnumerable<string> selectedAgents)
+    internal static async Task RemoveAgentDataAsync(IEnumerable<string> selectedAgents, CancellationToken cancellation = default)
     {
+        cancellation.ThrowIfCancellationRequested();
         if (!SupportsDataRemoval())
             throw new InvalidOperationException("This older preview preserves agent data. Install the current preview before using selective data removal.");
         var agents = selectedAgents.Distinct(StringComparer.Ordinal).ToArray();
@@ -152,11 +155,12 @@ internal static class NativeMaintenance
         var launcher = NativeSetupOperations.InstalledLauncher();
         foreach (var agent in agents)
             await RunOwnedHelperAsync(launcher, new[] { "--remove-native-data", "--agent", agent },
-                "The selected agent data could not be removed. Stop its active session before trying again.");
+                "The selected agent data could not be removed. Stop its active session before trying again.", cancellation);
     }
 
-    internal static async Task StopSharedInferenceAsync(Action? reportProgress = null)
+    internal static async Task StopSharedInferenceAsync(Action? reportProgress = null, CancellationToken cancellation = default)
     {
+        cancellation.ThrowIfCancellationRequested();
         var launcher = NativeSetupOperations.InstalledLauncher();
         var root = Directory.GetParent(Path.GetDirectoryName(launcher)!)!.FullName;
         // Earlier preview launchers interpret unknown options as application
@@ -164,14 +168,15 @@ internal static class NativeMaintenance
         if (!File.Exists(launcher) || (!SupportsFinishedRuntime(root, launcher) && !File.Exists(Path.Combine(root, "qualification", "native-inference-cli.mts")))) return;
         reportProgress?.Invoke();
         await RunOwnedHelperAsync(launcher, new[] { "--native-inference", "stop" },
-            "The shared local model could not stop safely. Close its active sessions before continuing maintenance.");
+            "The shared local model could not stop safely. Close its active sessions before continuing maintenance.", cancellation);
     }
 
-    private static async Task RunOwnedHelperAsync(string launcher, string[] arguments, string failure)
+    private static async Task RunOwnedHelperAsync(string launcher, string[] arguments, string failure, CancellationToken cancellation)
     {
         var start = new ProcessStartInfo { FileName = launcher, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        cancellation.ThrowIfCancellationRequested();
         using var child = Process.Start(start) ?? throw new InvalidOperationException(failure);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         Exception? operationError = null;
@@ -195,6 +200,9 @@ internal static class NativeMaintenance
             throw new InvalidOperationException(failure +
                 (operationError is OperationCanceledException ? " The operation timed out." : string.Empty) +
                 (cleanupError is not null ? " Helper shutdown could not be confirmed." : string.Empty), operationError ?? cleanupError);
+        // Let an already-started data removal or service stop finish safely.
+        // Cancellation prevents the next helper or installer transaction.
+        cancellation.ThrowIfCancellationRequested();
     }
 
     private static async Task DiscardBoundedAsync(StreamReader reader, CancellationToken cancellation)

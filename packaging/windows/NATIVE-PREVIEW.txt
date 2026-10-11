@@ -3,27 +3,28 @@ NemoClaw Native Windows Candidate Preview
 Product decision and ownership
 
 This PR-scoped package is an engineering candidate under NVIDIA/NemoClaw#8178.
-That product-decision record explicitly does not accept or advertise native
-Windows support, and no later Accept decision is recorded. Passing technical
-validation does not change that status. The installer must not be published as
-a release, linked from canonical onboarding, or represented as supported until
-an authorized maintainer records an Accept decision that names the reason,
-placement, accountable maintainer, supported agent and Windows/OpenShell/MXC
-matrix, support and vulnerability-response lifecycle, compatibility and
-security ownership, and validation plan.
+The maintainer decision accepts implementation and qualification in #12014,
+with Prekshi Vyas accountable for the work:
+https://github.com/NVIDIA/NemoClaw/issues/8178#issuecomment-5984526049
+The current maintainer-directed scope narrows the Windows candidate to OpenClaw
+and Hermes. This accepts development, not a supported release or the PR's code.
 
-Until that decision exists, placement is limited to explicitly dispatched PR
-workflow artifacts with their configured retention. There is no support or
-upgrade SLA. Compatibility claims are limited to the exact identities and
-results in each candidate's receipt. Security review and Authenticode signing
-remain release gates. The workflow's clean-install, migration, inference,
-restart, diagnostics, rollback, and cleanup lanes are engineering validation,
-not product acceptance. NVIDIA/NemoClaw#8178 remains the authority for assigning
-the accountable owner and changing this status.
+Placement remains limited to explicitly dispatched PR workflow artifacts with
+their configured retention. There is no support or upgrade SLA. Compatibility
+claims are limited to the exact identities and results in each candidate's
+receipt. Release activation still requires an accepted exact OpenShell/MXC
+distribution, an evidence-backed Windows/build/backend matrix, signing and
+distribution authority, update and vulnerability-response ownership, and the
+required security and lifecycle evidence. Passing engineering validation does
+not satisfy those separate release gates. Do not publish a release, link this
+candidate from canonical onboarding, or represent it as supported while those
+gates remain unmet.
 
 Each finished installer contains the NemoClaw CLI and the agent selected when
-the package was built. Its embedded availability record disables unselected
-agents. Pi and NemoCUA remain experimental. The MSI installs that agent's
+the package was built: OpenClaw or Hermes. Its embedded availability record
+disables the other agent. Standalone Pi, Deep Agents Code, and NemoCUA are no
+longer included. Historical state remains eligible for explicit owned-data cleanup.
+The MSI installs the selected agent's
 required native ARM64 runtime, OpenShell, and Microsoft MXC ProcessContainer
 components. WSL, Docker, Linux virtual machines, and unused MXC backend sidecars
 are not part of this package.
@@ -33,7 +34,7 @@ inference and supported optional services, and follow the named install phases.
 The Personal profile enables outbound network access while keeping host settings
 outside the agent filesystem. Setup adds a NemoClaw Setup desktop shortcut and
 a shortcut with the selected agent's icon. OpenClaw and Hermes open their web
-interfaces in the default browser; terminal agents open a Windows console.
+interfaces in the default browser. Hermes also has an interactive console.
 A native control window stops each web session and cleans up its sandbox.
 
 Run NemoClaw Setup again to change settings or, when installed, uninstall.

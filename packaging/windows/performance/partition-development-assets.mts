@@ -35,7 +35,7 @@ export type Partition = {
   moved: Asset[];
   retainedCandidates: Asset[];
 };
-const NODE_ROOTS = ["nemoclaw/node_modules/", "openclaw/node_modules/", "pi/node_modules/"];
+const NODE_ROOTS = ["nemoclaw/node_modules/", "openclaw/node_modules/"];
 const FIRST_PARTY = "nemoclaw/app/dist/";
 const METADATA = new Set([
   "partition-receipt.json",

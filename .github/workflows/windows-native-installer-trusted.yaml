@@ -86,7 +86,7 @@ jobs:
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ && "$CANDIDATE_REPOSITORY" == 'NVIDIA/NemoClaw' ]]
           [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ && "$BASE_SHA" =~ ^[a-f0-9]{40}$ && "$WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$INSTALLER_MANIFEST" =~ ^[a-f0-9]{64}$ && "$APPLICATION_MANIFEST" =~ ^[a-f0-9]{64}$ ]]
-          [[ "$SELECTED_AGENT" =~ ^(openclaw|hermes|pi)$ && "$PRODUCT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SELECTED_AGENT" =~ ^(openclaw|hermes)$ && "$PRODUCT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$INSTALLER_CACHE_KEY" == "windows-finished-installer-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CANDIDATE_SHA-$SELECTED_AGENT" ]]
           [[ "$BASE_SHA" == "$WORKFLOW_SHA" ]]
           main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"

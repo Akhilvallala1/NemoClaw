@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock
 from pathlib import Path
 
 MODULE = Path(__file__).with_name("verify-system-drive-proof.py")
@@ -59,7 +59,7 @@ class SystemDriveProofTests(unittest.TestCase):
         )
         self.revision = "a" * 40
         self.run_id, self.run_attempt = "123456", "1"
-        self.enterContext(mock.patch.dict(os.environ, {
+        self.enterContext(unittest.mock.patch.dict(os.environ, {
             "GITHUB_RUN_ID": self.run_id, "GITHUB_RUN_ATTEMPT": self.run_attempt,
         }))
         self.host_root = self.root / "host"
@@ -442,7 +442,7 @@ class SystemDriveProofTests(unittest.TestCase):
         self.policy["network"] = copy.deepcopy(gate.LEGACY_MXC_NETWORK)
         self.save()
         # Synthetic PE bytes remain inert; only the fixture's expected hashes change.
-        return mock.patch.object(gate, "LEGACY_MXC_FILES", {
+        return unittest.mock.patch.object(gate, "LEGACY_MXC_FILES", {
             row["file"]: row["sha256"] for row in self.host["mxcBuild"]["files"]
         })
 

@@ -13,7 +13,7 @@ import {
   openNativeAgentResultFixture,
 } from "../support/windows-native-agent-result-fixtures.js";
 
-const routes = ["terminal", "nemocua"] as const;
+const routes = ["terminal"] as const;
 
 describe.each(routes)("native %s request completion", (route) => {
   it("waits for an actual delayed result after creation exits zero", async () => {
@@ -84,24 +84,21 @@ describe.each(routes)("native %s request completion", (route) => {
   });
 });
 
-it.each(["Pi", "Hermes", "Deep Agents Code"])(
-  "keeps the final-token requirement for %s",
-  async (label) => {
-    const fixture = await openNativeAgentResultFixture("terminal");
-    try {
-      await fixture.write(JSON.stringify({ verdict: "pass", token: "different" }) + "\n");
-      await expect(fixture.wait(100, "OWNED_FINAL_TOKEN", label)).rejects.toThrow(
-        `${label} did not publish`,
-      );
-      await fixture.write(JSON.stringify(fixture.expected) + "\n");
-      expect(JSON.parse(await fixture.wait(100, "OWNED_FINAL_TOKEN", label))).toEqual(
-        fixture.expected,
-      );
-    } finally {
-      await fixture.close();
-    }
-  },
-);
+it.each(["Hermes"])("keeps the final-token requirement for %s", async (label) => {
+  const fixture = await openNativeAgentResultFixture("terminal");
+  try {
+    await fixture.write(JSON.stringify({ verdict: "pass", token: "different" }) + "\n");
+    await expect(fixture.wait(100, "OWNED_FINAL_TOKEN", label)).rejects.toThrow(
+      `${label} did not publish`,
+    );
+    await fixture.write(JSON.stringify(fixture.expected) + "\n");
+    expect(JSON.parse(await fixture.wait(100, "OWNED_FINAL_TOKEN", label))).toEqual(
+      fixture.expected,
+    );
+  } finally {
+    await fixture.close();
+  }
+});
 
 it("waits for the terminal receipt completion marker after its final token", async () => {
   const fixture = await openNativeAgentResultFixture("terminal");
@@ -126,20 +123,6 @@ it("keeps the terminal receipt byte bound", async () => {
   try {
     await fixture.write("OWNED_FINAL_TOKEN" + "x".repeat(1024 * 1024));
     await expect(fixture.wait()).rejects.toThrow("exceeds its limit");
-  } finally {
-    await fixture.close();
-  }
-});
-
-it("stops the guarded polling owner when an outer relay failure cancels it", async () => {
-  const fixture = await openNativeAgentResultFixture("nemocua");
-  try {
-    const pending = fixture.wait();
-    fixture.abort();
-    await expect(pending).rejects.toThrow("owned result monitoring cancelled");
-    const reads = fixture.reads();
-    await delay(150);
-    expect(fixture.reads()).toBe(reads);
   } finally {
     await fixture.close();
   }

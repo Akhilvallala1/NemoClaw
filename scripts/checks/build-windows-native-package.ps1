@@ -355,9 +355,7 @@ foreach ($requiredAsset in @(
     'packaging\windows\assets\NemoClaw.ico',
     'packaging\windows\assets\NemoClawLogo.png',
     'packaging\windows\onboarding\assets\openclaw.png',
-    'packaging\windows\onboarding\assets\hermes.png',
-    'packaging\windows\onboarding\assets\deepagents.png',
-    'packaging\windows\onboarding\assets\nemocua.png'
+    'packaging\windows\onboarding\assets\hermes.png'
 )) {
     if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot $requiredAsset) -PathType Leaf)) {
         Fail-WindowsPackageBuild "Required branded setup asset is missing: $requiredAsset"

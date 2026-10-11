@@ -13,7 +13,6 @@
     <NemoClawRequiredPayload Include="bin\nemoclaw.cmd" Phase="Prepared" />
     <NemoClawRequiredPayload Include="nemoclaw\app\bin\nemoclaw.js" Phase="Prepared" />
     <NemoClawRequiredPayload Include="openclaw\node_modules\openclaw\openclaw.mjs" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="pi\node_modules\@earendil-works\pi-coding-agent\dist\cli.js" Phase="Prepared" />
     <NemoClawRequiredPayload Include="python\python.exe" Phase="Prepared" />
     <NemoClawRequiredPayload Include="hermes\site-packages\hermes_cli\main.py" Phase="Prepared" />
     <NemoClawRequiredPayload Include="hermes\site-packages\concurrent_log_handler\__init__.py" Phase="Prepared" />
@@ -21,22 +20,12 @@
     <NemoClawRequiredPayload Include="hermes\site-packages\winpty\conpty.dll" Phase="Prepared" />
     <NemoClawRequiredPayload Include="hermes\site-packages\winpty\OpenConsole.exe" Phase="Prepared" />
     <NemoClawRequiredPayload Include="hermes\CONPTY-LICENSE.txt" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="deepagents\site-packages\deepagents_code\main.py" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="deepagents\site-packages\colorama\__init__.py" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="deepagents\site-packages\jsonschema_rs\jsonschema_rs.pyd" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="deepagents\site-packages\quickjs_rs\__init__.py" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="deepagents\site-packages\quickjs_rs\_guest.wasm" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="deepagents\site-packages\quickjs_rs\_transform.wasm" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="deepagents\site-packages\sitecustomize.py" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="deepagents\site-packages\tiktoken\_tiktoken.cp313-win_arm64.pyd" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="nemocua\run_with_harness.py" Phase="Prepared" />
     <NemoClawRequiredPayload Include="onboarding\index.html" Phase="Prepared" />
     <NemoClawRequiredPayload Include="onboarding\styles.css" Phase="Prepared" />
     <NemoClawRequiredPayload Include="onboarding\app.ts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="config\mxc-gateway.toml" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-security.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-state.mts" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="qualification\native-nemocua-relay.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-ui-file-owner.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-hermes-dashboard.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\run-installed-native-hermes-ui.mts" Phase="Prepared" />
@@ -47,9 +36,6 @@
     <NemoClawRequiredPayload Include="desktop-icons\NemoClaw.ico" Phase="Prepared" />
     <NemoClawRequiredPayload Include="desktop-icons\openclaw.ico" Phase="Prepared" />
     <NemoClawRequiredPayload Include="desktop-icons\hermes.ico" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="desktop-icons\langchain-deepagents-code.ico" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="desktop-icons\pi.ico" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="desktop-icons\nemocua.ico" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-options.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-inference-broker.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-broker-relay.mts" Phase="Prepared" />
@@ -73,13 +59,8 @@
     <NemoClawRequiredPayload Include="qualification\run-installed-native-turn.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\run-installed-native-web-ui.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\run-installed-native-console-agent.mts" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="qualification\run-installed-native-pi.mts" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="qualification\run-installed-native-nemocua.mts" Phase="Prepared" />
+    <NemoClawRequiredPayload Include="qualification\run-installed-native-hermes-turn.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="agent-support.json" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="LANGGRAPH-PYTHON313-COMPATIBILITY.patch" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="LANGGRAPH-INMEMORY-NO-GRPC.patch" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="LANGCHAIN-QUICKJS-NO-BSDIFF.patch" Phase="Prepared" />
-    <NemoClawRequiredPayload Include="DEEPAGENTS-WINDOWS-DACL.patch" Phase="Prepared" />
     <NemoClawRequiredPayload Include="OPENSHELL-NODE-UI-COMPATIBILITY.patch" Phase="Prepared" />
     <NemoClawRequiredPayload Include="LICENSE.txt" Phase="Prepared" />
     <NemoClawRequiredPayload Include="NATIVE-PREVIEW.txt" Phase="Prepared" />

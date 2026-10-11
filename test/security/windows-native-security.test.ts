@@ -17,7 +17,6 @@ import {
   readOpenedRegularFile,
   readWindowsCredential,
   resolveBrokerUpstreamUrl,
-  validatedChatMessages,
 } from "../../packaging/windows/runtime/native-security.mts";
 
 const { credentialSpawn } = vi.hoisted(() => ({ credentialSpawn: vi.fn() }));
@@ -458,41 +457,6 @@ describe("native Windows runtime security boundaries", () => {
       } finally {
         fs.rmSync(directory, { recursive: true, force: true });
       }
-    },
-  );
-
-  it("projects NemoCUA model requests through a bounded message schema", () => {
-    expect(
-      validatedChatMessages({
-        messages: [{ role: "user", content: "observe the bounded page" }],
-        tools: [{ type: "untrusted" }],
-      }),
-    ).toEqual([{ role: "user", content: "observe the bounded page" }]);
-    expect(() =>
-      validatedChatMessages({ messages: [{ role: "tool", content: "secret" }] }),
-    ).toThrow(/invalid message/u);
-    expect(() =>
-      validatedChatMessages({ messages: [{ role: "user", content: "x".repeat(64 * 1024 + 1) }] }),
-    ).toThrow(/exceeds its limit/u);
-    expect(() =>
-      validatedChatMessages({
-        messages: Array.from({ length: 65 }, () => ({ role: "user", content: "x" })),
-      }),
-    ).toThrow(/message list is invalid/u);
-    expect(() =>
-      validatedChatMessages({
-        messages: Array.from({ length: 17 }, () => ({
-          role: "user",
-          content: "x".repeat(64 * 1024),
-        })),
-      }),
-    ).toThrow(/content exceeds its limit/u);
-  });
-
-  it.each([{ body: null }, { body: [] }, { body: "message" }, { body: { messages: {} } }])(
-    "rejects an invalid NemoCUA message envelope %j",
-    ({ body }) => {
-      expect(() => validatedChatMessages(body)).toThrow(/invalid/u);
     },
   );
 });

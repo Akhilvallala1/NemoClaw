@@ -39,7 +39,7 @@ function Fail-PackageQualification {
 
 function Write-InteractiveVideoMarker {
     param(
-        [Parameter(Mandatory)][ValidateSet('openclaw', 'hermes', 'langchain-deepagents-code', 'pi', 'nemocua')][string]$Agent,
+        [Parameter(Mandatory)][ValidateSet('openclaw', 'hermes')][string]$Agent,
         [Parameter(Mandatory)][ValidateSet('start', 'end')][string]$Phase
     )
 
@@ -1134,7 +1134,7 @@ function Invoke-HermesDashboardQualification {
 
 function Invoke-InstalledQualificationEntry {
     param(
-        [Parameter(Mandatory)][ValidateSet('run-installed-native-web-ui.mts', 'run-installed-native-pi.mts', 'run-installed-native-nemocua.mts')][string]$Entry,
+        [Parameter(Mandatory)][ValidateSet('run-installed-native-web-ui.mts', 'run-installed-native-hermes-turn.mts')][string]$Entry,
         [Parameter(Mandatory)][string[]]$Arguments,
         [Parameter(Mandatory)][string]$Label
     )
@@ -1316,9 +1316,6 @@ function Invoke-NativeSetupSelection {
             $element = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
             if (-not $element -or -not $element.Current.IsEnabled -or $element.Current.ControlType -ne [Windows.Automation.ControlType]::RadioButton) {
                 Fail-PackageQualification "Native setup is missing the enabled $($choice.agent) radio-button choice."
-            }
-            if ($choice.agent -in @('pi', 'nemocua') -and $element.Current.Name -notmatch 'experimental') {
-                Fail-PackageQualification "Native setup did not identify $($choice.agent) as experimental."
             }
             $observedChoices += $choice.agent
         }
@@ -1782,19 +1779,9 @@ foreach ($requiredPayload in @(
     'bin\nemoclaw.cmd',
     'nemoclaw\app\bin\nemoclaw.js',
     'openclaw\node_modules\openclaw\openclaw.mjs',
-    'pi\node_modules\@earendil-works\pi-coding-agent\dist\cli.js',
     'python\python.exe',
     'hermes\site-packages\hermes_cli\main.py',
     'hermes\site-packages\concurrent_log_handler\__init__.py',
-    'deepagents\site-packages\deepagents_code\main.py',
-    'deepagents\site-packages\colorama\__init__.py',
-    'deepagents\site-packages\jsonschema_rs\jsonschema_rs.pyd',
-    'deepagents\site-packages\quickjs_rs\__init__.py',
-    'deepagents\site-packages\quickjs_rs\_guest.wasm',
-    'deepagents\site-packages\quickjs_rs\_transform.wasm',
-    'deepagents\site-packages\sitecustomize.py',
-    'deepagents\site-packages\tiktoken\_tiktoken.cp313-win_arm64.pyd',
-    'nemocua\run_with_harness.py',
     'onboarding\index.html',
     'onboarding\styles.css',
     'onboarding\app.ts',
@@ -1805,13 +1792,8 @@ foreach ($requiredPayload in @(
     'qualification\run-installed-native-turn.mts',
     'qualification\run-installed-native-web-ui.mts',
     'qualification\run-installed-native-console-agent.mts',
-    'qualification\run-installed-native-pi.mts',
-    'qualification\run-installed-native-nemocua.mts',
+    'qualification\run-installed-native-hermes-turn.mts',
     'agent-support.json',
-    'LANGGRAPH-PYTHON313-COMPATIBILITY.patch',
-    'LANGGRAPH-INMEMORY-NO-GRPC.patch',
-    'LANGCHAIN-QUICKJS-NO-BSDIFF.patch',
-    'DEEPAGENTS-WINDOWS-DACL.patch',
     'OPENSHELL-NODE-UI-COMPATIBILITY.patch'
 )) {
     if (-not $payloadHashes.ContainsKey($requiredPayload) -or
@@ -1834,9 +1816,6 @@ $openshellPath = Join-Path $installBin 'openshell.exe'
 $gatewayPath = Join-Path $installBin 'openshell-gateway.exe'
 $pythonPath = Join-Path $installRoot 'python\python.exe'
 $hermesSitePackages = Join-Path $installRoot 'hermes\site-packages'
-$deepAgentsSitePackages = Join-Path $installRoot 'deepagents\site-packages'
-$nemoCuaEntryPath = Join-Path $installRoot 'nemocua\run_with_harness.py'
-$piEntryPath = Join-Path $installRoot 'pi\node_modules\@earendil-works\pi-coding-agent\dist\cli.js'
 $nodePath = Join-Path $installBin 'node.exe'
 $nemoclawEntryPath = Join-Path $installRoot 'nemoclaw\app\bin\nemoclaw.js'
 $openClawEntryPath = Join-Path $installRoot 'openclaw\node_modules\openclaw\openclaw.mjs'
@@ -1862,10 +1841,7 @@ $nativeConfigurationRoot = Join-Path $env:LOCALAPPDATA 'NVIDIA\NemoClaw\agents'
 $nativeActiveAgentPath = Join-Path $env:LOCALAPPDATA 'NVIDIA\NemoClaw\active-agent.txt'
 $nativeAgentChoices = @(
     [pscustomobject]@{ agent = 'openclaw'; automationId = 'AgentOpenClaw' },
-    [pscustomobject]@{ agent = 'hermes'; automationId = 'AgentHermes' },
-    [pscustomobject]@{ agent = 'langchain-deepagents-code'; automationId = 'AgentDeepAgents' },
-    [pscustomobject]@{ agent = 'pi'; automationId = 'AgentPi' },
-    [pscustomobject]@{ agent = 'nemocua'; automationId = 'AgentNemoCUA' }
+    [pscustomobject]@{ agent = 'hermes'; automationId = 'AgentHermes' }
 )
 $nativeSelections = @()
 $desktopLinkEvidence = @()
@@ -1877,10 +1853,16 @@ Write-Host "HOST> os=$([Environment]::OSVersion.Version) architecture=$([Runtime
 
 try {
     Initialize-NativeSetupAutomation
+    . (Join-Path $PSScriptRoot 'qualify-windows-native-tester-reset.ps1')
     $nativeSetupAudit = Start-ProhibitedProcessAudit
     foreach ($choice in $nativeAgentChoices) {
-        $standalone = $choice.agent -ceq 'nemocua'
-        $nativeSelections += Invoke-NativeSetupSelection -Agent $choice.agent -ChoiceId $choice.automationId -Maintenance:($nativeSelections.Count -ne 0 -and -not $standalone) -Standalone:$standalone
+        # OpenClaw installs the candidate first. Reset must claim fresh Hermes
+        # state before normal Hermes setup creates its persistent workspace.
+        if ($choice.agent -ceq 'hermes') {
+            $testerResetEvidence = Invoke-NativeTesterResetQualification
+        }
+        $nativeSelections += Invoke-NativeSetupSelection -Agent $choice.agent -ChoiceId $choice.automationId `
+            -Maintenance:($nativeSelections.Count -ne 0) -ReplaceOwned:($choice.agent -ceq 'hermes')
     }
     $credentialBindingEvidence = Invoke-NativeCredentialBindingControl
     $desktopReceipt = Join-Path $artifactRoot 'desktop-links-configured.json'
@@ -1915,7 +1897,7 @@ try {
         processStarts = $nativeAuditResult.descendantStarts
     }
     [IO.File]::WriteAllText((Join-Path $nativeSetupArtifacts 'native-setup.json'), ($nativeSetupReceipt | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
-    Write-Host '[PASS] Five native WPF agent configurations completed with zero browser or WebView descendants'
+    Write-Host '[PASS] Two native WPF agent configurations completed with zero browser or WebView descendants'
 
     if (-not (Test-Path -LiteralPath $openshellPath -PathType Leaf) -or
         -not (Test-Path -LiteralPath $gatewayPath -PathType Leaf)) {
@@ -1938,10 +1920,7 @@ try {
     $applicationEvidence = @(
         Invoke-NodeCliVersionProbe -NodePath $nodePath -EntryPath $nemoclawEntryPath -ExpectedVersion $ProductVersion -Label 'Installed NemoClaw CLI'
         Invoke-NodeCliVersionProbe -NodePath $nodePath -EntryPath $openClawEntryPath -ExpectedVersion '2026.7.1' -Label 'Installed OpenClaw runtime'
-        Invoke-NodeCliVersionProbe -NodePath $nodePath -EntryPath $piEntryPath -ExpectedVersion '0.84.1' -Label 'Installed Pi runtime'
         Invoke-PythonDistributionVersionProbe -PythonPath $pythonPath -SitePackages $hermesSitePackages -Distribution 'hermes-agent' -ExpectedVersion '0.19.0' -EntryRelativePath 'hermes_cli\main.py' -Label 'Installed Hermes Agent runtime'
-        Invoke-PythonDistributionVersionProbe -PythonPath $pythonPath -SitePackages $deepAgentsSitePackages -Distribution 'deepagents-code' -ExpectedVersion '0.1.55' -EntryRelativePath 'deepagents_code\main.py' -Label 'Installed Deep Agents Code runtime'
-        Invoke-PythonScriptVersionProbe -PythonPath $pythonPath -ScriptPath $nemoCuaEntryPath -ExpectedVersion '0.1.0-windows-experimental' -Label 'Installed NemoCUA runtime'
     )
     $credentialManagerEvidence = Invoke-NativeCredentialManagerRoundTrip -LauncherPath $nemoclawUiLauncherPath
     $nativeTurnArtifacts = Join-Path $artifactRoot 'native-turn'
@@ -2020,50 +1999,11 @@ try {
     }
     Write-Host '[PASS] Native WPF onboarding selected OpenClaw and completed three exact Control UI agent turns'
     Write-InteractiveVideoMarker -Agent 'openclaw' -Phase 'end'
-    $piArtifacts = Join-Path $artifactRoot 'pi'
-    Write-Host 'PS> Run the installed Pi runtime after native WPF selection'
-    Write-InteractiveVideoMarker -Agent 'pi' -Phase 'start'
-    Invoke-InstalledQualificationEntry `
-        -Entry 'run-installed-native-pi.mts' `
-        -Arguments @('--qualification', '--agent', 'pi', '--artifact-directory', $piArtifacts) `
-        -Label 'Installed native Windows Pi runtime qualification'
-    $piReceipts = @(Get-ChildItem -LiteralPath $piArtifacts -Filter 'native-windows-pi-*.json' -File -ErrorAction SilentlyContinue)
-    if ($piReceipts.Count -ne 1) {
-        Fail-PackageQualification 'Installed Pi runtime did not publish exactly one receipt.'
-    }
-    $piReceipt = Get-Content -LiteralPath $piReceipts[0].FullName -Raw | ConvertFrom-Json
-    $piSelection = @($nativeSelections | Where-Object { $_.agent -ceq 'pi' })
-    if ($piSelection.Count -ne 1) { Fail-PackageQualification 'Native Pi selection evidence is missing.' }
-    $piLaunchReceipt = [pscustomobject]@{
-        classification = 'native-wpf-selection-and-runtime-qualification'
-        selectedAgent = 'pi'
-        nativeSetupSelection = $piSelection[0]
-        runtimeReceipt = $piReceipt
-    }
-    if ($piReceipt.verdict -cne 'pass' -or
-        $piLaunchReceipt.selectedAgent -cne 'pi' -or
-        $piLaunchReceipt.nativeSetupSelection.agent -cne 'pi' -or
-        $piReceipt.piVersion -cne '0.84.1' -or
-        $piReceipt.backend -cne 'process_container' -or
-        $piReceipt.interface -cne 'Pi terminal one-shot mode' -or
-        $piReceipt.runtimeEntrypointSha256 -cne $payloadHashes['pi\node_modules\@earendil-works\pi-coding-agent\dist\cli.js'] -or
-        $piReceipt.runtimeHostSha256 -cne $payloadHashes['bin\node.exe'] -or
-        [int]$piReceipt.turnCount -ne 3 -or
-        @($piReceipt.turns).Count -ne 3 -or
-        $piReceipt.createWatcherStopped -ne $true -or
-        $piReceipt.sandboxDeleted -ne $true -or
-        $piReceipt.sandboxRegistryAbsent -ne $true -or
-        $piReceipt.gatewayStopped -ne $true -or
-        $piReceipt.qualificationRootsRemoved -ne $true) {
-        Fail-PackageQualification 'Installed Pi qualification receipt is incomplete.'
-    }
-    Write-Host '[PASS] Installed Pi completed three real terminal agent turns inside native MXC'
-    Write-InteractiveVideoMarker -Agent 'pi' -Phase 'end'
     $hermesArtifacts = Join-Path $artifactRoot 'hermes'
     Write-Host 'PS> Run the installed Hermes runtime after native WPF selection'
     Write-InteractiveVideoMarker -Agent 'hermes' -Phase 'start'
     Invoke-InstalledQualificationEntry `
-        -Entry 'run-installed-native-pi.mts' `
+        -Entry 'run-installed-native-hermes-turn.mts' `
         -Arguments @('--qualification', '--agent', 'hermes', '--artifact-directory', $hermesArtifacts) `
         -Label 'Installed native Windows Hermes runtime qualification'
     $hermesReceipts = @(Get-ChildItem -LiteralPath $hermesArtifacts -Filter 'native-windows-hermes-*.json' -File -ErrorAction SilentlyContinue)
@@ -2098,88 +2038,6 @@ try {
     }
     Write-Host '[PASS] Installed Hermes completed three real terminal agent turns inside native MXC'
     Write-InteractiveVideoMarker -Agent 'hermes' -Phase 'end'
-    $deepAgentsArtifacts = Join-Path $artifactRoot 'deepagents'
-    Write-Host 'PS> Run the installed Deep Agents Code runtime after native WPF selection'
-    Write-InteractiveVideoMarker -Agent 'langchain-deepagents-code' -Phase 'start'
-    Invoke-InstalledQualificationEntry `
-        -Entry 'run-installed-native-pi.mts' `
-        -Arguments @('--qualification', '--agent', 'langchain-deepagents-code', '--artifact-directory', $deepAgentsArtifacts) `
-        -Label 'Installed native Windows Deep Agents Code runtime qualification'
-    $deepAgentsReceipts = @(Get-ChildItem -LiteralPath $deepAgentsArtifacts -Filter 'native-windows-langchain-deepagents-code-*.json' -File -ErrorAction SilentlyContinue)
-    if ($deepAgentsReceipts.Count -ne 1) {
-        Fail-PackageQualification 'Installed Deep Agents Code runtime did not publish exactly one receipt.'
-    }
-    $deepAgentsReceipt = Get-Content -LiteralPath $deepAgentsReceipts[0].FullName -Raw | ConvertFrom-Json
-    $deepAgentsSelection = @($nativeSelections | Where-Object { $_.agent -ceq 'langchain-deepagents-code' })
-    if ($deepAgentsSelection.Count -ne 1) { Fail-PackageQualification 'Native Deep Agents Code selection evidence is missing.' }
-    $deepAgentsLaunchReceipt = [pscustomobject]@{
-        classification = 'native-wpf-selection-and-runtime-qualification'
-        selectedAgent = 'langchain-deepagents-code'
-        nativeSetupSelection = $deepAgentsSelection[0]
-        runtimeReceipt = $deepAgentsReceipt
-    }
-    if ($deepAgentsReceipt.verdict -cne 'pass' -or
-        $deepAgentsLaunchReceipt.selectedAgent -cne 'langchain-deepagents-code' -or
-        $deepAgentsLaunchReceipt.nativeSetupSelection.agent -cne 'langchain-deepagents-code' -or
-        $deepAgentsReceipt.deepAgentsCodeVersion -cne '0.1.55' -or
-        $deepAgentsReceipt.backend -cne 'process_container' -or
-        $deepAgentsReceipt.interface -cne 'Deep Agents Code terminal one-shot mode' -or
-        $deepAgentsReceipt.runtimeEntrypointSha256 -cne $payloadHashes['deepagents\site-packages\deepagents_code\main.py'] -or
-        $deepAgentsReceipt.runtimeHostSha256 -cne $payloadHashes['python\python.exe'] -or
-        [int]$deepAgentsReceipt.turnCount -ne 3 -or
-        @($deepAgentsReceipt.turns).Count -ne 3 -or
-        $deepAgentsReceipt.createWatcherStopped -ne $true -or
-        $deepAgentsReceipt.sandboxDeleted -ne $true -or
-        $deepAgentsReceipt.sandboxRegistryAbsent -ne $true -or
-        $deepAgentsReceipt.gatewayStopped -ne $true -or
-        $deepAgentsReceipt.qualificationRootsRemoved -ne $true) {
-        Fail-PackageQualification 'Installed Deep Agents Code qualification receipt is incomplete.'
-    }
-    Write-Host '[PASS] Installed Deep Agents Code completed three real terminal agent turns inside native MXC'
-    Write-InteractiveVideoMarker -Agent 'langchain-deepagents-code' -Phase 'end'
-    $nemoCuaArtifacts = Join-Path $artifactRoot 'nemocua'
-    Write-Host 'PS> Run the installed NemoCUA browser task after native WPF selection'
-    Write-InteractiveVideoMarker -Agent 'nemocua' -Phase 'start'
-    Invoke-InstalledQualificationEntry `
-        -Entry 'run-installed-native-nemocua.mts' `
-        -Arguments @('--qualification', '--agent', 'nemocua', '--artifact-directory', $nemoCuaArtifacts) `
-        -Label 'Installed native Windows NemoCUA runtime qualification'
-    $nemoCuaReceipts = @(Get-ChildItem -LiteralPath $nemoCuaArtifacts -Filter 'native-windows-nemocua-*.json' -File -ErrorAction SilentlyContinue)
-    if ($nemoCuaReceipts.Count -ne 1) {
-        Fail-PackageQualification 'Installed NemoCUA runtime did not publish exactly one receipt.'
-    }
-    $nemoCuaReceipt = Get-Content -LiteralPath $nemoCuaReceipts[0].FullName -Raw | ConvertFrom-Json
-    $nemoCuaSelection = @($nativeSelections | Where-Object { $_.agent -ceq 'nemocua' })
-    if ($nemoCuaSelection.Count -ne 1) { Fail-PackageQualification 'Native NemoCUA selection evidence is missing.' }
-    $nemoCuaLaunchReceipt = [pscustomobject]@{
-        classification = 'native-wpf-selection-and-runtime-qualification'
-        selectedAgent = 'nemocua'
-        nativeSetupSelection = $nemoCuaSelection[0]
-        runtimeReceipt = $nemoCuaReceipt
-    }
-    if ($nemoCuaReceipt.verdict -cne 'pass' -or
-        $nemoCuaLaunchReceipt.selectedAgent -cne 'nemocua' -or
-        $nemoCuaLaunchReceipt.nativeSetupSelection.agent -cne 'nemocua' -or
-        $nemoCuaReceipt.nemocuaVersion -cne '0.1.0-windows-experimental' -or
-        $nemoCuaReceipt.backend -cne 'process_container' -or
-        $nemoCuaReceipt.interface -cne 'NemoCUA visible browser task' -or
-        $nemoCuaReceipt.browser -cne 'Microsoft Edge' -or
-        $nemoCuaReceipt.runtimeEntrypointSha256 -cne $payloadHashes['nemocua\run_with_harness.py'] -or
-        $nemoCuaReceipt.pythonSha256 -cne $payloadHashes['python\python.exe'] -or
-        $nemoCuaReceipt.openShellSha256 -cne $payloadHashes['bin\openshell.exe'] -or
-        [int]$nemoCuaReceipt.turnCount -ne 3 -or
-        @($nemoCuaReceipt.turns).Count -ne 3 -or
-        $nemoCuaReceipt.visiblePostcondition.inputValue -cne 'NEMOCUA_NATIVE_WINDOWS' -or
-        $nemoCuaReceipt.visiblePostcondition.completed -ne $true -or
-        $nemoCuaReceipt.createWatcherStopped -ne $true -or
-        $nemoCuaReceipt.sandboxDeleted -ne $true -or
-        $nemoCuaReceipt.sandboxRegistryAbsent -ne $true -or
-        $nemoCuaReceipt.gatewayStopped -ne $true -or
-        $nemoCuaReceipt.qualificationRootsRemoved -ne $true) {
-        Fail-PackageQualification 'Installed NemoCUA qualification receipt is incomplete.'
-    }
-    Write-Host '[PASS] Installed NemoCUA completed three real model-driven browser actions inside native MXC'
-    Write-InteractiveVideoMarker -Agent 'nemocua' -Phase 'end'
     if ($InteractiveProof) {
         Start-Sleep -Seconds 3
     }
@@ -2233,9 +2091,6 @@ try {
         & $desktopLinkCheck -InstallRoot $installRoot -ReceiptPath $desktopReceipt -Expected Present
         $desktopLinkEvidence += ([IO.File]::ReadAllText($desktopReceipt) | ConvertFrom-Json)
     }
-
-    . (Join-Path $PSScriptRoot 'qualify-windows-native-tester-reset.ps1')
-    $testerResetEvidence = Invoke-NativeTesterResetQualification
 
     Invoke-BoundedProcess `
         -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') `
@@ -2342,17 +2197,11 @@ try {
         nativeTurn = $nativeTurnReceipt
         nativeSetup = $nativeSetupReceipt
         webUi = $webUiReceipt
-        pi = $piReceipt
         hermes = $hermesReceipt
         interactiveHermes = $interactiveHermesReceipt
         hermesDashboard = $hermesDashboardReceipt
-        deepAgentsCode = $deepAgentsReceipt
-        nemoCua = $nemoCuaReceipt
         agentLaunches = [pscustomobject]@{
-            pi = $piLaunchReceipt
             hermes = $hermesLaunchReceipt
-            deepAgentsCode = $deepAgentsLaunchReceipt
-            nemoCua = $nemoCuaLaunchReceipt
         }
         msiRegistration = $msiArp
         bundleRegistration = $bundleArp

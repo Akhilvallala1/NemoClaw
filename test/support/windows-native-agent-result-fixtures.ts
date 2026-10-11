@@ -13,8 +13,7 @@ import { readOpenedRegularFile } from "../../packaging/windows/runtime/native-se
 
 type Failure = { error: Error | null };
 type ProcessState = Pick<ChildProcess, "exitCode" | "signalCode">;
-type GuardedRelay = { readResult(): Promise<Buffer | null> };
-export type ResultRoute = "terminal" | "nemocua";
+export type ResultRoute = "terminal";
 export type CreateMode = "success" | "failure" | "signal" | "missing" | "pending";
 
 function actualFunctions(file: string, names: readonly string[]) {
@@ -46,7 +45,7 @@ function actualFunctions(file: string, names: readonly string[]) {
   }) as unknown;
 }
 
-const terminalWait = actualFunctions("run-installed-native-pi.mts", [
+const terminalWait = actualFunctions("run-installed-native-hermes-turn.mts", [
   "fail",
   "waitForTerminalAgentResult",
 ]) as (
@@ -58,28 +57,14 @@ const terminalWait = actualFunctions("run-installed-native-pi.mts", [
   label: string,
   timeout: number,
 ) => Promise<string>;
-const nemocuaWait = actualFunctions("run-installed-native-nemocua.mts", [
-  "fail",
-  "waitForGuardedResult",
-]) as (
-  relay: GuardedRelay,
-  create: ProcessState,
-  gateway: ProcessState,
-  failure: Failure,
-  signal: AbortSignal,
-  timeout: number,
-) => Promise<string>;
-
 export async function openNativeAgentResultFixture(
-  route: ResultRoute,
+  _route: ResultRoute,
   mode: CreateMode = "success",
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "native-agent-result-"));
   const resultPath = path.join(root, "result.json");
   const createFailure: Failure = { error: null };
   const owned: { child: ChildProcess; closed: Promise<void> }[] = [];
-  const controller = new AbortController();
-  let reads = 0;
   const launch = (program: string, executable = process.execPath, args: string[] = []) => {
     const child = spawn(executable, ["-e", program, ...args], {
       cwd: root,
@@ -107,20 +92,9 @@ export async function openNativeAgentResultFixture(
   });
   if (mode === "signal") create.child.kill();
   if (mode !== "pending") await create.closed;
-  const relay: GuardedRelay = {
-    async readResult() {
-      reads++;
-      // Host file-owner authority is substituted in this portable caller test.
-      // The actual caller consumes a bounded Buffer or MISS in the same way.
-      const result = readOpenedRegularFile(resultPath, { maxBytes: 1024 * 1024 });
-      return result;
-    },
-  };
   const expected = { verdict: "pass", token: "OWNED_FINAL_TOKEN" };
-  const wait = (timeout = 2000, token = "OWNED_FINAL_TOKEN", label = "Pi") =>
-    route === "terminal"
-      ? terminalWait(resultPath, token, create.child, gateway.child, createFailure, label, timeout)
-      : nemocuaWait(relay, create.child, gateway.child, createFailure, controller.signal, timeout);
+  const wait = (timeout = 2000, token = "OWNED_FINAL_TOKEN", label = "Hermes") =>
+    terminalWait(resultPath, token, create.child, gateway.child, createFailure, label, timeout);
   let disposed = false;
   return {
     resultPath,
@@ -129,8 +103,6 @@ export async function openNativeAgentResultFixture(
     gateway: gateway.child,
     createFailure,
     wait,
-    reads: () => reads,
-    abort: () => controller.abort(new Error("owned result monitoring cancelled")),
     publish(result: unknown = expected, delayMilliseconds = 100) {
       return launch(
         'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], process.argv[2]), Number(process.argv[3]));',
@@ -146,7 +118,6 @@ export async function openNativeAgentResultFixture(
     async close() {
       if (disposed) return;
       disposed = true;
-      controller.abort();
       for (const item of owned) {
         if (item.child.exitCode === null && item.child.signalCode === null) item.child.kill();
       }
@@ -156,9 +127,8 @@ export async function openNativeAgentResultFixture(
   };
 }
 
-export function createNativeAgentCompletionFixture(route: ResultRoute, deferAbsence = false) {
-  const file =
-    route === "terminal" ? "run-installed-native-pi.mts" : "run-installed-native-nemocua.mts";
+export function createNativeAgentCompletionFixture(_route: ResultRoute, deferAbsence = false) {
+  const file = "run-installed-native-hermes-turn.mts";
   const source = ts.createSourceFile(
     file,
     fs.readFileSync(new URL(`../../packaging/windows/runtime/${file}`, import.meta.url), "utf8"),
@@ -233,7 +203,7 @@ export function createNativeAgentCompletionFixture(route: ResultRoute, deferAbse
     cliEnvironment: environment,
     sandboxName: "owned-sandbox",
     gateway,
-    agentLabel: "Pi",
+    agentLabel: "Hermes",
     create: null,
     runtimeLease,
     // The real shared completion helper has its own terminal-condition tests.

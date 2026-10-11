@@ -58,7 +58,6 @@ on:
         options:
           - openclaw
           - hermes
-          - pi
       finished_windows_product_version:
         description: MSI product version for the finished preview (must be newer than the legacy preview)
         required: false
@@ -248,7 +247,7 @@ jobs:
           [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ && "$BASE_SHA" =~ ^[a-f0-9]{40}$ && "$EXPECTED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$EVENT_SHA" == "$EXPECTED_WORKFLOW_SHA" && "$EVENT_WORKFLOW_SHA" == "$EXPECTED_WORKFLOW_SHA" ]]
           [[ "$BASE_SHA" == "$EXPECTED_WORKFLOW_SHA" ]]
-          [[ "$SELECTED_AGENT" =~ ^(openclaw|hermes|pi)$ && "$VALIDATION_SCOPE" == 'full-acceptance' ]]
+          [[ "$SELECTED_AGENT" =~ ^(openclaw|hermes)$ && "$VALIDATION_SCOPE" == 'full-acceptance' ]]
           [[ "$PRODUCT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
           [[ "$(jq -r '.state' <<<"$pr")" == 'open' ]]
@@ -562,36 +561,6 @@ jobs:
             --node-version 22.23.2 --source-revision $env:GITHUB_SHA --component-identity $component `
             --namespace-receipt "$work\namespace.json" --worker-build "$work\runtime\workers" --executable-build "$work\runtime\executable"
           if ($LASTEXITCODE -ne 0) { throw 'The finished runtime could not be sealed.' }
-      - name: Prepare the locked finished Pi runtime
-        if: ${{ needs.windows-finished-request.outputs.agent == 'pi' }}
-        shell: pwsh
-        run: |
-          $env:GITHUB_SHA = $env:CANDIDATE_SHA
-          $work = "$env:RUNNER_TEMP\finished-windows"
-          & python -m unittest discover -s "$env:GITHUB_WORKSPACE\candidate\packaging\windows\distribution" -p test_prepare_selected_node_agent.py
-          if ($LASTEXITCODE -ne 0) { throw 'Selected-agent preparation regression tests failed.' }
-          & python "$env:GITHUB_WORKSPACE\candidate\packaging\windows\distribution\prepare-selected-node-agent.py" `
-            --agent pi --source-root "$env:GITHUB_WORKSPACE\candidate" `
-            --node "$work\application\node\node.exe" `
-            --npm-cli "$work\application\node\node_modules\npm\bin\npm-cli.js" `
-            --output "$work\pi" --tool-root "$work\application\inputs\tools"
-          if ($LASTEXITCODE -ne 0) { throw 'The locked Pi runtime could not be prepared.' }
-      - name: Seal only the finished Pi runtime
-        if: ${{ needs.windows-finished-request.outputs.agent == 'pi' }}
-        shell: pwsh
-        run: |
-          $env:GITHUB_SHA = $env:CANDIDATE_SHA
-          $work = "$env:RUNNER_TEMP\finished-windows"
-          $inputs = @("$work\host\runtime-payload-receipt.json", "$work\pi\selected-agent-build.json", "$work\runtime\workers\build.json", "$work\runtime\executable\build.json")
-          $identityText = ($inputs | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }) -join "`n"
-          $component = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identityText))).ToLowerInvariant()
-          & python "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\assign_runtime_namespace.py" --receipt "$work\namespace.json" --source-revision $env:GITHUB_SHA --component-identity $component
-          & python "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\assemble_runtime.py" --output "$work\assembled" `
-            --agent "pi=$work\pi" --shared-node "$work\host\bin\node.exe" --node-version 22.23.2 `
-            --source-revision $env:GITHUB_SHA --component-identity $component --namespace-receipt "$work\namespace.json" `
-            --worker-build "$work\runtime\workers" --executable-build "$work\runtime\executable" `
-            --target-install-root "$env:ProgramFiles\NVIDIA\NemoClaw"
-          if ($LASTEXITCODE -ne 0) { throw 'The finished Pi runtime could not be sealed.' }
       - name: Restore the exact same-run compatibility component and proof
         if: ${{ needs.windows-finished-request.outputs.agent == 'hermes' }}
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1247,8 +1216,6 @@ jobs:
             -Target "$work\inputs\tools\node_modules" | Out-Null
           & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/app/runtime-external-packages.test.mts
           if ($LASTEXITCODE -ne 0) { throw 'OpenClaw dependency-location controls failed.' }
-          & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/distribution/compile-pi-sdks.test.mts
-          if ($LASTEXITCODE -ne 0) { throw 'Pi SDK compilation regression tests failed.' }
           & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/runtime/native-openclaw-migration.test.mts
           if ($LASTEXITCODE -ne 0) { throw 'OpenClaw session migration controls failed.' }
           & "$work\node\node.exe" --experimental-strip-types `
@@ -1328,7 +1295,7 @@ jobs:
           )
           foreach ($choice in @('brave', 'slack', 'tavily')) {
             $choiceRoot = "$work\build\diagnostics\choice-$choice"
-            $inputs += @("$choiceRoot\result.json", "$choiceRoot\registered.json")
+            $inputs += @("$choiceRoot\result.json", "$choiceRoot\registered.json", "$choiceRoot\inspect.timeline.log")
           }
           foreach ($pattern in @(
             "$work\build\diagnostics\choice-*.controller.stdout.log",

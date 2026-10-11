@@ -284,10 +284,11 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
                 if (agents.Length > 0)
                 {
                     this.window?.ShowProgress("Removing selected agent data", "Checking that each selected session has stopped before removing its data and saved keys.");
-                    await NativeMaintenance.RemoveAgentDataAsync(agents);
+                    await NativeMaintenance.RemoveAgentDataAsync(agents, cancellation.Token);
                 }
             }
-            await NativeMaintenance.StopSharedInferenceAsync(() => this.window?.ShowProgress("Stopping the shared local model", "Closing the owned inference service before Windows updates its application files. Downloaded model files are being kept."));
+            await NativeMaintenance.StopSharedInferenceAsync(() => this.window?.ShowProgress("Stopping the shared local model", "Closing the owned inference service before Windows updates its application files. Downloaded model files are being kept."), cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
             if (this.relatedOnly)
             {
                 this.window?.ShowProgress("Maintaining your installation", "Windows is updating the previous registered NemoClaw installation.");
@@ -320,7 +321,8 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
         this.maintenanceCancellation = cancellation;
         try
         {
-            await NativeMaintenance.StopSharedInferenceAsync(() => this.window?.ShowProgress("Stopping the shared local model", "Closing the owned inference service before replacing the application. Downloaded model files are being kept."));
+            await NativeMaintenance.StopSharedInferenceAsync(() => this.window?.ShowProgress("Stopping the shared local model", "Closing the owned inference service before replacing the application. Downloaded model files are being kept."), cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
             this.window?.ShowProgress("Removing the previous preview", "Windows is removing the registered application. Your agent data and saved keys are being kept.");
             // Only the registered old Burn package receives its supported quiet
             // uninstall command. New native helper flags never reach its launcher.

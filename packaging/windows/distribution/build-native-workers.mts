@@ -15,11 +15,8 @@ import { prepareRuntimeSource } from "./prepare-runtime-source.mts";
 const factories = [
   ["openclaw-turn", "run-installed-native-turn.mts", "probeSource"],
   ["openclaw-web", "run-installed-native-web-ui.mts", "gatewaySource"],
-  ["pi-turn", "run-installed-native-pi.mts", "piWorkloadSource"],
-  ["hermes-turn", "run-installed-native-pi.mts", "hermesWorkloadSource"],
-  ["deepagents-turn", "run-installed-native-pi.mts", "deepAgentsWorkloadSource"],
+  ["hermes-turn", "run-installed-native-hermes-turn.mts", "hermesWorkloadSource"],
   ["interactive", "run-installed-native-console-agent.mts", "interactiveWorkloadSource"],
-  ["nemocua", "native-nemocua-relay.mts", "relayWorkloadSource"],
 ] as const;
 
 function parse(name: string, text: string) {
@@ -97,10 +94,6 @@ export function staticWorkerSource(mode: string, input: string, assets: Map<stri
   const source = parse(mode + ".mjs", input);
   const edits: { start: number; end: number; text: string }[] = [];
   const declarations = all(source, ts.isVariableDeclaration);
-  const shim = declarations.find((node) => node.name.getText(source) === "deepAgentsTempfileShim");
-  const deepAgentsTempfileShim = shim?.initializer
-    ? evaluateBuildExpression(shim.initializer.getText(source))
-    : [];
   const writes = all(source, ts.isCallExpression).filter(
     (call) =>
       call.expression.getText(source) === "writeFileSync" &&
@@ -114,6 +107,7 @@ export function staticWorkerSource(mode: string, input: string, assets: Map<stri
     if (!runner?.initializer || !ts.isExpressionStatement(call.parent))
       throw new Error("Unknown Python worker construction.");
     const hermes = runner.initializer.getText(source).includes("hermes");
+    if (!hermes) throw new Error("Only Hermes Python workers are supported.");
     const variants =
       mode === "interactive" && hermes
         ? ([
@@ -122,12 +116,11 @@ export function staticWorkerSource(mode: string, input: string, assets: Map<stri
             ["hermes-dashboard", true, false],
             ["hermes-dashboard-probe", true, true],
           ] as const)
-        : ([[mode === "interactive" ? "deepagents-console" : mode, false, false]] as const);
+        : ([[mode, false, false]] as const);
     for (const [name, dashboard, consoleProbe] of variants) {
       const value = evaluateBuildExpression(call.arguments[1].getText(source), {
         dashboard,
         consoleProbe,
-        deepAgentsTempfileShim,
       });
       if (typeof value !== "string" || Buffer.byteLength(value) > 64 * 1024)
         throw new Error("Invalid static Python worker.");
@@ -136,7 +129,7 @@ export function staticWorkerSource(mode: string, input: string, assets: Map<stri
     const filename =
       mode === "interactive" && hermes
         ? '(dashboard ? "hermes-dashboard" : "hermes-console") + (process.env.NEMOCLAW_AGENT_CONSOLE_PROBE ? "-probe" : "") + ".pyc"'
-        : JSON.stringify((mode === "interactive" ? "deepagents-console" : mode) + ".pyc");
+        : JSON.stringify(mode + ".pyc");
     edits.push({
       start: runner.initializer.getStart(source),
       end: runner.initializer.end,
@@ -144,11 +137,7 @@ export function staticWorkerSource(mode: string, input: string, assets: Map<stri
     });
     edits.push({ start: call.parent.getStart(source), end: call.parent.end, text: "" });
   }
-  const expected = ["hermes-turn", "deepagents-turn"].includes(mode)
-    ? 1
-    : mode === "interactive"
-      ? 2
-      : 0;
+  const expected = ["hermes-turn", "interactive"].includes(mode) ? 1 : 0;
   if (writes.length !== expected) throw new Error("The Python worker site inventory changed.");
   if (mode === "openclaw-turn") {
     const worker = declarations.find((node) => node.name.getText(source) === "workerSource");

@@ -8,7 +8,6 @@ import path from "node:path";
 import { nativeHermesCompatibility, type NativeRuntimeLaunchLease } from "./native-runtime.mts";
 import type { NativeGatewaySession } from "./native-gateway-session.mts";
 
-type NativeMessage = { role: "system" | "user" | "assistant"; content: string };
 type ReadOpenedRegularFileOptions = {
   encoding?: BufferEncoding;
   maxBytes?: number;
@@ -456,28 +455,4 @@ function nativeGatewayProfile(options: NativeGatewayOptions): string[] {
     `pc_host_console = ${options.hostConsole ?? false}`,
     `pc_loopback_ports = ${JSON.stringify(ports)}`,
   ];
-}
-
-export function validatedChatMessages(body: unknown): NativeMessage[] {
-  if (body === null || typeof body !== "object" || Array.isArray(body))
-    fail("the model request body is invalid");
-  const messages = (body as { messages?: unknown }).messages;
-  if (!Array.isArray(messages) || messages.length > 64)
-    fail("the model request message list is invalid");
-  let totalBytes = 0;
-  return messages.map((message: unknown) => {
-    if (
-      message === null ||
-      typeof message !== "object" ||
-      Array.isArray(message) ||
-      !["system", "user", "assistant"].includes((message as { role?: unknown }).role as string) ||
-      typeof (message as { content?: unknown }).content !== "string"
-    )
-      fail("the model request contains an invalid message");
-    const validated = message as NativeMessage;
-    totalBytes += Buffer.byteLength(validated.content, "utf8");
-    if (validated.content.length > 64 * 1024 || totalBytes > 1024 * 1024)
-      fail("the model request message content exceeds its limit");
-    return { role: validated.role, content: validated.content };
-  });
 }

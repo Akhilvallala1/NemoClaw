@@ -43,22 +43,10 @@ import {
   waitForPort,
 } from "./run-installed-native-turn.mts";
 
-const PI_TURN_PROOFS = [
-  ["Reply exactly with NATIVE_PI_TURN_1_OK", "NATIVE_PI_TURN_1_OK"],
-  ["Reply exactly with NATIVE_PI_TURN_2_OK", "NATIVE_PI_TURN_2_OK"],
-  ["Reply exactly with NATIVE_PI_TURN_3_OK", "NATIVE_PI_TURN_3_OK"],
-];
-
 const HERMES_TURN_PROOFS = [
   ["Reply exactly with NATIVE_HERMES_TURN_1_OK", "NATIVE_HERMES_TURN_1_OK"],
   ["Reply exactly with NATIVE_HERMES_TURN_2_OK", "NATIVE_HERMES_TURN_2_OK"],
   ["Reply exactly with NATIVE_HERMES_TURN_3_OK", "NATIVE_HERMES_TURN_3_OK"],
-];
-
-const DEEP_AGENTS_TURN_PROOFS = [
-  ["Reply exactly with NATIVE_DEEP_AGENTS_TURN_1_OK", "NATIVE_DEEP_AGENTS_TURN_1_OK"],
-  ["Reply exactly with NATIVE_DEEP_AGENTS_TURN_2_OK", "NATIVE_DEEP_AGENTS_TURN_2_OK"],
-  ["Reply exactly with NATIVE_DEEP_AGENTS_TURN_3_OK", "NATIVE_DEEP_AGENTS_TURN_3_OK"],
 ];
 
 function fail(message): never {
@@ -100,197 +88,6 @@ function sha256(file) {
 }
 
 export { createPrivateShareRoot } from "./native-private-share.mts";
-
-function deepAgentDiagnosticFiles(root) {
-  const matches = [];
-  const pending = [root];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const candidate = path.join(current, entry.name);
-      if (entry.isDirectory()) pending.push(candidate);
-      else if (
-        entry.isFile() &&
-        (entry.name === "deepagents-debug.log" ||
-          /^deepagents_server_log_.*[.]txt$/u.test(entry.name))
-      )
-        matches.push(candidate);
-    }
-  }
-  return matches;
-}
-
-export function piWorkloadSource() {
-  return String.raw`import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
-import { join } from "node:path";
-
-const required = (name) => {
-  const value = process.env[name];
-  if (!value) throw new Error(name + " is required");
-  return value;
-};
-const home = required("NEMOCLAW_PI_HOME");
-const piCli = required("NEMOCLAW_PI_ENTRY");
-const modelPort = Number(required("NEMOCLAW_PI_MODEL_PORT"));
-const resultPath = required("NEMOCLAW_PI_RESULT");
-const turnProofs = [
-  ["Reply exactly with NATIVE_PI_TURN_1_OK", "NATIVE_PI_TURN_1_OK"],
-  ["Reply exactly with NATIVE_PI_TURN_2_OK", "NATIVE_PI_TURN_2_OK"],
-  ["Reply exactly with NATIVE_PI_TURN_3_OK", "NATIVE_PI_TURN_3_OK"],
-];
-const bodyText = async (request) => {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  return Buffer.concat(chunks).toString("utf8");
-};
-const messageText = (content) => {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((part) => typeof part === "string" ? part : part?.text ?? "").join(" ");
-};
-const modelRequests = [];
-const model = createServer(async (request, response) => {
-  if (request.method === "GET" && request.url === "/v1/models") {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ object: "list", data: [{ id: "native-preview", object: "model" }] }));
-    return;
-  }
-  if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
-    response.writeHead(404, { "content-type": "application/json" });
-    response.end(JSON.stringify({ error: { message: "not found" } }));
-    return;
-  }
-  const body = JSON.parse(await bodyText(request));
-  const prompt = (body.messages ?? []).map((entry) => messageText(entry?.content)).join("\n");
-  const expected = turnProofs.find(([, token]) => prompt.includes(token))?.[1] ?? "NATIVE_PI_OK";
-  if (body.model === "native-preview" && turnProofs.some(([, token]) => token === expected))
-    modelRequests.push(expected);
-  const id = "chatcmpl-nemoclaw-native-pi";
-  const created = Math.floor(Date.now() / 1000);
-  if (body.stream === true) {
-    response.writeHead(200, { "cache-control": "no-cache", connection: "keep-alive", "content-type": "text/event-stream" });
-    for (const chunk of [
-      { id, object: "chat.completion.chunk", created, model: "native-preview", choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] },
-      { id, object: "chat.completion.chunk", created, model: "native-preview", choices: [{ index: 0, delta: { content: expected }, finish_reason: null }] },
-      { id, object: "chat.completion.chunk", created, model: "native-preview", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
-    ]) response.write("data: " + JSON.stringify(chunk) + "\n\n");
-    response.end("data: [DONE]\n\n");
-    return;
-  }
-  response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({
-    id,
-    object: "chat.completion",
-    created,
-    model: "native-preview",
-    choices: [{ index: 0, message: { role: "assistant", content: expected }, finish_reason: "stop" }],
-  }));
-});
-await new Promise((resolve, reject) => {
-  model.once("error", reject);
-  model.listen(modelPort, "127.0.0.1", resolve);
-});
-const agentDirectory = join(home, ".pi", "agent");
-mkdirSync(agentDirectory, { recursive: true });
-writeFileSync(join(agentDirectory, "models.json"), JSON.stringify({
-  defaultModel: "native-preview",
-  providers: {
-    openshell: {
-      api: "openai-completions",
-      apiKey: "qualification-only",
-      baseUrl: "http://127.0.0.1:" + modelPort + "/v1",
-      models: [{
-        id: "native-preview",
-        name: "NemoClaw Native Pi Preview",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 131072,
-        maxTokens: 4096,
-      }],
-    },
-  },
-}), "utf8");
-writeFileSync(join(agentDirectory, "settings.json"), JSON.stringify({
-  defaultProvider: "openshell",
-  defaultModel: "native-preview",
-  defaultThinkingLevel: "off",
-  enableInstallTelemetry: false,
-  enableAnalytics: false,
-  quietStartup: true,
-}), "utf8");
-
-const execute = (prompt) => new Promise((resolve, reject) => {
-  const child = spawn(process.execPath, [
-    piCli,
-    "--no-approve",
-    "--no-tools",
-    "--no-extensions",
-    "--no-skills",
-    "--no-prompt-templates",
-    "--no-context-files",
-    "--no-session",
-    "--thinking", "off",
-    "--provider", "openshell",
-    "--model", "native-preview",
-    "--print", prompt,
-  ], {
-    cwd: home,
-    env: {
-      ...process.env,
-      HOME: home,
-      LOCALAPPDATA: home,
-      NODE_DISABLE_COMPILE_CACHE: "1",
-      PI_CODING_AGENT_DIR: agentDirectory,
-      USERPROFILE: home,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk.toString("utf8");
-    process.stdout.write(chunk);
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk.toString("utf8");
-    process.stderr.write(chunk);
-  });
-  child.once("error", reject);
-  child.once("close", (code) => code === 0 ? resolve({ stdout, stderr }) : reject(new Error("Pi exited " + code + ": " + stderr)));
-});
-
-const turns = [];
-try {
-  for (let index = 0; index < turnProofs.length; index += 1) {
-    const [prompt, expected] = turnProofs[index];
-    console.log("PI> TURN " + (index + 1) + " running through the real Pi CLI");
-    const requestStart = modelRequests.length;
-    const result = await execute(prompt);
-    const output = result.stdout.trim();
-    if (!output.includes(expected)) throw new Error("Pi output did not contain exact token " + expected);
-    const observed = modelRequests.slice(requestStart);
-    if (!observed.length || observed.some((token) => token !== expected))
-      throw new Error("Pi did not send the expected local-model request " + expected);
-    console.log("PI> TURN " + (index + 1) + " PASS " + expected);
-    turns.push({ prompt, expected, output, modelRequests: observed });
-  }
-  writeFileSync(resultPath, JSON.stringify({
-    schemaVersion: 1,
-    classification: "native-windows-pi-agent-result",
-    piVersion: "0.84.1",
-    turnCount: turns.length,
-    turns,
-    verdict: "pass",
-  }, null, 2) + "\n", "utf8");
-} finally {
-  await new Promise((resolve) => model.close(() => resolve()));
-}
-`;
-}
 
 export function hermesWorkloadSource() {
   return String.raw`import { spawn } from "node:child_process";
@@ -483,208 +280,17 @@ try {
 `;
 }
 
-export function deepAgentsWorkloadSource() {
-  return String.raw`import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
-import { join } from "node:path";
-
-const required = (name) => {
-  const value = process.env[name];
-  if (!value) throw new Error(name + " is required");
-  return value;
-};
-const home = required("NEMOCLAW_DEEP_AGENTS_HOME_ROOT");
-const python = required("NEMOCLAW_DEEP_AGENTS_PYTHON");
-const sitePackages = required("NEMOCLAW_DEEP_AGENTS_SITE_PACKAGES");
-const modelPort = Number(required("NEMOCLAW_DEEP_AGENTS_MODEL_PORT"));
-const resultPath = required("NEMOCLAW_DEEP_AGENTS_RESULT");
-const turnProofs = [
-  ["Reply exactly with NATIVE_DEEP_AGENTS_TURN_1_OK", "NATIVE_DEEP_AGENTS_TURN_1_OK"],
-  ["Reply exactly with NATIVE_DEEP_AGENTS_TURN_2_OK", "NATIVE_DEEP_AGENTS_TURN_2_OK"],
-  ["Reply exactly with NATIVE_DEEP_AGENTS_TURN_3_OK", "NATIVE_DEEP_AGENTS_TURN_3_OK"],
-];
-const bodyText = async (request) => {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  return Buffer.concat(chunks).toString("utf8");
-};
-const messageText = (content) => {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((part) => typeof part === "string" ? part : part?.text ?? "").join(" ");
-};
-const model = createServer(async (request, response) => {
-  if (request.method === "GET" && request.url === "/v1/models") {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ object: "list", data: [{ id: "native-preview", object: "model" }] }));
-    return;
-  }
-  if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
-    response.writeHead(404, { "content-type": "application/json" });
-    response.end(JSON.stringify({ error: { message: "not found" } }));
-    return;
-  }
-  const body = JSON.parse(await bodyText(request));
-  const prompt = (body.messages ?? []).map((entry) => messageText(entry?.content)).join("\n");
-  const expected = turnProofs.find(([, token]) => prompt.includes(token))?.[1] ?? "NATIVE_DEEP_AGENTS_OK";
-  const id = "chatcmpl-nemoclaw-native-deep-agents";
-  const created = Math.floor(Date.now() / 1000);
-  if (body.stream === true) {
-    response.writeHead(200, { "cache-control": "no-cache", connection: "keep-alive", "content-type": "text/event-stream" });
-    for (const chunk of [
-      { id, object: "chat.completion.chunk", created, model: "native-preview", choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] },
-      { id, object: "chat.completion.chunk", created, model: "native-preview", choices: [{ index: 0, delta: { content: expected }, finish_reason: null }] },
-      { id, object: "chat.completion.chunk", created, model: "native-preview", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
-    ]) response.write("data: " + JSON.stringify(chunk) + "\n\n");
-    response.end("data: [DONE]\n\n");
-    return;
-  }
-  response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({
-    id,
-    object: "chat.completion",
-    created,
-    model: "native-preview",
-    choices: [{ index: 0, message: { role: "assistant", content: expected }, finish_reason: "stop" }],
-  }));
-});
-await new Promise((resolve, reject) => {
-  model.once("error", reject);
-  model.listen(modelPort, "127.0.0.1", resolve);
-});
-const configDirectory = join(home, ".deepagents");
-mkdirSync(join(configDirectory, ".state"), { recursive: true });
-mkdirSync(join(configDirectory, "skills"), { recursive: true });
-writeFileSync(join(configDirectory, "config.toml"), [
-  "# Generated by NemoClaw native Windows qualification.",
-  "[models]",
-  "default = \"openai:native-preview\"",
-  "",
-  "[models.providers.openai]",
-  "models = [\"native-preview\"]",
-  "api_key_env = \"DEEPAGENTS_CODE_OPENAI_API_KEY\"",
-  "base_url = \"http://127.0.0.1:" + modelPort + "/v1\"",
-  "enabled = true",
-  "",
-  "[models.providers.openai.params]",
-  "use_responses_api = false",
-  "",
-  "[update]",
-  "check = false",
-  "auto_update = false",
-  "",
-  "[warnings]",
-  "suppress = [\"ripgrep\", \"tavily\"]",
-  "",
-].join("\n"), "utf8");
-const runner = join(home, "run-deep-agents.py");
-// Python 3.13 gives tempfile.mkdtemp() a protected owner-only Windows DACL.
-// MXC child processes need the approved writable-root capability to inherit.
-const deepAgentsTempfileShim = [
-  "import tempfile",
-  "def _nemoclaw_mkdtemp(suffix=None, prefix=None, dir=None):",
-  "    suffix = '' if suffix is None else suffix",
-  "    prefix = tempfile.template if prefix is None else prefix",
-  "    parent = tempfile.gettempdir() if dir is None else dir",
-  "    for _ in range(tempfile.TMP_MAX):",
-  "        candidate = os.path.join(parent, prefix + os.urandom(16).hex() + suffix)",
-  "        sys.audit('tempfile.mkdtemp', candidate)",
-  "        try:",
-  "            os.mkdir(candidate, 0o777)",
-  "        except FileExistsError:",
-  "            continue",
-  "        return os.path.abspath(candidate)",
-  "    raise FileExistsError('No usable temporary directory name found')",
-  "tempfile.mkdtemp = _nemoclaw_mkdtemp",
-];
-writeFileSync(runner, [
-  "import os",
-  "import sys",
-  ...deepAgentsTempfileShim,
-  "sys.path.insert(0, os.environ['NEMOCLAW_DEEP_AGENTS_SITE_PACKAGES'])",
-  "from deepagents_code import cli_main",
-  "cli_main()",
-  "",
-].join("\n"), "utf8");
-
-const execute = (prompt) => new Promise((resolve, reject) => {
-  const child = spawn(python, [
-    runner,
-    "--non-interactive", prompt,
-    "--quiet",
-    "--sandbox", "none",
-  ], {
-    cwd: home,
-    env: {
-      ...process.env,
-      DEEPAGENTS_CODE_OPENAI_API_KEY: "qualification-only",
-      HOME: home,
-      PYTHONDONTWRITEBYTECODE: "1",
-      PYTHONNOUSERSITE: "1",
-      PYTHONUTF8: "1",
-      USERPROFILE: home,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk.toString("utf8");
-    process.stdout.write(chunk);
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk.toString("utf8");
-    process.stderr.write(chunk);
-  });
-  child.once("error", reject);
-  child.once("close", (code) => code === 0 ? resolve({ stdout, stderr }) : reject(new Error("Deep Agents Code exited " + code + ": " + stderr)));
-});
-
-const turns = [];
-try {
-  for (let index = 0; index < turnProofs.length; index += 1) {
-    const [prompt, expected] = turnProofs[index];
-    console.log("DEEP AGENTS> TURN " + (index + 1) + " running through the real Deep Agents Code CLI");
-    const result = await execute(prompt);
-    const output = result.stdout.trim();
-    if (!output.includes(expected)) throw new Error("Deep Agents output did not contain exact token " + expected);
-    console.log("DEEP AGENTS> TURN " + (index + 1) + " PASS " + expected);
-    turns.push({ prompt, expected, output });
-  }
-  writeFileSync(resultPath, JSON.stringify({
-    schemaVersion: 1,
-    classification: "native-windows-deep-agents-code-result",
-    deepAgentsCodeVersion: "0.1.55",
-    turnCount: turns.length,
-    turns,
-    verdict: "pass",
-  }, null, 2) + "\n", "utf8");
-} finally {
-  await new Promise((resolve) => model.close(() => resolve()));
-}
-`;
-}
-
 async function mainInternal(runtimeLease: NativeRuntimeSession) {
   if (process.platform !== "win32" || process.arch !== "arm64")
     fail("native Windows ARM64 is required");
   if (!process.argv.includes("--qualification"))
     fail("the current terminal-agent entrypoint requires a completed graphical configuration");
-  const agentId = argumentValue("--agent") ?? "pi";
-  if (agentId !== "pi" && agentId !== "hermes" && agentId !== "langchain-deepagents-code")
-    fail(`unsupported terminal agent: ${agentId}`);
-  const isHermes = agentId === "hermes";
-  const isDeepAgents = agentId === "langchain-deepagents-code";
-  const agentLabel = isHermes ? "Hermes" : isDeepAgents ? "Deep Agents Code" : "Pi";
-  const sandboxPrefix = isHermes ? "nc-h" : isDeepAgents ? "nc-d" : "nc-pi";
-  const agentVersion = isHermes ? "0.21.1" : isDeepAgents ? "0.1.55" : "0.84.1";
-  const turnProofs = isHermes
-    ? HERMES_TURN_PROOFS
-    : isDeepAgents
-      ? DEEP_AGENTS_TURN_PROOFS
-      : PI_TURN_PROOFS;
+  const agentId = argumentValue("--agent") ?? "hermes";
+  if (agentId !== "hermes") fail("unsupported terminal agent");
+  const agentLabel = "Hermes";
+  const sandboxPrefix = "nc-h";
+  const agentVersion = "0.21.1";
+  const turnProofs = HERMES_TURN_PROOFS;
   const finalToken = turnProofs[2][1];
 
   const installRoot = requiredDirectory(
@@ -692,31 +298,20 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     "NemoClaw installation root",
   );
   const binRoot = requiredDirectory(path.join(installRoot, "bin"), "NemoClaw bin directory");
-  const installedNode = requiredFile(runtimeLease.node, "sealed Node.js runtime");
+  requiredFile(runtimeLease.node, "sealed Node.js runtime");
   const openshell = requiredFile(path.join(binRoot, "openshell.exe"), "OpenShell CLI");
   const gatewayExecutable = requiredFile(
     path.join(binRoot, "openshell-gateway.exe"),
     "OpenShell gateway",
   );
   const installedAgentRoot = requiredDirectory(runtimeLease.agentRoot, `${agentLabel} runtime`);
-  const installedPythonRoot =
-    isHermes || isDeepAgents
-      ? requiredDirectory(path.dirname(runtimeLease.python!), "sealed Python directory")
-      : null;
+  const installedPythonRoot = requiredDirectory(
+    path.dirname(runtimeLease.python!),
+    "sealed Python directory",
+  );
   const installedAgentEntrypoint = requiredFile(
-    isHermes
-      ? path.join(installedAgentRoot, "hermes-agent", "hermes_cli", "main.py")
-      : isDeepAgents
-        ? path.join(installedAgentRoot, "site-packages", "deepagents_code", "main.py")
-        : path.join(
-            installedAgentRoot,
-            "node_modules",
-            "@earendil-works",
-            "pi-coding-agent",
-            "dist",
-            "cli.js",
-          ),
-    `${agentLabel} installed entrypoint`,
+    path.join(installedAgentRoot, "hermes-agent", "hermes_cli", "main.py"),
+    "Hermes installed entrypoint",
   );
   requiredFile(path.join(installRoot, "config", "mxc-gateway.toml"), "MXC gateway configuration");
   requiredFile(path.join(installRoot, "mxc", "wxc-exec.exe"), "MXC executor");
@@ -724,8 +319,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
   const systemDrive = process.env.SystemDrive;
   if (!systemDrive || !/^[A-Za-z]:$/u.test(systemDrive)) fail("SystemDrive is invalid");
   const systemRoot = requiredDirectory(process.env.SystemRoot ?? "", "Windows system root");
-  const hermesTools = isHermes ? nativeHermesToolEnvironment(runtimeLease, systemRoot) : null;
-  const hermesCompatibility = isHermes ? nativeHermesCompatibility(runtimeLease) : null;
+  const hermesTools = nativeHermesToolEnvironment(runtimeLease, systemRoot);
+  const hermesCompatibility = nativeHermesCompatibility(runtimeLease);
   if (hermesTools) {
     for (const [tool, executable] of Object.entries({
       Python: hermesTools.python,
@@ -790,7 +385,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     const gatewayConfig = await writeNativeGatewayConfig(
       installRoot,
       runRoot,
-      isHermes ? runtimeLease : undefined,
+      runtimeLease,
       {},
       gatewaySession,
     );
@@ -805,61 +400,15 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       () => ownedRoots.push(shareRoot),
     );
     runtimeLease.assertHeld();
-    const _node = installedNode;
-    const stagedAgentRoot = installedAgentRoot;
-    let agentEnvironment;
-    if (isHermes || isDeepAgents) {
-      const _stagedPythonRoot = installedPythonRoot;
-      if (isDeepAgents) {
-        agentEnvironment = {
-          DEEPAGENTS_CODE_DEBUG: "1",
-          DEEPAGENTS_CODE_DEBUG_FILE: path.join(shareRoot, "deepagents-debug.log"),
-          DEEPAGENTS_CODE_RIPGREP_INSTALLER: "system",
-          NEMOCLAW_DEEP_AGENTS_HOME_ROOT: path.join(shareRoot, "home"),
-          NEMOCLAW_DEEP_AGENTS_MODEL_PORT: "",
-          NEMOCLAW_DEEP_AGENTS_PYTHON: requiredFile(runtimeLease.python, "staged Python runtime"),
-          NEMOCLAW_DEEP_AGENTS_RESULT: path.join(shareRoot, "deep-agents-result.json"),
-          NEMOCLAW_DEEP_AGENTS_SITE_PACKAGES: requiredDirectory(
-            path.join(stagedAgentRoot, "site-packages"),
-            "staged Deep Agents Code site-packages",
-          ),
-        };
-      } else {
-        agentEnvironment = {
-          NEMOCLAW_HERMES_HOME_ROOT: path.join(shareRoot, "home"),
-          NEMOCLAW_HERMES_MODEL_PORT: "",
-          NEMOCLAW_HERMES_PYTHON: requiredFile(runtimeLease.python, "staged Python runtime"),
-          NEMOCLAW_HERMES_RESULT: path.join(shareRoot, "hermes-result.json"),
-        };
-      }
-    } else {
-      agentEnvironment = {
-        NEMOCLAW_PI_ENTRY: requiredFile(
-          path.join(
-            stagedAgentRoot,
-            "node_modules",
-            "@earendil-works",
-            "pi-coding-agent",
-            "dist",
-            "cli.js",
-          ),
-          "staged Pi CLI",
-        ),
-        NEMOCLAW_PI_HOME: path.join(shareRoot, "home"),
-        NEMOCLAW_PI_MODEL_PORT: "",
-        NEMOCLAW_PI_RESULT: path.join(shareRoot, "pi-result.json"),
-      };
-    }
-    const worker = nativeWorkerAssets(
-      runtimeLease.runtimeRoot,
-      isHermes ? "hermes-turn" : isDeepAgents ? "deepagents-turn" : "pi-turn",
-    );
+    const agentEnvironment = {
+      NEMOCLAW_HERMES_HOME_ROOT: path.join(shareRoot, "home"),
+      NEMOCLAW_HERMES_MODEL_PORT: "",
+      NEMOCLAW_HERMES_PYTHON: requiredFile(runtimeLease.python, "staged Python runtime"),
+      NEMOCLAW_HERMES_RESULT: path.join(shareRoot, "hermes-result.json"),
+    };
+    const worker = nativeWorkerAssets(runtimeLease.runtimeRoot, "hermes-turn");
     const workload = requiredFile(worker.entry, "prebuilt terminal qualification worker");
-    const resultPath = isHermes
-      ? agentEnvironment.NEMOCLAW_HERMES_RESULT
-      : isDeepAgents
-        ? agentEnvironment.NEMOCLAW_DEEP_AGENTS_RESULT
-        : agentEnvironment.NEMOCLAW_PI_RESULT;
+    const resultPath = agentEnvironment.NEMOCLAW_HERMES_RESULT;
     const policyPath = path.join(runRoot, "policy.yaml");
     fs.writeFileSync(
       policyPath,
@@ -883,9 +432,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     for (const directory of [home, temp]) fs.mkdirSync(directory, { recursive: true });
     const openShellPort = await freePort();
     const modelPort = await freePort();
-    if (isHermes) agentEnvironment.NEMOCLAW_HERMES_MODEL_PORT = String(modelPort);
-    else if (isDeepAgents) agentEnvironment.NEMOCLAW_DEEP_AGENTS_MODEL_PORT = String(modelPort);
-    else agentEnvironment.NEMOCLAW_PI_MODEL_PORT = String(modelPort);
+    agentEnvironment.NEMOCLAW_HERMES_MODEL_PORT = String(modelPort);
     const gatewayLog = fs.openSync(gatewayLogPath, "w");
     ownedLogs.add(gatewayLog);
     const gatewayError = fs.openSync(gatewayErrorPath, "w");
@@ -1010,15 +557,11 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     ]);
     runtimeLease.assertHeld();
     const agentResult = JSON.parse(agentResultText);
-    const reportedVersion = isHermes
-      ? agentResult.hermesVersion
-      : isDeepAgents
-        ? agentResult.deepAgentsCodeVersion
-        : agentResult.piVersion;
+    const reportedVersion = agentResult.hermesVersion;
     if (
       agentResult.verdict !== "pass" ||
       reportedVersion !== agentVersion ||
-      (isHermes && agentResult.nativePythonSecurityChecksPassed !== true) ||
+      agentResult.nativePythonSecurityChecksPassed !== true ||
       agentResult.turnCount !== 3 ||
       !turnProofs.every(([, expected], index) => agentResult.turns?.[index]?.expected === expected)
     )
@@ -1063,9 +606,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       interface: `${agentLabel} terminal one-shot mode`,
       runtimeEntrypointSha256: sha256(installedAgentEntrypoint),
       runtimeHostSha256: sha256(
-        installedPythonRoot === null
-          ? installedNode
-          : requiredFile(path.join(installedPythonRoot, "python.exe"), "installed Python runtime"),
+        requiredFile(path.join(installedPythonRoot, "python.exe"), "installed Python runtime"),
       ),
       deterministicLocalModel: true,
       privateShareAcl,
@@ -1148,15 +689,6 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
               maxBytes: 2 * 1024 * 1024,
             });
             if (content !== null) diagnosticParts.push(content);
-          }
-          if (isDeepAgents && ownedRoots.includes(shareRoot) && fs.existsSync(shareRoot)) {
-            for (const file of deepAgentDiagnosticFiles(shareRoot)) {
-              const content = readOpenedRegularFile(file, {
-                encoding: "utf8",
-                maxBytes: 2 * 1024 * 1024,
-              });
-              if (content !== null) diagnosticParts.push(content.slice(-512 * 1024));
-            }
           }
           const diagnostic = sanitizedDiagnostic(diagnosticParts.filter(Boolean).join("\n"), [
             [installRoot, "<install-root>"],
@@ -1245,9 +777,8 @@ async function main() {
     "NemoClaw installation root",
   );
   const launcher = requiredFile(path.join(installRoot, "bin", "NemoClaw.exe"), "NemoClaw launcher");
-  const purpose = argumentValue("--agent") ?? "pi";
-  if (!["openclaw", "hermes", "pi", "langchain-deepagents-code", "nemocua"].includes(purpose))
-    fail("unsupported native runtime purpose");
+  const purpose = argumentValue("--agent") ?? "hermes";
+  if (purpose !== "hermes") fail("unsupported native runtime purpose");
   return await withNativeRuntimeSession(
     launcher,
     installRoot,

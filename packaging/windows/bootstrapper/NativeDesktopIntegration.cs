@@ -20,6 +20,7 @@ internal static class NativeDesktopIntegration
 
     internal static void Ensure(string agent, string launcher)
     {
+        if (agent is not ("openclaw" or "hermes")) throw new InvalidOperationException("The selected agent is no longer supported. Open NemoClaw Setup to select OpenClaw or Hermes.");
         _ = AgentName(agent);
         var root = Directory.GetParent(Path.GetDirectoryName(Path.GetFullPath(launcher))!)!.FullName;
         var icons = Path.Combine(root, "desktop-icons");
@@ -46,6 +47,8 @@ internal static class NativeDesktopIntegration
         var agent = marker.TrimEnd('\n');
         if (marker != agent + "\n" || !Agents.Contains(agent, StringComparer.Ordinal))
             throw new InvalidOperationException("The remembered agent selection is invalid.");
+        // Preserve historical settings, but do not recreate retired agent shortcuts.
+        if (agent is not ("openclaw" or "hermes")) return;
         Ensure(agent, launcher);
     }
 

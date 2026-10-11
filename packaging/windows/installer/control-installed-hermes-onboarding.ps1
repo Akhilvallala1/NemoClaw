@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][string]$Model,
     [Parameter(Mandatory)][string]$OutputPath,
-    [ValidateSet('hermes','pi')][string]$Agent = 'hermes')
+    [ValidateSet('hermes')][string]$Agent = 'hermes')
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'preview-ui-controls.ps1')
@@ -49,7 +49,7 @@ try {
     $window = Wait-PreviewWindow $process; $result.nativeWpf = $true
     $result['windowProcessId'] = $window.Current.ProcessId
     $phase = "$Agent-provider"
-    $choiceId = if ($Agent -ceq 'hermes') { 'AgentHermes' } else { 'AgentPi' }
+    $choiceId = 'AgentHermes'
     $choice = Wait-InstalledElement $window $choiceId
     ([Windows.Automation.SelectionItemPattern]$choice.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern)).Select()
     Invoke-PreviewButton (Wait-InstalledElement $window 'ConfigureInference')
@@ -93,12 +93,7 @@ try {
         if ($failure.Current.Name -cne 'Enter the required keys for each enabled integration.' -or (Test-Path -LiteralPath $configFile)) { throw 'Empty Tavily credentials did not refuse before configuration was saved.' }
         $result.rejectedEmptyIntegrationSave = $true
         Toggle-Onboarding $window 'EnableSearch' $false
-    } else {
-        # Pi must not inherit Hermes-only service options or claim their tests passed.
-        $options = Find-PreviewElement $window 'DownstreamOptions'
-        if ($null -ne $options -and -not $options.Current.IsOffscreen) { throw 'Pi exposed unsupported downstream integration options.' }
-        $result['integrationChoicesUnavailable'] = $true
-        $result['messagingChoices'] = @()
+
     }
     $phase = 'save-once'
     Invoke-PreviewButton $save

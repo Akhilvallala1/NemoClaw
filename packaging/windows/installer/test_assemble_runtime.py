@@ -353,8 +353,16 @@ class RuntimeAssembly(unittest.TestCase):
 
     def test_missing_selected_agent_fails_before_output(self):
         with self.assertRaises(FileNotFoundError):
-            self.assemble({"pi": self.root / "absent"})
+            self.assemble({"openclaw": self.root / "absent"})
         self.assertFalse(self.output.exists())
+
+    def test_removed_agents_cannot_enter_runtime_assembly(self):
+        self.assertEqual(set(assembler.LAYOUT), {"openclaw", "hermes"})
+        for agent in ("pi", "langchain-deepagents-code", "nemocua"):
+            with self.subTest(agent=agent):
+                with self.assertRaisesRegex(ValueError, "explicit selected agent inputs"):
+                    self.assemble({agent: self.source})
+                self.assertFalse(self.output.exists())
 
     def test_changed_executable_cannot_enter_the_sealed_application(self):
         with (self.sea / "NemoClaw.Runtime.exe").open("ab") as stream:

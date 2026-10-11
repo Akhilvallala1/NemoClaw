@@ -96,7 +96,7 @@ export function normalizeOnboardingConfiguration(
   qualification: boolean,
   metadataOnly = false,
 ): NativeOnboardingConfiguration {
-  const agents = new Set(["openclaw", "hermes", "langchain-deepagents-code", "pi", "nemocua"]);
+  const agents = new Set(["openclaw", "hermes"]);
   if (!agents.has(submitted?.agent)) throw new Error("Select a valid agent runtime.");
   if (qualification) {
     if (submitted?.inference !== "qualification")

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Dot-sourced by the package qualifier after all agent sessions have closed.
+# Dot-sourced by the package qualifier before normal Hermes setup or agent launch.
 # This uses its existing bounded process, UI Automation and ownership helpers.
 function Invoke-NativeTesterResetQualification {
     $fixture = Join-Path $artifactRoot ('tester-reset-' + [guid]::NewGuid().ToString('N'))
@@ -21,40 +21,40 @@ function Invoke-NativeTesterResetQualification {
     $nonce = [guid]::NewGuid().ToString('N')
     $canary = 'native-tester-reset-key-' + $nonce
     $endpoint = "https://127.0.0.1:17193/tester-$nonce/v1"
-    $piConfig = Join-Path $nativeConfigurationRoot 'pi\native-windows.json'
+    $hermesConfig = Join-Path $nativeConfigurationRoot 'hermes\native-windows.json'
     $preserved = @{}
     $primary = $null
     $cleanupErrors = [Collections.Generic.List[string]]::new()
     foreach ($entry in @($script:OwnedNativeConfigurations.GetEnumerator())) {
-        if ($entry.Key -ine $piConfig -and $entry.Key -ine $nativeActiveAgentPath) { $preserved[$entry.Key] = $entry.Value }
+        if ($entry.Key -ine $hermesConfig -and $entry.Key -ine $nativeActiveAgentPath) { $preserved[$entry.Key] = $entry.Value }
     }
     try {
         # The fixture may only use a state root created by this transaction.
-        # An existing persistent Pi workspace is never adopted or deleted.
-        $creation = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--state-session', 'pi')
+        # An existing persistent Hermes workspace is never adopted or deleted.
+        $creation = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--state-session', 'hermes')
         if ($creation.exitCode -ne 0 -or $creation.stdout.Length -gt 4096) { Fail-PackageQualification 'The tester-reset state fixture could not be opened.' }
         $state = $creation.stdout | ConvertFrom-Json
         $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $expectedStateRoot = $env:SystemDrive.ToUpperInvariant() + '\NemoClawState-' + $sid + '-pi'
-        if ($state.schemaVersion -ne 1 -or $state.kind -cne 'native-state-session' -or $state.agent -cne 'pi' -or
+        $expectedStateRoot = $env:SystemDrive.ToUpperInvariant() + '\NemoClawState-' + $sid + '-hermes'
+        if ($state.schemaVersion -ne 1 -or $state.kind -cne 'native-state-session' -or $state.agent -cne 'hermes' -or
             $state.stateRoot -cne $expectedStateRoot -or $state.created -ne $true -or $state.leaseHeld -ne $true) {
-            Fail-PackageQualification 'Tester reset requires a fresh, independently owned Pi state fixture; existing state was preserved.'
+            Fail-PackageQualification 'Tester reset requires a fresh, independently owned Hermes state fixture; existing state was preserved.'
         }
         $stateRoot = $state.stateRoot
         $ownsState = $true
         $marker = Join-Path $stateRoot 'tester-reset-canary.txt'
         [IO.File]::WriteAllText($marker, ('disposable native reset fixture ' + $nonce), [Text.UTF8Encoding]::new($false))
         $markerHash = (Get-FileHash -LiteralPath $marker -Algorithm SHA256).Hash.ToLowerInvariant()
-        $intent = [ordered]@{ schemaVersion = 1; classification = 'nemoclaw-native-windows-agent-configuration'; profile = 'personal'; agent = 'pi'; inference = 'compatible'; endpoint = $endpoint; model = $script:NativeSetupModel; credentialStored = $true; options = @{} }
+        $intent = [ordered]@{ schemaVersion = 1; classification = 'nemoclaw-native-windows-agent-configuration'; profile = 'personal'; agent = 'hermes'; inference = 'compatible'; endpoint = $endpoint; model = $script:NativeSetupModel; credentialStored = $true; options = @{} }
         $prepared = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath -Arguments @('--configure-native', '--prepare') -StandardInput ($intent | ConvertTo-Json -Depth 8 -Compress)
         $binding = $prepared.stdout.Trim()
         if ($prepared.exitCode -ne 0 -or $binding -cnotmatch '^[0-9a-f]{64}$') { Fail-PackageQualification 'The reset canary binding could not be prepared before Save.' }
         $absent = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'compatible', '--binding', $binding)
         if ($absent.exitCode -eq 0 -or $absent.stdout.Length -ne 0) { Fail-PackageQualification 'The unique tester-reset credential target already exists.' }
         $ownsKey = $true
-        $selection = Invoke-NativeSetupSelection -Agent pi -ChoiceId AgentPi -Standalone -ReplaceOwned `
+        $selection = Invoke-NativeSetupSelection -Agent hermes -ChoiceId AgentHermes -Standalone `
             -Inference compatible -Endpoint $endpoint -CredentialCanary $canary -EvidenceName 'tester-reset-canary'
-        $metadata = [IO.File]::ReadAllText($piConfig)
+        $metadata = [IO.File]::ReadAllText($hermesConfig)
         $prepared = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath -Arguments @('--configure-native', '--prepare') -StandardInput $metadata
         if ($prepared.exitCode -ne 0 -or $prepared.stdout.Trim() -cne $binding) { Fail-PackageQualification 'The saved reset canary binding does not match its prepared identity.' }
         $read = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'compatible', '--binding', $binding)
@@ -85,7 +85,7 @@ function Invoke-NativeTesterResetQualification {
             $element = Wait-NativeSetupElement -Root $window -AutomationId ('RemoveAgent-' + $choice.agent)
             $selected = [Windows.Automation.TogglePattern]$element.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
             if ($selected.Current.ToggleState -ne [Windows.Automation.ToggleState]::Off) { Fail-PackageQualification 'Uninstall preselected an agent for data removal.' }
-            if ($choice.agent -ceq 'pi') { $selected.Toggle() }
+            if ($choice.agent -ceq 'hermes') { $selected.Toggle() }
         }
         $beforeFrame = Save-NativeSetupFrame -Window $window -Name 'tester-reset-selected.png'
         Invoke-NativeSetupButton -Element (Wait-NativeSetupElement -Root $window -AutomationId 'UninstallNemoClaw')
@@ -94,7 +94,7 @@ function Invoke-NativeTesterResetQualification {
         Invoke-NativeSetupButton -Element (Wait-NativeSetupElement -Root $window -AutomationId 'CloseButton')
         if (-not $process.WaitForExit(30000) -or $process.ExitCode -notin @(0, 3010)) { Fail-PackageQualification 'The native tester-reset uninstall did not finish successfully.' }
         if ((Test-Path -LiteralPath $installRoot) -or (Test-Path -LiteralPath $stateRoot) -or
-            (Test-Path -LiteralPath $piConfig) -or (Test-Path -LiteralPath $nativeActiveAgentPath)) {
+            (Test-Path -LiteralPath $hermesConfig) -or (Test-Path -LiteralPath $nativeActiveAgentPath)) {
             Fail-PackageQualification 'Tester reset retained the selected data, configuration, remembered choice, or installed application.'
         }
         $ownsState = $false
@@ -105,7 +105,7 @@ function Invoke-NativeTesterResetQualification {
         foreach ($entry in @($preserved.GetEnumerator())) {
             if (-not (Test-Path -LiteralPath $entry.Key -PathType Leaf) -or
                 (Get-FileHash -LiteralPath $entry.Key -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.Value) {
-                Fail-PackageQualification 'Selecting Pi for reset changed another agent configuration.'
+                Fail-PackageQualification 'Selecting Hermes for reset changed another agent configuration.'
             }
         }
         $read = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'compatible', '--binding', $binding)
@@ -113,17 +113,16 @@ function Invoke-NativeTesterResetQualification {
         $ownsKey = $false
         $desktopReceipt = Join-Path $artifactRoot 'tester-reset-desktop-absent.json'
         & $desktopLinkCheck -InstallRoot $installRoot -ReceiptPath $desktopReceipt -Expected Absent
-        [void]$script:OwnedNativeConfigurations.Remove($piConfig)
+        [void]$script:OwnedNativeConfigurations.Remove($hermesConfig)
         [void]$script:OwnedNativeConfigurations.Remove($nativeActiveAgentPath)
 
-        # Reinstall through the same WPF flow, retaining the original five-choice
-        # receipt while restoring deterministic configs for default-preserve removal.
+        # Reinstall through the same WPF flow, preserving earlier selection
+        # receipts and restoring configurations for subsequent agent qualification.
         $restore = @()
         foreach ($choice in $nativeAgentChoices) {
             $existing = Test-Path -LiteralPath (Join-Path $nativeConfigurationRoot ($choice.agent + '\native-windows.json'))
-            $standalone = $choice.agent -ceq 'nemocua'
             $restore += Invoke-NativeSetupSelection -Agent $choice.agent -ChoiceId $choice.automationId `
-                -Maintenance:($restore.Count -gt 0 -and -not $standalone) -Standalone:$standalone -ReplaceOwned:$existing `
+                -Maintenance:($restore.Count -gt 0) -ReplaceOwned:$existing `
                 -EvidenceName ('tester-reset-restore-' + $choice.agent)
         }
         Assert-InstalledTree -Root $installRoot -Phase 'Tester reset reinstall' -ExpectedFiles $expectedPayloadFiles
@@ -133,9 +132,9 @@ function Invoke-NativeTesterResetQualification {
         $restoredDesktop = Join-Path $artifactRoot 'tester-reset-desktop-restored.json'
         & $desktopLinkCheck -InstallRoot $installRoot -ReceiptPath $restoredDesktop -Expected Present
         $receipt = [pscustomobject]@{
-            schemaVersion = 1; classification = 'native-windows-tester-reset-qualification'; agent = 'pi'; passed = $true
+            schemaVersion = 1; classification = 'native-windows-tester-reset-qualification'; agent = 'hermes'; passed = $true
             freshOwnedState = $true; stateCanarySha256 = $markerHash; installedHelperSha256 = $helperHash
-            preservedDataByDefault = $true; explicitSelection = @('pi'); selectedStateRemoved = $true
+            preservedDataByDefault = $true; explicitSelection = @('hermes'); selectedStateRemoved = $true
             selectedCredentialRemoved = $true; selectedConfigurationRemoved = $true; activeAgentCleared = $true
             otherAgentConfigurationsPreserved = $true; desktopLinksRemoved = $true; registrationRemoved = $true
             actualNativeMaintenance = $true; reinstalledThroughNativeSetup = $true
@@ -176,7 +175,7 @@ function Invoke-NativeTesterResetQualification {
             }
             if ($ownsState) {
                 try {
-                    $removed = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--state-remove', 'pi')
+                    $removed = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--state-remove', 'hermes')
                     if ($removed.exitCode -ne 0) { throw 'State removal failed.' }
                 } catch { $cleanupErrors.Add('The owned tester-reset state fixture could not be cleared safely.') }
             }

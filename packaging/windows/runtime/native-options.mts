@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readCredentialByBinding } from "./native-security.mts";
 
-const AGENTS = ["openclaw", "hermes", "langchain-deepagents-code", "pi", "nemocua"];
+const AGENTS = ["openclaw", "hermes"];
 export const NATIVE_SERVICES = {
   brave: { authority: "https://api.search.brave.com", environment: "BRAVE_API_KEY" },
   tavily: { authority: "https://api.tavily.com", environment: "TAVILY_API_KEY" },
@@ -91,7 +91,12 @@ export function normalizeNativeOptions(agent: string, value: unknown): NativeOpt
 }
 
 export function nativeServiceBinding(agent: string, service: string): string {
-  if (!AGENTS.includes(agent) || !Object.hasOwn(NATIVE_SERVICES, service))
+  // Historical identities remain hashable for credential deletion during uninstall.
+  // This function does not authorize setup or runtime launch.
+  if (
+    ![...AGENTS, "langchain-deepagents-code", "pi", "nemocua"].includes(agent) ||
+    !Object.hasOwn(NATIVE_SERVICES, service)
+  )
     throw new Error("The native service credential identity is invalid.");
   // Search and channel keys cannot alias an inference endpoint or another agent.
   return createHash("sha256")

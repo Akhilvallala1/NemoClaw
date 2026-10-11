@@ -13,8 +13,34 @@ import {
   normalizeNativeOptions,
 } from "../../packaging/windows/runtime/native-options.mts";
 import { nativeCredentialBinding } from "../../packaging/windows/runtime/native-security.mts";
+import { normalizeOnboardingConfiguration } from "../../packaging/windows/runtime/native-setup-configuration.mts";
 
 describe("native optional services", () => {
+  it.each([
+    ["pi", false],
+    ["pi", true],
+    ["langchain-deepagents-code", false],
+    ["langchain-deepagents-code", true],
+    ["nemocua", false],
+    ["nemocua", true],
+  ] as const)(
+    "rejects removed Windows agent %s before accepting options (qualification=%s)",
+    (agent, qualification) => {
+      expect(() => normalizeNativeOptions(agent, {})).toThrow("Native setup options are invalid.");
+      expect(() =>
+        normalizeOnboardingConfiguration(
+          { agent, inference: qualification ? "qualification" : "local", options: {} },
+          qualification,
+        ),
+      ).toThrow("Select a valid agent runtime.");
+    },
+  );
+
+  it.each(["openclaw", "hermes"])("accepts empty options for retained agent %s", (agent) => {
+    expect(normalizeNativeOptions(agent, {})).toEqual({});
+    expect(nativeServiceBinding(agent, "tavily")).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
   it("filters services by real agent capability and rejects inline keys", () => {
     expect(
       normalizeNativeOptions("hermes", { search: { provider: "tavily", credentialStored: true } }),
@@ -34,7 +60,7 @@ describe("native optional services", () => {
           slack: { credentialStored: true, appCredentialStored: true, allowedUsers: [] },
         },
       }),
-    ).toThrow("Messaging is unavailable for this agent.");
+    ).toThrow("Native setup options are invalid.");
     expect(() =>
       normalizeNativeOptions("openclaw", {
         search: { provider: "brave", credentialStored: true, apiKey: "must-not-persist" },

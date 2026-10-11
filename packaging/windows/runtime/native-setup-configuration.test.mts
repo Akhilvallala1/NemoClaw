@@ -23,7 +23,12 @@ import { NATIVE_EXPRESS } from "./native-inference-manifest.mts";
 import { interactiveWorkloadSource } from "./run-installed-native-console-agent.mts";
 import type { NativeOptions } from "./native-options.mts";
 import { hermesDashboardPythonSource } from "./native-hermes-dashboard.mts";
-import { renderFactory, staticWorkerSource } from "../distribution/build-native-workers.mts";
+import {
+  buildNativeWorkers,
+  renderFactory,
+  staticWorkerSource,
+} from "../distribution/build-native-workers.mts";
+import { prepareRuntimeSource } from "../distribution/prepare-runtime-source.mts";
 import { probeSource } from "./run-installed-native-turn.mts";
 import { gatewaySource } from "./run-installed-native-web-ui.mts";
 import {
@@ -32,7 +37,78 @@ import {
   bindNativeRuntimeGuard,
   nativeRuntimeWorkerCommand,
   validateNativeRuntimeReceipt,
+  acquireNativeRuntimeSession,
+  type NativeRuntimePurpose,
 } from "./native-runtime.mts";
+
+for (const removed of ["pi", "langchain-deepagents-code", "nemocua"]) {
+  test(`retired ${removed} cannot acquire an installed runtime lease`, async () => {
+    const purpose = removed as NativeRuntimePurpose;
+    assert.throws(
+      () => validateNativeRuntimeReceipt({}, "C:\\Program Files\\NVIDIA\\NemoClaw", purpose),
+      /installed runtime identity is invalid/u,
+    );
+    await assert.rejects(
+      acquireNativeRuntimeSession(
+        "must-not-execute",
+        "C:\\Program Files\\NVIDIA\\NemoClaw",
+        purpose,
+      ),
+      /native runtime purpose is invalid/u,
+    );
+  });
+}
+
+test("compiled native workers expose only retained agent modes", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "two-agent-workers-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const staged = prepareRuntimeSource(fileURLToPath(new URL("./", import.meta.url)));
+  t.after(() => staged.close());
+  assert.equal(staged.receipt.adapterSha256, null);
+  assert.equal(staged.receipt.preimagesVerified, 0);
+  assert.equal(staged.receipt.removedDiagnosticGuards.length, 6);
+  const output = path.join(root, "compiled");
+  const report = await buildNativeWorkers(staged.runtime, output);
+  assert.equal(report.installedExecutionQualified, false);
+  assert.deepEqual(report.modes, ["openclaw-turn", "openclaw-web", "hermes-turn", "interactive"]);
+  const described = spawnSync(
+    process.execPath,
+    [path.join(output, "native-runtime.cjs"), "--describe-runtime"],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  assert.equal(described.status, 0, described.stderr);
+  const description = JSON.parse(described.stdout);
+  assert.deepEqual(description.guestModes, report.modes);
+  assert.deepEqual(description.hostModes, [
+    "turn",
+    "terminal-turn",
+    "console",
+    "web",
+    "hermes-dashboard",
+    "inference",
+  ]);
+  assert.deepEqual(fs.readdirSync(path.join(output, "python-build-inputs")).sort(), [
+    "hermes-console-probe.py",
+    "hermes-console.py",
+    "hermes-dashboard-probe.py",
+    "hermes-dashboard.py",
+    "hermes-turn.py",
+  ]);
+});
+
+test("runtime preparation refuses historical patches and a missing diagnostic entry", (t) => {
+  assert.throws(
+    () => Reflect.apply(prepareRuntimeSource, null, ["must-not-read", "historical.patch"]),
+    /patches are no longer accepted/u,
+  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-entry-inventory-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, "unexpected.mts"), "export const fixture = true;\n");
+  assert.throws(() => prepareRuntimeSource(root), /diagnostic entry inventory changed/u);
+});
 
 test("prebuilt OpenClaw factories materialize the exported workers as valid JavaScript", () => {
   const root = fileURLToPath(new URL("./", import.meta.url));
@@ -51,7 +127,7 @@ test("prebuilt OpenClaw factories materialize the exported workers as valid Java
   }
 });
 
-function heldHermesRuntime(agent: "hermes" | "pi" = "hermes") {
+function heldHermesRuntime(agent: "hermes" | "openclaw" = "hermes") {
   const install = "C:\\Program Files\\NVIDIA\\NemoClaw";
   const runtimeId = "a".repeat(64);
   return {
@@ -113,7 +189,7 @@ test("Hermes compatibility paths and prebuilt command bind the live sealed lease
 });
 
 test("sealed Node workers avoid main-entry parent traversal without changing dependency resolution", () => {
-  const runtime = heldHermesRuntime("pi");
+  const runtime = heldHermesRuntime("openclaw");
   const worker = path.win32.join(runtime.runtimeRoot, "workers", "native-runtime.cjs");
   assert.deepEqual(nativeRuntimeWorkerCommand(runtime, worker), [
     runtime.node,
@@ -125,7 +201,7 @@ test("sealed Node workers avoid main-entry parent traversal without changing dep
     "--preserve-symlinks-main",
     worker,
   ]);
-  for (const purpose of ["langchain-deepagents-code", "nemocua", "inference"] as const)
+  for (const purpose of ["inference"] as const)
     assert.deepEqual(nativeRuntimeWorkerCommand({ ...runtime, purpose }, worker), [
       runtime.node,
       worker,
@@ -165,7 +241,7 @@ test("actual gateway renderer selects only the held Hermes executor and preserve
     /different installations/u,
   );
   assert.throws(
-    () => renderNativeGatewayConfig(template, installation, heldHermesRuntime("pi")),
+    () => renderNativeGatewayConfig(template, installation, heldHermesRuntime("openclaw")),
     /held runtime lease/u,
   );
   runtime.assertHeld = () => {
@@ -175,18 +251,21 @@ test("actual gateway renderer selects only the held Hermes executor and preserve
 });
 
 test("actual console and turn driver configs prefix Hermes only and retain their worker environment", async () => {
-  for (const file of ["run-installed-native-console-agent.mts", "run-installed-native-pi.mts"]) {
+  for (const file of [
+    "run-installed-native-console-agent.mts",
+    "run-installed-native-hermes-turn.mts",
+  ]) {
     const source = fs.readFileSync(new URL(file, import.meta.url), "utf8");
     const start = source.indexOf("const createArgs = [");
     const end = source.indexOf("console.log(", start);
     assert(start >= 0 && end > start);
-    for (const agent of ["hermes", "pi"] as const) {
+    for (const agent of ["hermes"] as const) {
       const runtime = heldHermesRuntime(agent);
       const workload = path.win32.join(runtime.runtimeRoot, "workers", "native-runtime.cjs");
       const environment =
         agent === "hermes"
           ? nativeHermesToolEnvironment(runtime, "C:\\Windows").environment
-          : { PATH: "unchanged-pi-path" };
+          : { PATH: "unchanged-non-hermes-path" };
       const context: any = {
         runtimeLease: runtime,
         nativeRuntimeWorkerCommand,
@@ -270,9 +349,8 @@ test("every native Node workload emits portable UI policy without widening files
   for (const file of [
     "run-installed-native-turn.mts",
     "run-installed-native-web-ui.mts",
-    "run-installed-native-pi.mts",
+    "run-installed-native-hermes-turn.mts",
     "run-installed-native-console-agent.mts",
-    "run-installed-native-nemocua.mts",
     "../performance/probe-installed-readonly.mts",
     "../hermes/probe-official-components.mts",
   ]) {
@@ -323,7 +401,7 @@ test("every native Node workload emits portable UI policy without widening files
         : [roots.runtimeRoot, "C:/sealed"];
     const expectedReadWrite = file.includes("console-agent")
       ? [roots.agentRuntimeRoot, roots.statusRoot, roots.brokerRelayRoot, roots.browserRelayRoot]
-      : file.includes("web-ui") || file.includes("nemocua")
+      : file.includes("web-ui")
         ? [roots.shareRoot, roots.relayRoot]
         : [roots.shareRoot];
     assert.deepEqual(document.filesystem_policy.read_only, expectedReadOnly, file);
@@ -348,7 +426,7 @@ test("installed Hermes query modes bind both held owners and remain host or gues
   assert(
     gatewayStart >= 0 && gatewayEnd > gatewayStart && guestStart >= 0 && guestEnd > guestStart,
   );
-  for (const agentId of ["hermes", "pi"] as const) {
+  for (const agentId of ["hermes"] as const) {
     const runtimeLease = heldHermesRuntime(agentId);
     const agentRuntimeRoot = "C:\\NemoClawState-S-1-5-21-1-2-3-1001-hermes";
     let stateHeld = true;
@@ -544,7 +622,10 @@ test("prebuilt Hermes worker keeps canonical Node instead of overwriting it with
   assert(assets.get("hermes-dashboard.py")!.includes("--skip-build"));
   assert(assets.get("hermes-console.py")!.includes("from hermes_cli.main import main"));
   const start = source.indexOf("extraEnvironment = { HERMES_HOME: hermesHome");
-  const end = source.indexOf('} else if (agent === "langchain-deepagents-code")', start);
+  const end = source.indexOf(
+    '} else {\n  throw new Error("unsupported native terminal agent "',
+    start,
+  );
   assert(start >= 0 && end > start);
   const tools = nativeHermesToolEnvironment(heldHermesRuntime(), "C:\\Windows");
   const context: any = {
@@ -585,9 +666,12 @@ test("the generated dashboard preserves the required canonical Hermes Node envir
 });
 
 test("Hermes turn-only worker also preserves the held canonical tool environment", () => {
-  const owner = fs.readFileSync(new URL("./run-installed-native-pi.mts", import.meta.url), "utf8");
+  const owner = fs.readFileSync(
+    new URL("./run-installed-native-hermes-turn.mts", import.meta.url),
+    "utf8",
+  );
   const functionStart = owner.indexOf("function hermesWorkloadSource() {");
-  const functionEnd = owner.indexOf("export function deepAgentsWorkloadSource() {", functionStart);
+  const functionEnd = owner.indexOf("async function mainInternal(", functionStart);
   assert(functionStart >= 0 && functionEnd > functionStart);
   const source = runInNewContext(
     owner.slice(functionStart, functionEnd) + "\nhermesWorkloadSource()",
@@ -991,15 +1075,15 @@ test("dashboard and console cleanup emit their held runtime tuple and cleanup re
     runtimeBytesCopied: 7,
     runtimeFilesHashedAtLaunch: 3,
   };
-  for (const agent of ["hermes", "pi"]) {
+  for (const surface of ["dashboard", "console"]) {
     for (const succeeded of [true, false]) {
       const written: { file: string; document: any; options: any }[] = [];
       await runInNewContext(
         "(async () => {" + stripTypeScriptTypes(source.slice(start, end)) + "})()",
         {
-          agentId: agent,
-          dashboardEvidenceRoot: agent === "hermes" ? "/evidence" : null,
-          consoleEvidenceRoot: agent === "pi" ? "/evidence" : null,
+          agentId: "hermes",
+          dashboardEvidenceRoot: surface === "dashboard" ? "/evidence" : null,
+          consoleEvidenceRoot: surface === "console" ? "/evidence" : null,
           attempt: async (_label: string, operation: () => unknown) => operation(),
           path,
           runtimeLease,
@@ -1025,11 +1109,14 @@ test("dashboard and console cleanup emit their held runtime tuple and cleanup re
       assert.equal(written.length, 1);
       assert.equal(
         written[0].file,
-        path.join("/evidence", agent === "hermes" ? "dashboard-end.json" : "console-cleanup.json"),
+        path.join(
+          "/evidence",
+          surface === "dashboard" ? "dashboard-end.json" : "console-cleanup.json",
+        ),
       );
       assert.equal(written[0].options.flag, "wx");
       const result = written[0].document;
-      assert.equal(result.agent, agent);
+      assert.equal(result.agent, "hermes");
       assert.equal(result.stateRetained, true);
       assert.equal(result.retainedPrivateGatewayRoot, succeeded ? null : "private-gateway");
       for (const key of [

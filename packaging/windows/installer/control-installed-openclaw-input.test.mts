@@ -10,13 +10,14 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { signalObserverStop } from "./observer-stop.mts";
 
-async function heldSentinelControl(reader: string, contents: string) {
+async function heldSentinelControl(reader: string, contents: string, disableModuleLoading = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "installed-observer-input-"));
   const sentinel = path.join(root, `observer-stop-${"a".repeat(64)}.sentinel`);
   const script = path.join(root, "observer.ps1");
   fs.writeFileSync(
     script,
     `$ErrorActionPreference='Stop'
+${disableModuleLoading ? "$PSModuleAutoLoadingPreference='None'" : ""}
 $stopSentinelPath = '${sentinel.replaceAll("'", "''")}'
 ${reader}
 $controlWatch = [Diagnostics.Stopwatch]::StartNew()
@@ -36,7 +37,7 @@ while ($true) {
   if ($pollCount -lt 2) { Write-ControlStage 'poll-check-finished' }
   if ($observed) { break }
   if ($pollCount -lt 2) { Write-ControlStage 'poll-sleep-start' }
-  Start-Sleep -Milliseconds 10
+  [Threading.Thread]::Sleep(10)
   if ($pollCount -lt 2) { Write-ControlStage 'poll-sleep-finished' }
   $pollCount++
 }
@@ -146,6 +147,19 @@ test("the exact observer sentinel rejects nonempty files", async () => {
   assert.notEqual(result.code, 0);
   assert.equal(result.discoveryBeforeSignal, true);
   assert.match(result.stderr, /empty regular file/u);
+});
+
+test("Stop does not depend on loading a PowerShell provider module", async () => {
+  const source = fs.readFileSync(
+    new URL("./control-installed-openclaw.ps1", import.meta.url),
+    "utf8",
+  );
+  const reader = source.match(/^function Test-OwnedStopSentinel \{[\s\S]*?^\}$/mu)?.[0];
+  assert(reader);
+  const result = await heldSentinelControl(reader, "", true);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.equal(result.discoveryBeforeSignal, true);
+  assert.match(result.stdout, /stop-observed/u);
 });
 
 test("installed observers receive private runner-owned controls", () => {

@@ -83,16 +83,7 @@ fn node_version(value: &str) -> bool {
 }
 
 fn valid_agent(agent: &str) -> bool {
-    matches!(
-        agent,
-        "openclaw"
-            | "hermes"
-            | "pi"
-            | "langchain-deepagents-code"
-            | "nemocua"
-            | "inference"
-            | "host"
-    )
+    matches!(agent, "openclaw" | "hermes" | "inference" | "host")
 }
 
 fn installer_principal(sid: &str) -> bool {
@@ -1467,15 +1458,8 @@ mod tests {
         assert!(!installer_principal("S-1-5-21-1-2-3-1001"));
     }
     #[test]
-    fn all_five_agents_and_host_inference_have_bounded_receipts() {
-        for agent in [
-            "openclaw",
-            "hermes",
-            "pi",
-            "langchain-deepagents-code",
-            "nemocua",
-            "inference",
-        ] {
+    fn retained_agents_and_host_inference_have_bounded_receipts() {
+        for agent in ["openclaw", "hermes", "inference"] {
             let value = readiness(
                 agent,
                 "C:\\Program Files\\NVIDIA\\NemoClaw\\runtimes\\fixture",
@@ -1486,5 +1470,9 @@ mod tests {
             assert!(value.len() < 1024);
         }
         assert!(readiness("../other", "", &descriptor()).is_err());
+        for removed in ["pi", "langchain-deepagents-code", "nemocua"] {
+            assert!(!valid_agent(removed));
+            assert!(readiness(removed, "", &descriptor()).is_err());
+        }
     }
 }

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$FixtureDirectory, [Parameter(Mandatory)][string]$OutputDirectory,
-    [ValidateSet('openclaw','hermes','pi')][string]$Agent = 'openclaw')
+    [ValidateSet('openclaw','hermes')][string]$Agent = 'openclaw')
 Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'preview-ui-controls.ps1')
 function Read-DiagnosticPreparationTier([string]$Text) {

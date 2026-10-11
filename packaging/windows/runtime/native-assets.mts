@@ -6,11 +6,8 @@ import path from "node:path";
 export const NATIVE_WORKER_MODES = [
   "openclaw-turn",
   "openclaw-web",
-  "pi-turn",
   "hermes-turn",
-  "deepagents-turn",
   "interactive",
-  "nemocua",
 ] as const;
 export type NativeWorkerMode = (typeof NATIVE_WORKER_MODES)[number];
 
@@ -36,7 +33,7 @@ export function nativeWorkerAssets(runtimeRoot: string, mode: NativeWorkerMode) 
 
 export function nativeGuestAsset(name: string) {
   if (
-    !/^(?:openclaw-invoke\.cjs|(?:hermes|deepagents)-(?:turn|console|console-probe|dashboard|dashboard-probe)\.pyc)$/u.test(
+    !/^(?:openclaw-invoke\.cjs|hermes-(?:turn|console|console-probe|dashboard|dashboard-probe)\.pyc)$/u.test(
       name,
     )
   )

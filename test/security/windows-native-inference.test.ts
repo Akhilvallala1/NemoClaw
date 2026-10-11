@@ -52,7 +52,7 @@ const chat = { model: NATIVE_EXPRESS.model, messages: [{ role: "user", content: 
 
 describe("configured native local inference", () => {
   it.each(
-    ["openclaw", "hermes", "pi"].flatMap((agent) =>
+    ["openclaw", "hermes"].flatMap((agent) =>
       [NATIVE_EXPRESS.id, "qwen3.8-27b", "qwen3.6-35b-a3b"].map((localModel) => ({
         agent,
         localModel,
@@ -676,17 +676,15 @@ describe("authenticated native inference guard", () => {
     expect(f.stop).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["OpenAI tool history", "NemoCUA text observation"])(
+  it.each(["OpenAI tool history", "textual browser observation"])(
     "accepts the %s wire shape above 32 KiB with bounded output",
     async (shape) => {
       const f = await fixture();
-      // Hermes 0.19's ChatCompletionsTransport preserves OpenAI tool messages;
-      // the Pi/OpenClaw and LangChain adapters use the same wire schema. NemoCUA
-      // currently supplies textual observation JSON, not a vision attachment.
-      // Exercise the actual fields the configured adapters forward, including
-      // durable tool results larger than the former 32 KiB request limit.
+      // Retain both text-only browser observations and OpenAI tool history.
+      // Their request bodies exceed the former 32 KiB limit; neither includes
+      // an image attachment.
       const messages =
-        shape === "NemoCUA text observation"
+        shape === "textual browser observation"
           ? [
               {
                 role: "user",

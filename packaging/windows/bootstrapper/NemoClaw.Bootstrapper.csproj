@@ -40,8 +40,6 @@
     <Resource Include="..\assets\NemoClawLogo.png" Link="Assets\NemoClawLogo.png" />
     <Resource Include="..\onboarding\assets\openclaw.png" Link="Assets\openclaw.png" />
     <Resource Include="..\onboarding\assets\hermes.png" Link="Assets\hermes.png" />
-    <Resource Include="..\onboarding\assets\deepagents.png" Link="Assets\deepagents.png" />
-    <Resource Include="..\onboarding\assets\nemocua.png" Link="Assets\nemocua.png" />
   </ItemGroup>
   <Target Name="ValidateImmutableRuntimePresentation" BeforeTargets="BeforeBuild">
     <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(MxcProbeSha256)', '^[a-f0-9]{64}$'))" Text="Setup requires the exact admitted MXC probe SHA-256 before compilation." />

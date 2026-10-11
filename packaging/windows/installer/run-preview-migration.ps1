@@ -3,7 +3,7 @@
 # Separate-runner migration qualification. It does not send inference requests.
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$WorkDirectory, [Parameter(Mandatory)][string]$ProductVersion,
-    [ValidateSet('openclaw','hermes','pi')][string]$NewAgent = 'openclaw')
+    [ValidateSet('openclaw','hermes')][string]$NewAgent = 'openclaw')
 Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'
 $parsedVersion = $null
 if ($ProductVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or

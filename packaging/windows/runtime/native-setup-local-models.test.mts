@@ -29,7 +29,7 @@ for (const model of NATIVE_LOCAL_MODELS.models) {
     availability: "download-on-setup",
     modelBytesRead: 0,
   };
-  for (const agent of ["openclaw", "hermes", "pi"]) {
+  for (const agent of ["openclaw", "hermes"]) {
     const configuration = {
       schemaVersion: 1,
       classification: "nemoclaw-native-windows-agent-configuration",

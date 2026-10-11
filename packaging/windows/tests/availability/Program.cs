@@ -12,8 +12,8 @@ static byte[] Record(string firstStatus = "qualified") => JsonSerializer.Seriali
     runtimeId = new string('a', 64),
     manifestSha256 = new string('b', 64),
     sourceRevision = new string('c', 40),
-    agents = new[] { "openclaw", "hermes", "langchain-deepagents-code", "pi", "nemocua" }
-        .Select((agent, index) => new { agent, status = index == 0 ? firstStatus : index == 1 ? "unqualified" : "not-included" }).ToArray(),
+    agents = new[] { "openclaw", "hermes" }
+        .Select((agent, index) => new { agent, status = index == 0 ? firstStatus : "unqualified" }).ToArray(),
 });
 static void Require(bool value) { if (!value) throw new Exception("Availability control failed."); }
 static void Reject(byte[] bytes)
@@ -27,7 +27,12 @@ Require(selected.IsSelectedRuntimeBuild && selected.CanSelect("openclaw") && sel
 Require(NativeRuntimeAvailability.Parse(Record("unqualified")).CanSelect("openclaw") && NativeRuntimeAvailability.Parse(Record("unqualified")).IsUnqualified("openclaw"));
 Require(!selected.CanSelect("../foreign") && selected.UnavailableText == "Unavailable in this preview");
 Reject(Record("built"));
-Reject(Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Record()).Replace("\"agent\":\"pi\"", "\"agent\":\"hermes\"", StringComparison.Ordinal)));
+Reject(Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Record()).Replace("\"agent\":\"openclaw\"", "\"agent\":\"hermes\"", StringComparison.Ordinal)));
+foreach (var removed in new[] { "pi", "langchain-deepagents-code", "nemocua" })
+{
+    Require(!selected.CanSelect(removed) && !NativeRuntimeAvailability.Load().CanSelect(removed));
+    Reject(Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Record()).Replace("\"agent\":\"hermes\"", $"\"agent\":\"{removed}\"", StringComparison.Ordinal)));
+}
 Reject(Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Record()).Replace("\"schemaVersion\":1", "\"schemaVersion\":1,\"path\":\"foreign\"", StringComparison.Ordinal)));
 Reject(new byte[16385]);
 Require(!NativeRuntimeAvailability.Load().IsSelectedRuntimeBuild && NativeRuntimeAvailability.Load().CanSelect("hermes"));

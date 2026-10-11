@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
-from unittest import mock
+import unittest.mock
 
 SPEC = importlib.util.spec_from_file_location(
     "host_builder", Path(__file__).with_name("prepare-finished-host.py")
@@ -284,7 +284,7 @@ class NativeHostInputs(unittest.TestCase):
         with tempfile.TemporaryDirectory() as value:
             native = Path(value)
             build = self.mxc_build(native)
-            with mock.patch.object(MODULE, "MXC_LICENSE_SHA256", build["licenseSha256"]):
+            with unittest.mock.patch.object(MODULE, "MXC_LICENSE_SHA256", build["licenseSha256"]):
                 self.assertEqual(self.verify_mxc(native, build), build)
                 for key in set(build) - {"files"}:
                     for replacement in (None, "substituted"):
@@ -308,7 +308,7 @@ class NativeHostInputs(unittest.TestCase):
         with tempfile.TemporaryDirectory() as value:
             native = Path(value)
             build = self.mxc_build(native)
-            with mock.patch.object(MODULE, "MXC_LICENSE_SHA256", build["licenseSha256"]):
+            with unittest.mock.patch.object(MODULE, "MXC_LICENSE_SHA256", build["licenseSha256"]):
                 for files in (
                     [], build["files"][:1], [build["files"][0]] * 2,
                     [{**item, "file": "../outside.exe"} for item in build["files"]],
@@ -321,7 +321,7 @@ class NativeHostInputs(unittest.TestCase):
             with self.subTest(component=name), tempfile.TemporaryDirectory() as value:
                 native = Path(value)
                 build = self.mxc_build(native)
-                with mock.patch.object(MODULE, "MXC_LICENSE_SHA256", build["licenseSha256"]):
+                with unittest.mock.patch.object(MODULE, "MXC_LICENSE_SHA256", build["licenseSha256"]):
                     self.verify_mxc(native, build)
                     destination = native / "staged"
                     destination.mkdir()

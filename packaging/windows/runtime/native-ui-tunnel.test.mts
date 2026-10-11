@@ -2,12 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
-import { relayWorkloadSource } from "./native-nemocua-relay.mts";
 import { claimNativeUiTunnelFrame } from "./native-ui-tunnel.mts";
 
 test("native UI tunnel claims a frame before delivering it", () => {
@@ -80,22 +75,4 @@ test("native UI tunnel sharing retries are bounded", () => {
       ),
     /remained locked after 2 bounded attempts/u,
   );
-});
-
-test("contained NemoCUA claims each ordered frame before delivery", (context) => {
-  const source = relayWorkloadSource();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemocua-relay-source-"));
-  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const worker = path.join(root, "worker.mjs");
-  fs.writeFileSync(worker, source, { flag: "wx" });
-  execFileSync(process.execPath, ["--check", worker], { stdio: "pipe" });
-
-  const read = source.indexOf("const bytes = fs.readFileSync(file);");
-  const claim = source.indexOf("if (!claim(file)) break;", read);
-  const write = source.indexOf("stream.socket.write(bytes);", claim);
-  assert(read >= 0 && claim > read && write > claim);
-  assert(source.includes('process.platform !== "win32"'));
-  assert(source.includes('["EACCES", "EBUSY", "EPERM"].includes(error.code)'));
-  assert(source.includes("now - retry.startedMs >= 250"));
-  assert(source.includes("delivered === incoming.length"));
 });

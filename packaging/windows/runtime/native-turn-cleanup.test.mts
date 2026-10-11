@@ -9,7 +9,10 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { qualifyNativeOpenClawTurn, stopChild } from "./run-installed-native-turn.mts";
-import { createPrivateShareRoot, qualifyNativeTerminalAgent } from "./run-installed-native-pi.mts";
+import {
+  createPrivateShareRoot,
+  qualifyNativeTerminalAgent,
+} from "./run-installed-native-hermes-turn.mts";
 import type { NativeRuntimeSession } from "./native-runtime.mts";
 import { NativeGatewaySession } from "./native-gateway-session.mts";
 
@@ -26,7 +29,7 @@ async function scenario(
     | "private-timeout"
     | "private-retained"
     | "private-unconfirmed",
-  agent: "openclaw" | "pi" | "hermes",
+  agent: "openclaw" | "hermes",
 ) {
   const originalArgv = process.argv;
   const originalInstall = process.env.NEMOCLAW_NATIVE_INSTALL_ROOT;
@@ -241,7 +244,7 @@ async function scenario(
   }
 }
 
-for (const agent of ["openclaw", "pi", "hermes"] as const)
+for (const agent of ["openclaw", "hermes"] as const)
   for (const fault of [
     "second-root",
     "config",

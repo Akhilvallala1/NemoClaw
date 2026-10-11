@@ -41,8 +41,10 @@ if (-not [IO.Directory]::Exists($runnerTemp) -or
 function Test-OwnedStopSentinel {
     if ([IO.Directory]::Exists($stopSentinelPath)) { throw 'The owned Stop sentinel became a directory.' }
     if (-not [IO.File]::Exists($stopSentinelPath)) { return $false }
-    $item = Get-Item -LiteralPath $stopSentinelPath -Force -ErrorAction Stop
-    if ($item -isnot [IO.FileInfo] -or $item.Length -ne 0 -or
+    # Stop must not wait for PowerShell provider/module discovery on its first poll.
+    $item = [IO.FileInfo]::new($stopSentinelPath)
+    $item.Refresh()
+    if (-not $item.Exists -or $item.Length -ne 0 -or
         ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'The owned Stop sentinel must be an empty regular file.'
     }

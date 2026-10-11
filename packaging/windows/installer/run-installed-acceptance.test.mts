@@ -19,6 +19,104 @@ function powershellEnvironment(extra: NodeJS.ProcessEnv = {}) {
   };
 }
 
+test("legacy reset claims fresh Hermes state before normal Hermes setup", (context) => {
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:QUALIFIER_SOURCE, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Package qualifier does not parse.' }
+$main = @($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and $null -ne $_.Finally })
+if ($main.Count -ne 1) { throw 'The qualification lifecycle owner is ambiguous.' }
+$loops = @($main[0].Body.Statements | Where-Object {
+  $_ -is [Management.Automation.Language.ForEachStatementAst] -and
+  $_.Condition.Extent.Text -ceq '$nativeAgentChoices'
+})
+if ($loops.Count -ne 1) { throw 'The setup selection owner is ambiguous.' }
+$execute = [scriptblock]::Create($loops[0].Extent.Text)
+function Invoke-NativeSetupSelection {
+  param($Agent, $ChoiceId, [switch]$Maintenance, [switch]$ReplaceOwned)
+  if ($Agent -ceq 'openclaw') {
+    if ($Maintenance -or $ReplaceOwned -or $script:installed) { throw 'First install must not adopt existing data.' }
+    $script:installed = $true
+  } elseif ($Agent -ceq 'hermes') {
+    if (-not $script:reset -or -not $Maintenance -or -not $ReplaceOwned) { throw 'Hermes must reuse only reset-owned configuration.' }
+  } else { throw 'Retired agent selected.' }
+  $script:operations.Add('setup-' + $Agent)
+  return @{agent=$Agent;automationId=$ChoiceId}
+}
+function Invoke-NativeTesterResetQualification {
+  if (-not $script:installed -or $script:reset) { throw 'Reset requires one installed candidate.' }
+  if ($nativeSelections.Count -ne 1 -or $nativeSelections[0].agent -cne 'openclaw') { throw 'Hermes state was used before reset.' }
+  $script:operations.Add('reset-hermes')
+  if ($failReset) { throw 'fresh-state-denied' }
+  $script:reset = $true
+  return @{passed=$true}
+}
+foreach ($failReset in @($false,$true)) {
+  $nativeAgentChoices = @(@{agent='openclaw';automationId='AgentOpenClaw'},@{agent='hermes';automationId='AgentHermes'})
+  $nativeSelections = @(); $testerResetEvidence = $null
+  $script:installed = $false; $script:reset = $false
+  $script:operations = [Collections.Generic.List[string]]::new()
+  $failed = $false
+  try { . $execute } catch {
+    if ($_.Exception.Message -cne 'fresh-state-denied') { throw }
+    $failed = $true
+  }
+  if ($failed -ne $failReset) { throw 'Reset rejection was lost.' }
+  $expected = if ($failReset) { 'setup-openclaw,reset-hermes' } else { 'setup-openclaw,reset-hermes,setup-hermes' }
+  if (($script:operations -join ',') -cne $expected) { throw 'Setup and reset crossed their ownership order.' }
+  if ($nativeSelections.Count -ne $(if ($failReset) { 1 } else { 2 })) { throw 'Selection receipts were replaced.' }
+  if (($null -ne $testerResetEvidence) -eq $failReset) { throw 'Reset evidence does not match the outcome.' }
+}
+$resetAst = [Management.Automation.Language.Parser]::ParseFile($env:RESET_SOURCE, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Reset controller does not parse.' }
+$save = @($resetAst.FindAll({ param($node)
+  $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$selection'
+}, $true))
+if ($save.Count -ne 1) { throw 'Reset canary configuration owner is ambiguous.' }
+function Invoke-NativeSetupSelection {
+  param($Agent, $ChoiceId, [switch]$Standalone, [switch]$ReplaceOwned, $Inference, $Endpoint, $CredentialCanary, $EvidenceName)
+  if ($Agent -cne 'hermes' -or $ChoiceId -cne 'AgentHermes' -or -not $Standalone -or $ReplaceOwned -or
+      $Inference -cne 'compatible' -or $CredentialCanary -cne 'fixture-key') { throw 'Fresh reset configuration tried to adopt prior user settings.' }
+  return @{agent=$Agent}
+}
+$endpoint = 'https://127.0.0.1:17193/fixture/v1'; $canary = 'fixture-key'
+. ([scriptblock]::Create($save[0].Extent.Text))
+if ($selection.agent -cne 'hermes') { throw 'Reset did not save its fresh selected-agent configuration.' }
+Write-Output 'RESET_ORDER_3_PASS'
+`;
+  const result = spawnSync(
+    process.platform === "win32" ? "pwsh.exe" : "pwsh",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      env: powershellEnvironment({
+        QUALIFIER_SOURCE: fileURLToPath(
+          new URL(
+            "../../../scripts/checks/run-windows-native-package-qualification.ps1",
+            import.meta.url,
+          ),
+        ),
+        RESET_SOURCE: fileURLToPath(
+          new URL(
+            "../../../scripts/checks/qualify-windows-native-tester-reset.ps1",
+            import.meta.url,
+          ),
+        ),
+      }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30_000,
+    },
+  );
+  if (process.platform !== "win32" && result.error?.code === "ENOENT") {
+    context.skip("PowerShell is unavailable on this non-Windows host.");
+    return;
+  }
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESET_ORDER_3_PASS/u);
+});
+
 test(
   "Burn fixture accepts MXC capability details but rejects ambiguous preparation decisions",
   { skip: process.platform !== "win32" },
@@ -174,25 +272,33 @@ test(
       "run-installed-acceptance.ps1",
     );
     for (const [agent, scope, mode, secret, expected] of [
-      ["pi", "full-acceptance", "current-build", "", "requires explicit Windows CI identities"],
-      ["pi", "startup-only", "built-0.1.3-replay", "", "Only OpenClaw"],
+      ["pi", "full-acceptance", "current-build", "", "does not belong to the set"],
+      ["nemocua", "full-acceptance", "current-build", "", "does not belong to the set"],
+      [
+        "langchain-deepagents-code",
+        "full-acceptance",
+        "current-build",
+        "",
+        "does not belong to the set",
+      ],
+      ["hermes", "startup-only", "built-0.1.3-replay", "", "Only OpenClaw"],
       ["hermes", "startup-only", "current-build", "", "Startup-only smoke supports"],
       ["openclaw", "startup-only", "built-0.1.3-replay", "", "Startup-only smoke supports"],
       [
-        "pi",
+        "openclaw",
         "startup-only",
         "current-build",
         "NVIDIA_API_KEY",
         "must not receive inference credentials",
       ],
       [
-        "pi",
+        "openclaw",
         "startup-only",
         "current-build",
         "NVIDIA_INFERENCE_API_KEY",
         "must not receive inference credentials",
       ],
-      ["pi", "startup-only", "current-build", "", "requires explicit Windows CI identities"],
+      ["openclaw", "startup-only", "current-build", "", "requires explicit Windows CI identities"],
       [
         "openclaw",
         "full-acceptance",
@@ -329,10 +435,10 @@ if ($errors.Count) { throw 'Acceptance source does not parse.' }
 $owner = @($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and $null -ne $_.Finally })
 $branch = @($owner[0].Body.Statements | Where-Object { $_ -is [Management.Automation.Language.IfStatementAst] })
 $execute = [scriptblock]::Create($branch[0].Extent.Text)
-$ValidationScope = 'startup-only'; $Agent = 'pi'; $SourceRoot = 'source-fixture'
+$ValidationScope = 'startup-only'; $Agent = 'openclaw'; $SourceRoot = 'source-fixture'
 $work = 'work-fixture'; $installation = 'install-fixture'; $ciNode = 'Invoke-TestSmoke'
 function Invoke-TestSmoke {
-  if ($args -contains '--browser-driver-root' -or $args -notcontains '--agent' -or $args -notcontains 'pi' -or
+  if ($args -contains '--browser-driver-root' -or $args -notcontains '--agent' -or $args -notcontains 'openclaw' -or
       $args -notcontains 'source-fixture\packaging\windows\installer\qualify-finished-package.mts') { throw 'Unexpected installed test route.' }
   $global:LASTEXITCODE = $testExit
 }
@@ -344,10 +450,10 @@ function Get-Content {
 $count = 0
 foreach ($case in @('pass','exit','receipt-fail','wrong-agent','wrong-scope','full-claim','truncated','missing','string-false')) {
   $timings = @{}; $testExit = if ($case -ceq 'exit') { 1 } else { 0 }
-  $receipt = @{ verdict='pass'; agent='pi'; validationScope='startup-only'; fullInstalledQualification=$false }
+  $receipt = @{ verdict='pass'; agent='openclaw'; validationScope='startup-only'; fullInstalledQualification=$false }
   switch ($case) {
     'receipt-fail' { $receipt.verdict = 'fail' }
-    'wrong-agent' { $receipt.agent = 'openclaw' }
+    'wrong-agent' { $receipt.agent = 'pi' }
     'wrong-scope' { $receipt.validationScope = 'full-acceptance' }
     'full-claim' { $receipt.fullInstalledQualification = $true }
     'missing' { $receipt.Remove('fullInstalledQualification') }
@@ -386,7 +492,7 @@ Write-Output $count
   },
 );
 
-for (const agent of ["pi", "hermes"])
+for (const agent of ["hermes"])
   test(
     `${agent} installed acceptance runs cold and saved-configuration launches and rejects incomplete evidence`,
     { skip: process.platform !== "win32" },
@@ -418,32 +524,22 @@ function Get-Content {
   param($LiteralPath, [switch]$Raw)
   $directory = if ($calls.Count -eq 1) { 'installed-acceptance' } else { 'installed-acceptance-warm' }
   if ($LiteralPath -cne "work-fixture\$directory\installed-$Agent-acceptance.json") { throw 'Wrong agent receipt.' }
-  $receipt = @{ classification='installed-pi-terminal-acceptance'; verdict='pass'; cleanupErrors=@(); results=@{
+  $receipt = @{ classification='installed-canonical-hermes-acceptance'; verdict='pass'; cleanupErrors=@(); results=@{
     realTerminal=$true; realModelReply=$true; fileToolsQualified=$true; turns=@(@{},@{fileTools=$true}); configurationReused=($calls.Count -eq 2)
   } }
   switch ($scenario) {
     'failed-receipt' { $receipt.verdict='fail' }
     'cleanup-failure' { $receipt.cleanupErrors=@('retained process') }
-    'no-terminal' { $receipt.results.realTerminal=$false }
-    'no-model' { $receipt.results.realModelReply=$false }
-    'one-turn' { $receipt.results.turns=@(@{}) }
-    'no-tools' { $receipt.results.fileToolsQualified=$false }
-    'no-tool-turn' { $receipt.results.turns[1].Remove('fileTools') }
-    'string-tools' { $receipt.results.fileToolsQualified='true' }
-    'wrong-controller' { $receipt.classification='startup-only' }
-    'no-restart' { $receipt.results.configurationReused=$false }
   }
   return ($receipt | ConvertTo-Json -Depth 6)
 }
 $count=0
 $scenarios=@('pass','process-failure','failed-receipt','cleanup-failure')
-if ($Agent -ceq 'pi') { $scenarios+=@('no-terminal','no-model','one-turn','no-tools','no-tool-turn','string-tools','wrong-controller','no-restart') }
 foreach ($scenario in $scenarios) {
   $calls=[Collections.Generic.List[object]]::new(); $timings=@{}; $failed=$false
   try { . $execute } catch { if ($scenario -ceq 'pass') { throw }; $failed=$true }
-  if ($failed -ne ($scenario -cne 'pass')) { throw ('Unexpected Pi acceptance result: '+$scenario) }
+  if ($failed -ne ($scenario -cne 'pass')) { throw ('Unexpected Hermes acceptance result: '+$scenario) }
   if ($scenario -ceq 'pass' -and ($calls.Count -ne 2 -or $timings.startupComparisonAvailable -ne $true)) { throw 'Incorrect launch comparison result.' }
-  if ($scenario -ceq 'pass' -and $Agent -ceq 'pi' -and ($timings.networkQualification -ne $false -or $timings.piCodingToolsQualified -ne $false)) { throw 'Incorrect Pi qualification scope.' }
   if ($failed -and $timings.startupComparisonAvailable -eq $true) { throw 'A failed case claimed a startup comparison.' }
   $count++
 }
@@ -466,7 +562,7 @@ Write-Output $count
       );
       assert.equal(result.error, undefined);
       assert.equal(result.status, 0, result.stdout + result.stderr);
-      assert.equal(result.stdout.trim(), agent === "pi" ? "12" : "4");
+      assert.equal(result.stdout.trim(), "4");
     },
   );
 
@@ -553,7 +649,7 @@ ConvertTo-Json -InputObject @($results) -Compress
   );
 
 test(
-  "migration accepts Pi and only versions newer than its published baseline",
+  "migration accepts retained agents and only versions newer than its published baseline",
   { skip: process.platform !== "win32" },
   () => {
     const script = String.raw`
@@ -567,7 +663,7 @@ function Parse([string]$File) {
 $ast=Parse (Join-Path $env:TEST_OWNER 'run-preview-migration.ps1')
 $guard=@($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.IfStatementAst] })[0]
 $check=[scriptblock]::Create($ast.ParamBlock.Extent.Text + '; $parsedVersion=$null; ' + $guard.Extent.Text + '; return $NewAgent')
-foreach ($agent in @('openclaw','hermes','pi')) {
+foreach ($agent in @('openclaw','hermes')) {
   foreach ($version in @('0.1.3','0.1.4','0.1.5','0.1.10','bad','0.1.10.1')) {
     $failed=$false
     try { $result=& $check -WorkDirectory 'unused-fixture' -ProductVersion $version -NewAgent $agent } catch { $failed=$true }
@@ -579,7 +675,7 @@ $controls=Parse (Join-Path $env:TEST_OWNER 'preview-ui-controls.ps1')
 $function=@($controls.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Set-PreviewCanaryConfiguration'},$true))[0]
 $parameters=($function.Parameters | ForEach-Object { $_.Extent.Text }) -join ','
 $choose=[scriptblock]::Create('param('+ $parameters + ') ' + $function.Body.EndBlock.Statements[0].Extent.Text + '; return $choiceId')
-foreach ($entry in @{openclaw='AgentOpenClaw';hermes='AgentHermes';pi='AgentPi'}.GetEnumerator()) {
+foreach ($entry in @{openclaw='AgentOpenClaw';hermes='AgentHermes'}.GetEnumerator()) {
   if ((& $choose -Window $null -Endpoint '' -Key '' -Agent $entry.Key) -cne $entry.Value) { throw 'Wrong native UI agent choice.' }
 }
 try { $null=& $choose -Window $null -Endpoint '' -Key '' -Agent 'unrecognized'; throw 'Unexpected agent accepted.' }

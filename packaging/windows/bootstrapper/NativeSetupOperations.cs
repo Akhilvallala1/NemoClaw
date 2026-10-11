@@ -98,7 +98,7 @@ internal static class NativeSetupOperations
 
     internal static void Launch(string agent)
     {
-        if (agent is not ("openclaw" or "hermes" or "langchain-deepagents-code" or "pi" or "nemocua")) throw new InvalidOperationException("The selected agent is invalid.");
+        if (agent is not ("openclaw" or "hermes")) throw new InvalidOperationException("The selected agent is invalid.");
         var launcher = InstalledLauncher();
         using var child = Process.Start(new ProcessStartInfo
         {

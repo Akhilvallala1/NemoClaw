@@ -36,26 +36,6 @@ LAYOUT = {
             "openclaw-resource-closure.json",
         ],
     ),
-    "pi": ("pi", ["node_modules/@earendil-works/pi-coding-agent/dist/cli.js"]),
-    "langchain-deepagents-code": (
-        "deepagents",
-        [
-            "site-packages/deepagents_code/main.py",
-            "python/python.exe",
-            "runtime-python.json",
-        ],
-    ),
-    "nemocua": (
-        "nemocua",
-        [
-            "run_with_harness.py",
-            "run_with_harness.pyc",
-            "python/python.exe",
-            "runtime-python.json",
-            "python-bytecode.json",
-            "browser-driver/node_modules/playwright-core/package.json",
-        ],
-    ),
     "hermes": (
         "hermes",
         [
@@ -75,7 +55,6 @@ HERMES_CORE_PYTHON = "hermes-agent/.hermes-runtime/python/cpython-3.11.16-window
 HOST_MODES = [
     "turn",
     "terminal-turn",
-    "nemocua",
     "console",
     "web",
     "hermes-dashboard",
@@ -84,11 +63,8 @@ HOST_MODES = [
 GUEST_MODES = [
     "openclaw-turn",
     "openclaw-web",
-    "pi-turn",
     "hermes-turn",
-    "deepagents-turn",
     "interactive",
-    "nemocua",
 ]
 PYTHON_WORKERS = {
     "hermes": (
@@ -101,14 +77,10 @@ PYTHON_WORKERS = {
             "hermes-dashboard-probe",
         ],
     ),
-    "langchain-deepagents-code": ("3.13.13", ["deepagents-turn", "deepagents-console"]),
 }
 AGENT_RUNTIME_CONTRACT = {
     "openclaw": ("OpenClaw Control UI", ["NemoClaw.Runtime.exe", "openclaw gateway"]),
     "hermes": ("Hermes dashboard and native terminal UI", ["Microsoft Edge", "Hermes Python", "OpenShell gateway"]),
-    "langchain-deepagents-code": ("Deep Agents Code terminal UI", ["Deep Agents Python", "ConPTY host"]),
-    "pi": ("Pi native terminal UI", ["Pi Node", "ConPTY host"]),
-    "nemocua": ("NemoCUA computer-use runtime", ["NemoCUA Python", "owned visible browser"]),
 }
 
 
@@ -485,56 +457,6 @@ def prepare_agent(agent: str, root: Path):
         raise ValueError("Unknown Windows runtime agent.")
     for relative in LAYOUT[agent][1]:
         ordinary(root / relative, False)
-    if agent in {"langchain-deepagents-code", "nemocua"}:
-        record = read_json(root / "runtime-python.json")
-        if (
-            record.get("classification") != "installer-finalized-agent-python"
-            or record.get("agent") != agent
-            or record.get("runtimeLaunchMutationRequired") is not False
-            or record.get("interpreter") != "python/python.exe"
-            or record.get("interpreterSha256")
-            != hash_file(root / "python/python.exe")[1]
-            or record.get("metadataPath") != "python/python313._pth"
-            or record.get("metadataSha256")
-            != hash_file(root / "python/python313._pth")[1]
-        ):
-            raise ValueError(
-                "Per-agent Python metadata is missing or differs from its final bytes."
-            )
-        arm64_executable(root / "python/python.exe")
-        if agent == "nemocua":
-            compiled = read_json(root / "python-bytecode.json", 16 * 1024 * 1024)
-            rows = compiled.get("directEntries", [])
-            if (
-                compiled.get("classification") != "ci-prepared-python-bytecode"
-                or compiled.get("agent") != agent
-                or compiled.get("pythonVersion") != record.get("pythonVersion")
-                or compiled.get("platform") != "win32"
-                or len(rows) != 1
-                or rows[0].get("entry") != "run_with_harness.pyc"
-                or rows[0].get("sourceSha256")
-                != hash_file(root / "run_with_harness.py")[1]
-                or hash_file(root / "run_with_harness.pyc")
-                != (rows[0].get("bytecodeBytes"), rows[0].get("bytecodeSha256"))
-            ):
-                raise ValueError(
-                    "The NemoCUA direct harness lacks exact precompiled bytecode."
-                )
-    if agent == "pi":
-        receipt = read_json(root / "selected-agent-build.json", 1024 * 1024)
-        if (
-            receipt.get("classification") != "finished-selected-node-agent"
-            or receipt.get("agent") != "pi"
-            or receipt.get("upstream")
-            != {"package": "@earendil-works/pi-coding-agent", "version": "0.84.1"}
-            or receipt.get("sourceLockSha256")
-            != "6267ec58e69fc6cd53d3c753f28b0e25c00f4befdcae63e8e4924bee2abf0712"
-            or receipt.get("customerBuildRequired") is not False
-            or receipt.get("runtimeLaunchCopiesRequired") is not False
-            or receipt.get("compiledSdkBuildSha256") != hash_file(root / "compiled-sdk-build.json")[1]
-            or (root / "package-lock.json").exists()
-        ):
-            raise ValueError("Pi requires its exact finished CI dependency tree.")
     # All links are rejected until the official archive's actual workspace
     # representation is reviewed. Never flatten links or accept curated Hermes.
     result = inventory(root)

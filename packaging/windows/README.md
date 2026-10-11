@@ -3,6 +3,16 @@
 
 # Native Windows candidate package
 
+## Agent scope
+
+This Windows candidate includes OpenClaw and Hermes only. Each finished package
+contains its build-selected agent; the other remains unavailable in that package.
+Standalone Pi, Deep Agents Code, and NemoCUA integrations have been removed.
+Their source remains in Git history. Existing state and credential cleanup still
+recognize those historical identities; they cannot start a new agent session.
+Non-Windows integrations and OpenClaw's internal dependencies are unchanged.
+This scope reduction does not establish installed qualification or release approval.
+
 ## Windows-tip migration in progress
 
 The finished-host build now pins OpenShell
@@ -21,7 +31,7 @@ publish this intermediate state as a usable installer. Required work includes
 OpenShell authorization and supervisor lifecycle validation, network-profile
 compatibility, and the prepared Hermes PTY runtime.
 
-The five launchers now provision fresh TLS and JWT keys through a shared gateway
+The retained launchers provision fresh TLS and JWT keys through a shared gateway
 session owner. Its sibling session directory permits access only to the Windows
 user and SYSTEM. It contains gateway keys, imported CLI certificates, and supervisor
 state; it is outside the workload share and ordinary logs. The bundled UI helper
@@ -60,7 +70,7 @@ The passing Windows-tip cycles allowed host loopback through the host-supervisor
 protocol. They did not prove denied host loopback, port-only isolation, an outer
 network fence, or live policy revocation. Keep those limitations separate from
 functional acceptance. Do not replace denied-network evidence with the passing
-preview result. Fresh installed OpenClaw, Hermes, and shipped Pi acceptance must
+preview result. Fresh installed OpenClaw and Hermes acceptance must
 use the newly built package and record its actual Windows and runtime identities.
 
 ## Existing installer behavior and remaining migration surface
@@ -166,31 +176,14 @@ Closing that control waits for sandbox, gateway, broker, and state cleanup.
 
 The selected agent carries through configuration and launch, and the installed
 launcher remembers the last configured agent. The same native window edits
-settings later. Agent launch is an explicit completion action. Pi and NemoCUA
-remain experimental. `agent-support.json` records the authentic packaged
+settings later. Agent launch is an explicit completion action.
+`agent-support.json` records the packaged
 implementations and their preview limitations.
 
 The compiled OpenClaw package retains its published workspace templates under
 the canonical package root. Fresh workspace bootstrap needs these files even when
 existing-workspace tool checks pass. Resource composition preserves their bytes
 and inventory hashes and rejects missing directories or linked input files.
-
-Pi packaging keeps the locked 0.84.1 agent and its original CLI and resources.
-Five dependency SDKs have ESM paths too long for the installed Windows namespace.
-The build compiles those ESM modules with pinned esbuild 0.27.4 into short names,
-preserving runtime exports and CommonJS files. SDK source and declarations are
-omitted; original licenses are archived before transformation. A hashed build
-receipt binds the transformed inputs, and the final payload still must pass the
-Windows path-length check. This packaging step is not installed qualification.
-
-For Pi installer tests, select `finished_windows_validation_scope: startup-only`.
-This lane installs the package, verifies the compiled runtime identity, runs three
-contained Pi turns against a local mock model, and uninstalls the package.
-It does not receive repository inference keys. Its receipt does not qualify live
-inference, interactive onboarding, migration, or N1X security. Pi's `full-acceptance`
-lane instead requires native onboarding, two real terminal replies, verified file
-tools, a settings-preserving restart, and owned cleanup. Implementing that lane
-does not establish a passing installed or physical N1X run.
 
 Hermes uses the corrected pywinpty ARM64 wheel, including its matched `conpty.dll`
 and `OpenConsole.exe` beside the native Python extension. The Microsoft ConPTY
@@ -233,8 +226,16 @@ per-account, per-agent session ownership through sandbox cleanup. Reopening
 retains data and checks the directory's owner, permissions, and ordinary-directory
 type. Changed permissions or a reparse point stop the launch without resetting
 or deleting state. Host configuration remains private in Local App Data; the
-agent receives no access to the user-profile directory. Existing preview state
-is not migrated automatically.
+agent receives no access to the user-profile directory. The launcher does not
+import arbitrary state from older preview locations. Within the retained
+OpenClaw state root, configured startup detects the legacy
+`.openclaw/agents/main/sessions/sessions.json` store and runs the packaged
+OpenClaw dry-run and SQLite import before starting the sandbox. It holds the
+private state lease throughout, rejects redirected paths and unsafe records,
+and does not load agent plugins or credentials into the migration process.
+Successful migration retains the upstream migration archives. A failed or
+interrupted migration stops launch and retains original files and available
+archives for recovery; do not delete them to force startup.
 
 Web UI file transport uses a native, bounded file owner. It pins the root and
 stream directory handles, performs handle-relative I/O, and refuses reparse

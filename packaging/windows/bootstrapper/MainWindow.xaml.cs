@@ -23,9 +23,6 @@ public partial class MainWindow : Window
     {
         ["openclaw"] = "OpenClaw",
         ["hermes"] = "Hermes Agent",
-        ["langchain-deepagents-code"] = "Deep Agents Code",
-        ["pi"] = "Pi",
-        ["nemocua"] = "NemoCUA",
     };
     private readonly NativeProgressPresentation progress = new();
     private readonly NativeRuntimeAvailability runtimeAvailability = NativeRuntimeAvailability.Load();
@@ -117,9 +114,6 @@ public partial class MainWindow : Window
         var choice = (initialAgent ?? this.SelectedAgent) switch
         {
             "hermes" => this.HermesChoice,
-            "langchain-deepagents-code" => this.DeepAgentsChoice,
-            "pi" => this.PiChoice,
-            "nemocua" => this.NemoCuaChoice,
             _ => this.OpenClawChoice,
         };
         choice.IsChecked = true;
@@ -408,8 +402,8 @@ public partial class MainWindow : Window
     private void ApplyRuntimeAvailability()
     {
         if (!this.runtimeAvailability.IsSelectedRuntimeBuild) return;
-        var choices = new[] { this.OpenClawChoice, this.HermesChoice, this.DeepAgentsChoice, this.PiChoice, this.NemoCuaChoice };
-        var details = new[] { this.OpenClawAvailability, this.HermesAvailability, this.DeepAgentsAvailability, this.PiAvailability, this.NemoCuaAvailability };
+        var choices = new[] { this.OpenClawChoice, this.HermesChoice };
+        var details = new[] { this.OpenClawAvailability, this.HermesAvailability };
         for (var index = 0; index < choices.Length; index++)
         {
             var enabled = this.runtimeAvailability.CanSelect((string)choices[index].Tag);

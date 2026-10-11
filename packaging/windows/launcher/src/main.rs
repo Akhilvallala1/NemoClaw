@@ -404,16 +404,13 @@ fn main() {
             .windows(2)
             .find(|values| values[0] == "--agent")
             .and_then(|values| values[1].to_str())
-            .unwrap_or("pi");
+            .unwrap_or("hermes");
         let (mode, purpose) = match route {
             "describe" if forwarded.len() == 2 => ("--describe-runtime", "host"),
             "turn" => ("turn", "openclaw"),
             "web" => ("web", "openclaw"),
-            "nemocua" => ("nemocua", "nemocua"),
             "hermes-dashboard" => ("hermes-dashboard", "hermes"),
-            "terminal-turn" if matches!(agent, "pi" | "hermes" | "langchain-deepagents-code") => {
-                ("terminal-turn", agent)
-            }
+            "terminal-turn" if agent == "hermes" => ("terminal-turn", agent),
             _ => credential_error("The owned native runtime route is invalid."),
         };
         let lease = runtime_lease::native::PackageLease::acquire(purpose)
@@ -666,10 +663,7 @@ fn main() {
                     (text.len() <= 64).then(|| text.trim().to_owned())
                 });
             if let Some(agent) = explicit_agent.clone().or(remembered) {
-                if matches!(
-                    agent.as_str(),
-                    "openclaw" | "hermes" | "langchain-deepagents-code" | "pi" | "nemocua"
-                ) {
+                if matches!(agent.as_str(), "openclaw" | "hermes") {
                     if explicit_agent.is_none() {
                         forwarded.push("--agent".into());
                         forwarded.push(agent.clone().into());
@@ -703,10 +697,7 @@ fn main() {
             .current_dir(&install);
         if let Some(selection) = forwarded.windows(2).find(|values| values[0] == "--agent") {
             let agent = selection[1].to_str().unwrap_or("");
-            if !matches!(
-                agent,
-                "openclaw" | "hermes" | "langchain-deepagents-code" | "pi" | "nemocua"
-            ) {
+            if !matches!(agent, "openclaw" | "hermes") {
                 fail("The selected NemoClaw agent is invalid.");
             }
             command.arg("--agent").arg(agent);
@@ -728,10 +719,6 @@ fn main() {
             .unwrap_or_else(|_| fail("The native NemoClaw interface could not start."));
         return;
     }
-    let configured_nemocua = configured
-        && forwarded
-            .windows(2)
-            .any(|values| values[0] == "--agent" && values[1] == "nemocua");
     let configured_openclaw = configured
         && forwarded
             .windows(2)
@@ -742,20 +729,13 @@ fn main() {
             .windows(2)
             .any(|values| values[0] == "--agent" && values[1] == "hermes");
     let configured_terminal = configured
-        && forwarded.windows(2).any(|values| {
-            values[0] == "--agent"
-                && matches!(
-                    values[1].to_str(),
-                    Some("pi" | "hermes" | "langchain-deepagents-code")
-                )
-        });
-    let new_console =
-        explicit_console || (configured_terminal && !configured_hermes_ui) || configured_nemocua;
+        && forwarded
+            .windows(2)
+            .any(|values| values[0] == "--agent" && matches!(values[1].to_str(), Some("hermes")));
+    let new_console = explicit_console || (configured_terminal && !configured_hermes_ui);
     #[cfg(feature = "immutable-runtime")]
     let mode = if native_turn {
         "turn"
-    } else if configured_nemocua {
-        "nemocua"
     } else if configured_hermes_ui {
         "hermes-dashboard"
     } else if configured_openclaw {
@@ -781,8 +761,6 @@ fn main() {
     #[cfg(not(feature = "immutable-runtime"))]
     let entry = install.join("qualification").join(if native_turn {
         "run-installed-native-turn.mts"
-    } else if configured_nemocua {
-        "run-installed-native-nemocua.mts"
     } else if configured_hermes_ui {
         "run-installed-native-hermes-ui.mts"
     } else if configured_openclaw {

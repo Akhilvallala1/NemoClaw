@@ -28,15 +28,15 @@ const selections = [
   ...NATIVE_LOCAL_MODELS.models.map(({ id }) => ({ id, model: id })),
 ];
 
-function fixture(t: TestContext, configuration: object) {
+function fixture(t: TestContext, configuration: object, agent = "openclaw") {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-removal-"));
   const previous = process.env.LOCALAPPDATA;
   // A double-leading slash is also absolute to path.win32 on the portable runner.
   process.env.LOCALAPPDATA = process.platform === "win32" ? directory : `/${directory}`;
   const root = path.join(directory, "NVIDIA", "NemoClaw");
-  const selected = path.join(root, "agents", "openclaw");
+  const selected = path.join(root, "agents", agent);
   const config = path.join(selected, "native-windows.json");
-  const other = path.join(root, "agents", "pi", "retained.txt");
+  const other = path.join(root, "agents", agent === "pi" ? "openclaw" : "pi", "retained.txt");
   const shared = path.join(root, "inference", "retained-model.gguf");
   fs.mkdirSync(selected, { recursive: true });
   fs.mkdirSync(path.dirname(other), { recursive: true });
@@ -45,7 +45,7 @@ function fixture(t: TestContext, configuration: object) {
   fs.writeFileSync(other, "other-agent");
   fs.writeFileSync(shared, "shared-model");
   const active = path.join(root, "active-agent.txt");
-  fs.writeFileSync(active, "openclaw\n");
+  fs.writeFileSync(active, agent + "\n");
   t.after(() => {
     if (previous === undefined) delete process.env.LOCALAPPDATA;
     else process.env.LOCALAPPDATA = previous;
@@ -54,18 +54,18 @@ function fixture(t: TestContext, configuration: object) {
   return { selected, config, other, shared, active };
 }
 
-function owner() {
+function owner(expectedAgent = "openclaw") {
   const deleted: { provider: string; binding: string }[] = [];
   let held = false;
   let released = false;
   let acquired = 0;
   const dependencies = {
     acquireRemoval: async (_launcher: string, agent: string) => {
-      assert.equal(agent, "openclaw");
+      assert.equal(agent, expectedAgent);
       acquired++;
       held = true;
       return {
-        stateRoot: "C:\\NemoClawState-S-1-5-21-1-openclaw",
+        stateRoot: "C:\\NemoClawState-S-1-5-21-1-" + expectedAgent,
         created: false,
         removed: true,
         assertHeld() {
@@ -83,6 +83,27 @@ function owner() {
     },
   };
   return { dependencies, deleted, acquired: () => acquired, released: () => released };
+}
+
+for (const agent of ["pi", "langchain-deepagents-code", "nemocua"]) {
+  test(`retired ${agent} data remains removable without affecting another agent`, async (t) => {
+    const configuration = { ...hosted, agent };
+    const files = fixture(t, configuration, agent);
+    const state = owner(agent);
+    await removeNativeAgentData("unused", agent, state.dependencies);
+    assert.deepEqual(state.deleted, [
+      { provider: "compatible", binding: nativeCredentialBinding(configuration) },
+      ...Object.keys(NATIVE_SERVICES).map((provider) => ({
+        provider,
+        binding: nativeServiceBinding(agent, provider),
+      })),
+    ]);
+    assert.equal(fs.existsSync(files.selected), false);
+    assert.equal(fs.existsSync(files.active), false);
+    assert.equal(fs.readFileSync(files.other, "utf8"), "other-agent");
+    assert.equal(fs.readFileSync(files.shared, "utf8"), "shared-model");
+    assert.equal(state.released(), true);
+  });
 }
 
 for (const selection of selections) {

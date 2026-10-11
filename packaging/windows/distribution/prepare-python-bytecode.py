@@ -22,8 +22,6 @@ import sys
 
 VERSIONS = {
     "hermes": (3, 11, 16),
-    "langchain-deepagents-code": (3, 13, 13),
-    "nemocua": (3, 13, 13),
 }
 WORKERS = {
     "hermes": (
@@ -33,8 +31,6 @@ WORKERS = {
         "hermes-dashboard",
         "hermes-dashboard-probe",
     ),
-    "langchain-deepagents-code": ("deepagents-turn", "deepagents-console"),
-    "nemocua": (),
 }
 
 

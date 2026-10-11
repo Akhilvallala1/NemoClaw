@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { runNativeTurnEntry } from "./run-installed-native-turn.mts";
-import { runNativeTerminalTurnEntry } from "./run-installed-native-pi.mts";
-import { runNativeNemoCuaEntry } from "./run-installed-native-nemocua.mts";
+import { runNativeTerminalTurnEntry } from "./run-installed-native-hermes-turn.mts";
 import { runNativeConsoleEntry } from "./run-installed-native-console-agent.mts";
 import { runNativeWebEntry } from "./run-installed-native-web-ui.mts";
 import { runNativeHermesUiEntry } from "./run-installed-native-hermes-ui.mts";
@@ -12,7 +11,6 @@ import { runNativeInferenceEntry } from "./native-inference-cli.mts";
 const entries = {
   turn: runNativeTurnEntry,
   "terminal-turn": runNativeTerminalTurnEntry,
-  nemocua: runNativeNemoCuaEntry,
   console: runNativeConsoleEntry,
   web: runNativeWebEntry,
   "hermes-dashboard": runNativeHermesUiEntry,

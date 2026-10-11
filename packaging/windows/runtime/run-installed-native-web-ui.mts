@@ -76,7 +76,7 @@ const TURN_PROOFS = [
   ["Reply exactly with NATIVE_WINDOWS_TURN_3_OK", "NATIVE_WINDOWS_TURN_3_OK"],
 ];
 
-const AGENT_CHOICE_PROOF = ["openclaw", "hermes", "langchain-deepagents-code", "pi", "nemocua"];
+const AGENT_CHOICE_PROOF = ["openclaw", "hermes"];
 
 const sleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -455,9 +455,6 @@ async function startOnboardingServer(
     ["/assets/nvidia.svg", ["assets/nvidia.svg", "image/svg+xml"]],
     ["/assets/openclaw.png", ["assets/openclaw.png", "image/png"]],
     ["/assets/hermes.png", ["assets/hermes.png", "image/png"]],
-    ["/assets/deepagents.png", ["assets/deepagents.png", "image/png"]],
-    ["/assets/pi.svg", ["assets/pi.svg", "image/svg+xml"]],
-    ["/assets/nemocua.png", ["assets/nemocua.png", "image/png"]],
   ]);
   let selection: {
     schemaVersion: number;
@@ -601,9 +598,6 @@ async function startOnboardingServer(
 const agentNamesForLaunch: Record<string, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes Agent",
-  "langchain-deepagents-code": "Deep Agents Code",
-  pi: "Pi",
-  nemocua: "NemoCUA",
 };
 
 async function driveBrowser(
@@ -860,18 +854,13 @@ async function runSelectedNonOpenClaw(
 
   const runtimeEvidence = path.join(evidenceRoot, "runtime");
   fs.mkdirSync(runtimeEvidence, { recursive: true });
-  const isNemoCua = targetAgent === "nemocua";
+  if (targetAgent !== "hermes") fail("the terminal runtime requires Hermes");
   const runner = requiredFile(
     nativeDistributionAsset("NemoClaw.Runtime.exe"),
     "prebuilt native adapter",
   );
-  const arguments_ = [
-    isNemoCua ? "nemocua" : "terminal-turn",
-    "--qualification",
-    "--artifact-directory",
-    runtimeEvidence,
-  ];
-  if (!isNemoCua) arguments_.push("--agent", targetAgent);
+  const arguments_ = ["terminal-turn", "--qualification", "--artifact-directory", runtimeEvidence];
+  arguments_.push("--agent", targetAgent);
   const environment = allowlistedWindowsEnvironment({
     NEMOCLAW_NATIVE_INSTALL_ROOT: installRoot,
     NEMOCLAW_NATIVE_RUNTIME_ROOT: path.dirname(path.dirname(runner)),
@@ -892,9 +881,6 @@ async function runSelectedNonOpenClaw(
   if (exitCode !== 0) fail(`${agentNamesForLaunch[targetAgent]} native adapter exited ${exitCode}`);
   const receiptPrefixes: Record<string, string> = {
     hermes: "native-windows-hermes-",
-    "langchain-deepagents-code": "native-windows-langchain-deepagents-code-",
-    pi: "native-windows-pi-",
-    nemocua: "native-windows-nemocua-",
   };
   const runtimeReceipts = fs
     .readdirSync(runtimeEvidence)
@@ -1059,45 +1045,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         },
       };
     }
-    diagnostics.stage("inference");
-    webSession?.progress("inference");
-    const configuredIdentity = configured ? readNativeAgentConfiguration("openclaw") : null;
-    const resolvedInference = configuredIdentity
-      ? await resolveNativeConfiguredInference(
-          installRoot,
-          launcherPath,
-          configuredIdentity.config,
-          {
-            signal: webSession?.signal,
-            ...(webSession
-              ? {
-                  onProgress: (event: NativeInferenceProgress) =>
-                    webSession?.progress(
-                      "inference",
-                      typeof event.completedBytes === "number" &&
-                        typeof event.totalBytes === "number"
-                        ? {
-                            completed: event.completedBytes,
-                            total: event.totalBytes,
-                            unit: "bytes",
-                          }
-                        : undefined,
-                    ),
-                }
-              : {}),
-          },
-        )
-      : null;
-    if (configuredIdentity && resolvedInference)
-      configuredIdentity.config = resolvedInference.configuration;
-    const modelId = configuredIdentity?.config.model ?? "native-preview";
-    const modelToken = randomBytes(32).toString("base64url");
-    const credential = resolvedInference?.credential ?? "";
-    diagnostics.secret(modelToken, credential);
-    diagnostics.stage("runtime");
-    webSession?.assertRunning();
-    webSession?.progress("runtime");
-    const stateSession = configuredIdentity
+    const stateSession = configured
       ? bindNativeRuntimeGuard(
           await acquireNativeStateSession(launcherPath, "openclaw"),
           runtimeLease,
@@ -1297,6 +1245,46 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         ],
       ]));
     try {
+      stateSession?.assertHeld();
+      diagnostics.stage("inference");
+      webSession?.progress("inference");
+      const configuredIdentity = configured ? readNativeAgentConfiguration("openclaw") : null;
+      const resolvedInference = configuredIdentity
+        ? await resolveNativeConfiguredInference(
+            installRoot,
+            launcherPath,
+            configuredIdentity.config,
+            {
+              signal: webSession?.signal,
+              ...(webSession
+                ? {
+                    onProgress: (event: NativeInferenceProgress) =>
+                      webSession?.progress(
+                        "inference",
+                        typeof event.completedBytes === "number" &&
+                          typeof event.totalBytes === "number"
+                          ? {
+                              completed: event.completedBytes,
+                              total: event.totalBytes,
+                              unit: "bytes",
+                            }
+                          : undefined,
+                      ),
+                  }
+                : {}),
+            },
+          )
+        : null;
+      if (configuredIdentity && resolvedInference)
+        configuredIdentity.config = resolvedInference.configuration;
+      const modelId = configuredIdentity?.config.model ?? "native-preview";
+      const modelToken = randomBytes(32).toString("base64url");
+      const credential = resolvedInference?.credential ?? "";
+      diagnostics.secret(modelToken, credential);
+      diagnostics.stage("runtime");
+      webSession?.assertRunning();
+      webSession?.progress("runtime");
+      stateSession?.assertHeld();
       if (stateSession) {
         diagnostics.stage("runtime");
         await migrateNativeOpenClawSessions({

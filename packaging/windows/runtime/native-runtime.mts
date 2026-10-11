@@ -5,30 +5,14 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
-export type NativeRuntimePurpose =
-  | "openclaw"
-  | "hermes"
-  | "pi"
-  | "langchain-deepagents-code"
-  | "nemocua"
-  | "inference";
-const PURPOSES: readonly NativeRuntimePurpose[] = [
-  "openclaw",
-  "hermes",
-  "pi",
-  "langchain-deepagents-code",
-  "nemocua",
-  "inference",
-];
+export type NativeRuntimePurpose = "openclaw" | "hermes" | "inference";
+const PURPOSES: readonly NativeRuntimePurpose[] = ["openclaw", "hermes", "inference"];
 const HEX64 = /^[a-f0-9]{64}$/u;
 const HEX40 = /^[a-f0-9]{40}$/u;
 const NODE_VERSION = /^(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})$/u;
 const DIRECTORY = {
   openclaw: "openclaw",
   hermes: "hermes",
-  pi: "pi",
-  "langchain-deepagents-code": "deepagents",
-  nemocua: "nemocua",
 } as const;
 
 export function validateNativeRuntimeReceipt(
@@ -89,9 +73,7 @@ export function validateNativeRuntimeReceipt(
   const python =
     purpose === "hermes"
       ? path.win32.join(agentRoot!, "hermes-agent", "venv", "Scripts", "python.exe")
-      : purpose === "nemocua" || purpose === "langchain-deepagents-code"
-        ? path.win32.join(agentRoot!, "python", "python.exe")
-        : null;
+      : null;
   const bash = purpose === "hermes" ? path.win32.join(agentRoot!, "git", "bin", "bash.exe") : null;
   return Object.freeze({
     purpose,
@@ -300,7 +282,7 @@ export function nativeRuntimeWorkerCommand(runtime: NativeRuntimeLaunchLease, wo
   // to canonicalize their entry point. Keep filesystem policy and dependency
   // resolution unchanged; this option applies only to the main module.
   const command =
-    runtime.purpose === "hermes" || runtime.purpose === "pi" || runtime.purpose === "openclaw"
+    runtime.purpose === "hermes" || runtime.purpose === "openclaw"
       ? [runtime.node, "--preserve-symlinks-main", workload]
       : [runtime.node, workload];
   if (runtime.purpose !== "hermes") return command;

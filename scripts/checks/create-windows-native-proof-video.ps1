@@ -40,10 +40,7 @@ $script:MinimumCaptureFrames = 40
 $script:MinimumUniqueFrames = 8
 $script:AgentVideoSegments = @(
     'openclaw',
-    'hermes',
-    'langchain-deepagents-code',
-    'pi',
-    'nemocua'
+    'hermes'
 )
 
 function Fail-ProofVideo {
@@ -72,14 +69,14 @@ function Assert-NativeExperienceReceipt {
         $setup.setupAndOnboardingBrowserFree -ne $true -or $setup.noAutomaticAgentLaunch -ne $true -or
         @($setup.browserDescendantStarts).Count -ne 0 -or @($setup.automaticAgentStarts).Count -ne 0 -or
         $setup.configurationsPreservedOnUninstall -ne $true -or $setup.qualificationConfigurationsRemoved -ne $true -or
-        (@($setup.selections | ForEach-Object { $_.agent }) -join ',') -cne 'openclaw,hermes,langchain-deepagents-code,pi,nemocua') {
+        (@($setup.selections | ForEach-Object { $_.agent }) -join ',') -cne 'openclaw,hermes') {
         Fail-ProofVideo 'The receipt does not prove one native setup experience and retained configuration ownership.'
     }
     foreach ($selection in $setup.selections) {
         if ($selection.framework -cne 'WPF' -or $selection.selectionConfirmed -ne $true -or
             $selection.finishedWithoutLaunch -ne $true -or [int]$selection.windowProcessId -le 0 -or
             @($selection.screenshots).Count -lt 2 -or
-            (@($selection.demonstratedAgentChoices) -join ',') -cne 'openclaw,hermes,langchain-deepagents-code,pi,nemocua') {
+            (@($selection.demonstratedAgentChoices) -join ',') -cne 'openclaw,hermes') {
             Fail-ProofVideo 'A native agent selection lacks actual window and configuration evidence.'
         }
     }
@@ -88,8 +85,8 @@ function Assert-NativeExperienceReceipt {
         Fail-ProofVideo 'Desktop shortcut installation and removal are not proven.'
     }
     foreach ($stage in $links) {
-        if ($stage.classification -cne 'native-windows-desktop-shortcut-qualification' -or $stage.passed -ne $true -or @($stage.links).Count -ne 6) {
-            Fail-ProofVideo 'The six expected Windows desktop shortcuts lack a complete stage receipt.'
+        if ($stage.classification -cne 'native-windows-desktop-shortcut-qualification' -or $stage.passed -ne $true -or @($stage.links).Count -ne 3) {
+            Fail-ProofVideo 'The three expected Windows desktop shortcuts lack a complete stage receipt.'
         }
         foreach ($link in $stage.links) {
             if (($stage.expected -ceq 'Present' -and $link.nativeShellLink -ne $true) -or
@@ -99,16 +96,16 @@ function Assert-NativeExperienceReceipt {
     $reset = $Receipt.testerReset
     if ($reset.classification -cne 'native-windows-tester-reset-qualification' -or $reset.passed -ne $true -or
         $reset.freshOwnedState -ne $true -or $reset.preservedDataByDefault -ne $true -or
-        (@($reset.explicitSelection) -join ',') -cne 'pi' -or $reset.selectedStateRemoved -ne $true -or
+        (@($reset.explicitSelection) -join ',') -cne 'hermes' -or $reset.selectedStateRemoved -ne $true -or
         $reset.selectedCredentialRemoved -ne $true -or $reset.selectedConfigurationRemoved -ne $true -or
         $reset.activeAgentCleared -ne $true -or $reset.otherAgentConfigurationsPreserved -ne $true -or
         $reset.desktopLinksRemoved -ne $true -or $reset.registrationRemoved -ne $true -or
         $reset.actualNativeMaintenance -ne $true -or $reset.reinstalledThroughNativeSetup -ne $true -or
-        (@($reset.restoredAgents) -join ',') -cne 'openclaw,hermes,langchain-deepagents-code,pi,nemocua' -or
+        (@($reset.restoredAgents) -join ',') -cne 'openclaw,hermes' -or
         $reset.originalSelectionReceiptRetained -ne $true) {
         Fail-ProofVideo 'The real tester data-removal and fresh native reinstall path is not proven.'
     }
-    foreach ($agent in @('pi', 'hermes', 'deepAgentsCode')) {
+    foreach ($agent in @('hermes')) {
         $acl = $Receipt.$agent.privateShareAcl
         if ($acl.protected -ne $true -or $acl.nonOwnerDataAccess -ne $false -or $acl.serviceSid -cne 'S-1-5-18' -or
             (@($acl.deniedSids) -join ',') -cne 'S-1-1-0,S-1-5-11,S-1-5-32-545') {
@@ -505,20 +502,11 @@ if ($null -eq $qualification -or -not $qualification.repairRestoredDigest -or
     [int]$qualification.webUi.turnCount -ne 3 -or
     $qualification.webUi.onboardingSkipped -ne $true -or
             @($qualification.webUi.turns).Count -ne 3 -or
-    $qualification.pi.verdict -cne 'pass' -or
-    [int]$qualification.pi.turnCount -ne 3 -or
     $qualification.hermes.verdict -cne 'pass' -or
     [int]$qualification.hermes.turnCount -ne 3 -or
-    $qualification.deepAgentsCode.verdict -cne 'pass' -or
-    [int]$qualification.deepAgentsCode.turnCount -ne 3 -or
-    $qualification.nemoCua.verdict -cne 'pass' -or
-    [int]$qualification.nemoCua.turnCount -ne 3 -or
-    $qualification.agentLaunches.pi.nativeSetupSelection.agent -cne 'pi' -or
     $qualification.agentLaunches.hermes.nativeSetupSelection.agent -cne 'hermes' -or
-    $qualification.agentLaunches.deepAgentsCode.nativeSetupSelection.agent -cne 'langchain-deepagents-code' -or
-    $qualification.agentLaunches.nemoCua.nativeSetupSelection.agent -cne 'nemocua' -or
     @($qualification.nativeExecutions).Count -ne 4 -or
-    @($qualification.applicationExecutions).Count -ne 6 -or
+    @($qualification.applicationExecutions).Count -ne 3 -or
     @($qualification.packageDescendantProhibitedStarts).Count -ne 0 -or
     @($qualification.newPackageDescendantProhibitedProcesses).Count -ne 0) {
     Fail-ProofVideo 'Initial package qualification receipt is not a complete passing lifecycle.'
@@ -685,9 +673,6 @@ try {
             '[PASS] Native WPF onboarding selected OpenClaw and completed three exact Control UI agent turns'
         ) -or
         -not $consoleTranscriptText.Contains(
-            '[PASS] Installed Pi completed three real terminal agent turns inside native MXC'
-        ) -or
-        -not $consoleTranscriptText.Contains(
             '[PASS] Installed Hermes completed three real terminal agent turns inside native MXC'
         ) -or
         -not $consoleTranscriptText.Contains(
@@ -695,12 +680,6 @@ try {
         ) -or
         -not $consoleTranscriptText.Contains(
             '[PASS] Real Hermes dashboard accepted three typed turns, displayed three provider responses, and native Stop released its sandbox and state lease'
-        ) -or
-        -not $consoleTranscriptText.Contains(
-            '[PASS] Installed Deep Agents Code completed three real terminal agent turns inside native MXC'
-        ) -or
-        -not $consoleTranscriptText.Contains(
-            '[PASS] Installed NemoCUA completed three real model-driven browser actions inside native MXC'
         )) {
         $captureFailures.Add('The recorded console did not show every installed native agent qualification result.')
     }
@@ -921,29 +900,16 @@ public static class NemoClawConsoleVideoEncoder
                         @($recordedQualification.webUi.turns).Count -ne 3)) {
         $captureFailures.Add('The recorded qualification receipt does not prove visible agent choices and three OpenClaw Control UI turns.')
     }
-    if ($null -ne $recordedQualification -and ($recordedQualification.pi.verdict -cne 'pass' -or
-        [int]$recordedQualification.pi.turnCount -ne 3 -or
-        @($recordedQualification.pi.turns).Count -ne 3)) {
-        $captureFailures.Add('The recorded qualification receipt does not prove three real Pi terminal turns.')
-    }
+
     if ($null -ne $recordedQualification -and ($recordedQualification.hermes.verdict -cne 'pass' -or
         [int]$recordedQualification.hermes.turnCount -ne 3 -or
         @($recordedQualification.hermes.turns).Count -ne 3)) {
         $captureFailures.Add('The recorded qualification receipt does not prove three real Hermes terminal turns.')
     }
-    if ($null -ne $recordedQualification -and ($recordedQualification.deepAgentsCode.verdict -cne 'pass' -or
-        [int]$recordedQualification.deepAgentsCode.turnCount -ne 3 -or
-        @($recordedQualification.deepAgentsCode.turns).Count -ne 3)) {
-        $captureFailures.Add('The recorded qualification receipt does not prove three real Deep Agents Code terminal turns.')
-    }
-    if ($null -ne $recordedQualification -and ($recordedQualification.nemoCua.verdict -cne 'pass' -or
-        [int]$recordedQualification.nemoCua.turnCount -ne 3 -or
-        @($recordedQualification.nemoCua.turns).Count -ne 3 -or
-        $recordedQualification.agentLaunches.pi.nativeSetupSelection.agent -cne 'pi' -or
-        $recordedQualification.agentLaunches.hermes.nativeSetupSelection.agent -cne 'hermes' -or
-        $recordedQualification.agentLaunches.deepAgentsCode.nativeSetupSelection.agent -cne 'langchain-deepagents-code' -or
-        $recordedQualification.agentLaunches.nemoCua.nativeSetupSelection.agent -cne 'nemocua')) {
-        $captureFailures.Add('The recorded qualification receipt does not prove three real NemoCUA browser turns.')
+
+    if ($null -ne $recordedQualification -and
+        $recordedQualification.agentLaunches.hermes.nativeSetupSelection.agent -cne 'hermes') {
+        $captureFailures.Add('The recorded qualification receipt does not bind Hermes turns to its native setup selection.')
     }
     if ($null -ne $recordedQualification) {
         try { Assert-NativeExperienceReceipt -Receipt $recordedQualification }

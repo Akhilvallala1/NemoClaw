@@ -7,9 +7,6 @@ declare const window: Window;
 const agentNames = {
   openclaw: "OpenClaw",
   hermes: "Hermes Agent",
-  "langchain-deepagents-code": "Deep Agents Code",
-  pi: "Pi",
-  nemocua: "NemoCUA",
 };
 
 const inferenceNames = {
@@ -158,7 +155,6 @@ function render() {
     : credential.value.trim()
       ? "Windows Credential Manager"
       : "No credential required";
-  document.querySelector("#experimental-notice").hidden = !["pi", "nemocua"].includes(state.agent);
 }
 
 function select(selector, attribute, value) {

@@ -79,8 +79,8 @@ function Wait-PreviewWindow($Process) {
     throw 'The candidate setup window did not become available.'
 }
 function Set-PreviewCanaryConfiguration($Window, [string]$Endpoint, [string]$Key,
-    [ValidateSet('openclaw','hermes','pi')][string]$Agent = 'openclaw') {
-    $choiceId = switch ($Agent.ToLowerInvariant()) { 'hermes' { 'AgentHermes' }; 'pi' { 'AgentPi' }; 'openclaw' { 'AgentOpenClaw' } }
+    [ValidateSet('openclaw','hermes')][string]$Agent = 'openclaw') {
+    $choiceId = switch ($Agent.ToLowerInvariant()) { 'hermes' { 'AgentHermes' }; 'openclaw' { 'AgentOpenClaw' } }
     $choice = Wait-PreviewElement $Window $choiceId
     ([Windows.Automation.SelectionItemPattern]$choice.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern)).Select()
     Invoke-PreviewButton (Wait-PreviewElement $Window 'ConfigureInference')
@@ -106,7 +106,7 @@ function Invoke-PreviewUi {
         [string]$LogPath, [string]$Endpoint = 'https://127.0.0.1:17193/qualification/v1',
         [string]$CanaryKey = 'disposable-setup-diagnostic-canary',
         [Alias('RemoveOpenClawData')][switch]$RemoveAgentData, [scriptblock]$AfterReplacement,
-        [ValidateSet('openclaw','hermes','pi')][string]$Agent = 'openclaw')
+        [ValidateSet('openclaw','hermes')][string]$Agent = 'openclaw')
     if ((Get-FileHash -LiteralPath $SetupPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $SetupSha256) { throw 'The setup artifact bytes changed before execution.' }
     if (Test-Path -LiteralPath $LogPath) { throw 'Setup qualification logs must be fresh.' }
     $action = if ($Mode -ceq 'uninstall') { '-uninstall' } else { '-install' }

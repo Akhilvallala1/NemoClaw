@@ -10,7 +10,7 @@ param(
     [Parameter(Mandatory)][string]$Root,
     [Parameter(Mandatory)][ValidateSet('compiled-application', 'finished-installer', 'bash-compatibility')][string]$Kind,
     [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{40}$')][string]$SourceRevision,
-    [Parameter(Mandatory)][ValidateSet('openclaw', 'hermes', 'pi')][string]$Agent,
+    [Parameter(Mandatory)][ValidateSet('openclaw', 'hermes')][string]$Agent,
     [Parameter(Mandatory)][ValidatePattern('^[1-9][0-9]*$')][string]$RunId,
     [Parameter(Mandatory)][ValidatePattern('^[1-9][0-9]*$')][string]$RunAttempt,
     [ValidatePattern('^[a-f0-9]{64}$')][string]$ExpectedManifestSha256 = '',

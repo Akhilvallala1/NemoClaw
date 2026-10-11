@@ -114,7 +114,17 @@ function start(label: string, source: string) {
   fs.writeFileSync(file, trap + source, { flag: "wx" });
   const child = spawn(process.execPath, [file], {
     cwd: app,
-    env,
+    env:
+      label === "inspect"
+        ? {
+            ...env,
+            // The Windows failure enters the CLI but does not finish it. Upstream
+            // start/end spans locate the pending bootstrap operation in this
+            // synthetic, credential-free fixture without changing its deadline.
+            OPENCLAW_DIAGNOSTICS: "1",
+            OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: path.join(output, "inspect.timeline.log"),
+          }
+        : env,
     stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   let stdout = "",

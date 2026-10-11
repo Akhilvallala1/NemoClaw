@@ -57,14 +57,30 @@ internal static class Program
         }
         await AssertBoundedWaitAsync(cancel: true);
         await AssertBoundedWaitAsync(cancel: false);
-        Console.WriteLine("2 maintenance wait controls passed; cancellation and deadline leave Windows Installer alive.");
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        foreach (var operation in new Func<Task>[] {
+            async () => { await NativeMaintenance.RunRelatedActionAsync(true, cancelled.Token); },
+            async () => { await NativeMaintenance.RunRelatedActionAsync(false, cancelled.Token); },
+            () => NativeMaintenance.RemoveAgentDataAsync(["hermes"], cancelled.Token),
+            () => NativeMaintenance.StopSharedInferenceAsync(cancellation: cancelled.Token),
+        })
+        {
+            try
+            {
+                await operation();
+                throw new InvalidOperationException("Cancelled maintenance reached its external operation.");
+            }
+            catch (OperationCanceledException error) when (error.CancellationToken == cancelled.Token) { }
+        }
+        Console.WriteLine("6 maintenance controls passed; pre-cancelled operations do not start and live Windows Installer waits remain recoverable.");
         return 0;
     }
 }
 
 internal static class NativeSetupOperations
 {
-    internal static string InstalledLauncher() => "unused";
+    internal static string InstalledLauncher() => throw new InvalidOperationException("Pre-cancelled maintenance must not inspect the installed launcher.");
 }
 
 internal static class NativeOnboarding

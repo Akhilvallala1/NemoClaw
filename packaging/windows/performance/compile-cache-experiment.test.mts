@@ -36,7 +36,7 @@ test("cache namespace separates every runtime, Node and agent identity", () => {
   for (const [node, manifest, agent] of [
     ["c".repeat(64), "b".repeat(64), "openclaw"],
     ["a".repeat(64), "c".repeat(64), "openclaw"],
-    ["a".repeat(64), "b".repeat(64), "pi"],
+    ["a".repeat(64), "b".repeat(64), "hermes"],
   ])
     assert.notEqual(cacheNamespace(node!, manifest!, agent!), first);
   assert.throws(() => cacheNamespace("a".repeat(40), "b".repeat(64), "openclaw"));

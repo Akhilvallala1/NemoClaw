@@ -44,7 +44,7 @@ const map = JSON.stringify({ version: 3, sources: ["index.ts"], mappings: "AAAA"
 test("the build command preserves plan inputs and separates verified production assets", async () => {
   const f = await fixture();
   try {
-    const prefix = "pi/node_modules/cli-fixture/";
+    const prefix = "openclaw/node_modules/cli-fixture/";
     await f.write(
       prefix + "package.json",
       JSON.stringify({ types: "./index.d.ts", main: "./index.js" }),
@@ -135,13 +135,13 @@ test("runtime exports, compiler declarations and non-source-map data are retaine
   const f = await fixture();
   try {
     await f.write(
-      "pi/node_modules/compiler/package.json",
+      "openclaw/node_modules/compiler/package.json",
       JSON.stringify({ exports: { "./schema": "./schema.d.ts" } }),
     );
-    await f.write("pi/node_modules/compiler/schema.d.ts", "runtime-readable declaration\n");
-    await f.write("pi/node_modules/typescript/lib/lib.esnext.d.ts", "compiler resource\n");
+    await f.write("openclaw/node_modules/compiler/schema.d.ts", "runtime-readable declaration\n");
+    await f.write("openclaw/node_modules/typescript/lib/lib.esnext.d.ts", "compiler resource\n");
     await f.write(
-      "pi/node_modules/compiler/data.js.map",
+      "openclaw/node_modules/compiler/data.js.map",
       JSON.stringify({ version: 7, map: "runtime data" }),
     );
     await f.write("hermes/hermes-agent/custom.d.ts", "outside audited Node distributions\n");
@@ -281,7 +281,7 @@ test("an ancestor export remains a working resource through nested package metad
 test("a literal declaration resource read stays functional even when package metadata calls it types", async () => {
   const f = await fixture();
   try {
-    const prefix = "pi/node_modules/schema-reader/";
+    const prefix = "openclaw/node_modules/schema-reader/";
     await f.write(
       prefix + "package.json",
       JSON.stringify({ type: "module", types: "./schema.d.ts" }),
@@ -443,7 +443,7 @@ test("a working file reader keeps its data while annotated maps move to diagnost
 test("a runtime declaration reader preserves its input without treating linked maps as compiler inputs", async () => {
   const f = await fixture();
   try {
-    const prefix = "pi/node_modules/compiler-host/";
+    const prefix = "openclaw/node_modules/compiler-host/";
     await f.write(
       prefix + "package.json",
       JSON.stringify({ type: "module", types: "./schema.d.ts" }),
