@@ -31,6 +31,7 @@ import {
 } from "./jetson-dispatch-contract.mts";
 import { normalizeE2eSelectorIds } from "./selector-aliases.mts";
 import {
+  catalogueAgentRuntime,
   catalogueExclusionReason,
   catalogueHostPackages,
   catalogueMatrix,
@@ -407,7 +408,7 @@ function isCatalogueMatrixRowForProfile(
       )?.modelEnv &&
     target.targetId === value.target_id &&
     target.displayName === value.display_name &&
-    target.agentRuntime === value.agent_runtime &&
+    catalogueAgentRuntime(target, value.runtime_provider) === value.agent_runtime &&
     target.displayName === value.observable_outcome &&
     target.environmentOrInferenceEndpoint === value.environment_or_inference_endpoint &&
     target.unresolvedReason === value.unresolved_reason &&

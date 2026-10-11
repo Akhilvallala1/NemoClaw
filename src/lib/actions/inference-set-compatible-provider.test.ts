@@ -304,12 +304,9 @@ describe("runInferenceSet compatible providers", () => {
     expect(deps.calls.updateSandbox).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["an HTTPS IP-literal", "https://198.51.100.10/v1", "https://198.51.100.10/v1"],
-    ["a DNS-pinned HTTP", "http://compatible.example/v1", "http://198.51.100.10/v1"],
-  ])(
+  it.each(["18767/v1", "18768/api/v1"].map((path) => `http://host.openshell.internal:${path}`))(
     "recovers an absent legacy direct compatible provider for %s endpoint (#7725)",
-    async (_kind, endpointUrl, validatedEndpointUrl) => {
+    async (endpointUrl) => {
       let providerCreated = false;
       const captureOpenshell = vi.fn((args: string[]) => {
         switch (`${args[0]}:${args[1]}`) {
@@ -364,7 +361,7 @@ describe("runInferenceSet compatible providers", () => {
           model: "nvidia/model-a",
         }),
         captureOpenshell,
-        rewriteConfigUrlsWithDnsPinning: async () => validatedEndpointUrl,
+        rewriteConfigUrlsWithDnsPinning: async () => endpointUrl,
         resolveCredentialValue: () => "real-upstream-secret",
       });
 
@@ -394,7 +391,8 @@ describe("runInferenceSet compatible providers", () => {
       );
       expect(providerCreateIndex).toBeGreaterThanOrEqual(0);
       expect(successfulSetIndex).toBeGreaterThan(providerCreateIndex);
-      expect(captureOpenshell.mock.calls[successfulSetIndex][0]).not.toContain("--no-verify");
+      expect(captureOpenshell.mock.calls[successfulSetIndex][0]).toContain("--no-verify");
+      expect(deps.calls.probeSandboxRoute).toHaveBeenCalledOnce();
       expect(captureOpenshell.mock.calls[providerCreateIndex]).toEqual([
         [
           "provider",
@@ -408,7 +406,7 @@ describe("runInferenceSet compatible providers", () => {
           "--credential",
           "COMPATIBLE_API_KEY",
           "--config",
-          `OPENAI_BASE_URL=${validatedEndpointUrl}`,
+          `OPENAI_BASE_URL=${endpointUrl}`,
         ],
         expect.objectContaining({
           env: { COMPATIBLE_API_KEY: "real-upstream-secret" },
@@ -422,7 +420,7 @@ describe("runInferenceSet compatible providers", () => {
         "alpha",
         expect.objectContaining({
           provider: "compatible-endpoint",
-          endpointUrl: validatedEndpointUrl,
+          endpointUrl: endpointUrl,
         }),
       ]);
     },
@@ -467,7 +465,7 @@ describe("runInferenceSet compatible providers", () => {
       },
       session: baseSession({ provider: "compatible-endpoint", model: "nvidia/model-a" }),
       captureOpenshell,
-      rewriteConfigUrlsWithDnsPinning: async () => "http://198.51.100.10/v1",
+      rewriteConfigUrlsWithDnsPinning: async () => "http://host.openshell.internal:18767/v1",
       resolveCredentialValue: () => "real-upstream-secret",
     });
 
@@ -475,7 +473,7 @@ describe("runInferenceSet compatible providers", () => {
       {
         provider: "compatible-endpoint",
         model: "mock-model",
-        endpointUrl: "http://compatible.example/v1",
+        endpointUrl: "http://host.openshell.internal:18767/v1",
         credentialEnv: "COMPATIBLE_API_KEY",
         inferenceApi: "openai-completions",
       },
@@ -526,7 +524,7 @@ describe("runInferenceSet compatible providers", () => {
       },
       session: baseSession({ provider: "compatible-endpoint", model: "nvidia/model-a" }),
       captureOpenshell,
-      rewriteConfigUrlsWithDnsPinning: async () => "http://198.51.100.10/v1",
+      rewriteConfigUrlsWithDnsPinning: async () => "http://host.openshell.internal:18767/v1",
       resolveCredentialValue: () => "real-upstream-secret",
     });
 
@@ -534,7 +532,7 @@ describe("runInferenceSet compatible providers", () => {
       {
         provider: "compatible-endpoint",
         model: "mock-model",
-        endpointUrl: "http://compatible.example/v1",
+        endpointUrl: "http://host.openshell.internal:18767/v1",
         credentialEnv: "COMPATIBLE_API_KEY",
         inferenceApi: "openai-completions",
       },
@@ -582,10 +580,10 @@ describe("runInferenceSet compatible providers", () => {
           return {
             status: 1,
             output:
-              "failed to verify inference endpoint for provider 'compatible-endpoint' and model 'mock-model' at http://198.51.100.10/v1: requested endpoint is unreachable",
+              "failed to verify inference endpoint for provider 'compatible-endpoint' and model 'mock-model' at http://host.openshell.internal:18767/v1: requested endpoint is unreachable",
             stdout: "",
             stderr:
-              "failed to verify inference endpoint for provider 'compatible-endpoint' and model 'mock-model' at http://198.51.100.10/v1: requested endpoint is unreachable",
+              "failed to verify inference endpoint for provider 'compatible-endpoint' and model 'mock-model' at http://host.openshell.internal:18767/v1: requested endpoint is unreachable",
           };
         default:
           return { status: 0, output: "", stdout: "", stderr: "" };
@@ -604,7 +602,7 @@ describe("runInferenceSet compatible providers", () => {
         model: "nvidia/model-a",
       }),
       captureOpenshell,
-      rewriteConfigUrlsWithDnsPinning: async () => "http://198.51.100.10/v1",
+      rewriteConfigUrlsWithDnsPinning: async () => "http://host.openshell.internal:18767/v1",
       resolveCredentialValue: () => "real-upstream-secret",
     });
 
@@ -613,7 +611,7 @@ describe("runInferenceSet compatible providers", () => {
         {
           provider: "compatible-endpoint",
           model: "mock-model",
-          endpointUrl: "http://compatible.example/v1",
+          endpointUrl: "http://host.openshell.internal:18767/v1",
           credentialEnv: "COMPATIBLE_API_KEY",
           inferenceApi: "openai-completions",
         },
@@ -636,12 +634,12 @@ describe("runInferenceSet compatible providers", () => {
   it.each([
     {
       bindingPart: "endpoint URL",
-      recordedEndpointUrl: "http://198.51.100.9/v1",
+      recordedEndpointUrl: "http://host.openshell.internal:18766/v1",
       recordedCredentialEnv: "COMPATIBLE_API_KEY",
     },
     {
       bindingPart: "credential environment variable",
-      recordedEndpointUrl: "http://198.51.100.10/v1",
+      recordedEndpointUrl: "http://host.openshell.internal:18767/v1",
       recordedCredentialEnv: "LEGACY_COMPATIBLE_API_KEY",
     },
   ])(
@@ -673,7 +671,7 @@ describe("runInferenceSet compatible providers", () => {
           preferredInferenceApi: "openai-completions",
         }),
         captureOpenshell,
-        rewriteConfigUrlsWithDnsPinning: async () => "http://198.51.100.10/v1",
+        rewriteConfigUrlsWithDnsPinning: async () => "http://host.openshell.internal:18767/v1",
         resolveCredentialValue: () => "replacement-upstream-secret",
       });
 
@@ -682,7 +680,7 @@ describe("runInferenceSet compatible providers", () => {
           {
             provider: "compatible-endpoint",
             model: "new-model",
-            endpointUrl: "http://compatible.example/v1",
+            endpointUrl: "http://host.openshell.internal:18767/v1",
             credentialEnv: "COMPATIBLE_API_KEY",
             inferenceApi: "openai-completions",
           },
@@ -717,7 +715,7 @@ describe("runInferenceSet compatible providers", () => {
         agent: "openclaw",
         provider: "compatible-endpoint",
         model: "old-model",
-        endpointUrl: "http://198.51.100.10/v1",
+        endpointUrl: "http://host.openshell.internal:18767/v1",
         endpointSource: "inference-set",
         credentialEnv: "COMPATIBLE_API_KEY",
         preferredInferenceApi: "openai-completions",
@@ -725,12 +723,12 @@ describe("runInferenceSet compatible providers", () => {
       session: baseSession({
         provider: "compatible-endpoint",
         model: "old-model",
-        endpointUrl: "http://198.51.100.10/v1",
+        endpointUrl: "http://host.openshell.internal:18767/v1",
         credentialEnv: "COMPATIBLE_API_KEY",
         preferredInferenceApi: "openai-completions",
       }),
       captureOpenshell,
-      rewriteConfigUrlsWithDnsPinning: async () => "http://198.51.100.10/v1",
+      rewriteConfigUrlsWithDnsPinning: async () => "http://host.openshell.internal:18767/v1",
       resolveCredentialValue: () => "replacement-upstream-secret",
     });
 
@@ -738,7 +736,7 @@ describe("runInferenceSet compatible providers", () => {
       {
         provider: "compatible-endpoint",
         model: "new-model",
-        endpointUrl: "http://compatible.example/v1",
+        endpointUrl: "http://host.openshell.internal:18767/v1",
         credentialEnv: "COMPATIBLE_API_KEY",
         inferenceApi: "openai-completions",
       },
@@ -748,13 +746,14 @@ describe("runInferenceSet compatible providers", () => {
     const inferenceSetCall = captureOpenshell.mock.calls.find(
       ([args]) => args[0] === "inference" && args[1] === "set",
     );
-    expect(inferenceSetCall?.[0]).not.toContain("--no-verify");
+    expect(inferenceSetCall?.[0]).toContain("--no-verify");
+    expect(deps.calls.probeSandboxRoute).toHaveBeenCalledOnce();
     expect(
       captureOpenshell.mock.calls.some(([args]) => args[0] === "provider" && args[1] === "update"),
     ).toBe(false);
   });
 
-  it("preserves explicit inference API through legacy registry sync", async () => {
+  it("preserves explicit inference API through retained host-bridge registry sync", async () => {
     let providerVersion = 1;
     const captureOpenshell = vi.fn((args: string[]) => {
       switch (`${args[0]}:${args[1]}`) {
@@ -782,21 +781,17 @@ describe("runInferenceSet compatible providers", () => {
       agents: { defaults: { model: { primary: "inference/nvidia/model-a" } } },
       models: { providers: { inference: { api: "openai-completions", models: [] } } },
     };
+    const recordedRoute = {
+      provider: "compatible-endpoint",
+      model: "nvidia/model-a",
+      endpointUrl: "http://host.openshell.internal:11438/route/test-route",
+      credentialEnv: "COMPATIBLE_API_KEY",
+      preferredInferenceApi: "openai-completions",
+    } as const;
     const deps = createDeps({
       config,
-      entry: {
-        name: "alpha",
-        agent: "openclaw",
-        provider: "compatible-endpoint",
-        model: "nvidia/model-a",
-      },
-      session: baseSession({
-        provider: "compatible-endpoint",
-        model: "nvidia/model-a",
-        endpointUrl: "https://integrate.api.nvidia.com/v1",
-        credentialEnv: "NVIDIA_INFERENCE_API_KEY",
-        preferredInferenceApi: "openai-completions",
-      }),
+      entry: { name: "alpha", agent: "openclaw", ...recordedRoute },
+      session: baseSession(recordedRoute),
       captureOpenshell,
     });
 
@@ -805,7 +800,7 @@ describe("runInferenceSet compatible providers", () => {
         provider: "compatible-endpoint",
         model: "mock-responses-model",
         noVerify: true,
-        endpointUrl: "https://compatible.example/v1",
+        endpointUrl: "http://host.openshell.internal:11438/route/test-route",
         credentialEnv: "COMPATIBLE_API_KEY",
         inferenceApi: "openai-responses",
       },
@@ -823,12 +818,7 @@ describe("runInferenceSet compatible providers", () => {
         },
       },
     });
-    // The DNS-backed HTTPS endpoint is pinned via the HTTPS-pin runtime
-    // adapter, so the persisted endpointUrl is the adapter's local route base
-    // URL, not the raw operator-supplied hostname — mirroring the existing
-    // HTTP precedent of persisting the validated/pinned address. The
-    // The canonical provider key stays stable while its invocation-local
-    // value is replaced by the route-scoped adapter token.
+    // Preserve the recorded API family on the retained adapter path.
     expect(
       deps.calls.updateSandbox.mock.calls
         .filter(([, fields]) => fields.provider !== undefined)
@@ -1306,6 +1296,13 @@ describe("runInferenceSet compatible providers", () => {
           }),
       });
 
+      // Hosted switches use native admission; keep the real private-address
+      // checks reachable before provider, policy, or registry mutation.
+      deps.getNativeCustomProviderAuthority = vi.fn(() => undefined);
+      deps.setNativeCustomProviderAuthority = vi.fn();
+      deps.nativeCustomEndpointLookup = lookup;
+      deps.resolveCredentialValue = () => "test-upstream-secret";
+
       await expect(
         runInferenceSet(
           {
@@ -1322,10 +1319,14 @@ describe("runInferenceSet compatible providers", () => {
           },
           deps,
         ),
-      ).rejects.toThrow(/endpoint-url is not allowed:.*private\/internal address/i);
+      ).rejects.toThrow(
+        /(endpoint-url is not allowed:.*private\/internal address|Custom inference endpoint rejected:.*private)/i,
+      );
 
       expect(deps.calls.captureOpenshell).not.toHaveBeenCalled();
       expect(deps.calls.updateSandbox).not.toHaveBeenCalled();
+      expect(deps.setNativeCustomProviderAuthority).not.toHaveBeenCalled();
+      expect(deps.calls.writeSandboxConfig).not.toHaveBeenCalled();
     },
   );
 

@@ -178,7 +178,7 @@ describe("runInferenceSet degraded state handling", () => {
         provider: "compatible-endpoint",
         model: "openai/gpt-5.4-mini",
         endpointUrl: initiallyPresent
-          ? "https://new.example/v1"
+          ? "https://old.example/v1"
           : "http://host.openshell.internal:11434/v1",
         credentialEnv: "COMPATIBLE_API_KEY",
         inferenceApi: "openai-completions",
@@ -207,7 +207,14 @@ describe("runInferenceSet degraded state handling", () => {
         },
       });
 
-      await expect(runInferenceSet(options, deps)).resolves.toMatchObject({
+      // Retry config synchronization against the committed recorded route;
+      // supplying a hosted endpoint again would select a new native switch.
+      await expect(
+        runInferenceSet(
+          { provider: options.provider, model: options.model, noVerify: options.noVerify },
+          deps,
+        ),
+      ).resolves.toMatchObject({
         inSandboxConfigSynced: true,
       });
       expect(persistedConfig.models).toMatchObject({

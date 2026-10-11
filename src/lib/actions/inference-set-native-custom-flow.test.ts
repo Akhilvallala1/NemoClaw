@@ -550,3 +550,94 @@ it.each(["openclaw", "hermes"])(
     expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();
   },
 );
+
+it.each([
+  ["compatible-endpoint", "openai-completions"],
+  ["compatible-anthropic-endpoint", "anthropic-messages"],
+] as const)(
+  "creates native authority for an explicit hosted switch from retained %s (#12636)",
+  async (provider, inferenceApi) => {
+    const f = await fixture();
+    Reflect.deleteProperty(f.entry, "nativeCustomProviderAttachment");
+    f.entry.provider = provider;
+    f.entry.preferredInferenceApi = inferenceApi;
+    f.attachments.clear();
+    f.metadata.clear();
+    f.deps.resolveNativeCustomCredentialReference = vi.fn(
+      async () =>
+        `openshell:resolve:env:v12_${provider === "compatible-anthropic-endpoint" ? "COMPATIBLE_ANTHROPIC_API_KEY" : "COMPATIBLE_API_KEY"}`,
+    );
+    await runInferenceSet(
+      {
+        provider,
+        model: "new-model",
+        endpointUrl: "http://12.12.12.12/v1",
+        credentialEnv:
+          provider === "compatible-anthropic-endpoint"
+            ? "COMPATIBLE_ANTHROPIC_API_KEY"
+            : "COMPATIBLE_API_KEY",
+        inferenceApi,
+      },
+      f.deps,
+    );
+    expect(f.adapter.createProvider).toHaveBeenCalledOnce();
+    expect(f.entry.nativeCustomProviderAttachment).toMatchObject({
+      endpointUrl:
+        inferenceApi === "anthropic-messages" ? "http://12.12.12.12" : "http://12.12.12.12/v1",
+      api: inferenceApi,
+    });
+    expect([...f.attachments]).toEqual([f.entry.nativeCustomProviderAttachment.providerName]);
+    expect(f.deps.inferenceRouteMutator.setInferenceRoute).not.toHaveBeenCalled();
+    expect(f.deps.calls.probeSandboxRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nativeCustomProviderAttachment: f.entry.nativeCustomProviderAttachment,
+      }),
+    );
+    expect(JSON.stringify(f.entry)).not.toContain("host-secret");
+  },
+);
+
+it.each(["openclaw", "hermes"])(
+  "restores shared gateway selection after a rejected fixed native %s departure (#12636)",
+  async (agent) => {
+    const f = await fixedHostedFixture(agent);
+    const before = structuredClone(f.entry);
+    f.deps.calls.probeSandboxRoute.mockResolvedValue({
+      ok: false,
+      detail: "rejected",
+      httpStatus: 400,
+    });
+    await expect(
+      runInferenceSet(
+        { ...hostLocalSelection, endpointUrl: "http://host.openshell.internal:18767/v1" },
+        f.deps,
+      ),
+    ).rejects.toThrow(/Sandbox-side verification rejected/);
+    expect(f.deps.inferenceRouteMutator.setInferenceRoute).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        route: { provider: "openai-api", model: "old-model" },
+        verification: "skip",
+      }),
+    );
+    expect(f.entry).toEqual(before);
+    expect([...f.attachments]).toEqual([f.fixed.providerName]);
+    expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();
+  },
+);
+
+it("rejects fixed native departure without a gateway rollback selection before mutation (#12636)", async () => {
+  const f = await fixedHostedFixture("openclaw");
+  vi.mocked(f.deps.inferenceRouteObserver.observeInferenceRoute).mockResolvedValue({
+    ok: true,
+    value: { state: "unconfigured" },
+  });
+  await expect(
+    runInferenceSet(
+      { ...hostLocalSelection, endpointUrl: "http://host.openshell.internal:18767/v1" },
+      f.deps,
+    ),
+  ).rejects.toThrow(/no configured inference selection to restore/);
+  expect(f.deps.inferenceRouteMutator.setInferenceRoute).not.toHaveBeenCalled();
+  expect([...f.attachments]).toEqual([f.fixed.providerName]);
+  expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();
+});

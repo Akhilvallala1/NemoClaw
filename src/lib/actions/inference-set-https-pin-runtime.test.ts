@@ -89,11 +89,11 @@ function failRegistryRead(): never {
   throw new Error("registry unavailable");
 }
 
-function failRegistryReadAfterTwoCalls(
+function failRegistryReadAfterOneCall(
   originalListSandboxes: InferenceSetDeps["listSandboxes"],
 ): InferenceSetDeps["listSandboxes"] {
   let listCalls = 0;
-  return () => (listCalls++ < 2 ? originalListSandboxes() : failRegistryRead());
+  return () => (listCalls++ < 1 ? originalListSandboxes() : failRegistryRead());
 }
 
 // Existing beta custom registrations retain the shared-route owner; native
@@ -136,6 +136,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
           agent: "openclaw",
           provider: "compatible-endpoint",
           model: "nvidia/model-a",
+          endpointUrl: "https://compatible.example/v1",
         },
         session: baseSession({ provider: "compatible-endpoint", model: "nvidia/model-a" }),
         ensureHttpsPinRuntimeAdapter: adapter,
@@ -212,6 +213,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         agent: "hermes",
         provider: "compatible-anthropic-endpoint",
         model: "old-model",
+        endpointUrl: "https://compatible.example/v1",
       },
       defaultSandbox: "hermes",
       target: HERMES_TARGET,
@@ -264,7 +266,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         agent: "openclaw",
         provider: "compatible-endpoint",
         model: "old",
-        endpointUrl: OLD_ADAPTER_BASE_URL,
+        endpointUrl: "https://compatible.example/v1",
         credentialEnv: "COMPATIBLE_API_KEY",
         preferredInferenceApi: "openai-completions",
       },
@@ -307,6 +309,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         agent: "openclaw",
         provider: "compatible-endpoint",
         model: "old-model",
+        endpointUrl: "https://compatible.example/v1",
       },
       session: baseSession({ provider: "compatible-endpoint", model: "old-model" }),
       ensureHttpsPinRuntimeAdapter: mockAdapter(),
@@ -389,6 +392,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         agent: "openclaw",
         provider: "compatible-endpoint",
         model: "old-model",
+        endpointUrl: "https://compatible.example/v1",
       },
       ensureHttpsPinRuntimeAdapter: mockAdapter(),
       captureOpenshell: capture,
@@ -438,12 +442,12 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
     );
   });
 
-  it("reports an updated binding when sandbox verification restores the prior selection (#9806)", async () => {
-    vi.stubEnv("NEMOCLAW_OLLAMA_PROXY_TOKEN", "real-upstream-secret");
+  it("restores the prior selection when sandbox verification rejects a recorded bridge route (#9806)", async () => {
+    vi.stubEnv("COMPATIBLE_API_KEY", "real-upstream-secret");
     const capture = providerCapture({
       providerName: "compatible-endpoint",
       providerType: "openai",
-      credentialEnv: "NEMOCLAW_OLLAMA_PROXY_TOKEN",
+      credentialEnv: "COMPATIBLE_API_KEY",
     });
     const adapter = mockAdapter();
     const deps = createDeps({
@@ -456,16 +460,16 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         agent: "openclaw",
         provider: "compatible-endpoint",
         model: "old-model",
-        endpointUrl: "http://127.0.0.1:11434/v1",
+        endpointUrl: "http://host.openshell.internal:18767/v1",
         endpointSource: "onboard",
-        credentialEnv: "NEMOCLAW_OLLAMA_PROXY_TOKEN",
+        credentialEnv: "COMPATIBLE_API_KEY",
         preferredInferenceApi: "openai-completions",
       },
       session: baseSession({
         provider: "compatible-endpoint",
         model: "old-model",
-        endpointUrl: "http://127.0.0.1:11434/v1",
-        credentialEnv: "NEMOCLAW_OLLAMA_PROXY_TOKEN",
+        endpointUrl: "http://host.openshell.internal:18767/v1",
+        credentialEnv: "COMPATIBLE_API_KEY",
         preferredInferenceApi: "openai-completions",
       }),
       ensureHttpsPinRuntimeAdapter: adapter,
@@ -481,8 +485,8 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
       {
         provider: "compatible-endpoint",
         model: "new-model",
-        endpointUrl: "https://compatible.example/v1",
-        credentialEnv: "NEMOCLAW_OLLAMA_PROXY_TOKEN",
+        endpointUrl: "http://host.openshell.internal:18767/v1",
+        credentialEnv: "COMPATIBLE_API_KEY",
         inferenceApi: "openai-completions",
       },
       deps,
@@ -492,45 +496,13 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
     const message = (failure as Error).message;
     expect(message).toContain("sandbox inference invocation probe returned HTTP 500");
     expect(message).toContain("The previous OpenShell inference selection was restored");
-    expect(message).toContain("existing OpenShell provider binding was updated");
-    expect(message).toContain(
-      "Rerun onboarding to reconcile the provider before using this provider route or retrying this switch.",
-    );
     expect(message).not.toContain(
       "The existing OpenShell provider binding and inference selection were not changed.",
     );
-    expect(adapter).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        gatewayName: "nemoclaw",
-        provider: "compatible-endpoint",
-        endpointUrl: "https://compatible.example/v1",
-        providerType: "openai",
-        credentialValue: "real-upstream-secret",
-      }),
-    );
+    expect(adapter).not.toHaveBeenCalled();
     expect(
       capture.mock.calls.filter(([args]) => args[0] === "provider" && args[1] === "update"),
-    ).toEqual([
-      [
-        [
-          "provider",
-          "update",
-          "-g",
-          "nemoclaw",
-          "compatible-endpoint",
-          "--credential",
-          "NEMOCLAW_OLLAMA_PROXY_TOKEN",
-          "--config",
-          `OPENAI_BASE_URL=${ADAPTER_BASE_URL}`,
-        ],
-        {
-          env: { NEMOCLAW_OLLAMA_PROXY_TOKEN: ADAPTER_TOKEN },
-          ignoreError: true,
-          includeStreams: true,
-          timeout: 30_000,
-        },
-      ],
-    ]);
+    ).toEqual([]);
     expect(
       capture.mock.calls
         .filter(([args]) => args[0] === "inference" && args[1] === "set")
@@ -570,6 +542,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         agent: "openclaw",
         provider: "compatible-endpoint",
         model: "old-model",
+        endpointUrl: "https://compatible.example/v1",
       },
       session: baseSession({ provider: "compatible-endpoint", model: "old-model" }),
       ensureHttpsPinRuntimeAdapter: mockAdapter(),
@@ -659,6 +632,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         agent: "openclaw",
         provider: "compatible-endpoint",
         model: "old-model",
+        endpointUrl: "https://compatible.example/v1",
       },
       session: baseSession({ provider: "compatible-endpoint", model: "old-model" }),
       ensureHttpsPinRuntimeAdapter: mockAdapter(),
@@ -728,6 +702,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         agent: "openclaw",
         provider: "compatible-endpoint",
         model: "old-model",
+        endpointUrl: "https://compatible.example/v1",
       },
       ensureHttpsPinRuntimeAdapter: mockAdapter(),
       captureOpenshell: capture,
@@ -783,7 +758,13 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
     });
     const deps = createDeps({
       config: {},
-      entry: { name: "alpha", agent: "openclaw", provider: "compatible-endpoint", model: "old" },
+      entry: {
+        name: "alpha",
+        agent: "openclaw",
+        provider: "compatible-endpoint",
+        model: "old",
+        endpointUrl: "https://compatible.example/v1",
+      },
       ensureHttpsPinRuntimeAdapter: mockAdapter(),
       captureOpenshell: capture,
       updateSandbox: () => false,
@@ -827,11 +808,8 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
 
     await runInferenceSet(
       {
-        provider: "compatible-endpoint",
-        model: "new",
-        endpointUrl: "https://new.example/v1",
-        credentialEnv: "COMPATIBLE_API_KEY",
-        inferenceApi: "openai-completions",
+        provider: "nvidia-prod",
+        model: "nvidia/new",
       },
       deps,
     );
@@ -892,17 +870,14 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
     });
     let listCalls = 0;
     deps.listSandboxes = () => ({
-      sandboxes: listCalls++ < 2 ? [alpha] : [alpha, peer],
+      sandboxes: listCalls++ < 1 ? [alpha] : [alpha, peer],
       defaultSandbox: "alpha",
     });
 
     await runInferenceSet(
       {
-        provider: "compatible-endpoint",
-        model: "new",
-        endpointUrl: "https://new.example/v1",
-        credentialEnv: "COMPATIBLE_API_KEY",
-        inferenceApi: "openai-completions",
+        provider: "nvidia-prod",
+        model: "nvidia/new",
       },
       deps,
     );
@@ -938,20 +913,17 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
       }),
     });
     deps.listSandboxes =
-      failure === "list" ? failRegistryReadAfterTwoCalls(deps.listSandboxes) : deps.listSandboxes;
+      failure === "list" ? failRegistryReadAfterOneCall(deps.listSandboxes) : deps.listSandboxes;
 
     await expect(
       runInferenceSet(
         {
-          provider: "compatible-endpoint",
-          model: "new",
-          endpointUrl: "https://new.example/v1",
-          credentialEnv: "COMPATIBLE_API_KEY",
-          inferenceApi: "openai-completions",
+          provider: "nvidia-prod",
+          model: "nvidia/new",
         },
         deps,
       ),
-    ).resolves.toMatchObject({ sandboxName: "alpha", provider: "compatible-endpoint" });
+    ).resolves.toMatchObject({ sandboxName: "alpha", provider: "nvidia-prod" });
     expect(deps.calls.updateSandbox).toHaveBeenCalledTimes(3);
     expect(deps.calls.updateSandbox).toHaveBeenLastCalledWith("alpha", {
       openClawConfigSyncPending: undefined,
@@ -959,7 +931,7 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
     expect(deps.calls.log).toHaveBeenCalledWith(expect.stringContaining("could not be revoked"));
   });
 
-  it("does not revoke when re-registration keeps the same route id", async () => {
+  it("preserves the recorded adapter route during a model-only switch", async () => {
     vi.stubEnv("COMPATIBLE_API_KEY", "real-upstream-secret");
     const sameRouteAdapter = vi.fn(async () => ({
       baseUrl: OLD_ADAPTER_BASE_URL,
@@ -975,6 +947,8 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
         provider: "compatible-endpoint",
         model: "old",
         endpointUrl: OLD_ADAPTER_BASE_URL,
+        credentialEnv: "COMPATIBLE_API_KEY",
+        preferredInferenceApi: "openai-completions",
       },
       ensureHttpsPinRuntimeAdapter: sameRouteAdapter,
       captureOpenshell: providerCapture({
@@ -988,13 +962,11 @@ describe("legacy custom HTTPS-pin route credential handoff (#6141)", () => {
       {
         provider: "compatible-endpoint",
         model: "new",
-        endpointUrl: "https://same.example/v1",
-        credentialEnv: "COMPATIBLE_API_KEY",
-        inferenceApi: "openai-completions",
       },
       deps,
     );
 
+    expect(sameRouteAdapter).not.toHaveBeenCalled();
     expect(deps.calls.revokeHttpsPinRuntimeAdapterRoute).not.toHaveBeenCalled();
   });
 });

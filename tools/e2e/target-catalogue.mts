@@ -80,6 +80,7 @@ export interface E2eCatalogueTarget {
   targetId: string;
   displayName: string;
   agentRuntime: E2eAgentRuntime;
+  agentRuntimeByRuntime?: Partial<Record<E2eRuntimeProvider, E2eAgentRuntime>>;
   environmentOrInferenceEndpoint: string;
   unresolvedReason: string;
   testFile: string;
@@ -164,6 +165,7 @@ type TargetOptions = Omit<
   | "gatewayRuntimes"
 > & {
   agentRuntime: E2eAgentRuntime;
+  agentRuntimeByRuntime?: Partial<Record<E2eRuntimeProvider, E2eAgentRuntime>>;
   environmentOrInferenceEndpoint: string;
   unresolvedReason?: string;
   releaseRequired?: boolean;
@@ -191,6 +193,7 @@ function target(id: string, options: TargetOptions): E2eCatalogueTarget {
   const {
     displayName,
     agentRuntime,
+    agentRuntimeByRuntime,
     environmentOrInferenceEndpoint,
     unresolvedReason = "",
     owningPaths = [],
@@ -217,6 +220,7 @@ function target(id: string, options: TargetOptions): E2eCatalogueTarget {
     id,
     displayName,
     agentRuntime,
+    ...(agentRuntimeByRuntime ? { agentRuntimeByRuntime } : {}),
     environmentOrInferenceEndpoint,
     unresolvedReason,
     testFile,
@@ -1046,6 +1050,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     shard: "custom-hosted",
     displayName: "Inference: proves native custom hosted lifecycle and isolation",
     agentRuntime: "openclaw + hermes + langchain-deepagents-code + pi",
+    agentRuntimeByRuntime: { podman: "openclaw + hermes + langchain-deepagents-code" },
     environmentOrInferenceEndpoint:
       "Ubuntu; native custom HTTPS, HTTP and Anthropic fixtures; protected Pi on Docker",
     profile: "standard",
@@ -1852,6 +1857,25 @@ export function validateE2eTargetCatalogue(
         throw new Error(`E2E target ${entry.id} has an invalid environment entry`);
       }
     }
+    for (const [runtime, agentRuntime] of Object.entries(entry.agentRuntimeByRuntime ?? {})) {
+      if (
+        !e2eRuntimeProviders(entry.gatewayRuntimes, E2E_GATEWAY_RUNTIMES).includes(
+          runtime as E2eRuntimeProvider,
+        )
+      )
+        throw new Error(
+          `E2E target ${entry.id} has metadata for an unsupported runtime: ${runtime}`,
+        );
+      validateE2eExecutionMetadata(
+        {
+          agentRuntime,
+          environmentOrInferenceEndpoint: entry.environmentOrInferenceEndpoint,
+          observableOutcome: entry.displayName,
+          unresolvedReason: entry.unresolvedReason,
+        },
+        `E2E target ${entry.id} runtime ${runtime}`,
+      );
+    }
     validateE2eExecutionMetadata(
       {
         agentRuntime: entry.agentRuntime,
@@ -1909,6 +1933,13 @@ export function catalogueTargetsForChangedFiles(
   });
 }
 
+export function catalogueAgentRuntime(
+  entry: E2eCatalogueTarget,
+  runtimeProvider: E2eRuntimeProvider,
+): E2eAgentRuntime {
+  return entry.agentRuntimeByRuntime?.[runtimeProvider] ?? entry.agentRuntime;
+}
+
 export function catalogueHostPackages(
   entry: E2eCatalogueTarget,
   runtimeProvider: E2eRuntimeProvider,
@@ -1941,7 +1972,7 @@ export function catalogueMatrix(
         coverage_variant: runtimeCoverageVariant(entry.shard, runtimeProvider),
         target_id: entry.targetId,
         display_name: entry.displayName,
-        agent_runtime: entry.agentRuntime,
+        agent_runtime: catalogueAgentRuntime(entry, runtimeProvider),
         observable_outcome: entry.displayName,
         environment_or_inference_endpoint: entry.environmentOrInferenceEndpoint,
         unresolved_reason: entry.unresolvedReason,

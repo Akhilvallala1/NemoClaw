@@ -1106,15 +1106,13 @@ function providerBackedRouteLacksRollbackTarget(input: {
   httpsPinProviderBinding: boolean;
   probeDirectSandboxBridge: boolean;
   rollbackRoute: boolean;
-  previousNativeAttachment: boolean;
 }): boolean {
   return (
     !input.nativeProvider &&
     (input.directProviderBinding ||
       input.httpsPinProviderBinding ||
       input.probeDirectSandboxBridge) &&
-    !input.rollbackRoute &&
-    !input.previousNativeAttachment
+    !input.rollbackRoute
   );
 }
 
@@ -1346,7 +1344,12 @@ async function runInferenceSetWithoutHostLock(
     : null;
   if (
     isNativeCustomProvider(provider) &&
-    selectsNativeCustomSwitch(entry, customRoute?.endpointUrl ?? entry.endpointUrl, provider)
+    selectsNativeCustomSwitch(
+      entry,
+      customRoute?.endpointUrl ?? entry.endpointUrl,
+      provider,
+      Boolean(options.endpointUrl),
+    )
   ) {
     return runNativeCustomInferenceSwitch(
       {
@@ -1583,7 +1586,6 @@ async function runInferenceSetWithoutHostLock(
       httpsPinProviderBinding: Boolean(httpsPinProviderBinding),
       probeDirectSandboxBridge: probeSandboxRoute,
       rollbackRoute: Boolean(rollbackRoute),
-      previousNativeAttachment: Boolean(previousNativeAttachment),
     })
   ) {
     throw new InferenceSetError(
@@ -1611,7 +1613,7 @@ async function runInferenceSetWithoutHostLock(
   let rollbackCustomPolicy: (() => Promise<void>) | undefined;
   let customDepartureCommitted = false;
   const restorePreviousInferenceSelection = async (): Promise<string | null> => {
-    if (selectingNative || previousNativeAttachment) {
+    if (selectingNative) {
       appliedInferenceSelection = false;
       return null;
     }

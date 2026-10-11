@@ -310,14 +310,21 @@ describe("E2E workflow plan", () => {
   });
 
   it("includes native custom lifecycle in the existing inference-routing selector (#12636)", () => {
-    const plan = buildE2eWorkflowPlan({ targets: "inference-routing" });
-    const rows = Object.values(plan.catalogueMatrices).flat();
-    expect(rows.map((row) => row.id)).toContain("inference-routing-custom-hosted");
-    const lifecycle = rows.find((row) => row.id === "inference-routing-custom-hosted");
-    expect(lifecycle?.shard).toBe("custom-hosted");
-    expect(catalogueTarget("inference-routing-custom-hosted").agentRuntime).toBe(
-      "openclaw + hermes + langchain-deepagents-code + pi",
+    const plan = buildE2eWorkflowPlan(
+      { targets: "inference-routing" },
+      { gatewayRuntimes: ["docker", "podman"] },
     );
+    const lifecycle = Object.values(plan.catalogueMatrices)
+      .flat()
+      .filter((row) => row.id === "inference-routing-custom-hosted");
+    expect(lifecycle.map((row) => [row.runtime_provider, row.agent_runtime, row.shard])).toEqual([
+      ["docker", "openclaw + hermes + langchain-deepagents-code + pi", "custom-hosted"],
+      ["podman", "openclaw + hermes + langchain-deepagents-code", "custom-hosted"],
+    ]);
+    expect(validateE2eWorkflowPlan(plan)).toEqual(plan);
+    lifecycle.find((row) => row.runtime_provider === "podman")!.agent_runtime =
+      "openclaw + hermes + langchain-deepagents-code + pi";
+    expect(() => validateE2eWorkflowPlan(plan)).toThrow("invalid output schema");
   });
 
   it("selects ordinary agent consumers and inference restart for a scope patch", () => {
@@ -449,6 +456,12 @@ describe("E2E workflow plan", () => {
 
   it("rejects unreviewed catalogue execution metadata", () => {
     const target = catalogueTarget("network-policy");
+    const reject = (entry: typeof target) => expect(() => validateE2eTargetCatalogue([entry]));
+    reject({
+      ...catalogueTarget("bootstrap-install-smoke"),
+      agentRuntimeByRuntime: { podman: "openclaw" },
+    }).toThrow("metadata for an unsupported runtime");
+    reject({ ...target, agentRuntimeByRuntime: { docker: "unknown-agent" as never } }).toThrow();
     expect(() => validateE2eTargetCatalogue([{ ...target, runnerKey: "unknown-runner" }])).toThrow(
       "invalid runner routing key",
     );

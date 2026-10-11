@@ -637,6 +637,9 @@ describe("runInferenceSet SSRF-block guidance — facet 2 (#6321)", () => {
       rewriteConfigUrlsWithDnsPinning: ssrfGuard(),
     });
 
+    deps.getNativeCustomProviderAuthority = vi.fn(() => undefined);
+    deps.setNativeCustomProviderAuthority = vi.fn();
+    deps.resolveCredentialValue = () => "test-upstream-secret";
     const attempt = runInferenceSet(
       {
         provider: "compatible-endpoint",
@@ -646,10 +649,9 @@ describe("runInferenceSet SSRF-block guidance — facet 2 (#6321)", () => {
       },
       deps,
     );
-    await expect(attempt).rejects.toThrow(
-      /endpoint-url is not allowed:.*private\/internal address/,
-    );
+    await expect(attempt).rejects.toThrow(/Custom inference endpoint rejected:.*private/);
     expectNoInferenceMutation(deps.calls);
+    expect(deps.setNativeCustomProviderAuthority).not.toHaveBeenCalled();
   });
 
   it("switches the model WITHOUT --endpoint-url on a same-provider sandbox (the guided path works, guard never runs)", async () => {

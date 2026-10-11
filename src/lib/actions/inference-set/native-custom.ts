@@ -24,6 +24,7 @@ import type { SandboxEntry } from "../../state/registry";
 import type * as onboardSession from "../../state/onboard-session";
 import { isDeepStrictEqual } from "node:util";
 import {
+  normalizeCustomEndpointUrlWithoutDns,
   prepareInferenceSetRoute,
   usesLoopbackNoAuthProxyRoute,
 } from "../inference-set-route-containment";
@@ -165,7 +166,7 @@ export async function runNativeCustomInferenceSwitch(
     throw new InferenceSetError(
       "The recorded native custom attachment is invalid. No provider was changed.",
     );
-  if (isNativeCustomProvider(entry.provider) && !previous)
+  if (isNativeCustomProvider(entry.provider) && !previous && !input.options.endpointUrl)
     throw new InferenceSetError(
       `Sandbox '${sandboxName}' predates native custom attachments. Recreate this beta sandbox before changing its custom model.`,
       2,
@@ -595,10 +596,17 @@ export function selectsNativeCustomSwitch(
   entry: SandboxEntry,
   endpointUrl: string | null | undefined,
   provider: string,
+  explicitEndpoint = false,
 ): boolean {
+  const changesEndpoint =
+    explicitEndpoint &&
+    (!entry.endpointUrl ||
+      normalizeCustomEndpointUrlWithoutDns(endpointUrl) !==
+        normalizeCustomEndpointUrlWithoutDns(entry.endpointUrl));
   return (
     !isHostLocalCustomEndpoint(endpointUrl) &&
-    (entry.nativeCustomProviderAttachment !== undefined ||
+    (changesEndpoint ||
+      entry.nativeCustomProviderAttachment !== undefined ||
       !isNativeCustomProvider(entry.provider)) &&
     !usesLoopbackNoAuthProxyRoute(entry, provider) &&
     !entry.hostLocalInferenceReceipt

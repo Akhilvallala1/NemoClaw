@@ -175,7 +175,7 @@ function normalizeEndpointUrlShape(value: string): { url: URL; normalized: strin
   };
 }
 
-function normalizeCustomEndpointUrlWithoutDns(value: string | null | undefined): string {
+export function normalizeCustomEndpointUrlWithoutDns(value: string | null | undefined): string {
   const input = typeof value === "string" ? value : "";
   const raw = input.trim();
   if (!raw)
