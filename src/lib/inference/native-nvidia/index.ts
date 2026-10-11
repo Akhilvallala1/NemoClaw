@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import path from "node:path";
-import { createNativeProviderLifecycle } from "../native-provider/lifecycle";
+import { createNativeProviderLifecycle } from "../native-provider/index";
 
 import { REPOSITORY_ROOT } from "../../core/repository-root";
 import {

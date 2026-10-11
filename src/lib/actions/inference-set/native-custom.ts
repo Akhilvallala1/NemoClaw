@@ -597,8 +597,9 @@ export function selectsNativeCustomSwitch(
   provider: string,
 ): boolean {
   return (
+    !isHostLocalCustomEndpoint(endpointUrl) &&
     (entry.nativeCustomProviderAttachment !== undefined ||
-      (!isNativeCustomProvider(entry.provider) && !isHostLocalCustomEndpoint(endpointUrl))) &&
+      !isNativeCustomProvider(entry.provider)) &&
     !usesLoopbackNoAuthProxyRoute(entry, provider) &&
     !entry.hostLocalInferenceReceipt
   );

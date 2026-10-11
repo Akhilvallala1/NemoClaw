@@ -354,7 +354,7 @@ Use these details when your first-run path needs more control.
     NemoClaw writes Hermes configuration into `/sandbox/.hermes` and starts the Hermes gateway inside the sandbox.
     NVIDIA Endpoints traffic uses the native NVIDIA endpoint through the least-privilege sandbox-attached OpenShell provider.
     Fresh custom hosted endpoints also use sandbox-attached providers with issued credential references.
-    HTTPS and Bedrock endpoints retain their host adapters.
+    DNS-backed HTTPS and classified Bedrock endpoints retain their host adapters.
     Host-local and existing shared-route sandboxes use `inference.local`.
     The Hermes image includes runtime dependencies for supported NemoClaw messaging integrations, the API service, and its health endpoint.
     The base image does not include unsupported Hermes integrations.
@@ -455,14 +455,17 @@ Use these details when your first-run path needs more control.
     ```
 
     `nemohermes inference set` changes the active model or provider without rebuilding the sandbox.
-    It updates the OpenShell inference route and patches `/sandbox/.hermes/config.yaml` without restarting Hermes.
+    It updates the selected inference route and patches `/sandbox/.hermes/config.yaml`.
+    Switching to or from a native sandbox-attached provider also restarts the managed Hermes gateway to activate the new configuration.
 
     ```bash
     nemohermes inference set --model <model> --provider <provider>
     ```
 
     If the in-sandbox config write or integrity hash update fails, `nemohermes inference set` exits with status `1` after committing the OpenShell route and NemoClaw registry.
-    Run the printed `nemohermes <sandbox-name> rebuild` command to make the in-sandbox Hermes configuration match the committed route.
+    Follow the reported recovery guidance, or run `nemohermes <sandbox-name> rebuild` to make the in-sandbox Hermes configuration match the committed route.
+    If the gateway restart fails after configuration is committed, the new route remains committed.
+    Run the printed `nemohermes <sandbox-name> gateway restart` command to complete activation.
   </Accordion>
 </AccordionGroup>
 

@@ -17,6 +17,14 @@ import { runInferenceSet } from "./inference-set";
 import { hostedNativeProvider } from "../inference/native-provider/hosted";
 import { createDeps, HERMES_TARGET } from "../../../test/helpers/inference-set";
 
+const hostLocalSelection = {
+  provider: "compatible-endpoint",
+  model: "local-model",
+  endpointUrl: "http://127.0.0.1:8000/v1",
+  credentialEnv: "COMPATIBLE_API_KEY",
+  inferenceApi: "openai-completions",
+};
+
 async function fixture(agent = "openclaw") {
   const prepared = await prepareNativeCustomProfile({
     sandboxName: "alpha",
@@ -62,7 +70,7 @@ async function fixture(agent = "openclaw") {
           name: request.name,
           type: request.type,
           credentialKeys: request.credentials.map((key) => key.name),
-          configKeys: [],
+          configKeys: request.config.map((item) => item.key),
           revision: { id: `id-${request.name}`, resourceVersion: 1 },
         });
         return { ok: true };
@@ -297,6 +305,52 @@ it("removes native custom access before publishing a built-in provider (#12636)"
   expect(f.entry.nativeCustomProviderAttachment).toBeUndefined();
   expect(f.policy.network_policies.native_custom_inference).toBeUndefined();
   expect(f.events).toContain(`detach:${f.receipt.providerName}`);
+});
+
+it.each(["openclaw", "hermes"])(
+  "switches native custom %s inference to the retained host-local route (#12636)",
+  async (agent) => {
+    const f = await fixture(agent);
+    await runInferenceSet(hostLocalSelection, f.deps);
+    expect(f.entry.nativeCustomProviderAttachment).toBeUndefined();
+    expect(f.entry.model).toBe("local-model");
+    expect(f.attachments.has(f.receipt.providerName)).toBe(false);
+    expect(f.policy.network_policies.native_custom_inference).toBeUndefined();
+    expect(f.deps.inferenceRouteMutator.setInferenceRoute).toHaveBeenCalled();
+    expect(f.deps.calls.restartSandboxGateway).toHaveBeenCalledExactlyOnceWith("alpha", "nemoclaw");
+    expect(f.adapter.createProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "compatible-endpoint", type: "openai" }),
+    );
+  },
+);
+
+it("preserves the committed host-local Hermes departure when gateway activation fails (#12636)", async () => {
+  const f = await fixture("hermes");
+  f.deps.calls.restartSandboxGateway.mockResolvedValueOnce({
+    ok: false,
+    failureLayer: "health timeout",
+    detail: "private restart diagnostic",
+  });
+  await expect(runInferenceSet(hostLocalSelection, f.deps)).rejects.toThrow(
+    /managed Hermes gateway restart.*committed route was not rolled back.*alpha gateway restart/,
+  );
+  expect(f.entry.nativeCustomProviderAttachment).toBeUndefined();
+  expect(f.entry.model).toBe("local-model");
+  expect(f.attachments.has(f.receipt.providerName)).toBe(false);
+  expect(f.adapter.attachProvider).not.toHaveBeenCalled();
+  expect(JSON.stringify(f.deps.calls.log.mock.calls)).not.toContain("private restart diagnostic");
+});
+
+it("restores native custom authority after rejected host-local departure publication (#12636)", async () => {
+  const f = await fixture("hermes");
+  f.deps.calls.updateSandbox.mockReturnValueOnce(false);
+  await expect(runInferenceSet(hostLocalSelection, f.deps)).rejects.toThrow();
+  expect(f.entry.nativeCustomProviderAttachment).toEqual(f.receipt);
+  expect(f.attachments.has(f.receipt.providerName)).toBe(true);
+  expect(f.policy.network_policies.native_custom_inference.endpoints).toEqual(
+    expect.arrayContaining([expect.objectContaining({ host: "8.8.8.8" })]),
+  );
+  expect(f.deps.calls.restartSandboxGateway).not.toHaveBeenCalled();
 });
 
 it("restores native custom access when departure publication is rejected (#12636)", async () => {

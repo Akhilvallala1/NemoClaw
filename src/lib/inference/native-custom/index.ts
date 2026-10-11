@@ -13,10 +13,8 @@ import {
   isOpenShellManagedHost,
   isOperatorTrustablePrivateIp,
 } from "../../security/trusted-private-endpoint";
-import {
-  createNativeProviderLifecycle,
-  type NativeProviderAttachment,
-} from "../native-provider/lifecycle";
+import { createNativeProviderLifecycle } from "../native-provider/index";
+import type { NativeProviderAttachment } from "../native-provider/contract";
 import { buildNativeCustomProfile, type NativeCustomProfile } from "./profile";
 import {
   normalizeNativeCustomAdapterTransport,

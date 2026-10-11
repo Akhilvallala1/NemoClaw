@@ -2044,7 +2044,7 @@ async function runInferenceSetWithoutHostLock(
         // without ever activating it in the running gateway.
         configChanged: patched.changed || retryingOpenClawConfigSync,
         hermesGatewayRestart:
-          agentName === "hermes" && (selectingNative || previousNativeAttachment)
+          agentName === "hermes" && (selectingNative || previousNativeAttachment || departingCustom)
             ? { gatewayName: expectedGatewayName }
             : undefined,
         openClawPairingTarget:
