@@ -15,6 +15,7 @@ import {
   assertApfCreateIntent,
   activateManagedStartupCorporateCaTrustAfterSandboxCreate,
   completeHermesPortableSandboxRegistration,
+  cleanupRecreatedSourceHermesStateVolume,
   createProviderEffectBoundary,
   finalizeCreatedSandboxBeforeHermesCredentialReconciliation,
   hasManagedMcpRebuildHandoff,
@@ -35,6 +36,36 @@ const UNVERIFIED_RECOVERY_CONTEXT = {
   lifecycleGeneration: "generation-1",
   createAttemptNonce: "a".repeat(62),
 } as const;
+describe("recreated managed state retention reporting", () => {
+  it.each(["removed", "absent"] as const)(
+    "reports the original migration volume when the selected volume is %s",
+    (status) => {
+      const retainedVolumeName = "nemoclaw-hermes-state-v1-alpha";
+      const warn = vi.fn();
+      cleanupRecreatedSourceHermesStateVolume(
+        {
+          sandboxName: "alpha",
+          targetKeepsManagedHermesStateVolume: false,
+          sourceEntry: {
+            name: "alpha",
+            agent: "hermes",
+            openshellDriver: "docker",
+          } as SandboxEntry,
+        },
+        {
+          normalizeRuntimeProviderIdentity: (driver) => driver ?? "docker",
+          removeManagedHermesStateVolume: () => ({ status, retainedVolumeName }),
+          note: vi.fn(),
+          warn,
+          redact: (message) => message,
+        },
+      );
+      expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
+        `Retained pre-migration state volume '${retainedVolumeName}'`,
+      );
+    },
+  );
+});
 describe("managed startup corporate CA onboarding orchestration", () => {
   it("wires the verified create boundary into the corporate CA refresh", async () => {
     const events: string[] = [];

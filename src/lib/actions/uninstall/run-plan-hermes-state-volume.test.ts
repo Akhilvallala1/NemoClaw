@@ -12,6 +12,7 @@ import { createDockerRuntimeProviderBundle } from "../../onboard/runtime-provide
 import { createPodmanRuntimeProviderBundle } from "../../onboard/runtime-provider/podman";
 import { createRuntimeProviderBundleRegistry } from "../../onboard/runtime-provider/registry";
 import { removeManagedHermesStateVolumes } from "./hermes-uninstall-cleanup";
+import * as sandboxProviderCleanup from "../../onboard/sandbox-provider-cleanup";
 import { withSuccessfulPreUninstallBackup } from "../../../../test/support/uninstall-managed-gateway-test-support";
 
 import {
@@ -211,6 +212,37 @@ async function runManagedHermesVolumeUninstall(
 }
 
 describe("managed Hermes state volume uninstall", () => {
+  it.each(["removed", "absent"] as const)(
+    "reports the retained migration source when the selected volume is %s",
+    (status) => {
+      const retainedVolumeName = "nemoclaw-hermes-state-v1-hermes";
+      const remove = vi
+        .spyOn(sandboxProviderCleanup, "removeManagedHermesStateVolume")
+        .mockReturnValue({ status, retainedVolumeName });
+      const warn = vi.fn();
+      try {
+        expect(
+          removeManagedHermesStateVolumes(
+            [
+              {
+                agentName: "hermes",
+                runtimeProviderId: "docker",
+                sandboxName: "hermes",
+                workloadKind: "managed-image",
+              },
+            ],
+            { env: {}, error: vi.fn(), log: vi.fn(), warn, runDocker: vi.fn() },
+          ),
+        ).toBe(true);
+        expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
+          `Retained pre-migration state volume '${retainedVolumeName}'`,
+        );
+      } finally {
+        remove.mockRestore();
+      }
+    },
+  );
+
   it("dispatches a Podman-owned volume through provider cleanup authority", () => {
     const volume = createHermesStateVolumeDockerHarness();
     volume.runDocker([

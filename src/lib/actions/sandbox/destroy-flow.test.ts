@@ -656,15 +656,19 @@ describe("destroySandbox flow", () => {
     expect(harness.retirePortableLifecycleReceiptSpy).not.toHaveBeenCalled();
   });
 
-  it(
-    "removes the owned managed Hermes state volume after confirmed sandbox deletion",
+  it.each([
+    ["removed", undefined],
+    ["removed", "nemoclaw-hermes-state-v1-alpha"],
+    ["absent", "nemoclaw-hermes-state-v1-alpha"],
+  ] as const)(
+    "finishes owned Hermes cleanup with selected volume %s and retained source %s",
     { timeout: 30_000 },
-    async () => {
+    async (status, retainedVolumeName) => {
       const harness = createDestroyHarness({
         agent: "hermes",
         openshellDriver: "docker",
         workload: managedHermesWorkload,
-        managedAgentStateVolumeCleanupResults: [{ status: "removed" }],
+        managedAgentStateVolumeCleanupResults: [{ status, retainedVolumeName }],
       });
 
       await expect(harness.destroySandbox("alpha", { yes: true })).resolves.toBeUndefined();
@@ -681,6 +685,11 @@ describe("destroySandbox flow", () => {
       expect(harness.removeManagedAgentStateVolumesSpy.mock.invocationCallOrder[0]).toBeLessThan(
         harness.removeSandboxSpy.mock.invocationCallOrder[0],
       );
+      const warnings = harness.warnSpy.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(warnings.match(/Retained pre-migration state volume '([^']+)'/u)?.[1]).toBe(
+        retainedVolumeName,
+      );
+      expect(harness.removeSandboxSpy).toHaveBeenCalledWith("alpha");
     },
   );
 

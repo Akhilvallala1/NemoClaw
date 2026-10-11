@@ -1152,6 +1152,11 @@ async function destroySandboxUnlocked(
       requestSandboxDestroyExit(1);
     }
     for (const stateVolumeCleanup of stateVolumeCleanupResults) {
+      if ("retainedVolumeName" in stateVolumeCleanup && stateVolumeCleanup.retainedVolumeName) {
+        console.warn(
+          `  ${YW}⚠${R} Retained pre-migration state volume '${stateVolumeCleanup.retainedVolumeName}' with user data. It is not deleted automatically; preserve it for administrator-reviewed recovery or retirement.`,
+        );
+      }
       if (stateVolumeCleanup.status === "not-owned") {
         console.warn(
           `  ${YW}⚠${R} Left managed state volume '${stateVolumeCleanup.volumeName}' untouched because ${stateVolumeCleanup.detail}.`,

@@ -69,6 +69,11 @@ export function removeManagedHermesStateVolumes(
       runtime.error("Preserved NemoClaw state so exact cleanup can be retried.");
       return false;
     }
+    if ("retainedVolumeName" in result && result.retainedVolumeName) {
+      runtime.warn(
+        `Retained pre-migration state volume '${result.retainedVolumeName}' with user data. It is not deleted automatically; preserve it for administrator-reviewed recovery or retirement.`,
+      );
+    }
     if (result.status === "not-owned") {
       runtime.warn(
         `Left managed state volume '${result.volumeName}' untouched because ${result.detail}.`,

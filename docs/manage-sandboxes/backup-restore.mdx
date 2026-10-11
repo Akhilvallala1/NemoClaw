@@ -47,7 +47,26 @@ Backups created by older NemoClaw versions from a selective per-agent path inven
 
 ## Destroy
 
-`$$nemoclaw <name> destroy` removes NemoClaw-owned managed state volumes and, for Deep Agents Code, clears the complete retained `/sandbox` root before asking OpenShell to delete the sandbox. Download files you need before destroy. To replace software while preserving the complete native state, use `$$nemoclaw <name> rebuild`.
+`$$nemoclaw <name> destroy` removes the selected NemoClaw-owned managed state volume and, for Deep Agents Code, clears the complete retained `/sandbox` root before asking OpenShell to delete the sandbox. Download files you need before destroy. To replace software while preserving the complete native state, use `$$nemoclaw <name> rebuild`.
+
+## Retained Pre-Migration Volumes
+
+When an older managed OpenClaw or Hermes state volume lacks the labels required by OpenShell 0.1.2, NemoClaw copies its data into a separately labeled volume and leaves the original unchanged.
+The replacement uses the migrated copy.
+After migration, writes to that copy do not update the original, so the original is not a current backup.
+
+Cleanup removes only the selected migrated copy after verifying ownership.
+Destroy, Hermes uninstall, and recreation cleanup report the retained original's volume name when that migration state is available.
+NemoClaw does not automatically delete, expire, or restore the original.
+A successful cleanup does not establish that all historical user data has been erased.
+
+<Warning>
+The retained original can contain user files and sensitive agent state and continues to consume storage.
+Keep the reported volume name and restrict access through the owning container engine.
+Before any manual recovery or retirement, have the host administrator verify the exact volume's identity, ownership, attachments, and backup requirements on that same engine.
+Retirement requires a separate data-deletion decision; do not delete a volume solely because its name appeared in an earlier warning.
+NemoClaw provides no automatic retirement or restore command for these originals.
+</Warning>
 
 ## Related Topics
 
