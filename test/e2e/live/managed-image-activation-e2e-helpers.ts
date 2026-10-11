@@ -62,11 +62,9 @@ import {
 
 const API_KEY = "nemoclaw-managed-activation-e2e-key";
 
-/** Real engine/provider evidence; deterministic identity and failure matrices stay in unit tests. */
-export async function qualifyManagedVolumeMigration(
-  { artifacts, cleanup }: Pick<RuntimeFixtures, "artifacts" | "cleanup">,
-  phases: { copy: () => void; evidence: () => void },
-): Promise<void> {
+/** Shared seed for the copy oracle and the production onboarding consumer. */
+export function createLegacyManagedVolumeFixture(cleanup: CleanupRegistry) {
+  const sandboxName = `mv-${randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const runtimeProvider =
     process.env.NEMOCLAW_GATEWAY_RUNTIME === "podman"
       ? createCurrentPodmanRuntimeProviderBundle()
@@ -80,6 +78,11 @@ export async function qualifyManagedVolumeMigration(
   const helpers = new Set<string>();
   let unresolvedHelperCreation = false;
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-volume-e2e-"));
+  const root = managedStartupStateRoots({
+    agent: "openclaw",
+    sandboxName,
+    agentIdentity: { uid: 1000, gid: 1000 },
+  })[0]!;
   const run: MigrationEngine = (args, timeout) => {
     const previouslyUnresolved = unresolvedHelperCreation;
     if (args[0] === "create") unresolvedHelperCreation = true;
@@ -108,27 +111,20 @@ export async function qualifyManagedVolumeMigration(
     if (unresolvedHelperCreation)
       throw new Error("Fixture helper creation was ambiguous; cleanup is not established");
     for (const volume of volumes) command(["volume", "rm", volume]);
-    const remaining = command(["volume", "ls", "--format", "{{.Name}}"]);
-    expect(remaining.split(/\r?\n/u).filter((name) => volumes.has(name))).toEqual([]);
+    const remaining = command([
+      "volume",
+      "ls",
+      "--format",
+      "{{.Name}}",
+      ...Object.entries(root.ownershipLabels).flatMap(([key, value]) => [
+        "--filter",
+        `label=${key}=${value}`,
+      ]),
+    ]);
+    // Production destruction owns its migrated copy; do not delete an untracked destination here.
+    expect(remaining).toBe("");
     fs.rmSync(stateDir, { recursive: true });
   });
-  const root = managedStartupStateRoots({
-    agent: "openclaw",
-    sandboxName: `volume-e2e-${randomUUID()}`,
-    agentIdentity: { uid: 1000, gid: 1000 },
-  })[0]!;
-  const input = { roots: [root] };
-  const deps = { runtimeProvider, migrationStateDir: stateDir, runMigrationEngine: run };
-  command(["pull", "--quiet", MANAGED_STATE_COPY_IMAGE]);
-  command([
-    "volume",
-    "create",
-    ...Object.entries(root.ownershipLabels).flatMap(([key, value]) => [
-      "--label",
-      `${key}=${value}`,
-    ]),
-    root.resourceIdentity,
-  ]);
   const marker = randomUUID();
   const probe = (volume: string, program: string, readonly = true) => {
     const id = command([
@@ -153,12 +149,37 @@ export async function qualifyManagedVolumeMigration(
       command(["rm", "--force", id]);
     }
   };
-  probe(
-    root.resourceIdentity,
-    `const fs=require("node:fs"); fs.writeFileSync("/state/marker", ${JSON.stringify(marker)}); fs.chownSync("/state/marker",1000,1000); fs.chmodSync("/state/marker",0o640); fs.symlinkSync("marker","/state/link");`,
-    false,
-  );
+  const seed = () => {
+    command(["pull", "--quiet", MANAGED_STATE_COPY_IMAGE]);
+    command([
+      "volume",
+      "create",
+      ...Object.entries(root.ownershipLabels).flatMap(([key, value]) => [
+        "--label",
+        `${key}=${value}`,
+      ]),
+      root.resourceIdentity,
+    ]);
+    probe(
+      root.resourceIdentity,
+      `const fs=require("node:fs"); fs.writeFileSync("/state/marker", ${JSON.stringify(marker)}); fs.chownSync("/state/marker",1000,1000); fs.chmodSync("/state/marker",0o640); fs.symlinkSync("marker","/state/link");`,
+      false,
+    );
+  };
   const readback = `const fs=require("node:fs"); const s=fs.lstatSync("/state/marker"); process.stdout.write(JSON.stringify([fs.readFileSync("/state/marker","utf8"),s.uid,s.gid,s.mode,fs.readlinkSync("/state/link")]));`;
+  return { sandboxName, root, marker, seed, probe, readback, runtimeProvider, stateDir, run };
+}
+
+/** Real engine/provider evidence; deterministic identity and failure matrices stay in unit tests. */
+export async function qualifyManagedVolumeMigration(
+  { artifacts, cleanup }: Pick<RuntimeFixtures, "artifacts" | "cleanup">,
+  phases: { copy: () => void; evidence: () => void },
+): Promise<void> {
+  const { root, seed, probe, readback, runtimeProvider, stateDir, run } =
+    createLegacyManagedVolumeFixture(cleanup);
+  seed();
+  const input = { roots: [root] };
+  const deps = { runtimeProvider, migrationStateDir: stateDir, runMigrationEngine: run };
   const before = probe(root.resourceIdentity, readback);
   phases.copy();
   // The process really exits nonzero; no mocked success or synthetic filesystem is involved.
@@ -171,7 +192,7 @@ export async function qualifyManagedVolumeMigration(
   const scope = prepareManagedStateVolumes(input, deps)!;
   scope.commit();
   const selected = scope.mounts[0]!.source;
-  expect(selected).not.toBe(root.resourceIdentity);
+  // Destination derivation and selection are covered by managed-state-volume-migration.test.ts.
   expect([probe(root.resourceIdentity, readback), probe(selected, readback)]).toEqual([
     before,
     before,
@@ -961,7 +982,10 @@ async function qualifyAgent(
   phases: ManagedActivationPhases,
 ): Promise<void> {
   const { artifacts, cleanup, host, lifecycle, sandbox } = fixtures;
-  const sandboxName = SANDBOX_NAMES[agent];
+  // Register first so retained-source cleanup runs after both production sandbox cleanup paths.
+  const legacy = agent === "openclaw" ? createLegacyManagedVolumeFixture(cleanup) : undefined;
+  // A fresh identity avoids reusing a retired migration journal from an earlier qualification.
+  const sandboxName = legacy?.sandboxName ?? SANDBOX_NAMES[agent];
   const env = commandEnv(guard, catalogPath, endpointUrl);
   cleanup.trackDisposable(`delete OpenShell sandbox ${sandboxName}`, () =>
     sandbox.cleanupSandbox(sandboxName, { env, timeoutMs: 60_000 }),
@@ -970,6 +994,7 @@ async function qualifyAgent(
   await preclean(host, lifecycle, sandbox, sandboxName, env);
 
   phases.agents[agent].onboard();
+  legacy?.seed();
   const onboard = await host.nemoclaw(
     managedActivationOnboardArgs(catalogPath, agent, sandboxName),
     {
@@ -984,6 +1009,23 @@ async function qualifyAgent(
     await collectOnboardFailureRuntimeDiagnostics(artifacts, host, agent, sandboxName, env);
   }
   expect(onboard.exitCode, resultText(onboard)).toBe(0);
+  if (legacy) {
+    const retained = await sandbox.execShell(
+      sandboxName,
+      trustedSandboxShellScript(`cat ${shellQuote(`${legacy.root.mountTarget}/marker`)}`),
+      { artifactName: "openclaw-read-migrated-state-in-sandbox", env, timeoutMs: 30_000 },
+    );
+    expect(
+      retained.exitCode === 0 && retained.stdout.trim() === legacy.marker,
+      resultText(retained),
+    ).toBe(true);
+    await artifacts.writeJson("managed-volume-attachment.json", {
+      source: legacy.root.resourceIdentity,
+      sandboxName,
+      mountTarget: legacy.root.mountTarget,
+      markerReadInsideSandbox: true,
+    });
+  }
   if (agent === "openclaw") {
     await approveOpenClawAdminScope(host, sandbox, sandboxName, env, [API_KEY]);
   }

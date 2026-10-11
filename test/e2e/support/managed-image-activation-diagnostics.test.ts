@@ -2,11 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import fs, { existsSync, readFileSync, writeFileSync } from "node:fs";
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path, { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+import * as dockerRuntime from "../../../src/lib/onboard/runtime-provider/docker.ts";
+import * as podmanRuntime from "../../../src/lib/onboard/runtime-provider/podman.ts";
+import { isValidName } from "../../../src/lib/name-validation.ts";
+import { CleanupRegistry } from "../fixtures/cleanup.ts";
 
 import {
   approveOpenClawAdminScope,
@@ -24,6 +29,7 @@ import {
 import { ArtifactSink } from "../fixtures/artifacts.ts";
 import {
   captureManagedImageOnboardPairingDiagnostics,
+  createLegacyManagedVolumeFixture,
   collectOnboardFailureRuntimeDiagnostics,
   externalImageActivationAgents,
   externalImageActivationMatches,
@@ -42,6 +48,74 @@ import {
   verifyExactCleanup,
 } from "../live/managed-image-activation-e2e-helpers.ts";
 import { pendingAdminRequestId } from "../fixtures/issue-4462-admin-approval-evidence.ts";
+
+describe("legacy managed volume fixture", () => {
+  it.each(["docker", "podman"] as const)(
+    "seeds owned legacy state and removes only recorded fixtures through %s",
+    async (runtime) => {
+      vi.stubEnv("NEMOCLAW_GATEWAY_RUNTIME", runtime);
+      const provider =
+        runtime === "docker"
+          ? dockerRuntime.createDockerRuntimeProviderBundle()
+          : podmanRuntime.createCurrentPodmanRuntimeProviderBundle();
+      assert(provider.containerEngine.supported, "built-in engine required");
+      const helperId = "a".repeat(64);
+      const capture = vi
+        .spyOn(provider.containerEngine, "capture")
+        .mockImplementation((_operation, args) => ({
+          status: 0,
+          stdout: args[0] === "create" ? helperId : "",
+          stderr: "",
+        }));
+      vi.spyOn(dockerRuntime, "createDockerRuntimeProviderBundle").mockReturnValue(provider);
+      vi.spyOn(podmanRuntime, "createCurrentPodmanRuntimeProviderBundle").mockReturnValue(provider);
+      const cleanup = new CleanupRegistry();
+      const fixture = createLegacyManagedVolumeFixture(cleanup);
+      try {
+        expect(isValidName(fixture.sandboxName)).toBe(true);
+        expect(capture).not.toHaveBeenCalled();
+        fixture.seed();
+        const commands = () => capture.mock.calls.map((call) => call[1]);
+        expect(commands().find((args) => args[0] === "volume" && args[1] === "create")).toEqual([
+          "volume",
+          "create",
+          ...Object.entries(fixture.root.ownershipLabels).flatMap(([key, value]) => [
+            "--label",
+            `${key}=${value}`,
+          ]),
+          fixture.root.resourceIdentity,
+        ]);
+        const probe = commands().find((args) => args[0] === "create")!;
+        expect(probe.at(-1)).toContain(JSON.stringify(fixture.marker));
+        expect(probe.join(" ")).toContain(
+          runtime === "docker"
+            ? `src=${fixture.root.resourceIdentity},dst=/state,volume-nocopy`
+            : `${fixture.root.resourceIdentity}:/state:rw,nocopy`,
+        );
+        expect(await cleanup.runAll()).toEqual({
+          passed: ["remove only the volume qualification fixtures"],
+          failures: [],
+        });
+        expect(commands().filter((args) => args[0] === "volume" && args[1] === "rm")).toEqual([
+          ["volume", "rm", fixture.root.resourceIdentity],
+        ]);
+        expect(commands().at(-1)).toEqual([
+          "volume",
+          "ls",
+          "--format",
+          "{{.Name}}",
+          ...Object.entries(fixture.root.ownershipLabels).flatMap(([key, value]) => [
+            "--filter",
+            `label=${key}=${value}`,
+          ]),
+        ]);
+        expect(fs.existsSync(fixture.stateDir)).toBe(false);
+      } finally {
+        fs.rmSync(fixture.stateDir, { recursive: true, force: true });
+      }
+    },
+  );
+});
 
 const MANAGED_ADMIN_PUBLIC_KEY_BYTES = Buffer.from(
   Array.from({ length: 32 }, (_value, index) => index),

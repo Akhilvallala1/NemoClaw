@@ -51,7 +51,9 @@ Backups created by older NemoClaw versions from a selective per-agent path inven
 
 ## Retained Pre-Migration Volumes
 
-When an older managed OpenClaw or Hermes state volume lacks the labels required by OpenShell 0.1.2, NemoClaw copies its data into a separately labeled volume and leaves the original unchanged.
+NemoClaw migrates an eligible older managed OpenClaw or Hermes state volume only when both OpenShell attachment-approval labels are absent.
+It verifies ownership and source detachment, copies the data into a separately labeled volume, and leaves the original unchanged.
+Partial, conflicting, or workspace-mismatched approval labels stop onboarding without changing retained data and require operator reconciliation.
 The replacement uses the migrated copy.
 After migration, writes to that copy do not update the original, so the original is not a current backup.
 

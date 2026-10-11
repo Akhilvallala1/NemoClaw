@@ -59,7 +59,7 @@ test(
     const containerEngine = process.env.NEMOCLAW_GATEWAY_RUNTIME === "podman" ? "Podman" : "Docker";
     await artifacts.target.declare({
       id: "managed-image-activation",
-      boundary: `exact candidate CLI and published all-agent managed-image digests through real ${containerEngine}, OpenShell, agent turns, gateway restart readiness, and exact cleanup; the selected runtime also adopts and retains the public OpenClaw and Hermes digests as external images, rejects identity drift before replacement, and rebuilds OpenClaw from its recorded digest`,
+      boundary: `exact candidate CLI and published all-agent managed-image digests through real ${containerEngine}, OpenShell, legacy OpenClaw state migration and running-sandbox attachment, agent turns, gateway restart readiness, and exact cleanup; the selected runtime also adopts and retains the public OpenClaw and Hermes digests as external images, rejects identity drift before replacement, and rebuilds OpenClaw from its recorded digest`,
       agents: ["openclaw", "hermes", "langchain-deepagents-code"],
       syntheticBoundary:
         "Only the OpenAI-compatible inference response is synthetic; runtime construction and agent execution are real.",
