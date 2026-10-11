@@ -1089,6 +1089,7 @@ def managed_inference_api_key(base_url: str) -> str:
             "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"
         ))
     except ipaddress.AddressValueError:
+        # Keep the host-alias result above; every other non-IPv4 name remains untrusted.
         pass
     if parsed.scheme == "http" and local_host and _managed_upstream_provider() in {
         "ollama-local", "vllm-local", "llama-cpp-local", "compatible-endpoint"

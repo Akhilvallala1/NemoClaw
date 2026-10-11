@@ -3207,6 +3207,13 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
           buildVerifyChain: (chatUiUrl, name) => buildAgentVerifyChain(chatUiUrl, name, agent),
           verifyDeployment: async (name, chain) => {
             const verifyDeploymentModule: typeof import("./verify-deployment") = require("./verify-deployment");
+            const inference = verifyDeploymentModule.onboardInferenceVerificationContext(
+              name,
+              GATEWAY_NAME,
+              agent?.name ?? "openclaw",
+              liveFinalFlowContext,
+              registry.getSandbox(name)?.nativeLocalProviderAttachment,
+            );
             return verifyDeploymentModule.verifyDeployment(
               name,
               chain,
@@ -3218,12 +3225,7 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
                 providerExistsInGateway: (providerName: string) =>
                   providerExistsInGateway(providerName),
                 probeInferenceInvocation: () =>
-                  verifyDeploymentModule.probeOnboardInferenceInvocation({
-                    ...liveFinalFlowContext,
-                    sandboxName: name,
-                    gatewayName: GATEWAY_NAME,
-                    agentName: agent?.name,
-                  }),
+                  verifyDeploymentModule.probeOnboardInferenceInvocation(inference.invocation),
               },
               {
                 diagnoseCustomOpenClawRuntime:
@@ -3231,9 +3233,7 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
                     liveFinalFlowContext.fromDockerfile,
                     agent?.name,
                   ),
-                inferenceRouteContext: {
-                  provider: liveFinalFlowContext.provider,
-                },
+                inferenceRouteContext: inference.route,
               },
             );
           },

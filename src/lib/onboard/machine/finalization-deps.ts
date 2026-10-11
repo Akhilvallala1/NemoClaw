@@ -15,6 +15,7 @@ import type {
 import { WATCHER_STATUS_TIMEOUT_MS } from "../../actions/sandbox/auto-pair-warmup";
 import { sanitizeWedgeLogLine } from "../../actions/sandbox/gateway-wedge-diagnostics";
 import { OPENSHELL_DEFAULT_WORKSPACE } from "../../adapters/openshell/sandbox-ssh-host";
+import type { SandboxEntry } from "../../state/registry/types";
 
 export {
   OPENCLAW_ONBOARDING_PAIRING_FINAL_OBSERVATION_TIMEOUT_MS,
@@ -377,12 +378,12 @@ export function ordinaryOpenClawPairingIncompleteMessage(
   return `OpenClaw onboarding for '${name}' is incomplete because ${cause}. Resume or rerun onboarding.`;
 }
 
-function readRegistryGatewayName(name: string): string | null {
+function readRegistryInferenceRoute(name: string): (SandboxEntry & { gatewayName: string }) | null {
   try {
-    const gatewayName = finalizationHandlerRuntime.loadRegistryPersistence().load().sandboxes[
-      name
-    ]?.gatewayName;
-    return typeof gatewayName === "string" && gatewayName ? gatewayName : null;
+    const entry = finalizationHandlerRuntime.loadRegistryPersistence().load().sandboxes[name];
+    return typeof entry?.gatewayName === "string" && entry.gatewayName
+      ? { ...entry, gatewayName: entry.gatewayName }
+      : null;
   } catch {
     return null;
   }
@@ -396,14 +397,19 @@ export const finalizationHandlerDeps = {
     model: string;
     preferredInferenceApi: string | null;
   }): Promise<{ ok: boolean; detail?: string }> {
-    const gatewayName = readRegistryGatewayName(input.sandboxName);
-    if (!gatewayName) {
+    const route = readRegistryInferenceRoute(input.sandboxName);
+    if (!route) {
       return { ok: false, detail: "the sandbox gateway identity is unavailable" };
     }
-    return finalizationHandlerRuntime.loadVerifyDeployment().probeOnboardInferenceInvocation({
-      ...input,
-      gatewayName,
-    });
+    const verification = finalizationHandlerRuntime.loadVerifyDeployment();
+    const context = verification.onboardInferenceVerificationContext(
+      input.sandboxName,
+      route.gatewayName,
+      input.agentName,
+      { ...input, endpointUrl: route.endpointUrl },
+      route.nativeLocalProviderAttachment,
+    );
+    return verification.probeOnboardInferenceInvocation(context.invocation);
   },
   async waitForSandboxControlPlaneReady(name: string): Promise<boolean> {
     return finalizationHandlerRuntime

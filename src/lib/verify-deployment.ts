@@ -10,7 +10,7 @@
  *   1. Gateway reachable (HTTP /health returns 200 or 401)
  *   2. Gateway version retrieval
  *   3. Dashboard port reachable from the host (port forward working)
- *   4. Inference route working (sandbox can reach inference.local)
+ *   4. Selected inference route serves a sandbox request
  *   5. Messaging bridges healthy (if configured)
  *
  * Fixes #2342 — users no longer see "AGENT IS LIVE" followed by
@@ -31,6 +31,11 @@ import { listMessagingChannelsWithoutCredentials } from "./messaging/channels";
 
 import { retryUntilAsync } from "./core/retry";
 import { isNativeNvidiaProvider } from "./inference/native-nvidia";
+import {
+  normalizeNativeLocalProviderAttachment,
+  usesNativeLocalInferenceForAgent,
+  type NativeLocalProviderAttachment,
+} from "./inference/native-local/contract";
 import {
   buildCustomOpenClawRuntimeFailureHints,
   classifyOpenClawRuntimeFailure,
@@ -112,8 +117,8 @@ export interface VerifyDeploymentDeps {
 
   /**
    * Send one bounded inference request over the sandbox's configured route.
-   * This request is authoritative for native NVIDIA, which has no shared
-   * `inference.local` route. It also validates OpenRouter runtime adapters,
+   * This request is authoritative for attached native providers, which have
+   * no shared `inference.local` route. It also validates OpenRouter runtime adapters,
    * whose models route returns HTTP 404 (#12621). When this dependency is
    * absent, both exceptional paths fail closed because no request validated
    * the selected model (#10543).
@@ -267,6 +272,8 @@ type InferenceRouteStatus = "ok" | "unreachable" | "unhealthy";
  */
 export type InferenceRouteContext = {
   provider?: string | null;
+  nativeLocalExpected?: boolean;
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
 };
 
 function toRouteHealthContext(context: InferenceRouteContext): SandboxInferenceRouteHealthContext {
@@ -395,7 +402,24 @@ async function verifyInferenceRoute(
   sleep: (ms: number) => Promise<void>,
   context: InferenceRouteContext,
 ): Promise<InferenceRouteProbe> {
-  if (isNativeNvidiaProvider(context.provider)) {
+  const nativeLocal =
+    context.nativeLocalExpected || context.nativeLocalProviderAttachment !== undefined;
+  if (isNativeNvidiaProvider(context.provider) || nativeLocal) {
+    if (
+      nativeLocal &&
+      (!normalizeNativeLocalProviderAttachment(context.nativeLocalProviderAttachment) ||
+        context.nativeLocalProviderAttachment?.sandboxName !== sandboxName ||
+        context.nativeLocalProviderAttachment?.provider !== context.provider)
+    ) {
+      return {
+        status: "unhealthy",
+        detail: "native local provider attachment is missing or invalid",
+        httpCode: 0,
+        hint:
+          "The selected sandbox has no valid native local provider attachment. " +
+          "Reconcile its recorded provider before retrying onboarding.",
+      };
+    }
     const invocation = await retryUntilAsync(
       async () => (await deps.probeInferenceInvocation?.()) ?? null,
       {
@@ -407,18 +431,24 @@ async function verifyInferenceRoute(
     if (invocation?.ok) {
       return {
         status: "ok",
-        detail: "native NVIDIA inference served an agent request",
+        detail: nativeLocal
+          ? "native local inference served a sandbox request"
+          : "native NVIDIA inference served an agent request",
         httpCode: 200,
       };
     }
     const reason = invocation?.detail ?? "no inference request confirmed the selected model";
     return {
       status: "unhealthy",
-      detail: `native NVIDIA inference did not serve an agent request: ${reason}`,
+      detail: nativeLocal
+        ? `native local inference did not serve a sandbox request: ${reason}`
+        : `native NVIDIA inference did not serve an agent request: ${reason}`,
       httpCode: 0,
-      hint:
-        "The sandbox-attached NVIDIA provider could not serve the selected model. Confirm the " +
-        "NVIDIA credential and model, then re-run: nemoclaw <sandbox> status.",
+      hint: nativeLocal
+        ? "The sandbox-attached local provider could not serve the selected model. Confirm its " +
+          "endpoint and credential, then re-run: nemoclaw <sandbox> status."
+        : "The sandbox-attached NVIDIA provider could not serve the selected model. Confirm the " +
+          "NVIDIA credential and model, then re-run: nemoclaw <sandbox> status.",
     };
   }
   const routeContext = toRouteHealthContext(context);
@@ -900,7 +930,39 @@ export type InferenceInvocationContext = {
   model: string | null;
   provider: string | null;
   preferredInferenceApi: string | null;
+  nativeLocalExpected?: boolean;
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
 };
+
+/** Keep onboarding route verification and its request on the same selected route. */
+export function onboardInferenceVerificationContext(
+  sandboxName: string,
+  gatewayName: string,
+  agentName: string,
+  flow: Pick<InferenceInvocationContext, "model" | "provider" | "preferredInferenceApi"> & {
+    endpointUrl?: string | null;
+  },
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment,
+): { route: InferenceRouteContext; invocation: InferenceInvocationContext } {
+  const nativeLocalExpected = usesNativeLocalInferenceForAgent(
+    agentName,
+    flow.provider,
+    flow.endpointUrl,
+  );
+  return {
+    route: { provider: flow.provider, nativeLocalExpected, nativeLocalProviderAttachment },
+    invocation: {
+      sandboxName,
+      gatewayName,
+      agentName,
+      model: flow.model,
+      provider: flow.provider,
+      preferredInferenceApi: flow.preferredInferenceApi,
+      nativeLocalExpected,
+      nativeLocalProviderAttachment,
+    },
+  };
+}
 
 /**
  * The standard `probeInferenceInvocation` dependency: send one bounded
@@ -911,18 +973,31 @@ export type InferenceInvocationContext = {
  */
 export async function probeOnboardInferenceInvocation(
   context: InferenceInvocationContext,
+  probe: typeof runSandboxInferenceInvocationProbe = runSandboxInferenceInvocationProbe,
 ): Promise<{ ok: boolean; detail?: string }> {
   const { model, provider } = context;
   if (!model || !provider) {
     return { ok: false, detail: "no provider and model were recorded for this sandbox" };
   }
-  const result = await runSandboxInferenceInvocationProbe({
+  if (
+    (context.nativeLocalExpected || context.nativeLocalProviderAttachment !== undefined) &&
+    (!normalizeNativeLocalProviderAttachment(context.nativeLocalProviderAttachment) ||
+      context.nativeLocalProviderAttachment?.sandboxName !== context.sandboxName ||
+      context.nativeLocalProviderAttachment?.gatewayName !== context.gatewayName ||
+      context.nativeLocalProviderAttachment?.provider !== provider)
+  ) {
+    return { ok: false, detail: "native local provider attachment is missing or invalid" };
+  }
+  const result = await probe({
     sandboxName: context.sandboxName,
     gatewayName: context.gatewayName,
     agentName: context.agentName ?? null,
     provider,
     model,
     preferredInferenceApi: context.preferredInferenceApi,
+    ...(context.nativeLocalProviderAttachment
+      ? { nativeLocalProviderAttachment: context.nativeLocalProviderAttachment }
+      : {}),
     ...(isNativeNvidiaProvider(provider) ? { nativeProvider: true } : {}),
   });
   return result.ok ? { ok: true } : { ok: false, detail: result.detail };
