@@ -22,6 +22,7 @@ import { FULL_E2E_STANDARD_PROFILE_JOB_TIMEOUT_MINUTES } from "./full-e2e-timeou
 import {
   ONBOARD_RESUME_TARGET_TIMEOUT_MINUTES,
   INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
+  PI_QUALIFICATION_TARGET_TIMEOUT_MINUTES,
 } from "./onboard-timeout-contract.mts";
 import { HERMES_ACP_E2E_OWNING_PATHS } from "./hermes-acp-owning-paths.mts";
 import {
@@ -1308,10 +1309,10 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     targetId: "pi-agent-qualification",
     displayName: "Pi: qualifies managed runtime on Linux AMD64",
     agentRuntime: "pi",
-    environmentOrInferenceEndpoint: "Linux AMD64 Docker; NVIDIA hosted inference",
+    environmentOrInferenceEndpoint: "Linux AMD64 Docker; NVIDIA hosted and native-local inference",
     profile: "nvidia-api",
     testFile: "test/e2e/live/pi-agent-qualification.test.ts",
-    timeoutMinutes: 100,
+    timeoutMinutes: PI_QUALIFICATION_TARGET_TIMEOUT_MINUTES,
     installMode: "authenticated",
     installNonInteractive: true,
     restoreCli: true,
@@ -1327,6 +1328,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
       "src/lib/onboard/managed-workload/",
       "src/lib/onboard/workload/",
       "test/e2e/live/pi-agent-qualification-events.ts",
+      "tools/e2e/onboard-timeout-contract.mts",
     ],
     environment: {
       ...nonInteractive,

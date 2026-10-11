@@ -308,6 +308,14 @@ managed-image build, startup, publication, and checked-in receipt. The receipt r
 the Linux AMD64 and Linux ARM64 receipts to identify one source revision, release, and publication
 cohort.
 
+Pi qualification preserves its hosted onboarding, rebuild, recovery, policy and credential checks.
+After destroying that sandbox, the same target onboards a fresh Pi sandbox against an authenticated
+local compatible fixture. A fresh Pi process must send the selected model to that endpoint;
+the existing credential probe must find no upstream credential in the sandbox. Public destroy and
+sandbox absence remain required before reporting success. The test retains 90 minutes for the hosted
+lifecycle and adds 35 minutes for native onboarding, a turn, credential inspection and cleanup;
+the catalogue adds 10 minutes of job headroom. Operation deadlines and the target selector stay unchanged.
+
 The gateway restart fixture restarts the user service it stopped. If no service was selected, the candidate CLI startup code starts the registered gateway.
 A selected service that cannot restart remains selected for cleanup; recovery does not switch to another startup path.
 Restart inputs are checked before stopping the gateway. A failed start ends the test before health polling. Sandbox readiness, retained state, and agent turns remain separate assertions.
