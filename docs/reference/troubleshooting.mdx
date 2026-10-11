@@ -1756,7 +1756,7 @@ nemo-deepagents onboard --fresh --name <name> --recreate-sandbox
 
 ### Trusted route-probe helper is missing
 
-Deep Agents sandboxes created by older NemoClaw images may not contain the image-owned `/usr/local/lib/nemoclaw/dcode-managed-exec` helper. Current `connect`, `status`, and `doctor` fail closed when that helper is missing because NemoClaw cannot run the authoritative `inference.local` route probe safely.
+Deep Agents sandboxes created by older NemoClaw images may not contain the image-owned `/usr/local/lib/nemoclaw/dcode-managed-exec` helper. Current `connect`, `status`, and `doctor` fail closed when that helper is missing because NemoClaw cannot run the authoritative probe of the selected inference path safely.
 
 If the output says the trusted Deep Agents Code route-probe helper is missing, rebuild the sandbox with the current image and retry the command:
 

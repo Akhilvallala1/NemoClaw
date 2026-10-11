@@ -9,6 +9,11 @@ import {
   NVIDIA_HOSTED_NATIVE_PROFILE_ID,
   NVIDIA_HOSTED_NATIVE_PROVIDER,
 } from "../../inference/native-nvidia";
+import {
+  HOSTED_NATIVE_PROVIDERS,
+  hostedNativeProvider,
+} from "../../inference/native-provider/hosted";
+import { buildSandboxInferenceInvocationCommand } from "./inference-invocation-probe";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -881,6 +886,56 @@ describe("start inference attachment authority (#12636)", () => {
     expect(verify).not.toHaveBeenCalled();
     expect(probe).not.toHaveBeenCalled();
   });
+
+  it.each(
+    HOSTED_NATIVE_PROVIDERS.flatMap((fixed) => [
+      { provider: fixed.logicalProvider, attached: true },
+      { provider: fixed.logicalProvider, attached: false },
+    ]),
+  )(
+    "selects the recorded $provider restart path with attached=$attached",
+    async ({ provider, attached }) => {
+      const definition = hostedNativeProvider(
+        provider,
+        provider === "hermes-provider" ? "https://hosted.hermes.example/v1" : undefined,
+      )!;
+      const probe = vi.fn<NonNullable<SandboxStartDeps["probeInferenceInvocation"]>>(async () => ({
+        ok: true,
+      }));
+      const h = harness({ probeInferenceInvocation: probe });
+      h.getSandbox.mockReturnValue(
+        sandbox({
+          provider,
+          model: "model",
+          preferredInferenceApi: definition.api,
+          ...(attached
+            ? {
+                nativeHostedProviderAttachment: {
+                  schemaVersion: 1,
+                  profileId: definition.profileId,
+                  providerName: definition.providerName,
+                  providerId: "hosted-immutable",
+                  ...(definition.endpointUrl
+                    ? {
+                        endpointUrl: definition.endpointUrl,
+                        allowedIps: ["8.8.8.8"],
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+        }),
+      );
+      expect(await startSandbox("my-sandbox", h.deps)).toEqual({ exitCode: 0 });
+      expect(probe).toHaveBeenCalledOnce();
+      const request = probe.mock.calls[0]![0];
+      expect(request.nativeProvider).toBe(attached ? true : undefined);
+      expect(request.nativeEndpointUrl).toBe(attached ? definition.endpointUrl : undefined);
+      expect(buildSandboxInferenceInvocationCommand(request)).toContain(
+        attached ? definition.endpoint.replace(/\/+$/, "") : "https://inference.local/v1",
+      );
+    },
+  );
 
   it("preserves the native NVIDIA restart path after verifying its receipt", async () => {
     const receipt = {
