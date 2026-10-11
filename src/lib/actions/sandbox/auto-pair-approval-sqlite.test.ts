@@ -236,8 +236,7 @@ describe("auto-pair approval SQLite compatibility", () => {
         "        os.rename(database_path + '-wal.validated', database_path + '-wal')",
         "        os.rename(database_path + '-shm.validated', database_path + '-shm')",
       ].join("\n");
-      const postBinding =
-        "        if schema_version is None or schema_version[0] not in OPENCLAW_STATE_SCHEMA_VERSIONS:";
+      const postBinding = "        records = read_records(";
       const script = originalScript
         .replace(schemaRead, attack)
         .replace(

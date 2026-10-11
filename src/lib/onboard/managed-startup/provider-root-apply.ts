@@ -24,7 +24,7 @@ import {
 
 import {
   OPENCLAW_OWNER_LEASE_EXECUTION_TIMEOUT_MS,
-  WAIT_FOR_OPENCLAW_OWNER_LEASE,
+  buildOpenClawOwnerLeaseObserver,
 } from "./openclaw-owner-lease";
 
 const FULL_CONTAINER_ID_RE = /^[a-f0-9]{64}$/u;
@@ -394,17 +394,16 @@ export function applyProviderManagedStartupRootRequest(
       const phase = String(status.stdout).trim();
       if (status.status === 0 && (phase === "pending" || phase === "committed")) {
         if (phase === "pending" && input.request.agent === "openclaw") {
+          let leaseObserver: string;
+          try {
+            leaseObserver = buildOpenClawOwnerLeaseObserver();
+          } catch {
+            lastFailure = "Packaged OpenClaw state reader is unavailable";
+            break;
+          }
           const lease = executeExact(
             runtime,
-            [
-              "/usr/bin/env",
-              "-i",
-              ...FIXED_ROOT_ENV,
-              "python3",
-              "-I",
-              "-c",
-              WAIT_FOR_OPENCLAW_OWNER_LEASE,
-            ],
+            ["/usr/bin/env", "-i", ...FIXED_ROOT_ENV, "python3", "-I", "-c", leaseObserver],
             { timeoutMs: OPENCLAW_OWNER_LEASE_EXECUTION_TIMEOUT_MS },
           );
           if (lease.status !== 0 || lease.error) {

@@ -25,7 +25,7 @@ import {
   PODMAN_SANDBOX_WORKSPACE_LABEL,
 } from "../runtime-provider/podman-lifecycle";
 import { encodeManagedStartupProfile } from "./profile";
-import { WAIT_FOR_OPENCLAW_OWNER_LEASE } from "./openclaw-owner-lease";
+import * as ownerLease from "./openclaw-owner-lease";
 import {
   applyProviderManagedStartupRootRequest,
   finalizeProviderManagedStartupSharedState,
@@ -41,7 +41,7 @@ const SANDBOX_NAME = "managed-podman";
 // Execute the shipped observer unchanged. Only the container account/root and
 // clock are substituted; SQLite queries and descriptor checks run against files.
 const OWNER_LEASE_FIXTURE = String.raw`
-import contextlib, json, os, pathlib, pwd, re, socket, sqlite3, sys, tempfile
+import contextlib, json, os, pathlib, pwd, socket, sqlite3, sys, tempfile
 from unittest.mock import patch
 
 request = json.load(sys.stdin)
@@ -80,20 +80,27 @@ with tempfile.TemporaryDirectory(prefix="nemoclaw-owner-lease-") as root:
                     host = socket.gethostname() if row["host"] == "local" else socket.gethostname() + "-foreign"
                     payload = row.get("payload", json.dumps({"owner": {"host": host}}))
                     db.execute("INSERT INTO state_leases VALUES ('gateway-owner', 'global', ?, ?)", (expiry, payload))
+            else:
+                # A valid SQLite database without the lease table, not an empty file.
+                db.execute("CREATE TABLE unrelated(value TEXT)")
         db.close()
+        database_path.chmod(fixture.get("mode", 0o660))
     before = database_path.read_bytes() if database_path.exists() else None
 
     def open_root(path, *args, **kwargs):
         return real_open(root if path == "/" else path, *args, **kwargs)
 
+    real_stat = os.stat
+    def stat_root(path, *args, **kwargs):
+        if isinstance(path, str) and path.startswith("/sandbox/"):
+            path = root + path
+        return real_stat(path, *args, **kwargs)
+
     def connect_descriptor(reference, *args, **kwargs):
-        # Darwin lacks /proc. Preserve the opened-directory identity and real
-        # read-only SQLite connection; Linux executes the native descriptor URI.
-        match = re.fullmatch(r"file:/proc/self/fd/(\d+)/openclaw.sqlite\?mode=ro", reference)
-        assert match is not None and kwargs.get("uri") is True
-        opened = os.fstat(int(match.group(1)))
-        actual = state.stat()
-        assert (opened.st_dev, opened.st_ino) == (actual.st_dev, actual.st_ino)
+        # Redirect only the container root to the fixture. SQLite still opens
+        # a real pathname, and the shared reader validates its actual descriptor.
+        assert reference.startswith("file:/sandbox/.openclaw/state/openclaw.sqlite?mode=ro")
+        assert kwargs.get("uri") is True
         race = fixture.get("race")
         original = state / "original.sqlite"
         if race in ("replace-before-open", "replace-and-restore"):
@@ -103,7 +110,7 @@ with tempfile.TemporaryDirectory(prefix="nemoclaw-owner-lease-") as root:
             substitute.close()
             database_path.rename(original)
             replacement.rename(database_path)
-        connection = real_connect(database_path.as_uri() + "?mode=ro" if sys.platform == "darwin" else reference, *args, **kwargs)
+        connection = real_connect(database_path.as_uri() + reference[reference.index("?"):], *args, **kwargs)
         if race == "replace-and-restore":
             database_path.rename(state / "substituted.sqlite")
             original.rename(database_path)
@@ -118,6 +125,7 @@ with tempfile.TemporaryDirectory(prefix="nemoclaw-owner-lease-") as root:
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch("pwd.getpwnam", return_value=account))
         stack.enter_context(patch("os.open", side_effect=open_root))
+        stack.enter_context(patch("os.stat", side_effect=stat_root))
         stack.enter_context(patch("time.monotonic", side_effect=lambda: clock[0]))
         stack.enter_context(patch("time.time", side_effect=lambda: epoch + clock[0]))
         stack.enter_context(patch("time.sleep", side_effect=sleep))
@@ -133,7 +141,7 @@ sys.exit(1 if error is not None else 0)
 
 function observeOwnerLease(fixture: unknown) {
   const result = spawnSync("python3", ["-I", "-c", OWNER_LEASE_FIXTURE], {
-    input: JSON.stringify({ fixture, source: WAIT_FOR_OPENCLAW_OWNER_LEASE }),
+    input: JSON.stringify({ fixture, source: ownerLease.buildOpenClawOwnerLeaseObserver() }),
     encoding: "utf8",
     timeout: 10_000,
     maxBuffer: 32 * 1_024,
@@ -148,6 +156,12 @@ describe("native OpenClaw owner lease observation", () => {
     { name: "missing database", fixture: { database: false }, elapsed: 0, error: null },
     { name: "missing lease table", fixture: { table: false }, elapsed: 0, error: null },
     { name: "absent global owner", fixture: {}, elapsed: 0, error: null },
+    {
+      name: "world-accessible database",
+      fixture: { mode: 0o666 },
+      elapsed: 0,
+      error: "unsafe canonical pairing-state SQLite entry",
+    },
     {
       name: "foreign owner that expires at the native deadline",
       fixture: { row: { host: "foreign", expiry: 300_000 } },
@@ -277,10 +291,10 @@ function createOwnerLeaseDeadlineFixture(expiry: number) {
 
 describe("provider-owned managed startup root application", () => {
   it.each([
-    { race: "replace-before-open", error: "unvalidated OpenClaw owner lease database" },
-    { race: "replace-and-restore", error: "unvalidated OpenClaw owner lease database" },
-    { race: "remove-after-open", error: "disappeared during observation" },
-    { race: "replace-directory", error: "directory changed during observation" },
+    { race: "replace-before-open", error: "unvalidated pairing-state file identity" },
+    { race: "replace-and-restore", error: "unvalidated pairing-state file identity" },
+    { race: "remove-after-open", error: "canonical pairing-state database changed while reading" },
+    { race: "replace-directory", error: "canonical pairing-state database changed while reading" },
   ])("retains the startup hold after the SQLite $race race", ({ race, error }) => {
     const { result, observation } = observeOwnerLease({ race, table: false });
     expect(result.status).toBe(1);
@@ -337,6 +351,35 @@ describe("provider-owned managed startup root application", () => {
       }),
     ).toThrow("OpenClaw owner lease did not settle before managed startup");
     expect(fixture.execute.mock.calls.map(([call]) => call.command)).toHaveLength(3);
+  });
+
+  it("retains the pending transaction when the packaged state reader is unavailable", () => {
+    const fixture = createDockerRootApplyFixture(() => ({ resourceHandle: CONTAINER_ID }));
+    const reader = vi
+      .spyOn(ownerLease, "buildOpenClawOwnerLeaseObserver")
+      .mockImplementation(() => {
+        throw new Error("reader unavailable");
+      });
+    try {
+      expect(() =>
+        applyProviderManagedStartupRootRequest({
+          runtimeProvider: fixture.runtimeProvider,
+          sandboxName: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          bootstrapIdentity: "c".repeat(64),
+          request: fixture.request,
+          environment: {},
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          message: expect.stringContaining("Packaged OpenClaw state reader is unavailable"),
+          managedStartupTransaction: expect.objectContaining({ containerId: CONTAINER_ID }),
+        }),
+      );
+      expect(fixture.execute.mock.calls).toHaveLength(2);
+    } finally {
+      reader.mockRestore();
+    }
   });
 
   it("does not inspect owner leases again after the managed transaction is committed", () => {
