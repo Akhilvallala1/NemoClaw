@@ -19,7 +19,7 @@ import {
 
 /** Ordinary native Hermes routing, sharing TC-INF-11's authenticated public fixture. */
 export async function verifyFreshNativeHermesEndpoint(
-  fixtures: E2ETargetFixtures,
+  fixtures: Pick<E2ETargetFixtures, "artifacts" | "cleanup" | "host" | "progress" | "sandbox">,
   options: { endpoint: FakeOpenAiCompatibleServer; apiKey: string; model: string },
 ) {
   const { artifacts, cleanup, host, progress, sandbox } = fixtures;

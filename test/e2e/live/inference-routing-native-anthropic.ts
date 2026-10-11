@@ -19,7 +19,7 @@ import {
 
 /** TC-INF-11's native Anthropic boundary, sharing its owned public address. */
 export async function verifyFreshNativeAnthropicEndpoint(
-  fixtures: E2ETargetFixtures,
+  fixtures: Pick<E2ETargetFixtures, "artifacts" | "cleanup" | "host" | "progress" | "sandbox">,
   options: { sandboxName: string; apiKey: string; publicHttpAddress: string },
 ) {
   const { artifacts, cleanup, host, progress, sandbox } = fixtures;

@@ -3,6 +3,7 @@
 
 import { getSandbox } from "../../../src/lib/state/registry.ts";
 import { normalizeNativeCustomProviderAttachment } from "../../../src/lib/inference/native-custom/index.ts";
+import { isNativeCustomCredentialReference } from "../../../src/lib/inference/native-custom/credential-reference.ts";
 import {
   buildHttpsPinRouteLoopbackBaseUrl,
   computeHttpsPinRouteId,
@@ -15,7 +16,7 @@ import {
   CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS,
 } from "../../../tools/e2e/onboard-timeout-contract.mts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
-import { resultText } from "../fixtures/clients/command.ts";
+import { resultText, shellQuote } from "../fixtures/clients/command.ts";
 import { expect, test, type E2ETargetFixtures } from "../fixtures/e2e-test.ts";
 import { verifyFreshNativeAnthropicEndpoint } from "./inference-routing-native-anthropic.ts";
 import { verifyFreshNativeHermesEndpoint } from "./inference-routing-native-hermes.ts";
@@ -49,8 +50,44 @@ import { startPublicMcpHttpsTunnel } from "./mcp-bridge-servers.ts";
 // Native custom hosted lifecycle evidence has its own bounded catalogue job.
 process.env.NEMOCLAW_CLI_BIN ??= CLI_ENTRYPOINT;
 
+async function waitForNativeCredentialProjection(
+  sandbox: E2ETargetFixtures["sandbox"],
+  sandboxName: string,
+  attached: boolean,
+): Promise<string> {
+  let reference = "";
+  let attempt = 0;
+  // OpenShell 0.0.116 refreshes provider state on its ten-second poll.
+  // Observe fresh child environments without sending an inference request.
+  await expect
+    .poll(
+      async () => {
+        const probe = await sandbox.exec(
+          sandboxName,
+          ["sh", "-c", 'printf %s "${COMPATIBLE_API_KEY-}"'],
+          {
+            artifactName: `tc-inf-11-credential-${attached ? "attached" : "detached"}-${++attempt}`,
+            env: buildAvailabilityProbeEnv(),
+            timeoutMs: 15_000,
+            persistArtifacts: false,
+          },
+        );
+        reference = probe.stdout.trim();
+        return (
+          probe.exitCode === 0 &&
+          (attached
+            ? isNativeCustomCredentialReference(reference, "COMPATIBLE_API_KEY")
+            : reference === "")
+        );
+      },
+      { interval: 1_000, timeout: 30_000 },
+    )
+    .toBe(true);
+  return reference;
+}
+
 async function verifyFreshNativeDeepAgentsEndpoint(
-  fixtures: E2ETargetFixtures,
+  fixtures: Pick<E2ETargetFixtures, "artifacts" | "cleanup" | "host" | "progress" | "sandbox">,
   endpoint: FakeOpenAiCompatibleServer,
   apiKey: string,
   model: string,
@@ -161,8 +198,8 @@ test(
       ],
     },
   },
-  async (fixtures) => {
-    const { artifacts, cleanup, host, progress, runtimeProvider, sandbox } = fixtures;
+  async ({ artifacts, cleanup, host, progress, runtimeProvider, sandbox }) => {
+    const fixtures = { artifacts, cleanup, host, progress, sandbox };
     progress.phase("prepare the live HTTPS endpoint");
     await requireLivePrerequisites(host, runtimeProvider);
     const model = "nemoclaw-e2e-https-pin";
@@ -299,7 +336,6 @@ test(
       registered?.nativeCustomProviderAttachment,
       sandboxName,
     )!;
-    expect(receipt, "Fresh HTTPS onboarding must publish native authority").toBeDefined();
     expect(receipt.transport?.kind).toBe("https-pin");
     expect(registered.gatewayName).toBe(receipt.transport?.gatewayName);
     progress.phase("verify pinned route isolation");
@@ -460,7 +496,6 @@ test(
       getSandbox(peerName)?.nativeCustomProviderAttachment,
       peerName,
     )!;
-    expect(peerReceipt, "Peer onboarding must publish native authority").toBeDefined();
     expect(peerReceipt.providerName).not.toBe(receipt.providerName);
     expect(peerReceipt.providerId).not.toBe(receipt.providerId);
     expect(peerReceipt.endpointUrl).not.toBe(receipt.endpointUrl);
@@ -504,7 +539,7 @@ test(
         timeoutMs: 90_000,
       },
     );
-    expect(unapproved.exitCode, resultText(unapproved)).not.toBe(0);
+    expect(unapproved.exitCode, resultText(unapproved)).toBeGreaterThan(0);
     expect(fake.requests()).toHaveLength(deniedRequestOffset);
     let restoreAttachment: () => Promise<void> = async () => {
       const restored = await sandbox.openshell(
@@ -518,6 +553,7 @@ test(
       expect(restored.exitCode, resultText(restored)).toBe(0);
     };
     cleanup.add(`restore pending native attachment for ${sandboxName}`, () => restoreAttachment());
+    const issuedReference = await waitForNativeCredentialProjection(sandbox, sandboxName, true);
     const detach = await sandbox.openshell(
       ["sandbox", "provider", "detach", sandboxName, receipt.providerName],
       {
@@ -527,18 +563,20 @@ test(
       },
     );
     expect(detach.exitCode, resultText(detach)).toBe(0);
+    await waitForNativeCredentialProjection(sandbox, sandboxName, false);
     const revokedRequestOffset = fake.requests().length;
-    const revoked = await sandbox.exec(
-      sandboxName,
-      nativeCustomChatCommand(receipt, securityPayload, ["--fail"]),
-      {
-        artifactName: "tc-inf-11-detached-credential-denied",
-        env: buildAvailabilityProbeEnv(),
-        redactionValues: [apiKey],
-        timeoutMs: 90_000,
-      },
-    );
-    expect(revoked.exitCode, resultText(revoked)).not.toBe(0);
+    const revokedCommand = nativeCustomChatCommand(receipt, securityPayload, ["--fail"]);
+    // Exercise the revoked reference itself, rather than failing shell expansion
+    // merely because the refreshed environment no longer contains a credential.
+    revokedCommand[2] = `COMPATIBLE_API_KEY=${shellQuote(issuedReference)}; ${revokedCommand[2]}`;
+    const revoked = await sandbox.exec(sandboxName, revokedCommand, {
+      artifactName: "tc-inf-11-detached-credential-denied",
+      env: buildAvailabilityProbeEnv(),
+      redactionValues: [apiKey],
+      timeoutMs: 90_000,
+    });
+    expect(revoked.timedOut || revoked.exitCode === 28, resultText(revoked)).toBe(false);
+    expect(revoked.exitCode, resultText(revoked)).toBeGreaterThan(0);
     expect(fake.requests()).toHaveLength(revokedRequestOffset);
     await expectOpenAiChatThroughSandbox(
       sandbox,
@@ -557,6 +595,7 @@ test(
       },
     );
     expect(attach.exitCode, resultText(attach)).toBe(0);
+    await waitForNativeCredentialProjection(sandbox, sandboxName, true);
     await expectOpenAiChatThroughSandbox(
       sandbox,
       sandboxName,
