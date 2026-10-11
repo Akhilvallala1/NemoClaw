@@ -29,8 +29,8 @@
     },
     {
       "pullRequest": 12777,
-      "baseBudgetSha256": "20ab4c8648797fecce58ffafe4fbdc419c1790dea6b82a8de2509a5e64d75479",
-      "headBudgetSha256": "d4ed9d2ef9478b87f9af50d60cb571f15acaafb79fa79daefc5d08d708206e81"
+      "baseBudgetSha256": "cad397448ca1a5f535ef4416f7ea22e6e719bc1336945898aedf67a04241d545",
+      "headBudgetSha256": "c65e9bd771ae61ee4a410b04c2a72b349228da2861606de05b2fe67ba064f9d2"
     },
     {
       "pullRequest": 12886,
