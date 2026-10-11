@@ -31,8 +31,6 @@ export const ONBOARD_SINGLE_FINAL_HANDOFF_TEST_TIMEOUT_MS =
   ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS + ONBOARD_TEST_HEADROOM_MS;
 export const ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES = 75;
 
-export const INFERENCE_ROUTING_NEGATIVE_TEST_TIMEOUT_MS = 5 * MINUTE_MS;
-
 // The typed DCode target runs onboarding, its invalid-credential lifecycle,
 // state validation, and the ordered cloud checks. Those checks can consume 96
 // minutes of command deadlines before automatic config export; retain the same

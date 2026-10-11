@@ -9,7 +9,6 @@ import path from "node:path";
 import {
   ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS,
   ONBOARD_SINGLE_FINAL_HANDOFF_TEST_TIMEOUT_MS,
-  INFERENCE_ROUTING_NEGATIVE_TEST_TIMEOUT_MS,
 } from "../../../tools/e2e/onboard-timeout-contract.mts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import { resultText } from "../fixtures/clients/command.ts";
@@ -53,7 +52,7 @@ process.env.NEMOCLAW_CLI_BIN ??= CLI_ENTRYPOINT;
 test(
   "TC-INF-06 invalid API key fails with credential classification and cleanup",
   {
-    timeout: INFERENCE_ROUTING_NEGATIVE_TEST_TIMEOUT_MS,
+    timeout: 5 * 60_000,
     meta: {
       e2ePhases: [
         "confirm live inference prerequisites",
@@ -105,7 +104,7 @@ test(
 test(
   "TC-INF-07 unreachable endpoint fails with transport classification and cleanup",
   {
-    timeout: INFERENCE_ROUTING_NEGATIVE_TEST_TIMEOUT_MS,
+    timeout: 5 * 60_000,
     meta: {
       e2ePhases: [
         "confirm live inference prerequisites",
