@@ -64,7 +64,7 @@ enum Action {
         /// One step: tools, fmt, clippy, build, test, schema, bundle, or lifecycle;
         /// archive, live-docker, and live-kind run only when named.
         step: Option<String>,
-        /// Nextest partition for an explicitly selected lifecycle run (for example hash:1/2).
+        /// Nextest partition for an explicitly selected lifecycle run (for example slice:1/2).
         #[arg(long)]
         partition: Option<String>,
         /// Run lifecycle tests from a nextest archive instead of compiling them.
@@ -86,11 +86,26 @@ enum Action {
         #[arg(long)]
         base: String,
     },
+    /// Report a platform's whole lifecycle suite from its partitions' JUnit
+    /// artifacts, and add the report to the GitHub job summary. On the Linux
+    /// CI runners, fail when a test binary exceeds its budget.
+    LifecycleTiming {
+        /// Directory holding the downloaded lifecycle-PLATFORM-SHARD-ATTEMPT
+        /// artifacts, one subdirectory each.
+        directory: PathBuf,
+        #[arg(long)]
+        platform: String,
+        /// The shards CI ran, as a JSON list such as [1, 2].
+        #[arg(long)]
+        shards: String,
+    },
 }
 #[derive(Clone, clap::ValueEnum)]
 enum ChangedWorkflow {
     /// `CI / Images`.
     Images,
+    /// `Live / Docker` and `Live / Kind`.
+    Live,
 }
 #[cfg(feature = "sdk")]
 #[derive(Subcommand)]
@@ -467,11 +482,24 @@ async fn main() -> Result<()> {
         }
         .map_err(Into::into);
     }
+    if let Action::LifecycleTiming {
+        directory,
+        platform,
+        shards,
+    } = &cli.command
+    {
+        let shards: Vec<u32> = serde_json::from_str(shards)
+            .map_err(|error| format!("--shards must be a JSON list of numbers: {error}"))?;
+        return run_ci::report_lifecycle_suite(directory, platform, &shards);
+    }
     if let Action::Changes { workflow, base } = &cli.command {
-        let ChangedWorkflow::Images = workflow;
-        let decision = nemoclaw_build::changes::images(Path::new("."), base);
+        let (workflow, name) = match workflow {
+            ChangedWorkflow::Images => (nemoclaw_build::changes::Workflow::Images, "images"),
+            ChangedWorkflow::Live => (nemoclaw_build::changes::Workflow::Live, "live"),
+        };
+        let decision = nemoclaw_build::changes::decide(Path::new("."), base, workflow);
         eprintln!("{}", decision.reason);
-        println!("images={}", decision.run);
+        println!("{name}={}", decision.run);
         return Ok(());
     }
     let pins: Pins = serde_json::from_slice(&fs::read("versions.json")?)?;
@@ -500,8 +528,11 @@ async fn main() -> Result<()> {
         Action::Schema { .. } | Action::Docs { .. } | Action::Fern { .. } => {
             unreachable!("documentation generation returned before build tool checks")
         }
-        Action::Ci { .. } | Action::Images { .. } | Action::Changes { .. } => {
-            unreachable!("CI, image, and change commands returned before build tool checks")
+        Action::Ci { .. }
+        | Action::Images { .. }
+        | Action::Changes { .. }
+        | Action::LifecycleTiming { .. } => {
+            unreachable!("CI, image, change, and timing commands returned before build tool checks")
         }
         #[cfg(feature = "sdk")]
         Action::Bundle { platform } => {

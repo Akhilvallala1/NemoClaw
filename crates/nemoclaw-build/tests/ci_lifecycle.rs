@@ -25,11 +25,27 @@ if [ "$1 $2" = 'nextest --version' ]; then
     exit 0
 fi
 printf '%s\n' "$@" > arguments
+if [ "$1" = build ]; then
+    /bin/mkdir -p target/debug
+    printf '#!/bin/sh\nprintf "%%s\\n" "$@" > bundled\n' > target/debug/nemoclaw-build
+    /bin/chmod +x target/debug/nemoclaw-build
+    exit 0
+fi
 if [ "$1 $2" = 'nextest list' ]; then
-    printf '%s\n' "$CARGO_LIST"
+    previous=
+    profile=
+    for argument; do
+        [ "$previous" = --profile ] && profile=$argument
+        previous=$argument
+    done
+    case $profile in
+        live-docker) printf '%s\n' "${CARGO_LIST_LIVE_DOCKER:-$CARGO_LIST}" ;;
+        live-kind) printf '%s\n' "${CARGO_LIST_LIVE_KIND:-$CARGO_LIST}" ;;
+        *) printf '%s\n' "$CARGO_LIST" ;;
+    esac
     exit "${CARGO_RESULT:-0}"
 fi
-printf '%s\n' "$NEMOCLAW_TEST_BUNDLE" "$NEMOCLAW_TEST_TOFU" "$NEMOCLAW_TEST_PROVIDER" > inputs
+printf '%s\n' "$NEMOCLAW_TEST_BUNDLE" "${NEMOCLAW_TEST_TOFU-unset}" "${NEMOCLAW_TEST_PROVIDER-unset}" > inputs
 exit "${CARGO_RESULT:-0}"
 "#,
             ),
@@ -57,6 +73,8 @@ exit "${CARGO_RESULT:-0}"
             .env("PROTOC", self.0.path().join("bin/protoc"))
             .env("PATH", self.0.path().join("bin"))
             .env("TEST_PLATFORM", "linux_arm64")
+            .env_remove("NEMOCLAW_TEST_TOFU")
+            .env_remove("NEMOCLAW_TEST_PROVIDER")
             .env_remove("GITHUB_ENV")
             .env_remove("GITHUB_PATH");
         command
@@ -69,6 +87,31 @@ exit "${CARGO_RESULT:-0}"
     fn arguments(&self) -> String {
         fs::read_to_string(self.0.path().join("arguments")).unwrap()
     }
+
+    /// Write the files the build step leaves for `ci archive` to package.
+    fn seed_build_outputs(&self) {
+        for path in [
+            "dist/linux_arm64/bin/nemoclaw",
+            "dist/linux_arm64/libexec/tofu",
+            ".tools/protoc-36.1/bin/protoc",
+            ".tools/nextest-0.9.144/cargo-nextest",
+            "target/debug/terraform-provider-nemoclaw",
+            "target/debug/terraform-provider-openshell",
+            "target/debug/terraform-provider-fabric",
+            "target/debug/nemoclaw-fixture-ssh",
+        ] {
+            let file = self.0.path().join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, path).unwrap();
+            fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+}
+
+fn suite(id: &str) -> String {
+    format!(
+        r#"{{"rust-suites":{{"{id}":{{"testcases":{{"case":{{"filter-match":{{"status":"matches"}}}}}}}}}}}}"#
+    )
 }
 
 #[test]
@@ -86,12 +129,14 @@ fn lifecycle_partition_reaches_nextest_without_changing_the_selected_suite() {
         args.contains("--profile\nlifecycle\n--run-ignored\nonly\n"),
         "{args}"
     );
+    // The bundle supplies OpenTofu and the providers; each provider's own
+    // tests use the one Cargo built.
     let inputs = fs::read_to_string(fixture.0.path().join("inputs")).unwrap();
-    assert!(inputs.contains("dist/linux_arm64/libexec/tofu"), "{inputs}");
-    assert!(
-        inputs.contains("target/debug/terraform-provider-nemoclaw"),
-        "{inputs}"
-    );
+    let inputs: Vec<_> = inputs.lines().collect();
+    assert_eq!(inputs.len(), 3, "{inputs:?}");
+    assert!(inputs[0].ends_with("/dist/linux_arm64"), "{inputs:?}");
+    assert!(std::path::Path::new(inputs[0]).is_absolute(), "{inputs:?}");
+    assert_eq!(inputs[1..], ["unset", "unset"]);
 }
 
 #[test]
@@ -138,42 +183,29 @@ fn archived_lifecycle_uses_the_checkout_without_building_again() {
 
 #[test]
 fn lifecycle_options_cannot_silently_narrow_default_or_other_ci_steps() {
-    for args in [
-        vec!["--partition", "hash:1/2"],
-        vec!["test", "--partition", "hash:1/2"],
-        vec!["fmt", "--archive-file", "tests.tar.zst"],
-        vec!["--archive-file", "tests.tar.zst"],
+    let partition = "--partition requires ci lifecycle";
+    let archive = "--archive-file requires ci lifecycle, live-docker, or live-kind";
+    for (args, expected) in [
+        (vec!["--partition", "hash:1/2"], partition),
+        (vec!["test", "--partition", "hash:1/2"], partition),
+        (vec!["live-docker", "--partition", "hash:1/2"], partition),
+        (vec!["fmt", "--archive-file", "tests.tar.zst"], archive),
+        (vec!["--archive-file", "tests.tar.zst"], archive),
     ] {
         let fixture = Fixture::new();
         let output = fixture.run(&args);
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            error.contains("--partition and --archive-file require ci lifecycle"),
-            "{error}"
-        );
+        assert!(error.contains(expected), "{error}");
         assert!(!fixture.0.path().join("arguments").exists());
         assert!(!fixture.0.path().join(".build").exists());
     }
 }
 
 #[test]
-fn archive_packages_the_bundle_tools_and_provider_helpers_with_executable_modes() {
+fn archive_packages_tools_and_the_ssh_relay_but_leaves_providers_to_the_bundle_and_nextest() {
     let fixture = Fixture::new();
-    for path in [
-        "dist/linux_arm64/bin/nemoclaw",
-        "dist/linux_arm64/libexec/tofu",
-        ".tools/protoc-36.1/bin/protoc",
-        ".tools/nextest-0.9.144/cargo-nextest",
-        "target/debug/terraform-provider-nemoclaw",
-        "target/debug/terraform-provider-openshell",
-        "target/debug/terraform-provider-fabric",
-    ] {
-        let file = fixture.0.path().join(path);
-        fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(&file, path).unwrap();
-        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    fixture.seed_build_outputs();
     // Tool discovery uses the fixture's explicit PROTOC and cargo commands.
     let output = fixture.run(&["archive"]);
     assert!(
@@ -193,12 +225,16 @@ fn archive_packages_the_bundle_tools_and_provider_helpers_with_executable_modes(
     let packed = fs::File::open(fixture.0.path().join(".build/ci/lifecycle-inputs.tar")).unwrap();
     let unpacked = tempfile::tempdir().unwrap();
     tar::Archive::new(packed).unpack(unpacked.path()).unwrap();
+    // The bundle job uploads dist/PLATFORM separately, in parallel with this build.
+    assert!(!unpacked.path().join("dist").exists());
+    // Nextest archives each provider package's executables with its tests.
+    for name in ["nemoclaw", "openshell", "fabric"] {
+        let path = format!("target/debug/terraform-provider-{name}");
+        assert!(!unpacked.path().join(&path).exists(), "{path}");
+    }
     for path in [
-        "dist/linux_arm64/bin/nemoclaw",
         ".tools/nextest-0.9.144/cargo-nextest",
-        "target/debug/terraform-provider-nemoclaw",
-        "target/debug/terraform-provider-openshell",
-        "target/debug/terraform-provider-fabric",
+        "target/debug/nemoclaw-fixture-ssh",
     ] {
         let file = unpacked.path().join(path);
         assert_eq!(fs::read_to_string(&file).unwrap(), path);
@@ -208,6 +244,89 @@ fn archive_packages_the_bundle_tools_and_provider_helpers_with_executable_modes(
         fs::read(unpacked.path().join(".build/ci/nemoclaw-build")).unwrap(),
         fs::read(env!("CARGO_BIN_EXE_nemoclaw-build")).unwrap()
     );
+}
+
+#[test]
+fn linux_archives_also_hold_the_live_suites_so_live_jobs_need_not_compile() {
+    let fixture = Fixture::new();
+    fixture.seed_build_outputs();
+    let output = fixture
+        .command(&["archive"])
+        .env("CARGO_LIST_LIVE_DOCKER", suite("docker-suite"))
+        .env("CARGO_LIST_LIVE_KIND", suite("kind-suite"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let args = fixture.arguments();
+    assert!(
+        args.contains(
+            "--filterset\nbinary_id(=docker-suite) | binary_id(=kind-suite) | binary_id(=selected-suite)\n"
+        ),
+        "{args}"
+    );
+}
+
+#[test]
+fn other_platforms_archive_only_the_lifecycle_suite_because_live_suites_need_linux() {
+    let fixture = Fixture::new();
+    fixture.seed_build_outputs();
+    let output = fixture
+        .command(&["archive"])
+        .env("TEST_PLATFORM", "darwin_arm64")
+        .env("CARGO_LIST_LIVE_DOCKER", suite("docker-suite"))
+        .env("CARGO_LIST_LIVE_KIND", suite("kind-suite"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let args = fixture.arguments();
+    assert!(
+        args.contains("--filterset\nbinary_id(=selected-suite)\n"),
+        "{args}"
+    );
+}
+
+#[test]
+fn live_suites_accept_an_archive_of_their_tests() {
+    let fixture = Fixture::new();
+    let output = fixture.run(&["live-docker", "--archive-file", "tests.tar.zst"]);
+    assert!(!output.status.success());
+    // It gets past option validation and stops at the missing bundle.
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("build the bundle first"), "{error}");
+}
+
+#[test]
+fn bundle_builds_its_build_tool_so_it_can_run_without_the_build_step() {
+    let fixture = Fixture::new();
+    assert!(
+        !fixture
+            .0
+            .path()
+            .join("target/debug/nemoclaw-build")
+            .exists()
+    );
+    let output = fixture.run(&["bundle"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let args = fixture.arguments();
+    assert!(
+        args.starts_with("build\n--locked\n--package\nnemoclaw-build\n"),
+        "{args}"
+    );
+    assert!(!args.contains("--no-default-features"), "{args}");
+    let bundled = fs::read_to_string(fixture.0.path().join("bundled")).unwrap();
+    assert_eq!(bundled, "bundle\n--platform\nlinux_arm64\n");
 }
 
 #[test]

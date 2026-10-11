@@ -276,4 +276,3 @@ nemoclaw destroy --state-dir .local/kubernetes
 Destroy removes the sandboxes, managed model Pods and their disposable service resources, the gateway release, and the development issuer.
 It keeps the namespace, the credential key Secret, the gateway's persistent volumes, and each model and credential PVC, as described in [deletion and retention](state.md#deletion-and-retention).
 If destroy fails or is interrupted while removing the gateway release, follow [Recover an Interrupted Helm Removal](usage.md#recover-an-interrupted-helm-removal).
-Deployments made before the Helm provider graph keep their original bundle and state; see [the migration policy](migration.md#move-from-the-combined-kubernetes-gateway-resource).

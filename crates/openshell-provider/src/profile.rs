@@ -3,18 +3,36 @@
 use super::*;
 use nemoclaw_openshell::search::SearchProvider;
 
-const PROFILE_METADATA: &str = "nemoclaw.nvidia.com/profile-v1";
+const BINARIES: &str = "nemoclaw.nvidia.com/binaries";
+const ENDPOINT: &str = "nemoclaw.nvidia.com/endpoint";
+const PROVIDER_TYPE: &str = "nemoclaw.nvidia.com/provider-type";
+const AUTHENTICATED: &str = "nemoclaw.nvidia.com/authenticated";
+const CLUSTER_SOURCE: &str = "nemoclaw.nvidia.com/cluster-source";
+const CLUSTER_ADDRESSES: &str = "nemoclaw.nvidia.com/cluster-addresses";
+
+/// Each ownership and definition field, and the profile annotation that carries it.
+const FIELDS: [(&str, &str); 8] = [
+    ("owner", OWNER),
+    ("generation", GENERATION),
+    ("binaries_json", BINARIES),
+    ("endpoint", ENDPOINT),
+    ("provider_type", PROVIDER_TYPE),
+    ("authenticated", AUTHENTICATED),
+    ("cluster_source", CLUSTER_SOURCE),
+    ("cluster_addresses", CLUSTER_ADDRESSES),
+];
 
 fn annotations(fields: Row) -> std::collections::HashMap<String, String> {
-    // OpenShell v0.1.2 hashes protobuf map iteration order when computing profile
-    // revisions. One annotation containing canonical JSON keeps those bytes stable
-    // while retaining all ownership and definition fields. Revisit when the pinned
-    // gateway canonicalizes profile hashes: NVIDIA/NemoClaw#12458.
-    [(
-        PROFILE_METADATA.into(),
-        serde_json::to_string(&fields).expect("string map"),
-    )]
-    .into()
+    fields
+        .into_iter()
+        .map(|(field, value)| {
+            let (_, key) = FIELDS
+                .iter()
+                .find(|(name, _)| *name == field)
+                .expect("profile metadata field");
+            ((*key).into(), value)
+        })
+        .collect()
 }
 
 fn binaries(want: &Row) -> Result<Vec<proto::NetworkBinary>, ObservationError> {
@@ -162,13 +180,13 @@ fn row(
     catalog_entry: bool,
     services: &dyn Services,
 ) -> Result<Row, ObservationError> {
-    let metadata: Row = serde_json::from_str(
-        profile
-            .annotations
-            .get(PROFILE_METADATA)
-            .ok_or(ObservationError::Incomplete)?,
-    )
-    .map_err(|_| ObservationError::BindingMismatch)?;
+    let metadata: Row = FIELDS
+        .iter()
+        .filter_map(|(field, key)| {
+            let value = profile.annotations.get(*key)?;
+            Some(((*field).into(), value.clone()))
+        })
+        .collect();
     let owner = metadata.get("owner").cloned().unwrap_or_default();
     let generation = metadata.get("generation").cloned().unwrap_or_default();
     let search = SearchProvider::from_profile(name);
@@ -887,6 +905,11 @@ mod tests {
                 r#"["10.96.0.42","fd00::42"]"#.into(),
             );
             let mut profile = native_definition(&want, &TestServices).unwrap();
+            assert_eq!(profile.annotations[CLUSTER_SOURCE], want["cluster_source"]);
+            assert_eq!(
+                profile.annotations[CLUSTER_ADDRESSES],
+                want["cluster_addresses"]
+            );
             assert_eq!(
                 profile.endpoints[0].allowed_ips,
                 ["10.96.0.42/32", "fd00::42/128"]
@@ -903,6 +926,14 @@ mod tests {
             )
             .unwrap();
             assert_eq!(observed["cluster_source"], want["cluster_source"]);
+            for key in [CLUSTER_SOURCE, CLUSTER_ADDRESSES] {
+                let mut missing = profile.clone();
+                missing.annotations.remove(key);
+                assert!(
+                    row(missing, "workspace", &profile.id, true, &TestServices).is_err(),
+                    "missing {key}"
+                );
+            }
             profile.endpoints[0].allowed_ips = vec!["10.0.0.0/8".into()];
             assert!(
                 row(
@@ -1006,7 +1037,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_profiles_have_stable_revision_bytes_after_wire_round_trips() {
+    fn imported_profiles_survive_wire_round_trips() {
         let mut profiles = vec![
             search_definition(SearchProvider::Brave),
             search_definition(SearchProvider::Tavily),
@@ -1025,13 +1056,7 @@ mod tests {
             profile.scope = "workspace".into();
             let bytes = profile.encode_to_vec();
             for _ in 0..64 {
-                // The pinned gateway hashes these bytes after rebuilding its catalog.
                 let decoded = proto::ProviderProfile::decode(bytes.as_slice()).unwrap();
-                assert!(
-                    decoded.encode_to_vec() == bytes,
-                    "unstable profile: {}",
-                    profile.id
-                );
                 let observed =
                     row(decoded, "workspace", &profile.id, true, &DockerServices).unwrap();
                 assert_eq!(observed["owner"], "deployment");
@@ -1058,50 +1083,65 @@ mod tests {
         .unwrap();
         verify_identity(&want, &observed).unwrap();
         for key in [
-            "owner",
-            "generation",
-            "endpoint",
-            "provider_type",
-            "authenticated",
+            OWNER,
+            GENERATION,
+            BINARIES,
+            ENDPOINT,
+            PROVIDER_TYPE,
+            AUTHENTICATED,
         ] {
             let mut missing = profile.clone();
-            let mut metadata: Row =
-                serde_json::from_str(&missing.annotations[PROFILE_METADATA]).unwrap();
-            metadata.remove(key);
-            missing.annotations = annotations(metadata);
+            assert!(missing.annotations.remove(key).is_some(), "{key}");
             assert!(
                 row(missing, "workspace", &profile.id, true, &DockerServices).is_err(),
                 "missing {key}"
             );
         }
-        for value in ["{}", "null", "not JSON", "{\"owner\":7}"] {
+        for value in ["", "{}", "null", "not JSON", "[7]"] {
             let mut malformed = profile.clone();
-            malformed
-                .annotations
-                .insert(PROFILE_METADATA.into(), value.into());
+            malformed.annotations.insert(BINARIES.into(), value.into());
             assert!(row(malformed, "workspace", &profile.id, true, &DockerServices).is_err());
         }
-        let mut extra = profile.clone();
-        extra.annotations.insert(OWNER.into(), "deployment".into());
-        assert!(row(extra, "workspace", &profile.id, true, &DockerServices).is_err());
         let mut unknown = profile.clone();
-        let mut metadata: Row =
-            serde_json::from_str(&unknown.annotations[PROFILE_METADATA]).unwrap();
-        metadata.insert("unexpected".into(), "value".into());
-        unknown.annotations = annotations(metadata);
+        unknown
+            .annotations
+            .insert("nemoclaw.nvidia.com/unexpected".into(), "value".into());
         assert!(row(unknown, "workspace", &profile.id, true, &DockerServices).is_err());
-        for key in ["owner", "generation"] {
+        for key in [OWNER, GENERATION] {
             let mut foreign = profile.clone();
-            let mut metadata: Row =
-                serde_json::from_str(&foreign.annotations[PROFILE_METADATA]).unwrap();
-            metadata.insert(key.into(), "someone-else".into());
-            foreign.annotations = annotations(metadata);
+            foreign
+                .annotations
+                .insert(key.into(), "someone-else".into());
             let observed = row(foreign, "workspace", &profile.id, true, &DockerServices).unwrap();
             assert_eq!(
                 verify_identity(&want, &observed),
                 Err(ObservationError::BindingMismatch)
             );
         }
+    }
+
+    #[test]
+    fn profile_metadata_is_one_annotation_per_field() {
+        let native = native_definition(&native_fields("anthropic", true), &DockerServices).unwrap();
+        assert_eq!(
+            native.annotations,
+            [
+                (OWNER, "deployment"),
+                (GENERATION, "generation"),
+                (BINARIES, r#"["/srv/python3.99","/srv/bun"]"#),
+                (ENDPOINT, "https://inference.example.com/v1"),
+                (PROVIDER_TYPE, "anthropic"),
+                (AUTHENTICATED, "true"),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .into()
+        );
+        let mut search: Vec<_> = search_definition(SearchProvider::Brave)
+            .annotations
+            .into_keys()
+            .collect();
+        search.sort();
+        assert_eq!(search, [BINARIES, GENERATION, OWNER]);
     }
 
     #[test]

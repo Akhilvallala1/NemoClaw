@@ -97,7 +97,7 @@ async fn operations(
     objects.insert(json!({"apiVersion": "storage.k8s.io/v1", "kind": "StorageClass", "metadata": {"name": "model-cache"}}));
     objects.insert(json!({"apiVersion": "node.k8s.io/v1", "kind": "RuntimeClass", "metadata": {"name": "nvidia"}, "handler": "nvidia"}));
     let fixture = objects.serve().await;
-    let client = crate::kube_api::client(&fixture);
+    let client = crate::kube_client::client(&fixture);
     let cluster = Cluster::new(client.clone(), &spec.owner, &spec.gateway.generation);
     let namespace = cluster
         .create(json!({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "agents"}}))

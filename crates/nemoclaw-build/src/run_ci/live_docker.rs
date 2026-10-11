@@ -246,6 +246,7 @@ pub(super) fn run_live_docker(
     pins: &Pins,
     platform: &str,
     configure: &dyn Fn(&mut Command),
+    archive: Option<&Path>,
 ) -> Result<()> {
     let bundle = std::path::absolute(Path::new("dist").join(platform))?;
     if !bundle.join("manifest.json").is_file() {
@@ -271,27 +272,56 @@ pub(super) fn run_live_docker(
     let [args] = Step::LiveDocker.cargo_args() else {
         unreachable!("live-docker is one nextest command")
     };
-    let nextest = |filter: &str, document: Option<&str>| -> Result<()> {
-        let mut command = cargo();
-        configure(&mut command);
+    // Each nextest command rewrites the profile's JUnit report; keep each one,
+    // so the step reports and uploads all of its tests.
+    let Some((profile, file)) = Step::LiveDocker.junit() else {
+        unreachable!("live-docker writes a JUnit report")
+    };
+    let junit = Path::new("target").join("nextest").join(profile).join(file);
+    let mut reports = Vec::new();
+    let mut nextest = |filter: &str, document: Option<&str>| -> Result<()> {
+        let mut command = match archive {
+            Some(archive) => archived(Step::LiveDocker, archive, configure)?,
+            None => {
+                let mut command = cargo();
+                configure(&mut command);
+                command.args(*args);
+                command
+            }
+        };
         command
-            .args(*args)
             .args(["-E", filter])
             .envs(shared.iter().map(|(key, value)| (key, value)));
         if let Some(document) = document {
             command.env("NEMOCLAW_TEST_GATEWAY_DOCUMENT", document);
         }
-        run(&mut command)
+        // A command that writes no report must not repeat the previous one.
+        let _ = fs::remove_file(&junit);
+        let result = run(&mut command);
+        if let Ok(xml) = fs::read_to_string(&junit) {
+            reports.push(xml);
+        }
+        result
     };
     let gateway = GATEWAY_TESTS
         .iter()
         .map(|name| format!("test({name})"))
         .collect::<Vec<_>>()
         .join(" | ");
-    // `-E` narrows the profile's default filter rather than replacing it.
-    nextest(&format!("not ({gateway})"), None)?;
-    for (name, document) in GATEWAY_TESTS.iter().zip(&documents) {
-        nextest(&format!("test({name})"), Some(document))?;
+    let result = (|| {
+        // `-E` narrows the profile's default filter rather than replacing it.
+        nextest(&format!("not ({gateway})"), None)?;
+        for (name, document) in GATEWAY_TESTS.iter().zip(&documents) {
+            nextest(&format!("test({name})"), Some(document))?;
+        }
+        Ok(())
+    })();
+    if !reports.is_empty() {
+        let joined = ci::timing::join_consecutive(&reports)
+            .and_then(|xml| fs::write(&junit, xml).map_err(|error| error.to_string()));
+        if let Err(error) = joined {
+            eprintln!("cannot join the live-docker JUnit reports: {error}");
+        }
     }
-    Ok(())
+    result
 }

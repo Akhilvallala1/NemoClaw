@@ -44,8 +44,9 @@ The generated graphs manage these objects and observations:
 | Docker provider data source | Local images selected with `imagePullPolicy: Never` |
 | Helm provider | The managed Kubernetes gateway's OpenShell chart release (`helm_release.gateway`) |
 
-The [standalone HCL fixture](contributing/integration-tests.md#standalone-cache-and-credential-resources) verifies cache and credential resource composition without SDK orchestration.
-It does not qualify a complete standalone OpenShell deployment workflow.
+Provider [contract tests](contributing/integration-tests.md) plan hand-written HCL through pinned OpenTofu without SDK orchestration.
+Cluster model workloads and storage have [SDK lifecycle tests](../crates/nemoclaw-sdk/tests/kubernetes_services.rs) against a fake Kubernetes API.
+These tests do not qualify a complete standalone deployment workflow.
 Do not edit SDK-generated graphs or share a deployment state directory between independently managed workflows.
 
 ## Provider Catalog
@@ -120,7 +121,8 @@ resource "openshell_sandbox" "assistant" {
 | `fabric_sandbox_readiness` data source | [Sandbox completion](#sandbox-completion) |
 | `fabric_capabilities` data source | [Fabric image catalog and compatibility](#engine-and-fabric-discovery) |
 
-The `fabric` provider takes the same gateway settings as the `openshell` provider, and `destroy`, which permits removing agent configurations during explicit teardown.
+The `fabric` provider takes the same gateway settings as the `openshell` provider.
+It also accepts `destroy`, but no Fabric type requires it: removing an agent configuration releases its binding without changing the sandbox.
 It reaches each sandbox's Fabric host by running commands in the sandbox through the gateway; `fabric_capabilities` instead reads the container engine named on it.
 The bundled Fabric provider includes NemoClaw's managed-service checks when it verifies a configuration's parent sandbox.
 
@@ -290,7 +292,9 @@ Fabric observations retain the original `catalog`: Fabric adapter and workflow t
 Native schemas and declared requirements are consumed directly, without a second capability projection.
 Missing declarations remain unknown; an advertised setting does not prove that the selected inference model supports it.
 
-Optional `requirements_json` supplies an SDK `FabricRequirements` containing the canonical public Fabric `configuration` and deployment filesystem grants.
+Optional `config_json` supplies the canonical public Fabric configuration, the same document `fabric_agent_configuration` takes.
+Optional `filesystem_read` lists the paths the sandbox policy grants for reading; omitting it skips the filesystem check.
+A configuration without `harness.adapter_id` is rejected.
 Optional `architecture` and `operating_system` supply the execution engine's platform.
 The computed `compatibility_status` is `supported`, `unsupported`, or `unknown`, with details in `observation_json.compatibility`.
 The SDK checks image identity, source revision and platform, then calls Fabric's pure planner with the selected image's descriptors.
@@ -301,7 +305,7 @@ Raw schema messages and rejected values are omitted; unsafe or overlong field id
 For a rejected model token limit, the reason also names `overrides.maxTokens` and up to 16 model routes carrying that setting, including Fabric's generated `default` role.
 Deployment postconditions name the sandbox and adapter and preserve unsupported check reasons in text and JSON errors.
 Onboarding uses the same assessment; unknown error variants retain a generic rejection.
-Omitting requirements preserves metadata-only discovery.
+Omitting `config_json` preserves metadata-only discovery.
 
 The [agent image builder](build.md#build-agent-images) reads `Fabric.discover()` inside each assembled image and stores the result in `io.nemoclaw.fabric.catalog`.
 It selects installed-package records using Fabric's provenance, without editing their descriptors.
@@ -315,7 +319,7 @@ The runtime consumes the same canonical public configuration through Fabric; see
 
 Generated graphs observe each sandbox image independently of resource creation or image acquisition.
 Managed gateways use their configured engine; external gateways require `spec.gateway.engine` for image inspection and do not run managed-gateway prerequisite checks.
-With `requirements_json`, image discovery also returns `runtime_json`, the selected adapter and advertised runtime layout, and `binaries_json`, its resolved executable list.
+With `config_json`, image discovery also returns `runtime_json`, the selected adapter and advertised runtime layout, and `binaries_json`, its resolved executable list.
 The sandbox consumes `runtime_json`; its `policy` block retains authored policy and managed endpoint inputs, resolved against that layout before creation.
 Provider profiles require a nonempty `binaries` list, which graphs decode from `binaries_json`; search registrations retain their scoped `profile_name`.
 Refresh verifies the actual launch and policy against retained metadata, and export and teardown do not need another image inspection.
@@ -400,7 +404,7 @@ A failed apply may record new observations and condition results while retaining
 After correcting compatibility or access, reapply the same configuration with its retained state.
 Teardown omits the capability gates so a version or driver mismatch alone does not prevent cleanup.
 
-[Gateway protocol tests](../crates/nemoclaw-e2e/tests/opentofu_openshell.rs) exercise the production provider and pinned OpenTofu without SDK orchestration: early planning errors, saved-plan drift, unchanged apply, failed observation, recovery, and teardown.
+[OpenShell contract tests](../crates/openshell-provider/tests/contract) exercise the production provider and pinned OpenTofu without SDK orchestration: early planning errors, saved-plan drift, unchanged apply, failed observation, recovery, and teardown.
 [Deployment fixtures](../crates/nemoclaw-e2e/tests/deployment.rs) and [Fabric lifecycle fixtures](../crates/nemoclaw-e2e/tests/fabric_deployment.rs) verify that the SDK uses the same apply-time protection.
 Fabric configuration writes are owned by `fabric_agent_configuration`; unchanged apply preserves the active runtime handle.
 Its `config_json` is the canonical public Fabric configuration, separate from immutable sandbox identity.
@@ -525,7 +529,8 @@ See [runtime ownership](design/runtime.md) and [recovery](models.md#diagnose-and
 ## Sandbox Completion
 
 The OpenShell graph uses `fabric_sandbox_readiness` after sandbox creation and any runtime configuration resource.
-Its required `sandbox` map carries the sandbox resource's binding and configuration; the provider checks startup and configuration before requesting the packaged bridge's health response.
+It requires the sandbox's `workspace`, `name`, `id`, `owner`, `generation`, `agent_name`, `agent_runtime`, and `runtime_json`, and the agent configuration's `config_json`.
+The provider checks that the sandbox still has that identity and agent runtime, waits for startup, and confirms the host applied that configuration before requesting the packaged bridge's health response.
 It does not invoke an agent or model.
 The optional string `read_trigger` uses `uuid()` in generated graphs, making the read unknown during planning and recording a fresh token on every apply.
 
@@ -620,7 +625,7 @@ Follow [bundle building](build.md) for matched CLI, SDK contract, provider, sche
 The NemoClaw, OpenShell, and Fabric providers use the same source-derived version to prevent stale reuse.
 The Docker and Helm providers have fixed release versions and checksum-pinned native archives, with their upstream licenses retained in the bundle.
 
-[Schema tests](../crates/nemoclaw-provider/tests/schema.rs), [OpenShell provider schema tests](../crates/openshell-provider/tests/schema.rs), [Fabric provider schema tests](../crates/fabric-provider/tests/schema.rs), [planning tests](../crates/nemoclaw-provider/tests/planning.rs), and [refresh tests](../crates/nemoclaw-provider/tests/refresh.rs) cover provider contracts.
+[Schema snapshots](contributing/testing.md#provider-schema-snapshots) of the NemoClaw, OpenShell, and Fabric providers, [planning tests](../crates/nemoclaw-provider/tests/planning.rs), and [refresh tests](../crates/nemoclaw-provider/tests/refresh.rs) cover provider contracts.
 [Fixture qualification](contributing/integration-tests.md) covers real OpenTofu protocol/lifecycle execution with explicit bundle inputs.
 
 ## Direct OpenTofu Usage
@@ -628,4 +633,4 @@ The Docker and Helm providers have fixed release versions and checksum-pinned na
 The providers are not published yet ([#12638](https://github.com/NVIDIA/NemoClaw/issues/12638)).
 Supported HCL examples, import, adoption, remote-state backends and compatibility across releases are tracked in [#12645](https://github.com/NVIDIA/NemoClaw/issues/12645).
 
-These sections need verified implementations and test results before they can recommend a direct-use workflow.
+Every resource and data source takes inputs that can be written in HCL, but this guide does not recommend a direct-use workflow.

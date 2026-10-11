@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Retained volumes: their identity, ownership labels, and observation.
-#[cfg(all(test, unix, feature = "client"))]
+#[cfg(all(test, feature = "client"))]
 #[path = "storage_tests.rs"]
 mod tests;
 
@@ -25,7 +25,7 @@ impl Storage {
     pub const ATTRIBUTES: [&str; 4] = ["name", "owner", "generation", "engine"];
 
     /// Check one storage attribute, explaining a rejected value without echoing it.
-    pub fn check(attribute: &str, value: &str) -> Result<(), &'static str> {
+    pub fn check(attribute: &str, value: &str) -> Result<(), std::borrow::Cow<'static, str>> {
         let (pattern, requirement) = match attribute {
             "name" => (
                 r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,254}$",
@@ -38,14 +38,14 @@ impl Storage {
             ),
             "engine" => {
                 return crate::validate_engine_endpoint(value)
-                    .map_err(|_| "must be a supported Docker or Podman engine endpoint");
+                    .map_err(|_| "must be a supported Docker or Podman engine endpoint".into());
             }
-            _ => return Err("is not a storage attribute"),
+            _ => return Err("is not a storage attribute".into()),
         };
         if regex::Regex::new(pattern).unwrap().is_match(value) {
             Ok(())
         } else {
-            Err(requirement)
+            Err(requirement.into())
         }
     }
     pub fn validate(&self) -> Result<(), Error> {
@@ -190,7 +190,7 @@ mod operations {
     }
 }
 // Only the Unix storage tests build volumes with the ownership labels.
-#[cfg(all(test, unix, feature = "client"))]
+#[cfg(all(test, feature = "client"))]
 use operations::labels;
 #[cfg(feature = "client")]
 pub use operations::{ensure_storage, observe_storage};

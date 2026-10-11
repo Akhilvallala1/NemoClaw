@@ -175,10 +175,16 @@ fn run_step(
     match step {
         Step::Tools => unreachable!("tools install in-process"),
         Step::LiveDocker => {
-            return live_docker::run_live_docker(tools.pins, platform, &configure);
+            return live_docker::run_live_docker(tools.pins, platform, &configure, archive_file);
         }
         Step::LiveKind => unreachable!("live-kind runs asynchronously"),
         Step::Schema | Step::Bundle => {
+            if step == Step::Bundle {
+                // CI builds the bundle in its own job, without the build step.
+                let mut build = cargo();
+                configure(&mut build);
+                run(build.args(["build", "--locked", "--package", "nemoclaw-build"]))?;
+            }
             let mut command = Command::new(tool("nemoclaw-build"));
             configure(&mut command);
             if step == Step::Schema {
@@ -194,33 +200,21 @@ fn run_step(
         fs::create_dir_all(".build/ci")?;
     }
     let archive_filter = if step == Step::Archive {
-        Some(archive::selected_binaries(&configure)?)
+        Some(archive::selected_binaries(&configure, platform)?)
     } else {
         None
     };
     let bundle = std::path::absolute(Path::new("dist").join(platform))?;
     for args in step.cargo_args() {
-        let mut command = cargo();
-        configure(&mut command);
-        if let Some(archive) = archive_file {
-            fs::create_dir_all(".build/ci/extracted")?;
-            command
-                .args([
-                    "nextest",
-                    "run",
-                    "--profile",
-                    "lifecycle",
-                    "--run-ignored",
-                    "only",
-                ])
-                .arg("--archive-file")
-                .arg(archive)
-                .arg("--workspace-remap")
-                .arg(std::env::current_dir()?)
-                .args(["--extract-to", ".build/ci/extracted", "--extract-overwrite"]);
-        } else {
-            command.args(*args);
-        }
+        let mut command = match archive_file {
+            Some(archive) => archived(step, archive, &configure)?,
+            None => {
+                let mut command = cargo();
+                configure(&mut command);
+                command.args(*args);
+                command
+            }
+        };
         if let Some(filter) = &archive_filter {
             command.args(["--filterset", filter]);
         }
@@ -228,25 +222,203 @@ fn run_step(
             if let Some(partition) = partition {
                 command.args(["--partition", partition]);
             }
-            command
-                .env("NEMOCLAW_TEST_BUNDLE", &bundle)
-                .env(
-                    "NEMOCLAW_TEST_TOFU",
-                    bundle
-                        .join("libexec")
-                        .join(nemoclaw_build_executable("tofu")),
-                )
-                .env(
-                    "NEMOCLAW_TEST_PROVIDER",
-                    std::path::absolute(tool("terraform-provider-nemoclaw"))?,
-                );
+            // Where Unix sockets are missing, fake engines are reached over SSH:
+            // providers and the SDK then run the fake ssh relay.
+            if cfg!(not(unix)) {
+                let directory = std::path::absolute(".build/ci/fake-ssh")?;
+                fs::create_dir_all(&directory)?;
+                fs::copy(
+                    tool("nemoclaw-fixture-ssh"),
+                    directory.join(nemoclaw_build_executable("ssh")),
+                )?;
+                let path = std::env::join_paths(
+                    std::iter::once(directory).chain(std::env::split_paths(&path)),
+                )?;
+                command.env("PATH", path);
+            }
+            // The bundle supplies pinned OpenTofu and the providers; each
+            // provider's contract tests use the one Cargo built with them.
+            command.env("NEMOCLAW_TEST_BUNDLE", &bundle);
         }
         run(&mut command)?;
     }
     if step == Step::Archive {
-        archive::package_inputs(tools, platform)?;
+        archive::package_inputs(tools)?;
     }
     Ok(())
+}
+
+/// Run a test step's executables from a nextest `archive` against this
+/// checkout, without compiling them.
+fn archived(step: Step, archive: &Path, configure: &dyn Fn(&mut Command)) -> Result<Command> {
+    let (profile, _) = step
+        .junit()
+        .ok_or_else(|| format!("{} runs no tests", step.name()))?;
+    fs::create_dir_all(".build/ci/extracted")?;
+    let mut command = cargo();
+    configure(&mut command);
+    command
+        .args([
+            "nextest",
+            "run",
+            "--profile",
+            profile,
+            "--run-ignored",
+            "only",
+        ])
+        .arg("--archive-file")
+        .arg(archive)
+        .arg("--workspace-remap")
+        .arg(std::env::current_dir()?)
+        .args(["--extract-to", ".build/ci/extracted", "--extract-overwrite"]);
+    Ok(command)
+}
+
+/// Budgets fail CI only on the Linux runners they were measured on.
+fn enforces_budgets() -> bool {
+    std::env::consts::OS == "linux" && std::env::var_os("GITHUB_ACTIONS").is_some()
+}
+
+/// How a timing report names the budgets in its table of budgeted binaries.
+const BINARY_BUDGETS: &str = "Binary budgets: summed time and per-test limit as in the table";
+
+fn read_budgets() -> std::result::Result<ci::timing::Budgets, String> {
+    std::fs::read_to_string(".config/test-budgets.yaml")
+        .map_err(|error| error.to_string())
+        .and_then(|yaml| ci::timing::Budgets::parse(&yaml))
+}
+
+/// Append to `report` the budgets that `applied` names, whether this run
+/// enforces them, and each line of `over`.
+fn append_verdict(report: &mut String, applied: &str, over: &[String]) {
+    use std::fmt::Write as _;
+    let enforced = if enforces_budgets() {
+        ""
+    } else {
+        " (reported only; budgets apply on Linux CI runners)"
+    };
+    let _ = writeln!(report, "\n{applied}{enforced}.");
+    if over.is_empty() {
+        report.push_str("Within budget.\n");
+    }
+    for line in over {
+        let _ = writeln!(report, "- Over budget: {line}");
+    }
+}
+
+/// Report a platform's whole lifecycle suite from its partitions' JUnit
+/// artifacts under `directory`, and add the report to the GitHub job summary.
+/// On the Linux CI runners, fails when a budgeted test binary, or one of its
+/// tests, exceeds its budget.
+pub(super) fn report_lifecycle_suite(
+    directory: &Path,
+    platform: &str,
+    shards: &[u32],
+) -> Result<()> {
+    let budgets = read_budgets();
+    let unbudgeted = ci::timing::Budgets::default();
+    let timing = ci::timing::partitioned_report(
+        directory,
+        platform,
+        shards,
+        15,
+        budgets.as_ref().unwrap_or(&unbudgeted),
+    )?;
+    let mut report = timing.report;
+    match &budgets {
+        Err(error) => report.push_str(&format!("\nCannot read the test budgets: {error}\n")),
+        Ok(budgets) if budgets.has_binaries() => {
+            append_verdict(&mut report, BINARY_BUDGETS, &timing.over);
+        }
+        Ok(_) => {}
+    }
+    publish(&report);
+    if enforces_budgets() && !timing.over.is_empty() {
+        return Err(format!(
+            "lifecycle on {platform} exceeded a binary budget in .config/test-budgets.yaml"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Report where a test step, or its lifecycle `partition`, spent its time,
+/// from the JUnit report it wrote after `begun`, and add the report to the
+/// GitHub job summary. Returns what exceeds the step's budget, if any.
+fn report_timing(step: Step, partition: Option<&str>, begun: Instant) -> Vec<String> {
+    let Some((profile, file)) = step.junit() else {
+        return Vec::new();
+    };
+    let path = Path::new("target").join("nextest").join(profile).join(file);
+    let started = std::time::SystemTime::now() - begun.elapsed();
+    // A report from an earlier run would misstate this one.
+    let fresh = std::fs::metadata(&path)
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| modified >= started);
+    if !fresh {
+        return Vec::new();
+    }
+    let budgets = read_budgets();
+    let run = match std::fs::read_to_string(&path)
+        .map_err(|error| error.to_string())
+        .and_then(|xml| ci::timing::Run::parse(&xml))
+    {
+        Ok(run) => run,
+        Err(error) => {
+            eprintln!("cannot read test timings from {}: {error}", path.display());
+            return Vec::new();
+        }
+    };
+    let label = match partition {
+        Some(partition) => format!("{} partition {partition}", step.name()),
+        None => step.name().to_owned(),
+    };
+    let mut report = run.report(&label, 15);
+    let mut over = Vec::new();
+    match &budgets {
+        Err(error) => report.push_str(&format!("\nCannot read the test budgets: {error}\n")),
+        Ok(budgets) => {
+            if let Some(budget) = budgets.get(step.name()) {
+                over = run.over(budget);
+                append_verdict(
+                    &mut report,
+                    &format!(
+                        "Budget: {} s wall, {} s per test",
+                        budget.wall_seconds, budget.test_seconds
+                    ),
+                    &over,
+                );
+            }
+            // A whole lifecycle suite in one run, as plain `cargo ci` runs it,
+            // holds each binary's tests. A partition holds only some, so in CI
+            // the platform's Lifecycle timing job checks the binary budgets.
+            if step == Step::Lifecycle && partition.is_none() && budgets.has_binaries() {
+                let binaries = run.binary_budgets(budgets);
+                report.push_str("\nBudgeted binaries:\n\n");
+                report.push_str(&binaries.report);
+                append_verdict(&mut report, BINARY_BUDGETS, &binaries.over);
+                over.extend(binaries.over);
+            }
+        }
+    }
+    publish(&report);
+    if enforces_budgets() { over } else { Vec::new() }
+}
+
+/// Print a timing report, and add it to the GitHub job summary when there is one.
+pub(super) fn publish(report: &str) {
+    eprintln!("{report}");
+    if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        use std::io::Write;
+        let appended = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(summary)
+            .and_then(|mut file| writeln!(file, "{report}"));
+        if let Err(error) = appended {
+            eprintln!("cannot write the job summary: {error}");
+        }
+    }
 }
 
 pub(super) async fn run_steps(
@@ -255,8 +427,13 @@ pub(super) async fn run_steps(
     partition: Option<&str>,
     archive_file: Option<&Path>,
 ) -> Result<()> {
-    if (partition.is_some() || archive_file.is_some()) && selected != Some("lifecycle") {
-        return Err("--partition and --archive-file require ci lifecycle".into());
+    if partition.is_some() && selected != Some("lifecycle") {
+        return Err("--partition requires ci lifecycle".into());
+    }
+    if archive_file.is_some()
+        && !matches!(selected, Some("lifecycle" | "live-docker" | "live-kind"))
+    {
+        return Err("--archive-file requires ci lifecycle, live-docker, or live-kind".into());
     }
     let tools = Tools {
         pins,
@@ -296,11 +473,23 @@ pub(super) async fn run_steps(
             let configure = |command: &mut Command| {
                 command.env("PROTOC", &protoc).env("PATH", &path);
             };
-            live_kind::run_live_kind(tools.pins, &platform, &configure).await
+            live_kind::run_live_kind(tools.pins, &platform, &configure, archive_file).await
         } else {
             run_step(&tools, &platform, step, partition, archive_file)
         };
         let elapsed = begun.elapsed().as_secs();
+        let over = report_timing(step, partition, begun);
+        let result = result.and_then(|()| {
+            if over.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{} exceeded its time budget in .config/test-budgets.yaml",
+                    step.name()
+                )
+                .into())
+            }
+        });
         if let Err(error) = result {
             eprintln!("FAILED {} after {elapsed}s: {error}", step.name());
             eprintln!("Rerun it with: cargo ci {}", step.name());

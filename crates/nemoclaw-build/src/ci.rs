@@ -23,7 +23,8 @@ pub enum Step {
     Schema,
     Bundle,
     Lifecycle,
-    /// Package built lifecycle tests and their inputs for another runner; opt-in.
+    /// Package built lifecycle tests, Linux live tests, and their inputs for
+    /// other runners; opt-in.
     Archive,
     /// Docker live tests; opt-in, never part of the default run.
     LiveDocker,
@@ -64,6 +65,19 @@ impl Step {
             .into_iter()
             .chain([Step::Archive, Step::LiveDocker, Step::LiveKind])
             .find(|step| step.name() == name)
+    }
+
+    /// The nextest profile and the JUnit report a test step writes under
+    /// `target/nextest`.
+    #[must_use]
+    pub fn junit(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Step::Test => Some(("ci", "test.xml")),
+            Step::Lifecycle => Some(("lifecycle", "lifecycle.xml")),
+            Step::LiveDocker => Some(("live-docker", "live-docker.xml")),
+            Step::LiveKind => Some(("live-kind", "live-kind.xml")),
+            _ => None,
+        }
     }
 
     /// Cargo arguments for this step. Tools, schema, and bundle run in-process
@@ -144,6 +158,7 @@ impl Step {
 }
 
 pub mod live;
+pub mod timing;
 
 /// The nextest release target for a bundle platform.
 pub fn nextest_target(platform: &str) -> Result<&'static str, String> {
