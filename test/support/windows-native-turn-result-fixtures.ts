@@ -89,7 +89,7 @@ const waitAndRead = new vm.Script(implementation).runInNewContext({
 
 export const validNativeTurnResult = {
   executionMode: "embedded-worker",
-  version: "2026.7.1",
+  version: "2026.9.2",
   versionExitCode: 0,
   chatExitCode: 0,
   exactReply: true,

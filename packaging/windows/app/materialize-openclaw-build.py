@@ -95,6 +95,101 @@ def extract(archive, destination):
     return {"files": files, "bytes": total}
 
 
+def dependency_plan(lock, lock_file):
+    """Keep the canonical wrapper's hoisted and nested package locations intact."""
+    dependency_lock = lock["dependencyLock"]
+    lock_path = (lock_file.parent / dependency_lock["path"]).resolve()
+    lock_bytes = lock_path.read_bytes()
+    require(hashlib.sha256(lock_bytes).hexdigest() == dependency_lock["sha256"], "Dependency lock SHA256 mismatch.")
+    document = json.loads(lock_bytes)
+    require(document.get("name") == "nemoclaw-openclaw-runtime" and document.get("lockfileVersion") == 3, "Unexpected runtime dependency lock.")
+    packages = document["packages"]
+    core_path = "node_modules/openclaw"
+    core = packages[core_path]
+    expected = lock["openclaw"]
+    require(packages[""]["dependencies"]["openclaw"] == expected["version"], "Runtime wrapper version differs from the selected source.")
+    require(core["version"] == expected["version"] and core["resolved"] == expected["url"] and core["integrity"] == expected["integrity"], "Runtime source differs from the dependency lock.")
+    requested = {}
+    destinations = set()
+    plan = []
+    for name, item in packages.items():
+        if not name:
+            continue
+        parts = safe_parts(name)
+        remaining = list(parts)
+        while remaining:
+            require(len(remaining) >= 2 and remaining.pop(0) == "node_modules", "Invalid locked package location.")
+            package_name = remaining.pop(0)
+            if package_name.startswith("@"):
+                require(len(package_name) > 1 and remaining and not remaining[0].startswith("@"), "Invalid scoped package location.")
+                remaining.pop(0)
+        require(name.casefold() not in destinations and not item.get("link"), "Aliased or linked dependency location.")
+        destinations.add(name.casefold())
+        require(isinstance(item.get("version"), str) and item["version"], "Missing locked dependency version.")
+        archive = {"url": item["resolved"], "integrity": item["integrity"]}
+        if archive["url"] in requested:
+            require(requested[archive["url"]]["integrity"] == archive["integrity"], "Conflicting dependency archive integrity.")
+        requested[archive["url"]] = archive
+        plan.append((name, parts, item))
+    return lock_bytes, core_path, plan, requested
+
+
+def choice_dependency_plan(lock, lock_file, core_plan):
+    """Complete published channel bundles from main's approved messaging lock."""
+    selected = lock.get("choiceDependencyLock")
+    if selected is None:
+        return None, []
+    raw = (lock_file.parent / selected["path"]).resolve().read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == selected["sha256"], "Choice dependency lock SHA256 mismatch.")
+    document = json.loads(raw)
+    require(document.get("name") == "nemoclaw-managed-image-messaging-runtime" and document.get("lockfileVersion") == 3, "Unexpected choice dependency lock.")
+    packages = document["packages"]
+    additional = {item["package"]: item for item in lock["additionalPackages"]}
+    plan = []
+    for name in selected["packages"]:
+        item = additional[name]
+        prefix = "node_modules/" + name
+        owner = packages[prefix]
+        require(owner["version"] == item["version"] and owner["resolved"] == item["url"] and owner["integrity"] == item["integrity"], "Choice package differs from its dependency lock.")
+        target = safe_parts(item["target"])
+        require(target[:1] == ("plugins",), "Choice dependencies require the plugins namespace.")
+        for location, dependency in packages.items():
+            if location.startswith(prefix + "/node_modules/"):
+                suffix = location[len(prefix) + 1:]
+                plan.append(("/".join((*target, *safe_parts(suffix))), location.rsplit("node_modules/", 1)[1], dependency))
+    core = {name: item for name, _, item in core_plan}
+    for name in selected["sharedPackages"]:
+        location = "node_modules/" + name
+        safe_parts(location)
+        item = packages[location]
+        if location in core:
+            require(all(core[location][field] == item[field] for field in ("version", "resolved", "integrity")), "Conflicting shared choice dependency.")
+        plan.append((location, name, item))
+    seen = set()
+    for location, _, item in plan:
+        require(location.casefold() not in seen and not item.get("link"), "Aliased or linked choice dependency.")
+        seen.add(location.casefold())
+        require(isinstance(item.get("version"), str) and item["version"], "Missing choice dependency version.")
+        require(item.get("inBundle") or (item.get("resolved") and item.get("integrity")), "Choice dependency has no verified source.")
+    return raw, plan
+
+
+def restore_choice_dependencies(plan, output, cache, deadline):
+    restored = []
+    for location, name, item in plan:
+        destination = output.joinpath(*safe_parts(location))
+        metadata_file = destination / "package.json"
+        archive = None
+        if not metadata_file.exists():
+            require(item.get("resolved") and item.get("integrity"), "Missing bundled choice dependency has no pinned archive.")
+            archive = fetch({"url": item["resolved"], "integrity": item["integrity"]}, cache, deadline)
+            extract(archive["archive"], destination)
+        metadata = json.loads(metadata_file.read_text())
+        require(metadata["name"] == name and metadata["version"] == item["version"], "Choice dependency identity differs from the canonical lock.")
+        restored.append({"path": location, "package": name, "version": item["version"], "archive": archive})
+    return restored
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -104,28 +199,28 @@ def main():
     args = parser.parse_args()
     require(os.name == "nt" or args.portable_proof, "Materialization is a Windows CI operation.")
     require(not args.output.exists(), "A fresh build-input directory is required.")
-    args.output.mkdir(parents=True)
-    args.cache.mkdir(parents=True, exist_ok=True)
     lock = json.loads(args.lock.read_text())
     require(lock["schemaVersion"] == 1, "Unknown application build lock.")
+    dependency_lock_bytes, core_path, plan, requested = dependency_plan(lock, args.lock)
+    choice_lock_bytes, choice_plan = choice_dependency_plan(lock, args.lock, plan)
+    args.output.mkdir(parents=True)
+    args.cache.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + 900
     source = fetch(lock["openclaw"], args.cache, deadline)
-    package = args.output / "openclaw"
+    package = args.output.joinpath(*safe_parts(core_path))
     source_inventory = extract(source["archive"], package)
-    shrinkwrap = json.loads((package / "npm-shrinkwrap.json").read_text())
-    require(shrinkwrap["name"] == "openclaw" and shrinkwrap["version"] == "2026.7.1" and shrinkwrap["lockfileVersion"] == 3, "Unexpected source shrinkwrap.")
-    packages = shrinkwrap["packages"]
-    requested = {item["resolved"]: {"url": item["resolved"], "integrity": item["integrity"]} for name, item in packages.items() if name}
+    metadata = json.loads((package / "package.json").read_text())
+    require(metadata["name"] == "openclaw" and metadata["version"] == lock["openclaw"]["version"], "Unexpected source package identity.")
+    del requested[lock["openclaw"]["url"]]
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as workers:
         archives = list(workers.map(lambda item: fetch(item, args.cache, deadline), requested.values()))
     by_url = {item["url"]: item for item in archives}
+    by_url[source["url"]] = source
     dependencies = []
-    for name, item in packages.items():
-        if not name:
+    for name, components, item in plan:
+        if name == core_path:
             continue
-        components = safe_parts(name)
-        require(name.startswith("node_modules/"), "Invalid locked package path.")
-        inventory = extract(by_url[item["resolved"]]["archive"], package.joinpath(*components))
+        inventory = extract(by_url[item["resolved"]]["archive"], args.output.joinpath(*components))
         dependencies.append({"path": name, "version": item["version"], "lifecycleScriptDeclared": item.get("hasInstallScript", False), **inventory})
     platform_package = "@esbuild/darwin-arm64" if args.portable_proof else "@esbuild/win32-arm64"
     compiler = []
@@ -142,7 +237,17 @@ def main():
         archive = fetch(item, args.cache, deadline)
         inventory = extract(archive["archive"], args.output.joinpath(*target))
         additional.append({**archive, "package": item["package"], "version": item["version"], "target": item["target"], **inventory})
-    receipt = {"schemaVersion": 1, "classification": "verified-application-build-inputs", "portableProof": args.portable_proof, "source": source, "sourceInventory": source_inventory, "dependencyArchives": archives, "dependencies": dependencies, "compiler": compiler, "additionalPackages": additional, "lifecycleScriptsExecuted": False, "runtimeReady": False, "lockSha256": hashlib.sha256(args.lock.read_bytes()).hexdigest()}
+    choice_dependencies = restore_choice_dependencies(choice_plan, args.output, args.cache, deadline)
+    choice_lock = None
+    if choice_lock_bytes is not None:
+        with (args.output / "choice-package-lock.json").open("xb") as choice_output:
+            choice_output.write(choice_lock_bytes)
+        choice_lock = {"path": "choice-package-lock.json", "sha256": hashlib.sha256(choice_lock_bytes).hexdigest()}
+    with (args.output / "runtime-package-lock.json").open("xb") as dependency_output:
+        dependency_output.write(dependency_lock_bytes)
+    receipt = {"schemaVersion": 1, "classification": "verified-application-build-inputs", "portableProof": args.portable_proof, "source": source, "sourceRoot": core_path, "sourceInventory": source_inventory, "dependencyLock": {"path": "runtime-package-lock.json", "sha256": hashlib.sha256(dependency_lock_bytes).hexdigest()}, "dependencyArchives": archives, "dependencies": dependencies, "compiler": compiler, "additionalPackages": additional, "lifecycleScriptsExecuted": False, "runtimeReady": False, "lockSha256": hashlib.sha256(args.lock.read_bytes()).hexdigest()}
+    receipt["choiceDependencyLock"] = choice_lock
+    receipt["choiceDependencies"] = choice_dependencies
     (args.output / "materialization-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps({"packages": len(dependencies), "sourceRoot": str(package), "toolRoot": str(args.output / "tools"), "runtimeReady": False}))
 

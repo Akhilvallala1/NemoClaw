@@ -26,10 +26,13 @@ class AuthoringTests(unittest.TestCase):
         self.helper = Path(self.temp.name) / "fixture.exe"
         # Header-only fixture exercises the build parser; it is never executed
         # and does not claim to implement the native transaction protocol.
-        data = bytearray(128)
+        data = bytearray(512)
         data[:2] = b"MZ"
         data[60:64] = (64).to_bytes(4, "little")
         data[64:70] = b"PE\0\0\x64\xaa"
+        data[84:86] = (240).to_bytes(2, "little")
+        data[88:90] = (0x20B).to_bytes(2, "little")
+        data[156:158] = (2).to_bytes(2, "little")
         self.helper.write_bytes(data)
         self.digest = hashlib.sha256(data).hexdigest()
         self.identity = {
@@ -187,6 +190,28 @@ class AuthoringTests(unittest.TestCase):
         self.helper.write_bytes(self.helper.read_bytes() + b"changed")
         with self.assertRaisesRegex(ValueError, "bytes changed"):
             author(self.identity, self.helper, self.digest)
+
+    def test_gui_helper_is_accepted_without_a_console(self):
+        _, receipt = self.authored()
+        self.assertEqual(receipt["helper"]["subsystem"], "windows")
+
+    def test_console_or_incomplete_gui_headers_are_rejected(self):
+        original = self.helper.read_bytes()
+        for field, start, replacement, length in (
+            ("console", 156, (3).to_bytes(2, "little"), 512),
+            ("native", 156, (1).to_bytes(2, "little"), 512),
+            ("pe32", 88, (0x10B).to_bytes(2, "little"), 512),
+            ("short-optional-header", 84, (68).to_bytes(2, "little"), 512),
+            ("truncated-optional-header", 84, (240).to_bytes(2, "little"), 157),
+            ("truncated-coff", 84, (240).to_bytes(2, "little"), 80),
+        ):
+            with self.subTest(field=field):
+                data = bytearray(original)
+                data[start : start + len(replacement)] = replacement
+                data = data[:length]
+                self.helper.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "Windows GUI"):
+                    author(self.identity, self.helper, hashlib.sha256(data).hexdigest())
 
     def test_x64_helper_is_not_labeled_native_arm64(self):
         data = bytearray(self.helper.read_bytes())

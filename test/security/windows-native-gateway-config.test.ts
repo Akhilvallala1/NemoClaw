@@ -41,9 +41,9 @@ function fixture(contents = template, name = "NemoClaw candidate") {
 }
 
 describe("native gateway configuration", () => {
-  it("uses the selected installation and preserves the template settings", () => {
+  it("uses the selected installation and preserves the template settings", async () => {
     const { installRoot, runRoot, source } = fixture();
-    const output = writeNativeGatewayConfig(installRoot, runRoot);
+    const output = await writeNativeGatewayConfig(installRoot, runRoot);
 
     expect(output).toBe(path.join(fs.realpathSync(runRoot), "mxc-gateway.toml"));
     expect(fs.readFileSync(source, "utf8")).toBe(template);
@@ -52,6 +52,10 @@ describe("native gateway configuration", () => {
         drivers: {
           mxc: {
             wxc_exec_path: path.join(installRoot, "mxc", "wxc-exec.exe"),
+            pc_network_allow: false,
+            pc_allow_local_network: false,
+            pc_host_console: false,
+            pc_loopback_ports: [],
             backend: "process_container",
             pc_least_privilege: false,
             pc_capabilities: ["privateNetworkClientServer"],
@@ -63,9 +67,9 @@ describe("native gateway configuration", () => {
     });
   });
 
-  it("preserves CRLF template endings while binding the installed executable", () => {
+  it("preserves CRLF template endings while binding the installed executable", async () => {
     const { installRoot, runRoot } = fixture(template.replaceAll("\n", "\r\n"));
-    const rendered = fs.readFileSync(writeNativeGatewayConfig(installRoot, runRoot), "utf8");
+    const rendered = fs.readFileSync(await writeNativeGatewayConfig(installRoot, runRoot), "utf8");
     expect(rendered.replaceAll("\r\n", "")).not.toContain("\n");
     expect(rendered.endsWith("\r\n")).toBe(true);
     expect(parse(rendered)).toMatchObject({
@@ -75,9 +79,9 @@ describe("native gateway configuration", () => {
     });
   });
 
-  it.skipIf(process.platform === "win32")("escapes TOML-sensitive path characters", () => {
+  it.skipIf(process.platform === "win32")("escapes TOML-sensitive path characters", async () => {
     const { installRoot, runRoot } = fixture(template, 'Nemo "quoted" \\ path\u007f');
-    const output = writeNativeGatewayConfig(installRoot, runRoot);
+    const output = await writeNativeGatewayConfig(installRoot, runRoot);
     const parsed = parse(fs.readFileSync(output, "utf8"));
 
     expect(parsed).toMatchObject({
@@ -87,35 +91,35 @@ describe("native gateway configuration", () => {
     });
   });
 
-  it("retains security settings supplied by a different installed template", () => {
+  it("retains security settings supplied by a different installed template", async () => {
     const alternate = template
       .replace("pc_least_privilege = false", "pc_least_privilege = true")
       .replace('pc_capabilities = ["privateNetworkClientServer"]', "pc_capabilities = []");
     const { installRoot, runRoot } = fixture(alternate);
-    const output = writeNativeGatewayConfig(installRoot, runRoot);
+    const output = await writeNativeGatewayConfig(installRoot, runRoot);
 
     expect(parse(fs.readFileSync(output, "utf8"))).toMatchObject({
       openshell: { drivers: { mxc: { pc_least_privilege: true, pc_capabilities: [] } } },
     });
   });
 
-  it.each(["", "runtime"])("rejects output inside the installed payload at %j", (child) => {
+  it.each(["", "runtime"])("rejects output inside the installed payload at %j", async (child) => {
     const { installRoot } = fixture();
     const runRoot = path.join(installRoot, child);
     fs.mkdirSync(runRoot, { recursive: true });
 
-    expect(() => writeNativeGatewayConfig(installRoot, runRoot)).toThrow(
+    await expect(writeNativeGatewayConfig(installRoot, runRoot)).rejects.toThrow(
       /outside the installed payload/u,
     );
     expect(fs.existsSync(path.join(runRoot, "mxc-gateway.toml"))).toBe(false);
   });
 
-  it("rejects a run directory that links into the installed payload", () => {
+  it("rejects a run directory that links into the installed payload", async () => {
     const { installRoot } = fixture();
     const alias = path.join(temporaryRoot, "alias");
     fs.symlinkSync(installRoot, alias, "junction");
 
-    expect(() => writeNativeGatewayConfig(installRoot, alias)).toThrow(
+    await expect(writeNativeGatewayConfig(installRoot, alias)).rejects.toThrow(
       /outside the installed payload/u,
     );
   });
@@ -127,36 +131,40 @@ describe("native gateway configuration", () => {
     '[openshell.drivers.mxc]\nwxc_exec_path = "first"\n[openshell.drivers.mxc]\n',
     '[openshell.drivers.mxc]\n[[another_driver]]\nwxc_exec_path = "other"\n',
     "[openshell.drivers.mxc]\nwxc_exec_path = 42\n",
-  ])("rejects an absent or ambiguous template binding %#", (contents) => {
+  ])("rejects an absent or ambiguous template binding %#", async (contents) => {
     const { installRoot, runRoot } = fixture(contents);
 
-    expect(() => writeNativeGatewayConfig(installRoot, runRoot)).toThrow(/gateway template/u);
+    await expect(writeNativeGatewayConfig(installRoot, runRoot)).rejects.toThrow(
+      /gateway template/u,
+    );
     expect(fs.readdirSync(runRoot)).toEqual([]);
   });
 
-  it("requires the installed template without creating a replacement", () => {
+  it("requires the installed template without creating a replacement", async () => {
     const { installRoot, runRoot, source } = fixture();
     fs.unlinkSync(source);
 
-    expect(() => writeNativeGatewayConfig(installRoot, runRoot)).toThrow(/template is missing/u);
+    await expect(writeNativeGatewayConfig(installRoot, runRoot)).rejects.toThrow(
+      /template is missing/u,
+    );
     expect(fs.readdirSync(runRoot)).toEqual([]);
   });
 
-  it("rejects an installation path that cannot be represented as TOML Unicode", () => {
+  it("rejects an installation path that cannot be represented as TOML Unicode", async () => {
     const { installRoot, runRoot } = fixture();
 
-    expect(() => writeNativeGatewayConfig(`${installRoot}\ud800`, runRoot)).toThrow(
+    await expect(writeNativeGatewayConfig(`${installRoot}\ud800`, runRoot)).rejects.toThrow(
       /invalid Unicode/u,
     );
     expect(fs.readdirSync(runRoot)).toEqual([]);
   });
 
-  it("does not replace an existing per-run configuration", () => {
+  it("does not replace an existing per-run configuration", async () => {
     const { installRoot, runRoot } = fixture();
     const output = path.join(runRoot, "mxc-gateway.toml");
     fs.writeFileSync(output, "existing run");
 
-    expect(() => writeNativeGatewayConfig(installRoot, runRoot)).toThrow(/EEXIST/u);
+    await expect(writeNativeGatewayConfig(installRoot, runRoot)).rejects.toThrow(/EEXIST/u);
     expect(fs.readFileSync(output, "utf8")).toBe("existing run");
   });
 });

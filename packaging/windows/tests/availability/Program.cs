@@ -34,4 +34,11 @@ Require(!NativeRuntimeAvailability.Load().IsSelectedRuntimeBuild && NativeRuntim
 Require(!selected.PrebuiltLocalModelAvailable);
 var withModel = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Record()).Replace("\"schemaVersion\":1", "\"schemaVersion\":1,\"prebuiltLocalModelAvailable\":true", StringComparison.Ordinal));
 Require(NativeRuntimeAvailability.Parse(withModel).PrebuiltLocalModelAvailable);
-Console.WriteLine("10 availability controls passed; unqualified included previews remain selectable, no Windows UI or qualification claim.");
+Require(!selected.BundledLocalInferenceAvailable);
+var withEngine = Encoding.UTF8.GetString(Record()).Replace("\"schemaVersion\":1", "\"schemaVersion\":1,\"prebuiltLocalModelAvailable\":false,\"bundledLocalInferenceAvailable\":true", StringComparison.Ordinal);
+var engine = NativeRuntimeAvailability.Parse(Encoding.UTF8.GetBytes(withEngine));
+Require(engine.BundledLocalInferenceAvailable && !engine.PrebuiltLocalModelAvailable);
+Require(engine.IsUnqualified("hermes") && !engine.CanSelect("pi"));
+Reject(Encoding.UTF8.GetBytes(withEngine.Replace("\"bundledLocalInferenceAvailable\":true", "\"bundledLocalInferenceAvailable\":\"true\"", StringComparison.Ordinal)));
+Reject(Encoding.UTF8.GetBytes(withEngine.Replace("\"bundledLocalInferenceAvailable\":true", "\"bundledLocalInferenceAvailable\":true,\"bundledLocalInferenceAvailable\":false", StringComparison.Ordinal)));
+Console.WriteLine("15 availability controls passed; engine presence does not grant runtime qualification.");

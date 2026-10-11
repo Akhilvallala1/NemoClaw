@@ -273,62 +273,92 @@ test("actual console wrapper saves a success record after the session control cl
   });
 });
 
-test("actual OpenClaw wrapper retains an early no-log failure and a later state-release error", async () => {
-  await withDiagnostics(async (diagnostics, root) => {
-    const primary = new Error(`broker startup ${CANARY}`);
-    let released = false;
-    let completed: unknown;
-    const operation = wrapper(
-      webWrapper,
-      {
-        ...common(diagnostics),
-        fs,
-        launcherPath: process.execPath,
-        installRoot: root,
-        configured: true,
-        selectedEvidenceRoot: root,
-        openNativeWebSession: async () => ({
-          signal: new AbortController().signal,
-          progress() {},
-          assertRunning() {},
-          complete: async (...values: unknown[]) => {
-            completed = values;
+for (const failureStage of ["migration", "broker"] as const) {
+  test(`actual OpenClaw wrapper retains ${failureStage} failure when state release also fails`, async () => {
+    await withDiagnostics(async (diagnostics, root) => {
+      const primary = new Error(`${failureStage} startup ${CANARY}`);
+      let released = false;
+      let migrationAttempted = false;
+      let brokerAttempted = false;
+      let stateChecks = 0;
+      let completed: unknown;
+      const operation = wrapper(
+        webWrapper,
+        {
+          ...common(diagnostics),
+          fs,
+          launcherPath: process.execPath,
+          installRoot: root,
+          installedNode: process.execPath,
+          installedOpenClawEntry: path.join(root, "openclaw-app.cjs"),
+          configured: true,
+          selectedEvidenceRoot: root,
+          openNativeWebSession: async () => ({
+            signal: new AbortController().signal,
+            progress() {},
+            assertRunning() {},
+            complete: async (...values: unknown[]) => {
+              completed = values;
+            },
+          }),
+          readNativeAgentConfiguration: () => ({ config: { model: "native-test" } }),
+          resolveNativeConfiguredInference: async () => ({
+            configuration: { model: "native-test" },
+            credential: CANARY,
+          }),
+          acquireNativeStateSession: async () => ({
+            stateRoot: root,
+            assertHeld() {
+              stateChecks++;
+            },
+            release: async () => {
+              released = true;
+              throw new Error("state cleanup failed");
+            },
+          }),
+          migrateNativeOpenClawSessions: async (options: {
+            home: string;
+            node: string;
+            entry: string;
+            signal: AbortSignal;
+            assertHeld: () => void;
+          }) => {
+            migrationAttempted = true;
+            assert.equal(options.home, root);
+            assert.equal(options.node, process.execPath);
+            assert.equal(options.entry, path.join(root, "openclaw-app.cjs"));
+            assert.equal(options.signal.aborted, false);
+            options.assertHeld();
+            if (failureStage === "migration") throw primary;
           },
-        }),
-        readNativeAgentConfiguration: () => ({ config: { model: "native-test" } }),
-        resolveNativeConfiguredInference: async () => ({
-          configuration: { model: "native-test" },
-          credential: CANARY,
-        }),
-        acquireNativeStateSession: async () => ({
-          release: async () => {
-            released = true;
-            throw new Error("state cleanup failed");
+          readNativeServiceEnvironment: async () => ({ environment: {} }),
+          startNativeInferenceBroker: async () => {
+            brokerAttempted = true;
+            throw primary;
           },
-        }),
-        readNativeServiceEnvironment: async () => ({ environment: {} }),
-        startNativeInferenceBroker: async () => {
-          throw primary;
+          randomBytes: () => Buffer.from("12345678"),
+          attemptNativeUiCleanup,
         },
-        randomBytes: () => Buffer.from("12345678"),
-        attemptNativeUiCleanup,
-      },
-      "runWeb",
-    );
-    await assert.rejects(operation(), (error: unknown) => {
-      assert(error instanceof NativeSessionFailure);
-      assert.equal(error.cause, primary);
-      return true;
+        "runWeb",
+      );
+      await assert.rejects(operation(), (error: unknown) => {
+        assert(error instanceof NativeSessionFailure);
+        assert.equal(error.cause, primary);
+        return true;
+      });
+      assert(migrationAttempted);
+      assert.equal(stateChecks, 1);
+      assert.equal(brokerAttempted, failureStage === "broker");
+      assert(released);
+      assert.equal((completed as unknown[])[0], false);
+      const saved = record(diagnostics);
+      assert.equal(saved.failure.message, `${failureStage} startup [REDACTED]`);
+      assert.deepEqual(saved.output, {});
+      assert.deepEqual(saved.cleanupFailures, ["private agent state"]);
+      assert.equal(saved.stage, failureStage === "migration" ? "runtime" : "broker");
     });
-    assert(released);
-    assert.equal((completed as unknown[])[0], false);
-    const saved = record(diagnostics);
-    assert.equal(saved.failure.message, "broker startup [REDACTED]");
-    assert.deepEqual(saved.output, {});
-    assert.deepEqual(saved.cleanupFailures, ["private agent state"]);
-    assert.equal(saved.stage, "broker");
   });
-});
+}
 
 test("actual OpenClaw wrapper retains failure to start the native control itself", async () => {
   await withDiagnostics(async (diagnostics, root) => {

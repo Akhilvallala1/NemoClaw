@@ -11,18 +11,27 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
-import tarfile
 import urllib.request
 
-SDK_URL = "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
-SDK_SHA256 = "06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2fbf569da14e"
+MXC_SOURCE = "7cd00d1ee6af9208322c924ef64e5113f6704639"
+MXC_FILES = ("wxc-exec.exe", "wxc-host-prep.exe")
+MXC_LICENSE_SHA256 = "d9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb"
 NODE_SHA256 = "97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878"
-OPENSHELL_SOURCE = "bcd517bbe08cc80860c9be57699390cd32e8445f"
-OPENSHELL_FILES = ("openshell.exe", "openshell-gateway.exe")
-OPENSHELL_LICENSE_URL = "https://raw.githubusercontent.com/NVIDIA/OpenShell/bcd517bbe08cc80860c9be57699390cd32e8445f/LICENSE"
-OPENSHELL_LICENSE_SHA256 = (
-    "b967d1c87b93b7d61ebcf4f8737e6ad79e5433e743e49dff395a36fb3c327047"
+OPENSHELL_SOURCE = "901338dbd334feeb1436f4cb41533f6d592d3595"
+OPENSHELL_FILES = (
+    "openshell.exe",
+    "openshell-gateway.exe",
+    "openshell-supervisor.exe",
+    "openshell-windows-sandbox.exe",
+    "libz3.dll",
 )
+OPENSHELL_LICENSE_URL = (
+    f"https://raw.githubusercontent.com/NVIDIA/OpenShell/{OPENSHELL_SOURCE}/LICENSE"
+)
+OPENSHELL_LICENSE_SHA256 = (
+    "d07c0367e2861e7fe70fa1b679f879f4fa2f9138ade4457d44ecf8b2e135bb45"
+)
+Z3_LICENSE_SHA256 = "cb070dd81b491334c5df7558731fe5cc8158ffcc757336e579ae4c155cc882fe"
 
 
 def digest(path):
@@ -43,15 +52,31 @@ def arm64(path):
         raise ValueError("A native host component is not Windows ARM64.")
 
 
-def verify_openshell_build(native, source, expected, run_id, run_attempt):
+def build_files(build, approved, component):
+    files = build.get("files")
+    if not isinstance(files, list) or len(files) != len(approved):
+        raise ValueError(f"The {component} build must contain every approved host component.")
+    if any(not isinstance(item, dict) for item in files) or sorted(
+        item.get("file", "") for item in files
+    ) != sorted(approved):
+        raise ValueError(f"The {component} build contains unexpected or duplicate files.")
+    return files
+
+
+def openshell_build_files(build):
+    return build_files(build, OPENSHELL_FILES, "OpenShell")
+
+
+def verify_openshell_build(native, expected, run_id, run_attempt):
     build = json.loads((native / "openshell-build.json").read_text(encoding="utf-8"))
     if (
         build.get("schemaVersion") != 1
         or build.get("classification") != "ci-built-openshell-host-binaries"
         or build.get("requestedSourceRevision") != expected
         or build.get("openshellRevision") != OPENSHELL_SOURCE
-        or build.get("derivativePatchSha256")
-        != digest(source / "packaging/windows/openshell-2721-node-ui.patch")
+        or "derivativePatchSha256" not in build
+        or build["derivativePatchSha256"] is not None
+        or build.get("sourceUnchanged") is not True
         or build.get("rustToolchain") != "1.95.0-aarch64-pc-windows-msvc"
         or build.get("rustTarget") != "aarch64-pc-windows-msvc"
         or not run_id
@@ -61,13 +86,36 @@ def verify_openshell_build(native, source, expected, run_id, run_attempt):
         or build.get("currentPackageQualification") is not False
     ):
         raise ValueError("OpenShell requires current-source, same-run ARM64 build evidence.")
-    files = build.get("files")
-    if not isinstance(files, list) or len(files) != len(OPENSHELL_FILES):
-        raise ValueError("The OpenShell build must contain exactly two host binaries.")
-    if any(not isinstance(item, dict) for item in files) or sorted(
-        item.get("file", "") for item in files
-    ) != sorted(OPENSHELL_FILES):
-        raise ValueError("The OpenShell build contains unexpected or duplicate files.")
+    files = openshell_build_files(build)
+    verify_build_files(native, files, "OpenShell")
+    return build
+
+
+def verify_mxc_build(native, expected, run_id, run_attempt):
+    build = json.loads((native / "mxc-build.json").read_text(encoding="utf-8"))
+    if (
+        build.get("schemaVersion") != 1
+        or build.get("classification") != "ci-built-mxc-host-binaries"
+        or build.get("requestedSourceRevision") != expected
+        or build.get("mxcRevision") != MXC_SOURCE
+        or build.get("sourceUnchanged") is not True
+        or build.get("rustToolchain") != "1.93.0-aarch64-pc-windows-msvc"
+        or build.get("rustTarget") != "aarch64-pc-windows-msvc"
+        or not run_id
+        or not run_attempt
+        or build.get("workflowRunId") != run_id
+        or build.get("workflowRunAttempt") != run_attempt
+        or build.get("currentPackageQualification") is not False
+        or build.get("licenseSha256") != MXC_LICENSE_SHA256
+    ):
+        raise ValueError("MXC requires current-source, same-run ARM64 build evidence.")
+    if digest(native / "LICENSE.md") != MXC_LICENSE_SHA256:
+        raise ValueError("MXC requires current-source, same-run ARM64 build evidence.")
+    verify_build_files(native, build_files(build, MXC_FILES, "MXC"), "MXC")
+    return build
+
+
+def verify_build_files(native, files, component):
     for item in files:
         binary = native / item["file"]
         info = binary.lstat()
@@ -76,64 +124,51 @@ def verify_openshell_build(native, source, expected, run_id, run_attempt):
             or info.st_nlink != 1
             or getattr(info, "st_file_attributes", 0) & 0x400
         ):
-            raise ValueError("An OpenShell build binary is not an ordinary single-link file.")
+            raise ValueError(f"A {component} build binary is not an ordinary single-link file.")
         arm64(binary)
         if binary.stat().st_size != item.get("bytes") or digest(binary) != item.get(
             "sha256"
         ):
-            raise ValueError("An OpenShell binary differs from its current build receipt.")
-    return build
+            raise ValueError(f"A {component} binary differs from its current build receipt.")
 
 
-def extract_mxc(archive: Path, output: Path):
-    selected = ("wxc-exec.exe", "wxc-host-prep.exe")
-    output.mkdir()
-    with tarfile.open(archive, "r:gz") as tar:
-        members = tar.getmembers()
-        for name in selected:
-            matches = [
-                entry for entry in members if entry.name == "package/bin/arm64/" + name
-            ]
-            if (
-                len(matches) != 1
-                or not matches[0].isfile()
-                or matches[0].size > 256 * 1024 * 1024
-            ):
-                raise ValueError(
-                    "The pinned MXC native member is missing, duplicated or redirected."
-                )
-            with (
-                tar.extractfile(matches[0]) as source,
-                (output / name).open("xb") as target,
-            ):
-                shutil.copyfileobj(source, target, 1024 * 1024)
-            arm64(output / name)
+def copy_openshell_build(native, destination, build):
+    # Use the verified inventory for staging as well as admission. A second
+    # executable-only list would omit an approved runtime DLL after an upgrade.
+    copy_build_files(native, destination, openshell_build_files(build), "OpenShell")
 
 
-def obtain_sdk(cache: Path):
-    cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / "mxc-sdk-0.8.0.tgz"
-    if not archive.exists():
-        total = 0
-        with (
-            urllib.request.urlopen(SDK_URL, timeout=180) as response,
-            archive.open("xb") as output,
-        ):
-            while block := response.read(1024 * 1024):
-                total += len(block)
-                if total > 512 * 1024 * 1024:
-                    raise ValueError(
-                        "The pinned MXC archive exceeds its download bound."
-                    )
-                output.write(block)
-    if digest(archive) != SDK_SHA256:
-        raise ValueError("The MXC archive differs from its exact input pin.")
-    return archive
+def copy_build_files(native, destination, files, component):
+    for item in files:
+        copied = destination / item["file"]
+        shutil.copy2(native / item["file"], copied)
+        if copied.stat().st_size != item["bytes"] or digest(copied) != item["sha256"]:
+            raise ValueError(f"A {component} component changed during its build copy.")
+
+
+def copy_z3_license(source, destination):
+    # Both statically linked and DLL-based OpenShell builds distribute Z3.
+    with (source / "packaging/windows/Z3-LICENSE.txt").open("rb") as stream:
+        notice = stream.read(16385)
+    if len(notice) > 16384 or hashlib.sha256(notice).hexdigest() != Z3_LICENSE_SHA256:
+        raise ValueError("The Z3 license differs from the reviewed notice.")
+    with (destination / "Z3-LICENSE.txt").open("xb") as output:
+        output.write(notice)
+
+
+def gateway_template(executor):
+    return (
+        "[openshell]\nversion = 2\n\n[openshell.drivers.mxc]\nwxc_exec_path = "
+        + json.dumps(executor)
+        + '\nbackend = "process_container"\n'
+        'pc_least_privilege = false\n'
+        'pc_capabilities = []\ndebug = false\n'
+    )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("source-root", "openshell-binaries", "node-root", "output", "cache"):
+    for name in ("source-root", "openshell-binaries", "mxc-binaries", "node-root", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()
     if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
@@ -149,7 +184,12 @@ def main():
         )
     build = verify_openshell_build(
         args.openshell_binaries,
-        source,
+        expected,
+        os.environ["GITHUB_RUN_ID"],
+        os.environ["GITHUB_RUN_ATTEMPT"],
+    )
+    mxc_build = verify_mxc_build(
+        args.mxc_binaries,
         expected,
         os.environ["GITHUB_RUN_ID"],
         os.environ["GITHUB_RUN_ATTEMPT"],
@@ -171,13 +211,17 @@ def main():
         )
     arm64(node)
     native = args.openshell_binaries
-    archive = obtain_sdk(args.cache)
     args.output.mkdir()
     (args.output / "bin").mkdir()
     shutil.copy2(node, args.output / "bin/node.exe")
-    for name in ("openshell.exe", "openshell-gateway.exe"):
-        shutil.copy2(native / name, args.output / "bin" / name)
-    extract_mxc(archive, args.output / "mxc")
+    copy_openshell_build(native, args.output / "bin", build)
+    (args.output / "mxc").mkdir()
+    copy_build_files(
+        args.mxc_binaries,
+        args.output / "mxc",
+        build_files(mxc_build, MXC_FILES, "MXC"),
+        "MXC",
+    )
     if digest(args.output / "bin/node.exe") != NODE_SHA256 or any(
         digest(args.output / "bin" / item["file"]) != item["sha256"]
         for item in build["files"]
@@ -188,11 +232,7 @@ def main():
         Path(os.environ["ProgramFiles"]) / "NVIDIA/NemoClaw/mxc/wxc-exec.exe"
     )
     (args.output / "config/mxc-gateway.toml").write_text(
-        "[openshell.drivers.mxc]\nwxc_exec_path = "
-        + json.dumps(executor)
-        + '\nbackend = "process_container"\n'
-        'default_configuration_id = "composable"\npc_least_privilege = false\n'
-        'pc_capabilities = ["privateNetworkClientServer"]\ndebug = false\n',
+        gateway_template(executor),
         encoding="utf-8",
     )
     shutil.copytree(
@@ -204,6 +244,7 @@ def main():
     )
     shutil.copy2(source / "LICENSE", args.output / "LICENSE.txt")
     shutil.copy2(args.node_root / "LICENSE", args.output / "NODE-LICENSE.txt")
+    copy_z3_license(source, args.output)
     with urllib.request.urlopen(OPENSHELL_LICENSE_URL, timeout=30) as response:
         license_bytes = response.read(16385)
     if (
@@ -215,8 +256,10 @@ def main():
         )
     (args.output / "OPENSHELL-LICENSE.txt").write_bytes(license_bytes)
     shutil.copy2(
-        source / "packaging/windows/MXC-LICENSE.txt", args.output / "MXC-LICENSE.txt"
+        args.mxc_binaries / "LICENSE.md", args.output / "MXC-LICENSE.txt"
     )
+    if digest(args.output / "MXC-LICENSE.txt") != MXC_LICENSE_SHA256:
+        raise ValueError("The MXC license changed during its build copy.")
     (args.output / "NATIVE-PREVIEW.txt").write_text(
         "NemoClaw finished native Windows preview.\nAgent qualification is continuing.\n"
         "Application code and dependencies are built in CI; settings do not install them.\n"
@@ -239,11 +282,12 @@ def main():
         "openshellSourceRevision": OPENSHELL_SOURCE,
         "openshellBuild": build,
         "openshellLicenseSha256": OPENSHELL_LICENSE_SHA256,
-        "openshellPatchSha256": digest(
-            source / "packaging/windows/openshell-2721-node-ui.patch"
-        ),
+        "z3LicenseSha256": Z3_LICENSE_SHA256,
+        "openshellPatchSha256": None,
         "nodeInput": record,
-        "mxcArchiveSha256": SDK_SHA256,
+        "mxcSourceRevision": MXC_SOURCE,
+        "mxcBuild": mxc_build,
+        "mxcLicenseSha256": MXC_LICENSE_SHA256,
         "files": files,
         "legacyAgentTreesPrepared": False,
         "installedAcceptance": False,

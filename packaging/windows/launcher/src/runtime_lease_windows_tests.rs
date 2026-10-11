@@ -394,6 +394,24 @@ fn protected_journal_create_read_remove_is_fixed_and_exclusive() {
 }
 
 #[test]
+fn created_directory_has_installer_security_without_repairing_existing_paths() {
+    let fixture = Fixture::new(false);
+    let control = ControlDirectory::at(fixture.root.to_str().unwrap()).unwrap();
+    let created = open_mode(control.handles.last(), "created", true, DIR_ACCESS, 3, 2).unwrap();
+    verify_security(&created).unwrap();
+    drop(created);
+
+    directory(&fixture.root.join("writable"), true);
+    let existing = open(control.handles.last(), "writable", true, DIR_ACCESS, 3).unwrap();
+    assert_eq!(verify_security(&existing), Err("runtime-writable"));
+    assert!(matches!(
+        open_mode(control.handles.last(), "writable", true, DIR_ACCESS, 3, 2),
+        Err("runtime-marker-exists")
+    ));
+    assert_eq!(verify_security(&existing), Err("runtime-writable"));
+}
+
+#[test]
 fn maintenance_replacement_preserves_old_journal_on_wrong_expectation() {
     let fixture = Fixture::new(false);
     let control = ControlDirectory::at(fixture.root.to_str().unwrap()).unwrap();

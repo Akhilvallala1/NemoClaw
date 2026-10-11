@@ -156,7 +156,7 @@ export async function openNativeAgentResultFixture(
   };
 }
 
-export function createNativeAgentCompletionFixture(route: ResultRoute) {
+export function createNativeAgentCompletionFixture(route: ResultRoute, deferAbsence = false) {
   const file =
     route === "terminal" ? "run-installed-native-pi.mts" : "run-installed-native-nemocua.mts";
   const source = ts.createSourceFile(
@@ -179,7 +179,15 @@ export function createNativeAgentCompletionFixture(route: ResultRoute) {
               ts.isAwaitExpression(declaration.initializer),
           ),
       );
-      if (first >= 0) fence = node.statements.slice(first, first + 3);
+      const last = node.statements.findIndex(
+        (item, index) =>
+          index > first &&
+          ts.isExpressionStatement(item) &&
+          ts.isAwaitExpression(item.expression) &&
+          ts.isCallExpression(item.expression.expression) &&
+          item.expression.expression.expression.getText(source) === "confirmNativeUiRegistryEmpty",
+      );
+      if (first >= 0 && last > first) fence = node.statements.slice(first, last + 1);
     }
     ts.forEachChild(node, visit);
   };
@@ -188,8 +196,7 @@ export function createNativeAgentCompletionFixture(route: ResultRoute) {
     (node): node is ts.FunctionDeclaration =>
       ts.isFunctionDeclaration(node) && node.name?.text === "fail",
   );
-  if (!fence || fence.length !== 3 || !fail)
-    throw new Error("The native agent completion fence is missing.");
+  if (!fence || !fail) throw new Error("The native agent completion fence is missing.");
   const code = ts.transpileModule(
     fail.getText(source) +
       "\n(async () => {\n" +
@@ -199,9 +206,10 @@ export function createNativeAgentCompletionFixture(route: ResultRoute) {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
     },
   ).outputText;
-  let complete!: (value: "AgentCompleted" | "ExecFailed") => void;
+  type Completion = "AgentCompleted" | "ExecFailed" | "MainProcessCompleted" | "MainProcessFailed";
+  let complete!: (value: Completion) => void;
   let reject!: (error: Error) => void;
-  const completion = new Promise<"AgentCompleted" | "ExecFailed">((resolve, rejectPromise) => {
+  const completion = new Promise<Completion>((resolve, rejectPromise) => {
     complete = resolve;
     reject = rejectPromise;
   });
@@ -209,6 +217,16 @@ export function createNativeAgentCompletionFixture(route: ResultRoute) {
   const environment = { OWNED_SESSION: "qualification" };
   const queries: unknown[][] = [];
   const deletions: unknown[][] = [];
+  const registryQueries: unknown[][] = [];
+  const runtimeLease = { assertHeld() {} };
+  let confirmAbsent!: () => void;
+  let rejectAbsence!: (error: Error) => void;
+  const absence = new Promise<void>((resolve, reject) => {
+    confirmAbsent = resolve;
+    rejectAbsence = reject;
+  });
+  void absence.catch(() => {});
+  if (!deferAbsence) confirmAbsent();
   const finish = new vm.Script(code).runInNewContext({
     Error,
     openshell: "owned-openshell",
@@ -216,6 +234,8 @@ export function createNativeAgentCompletionFixture(route: ResultRoute) {
     sandboxName: "owned-sandbox",
     gateway,
     agentLabel: "Pi",
+    create: null,
+    runtimeLease,
     // The real shared completion helper has its own terminal-condition tests.
     // This gate controls that boundary to exercise the exact caller's ordering.
     waitForNativeMxcCompletion: (...args: unknown[]) => {
@@ -225,6 +245,22 @@ export function createNativeAgentCompletionFixture(route: ResultRoute) {
     run: async (...args: unknown[]) => {
       deletions.push(args);
     },
+    confirmNativeUiRegistryEmpty: (...args: unknown[]) => {
+      registryQueries.push(args);
+      return absence;
+    },
   }) as () => Promise<void>;
-  return { finish, complete, reject, gateway, environment, queries, deletions };
+  return {
+    finish,
+    complete,
+    reject,
+    gateway,
+    environment,
+    queries,
+    deletions,
+    registryQueries,
+    runtimeLease,
+    confirmAbsent,
+    rejectAbsence,
+  };
 }

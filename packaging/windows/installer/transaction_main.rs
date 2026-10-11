@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 #[path = "../launcher/src/runtime_lease.rs"]
 mod runtime_lease;
 mod runtime_manifest;

@@ -14,6 +14,18 @@ use std::os::windows::ffi::OsStrExt;
 use std::process::Command;
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
+
+// std::process has its own private spawn lock, which cannot coordinate with
+// our direct CreateProcessW call. Cover the temporary inheritable-handle window
+// and every ordinary spawn in this guardian with the same lock.
+static PROCESS_START: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(super) fn spawn_command(command: &mut Command) -> std::io::Result<std::process::Child> {
+    let _start = PROCESS_START
+        .lock()
+        .map_err(|_| std::io::Error::other("runtime-host-spawn-lock"))?;
+    command.spawn()
+}
 type RawHandle = *mut c_void;
 #[repr(C)]
 #[derive(Default)]
@@ -404,6 +416,9 @@ pub(crate) fn run_managed(
     } else {
         None
     };
+    let start_lock = PROCESS_START
+        .lock()
+        .map_err(|_| "runtime-host-spawn-lock")?;
     let inherited_lease = duplicate(lease_handle)?;
     let mut inherited = vec![inherited_lease];
     let mut std = [null_mut(); 3];
@@ -421,11 +436,18 @@ pub(crate) fn run_managed(
             let value = if index == 0 && start_handshake {
                 let mut read = null_mut();
                 let mut write = null_mut();
-                if unsafe { CreatePipe(&mut read, &mut write, &security, 0) } == 0 {
+                let pipe_security = SecurityAttributes {
+                    inherit: 0,
+                    ..security
+                };
+                if unsafe { CreatePipe(&mut read, &mut write, &pipe_security, 0) } == 0 {
                     return Err("runtime-host-handshake");
                 }
                 handshake_writer = Some(Handle(write));
-                Handle(read)
+                // Only the child's read end is inheritable. The retained writer
+                // must never leak into a subsequently started shared service.
+                let read = Handle(read);
+                duplicate(read.0)?
             } else {
                 let source = unsafe { GetStdHandle(which) };
                 if !source.is_null() && source as isize != -1 {
@@ -534,10 +556,11 @@ pub(crate) fn run_managed(
     }
     let process = Handle(child.process);
     let _thread = Handle(child.thread);
+    drop(inherited);
+    drop(start_lock);
     let service_worker = service
         .map(|pending| pending.start(process.0, child.pid))
         .transpose()?;
-    drop(inherited);
     let browser_worker = browser
         .map(|pending| pending.start(process.0, child.pid))
         .transpose()?;

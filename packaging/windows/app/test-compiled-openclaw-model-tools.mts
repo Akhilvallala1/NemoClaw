@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 function javascriptStringLiteral(value: string) {
   return JSON.stringify(value).replace(
     /[<>/\u2028\u2029]/gu,
@@ -39,8 +40,12 @@ const codeCommand =
 const calls = [
   { name: "write", args: { path: file, content: nonce }, expect: "" },
   { name: "read", args: { path: file }, expect: nonce },
-  { name: "exec", args: { command: shellCommand, timeout: 10 }, expect: "SHELL_" + nonce },
-  { name: "exec", args: { command: codeCommand, timeout: 10 }, expect: "CODE_" + nonce + ":42" },
+  { name: "exec", args: { command: shellCommand, timeoutSeconds: 10 }, expect: "SHELL_" + nonce },
+  {
+    name: "exec",
+    args: { command: codeCommand, timeoutSeconds: 10 },
+    expect: "CODE_" + nonce + ":42",
+  },
 ];
 const observations: { path: string; model: string; toolResults: unknown[] }[] = [];
 let serverError: unknown;
@@ -133,7 +138,8 @@ const config = {
   agents: {
     defaults: {
       workspace,
-      skipBootstrap: true,
+      // Fresh workspace bootstrap must consume the packaged templates.
+      skipBootstrap: false,
       model: { primary: "nemoclawNative/fixture" },
       thinkingDefault: "off",
     },
@@ -221,12 +227,33 @@ try {
   assert.equal(observations.length, 5);
   const reply = JSON.parse(stdout);
   assert.equal(reply.payloads?.[0]?.text, marker);
-  const transcript = fs
-    .readFileSync(path.join(state, "agents", "main", "sessions", nonce + ".jsonl"), "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line).message)
-    .filter(Boolean);
+  for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+    const template = fs.statSync(path.join(workspace, name));
+    assert(template.isFile() && template.size > 0, "Workspace bootstrap must publish " + name);
+  }
+  // Read the actual persisted transcript, not the provider's copy of tool output.
+  // OpenClaw 2026.9.2 stores agent transcripts in SQLite instead of JSONL.
+  const database = new DatabaseSync(
+    path.join(state, "agents", "main", "agent", "openclaw-agent.sqlite"),
+    { readOnly: true, allowExtension: false },
+  );
+  let transcript;
+  try {
+    const rows = database
+      .prepare("SELECT seq, event_json FROM transcript_events WHERE session_id = ? ORDER BY seq")
+      .all(nonce);
+    assert(rows.length > 0, "The controlled session must have a persisted transcript.");
+    const events = rows.map((row, index) => {
+      assert.equal(row.seq, index, "The transcript must have no missing or reordered events.");
+      assert.equal(typeof row.event_json, "string");
+      return JSON.parse(row.event_json as string);
+    });
+    assert.equal(events[0].type, "session");
+    assert.equal(events[0].id, nonce);
+    transcript = events.map((event) => event.message).filter(Boolean);
+  } finally {
+    database.close();
+  }
   const results = transcript.filter((message) => message.role === "toolResult");
   assert.equal(results.length, calls.length);
   for (const [index, result] of results.entries()) {
@@ -266,6 +293,8 @@ try {
         exitCode: code,
         requests: observations.length,
         tools: ["write", "read", "shell", "node-code"],
+        workspaceBootstrapRequired: true,
+        transcriptStorage: "agent-sqlite",
         singleUndiciInstance: fs.existsSync(path.join(output, "undici-instances.json"))
           ? JSON.parse(fs.readFileSync(path.join(output, "undici-instances.json"), "utf8"))
           : null,

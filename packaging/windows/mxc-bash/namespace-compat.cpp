@@ -182,6 +182,17 @@ bool context_result(const char* stage, const char* kind, DWORD error) {
     return false;
 }
 
+bool finish_private_root_open(NTSTATUS rootStatus, HANDLE rootHandle) {
+    contextDiagnostic.ntRootStatus = static_cast<ULONG>(rootStatus);
+    contextDiagnostic.ntRootOpened = rootStatus >= 0;
+    if (rootStatus < 0) return context_result("private-nt-root-open", "ntstatus", ERROR_SUCCESS);
+    // A failed NT call does not transfer ownership of its output value.
+    if (!rootHandle || rootHandle == INVALID_HANDLE_VALUE)
+        return context_result("private-nt-root-handle", "validation", ERROR_INVALID_HANDLE);
+    if (!CloseHandle(rootHandle)) return context_result("private-nt-root-close", "win32", GetLastError());
+    return true;
+}
+
 // Fixed-size startup state, derived solely from the actual process token.
 // Every native failure captures GetLastError immediately. Validation failures
 // are separately labeled and do not masquerade as native ACCESS_DENIED.
@@ -291,10 +302,7 @@ bool initialize_namespace() {
     rootAttributes.ObjectName = &rootName;
     HANDLE rootHandle = nullptr;
     const NTSTATUS rootStatus = realOpen(&rootHandle, 0x0000000a, &rootAttributes);
-    contextDiagnostic.ntRootStatus = static_cast<ULONG>(rootStatus);
-    contextDiagnostic.ntRootOpened = rootStatus >= 0;
-    if (rootHandle) CloseHandle(rootHandle);
-    if (rootStatus < 0) return context_result("private-nt-root-open", "ntstatus", ERROR_SUCCESS);
+    if (!finish_private_root_open(rootStatus, rootHandle)) return false;
     context_result("ready", "success", ERROR_SUCCESS);
     return true;
 }
@@ -652,6 +660,7 @@ void retain_npfs_root(HANDLE original) {
     else if (!DuplicateHandle(GetCurrentProcess(), original, GetCurrentProcess(), &duplicate,
                               0, FALSE, DUPLICATE_SAME_ACCESS)) {
         error = GetLastError(); npfsBindingReason = "duplicate-failed";
+        duplicate = nullptr; // Failed output is not an owned handle.
     } else if (!sameKernelObject(original, duplicate)) {
         error = GetLastError(); npfsBindingReason = "duplicate-not-same-object";
     } else if (!verified_npfs_object_name(duplicate, error)) {
@@ -1249,7 +1258,14 @@ NTSTATUS NTAPI create_shared_mutex(PHANDLE output, ACCESS_MASK access, POBJECT_A
     const DWORD before = GetLastError();
     const SharedMutexRequest request = inspect_shared_mutex(access, input, owner);
     OBJECT_ATTRIBUTES adapted = request.attributes;
-    if (request.exact) adapted.SecurityDescriptor = &sharedMutexDescriptor.descriptor;
+    UNICODE_STRING name = {34, 36, const_cast<PWSTR>(request.name)};
+    if (request.exact) {
+        // Bind the adapted descriptor to the name and directory we admitted,
+        // as the section and PID-link paths do. Caller storage may change.
+        adapted.RootDirectory = heldSharedDirectory;
+        adapted.ObjectName = &name;
+        adapted.SecurityDescriptor = &sharedMutexDescriptor.descriptor;
+    }
     SetLastError(before);
     const NTSTATUS originalStatus = realCreateSharedMutex(output, access, request.exact ? &adapted : input, owner);
     const DWORD after = GetLastError();
@@ -1261,7 +1277,6 @@ NTSTATUS NTAPI create_shared_mutex(PHANDLE output, ACCESS_MASK access, POBJECT_A
         __except (EXCEPTION_EXECUTE_HANDLER) { originalHandle = nullptr; }
     }
     if (request.exact && output && originalStatus == static_cast<NTSTATUS>(0xc0000022)) {
-        UNICODE_STRING name = {34, 36, const_cast<PWSTR>(request.name)};
         OBJECT_ATTRIBUTES attributes = {};
         attributes.Length = sizeof(attributes);
         attributes.RootDirectory = heldSharedDirectory;
@@ -2027,7 +2042,10 @@ HWINSTA WINAPI create_browser_station(LPCWSTR name, DWORD flags, ACCESS_MASK acc
         if (!originalGrant.known)
             operationError = ERROR_NOT_SUPPORTED;
         else if (!DuplicateHandle(GetCurrentProcess(), borrowed, GetCurrentProcess(), &duplicate,
-                0, FALSE, DUPLICATE_SAME_ACCESS)) operationError = GetLastError();
+                0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            operationError = GetLastError();
+            duplicate = nullptr; // Failed output is not an owned station.
+        }
         else if (!duplicate || duplicate == borrowed || duplicate == INVALID_HANDLE_VALUE)
             operationError = ERROR_INVALID_HANDLE;
         else {

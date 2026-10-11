@@ -50,9 +50,15 @@ const receipt = JSON.parse(
 const selected = receipt.files.filter(
   (row) =>
     ["openclaw-app.cjs", "openclaw-dynamic-import.cjs"].includes(row.path) ||
-    row.path.startsWith("node_modules/undici/"),
+    row.path.startsWith("node_modules/undici/") ||
+    row.path.startsWith("node_modules/ws/") ||
+    row.path.startsWith("node_modules/@openclaw/fs-safe/"),
 );
 assert(selected.some((row) => row.path === "node_modules/undici/package.json"));
+assert(selected.some((row) => row.path === "node_modules/ws/package.json"));
+// 9.2 initializes fs-safe/config before the CLI. Keep its state shared with the
+// remaining external fs-safe modules; bundling only config would split that state.
+assert(selected.some((row) => row.path === "node_modules/@openclaw/fs-safe/package.json"));
 for (const row of selected) {
   assert(
     !row.path.includes("\\") &&
@@ -66,7 +72,12 @@ for (const row of selected) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, bytes, { flag: "wx" });
 }
-assert.deepEqual(fs.readdirSync(path.join(app, "node_modules")), ["undici"]);
+assert.deepEqual(fs.readdirSync(path.join(app, "node_modules")).sort(), [
+  "@openclaw",
+  "undici",
+  "ws",
+]);
+assert.deepEqual(fs.readdirSync(path.join(app, "node_modules", "@openclaw")), ["fs-safe"]);
 const state = path.join(output, "state");
 fs.mkdirSync(state);
 const entry = path.join(app, "openclaw-app.cjs");
@@ -116,9 +127,9 @@ fs.writeFileSync(
   (direct.stdout ?? "") + (direct.stderr ?? ""),
 );
 assert.equal(direct.status, 0, direct.stderr);
-assert.match(direct.stdout, /OpenClaw 2026\.7\.1/);
+assert.match(direct.stdout, /OpenClaw 2026\.9\.2/);
 results.push({
-  control: "direct-version-with-declared-undici-only",
+  control: "direct-version-with-declared-startup-sidecars",
   passed: true,
   stdout: direct.stdout.trim(),
 });
@@ -150,9 +161,9 @@ try {
 }
 fs.writeFileSync(path.join(output, "worker-version.log"), stdout + stderr);
 assert.equal(exitCode, 0, stderr);
-assert.match(stdout, /OpenClaw 2026\.7\.1/);
+assert.match(stdout, /OpenClaw 2026\.9\.2/);
 results.push({
-  control: "owned-worker-import-and-explicit-api-with-declared-undici-only",
+  control: "owned-worker-import-and-explicit-api-with-declared-startup-sidecars",
   passed: true,
   stdout: stdout.trim(),
 });
@@ -180,7 +191,7 @@ fs.writeFileSync(
 assert.equal(config.status, 0, config.stderr);
 assert.equal((JSON.parse(config.stdout) as { valid?: boolean }).valid, true);
 results.push({
-  control: "actual-config-validation-with-declared-undici-only",
+  control: "actual-config-validation-with-declared-startup-sidecars",
   passed: true,
   stdout: config.stdout.trim(),
 });
@@ -195,7 +206,7 @@ fs.writeFileSync(
       nodeVersion: process.version,
       portableProof: portable,
       neighboringDependencyTreeAbsent: false,
-      declaredSidecars: ["undici"],
+      declaredSidecars: ["undici", "@openclaw/fs-safe"],
       unrelatedNeighboringDependenciesAbsent: true,
       sourceTreeIsolationVerified: false,
       originalBuildTreeAccess:

@@ -68,9 +68,13 @@ class RuntimeAssembly(unittest.TestCase):
         for name in (
             "native-runtime.cjs",
             "openclaw-invoke.cjs",
+            "openclaw-migrate.cjs",
+            "openclaw-migration-config.json",
             "native-inference-manifest.json",
         ):
-            (self.workers / name).write_text("fixture\n")
+            (self.workers / name).write_text(
+                "{}\n" if name == "openclaw-migration-config.json" else "fixture\n"
+            )
             data = (self.workers / name).read_bytes()
             compiled.append(
                 {
@@ -139,10 +143,10 @@ class RuntimeAssembly(unittest.TestCase):
             "module.exports = {};\n"
         )
         (self.source / "package.json").write_text(
-            '{"name":"openclaw","version":"2026.7.1"}\n'
+            '{"name":"openclaw","version":"2026.9.2"}\n'
         )
-        (self.source / "dist/control-ui").mkdir(parents=True)
-        (self.source / "dist/control-ui/index.html").write_text(
+        (self.source / "node_modules/openclaw/dist/control-ui").mkdir(parents=True)
+        (self.source / "node_modules/openclaw/dist/control-ui/index.html").write_text(
             "<html>compiled fixture</html>\n"
         )
         resources = [
@@ -161,8 +165,8 @@ class RuntimeAssembly(unittest.TestCase):
                     "schemaVersion": 1,
                     "classification": "compiled-openclaw-resource-closure",
                     "closureAdmitted": True,
-                    "controlUiRoot": "dist/control-ui",
-                    "package": {"name": "openclaw", "version": "2026.7.1"},
+                    "controlUiRoot": "node_modules/openclaw/dist/control-ui",
+                    "package": {"name": "openclaw", "version": "2026.9.2"},
                     "compiler": {
                         "mainSha256": hashlib.sha256(
                             self.entry.read_bytes()
@@ -203,6 +207,14 @@ class RuntimeAssembly(unittest.TestCase):
         )
         audit = json.loads((content / "openclaw/nemoclaw-runtime-audit.json").read_text())
         self.assertEqual(audit["agent"], "openclaw")
+        dependency_lock = (
+            Path(assembler.__file__).parents[3]
+            / "agents/openclaw/openclaw-runtime/package-lock.json"
+        )
+        self.assertEqual(
+            audit["upstream"]["lockSha256"],
+            hashlib.sha256(dependency_lock.read_bytes()).hexdigest(),
+        )
         self.assertEqual(audit["runtimeBytesCopiedPerLaunch"], 0)
         self.assertLess(audit["maximumFinalInstalledPath"]["characters"], 260)
         self.assertEqual(assembler.inventory(self.source), before)
@@ -228,6 +240,59 @@ class RuntimeAssembly(unittest.TestCase):
         self.assertFalse(result["installedAcceptance"])
         self.assertFalse(result["agents"][0]["executionQualified"])
         self.assertFalse((self.output / "runtime-current").exists())
+
+    def test_finished_application_selects_sealed_migration_inputs(self):
+        selected, _ = assembler.finished_application(
+            self.workers, self.sea, self.node, "a" * 40
+        )
+        for name in ("openclaw-migrate.cjs", "openclaw-migration-config.json"):
+            self.assertIn((self.workers / name, "workers/" + name), selected)
+
+    def test_finished_application_rejects_omitted_migration_inputs(self):
+        receipt = self.workers / "build.json"
+        original = json.loads(receipt.read_text())
+        for name in ("openclaw-migrate.cjs", "openclaw-migration-config.json"):
+            with self.subTest(name=name):
+                changed = {**original, "files": [
+                    row for row in original["files"] if row["file"] != name
+                ]}
+                receipt.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(ValueError, "missing a static worker"):
+                    assembler.finished_application(
+                        self.workers, self.sea, self.node, "a" * 40
+                    )
+                self.assertFalse(self.output.exists())
+
+    def test_finished_application_rejects_changed_migration_inputs(self):
+        for name in ("openclaw-migrate.cjs", "openclaw-migration-config.json"):
+            with self.subTest(name=name):
+                file = self.workers / name
+                original = file.read_bytes()
+                file.write_bytes(original + b"changed")
+                try:
+                    with self.assertRaisesRegex(ValueError, "input changed"):
+                        assembler.finished_application(
+                            self.workers, self.sea, self.node, "a" * 40
+                        )
+                    self.assertFalse(self.output.exists())
+                finally:
+                    file.write_bytes(original)
+
+    def test_finished_application_rejects_nonempty_migration_configuration(self):
+        config = self.workers / "openclaw-migration-config.json"
+        receipt = self.workers / "build.json"
+        for value in ({"plugins": {"enabled": True}}, [], None, "config"):
+            with self.subTest(value=value):
+                config.write_text(json.dumps(value))
+                record = json.loads(receipt.read_text())
+                row = next(row for row in record["files"] if row["file"] == config.name)
+                row["bytes"], row["sha256"] = assembler.hash_file(config)
+                receipt.write_text(json.dumps(record))
+                with self.assertRaisesRegex(ValueError, "empty sealed configuration"):
+                    assembler.finished_application(
+                        self.workers, self.sea, self.node, "a" * 40
+                    )
+                self.assertFalse(self.output.exists())
 
     def test_missing_selected_agent_fails_before_output(self):
         with self.assertRaises(FileNotFoundError):

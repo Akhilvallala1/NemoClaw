@@ -13,6 +13,8 @@
     <Compile Include="../../bootstrapper/NativeSetupConfiguration.cs" Link="NativeSetupConfiguration.cs" />
     <Compile Include="../../bootstrapper/NativeSetupOptions.cs" Link="NativeSetupOptions.cs" />
     <Compile Include="../../bootstrapper/NativeExpressSetup.cs" Link="NativeExpressSetup.cs" />
+    <Compile Include="../../bootstrapper/NativeDownloadedModelSetup.cs" Link="NativeDownloadedModelSetup.cs" />
+    <EmbeddedResource Include="../../runtime/native-local-models.json" LogicalName="Nvidia.NemoClaw.NativeLocalModels.json" />
     <EmbeddedResource Include="../../runtime/native-inference-manifest.json" LogicalName="Nvidia.NemoClaw.NativeInferenceManifest.json" />
   </ItemGroup>
 </Project>

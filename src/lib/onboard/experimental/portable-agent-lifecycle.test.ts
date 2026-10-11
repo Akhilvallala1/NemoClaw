@@ -56,6 +56,10 @@ import {
   buildHermesPortableCommandEnvironment,
   buildHermesPortableOnboardingCommandAuthority,
   assertHermesPortableAgentLifecycleAuthority,
+  assertHermesPortableCommandSupported,
+  assertHermesPortableCommandUnavailable,
+  classifyRegisteredPortableAgentLifecycle,
+  HERMES_PORTABLE_UNSUPPORTED_COMMAND_MESSAGE,
   inspectPortableAgentReceiptDisposition,
   qualifyHermesPortableAcceptedReadinessAuthority,
   qualifyPortableAgentLifecycleAuthority,
@@ -150,6 +154,53 @@ describe("portable agent lifecycle dispatch", () => {
       (_sandboxName, _stateDir, _snapshot, assertOperatingAuthority) => assertOperatingAuthority,
     );
     mocks.readRegistry.mockReturnValue(null);
+  });
+
+  it.each([
+    ["hermes", "hermes"],
+    ["openclaw", "openclaw"],
+  ] as const)("classifies recorded %s Portable authority once", (agent, profile) => {
+    expect(
+      classifyRegisteredPortableAgentLifecycle(
+        "alpha",
+        "docker",
+        {
+          ...hermesRegistryEntry(),
+          agent,
+          portableLifecycleProfile: profile,
+        } as never,
+        lifecycleAuthorityDeps,
+      ),
+    ).toEqual({ kind: "portable", agent });
+  });
+
+  it("keeps an ordinary Docker entry on the standard lifecycle", () => {
+    expect(
+      classifyRegisteredPortableAgentLifecycle(
+        "alpha",
+        "docker",
+        {
+          ...hermesRegistryEntry(),
+          agent: "openclaw",
+          portableLifecycleProfile: undefined,
+        } as never,
+        lifecycleAuthorityDeps,
+      ),
+    ).toEqual({ kind: "standard" });
+  });
+
+  it("admits a legacy Hermes entry only through the shared receipt qualifier", () => {
+    const qualifyLegacyHermes = vi.fn(() => true);
+
+    expect(
+      classifyRegisteredPortableAgentLifecycle(
+        "alpha",
+        "docker",
+        { ...hermesRegistryEntry(), portableLifecycleProfile: undefined } as never,
+        { ...lifecycleAuthorityDeps, qualifyLegacyHermes },
+      ),
+    ).toEqual({ kind: "portable", agent: "hermes" });
+    expect(qualifyLegacyHermes).toHaveBeenCalledOnce();
   });
 
   it("directs copied active schema-7 authority to probe instead of migrating on launch (#10423)", () => {
@@ -624,5 +675,62 @@ describe("portable agent lifecycle dispatch", () => {
       expect.any(Object),
     );
     expect(mocks.stopHermes).not.toHaveBeenCalled();
+  });
+});
+
+/** Capture the message a portable command guard refuses with, or an empty string when it does not refuse. */
+function portableRefusalMessage(refuse: () => void): string {
+  try {
+    refuse();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  return "";
+}
+
+describe("hermes portable command refusals (#11966)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.inspectClassification.mockImplementation((...args) => mocks.inspect(...args));
+    mocks.hasCandidate.mockReturnValue(true);
+    mocks.inspect.mockReturnValue(hermes("active"));
+  });
+
+  it("appends registry guidance when refusing dashboard-url on a Hermes portable sandbox", () => {
+    const message = portableRefusalMessage(() =>
+      assertHermesPortableCommandUnavailable("alpha", "sandbox:dashboard-url"),
+    );
+
+    expect(message).toContain(
+      `${HERMES_PORTABLE_UNSUPPORTED_COMMAND_MESSAGE} Command: sandbox:dashboard-url`,
+    );
+    expect(message).toContain("sandboxes.json");
+    expect(message).toContain("dashboardExternalUrl");
+  });
+
+  it("appends the same guidance when the supported-command guard refuses dashboard-url", () => {
+    const message = portableRefusalMessage(() =>
+      assertHermesPortableCommandSupported("sandbox:dashboard-url", "alpha", []),
+    );
+
+    expect(message).toContain("Command: sandbox:dashboard-url");
+    expect(message).toContain("dashboardPort");
+  });
+
+  it.each([
+    "launch",
+    "sandbox:connect",
+    "sandbox:doctor",
+    "sandbox:recover",
+    "sandbox:start",
+    "sandbox:status",
+    "sandbox:stop",
+  ])("keeps the bare refusal for %s", (commandId) => {
+    const message = portableRefusalMessage(() =>
+      assertHermesPortableCommandUnavailable("alpha", commandId),
+    );
+
+    expect(message).toBe(`${HERMES_PORTABLE_UNSUPPORTED_COMMAND_MESSAGE} Command: ${commandId}`);
+    expect(message).not.toContain("dashboardPort");
   });
 });

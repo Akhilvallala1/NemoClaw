@@ -10,7 +10,7 @@ const position = process.argv.indexOf("--source-root");
 if (position < 0 || !process.argv[position + 1])
   throw new Error("The pinned materialized source root is required.");
 const source = path.resolve(process.argv[position + 1]);
-const relative = "dist/update-B0wRhzt_.js";
+const relative = "dist/update-BxCRjwo_.js";
 const original = fs.readFileSync(path.join(source, relative), "utf8");
 const patched = guardWindowsInstallerUpdate(relative, original);
 const syntax = createRequire(import.meta.url)(
@@ -30,9 +30,9 @@ function declaration(file: string, name: string) {
   return found.getText(tree);
 }
 const protocol = new Function(
-  declaration("schema-BuOFpc7K.js", "ErrorCodes") +
+  declaration("gateway-error-details-w0nAGBBp.js", "ErrorCodes") +
     "\n" +
-    declaration("schema-BuOFpc7K.js", "errorShape") +
+    declaration("error-codes-Bo8q2D1o.js", "errorShape") +
     "\nreturn {ErrorCodes,errorShape};",
 )() as {
   ErrorCodes: { UNAVAILABLE: string; INVALID_REQUEST: string };
@@ -42,7 +42,10 @@ const validation = new Function(
   "ErrorCodes",
   "errorShape",
   "formatValidationErrors",
-  declaration("validation-BlJXIosl.js", "assertValidParams") + "\nreturn assertValidParams;",
+  declaration("validation-pzrlzFvo.js", "validateGatewayMethodParams") +
+    "\n" +
+    declaration("validation-pzrlzFvo.js", "assertValidParams") +
+    "\nreturn assertValidParams;",
 )(protocol.ErrorCodes, protocol.errorShape, () => "controlled invalid request") as (
   ...args: unknown[]
 ) => boolean;
@@ -85,15 +88,42 @@ function handler(text: string, platform: string, valid: boolean) {
     validateUpdateRunParams: () => valid,
     __nemoUpdateErrorShape: protocol.errorShape,
     __nemoUpdateErrorCodes: protocol.ErrorCodes,
+    VERSION: "2026.9.2",
     resolveControlPlaneActor: () => ({ actor: "owned-control" }),
     parseRestartRequestParams: () => ({}),
+    normalizeGatewayRestartDelayMs: () => 0,
     extractDeliveryInfo: () => ({}),
-    normalizeUpdateChannel: () => undefined,
-    tryResolveProcessCwd: () => "owned-root",
-    resolveOpenClawPackageRoot: async () => {
-      calls.push("package-root-probe");
-      return "owned-root";
+    mergeDeliveryContext: () => undefined,
+    isBrowserOperatorUiClient: () => false,
+    resolveUpdateRunNoticeTarget: () => ({ kind: "none" }),
+    formatDoctorNonInteractiveHint: () => "controlled update hint",
+    createUpdateRun: () => {
+      calls.push("ledger-create");
+      return { runId: "controlled-run" };
     },
+    recordUpdateRunVerification: () => calls.push("ledger-verification"),
+    wakeUpdateRunWatcher: () => calls.push("update-watcher"),
+    loadUpdateRunNotifier: async () => {
+      calls.push("notifier-load");
+      return { createUpdateRunNotifier: () => async () => ({ delivered: false, owned: false }) };
+    },
+    initializeGatewayUpdateStatus: async () => {
+      calls.push("package-root-probe");
+      return { root: "owned-root", status: { installKind: "package" } };
+    },
+    resolveEffectiveUpdateChannel: () => ({ channel: "stable" }),
+    isRecord: (value: unknown) => value !== null && typeof value === "object",
+    gatewayUpdateCampaign: { adopt: () => undefined },
+    recordUpdateRunPhase: () => {
+      calls.push("ledger-phase");
+      return { runId: "controlled-run" };
+    },
+    isGatewayExternallySupervised: () => false,
+    readPackageVersion: async () => "2026.9.2",
+    getUpdateAvailable: () => undefined,
+    renderUpdateRunNotice: () => undefined,
+    normalizeControlPlaneUpdateResult: (result: unknown) => result,
+    normalizeUpdateChannel: () => undefined,
     resolveUpdateInstallSurface: async () => {
       calls.push("install-surface-probe");
       return { kind: "package", mode: "npm", root: "owned-root" };
@@ -117,11 +147,16 @@ function handler(text: string, platform: string, valid: boolean) {
     },
     formatControlPlaneActor: () => "owned-control",
   };
+  const notifierImport = 'import("./update-run-notice.runtime.js")';
+  const handlerSource = member.initializer.getText(tree);
+  assert.equal(handlerSource.split(notifierImport).length, 2);
+  // Replace only the notifier's external module boundary; execute the pinned
+  // handler through its ledger, update, sentinel and restart calls below.
   const execute = new Function(
     ...Object.keys(dependencies),
     "return (" +
-      member.initializer
-        .getText(tree)
+      handlerSource
+        .replace(notifierImport, "loadUpdateRunNotifier()")
         .replace("import.meta.url", JSON.stringify("file:///owned/update.js")) +
       ");",
   )(...Object.values(dependencies)) as (input: Input) => Promise<void>;
@@ -131,7 +166,12 @@ function handler(text: string, platform: string, valid: boolean) {
     responses,
     validations: () => validations,
     run: () =>
-      execute({ params: {}, client: {}, context, respond: (...args) => responses.push(args) }),
+      execute({
+        params: {},
+        client: { connect: { client: {} } },
+        context,
+        respond: (...args) => responses.push(args),
+      }),
   };
 }
 
@@ -140,6 +180,12 @@ await before.run();
 assert.ok(
   before.calls.includes("install-surface-probe") && before.calls.includes("update-mutation"),
 );
+assert.ok(
+  before.calls.includes("ledger-create") &&
+    before.calls.includes("sentinel-mutation") &&
+    before.calls.includes("restart"),
+);
+assert.equal((before.responses[0][1] as { ok: boolean }).ok, true);
 const blocked = handler(patched, "win32", true);
 await blocked.run();
 assert.equal(blocked.validations(), 1);

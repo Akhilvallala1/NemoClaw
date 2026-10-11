@@ -13,7 +13,11 @@ import { stripTypeScriptTypes } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { configureNativeFromStdin } from "./native-setup-configuration.mts";
-import { nativeCredentialBinding, renderNativeGatewayConfig } from "./native-security.mts";
+import {
+  NATIVE_NODE_UI_POLICY,
+  nativeCredentialBinding,
+  renderNativeGatewayConfig,
+} from "./native-security.mts";
 import { nativeServiceBinding } from "./native-options.mts";
 import { NATIVE_EXPRESS } from "./native-inference-manifest.mts";
 import { interactiveWorkloadSource } from "./run-installed-native-console-agent.mts";
@@ -145,12 +149,16 @@ test("actual gateway renderer selects only the held Hermes executor and preserve
     "# retained\r\n[openshell.drivers.mxc]\r\nwxc_exec_path = 'stock.exe' # retained path comment\r\nother = true\r\n[other]\r\nwxc_exec_path = 'unrelated.exe'\r\n";
   const runtime = heldHermesRuntime();
   const executor = nativeHermesCompatibility(runtime).executor;
-  const expected = template.replace("'stock.exe'", JSON.stringify(executor));
+  const profiled = template.replace(
+    "other = true",
+    "pc_network_allow = false\r\npc_allow_local_network = false\r\npc_host_console = false\r\npc_loopback_ports = []\r\nother = true",
+  );
+  const expected = profiled.replace("'stock.exe'", JSON.stringify(executor));
   assert.equal(renderNativeGatewayConfig(template, installation, runtime), expected);
   assert.equal(JSON.parse(expected.split("\r\n")[2].split(" = ")[1].split(" #")[0]), executor);
   assert.equal(
     renderNativeGatewayConfig(template, installation),
-    template.replace("'stock.exe'", JSON.stringify(path.join(installation, "mxc", "wxc-exec.exe"))),
+    profiled.replace("'stock.exe'", JSON.stringify(path.join(installation, "mxc", "wxc-exec.exe"))),
   );
   assert.throws(
     () => renderNativeGatewayConfig(template, "D:\\Other", runtime),
@@ -166,7 +174,7 @@ test("actual gateway renderer selects only the held Hermes executor and preserve
   assert.throws(() => renderNativeGatewayConfig(template, installation, runtime), /lease revoked/u);
 });
 
-test("actual console and turn driver configs prefix Hermes only and retain their worker environment", () => {
+test("actual console and turn driver configs prefix Hermes only and retain their worker environment", async () => {
   for (const file of ["run-installed-native-console-agent.mts", "run-installed-native-pi.mts"]) {
     const source = fs.readFileSync(new URL(file, import.meta.url), "utf8");
     const start = source.indexOf("const createArgs = [");
@@ -191,16 +199,22 @@ test("actual console and turn driver configs prefix Hermes only and retain their
         dashboard: false,
         environment,
         sandboxEnvironment: environment,
+        gatewaySession: { kind: "owned-session-fixture" },
       };
       runInNewContext(source.slice(start, end) + "\nresult = createArgs;", context);
       const args = context.result as string[];
+      if (file.includes("console")) {
+        assert(args.includes("--detach"));
+        assert(args.includes("--tty"));
+        assert(!args.includes("--no-tty"));
+      }
       const driver = JSON.parse(args[args.indexOf("--driver-config-json") + 1]).mxc;
       assert.deepEqual(driver.command, nativeRuntimeWorkerCommand(runtime, workload));
       assert.equal(
         driver.cwd,
         file.includes("console") ? "held-state-root" : "existing-turn-share",
       );
-      assert.equal(driver.windows_ui, true);
+      assert.deepEqual(Object.keys(driver).sort(), ["command", "cwd"]);
       const passedEnvironment = Object.fromEntries(
         args.flatMap((value, i) =>
           value === "--env" ? [args[i + 1].split(/=(.*)/su).slice(0, 2)] : [],
@@ -209,10 +223,42 @@ test("actual console and turn driver configs prefix Hermes only and retain their
       assert.deepEqual(passedEnvironment, environment);
       assert(!Object.hasOwn(passedEnvironment, "GITHUB_ACTIONS"));
       assert(!Object.hasOwn(passedEnvironment, "NEMOCLAW_MSYS_TOKEN_INSPECTION_HOLD"));
-      if (file.includes("console")) {
-        assert.equal(driver.host_loopback, false);
-        assert.equal(driver.host_console, true);
-        assert.equal(driver.personal_network, true);
+      const gatewayCall =
+        /const gatewayConfig = await writeNativeGatewayConfig\([\s\S]*?\n    \);/u.exec(source);
+      assert(gatewayCall, "The launcher must configure its private gateway before launch.");
+      for (const dashboard of [false, true]) {
+        if (file.includes("console")) {
+          const selected = { ...context, dashboard };
+          runInNewContext(source.slice(start, end) + "\nresult = createArgs;", selected);
+          assert.equal(selected.result.includes("--tty"), !dashboard);
+          assert.equal(selected.result.includes("--no-tty"), dashboard);
+        }
+        let rendered = "";
+        await runInNewContext(`(async () => { ${gatewayCall[0]} })()`, {
+          ...context,
+          dashboard,
+          agentId: agent,
+          isHermes: agent === "hermes",
+          installRoot: "C:\\Program Files\\NVIDIA\\NemoClaw",
+          runRoot: "owned-run-root",
+          writeNativeGatewayConfig: async (install, _run, lease, options, session) => {
+            assert.equal(session, context.gatewaySession);
+            rendered = renderNativeGatewayConfig(
+              '[openshell.drivers.mxc]\nwxc_exec_path = "old.exe"\n',
+              install,
+              lease,
+              options,
+            );
+            return "owned-gateway-config";
+          },
+        });
+        const console = file.includes("console");
+        assert(rendered.includes("pc_host_console = false\n"));
+        assert(rendered.includes(`pc_network_allow = ${console}\n`));
+        assert(rendered.includes(`pc_allow_local_network = ${console}\n`));
+        assert(rendered.includes("pc_loopback_ports = []\n"));
+        if (agent === "hermes") assert(rendered.includes("mxc-compat"));
+        else assert(!rendered.includes("mxc-compat"));
       }
       assert.equal(runtime.runtimeBytesCopied, 0);
       assert.equal(runtime.runtimeFilesHashedAtLaunch, 0);
@@ -220,12 +266,80 @@ test("actual console and turn driver configs prefix Hermes only and retain their
   }
 });
 
-test("installed Hermes query modes bind both held owners and remain host or guest scoped", () => {
+test("every native Node workload emits portable UI policy without widening filesystem grants", () => {
+  for (const file of [
+    "run-installed-native-turn.mts",
+    "run-installed-native-web-ui.mts",
+    "run-installed-native-pi.mts",
+    "run-installed-native-console-agent.mts",
+    "run-installed-native-nemocua.mts",
+    "../performance/probe-installed-readonly.mts",
+    "../hermes/probe-official-components.mts",
+  ]) {
+    const source = fs.readFileSync(new URL(file, import.meta.url), "utf8");
+    const policy =
+      /fs\.writeFileSync\(\s*policyPath,\s*(\[[\s\S]*?\])\.join\("\\n"\),(?:\s*"utf8",?)?\s*\);/u.exec(
+        source,
+      );
+    assert(policy, file);
+    const roots = {
+      runtimeRoot: "C:/runtime",
+      shareRoot: "C:/share",
+      relayRoot: "C:/relay",
+      brokerRelayRoot: "C:/broker",
+      agentRuntimeRoot: "C:/agent",
+      statusRoot: "C:/status",
+      browserRelayRoot: "C:/browser",
+      installRoot: "C:/install",
+      runRoot: "C:/run",
+      node: "C:/node.exe",
+      launcherRoot: "C:/launcher",
+      home: "C:/home",
+    };
+    const quoteYamlPath = (value) => JSON.stringify(value);
+    const context = {
+      ...roots,
+      path,
+      NATIVE_NODE_UI_POLICY,
+      security: { NATIVE_NODE_UI_POLICY },
+      quoteYamlPath,
+      helpers: { quoteYamlPath },
+      runtimeLease: { readOnlyRoots: ["C:/sealed"] },
+      configuredIdentity: null,
+      brokerRelay: null,
+      dashboard: false,
+    };
+    const document = parseYaml(runInNewContext(`${policy[1]}.join("\\n")`, context));
+    assert.deepEqual(
+      document.ui,
+      { allow_graphical_ui: true, clipboard: "none", allow_input_injection: false },
+      file,
+    );
+    assert.equal(document.filesystem_policy.include_workdir, false, file);
+    const expectedReadOnly = file.includes("performance")
+      ? [roots.node, path.join(roots.installRoot, "openclaw"), roots.runRoot]
+      : file.includes("probe-official")
+        ? [roots.runtimeRoot, roots.launcherRoot]
+        : [roots.runtimeRoot, "C:/sealed"];
+    const expectedReadWrite = file.includes("console-agent")
+      ? [roots.agentRuntimeRoot, roots.statusRoot, roots.brokerRelayRoot, roots.browserRelayRoot]
+      : file.includes("web-ui") || file.includes("nemocua")
+        ? [roots.shareRoot, roots.relayRoot]
+        : [roots.shareRoot];
+    assert.deepEqual(document.filesystem_policy.read_only, expectedReadOnly, file);
+    assert.deepEqual(document.filesystem_policy.read_write, expectedReadWrite, file);
+    assert(!Object.hasOwn(document, "network_policies"), file);
+  }
+});
+
+test("installed Hermes query modes bind both held owners and remain host or guest scoped", async () => {
   const source = fs.readFileSync(
     new URL("./run-installed-native-console-agent.mts", import.meta.url),
     "utf8",
   );
-  const gatewayStart = source.indexOf("stateSession.assertHeld();\n    const gatewayEnvironment");
+  const gatewayStart = source.indexOf(
+    "stateSession.assertHeld();\n    await gatewaySession.prepare();",
+  );
   const gatewayEnd = source.indexOf('    diagnostics.stage("gateway");', gatewayStart);
   const guestStart = source.indexOf("const environment = {");
   const guestEnd = source.indexOf("      diagnostics.secret(", guestStart);
@@ -238,6 +352,12 @@ test("installed Hermes query modes bind both held owners and remain host or gues
     const runtimeLease = heldHermesRuntime(agentId);
     const agentRuntimeRoot = "C:\\NemoClawState-S-1-5-21-1-2-3-1001-hermes";
     let stateHeld = true;
+    let prepared = 0;
+    const gatewayEnvironment = {
+      OPENSHELL_LOCAL_TLS_DIR: "private-gateway/tls",
+      XDG_CONFIG_HOME: "private-gateway/config",
+      XDG_STATE_HOME: "private-gateway/state",
+    };
     const stateSession = bindNativeRuntimeGuard(
       {
         assertHeld() {
@@ -249,6 +369,15 @@ test("installed Hermes query modes bind both held owners and remain host or gues
     const context: any = {
       agentId,
       stateSession,
+      gatewaySession: {
+        async prepare() {
+          prepared++;
+        },
+        get environment() {
+          assert.equal(prepared, 1);
+          return gatewayEnvironment;
+        },
+      },
       runtimeLease,
       path: path.win32,
       allowlistedWindowsEnvironment: (extra: object) => ({ ...extra }),
@@ -280,8 +409,11 @@ test("installed Hermes query modes bind both held owners and remain host or gues
       systemDrive: "C:",
       temp: path.win32.join(agentRuntimeRoot, "temp"),
     };
-    const gateway = source.slice(gatewayStart, gatewayEnd) + "\nresult = gatewayEnvironment;";
-    runInNewContext(gateway, context);
+    const gateway = `(async () => { ${source.slice(gatewayStart, gatewayEnd)}\nresult = gatewayEnvironment; })()`;
+    await runInNewContext(gateway, context);
+    assert.equal(prepared, 1);
+    for (const [name, value] of Object.entries(gatewayEnvironment))
+      assert.equal(context.result[name], value);
     assert.equal(
       context.result.NEMOCLAW_MSYS_TOKEN_INSPECTION,
       agentId === "hermes" ? "hermes-query" : undefined,
@@ -306,12 +438,14 @@ test("installed Hermes query modes bind both held owners and remain host or gues
     assert.equal(context.result.NEMOCLAW_HERMES_PRIVATE_DESKTOP, undefined);
     assert.equal(context.result.GITHUB_ACTIONS, undefined);
     stateHeld = false;
-    assert.throws(() => runInNewContext(gateway, { ...context }), /state revoked/u);
+    await assert.rejects(runInNewContext(gateway, { ...context }), /state revoked/u);
+    assert.equal(prepared, 1, "Revoked state must fail before private credential preparation.");
     stateHeld = true;
     runtimeLease.assertHeld = () => {
       throw new Error("runtime revoked");
     };
-    assert.throws(() => runInNewContext(gateway, { ...context }), /runtime revoked/u);
+    await assert.rejects(runInNewContext(gateway, { ...context }), /runtime revoked/u);
+    assert.equal(prepared, 1, "Revoked runtime must fail before private credential preparation.");
   }
 });
 
@@ -869,6 +1003,7 @@ test("dashboard and console cleanup emit their held runtime tuple and cleanup re
           attempt: async (_label: string, operation: () => unknown) => operation(),
           path,
           runtimeLease,
+          gatewaySession: { root: "private-gateway" },
           sessionPassed: succeeded,
           dashboardGatewayStopped: succeeded,
           rootsRemoved: succeeded,
@@ -880,7 +1015,8 @@ test("dashboard and console cleanup emit their held runtime tuple and cleanup re
           released: succeeded,
           cleanupFailures: succeeded ? [] : ["owned fixture cleanup"],
           fs: {
-            existsSync: (value: string) => value === "state",
+            existsSync: (value: string) =>
+              value === "state" || (!succeeded && value === "private-gateway"),
             writeFileSync: (file: string, text: string, options: unknown) =>
               written.push({ file, document: JSON.parse(text), options }),
           },
@@ -895,6 +1031,7 @@ test("dashboard and console cleanup emit their held runtime tuple and cleanup re
       const result = written[0].document;
       assert.equal(result.agent, agent);
       assert.equal(result.stateRetained, true);
+      assert.equal(result.retainedPrivateGatewayRoot, succeeded ? null : "private-gateway");
       for (const key of [
         "sandboxDeleted",
         "gatewayStopped",

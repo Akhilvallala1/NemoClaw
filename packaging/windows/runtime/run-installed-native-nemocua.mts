@@ -7,6 +7,7 @@ declare const HTMLInputElement: typeof globalThis.HTMLInputElement;
 import { fileURLToPath as nativeEntryFile } from "node:url";
 declare const NEMOCLAW_BUNDLED_RUNTIME: boolean | undefined;
 import { nativeWorkerAssets } from "./native-assets.mts";
+import { NativeGatewaySession } from "./native-gateway-session.mts";
 import { withNativeRuntimeSession, type NativeRuntimeSession } from "./native-runtime.mts";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -17,9 +18,13 @@ import path from "node:path";
 
 import { resolveNativeConfiguredInference } from "./native-configured-inference.mts";
 import { startFileTcpTargetRelay } from "./native-nemocua-relay.mts";
-import { waitForNativeMxcCompletion } from "./native-ui-lifecycle.mts";
+import {
+  confirmNativeUiRegistryEmpty,
+  waitForNativeMxcCompletion,
+} from "./native-ui-lifecycle.mts";
 
 import {
+  NATIVE_NODE_UI_POLICY,
   readOpenedRegularFile,
   resolveBrokerUpstreamUrl,
   validatedChatMessages,
@@ -30,7 +35,6 @@ import {
   allowlistedWindowsEnvironment,
   argumentValue,
   freePort,
-  jsonContainsExactValue,
   quoteYamlPath,
   removeDirectory,
   requiredDirectory,
@@ -472,6 +476,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
   const gatewayLogPath = path.join(runRoot, "openshell-gateway.log");
   const gatewayErrorPath = path.join(runRoot, "openshell-gateway.err.log");
   const ownedRoots = [];
+  const gatewaySession = new NativeGatewaySession(installRoot, runRoot);
   let bridge;
   let browserRelay;
   let gateway;
@@ -490,7 +495,15 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       fs.mkdirSync(directory);
       ownedRoots.push(directory);
     }
-    const gatewayConfig = writeNativeGatewayConfig(installRoot, runRoot);
+    const gatewayConfig = await writeNativeGatewayConfig(
+      installRoot,
+      runRoot,
+      undefined,
+      {
+        network: { kind: configuredIdentity !== null ? "personal" : "deny" },
+      },
+      gatewaySession,
+    );
     fs.mkdirSync(evidenceRoot, { recursive: true });
     runtimeLease.assertHeld();
     const nemocuaRoot = installedNemoCuaRoot;
@@ -506,6 +519,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       [
         "version: 1",
         "",
+        ...NATIVE_NODE_UI_POLICY,
         "filesystem_policy:",
         "  include_workdir: false",
         "  read_only:",
@@ -518,11 +532,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       ].join("\n"),
       "utf8",
     );
-    const configRoot = path.join(runRoot, "config");
-    const stateRoot = path.join(runRoot, "state");
     const temp = path.join(shareRoot, "temp");
-    for (const directory of [configRoot, stateRoot, temp])
-      fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(temp, { recursive: true });
     bridge = await startBrowserBridge(
       installedOpenClawRoot,
       evidenceRoot,
@@ -538,18 +549,18 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     const openShellPort = await freePort();
     gatewayLog = fs.openSync(gatewayLogPath, "w");
     gatewayError = fs.openSync(gatewayErrorPath, "w");
+    await gatewaySession.prepare();
     const gatewayEnvironment = allowlistedWindowsEnvironment({
       OPENSHELL_DRIVERS: "mxc",
       OPENSHELL_GATEWAY_CONFIG: gatewayConfig,
-      XDG_CONFIG_HOME: configRoot,
-      XDG_STATE_HOME: stateRoot,
+      ...gatewaySession.environment,
     });
-    gateway = spawn(
+    gateway = gatewaySession.spawnGateway(
       gatewayExecutable,
       [
         "--port",
         String(openShellPort),
-        "--disable-tls",
+        "--enable-mtls-auth",
         "--db-url",
         "sqlite::memory:",
         "--log-level",
@@ -566,7 +577,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     });
     await run(
       openshell,
-      ["gateway", "add", `http://127.0.0.1:${openShellPort}`, "--local", "--name", gatewayName],
+      ["gateway", "add", `https://127.0.0.1:${openShellPort}`, "--local", "--name", gatewayName],
       cliEnvironment,
       "Registering the native NemoCUA gateway",
     );
@@ -612,10 +623,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       "--driver-config-json",
       JSON.stringify({
         mxc: {
-          windows_ui: true,
           command: [node, relayWorkload],
           cwd: shareRoot,
-          personal_network: configuredIdentity !== null,
         },
       }),
       "--no-tty",
@@ -685,7 +694,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       gateway,
       null,
     );
-    if (completion === "ExecFailed") fail("The native NemoCUA executor failed during cleanup");
+    if (completion === "ExecFailed" || completion === "MainProcessFailed")
+      fail("The native NemoCUA execution failed");
     await run(
       openshell,
       ["sandbox", "delete", sandboxName],
@@ -694,15 +704,13 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     );
     if (create !== null && !(await stopChild(create)))
       fail("NemoCUA sandbox request watcher did not stop");
-    const sandboxList = await run(
-      openshell,
-      ["sandbox", "list", "-o", "json"],
-      cliEnvironment,
-      "Verifying native NemoCUA sandbox cleanup",
-    );
-    if (jsonContainsExactValue(JSON.parse(sandboxList.stdout.trim()), sandboxName))
-      fail("NemoCUA sandbox remained registered after deletion");
-    if (!(await stopChild(gateway))) fail("OpenShell MXC gateway did not stop");
+    await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+      sandboxName,
+      gateway,
+      stateSession: runtimeLease,
+    });
+    if (!(await gatewaySession.stopGateway())) fail("OpenShell MXC gateway did not stop");
+    await gatewaySession.dispose();
     receipt = {
       ...agentResult,
       classification: "installed-nemoclaw-native-windows-nemocua",
@@ -774,9 +782,18 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           30_000,
         ),
       );
+    if (!passed && gateway && cliEnvironment)
+      await attempt("sandbox registry verification", () =>
+        confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+          sandboxName,
+          gateway,
+          stateSession: runtimeLease,
+        }),
+      );
     await attempt("gateway stop", async () => {
-      if (gateway && !(await stopChild(gateway))) throw new Error();
+      if (gateway && !(await gatewaySession.stopGateway())) throw new Error();
     });
+    await attempt("private gateway cleanup", () => gatewaySession.dispose());
     for (const handle of [gatewayLog, gatewayError])
       await attempt("gateway log close", () => {
         if (handle !== undefined) fs.closeSync(handle);

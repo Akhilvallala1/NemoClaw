@@ -62,14 +62,20 @@ public partial class MainWindow : Window
         {
             try
             {
-                var eligibility = await NativeExpressSetup.CheckPreliminaryEligibilityAsync();
-                if (this.runtimeAvailability.IsSelectedRuntimeBuild && !this.runtimeAvailability.PrebuiltLocalModelAvailable)
-                    eligibility = eligibility with { Eligible = false, Message = "The prebuilt on-device model is not included in this distribution. Choose a hosted provider or an existing local server." };
+                var download = this.runtimeAvailability.BundledLocalInferenceAvailable;
+                var eligibility = await NativeExpressSetup.CheckPreliminaryEligibilityAsync(download);
+                if (this.runtimeAvailability.IsSelectedRuntimeBuild && !this.runtimeAvailability.PrebuiltLocalModelAvailable && !download)
+                    eligibility = eligibility with { Eligible = false, Message = "This distribution has no managed local inference runtime. Choose a hosted provider or an existing local server." };
                 if (!this.IsLoaded || !eligibility.IsDevice) return;
                 this.ExpressOffer.Visibility = Visibility.Visible;
                 this.ExpressStatus.Text = eligibility.Message;
                 this.UseExpressButton.IsEnabled = eligibility.Eligible;
-                if (eligibility.Eligible) this.ProviderChoice.Items.Add(new ComboBoxItem { Tag = "n1x", Content = NativeExpressSetup.DisplayName });
+                if (eligibility.Eligible && download)
+                {
+                    foreach (var model in NativeDownloadedModelSetup.Models)
+                        this.ProviderChoice.Items.Add(new ComboBoxItem { Tag = model.GetProperty("id").GetString(), Content = model.GetProperty("displayName").GetString() + " · on this PC" });
+                }
+                else if (eligibility.Eligible) this.ProviderChoice.Items.Add(new ComboBoxItem { Tag = "n1x", Content = NativeExpressSetup.DisplayName });
             }
             catch (Exception) { this.ExpressOffer.Visibility = Visibility.Collapsed; }
         };
@@ -255,7 +261,7 @@ public partial class MainWindow : Window
         this.ConfigurationPanel.Visibility = Visibility.Visible;
         this.SetJourneyStage(2);
         this.ConfigurationDetail.Text = "NemoClaw is installed. Complete your agent settings to finish setup.";
-        this.InstallButton.Content = "Save configuration";
+        this.UpdateModelSetupAction();
         this.BackButton.Visibility = Visibility.Collapsed;
         this.ShowConfigurationError(detail ?? "Windows could not save the agent configuration. Check these settings and try again. Your installed application is available for repair in Windows Installed apps.");
     }
@@ -294,6 +300,11 @@ public partial class MainWindow : Window
             this.SuccessDetail.Text = this.configurationSaved
                 ? "Setup is complete. Your settings are saved for your Windows account. Launch your agent when you are ready."
                 : "The native application is installed. Your agent configuration has not been saved.";
+            if (this.configurationSaved && this.SelectedAgent == "openclaw")
+            {
+                this.SuccessTitle.Text = "OpenClaw settings are saved.";
+                this.SuccessDetail.Text = "Launch OpenClaw to complete model setup and review requested plugin permissions. Setup does not accept plugin permissions for you.";
+            }
             this.LaunchButton.Content = $"Launch {agentName}";
         }
         this.CloseButton.Focus();
@@ -304,6 +315,10 @@ public partial class MainWindow : Window
         this.SuccessDetail.Text = this.SelectedAgent is "openclaw" or "hermes"
             ? "The session window is opening. It shows preparation progress and opens the browser after the agent's Web UI becomes available. You can close Setup."
             : "Your configured agent's own window is opening. You can close this setup window.";
+        if (this.SelectedAgent == "openclaw")
+        {
+            this.SuccessDetail.Text = "The session window is opening. It opens OpenClaw in your browser when available. Complete model setup and review plugin permissions there. You can close Setup.";
+        }
         this.LaunchButton.IsEnabled = false;
     }
 
@@ -385,7 +400,8 @@ public partial class MainWindow : Window
         this.HidePanels();
         this.SetJourneyStage(2);
         this.ConfigurationPanel.Visibility = Visibility.Visible;
-        this.ConfigurationDetail.Text = $"Connect {AgentNames[this.SelectedAgent]} to a provider or an existing local model server.";
+        this.ConfigurationDetail.Text = $"Choose a model for {AgentNames[this.SelectedAgent]} on this PC, a hosted provider, or an existing local server.";
+        this.UpdateModelSetupAction();
         this.ProviderChoice.Focus();
     }
 
@@ -425,13 +441,16 @@ public partial class MainWindow : Window
     private void ProviderChanged(object sender, SelectionChangedEventArgs args)
     {
         if (this.EndpointBox is null || this.ProviderChoice.SelectedItem is not ComboBoxItem { Tag: string provider }) return;
+        var download = NativeDownloadedModelSetup.IsModel(provider);
+        var managed = download || provider == "n1x";
         this.CredentialBox.Clear();
-        this.EndpointBox.IsReadOnly = provider is "nvidia" or "openrouter" or "n1x";
-        this.EndpointLabel.Visibility = this.EndpointBox.Visibility = provider == "n1x" ? Visibility.Collapsed : Visibility.Visible;
-        this.CredentialLabel.Visibility = this.CredentialBox.Visibility = provider == "n1x" ? Visibility.Collapsed : Visibility.Visible;
-        this.ModelBox.IsReadOnly = provider == "n1x";
-        this.ModelDownloadNotice.Visibility = provider == "n1x" ? Visibility.Visible : Visibility.Collapsed;
-        this.ModelDownloadNotice.Text = "Uses the prebuilt on-device model in this distribution. Saving only records your choice; its service starts when you launch the agent.";
+        this.EndpointBox.IsReadOnly = managed || provider is "nvidia" or "openrouter";
+        this.EndpointLabel.Visibility = this.EndpointBox.Visibility = managed ? Visibility.Collapsed : Visibility.Visible;
+        this.CredentialLabel.Visibility = this.CredentialBox.Visibility = managed ? Visibility.Collapsed : Visibility.Visible;
+        this.EndpointHelp.Visibility = this.CredentialHelp.Visibility = managed ? Visibility.Collapsed : Visibility.Visible;
+        this.ModelLabel.Visibility = this.ModelBox.Visibility = managed ? Visibility.Collapsed : Visibility.Visible;
+        this.ModelBox.IsReadOnly = managed;
+        this.ModelDownloadNotice.Visibility = managed ? Visibility.Visible : Visibility.Collapsed;
         this.EndpointBox.Text = provider switch
         {
             "nvidia" => "https://integrate.api.nvidia.com/v1",
@@ -440,7 +459,8 @@ public partial class MainWindow : Window
             "n1x" => string.Empty,
             _ => "https://",
         };
-        this.ModelBox.Text = provider == "n1x" ? NativeExpressSetup.Model : provider is "nvidia" or "openrouter" ? "nvidia/nemotron-3-super-120b-a12b" : string.Empty;
+        if (download) this.EndpointBox.Text = string.Empty;
+        this.ModelBox.Text = download ? provider : provider == "n1x" ? NativeExpressSetup.Model : provider is "nvidia" or "openrouter" ? "nvidia/nemotron-3-super-120b-a12b" : string.Empty;
         this.CredentialLabel.Content = provider is "nvidia" or "openrouter" ? "API _key" : "API _key (optional)";
         this.InferenceHelpPanel.Visibility = provider is "nvidia" or "openrouter" ? Visibility.Visible : Visibility.Collapsed;
         var helpUrl = provider == "openrouter" ? "https://openrouter.ai/settings/keys" : "https://build.nvidia.com/";
@@ -448,7 +468,20 @@ public partial class MainWindow : Window
         this.InferenceHelpUrlText.Text = helpUrl;
         this.InferenceKeyHelp.Text = provider == "openrouter" ? "Create a key in your OpenRouter workspace." : "Sign in to NVIDIA's API catalog, choose a model, and create an API key.";
         this.EndpointHelp.Text = provider == "local" ? "Use an already-running server at 127.0.0.1 or [::1]. Local inference is experimental." : "Use the provider's HTTPS API root. API keys belong in the protected field below.";
+        this.UpdateModelSetupAction();
         this.ConfigurationErrorPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void UpdateModelSetupAction()
+    {
+        var provider = (this.ProviderChoice.SelectedItem as ComboBoxItem)?.Tag as string;
+        var download = NativeDownloadedModelSetup.IsModel(provider);
+        this.ModelDownloadNotice.Text = download
+            ? NativeDownloadedModelSetup.Description(provider!) + (this.SelectedAgent == "openclaw" ? " Setup opens OpenClaw after the GPU test passes." : " Launch your agent after setup finishes.")
+            : "Uses the included model. Saving records your choice; its service starts when you launch the agent.";
+        this.InstallButton.Content = download
+            ? this.packageInstalled ? "Prepare model and save" : "Install and prepare model"
+            : this.packageInstalled ? "Save configuration" : "Install NemoClaw";
     }
 
     private void InstallClicked(object sender, RoutedEventArgs args)
@@ -457,7 +490,8 @@ public partial class MainWindow : Window
         {
             if (this.LicenseCheck.IsChecked != true) return;
             if (this.ProviderChoice.SelectedItem is not ComboBoxItem { Tag: string provider }) throw new InvalidOperationException("Choose an inference provider.");
-            var express = provider == "n1x";
+            var selectedLocalModel = NativeDownloadedModelSetup.IsModel(provider) ? provider : NativeExpressSetup.Id;
+            var express = provider == "n1x" || NativeDownloadedModelSetup.IsModel(provider);
             if (express) provider = "local";
             Uri? endpoint = null;
             if (!express && (!Uri.TryCreate(this.EndpointBox.Text.Trim(), UriKind.Absolute, out endpoint) ||
@@ -481,7 +515,7 @@ public partial class MainWindow : Window
                 var serviceBytes = NativeSetupConfiguration.ReadServiceCredential(service, key);
                 CryptographicOperations.ZeroMemory(serviceBytes);
             }
-            var configuration = new NativeSetupConfiguration(this.SelectedAgent, provider, express ? null : endpoint!.AbsoluteUri.TrimEnd('/'), model, password.Length != 0) { Options = options, LocalModel = express ? NativeExpressSetup.Id : null };
+            var configuration = new NativeSetupConfiguration(this.SelectedAgent, provider, express ? null : endpoint!.AbsoluteUri.TrimEnd('/'), model, password.Length != 0) { Options = options, LocalModel = express ? selectedLocalModel : null };
             var bytes = configuration.ReadCredential(password);
             CryptographicOperations.ZeroMemory(bytes);
             this.Configuration = configuration;
@@ -538,8 +572,9 @@ public partial class MainWindow : Window
 
     private void UseExpressClicked(object sender, RoutedEventArgs args)
     {
+        var selected = this.runtimeAvailability.BundledLocalInferenceAvailable ? NativeDownloadedModelSetup.DefaultModel : "n1x";
         foreach (var item in this.ProviderChoice.Items.OfType<ComboBoxItem>())
-            if (item.Tag as string == "n1x") { this.ProviderChoice.SelectedItem = item; this.ConfigureClicked(sender, args); return; }
+            if (item.Tag as string == selected) { this.ProviderChoice.SelectedItem = item; this.ConfigureClicked(sender, args); return; }
     }
 
     private void WindowClosing(object? sender, CancelEventArgs args)

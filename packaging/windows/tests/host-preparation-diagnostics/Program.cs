@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -20,6 +21,20 @@ public static class HostPreparationDiagnosticControls
 
     private static void PreparationControls(string[] args)
     {
+        if (args.Length > 1) throw new Exception("Expected only an optional pinned MXC probe path.");
+        // The live lane compiles its reviewed probe pin; the fixture lane never executes bytes.
+        using (Stream probe = args.Length == 1 ? File.OpenRead(args[0]) : new MemoryStream(Encoding.UTF8.GetBytes("reviewed MXC probe fixture")))
+            NativeHostPreparation.VerifyProbe(probe);
+        using (var substitute = new MemoryStream(Encoding.UTF8.GetBytes("substituted MXC probe")))
+            Reject(() => NativeHostPreparation.VerifyProbe(substitute));
+        const string key = "NemoClaw.MxcProbeSha256";
+        var valid = new AssemblyMetadataAttribute(key, new string('a', 64));
+        Require(NativeHostPreparation.ReadProbeSha256(new[] { valid }) == valid.Value, "Compiled probe identity changed.");
+        Reject(() => NativeHostPreparation.ReadProbeSha256(Array.Empty<AssemblyMetadataAttribute>()));
+        Reject(() => NativeHostPreparation.ReadProbeSha256(new[] { valid, valid }));
+        foreach (var value in new string?[] { null, "", new string('a', 63), new string('a', 65), new string('A', 64), new string('g', 64) })
+            Reject(() => NativeHostPreparation.ReadProbeSha256(new[] { new AssemblyMetadataAttribute(key, value) }));
+        Console.WriteLine("11 compiled probe identity controls passed; no MXC fixture was executed.");
         foreach (var tier in new[] { "base-container", "appcontainer-dacl" })
         {
             var augment = tier == "appcontainer-dacl";
@@ -59,7 +74,6 @@ public static class HostPreparationDiagnosticControls
             Reject(() => NativeHostPreparation.ProbeAsync(Path.Combine(directory, "missing.exe")).GetAwaiter().GetResult());
         }
         finally { Directory.Delete(directory, recursive: true); }
-        if (args.Length > 1) throw new Exception("Expected only an optional pinned MXC probe path.");
         if (args.Length == 1)
         {
             var tier = NativeHostPreparation.ProbeAsync(args[0]).GetAwaiter().GetResult();

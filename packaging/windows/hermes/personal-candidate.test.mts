@@ -34,6 +34,7 @@ import {
   verifyPersonalReplayInventory,
   removePersonalRoots,
   publishPersonalReceipt,
+  validatePersonalBase,
 } from "./probe-personal-candidate.mts";
 import { parseComponent, personalCommand } from "./probe-personal-workload.mts";
 
@@ -41,6 +42,95 @@ const browserRuntime = "C:\\NemoClawHermesProbe-274d797050ea";
 const browserOriginalNonce = "00112233445566778899aabb";
 const browserNewNonce = "ffeeddccbbaa998877665544";
 const browserController = "C:\\NemoClawPersonalNode-001122334455";
+
+function currentBaseDerivation() {
+  return {
+    base: {
+      artifactId: 11637766639,
+      runId: 37969718115,
+      sourceRevision: "371706dfa3173422b8d7ad521c2519010809697a",
+      zipSha256: "c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc",
+      inventorySha256: "9b2a7161657e9c55acb57fd52fbe36610747e032aa4323f83422696c112e1f4d",
+      candidateReceiptSha256: "3a15c2101d25cef859591ce7edebc98dc4cdfc6f8c6c0212105415f1e81b1fea",
+      buildReceiptSha256: "c50a92fa7cb97c1d65cebcd958af722d94db1da9819cfe6eb4c20e505954f475",
+    },
+    metadataRelocation: {
+      schemaVersion: 1,
+      classification: "current-adapter-metadata-relocation",
+      baseCandidateSource: "371706dfa3173422b8d7ad521c2519010809697a",
+      previousMarkerSha256: "e9a9baffe32dc0ffc5c0e275fa5389c237b9a9d3a9c116279dc27401aed8232b",
+      startupAdapterSha256: "d8e8b5524ca783dccc0024a1eed61a4c0955cf73b7d45157093787070dc8ed16",
+      hookPaths: [
+        "hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-aarch64-none/Lib/site-packages/nemoclaw_native_windows.py",
+        "hermes-agent/venv/Lib/site-packages/nemoclaw_native_windows.py",
+        "tools/browser-use/Lib/site-packages/nemoclaw_native_windows.py",
+      ],
+    },
+  };
+}
+
+test("current complete base accepts relocation without an adapter upgrade", () => {
+  const input = currentBaseDerivation();
+  validatePersonalBase(input, input.metadataRelocation.startupAdapterSha256);
+});
+
+test("current complete base rejects mixed artifact and receipt identities", () => {
+  const valid = currentBaseDerivation();
+  for (const key of Object.keys(valid.base)) {
+    const input: any = structuredClone(valid);
+    input.base[key] = typeof input.base[key] === "number" ? 1 : "0".repeat(64);
+    assert.throws(() => validatePersonalBase(input, valid.metadataRelocation.startupAdapterSha256));
+  }
+});
+
+test("current complete base rejects invented upgrades and changed relocation lineage", () => {
+  const valid = currentBaseDerivation();
+  for (const mutate of [
+    (input: any) => {
+      input.adapterUpgrade = {};
+    },
+    (input: any) => {
+      delete input.metadataRelocation;
+    },
+    (input: any) => {
+      input.metadataRelocation.previousMarkerSha256 = "0".repeat(64);
+    },
+    (input: any) => {
+      input.metadataRelocation.hookPaths.pop();
+    },
+  ]) {
+    const input: any = structuredClone(valid);
+    mutate(input);
+    assert.throws(() => validatePersonalBase(input, valid.metadataRelocation.startupAdapterSha256));
+  }
+});
+
+test("historical adapter evidence cannot qualify the current complete base", () => {
+  const input = currentBaseDerivation();
+  assert.throws(() => validatePersonalBase(input, completedPersonalReplayPin.startupAdapterSha256));
+  assert.throws(() =>
+    validatePersonalBase(input, input.metadataRelocation.startupAdapterSha256, true),
+  );
+});
+
+test("historical base remains restricted to explicit immutable replay", () => {
+  const input = {
+    base: {
+      artifactId: 10181796438,
+      runId: 34551706967,
+      sourceRevision: "47d890728482cca05e840edd27e33e3d495aeabf",
+      zipSha256: "b6e3683f4248b62e6ba3594d8ecab11d6958a23f161b526a1d11ec07d146d6ed",
+      inventorySha256: "777f6a6fcbefa3790130e795b611aff086775f23682ae109c16cac2f1ff1acd0",
+    },
+    adapterUpgrade: {
+      baseCandidateSource: "47d890728482cca05e840edd27e33e3d495aeabf",
+      afterSha256: completedPersonalReplayPin.startupAdapterSha256,
+      hookPaths: currentBaseDerivation().metadataRelocation.hookPaths,
+    },
+  };
+  validatePersonalBase(input, completedPersonalReplayPin.startupAdapterSha256, true);
+  assert.throws(() => validatePersonalBase(input, completedPersonalReplayPin.startupAdapterSha256));
+});
 
 test("postmortem may pair with startup recording while incompatible modes remain excluded", () => {
   const ordinary = {
@@ -1400,8 +1490,10 @@ test("a real receipt write failure preserves the primary error and reports its o
 
 test("browser probe retains error-only responses and requires the complete success envelope", () => {
   const check = String.raw`
-import ast,json,pathlib,sys,traceback
+import ast,importlib.util,json,pathlib,sys,traceback
 source=pathlib.Path(sys.argv[1]);tree=ast.parse(source.read_text())
+spec=importlib.util.spec_from_file_location('native_paths',source.with_name('nemoclaw_native_windows.py'))
+native_paths=importlib.util.module_from_spec(spec);spec.loader.exec_module(native_paths)
 function=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='browser_check')
 operation=next(n for n in function.body if isinstance(n,ast.Try))
 # Execute the exact response/assertion/handler slice only. No native browser,
@@ -1421,16 +1513,20 @@ responses=[normal,{'error':'controlled exact upstream error-only response'},
  {'success':False,'exit_code':0,'output':'BROWSER_PERSONAL_OK'},
  {'success':True,'exit_code':0,'output':'missing marker'}, ['not-an-envelope']]
 for index,value in enumerate(responses):
- raw=json.dumps(value);context={'json':json,'browser_exec':lambda *a,**k:raw,'code':'not executed','session':'fixture','task':'fixture','result':None,'raw':None,'primary':None}
+ raw=json.dumps(value);context={'json':json,'native_paths':native_paths,'browser_exec':lambda *a,**k:raw,'code':'not executed','session':'fixture','task':'fixture','result':None,'raw':None,'primary':None}
  exec(code,context)
  if index==0:assert context['primary']is None
  else:
   failure=context['primary'];assert isinstance(failure,AssertionError),type(failure)
   assert failure.__notes__==['Browser Use raw response: '+repr(raw)]
   assert raw in ''.join(traceback.format_exception(failure))
-context={'json':json,'browser_exec':lambda *a,**k:'not json','code':'not executed','session':'fixture','task':'fixture','result':None,'raw':None,'primary':None}
+context={'json':json,'native_paths':native_paths,'browser_exec':lambda *a,**k:'not json','code':'not executed','session':'fixture','task':'fixture','result':None,'raw':None,'primary':None}
 exec(code,context);assert isinstance(context['primary'],json.JSONDecodeError);assert 'not json' in context['primary'].__notes__[0]
-print(json.dumps({'responseCases':11,'nativeBrowserExecuted':False,'errorOnlyResponsePreserved':True}))
+refusal=native_paths.NativeStartupRefusal('controlled startup refusal')
+def refuse(*args,**kwargs):raise refusal
+context.update(browser_exec=refuse,raw=None,primary=None)
+exec(code,context);assert context['primary']is refusal;assert refusal.__notes__==['Browser Use raw response: None']
+print(json.dumps({'responseCases':11,'startupRefusalPreserved':True,'nativeBrowserExecuted':False,'errorOnlyResponsePreserved':True}))
 `;
   const result = spawnSync(
     process.env.NEMOCLAW_TEST_PYTHON ?? "python3",
@@ -1444,7 +1540,9 @@ print(json.dumps({'responseCases':11,'nativeBrowserExecuted':False,'errorOnlyRes
     { encoding: "utf8", timeout: 10000 },
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).responseCases, 11);
+  const evidence = JSON.parse(result.stdout);
+  assert.equal(evidence.responseCases, 11);
+  assert.equal(evidence.startupRefusalPreserved, true);
 });
 
 test("completed replay binds a historical immutable base to the current controller", () => {
@@ -1673,9 +1771,13 @@ print('9 bounded desktop observer controls passed; no Windows execution')
   const request = desktopAbsenceRequest(
     inspectHermesDesktopCleanup(desktopOwnerExecution(), desktopOwnerBinding),
   );
-  const result = spawnSync("python3", ["-B", "-c", program, helper, JSON.stringify(request)], {
-    encoding: "utf8",
-  });
+  const result = spawnSync(
+    process.env.NEMOCLAW_TEST_PYTHON ?? "python3",
+    ["-B", "-c", program, helper, JSON.stringify(request)],
+    {
+      encoding: "utf8",
+    },
+  );
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 

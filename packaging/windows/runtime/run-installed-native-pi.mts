@@ -4,6 +4,8 @@
 import { fileURLToPath as nativeEntryFile } from "node:url";
 declare const NEMOCLAW_BUNDLED_RUNTIME: boolean | undefined;
 import { nativeWorkerAssets } from "./native-assets.mts";
+import { NativeGatewaySession } from "./native-gateway-session.mts";
+import { createPrivateShareRoot } from "./native-private-share.mts";
 import {
   withNativeRuntimeSession,
   nativeHermesToolEnvironment,
@@ -11,19 +13,26 @@ import {
   nativeRuntimeWorkerCommand,
   type NativeRuntimeSession,
 } from "./native-runtime.mts";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { readOpenedRegularFile, writeNativeGatewayConfig } from "./native-security.mts";
-import { waitForNativeMxcCompletion } from "./native-ui-lifecycle.mts";
+import {
+  NATIVE_NODE_UI_POLICY,
+  readOpenedRegularFile,
+  writeNativeGatewayConfig,
+} from "./native-security.mts";
+import {
+  attemptNativeUiCleanup,
+  confirmNativeUiRegistryEmpty,
+  waitForNativeMxcCompletion,
+} from "./native-ui-lifecycle.mts";
 
 import {
   allowlistedWindowsEnvironment,
   argumentValue,
   freePort,
-  jsonContainsExactValue,
   quoteYamlPath,
   removeDirectory,
   requiredDirectory,
@@ -52,7 +61,7 @@ const DEEP_AGENTS_TURN_PROOFS = [
   ["Reply exactly with NATIVE_DEEP_AGENTS_TURN_3_OK", "NATIVE_DEEP_AGENTS_TURN_3_OK"],
 ];
 
-function fail(message) {
+function fail(message): never {
   throw new Error(`Native Windows terminal-agent qualification failed: ${message}`);
 }
 
@@ -90,113 +99,7 @@ function sha256(file) {
   return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-async function createPrivateShareRoot(directory, systemRoot) {
-  const powershell = requiredFile(
-    path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-    "Windows PowerShell",
-  );
-  const script = String.raw`$ErrorActionPreference = 'Stop'
-Set-StrictMode -Version Latest
-Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-public static class NativeShareAccess {
-  [StructLayout(LayoutKind.Sequential)] struct Luid { public uint Low; public int High; }
-  [StructLayout(LayoutKind.Sequential)] struct Request {
-    public uint Access; public IntPtr Self; public IntPtr Types; public uint TypeCount; public IntPtr Arguments;
-  }
-  [StructLayout(LayoutKind.Sequential)] struct Reply {
-    public uint Count; public IntPtr Granted; public IntPtr Sacl; public IntPtr Error;
-  }
-  [DllImport("authz.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  static extern bool AuthzInitializeResourceManager(uint flags, IntPtr check, IntPtr groups, IntPtr free, string name, out IntPtr manager);
-  [DllImport("authz.dll", SetLastError = true)]
-  static extern bool AuthzInitializeContextFromSid(uint flags, byte[] sid, IntPtr manager, IntPtr expiration, Luid id, IntPtr arguments, out IntPtr context);
-  [DllImport("authz.dll", SetLastError = true)]
-  static extern bool AuthzAccessCheck(uint flags, IntPtr context, ref Request request, IntPtr audit, byte[] descriptor, IntPtr descriptors, uint count, ref Reply reply, IntPtr results);
-  [DllImport("authz.dll")] static extern bool AuthzFreeContext(IntPtr context);
-  [DllImport("authz.dll")] static extern bool AuthzFreeResourceManager(IntPtr manager);
-  public static uint Granted(byte[] descriptor, byte[] sid) {
-    IntPtr manager = IntPtr.Zero, context = IntPtr.Zero;
-    IntPtr replyBuffer = Marshal.AllocHGlobal(12);
-    IntPtr granted = replyBuffer, sacl = IntPtr.Add(replyBuffer, 4), error = IntPtr.Add(replyBuffer, 8);
-    try {
-      Marshal.WriteInt32(granted, 0); Marshal.WriteInt32(sacl, 0); Marshal.WriteInt32(error, 0);
-      // NO_AUDIT avoids requiring SeAuditPrivilege; SKIP_TOKEN_GROUPS prevents account lookup.
-      if (!AuthzInitializeResourceManager(1, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, "NemoClaw share ACL", out manager))
-        throw new Win32Exception(Marshal.GetLastWin32Error());
-      if (!AuthzInitializeContextFromSid(2, sid, manager, IntPtr.Zero, new Luid(), IntPtr.Zero, out context))
-        throw new Win32Exception(Marshal.GetLastWin32Error());
-      Request request = new Request { Access = 0x02000000 }; // MAXIMUM_ALLOWED
-      Reply reply = new Reply { Count = 1, Granted = granted, Sacl = sacl, Error = error };
-      if (!AuthzAccessCheck(0, context, ref request, IntPtr.Zero, descriptor, IntPtr.Zero, 0, ref reply, IntPtr.Zero))
-        throw new Win32Exception(Marshal.GetLastWin32Error());
-      int result = Marshal.ReadInt32(error);
-      if (result != 0 && result != 5) throw new Win32Exception(result);
-      return unchecked((uint)Marshal.ReadInt32(granted));
-    } finally {
-      if (context != IntPtr.Zero) AuthzFreeContext(context);
-      if (manager != IntPtr.Zero) AuthzFreeResourceManager(manager);
-      Marshal.FreeHGlobal(replyBuffer);
-    }
-  }
-}
-'@
-$target = $env:NEMOCLAW_NATIVE_SHARE_ROOT
-if ([IO.Directory]::Exists($target) -or [IO.File]::Exists($target)) { throw 'Private share root already exists.' }
-$owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$allowed = @(@($owner.Value, 'S-1-5-18') | Select-Object -Unique)
-$security = [Security.AccessControl.DirectorySecurity]::new()
-$security.SetOwner($owner)
-$security.SetAccessRuleProtection($true, $false)
-foreach ($value in $allowed) {
-  $sid = [Security.Principal.SecurityIdentifier]::new($value)
-  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-  $security.AddAccessRule($rule)
-}
-# Apply the protected DACL during creation, before any offload, home, or temp data exists.
-[void][IO.Directory]::CreateDirectory($target, $security)
-$actual = Get-Acl -LiteralPath $target
-if (-not $actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner.Value) {
-  throw 'Private share owner or inheritance differs from the required DACL.'
-}
-$rules = @($actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-if ($rules.Count -ne $allowed.Count -or @($rules | Where-Object {
-  $_.IsInherited -or $_.IdentityReference.Value -notin $allowed -or $_.AccessControlType -ne 'Allow' -or
-  $_.FileSystemRights -ne 'FullControl' -or $_.InheritanceFlags -ne 'ContainerInherit,ObjectInherit' -or $_.PropagationFlags -ne 'None'
-}).Count -ne 0) { throw 'Private share DACL contains an unexpected access grant.' }
-$descriptor = $actual.GetSecurityDescriptorBinaryForm()
-foreach ($value in $allowed) {
-  $sid = [Security.Principal.SecurityIdentifier]::new($value)
-  $bytes = New-Object byte[] $sid.BinaryLength
-  $sid.GetBinaryForm($bytes, 0)
-  if (([NativeShareAccess]::Granted($descriptor, $bytes) -band 7) -ne 7) { throw 'Required host identity cannot access the private share.' }
-}
-$denied = @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')
-foreach ($value in $denied) {
-  $sid = [Security.Principal.SecurityIdentifier]::new($value)
-  $bytes = New-Object byte[] $sid.BinaryLength
-  $sid.GetBinaryForm($bytes, 0)
-  if (([NativeShareAccess]::Granted($descriptor, $bytes) -band 7) -ne 0) { throw 'An unprivileged identity can access the private share.' }
-}
-@{ ownerSid = $owner.Value; serviceSid = 'S-1-5-18'; protected = $true; nonOwnerDataAccess = $false; deniedSids = $denied } | ConvertTo-Json -Compress
-`;
-  const result = await run(
-    powershell,
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
-    allowlistedWindowsEnvironment({ NEMOCLAW_NATIVE_SHARE_ROOT: directory }),
-    "Creating and checking the private native-agent share",
-    60_000,
-  );
-  return JSON.parse(result.stdout);
-}
+export { createPrivateShareRoot } from "./native-private-share.mts";
 
 function deepAgentDiagnosticFiles(root) {
   const matches = [];
@@ -843,151 +746,185 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     `${systemDrive}\\`,
     `NemoClawNativeAgentRuntime-${agentId}-${runId}`,
   );
-  for (const directory of [runRoot, runtimeRoot]) {
-    if (fs.existsSync(directory)) fail("qualification root already exists");
-    fs.mkdirSync(directory);
-  }
-  const gatewayConfig = writeNativeGatewayConfig(
-    installRoot,
-    runRoot,
-    isHermes ? runtimeLease : undefined,
-  );
-  // MXC adds its container-specific grant from filesystem_policy after this host boundary is set.
-  const privateShareAcl = await createPrivateShareRoot(shareRoot, systemRoot);
+  const artifactArgument = argumentValue("--artifact-directory");
   const evidenceRoot = path.resolve(
-    argumentValue("--artifact-directory") ??
-      path.join(process.env.LOCALAPPDATA ?? runRoot, "NVIDIA", "NemoClaw", "evidence", agentId),
+    artifactArgument ??
+      (process.env.LOCALAPPDATA
+        ? path.join(process.env.LOCALAPPDATA, "NVIDIA", "NemoClaw", "evidence", agentId)
+        : fail("an artifact directory is required when LOCALAPPDATA is unavailable")),
   );
-  fs.mkdirSync(evidenceRoot, { recursive: true });
-  runtimeLease.assertHeld();
-  const _node = installedNode;
-  const stagedAgentRoot = installedAgentRoot;
-  let agentEnvironment;
-  if (isHermes || isDeepAgents) {
-    const _stagedPythonRoot = installedPythonRoot;
-    if (isDeepAgents) {
-      agentEnvironment = {
-        DEEPAGENTS_CODE_DEBUG: "1",
-        DEEPAGENTS_CODE_DEBUG_FILE: path.join(shareRoot, "deepagents-debug.log"),
-        DEEPAGENTS_CODE_RIPGREP_INSTALLER: "system",
-        NEMOCLAW_DEEP_AGENTS_HOME_ROOT: path.join(shareRoot, "home"),
-        NEMOCLAW_DEEP_AGENTS_MODEL_PORT: "",
-        NEMOCLAW_DEEP_AGENTS_PYTHON: requiredFile(runtimeLease.python, "staged Python runtime"),
-        NEMOCLAW_DEEP_AGENTS_RESULT: path.join(shareRoot, "deep-agents-result.json"),
-        NEMOCLAW_DEEP_AGENTS_SITE_PACKAGES: requiredDirectory(
-          path.join(stagedAgentRoot, "site-packages"),
-          "staged Deep Agents Code site-packages",
-        ),
-      };
-    } else {
-      agentEnvironment = {
-        NEMOCLAW_HERMES_HOME_ROOT: path.join(shareRoot, "home"),
-        NEMOCLAW_HERMES_MODEL_PORT: "",
-        NEMOCLAW_HERMES_PYTHON: requiredFile(runtimeLease.python, "staged Python runtime"),
-        NEMOCLAW_HERMES_RESULT: path.join(shareRoot, "hermes-result.json"),
-      };
-    }
-  } else {
-    agentEnvironment = {
-      NEMOCLAW_PI_ENTRY: requiredFile(
-        path.join(
-          stagedAgentRoot,
-          "node_modules",
-          "@earendil-works",
-          "pi-coding-agent",
-          "dist",
-          "cli.js",
-        ),
-        "staged Pi CLI",
-      ),
-      NEMOCLAW_PI_HOME: path.join(shareRoot, "home"),
-      NEMOCLAW_PI_MODEL_PORT: "",
-      NEMOCLAW_PI_RESULT: path.join(shareRoot, "pi-result.json"),
-    };
+  for (const root of [runRoot, shareRoot, runtimeRoot]) {
+    const relative = path.relative(root, evidenceRoot);
+    if (
+      !relative ||
+      (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep))
+    )
+      fail("the artifact directory must be outside the qualification roots");
   }
-  const worker = nativeWorkerAssets(
-    runtimeLease.runtimeRoot,
-    isHermes ? "hermes-turn" : isDeepAgents ? "deepagents-turn" : "pi-turn",
-  );
-  const workload = requiredFile(worker.entry, "prebuilt terminal qualification worker");
-  const resultPath = isHermes
-    ? agentEnvironment.NEMOCLAW_HERMES_RESULT
-    : isDeepAgents
-      ? agentEnvironment.NEMOCLAW_DEEP_AGENTS_RESULT
-      : agentEnvironment.NEMOCLAW_PI_RESULT;
-  const policyPath = path.join(runRoot, "policy.yaml");
-  fs.writeFileSync(
-    policyPath,
-    [
-      "version: 1",
-      "",
-      "filesystem_policy:",
-      "  include_workdir: false",
-      "  read_only:",
-      `    - ${quoteYamlPath(runtimeRoot)}`,
-      ...runtimeLease.readOnlyRoots.map((root) => `    - ${quoteYamlPath(root)}`),
-      "  read_write:",
-      `    - ${quoteYamlPath(shareRoot)}`,
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  const configRoot = path.join(runRoot, "config");
-  const stateRoot = path.join(runRoot, "state");
-  const home = path.join(shareRoot, "home");
-  const temp = path.join(shareRoot, "temp");
-  for (const directory of [configRoot, stateRoot, home, temp])
-    fs.mkdirSync(directory, { recursive: true });
-  const openShellPort = await freePort();
-  const modelPort = await freePort();
-  if (isHermes) agentEnvironment.NEMOCLAW_HERMES_MODEL_PORT = String(modelPort);
-  else if (isDeepAgents) agentEnvironment.NEMOCLAW_DEEP_AGENTS_MODEL_PORT = String(modelPort);
-  else agentEnvironment.NEMOCLAW_PI_MODEL_PORT = String(modelPort);
+  const receiptPath = path.join(evidenceRoot, `native-windows-${agentId}-${runId}.json`);
   const sandboxName = `${sandboxPrefix}-${runId}`;
   const gatewayName = `nemoclaw-${agentId}-${runId}`;
   const gatewayLogPath = path.join(runRoot, "openshell-gateway.log");
   const gatewayErrorPath = path.join(runRoot, "openshell-gateway.err.log");
-  const gatewayLog = fs.openSync(gatewayLogPath, "w");
-  const gatewayError = fs.openSync(gatewayErrorPath, "w");
-  const gatewayEnvironment = allowlistedWindowsEnvironment({
-    OPENSHELL_DRIVERS: "mxc",
-    OPENSHELL_GATEWAY_CONFIG: gatewayConfig,
-    XDG_CONFIG_HOME: configRoot,
-    XDG_STATE_HOME: stateRoot,
-  });
-  const gateway = spawn(
-    gatewayExecutable,
-    [
-      "--port",
-      String(openShellPort),
-      "--disable-tls",
-      "--db-url",
-      "sqlite::memory:",
-      "--log-level",
-      "info",
-    ],
-    {
-      env: gatewayEnvironment,
-      stdio: ["ignore", gatewayLog, gatewayError],
-      windowsHide: true,
-    },
-  );
-  let cliEnvironment = gatewayEnvironment;
-  let create = null;
+  const ownedRoots: string[] = [];
+  const ownedLogs = new Set<number>();
+  const gatewaySession = new NativeGatewaySession(installRoot, runRoot);
+  let gateway: ChildProcess | undefined;
+  let shareCreator: ChildProcess | undefined;
+  let shareCreatorStopped = true;
+  let create: ChildProcess | null = null;
+  let cliEnvironment: NodeJS.ProcessEnv | undefined;
   let createOutput = "";
   let createError = "";
   let passed = false;
-  let logsClosed = false;
+  let primaryFailed = false;
+  let receipt: Record<string, unknown> | undefined;
   try {
+    fs.mkdirSync(evidenceRoot, { recursive: true });
+    for (const directory of [runRoot, runtimeRoot]) {
+      if (fs.existsSync(directory)) fail("qualification root already exists");
+      fs.mkdirSync(directory);
+      ownedRoots.push(directory);
+    }
+    if (fs.existsSync(shareRoot)) fail("qualification root already exists");
+    const gatewayConfig = await writeNativeGatewayConfig(
+      installRoot,
+      runRoot,
+      isHermes ? runtimeLease : undefined,
+      {},
+      gatewaySession,
+    );
+    // MXC adds its container-specific grant from filesystem_policy after this host boundary is set.
+    const privateShareAcl = await createPrivateShareRoot(
+      shareRoot,
+      systemRoot,
+      (child) => {
+        shareCreator = child;
+        shareCreatorStopped = false;
+      },
+      () => ownedRoots.push(shareRoot),
+    );
+    runtimeLease.assertHeld();
+    const _node = installedNode;
+    const stagedAgentRoot = installedAgentRoot;
+    let agentEnvironment;
+    if (isHermes || isDeepAgents) {
+      const _stagedPythonRoot = installedPythonRoot;
+      if (isDeepAgents) {
+        agentEnvironment = {
+          DEEPAGENTS_CODE_DEBUG: "1",
+          DEEPAGENTS_CODE_DEBUG_FILE: path.join(shareRoot, "deepagents-debug.log"),
+          DEEPAGENTS_CODE_RIPGREP_INSTALLER: "system",
+          NEMOCLAW_DEEP_AGENTS_HOME_ROOT: path.join(shareRoot, "home"),
+          NEMOCLAW_DEEP_AGENTS_MODEL_PORT: "",
+          NEMOCLAW_DEEP_AGENTS_PYTHON: requiredFile(runtimeLease.python, "staged Python runtime"),
+          NEMOCLAW_DEEP_AGENTS_RESULT: path.join(shareRoot, "deep-agents-result.json"),
+          NEMOCLAW_DEEP_AGENTS_SITE_PACKAGES: requiredDirectory(
+            path.join(stagedAgentRoot, "site-packages"),
+            "staged Deep Agents Code site-packages",
+          ),
+        };
+      } else {
+        agentEnvironment = {
+          NEMOCLAW_HERMES_HOME_ROOT: path.join(shareRoot, "home"),
+          NEMOCLAW_HERMES_MODEL_PORT: "",
+          NEMOCLAW_HERMES_PYTHON: requiredFile(runtimeLease.python, "staged Python runtime"),
+          NEMOCLAW_HERMES_RESULT: path.join(shareRoot, "hermes-result.json"),
+        };
+      }
+    } else {
+      agentEnvironment = {
+        NEMOCLAW_PI_ENTRY: requiredFile(
+          path.join(
+            stagedAgentRoot,
+            "node_modules",
+            "@earendil-works",
+            "pi-coding-agent",
+            "dist",
+            "cli.js",
+          ),
+          "staged Pi CLI",
+        ),
+        NEMOCLAW_PI_HOME: path.join(shareRoot, "home"),
+        NEMOCLAW_PI_MODEL_PORT: "",
+        NEMOCLAW_PI_RESULT: path.join(shareRoot, "pi-result.json"),
+      };
+    }
+    const worker = nativeWorkerAssets(
+      runtimeLease.runtimeRoot,
+      isHermes ? "hermes-turn" : isDeepAgents ? "deepagents-turn" : "pi-turn",
+    );
+    const workload = requiredFile(worker.entry, "prebuilt terminal qualification worker");
+    const resultPath = isHermes
+      ? agentEnvironment.NEMOCLAW_HERMES_RESULT
+      : isDeepAgents
+        ? agentEnvironment.NEMOCLAW_DEEP_AGENTS_RESULT
+        : agentEnvironment.NEMOCLAW_PI_RESULT;
+    const policyPath = path.join(runRoot, "policy.yaml");
+    fs.writeFileSync(
+      policyPath,
+      [
+        "version: 1",
+        "",
+        ...NATIVE_NODE_UI_POLICY,
+        "filesystem_policy:",
+        "  include_workdir: false",
+        "  read_only:",
+        `    - ${quoteYamlPath(runtimeRoot)}`,
+        ...runtimeLease.readOnlyRoots.map((root) => `    - ${quoteYamlPath(root)}`),
+        "  read_write:",
+        `    - ${quoteYamlPath(shareRoot)}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const home = path.join(shareRoot, "home");
+    const temp = path.join(shareRoot, "temp");
+    for (const directory of [home, temp]) fs.mkdirSync(directory, { recursive: true });
+    const openShellPort = await freePort();
+    const modelPort = await freePort();
+    if (isHermes) agentEnvironment.NEMOCLAW_HERMES_MODEL_PORT = String(modelPort);
+    else if (isDeepAgents) agentEnvironment.NEMOCLAW_DEEP_AGENTS_MODEL_PORT = String(modelPort);
+    else agentEnvironment.NEMOCLAW_PI_MODEL_PORT = String(modelPort);
+    const gatewayLog = fs.openSync(gatewayLogPath, "w");
+    ownedLogs.add(gatewayLog);
+    const gatewayError = fs.openSync(gatewayErrorPath, "w");
+    ownedLogs.add(gatewayError);
+    await gatewaySession.prepare();
+    const gatewayEnvironment = allowlistedWindowsEnvironment({
+      OPENSHELL_DRIVERS: "mxc",
+      OPENSHELL_GATEWAY_CONFIG: gatewayConfig,
+      ...gatewaySession.environment,
+    });
+    gateway = gatewaySession.spawnGateway(
+      gatewayExecutable,
+      [
+        "--port",
+        String(openShellPort),
+        "--enable-mtls-auth",
+        "--db-url",
+        "sqlite::memory:",
+        "--log-level",
+        "info",
+      ],
+      {
+        env: gatewayEnvironment,
+        stdio: ["ignore", gatewayLog, gatewayError],
+        windowsHide: true,
+      },
+    );
+    const gatewayFailure = new Promise<never>((_, reject) => gateway!.once("error", reject));
+    void gatewayFailure.catch(() => {});
+    cliEnvironment = gatewayEnvironment;
     console.log(`${agentLabel.toUpperCase()}> Starting the installed OpenShell MXC gateway`);
-    await waitForPort(openShellPort, gateway);
+    await Promise.race([waitForPort(openShellPort, gateway), gatewayFailure, runtimeLease.failure]);
     cliEnvironment = allowlistedWindowsEnvironment({
       ...gatewayEnvironment,
       OPENSHELL_GATEWAY: undefined,
     });
     await run(
       openshell,
-      ["gateway", "add", `http://127.0.0.1:${openShellPort}`, "--local", "--name", gatewayName],
+      ["gateway", "add", `https://127.0.0.1:${openShellPort}`, "--local", "--name", gatewayName],
       cliEnvironment,
       `Registering the native ${agentLabel} gateway`,
     );
@@ -1031,7 +968,6 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         mxc: {
           command: nativeRuntimeWorkerCommand(runtimeLease, workload),
           cwd: shareRoot,
-          windows_ui: true,
         },
       }),
       "--no-tty",
@@ -1046,12 +982,12 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
-    create.stdout.on("data", (chunk) => {
+    create.stdout!.on("data", (chunk) => {
       const text = chunk.toString("utf8");
       createOutput = `${createOutput}${text}`.slice(-128 * 1024);
       process.stdout.write(text);
     });
-    create.stderr.on("data", (chunk) => {
+    create.stderr!.on("data", (chunk) => {
       const text = chunk.toString("utf8");
       createError = `${createError}${text}`.slice(-128 * 1024);
       process.stderr.write(text);
@@ -1070,6 +1006,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         agentLabel,
       ),
       runtimeLease.failure,
+      gatewayFailure,
     ]);
     runtimeLease.assertHeld();
     const agentResult = JSON.parse(agentResultText);
@@ -1093,8 +1030,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       gateway,
       null,
     );
-    if (completion === "ExecFailed")
-      fail(`The native ${agentLabel} executor failed during cleanup`);
+    if (completion === "ExecFailed" || completion === "MainProcessFailed")
+      fail(`The native ${agentLabel} execution failed`);
     await run(
       openshell,
       ["sandbox", "delete", sandboxName],
@@ -1103,23 +1040,22 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     );
     if (create !== null && !(await stopChild(create)))
       fail(`${agentLabel} sandbox request watcher did not stop`);
-    const sandboxList = await run(
-      openshell,
-      ["sandbox", "list", "-o", "json"],
-      cliEnvironment,
-      `Verifying native ${agentLabel} sandbox cleanup`,
-    );
-    if (jsonContainsExactValue(JSON.parse(sandboxList.stdout.trim()), sandboxName))
-      fail(`${agentLabel} sandbox remained registered after deletion`);
-    if (!(await stopChild(gateway))) fail("OpenShell MXC gateway did not stop");
+    await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+      sandboxName,
+      gateway,
+      stateSession: runtimeLease,
+    });
+    if (!(await gatewaySession.stopGateway())) fail("OpenShell MXC gateway did not stop");
+    await gatewaySession.dispose();
     fs.closeSync(gatewayLog);
+    ownedLogs.delete(gatewayLog);
     fs.closeSync(gatewayError);
-    logsClosed = true;
-    for (const directory of [runRoot, runtimeRoot, shareRoot]) {
+    ownedLogs.delete(gatewayError);
+    for (const directory of ownedRoots) {
       if (!(await removeDirectory(directory)))
         fail(`runtime root remained: ${path.basename(directory)}`);
     }
-    const receipt = {
+    receipt = {
       ...agentResult,
       classification: `installed-nemoclaw-native-windows-${agentId}`,
       architecture: "arm64",
@@ -1139,69 +1075,169 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       gatewayStopped: true,
       qualificationRootsRemoved: true,
     };
-    fs.writeFileSync(
-      path.join(evidenceRoot, `native-windows-${agentId}-${runId}.json`),
-      `${JSON.stringify(receipt, null, 2)}\n`,
-      "utf8",
-    );
     passed = true;
-    console.log(
-      `${agentLabel.toUpperCase()}> PASS three real ${agentLabel} agent turns inside native MXC`,
-    );
+  } catch (error) {
+    primaryFailed = true;
+    throw error;
   } finally {
-    if (create !== null) await stopChild(create);
-    if (!passed) {
+    const failures = await attemptNativeUiCleanup([
+      [
+        "private share creator stop",
+        async () => {
+          shareCreatorStopped = !shareCreator?.pid || (await stopChild(shareCreator));
+          if (!shareCreatorStopped) throw new Error();
+        },
+      ],
+      [
+        "sandbox request stop",
+        async () => {
+          if (create?.pid && !(await stopChild(create))) throw new Error();
+        },
+      ],
+      [
+        "sandbox removal",
+        async () => {
+          if (!passed && create && cliEnvironment)
+            await run(
+              openshell,
+              ["sandbox", "delete", sandboxName],
+              cliEnvironment,
+              `Failure cleanup native ${agentLabel} sandbox`,
+              30_000,
+            );
+        },
+      ],
+      [
+        "sandbox registry verification",
+        async () => {
+          if (!passed && create && cliEnvironment)
+            await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+              sandboxName,
+              gateway,
+              stateSession: runtimeLease,
+            });
+        },
+      ],
+      [
+        "gateway stop",
+        async () => {
+          if (gateway?.pid && !(await gatewaySession.stopGateway())) throw new Error();
+        },
+      ],
+      ["private gateway cleanup", () => gatewaySession.dispose()],
+      ...[...ownedLogs].map(
+        (descriptor) =>
+          [
+            "gateway log close",
+            () => {
+              fs.closeSync(descriptor);
+              ownedLogs.delete(descriptor);
+            },
+          ] as const,
+      ),
+      [
+        "failure diagnostic",
+        () => {
+          if (passed) return;
+          const diagnosticParts = [createOutput, createError];
+          for (const file of ownedRoots.includes(runRoot)
+            ? [gatewayLogPath, gatewayErrorPath]
+            : []) {
+            const content = readOpenedRegularFile(file, {
+              encoding: "utf8",
+              maxBytes: 2 * 1024 * 1024,
+            });
+            if (content !== null) diagnosticParts.push(content);
+          }
+          if (isDeepAgents && ownedRoots.includes(shareRoot) && fs.existsSync(shareRoot)) {
+            for (const file of deepAgentDiagnosticFiles(shareRoot)) {
+              const content = readOpenedRegularFile(file, {
+                encoding: "utf8",
+                maxBytes: 2 * 1024 * 1024,
+              });
+              if (content !== null) diagnosticParts.push(content.slice(-512 * 1024));
+            }
+          }
+          const diagnostic = sanitizedDiagnostic(diagnosticParts.filter(Boolean).join("\n"), [
+            [installRoot, "<install-root>"],
+            [runtimeRoot, "<runtime-root>"],
+            [shareRoot, "<share-root>"],
+            [runRoot, "<run-root>"],
+          ]);
+          if (diagnostic) {
+            fs.writeFileSync(
+              path.join(evidenceRoot, `native-windows-${agentId}-diagnostic-${runId}.log`),
+              diagnostic,
+              "utf8",
+            );
+            console.error(
+              `${agentLabel.toUpperCase()}> Sanitized failure diagnostic\n${diagnostic}`,
+            );
+          }
+        },
+      ],
+      ...ownedRoots.map(
+        (directory) =>
+          [
+            "temporary root removal: " + path.basename(directory),
+            async () => {
+              if (directory === shareRoot && !shareCreatorStopped) throw new Error();
+              if (!(await removeDirectory(directory))) throw new Error();
+            },
+          ] as const,
+      ),
+      [
+        "private share ownership verification",
+        () => {
+          if (!ownedRoots.includes(shareRoot) && fs.existsSync(shareRoot)) throw new Error();
+        },
+      ],
+    ]);
+    if (!passed || failures.length) {
       try {
-        await run(
-          openshell,
-          ["sandbox", "delete", sandboxName],
-          cliEnvironment,
-          `Failure cleanup native ${agentLabel} sandbox`,
-          30_000,
-        );
-      } catch {}
-    }
-    await stopChild(gateway);
-    if (!logsClosed) {
-      fs.closeSync(gatewayLog);
-      fs.closeSync(gatewayError);
-    }
-    if (!passed) {
-      const diagnosticParts = [createOutput, createError];
-      for (const file of [gatewayLogPath, gatewayErrorPath]) {
-        const content = readOpenedRegularFile(file, {
-          encoding: "utf8",
-          maxBytes: 2 * 1024 * 1024,
-        });
-        if (content !== null) diagnosticParts.push(content);
-      }
-      if (isDeepAgents) {
-        for (const file of deepAgentDiagnosticFiles(shareRoot)) {
-          const content = readOpenedRegularFile(file, {
-            encoding: "utf8",
-            maxBytes: 2 * 1024 * 1024,
-          });
-          if (content !== null) diagnosticParts.push(content.slice(-512 * 1024));
-        }
-      }
-      const diagnostic = sanitizedDiagnostic(diagnosticParts.filter(Boolean).join("\n"), [
-        [installRoot, "<install-root>"],
-        [runtimeRoot, "<runtime-root>"],
-        [shareRoot, "<share-root>"],
-        [runRoot, "<run-root>"],
-      ]);
-      if (diagnostic) {
         fs.writeFileSync(
-          path.join(evidenceRoot, `native-windows-${agentId}-diagnostic-${runId}.log`),
-          diagnostic,
+          receiptPath,
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              classification: `installed-nemoclaw-native-windows-${agentId}`,
+              verdict: "fail",
+              cleanupFailures: failures,
+              ownedQualificationRootsRemoved:
+                ownedRoots.every((directory) => !fs.existsSync(directory)) &&
+                !fs.existsSync(gatewaySession.root),
+              privateGatewayStateRemoved: !fs.existsSync(gatewaySession.root),
+              retainedPrivateGatewayRoot: fs.existsSync(gatewaySession.root)
+                ? gatewaySession.root
+                : null,
+              retainedQualificationRoots: ownedRoots.filter((directory) =>
+                fs.existsSync(directory),
+              ),
+              unconfirmedShareRoot:
+                !ownedRoots.includes(shareRoot) && fs.existsSync(shareRoot) ? shareRoot : null,
+            },
+            null,
+            2,
+          ) + "\n",
           "utf8",
         );
-        console.error(`${agentLabel.toUpperCase()}> Sanitized failure diagnostic\n${diagnostic}`);
+      } catch {
+        failures.push("failure receipt write");
       }
     }
-    for (const directory of [runRoot, shareRoot, runtimeRoot]) await removeDirectory(directory);
+    if (failures.length) {
+      console.error(`${agentLabel.toUpperCase()}> Cleanup also failed: ${failures.join(", ")}`);
+      if (!primaryFailed) fail(`cleanup failed: ${failures.join(", ")}`);
+    }
   }
+  if (!passed || !receipt) fail("the terminal-agent qualification receipt is missing");
+  fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n", "utf8");
+  console.log(
+    `${agentLabel.toUpperCase()}> PASS three real ${agentLabel} agent turns inside native MXC`,
+  );
 }
+
+export { mainInternal as qualifyNativeTerminalAgent };
 
 async function main() {
   const installRoot = requiredDirectory(

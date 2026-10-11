@@ -16,6 +16,7 @@ internal static class Program
     {
         NativeExpressSetup.ValidationCalls = 0;
         NativeDesktopIntegration.EnsureCalls = 0;
+        NativeDownloadedModelSetup.Ready = null;
     }
 
     private static async Task AssertPrecancelledSaveDoesNotLaunchAsync()
@@ -204,6 +205,45 @@ internal static class Program
             throw new InvalidOperationException("Transaction cleanup or success publication failed.");
     }
 
+    private static async Task AssertDownloadedModelOrderingAsync(bool cancel, bool failCommit)
+    {
+        ResetFixtureState();
+        using var password = new System.Security.SecureString();
+        using var cancellation = new CancellationTokenSource();
+        var configuration = new NativeSetupConfiguration("openclaw", "local", null, "fixture-downloaded-model", false) { LocalModel = "fixture-downloaded-model" };
+        var calls = 0;
+        var readyCalls = 0;
+        byte[]? transaction = null;
+        Task<string> Helper(string launcher, string[] arguments, byte[] input, bool captureOutput)
+        {
+            calls++;
+            if (calls == 1) return Task.FromResult(ValidPreparation);
+            if (calls != 2 || !arguments.SequenceEqual(new[] { "--configure-native", "--transaction" }))
+                throw new InvalidOperationException("Downloaded model setup escaped the credential transaction.");
+            transaction = input;
+            if (failCommit) throw new IOException("Fixture commit failed.");
+            return Task.FromResult(string.Empty);
+        }
+        NativeDownloadedModelSetup.Ready = token =>
+        {
+            readyCalls++;
+            if (calls != 2 || transaction is null || transaction.Any(value => value != 0) || NativeDesktopIntegration.EnsureCalls != 1)
+                throw new InvalidOperationException("Model readiness started before commit and secret-buffer cleanup.");
+            if (cancel) cancellation.Cancel();
+            token.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        };
+        try
+        {
+            await NativeSetupOperations.SaveWithHelperAsync(configuration, password, null, null, cancellation.Token, "unused", Helper);
+            if (cancel || failCommit) throw new InvalidOperationException("A failed model setup was reported as success.");
+        }
+        catch (OperationCanceledException) when (cancel && cancellation.IsCancellationRequested) { }
+        catch (IOException) when (failCommit) { }
+        if (readyCalls != (failCommit ? 0 : 1) || transaction is null || transaction.Any(value => value != 0))
+            throw new InvalidOperationException("Downloaded model setup did not preserve the commit boundary.");
+    }
+
     private static void AssertRecoverableMaintenanceCancellationCanRetry()
     {
         var cancellation = new NativeCancellationState();
@@ -279,9 +319,12 @@ internal static class Program
         await AssertCancellationIsDeferredUntilPreparationFinishesAsync();
         await AssertCredentialTransactionAsync(false);
         await AssertCredentialTransactionAsync(true);
+        await AssertDownloadedModelOrderingAsync(false, false);
+        await AssertDownloadedModelOrderingAsync(true, false);
+        await AssertDownloadedModelOrderingAsync(false, true);
         AssertRecoverableMaintenanceCancellationCanRetry();
         AssertRecoverableMaintenanceProductionWiring();
-        Console.WriteLine("9 native setup controls passed; cancellation checkpoints and private credential transactions preserve the configuration owner.");
+        Console.WriteLine("12 native setup controls passed; cancellation and model readiness preserve the credential transaction.");
         return 0;
     }
 }
@@ -305,6 +348,19 @@ internal static class NativeExpressSetup
 internal static class NativeMaintenance
 {
     internal static bool SupportsDataRemoval() => throw new InvalidOperationException("Unexpected maintenance invocation in the cancellation fixture.");
+}
+
+internal static class NativeDownloadedModelSetup
+{
+    internal static Func<CancellationToken, Task>? Ready { get; set; }
+    internal static bool IsModel(string? id) => id == "fixture-downloaded-model";
+    internal static void ValidateSelection(JsonElement preparation, string selected)
+    {
+        if (!IsModel(selected) || !preparation.TryGetProperty("localModel", out var model) || model.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("Invalid downloaded-model fixture metadata.");
+    }
+    internal static Task EnsureReadyAsync(string launcher, string selected, Action<NativeExpressProgress>? progress, CancellationToken cancellation) =>
+        (Ready ?? throw new InvalidOperationException("Unexpected model readiness invocation."))(cancellation);
 }
 
 internal static class NativeDesktopIntegration

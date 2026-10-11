@@ -13,6 +13,9 @@ internal sealed record NativeSetupConfiguration(string Agent, string Inference, 
 {
     internal NativeSetupOptions Options { get; init; } = new();
     internal string? LocalModel { get; init; }
+    internal bool LaunchAfterSetup => this.Agent == "openclaw" && this.Inference == "local"
+        && this.Endpoint is null && !this.CredentialStored && this.Model == this.LocalModel
+        && NativeDownloadedModelSetup.IsModel(this.LocalModel);
 
     internal string Serialize()
     {
@@ -30,7 +33,8 @@ internal sealed record NativeSetupConfiguration(string Agent, string Inference, 
         };
         if (this.LocalModel is not null)
         {
-            if (this.LocalModel != NativeExpressSetup.Id || this.Inference != "local" || this.Endpoint is not null || this.CredentialStored || this.Model != NativeExpressSetup.Model) throw new InvalidOperationException("The local model selection is invalid.");
+            var known = this.LocalModel == NativeExpressSetup.Id && this.Model == NativeExpressSetup.Model || NativeDownloadedModelSetup.IsModel(this.LocalModel) && this.Model == this.LocalModel;
+            if (!known || this.Inference != "local" || this.Endpoint is not null || this.CredentialStored) throw new InvalidOperationException("The local model selection is invalid.");
             value["localModel"] = this.LocalModel;
         }
         else value["endpoint"] = this.Endpoint ?? throw new InvalidOperationException("The inference endpoint is missing.");

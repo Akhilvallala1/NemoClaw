@@ -21,6 +21,9 @@ export type WorkflowJob = {
   uses?: string;
   environment?: unknown;
   outputs?: Record<string, string>;
+  permissions?: Record<string, string>;
+  strategy?: { "fail-fast"?: boolean; matrix?: { node?: string[] } };
+  "runs-on"?: string;
 };
 export type Workflow = { jobs: Record<string, WorkflowJob> };
 type WindowsInstallerWorkflow = Workflow & {
@@ -106,6 +109,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     "windows-finished-installer",
     "windows-finished-installed-startup",
     "windows-runtime-controls",
+    "windows-runtime-preflight",
   ]) {
     ((prJobName) => {
       const request = requiredJob(workflow, "windows-finished-request");
@@ -179,6 +183,61 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
   (() => {
     const compiled = requiredJob(workflow, "windows-compiled-application");
     const runtime = requiredJob(workflow, "windows-runtime-controls");
+    const preflight = requiredJob(workflow, "windows-runtime-preflight");
+    assert.deepStrictEqual(jobNeeds(preflight), ["windows-finished-request"]);
+    assert.deepStrictEqual(preflight.permissions, { contents: "read" });
+    assert.strictEqual(preflight["runs-on"], "windows-11-vs2026-arm");
+    assert.deepStrictEqual(preflight.strategy, {
+      "fail-fast": false,
+      matrix: { node: ["22.23.2", "24.18.1"] },
+    });
+    assert.strictEqual(
+      preflight.if,
+      "${{ needs.windows-finished-request.result == 'success' && (needs.windows-finished-request.outputs.build_allowed == 'true' || (github.event_name == 'workflow_dispatch' && (inputs.test_native_windows_runtime || (inputs.probe_official_hermes_components && inputs.official_hermes_phase == 'application')))) }}",
+    );
+    const checkout = requiredStep(preflight, "Check out the exact candidate preflight");
+    assert.deepStrictEqual(checkout.with, {
+      repository: "${{ needs.windows-finished-request.outputs.candidate_repository }}",
+      ref: "${{ needs.windows-finished-request.outputs.candidate_sha }}",
+      "persist-credentials": false,
+    });
+    const preflightNode = requiredStep(preflight, "Set up pinned ARM64 preflight Node");
+    assert.deepStrictEqual(preflightNode.with, {
+      "node-version": "${{ matrix.node }}",
+      architecture: "arm64",
+    });
+    const preflightTests = requiredStep(
+      preflight,
+      "Verify observer shutdown and qualification cleanup before building",
+    );
+    for (const name of [
+      "control-installed-openclaw-input.test.mts",
+      "native-turn-cleanup.test.mts",
+      "runtime-published-resources.test.mts",
+    ])
+      assert.ok(preflightTests.run?.includes(name));
+    assert.ok(preflight.steps!.indexOf(checkout) < preflight.steps!.indexOf(preflightNode));
+    assert.ok(preflight.steps!.indexOf(preflightNode) < preflight.steps!.indexOf(preflightTests));
+    assert.ok(preflightTests.run?.includes("$identity.version -cne $env:PREFLIGHT_NODE_VERSION"));
+    assert.ok(preflightTests.run?.includes("if ($result -ne 0) { throw"));
+    assert.ok(jobNeeds(compiled).includes("windows-runtime-preflight"));
+    assert.ok(compiled.if?.includes("needs.windows-runtime-preflight.result == 'success'"));
+    assert.deepStrictEqual(jobNeeds(runtime), ["windows-runtime-preflight"]);
+    assert.strictEqual(
+      runtime.if,
+      "${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.run_windows_native_installer && inputs.test_native_windows_runtime) }}",
+    );
+    const preflightUpload = requiredStep(
+      preflight,
+      "Retain preflight results for each Node version",
+    );
+    assert.strictEqual(preflightUpload.if, "always()");
+    assert.ok(String(preflightUpload.with?.name).includes("${{ matrix.node }}"));
+    assert.ok(
+      String(preflightUpload.with?.name).includes(
+        "${{ needs.windows-finished-request.outputs.candidate_sha }}",
+      ),
+    );
     const compiledController = requiredStep(
       compiled,
       "Verify installed acceptance controller Windows compatibility",

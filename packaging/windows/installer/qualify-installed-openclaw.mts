@@ -345,6 +345,29 @@ export function visibleChatReady() {
   );
 }
 
+export async function requestVisibleGateway({
+  method,
+  params,
+}: {
+  method: string;
+  params: Record<string, unknown>;
+}) {
+  const app = globalThis.document.querySelector("openclaw-app") as unknown as {
+    context?: {
+      gateway?: {
+        snapshot?: {
+          phase: string;
+          client: { request(method: string, params: unknown): Promise<unknown> };
+        };
+      };
+    };
+  };
+  const gateway = app?.context?.gateway?.snapshot;
+  if (gateway?.phase !== "connected" || !gateway.client)
+    throw new Error("The actual browser gateway client is disconnected.");
+  return await gateway.client.request(method, params);
+}
+
 async function main() {
   assert.equal(process.platform, "win32");
   assert.equal(process.arch, "arm64");
@@ -712,25 +735,7 @@ async function main() {
     await page.waitForFunction(visibleChatReady, undefined, { timeout: 90_000 });
     const rpc = (method: string, params: Record<string, unknown>) =>
       boundedClose(
-        page.evaluate(
-          async ({ method, params }: { method: string; params: Record<string, unknown> }) => {
-            const app = globalThis.document.querySelector("openclaw-app") as unknown as {
-              context?: {
-                gateway?: {
-                  snapshot?: {
-                    connected: boolean;
-                    client: { request(method: string, params: unknown): Promise<unknown> };
-                  };
-                };
-              };
-            };
-            const gateway = app?.context?.gateway?.snapshot;
-            if (!gateway?.connected || !gateway.client)
-              throw new Error("The actual browser gateway client is disconnected.");
-            return await gateway.client.request(method, params);
-          },
-          { method, params },
-        ),
+        page.evaluate(requestVisibleGateway, { method, params }),
         45_000,
       ) as Promise<any>;
     const sessionKey = await page.evaluate(

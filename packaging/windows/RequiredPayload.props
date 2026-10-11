@@ -57,6 +57,7 @@
     <NemoClawRequiredPayload Include="qualification\native-broker-relay-protocol.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-ui-relay.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-ui-lifecycle.mts" Phase="Prepared" />
+    <NemoClawRequiredPayload Include="qualification\native-console-attachment.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-inference.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-inference-cli.mts" Phase="Prepared" />
     <NemoClawRequiredPayload Include="qualification\native-inference-host.mts" Phase="Prepared" />

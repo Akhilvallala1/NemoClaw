@@ -68,7 +68,9 @@ while (-not (Test-OwnedStopSentinel)) {
   child.stdout.on("data", (chunk: Buffer) => {
     stdout += chunk.toString("utf8");
     if (stdout.includes("discovery-entered") && !signalSent) {
-      discoveryBeforeSignal = !fs.existsSync(sentinel);
+      // The child checked absence before announcing discovery. Publication itself
+      // must enforce exclusive creation, without a parent-side existence check.
+      discoveryBeforeSignal = stdout.includes("before-sentinel");
       try {
         if (contents === "") signalObserverStop(sentinel);
         else fs.writeFileSync(sentinel, contents, { flag: "wx" });
@@ -149,13 +151,44 @@ test("Stop exclusively creates an empty file and refuses existing paths", () => 
   const sentinel = path.join(root, "stop.sentinel");
   try {
     signalObserverStop(sentinel);
-    assert.equal(fs.statSync(sentinel).size, 0);
+    const empty = fs.openSync(sentinel, "r");
+    try {
+      assert.equal(fs.fstatSync(empty).size, 0);
+    } finally {
+      fs.closeSync(empty);
+    }
     assert.throws(() => signalObserverStop(sentinel), { code: "EEXIST" });
-    fs.writeFileSync(sentinel, "retain");
-    assert.throws(() => signalObserverStop(sentinel), { code: "EEXIST" });
-    assert.equal(fs.readFileSync(sentinel, "utf8"), "retain");
+    const occupied = path.join(root, "occupied.sentinel");
+    const retainedFile = fs.openSync(occupied, "wx+", 0o600);
+    try {
+      fs.writeFileSync(retainedFile, "retain");
+      assert.throws(() => signalObserverStop(occupied), { code: "EEXIST" });
+      const retained = Buffer.alloc(6);
+      assert.equal(fs.readSync(retainedFile, retained, 0, retained.length, 0), retained.length);
+      assert.equal(retained.toString("utf8"), "retain");
+    } finally {
+      fs.closeSync(retainedFile);
+    }
     assert.throws(() => signalObserverStop(root));
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Stop refuses a hard-linked path without changing its target", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "observer-stop-link-"));
+  const target = path.join(root, "retained.txt");
+  const sentinel = path.join(root, "stop.sentinel");
+  const retainedFile = fs.openSync(target, "wx+", 0o600);
+  try {
+    fs.writeFileSync(retainedFile, "retain");
+    fs.linkSync(target, sentinel);
+    assert.throws(() => signalObserverStop(sentinel), { code: "EEXIST" });
+    const retained = Buffer.alloc(6);
+    assert.equal(fs.readSync(retainedFile, retained, 0, retained.length, 0), retained.length);
+    assert.equal(retained.toString("utf8"), "retain");
+  } finally {
+    fs.closeSync(retainedFile);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

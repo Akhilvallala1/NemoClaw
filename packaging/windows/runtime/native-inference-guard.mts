@@ -18,7 +18,10 @@ function json(response: ServerResponse, status: number, value: unknown) {
   response.end(JSON.stringify(value));
 }
 
-async function requestBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function requestBody(
+  request: IncomingMessage,
+  model: string,
+): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of request) {
@@ -27,7 +30,7 @@ async function requestBody(request: IncomingMessage): Promise<Record<string, unk
       throw new Error("The local model request exceeds 16 MiB.");
     chunks.push(chunk);
   }
-  return guardedNativeChat(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+  return guardedNativeChat(JSON.parse(Buffer.concat(chunks).toString("utf8")), model);
 }
 
 export function createNativeInferenceGuard(options: {
@@ -87,7 +90,8 @@ export function createNativeInferenceGuard(options: {
           return;
         }
         options.assertHeld();
-        const body = request.method === "POST" ? await requestBody(request) : undefined;
+        const body =
+          request.method === "POST" ? await requestBody(request, record.model) : undefined;
         const cancelled = new AbortController();
         const closed = () => cancelled.abort();
         response.once("close", closed);

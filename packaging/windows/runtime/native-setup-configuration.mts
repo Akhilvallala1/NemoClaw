@@ -5,8 +5,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { NATIVE_EXPRESS } from "./native-inference-manifest.mts";
 import { inspectPrebuiltNativeModel } from "./native-prebuilt-inference.mts";
+import { inspectBundledNativeModel } from "./native-bundled-inference.mts";
+import { isDownloadedLocalModel, localModelIdentityMatches } from "./native-local-models.mts";
 import {
   NATIVE_SERVICES,
   nativeServiceBinding,
@@ -118,19 +119,20 @@ export function normalizeOnboardingConfiguration(
   if (options.localModel !== undefined) {
     if (
       submitted.inference !== "local" ||
-      options.localModel !== NATIVE_EXPRESS.id ||
-      options.model !== NATIVE_EXPRESS.model ||
+      typeof options.localModel !== "string" ||
+      typeof options.model !== "string" ||
+      !localModelIdentityMatches(options.localModel, options.model) ||
       options.endpoint !== undefined ||
       (options.credential !== undefined && options.credential !== "")
     )
       throw new Error(
-        "The prebuilt local model must be a logical selection without an endpoint or external key.",
+        "The managed local model must be a catalog selection without an endpoint or external key.",
       );
     return {
       agent: submitted.agent,
       inference: "local",
-      model: NATIVE_EXPRESS.model,
-      localModel: NATIVE_EXPRESS.id,
+      model: options.model,
+      localModel: options.localModel,
       credential: "",
       options,
     };
@@ -238,7 +240,14 @@ export async function configureNativeFromStdin(
   input: AsyncIterable<Buffer> = process.stdin,
   output: Pick<NodeJS.WriteStream, "write"> = process.stdout,
   dependencies: {
-    inspectModel?: typeof inspectPrebuiltNativeModel;
+    inspectModel?: (
+      root: string,
+      launcher: string,
+      id: string,
+    ) => Promise<
+      | Awaited<ReturnType<typeof inspectPrebuiltNativeModel>>
+      | Awaited<ReturnType<typeof inspectBundledNativeModel>>
+    >;
     acquireState?: typeof acquireNativeStateSession;
     readCredential?: typeof readWindowsCredential;
     readServices?: typeof readNativeServiceEnvironment;
@@ -298,10 +307,9 @@ export async function configureNativeFromStdin(
     Array.isArray(submitted.options) ||
     (submitted.profile !== undefined && submitted.profile !== "personal") ||
     (submitted.localModel !== undefined &&
-      (submitted.localModel !== "n1x-qwen3.6-35b-a3b" ||
+      (!localModelIdentityMatches(submitted.localModel, submitted.model) ||
         submitted.inference !== "local" ||
-        submitted.credentialStored ||
-        submitted.model !== NATIVE_EXPRESS.model))
+        submitted.credentialStored))
   )
     fail("native setup configuration is invalid");
   const normalized = normalizeOnboardingConfiguration(
@@ -358,10 +366,13 @@ export async function configureNativeFromStdin(
   )
     fail("the selected provider requires a credential");
   const localModel = normalized.localModel
-    ? await (dependencies.inspectModel ?? inspectPrebuiltNativeModel)(
-        path.dirname(path.dirname(launcher)),
-        launcher,
-      )
+    ? await (
+        dependencies.inspectModel ??
+        ((root, owner, id) =>
+          isDownloadedLocalModel(id)
+            ? inspectBundledNativeModel(root, owner, id)
+            : inspectPrebuiltNativeModel(root, owner))
+      )(path.dirname(path.dirname(launcher)), launcher, normalized.localModel)
     : undefined;
   const binding = normalized.localModel
     ? null

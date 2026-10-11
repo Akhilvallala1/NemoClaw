@@ -5,7 +5,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import {
   measuredCommand,
   createCommandOutputRecorder,
@@ -17,8 +16,10 @@ for (const mode of ["success", "failure", "timeout"] as const) {
   test(`real ${mode} child output is durable before its receipt and retains the actual outcome`, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "perf-output-"));
     const output = createCommandOutputRecorder(root);
+    const captured = { stdout: "", stderr: "" };
+    let pending: ReturnType<typeof measuredCommand> | undefined;
     try {
-      const pending = measuredCommand({
+      pending = measuredCommand({
         executable: process.execPath,
         args: [
           "-e",
@@ -27,18 +28,25 @@ for (const mode of ["success", "failure", "timeout"] as const) {
         environment: process.env,
         cwd: root,
         timeoutMs: mode === "timeout" ? 250 : 3000,
-        onOutput: output.write,
+        onOutput(stream, chunk) {
+          output.write(stream, chunk);
+          captured[stream] += chunk.toString("utf8");
+          assert.equal(
+            fs.readFileSync(path.join(root, `command-${stream}.log`), "utf8"),
+            captured[stream],
+          );
+        },
       });
-      await delay(150);
-      assert.equal(fs.readFileSync(path.join(root, "command-stdout.log"), "utf8"), "early-out");
-      assert.equal(fs.readFileSync(path.join(root, "command-stderr.log"), "utf8"), "early-err");
       const result = await pending;
+      assert.equal(result.observerError, null);
+      assert.deepEqual(captured, { stdout: "early-out", stderr: "early-err" });
       assert.equal(result.stdout, "early-out");
       assert.equal(result.stderr, "early-err");
       assert.equal(result.timedOut, mode === "timeout");
       assert.equal(result.rootTerminationConfirmed, true);
       if (mode !== "timeout") assert.equal(result.exitCode, mode === "failure" ? 37 : 0);
     } finally {
+      await pending;
       output.close();
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ensureNativeInference } from "./native-inference.mts";
-import type { ProgressSink } from "./native-inference-manifest.mts";
+import { isDownloadedLocalModel, localModelIdentityMatches } from "./native-local-models.mts";
+import { NATIVE_EXPRESS, type ProgressSink } from "./native-inference-manifest.mts";
 import { readWindowsCredential, type NativeCredentialIdentity } from "./native-security.mts";
 
 type Configuration = Omit<NativeCredentialIdentity, "endpoint"> & {
@@ -24,17 +25,21 @@ export async function resolveNativeConfiguredInference(
     throw new Error("The installed native configuration has an unsupported profile.");
   if (config.localModel !== undefined) {
     if (
-      config.localModel !== "n1x-qwen3.6-35b-a3b" ||
+      (config.localModel !== NATIVE_EXPRESS.id && !isDownloadedLocalModel(config.localModel)) ||
       config.inference !== "local" ||
       config.credentialStored
     )
       throw new Error("The managed local inference selection is invalid.");
     const owned = await ensureNativeInference({
+      localModel: config.localModel,
       installRoot,
       signal: options.signal,
       onProgress: options.onProgress ?? ((event) => console.log(event.message)),
     });
-    if (owned.localModel !== config.localModel)
+    if (
+      owned.localModel !== config.localModel ||
+      !localModelIdentityMatches(owned.localModel, owned.model)
+    )
       throw new Error("The running local model does not match the installed selection.");
     // The supervisor supplies both endpoint and token as one verified identity.
     // A custom endpoint is never paired with this shared host credential.

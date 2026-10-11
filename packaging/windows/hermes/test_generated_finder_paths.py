@@ -162,7 +162,7 @@ class CanonicalAdapterUpgrade(unittest.TestCase):
         for relative in metadata.UPGRADE_HOOK_PATHS:
             put(relative, self.old_hook)
             put(
-                str(Path(relative).with_name(metadata.PTH)),
+                Path(relative).with_name(metadata.PTH).as_posix(),
                 b"import nemoclaw_native_windows; nemoclaw_native_windows.install()\n",
             )
         site = "hermes-agent/venv/Lib/site-packages/"
@@ -283,6 +283,34 @@ class CanonicalAdapterUpgrade(unittest.TestCase):
             ):
                 self.plan(ci_upgrade_startup_adapter=True, target=target)
         self.assertEqual(self.snapshot(), before)
+
+    def test_current_base_relocates_without_inventing_an_adapter_upgrade(self):
+        marker = self.marker
+        for hook in metadata.UPGRADE_HOOK_PATHS:
+            (self.root / hook).write_bytes(self.new_hook)
+            marker["generatedFiles"][hook] = hashlib.sha256(self.new_hook).hexdigest()
+        marker["startupAdapterSha256"] = hashlib.sha256(self.new_hook).hexdigest()
+        (self.root / metadata.MARKER).write_text(json.dumps(marker) + "\n")
+        before = self.snapshot()
+        changes, report = self.plan(target=self.directory / "installed")
+        self.assertEqual(self.snapshot(), before)
+        self.assertNotIn("startupAdapterUpgrade", report)
+        self.assertNotIn("startupAdapterUpgradeApplied", report)
+        self.assertNotIn("startupAdapterUpgrade", json.loads(changes[self.root / metadata.MARKER]))
+        self.assertEqual(report["retirements"], [])
+        for hook in metadata.UPGRADE_HOOK_PATHS:
+            self.assertEqual(changes[self.root / hook], before[hook])
+        changed = {
+            p.relative_to(self.root).as_posix()
+            for p, data in changes.items()
+            if data != before[p.relative_to(self.root).as_posix()]
+        }
+        self.assertEqual(changed, {
+            "hermes-agent/venv/pyvenv.cfg", "tools/browser-use/pyvenv.cfg",
+            "hermes-agent/venv/Lib/site-packages/hermes_agent-0.21.1.dist-info/direct_url.json",
+            "hermes-agent/venv/Lib/site-packages/hermes_agent-0.21.1.dist-info/RECORD",
+            metadata.MARKER,
+        })
 
     def test_all_three_hooks_upgrade_metadata_retains_and_later_relocation_keeps_lineage(
         self,

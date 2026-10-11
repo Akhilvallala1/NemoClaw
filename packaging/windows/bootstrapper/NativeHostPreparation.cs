@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
@@ -14,8 +16,16 @@ namespace Nvidia.NemoClaw.Bootstrapper;
 
 internal static class NativeHostPreparation
 {
-    // The same ARM64 MXC 0.8.0 executable shipped in the runtime payload.
-    internal const string ProbeSha256 = "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503";
+    // The package build binds this assembly to the admitted MXC binary. Never
+    // read an expected digest from a mutable sidecar or the process environment.
+    internal static string ReadProbeSha256(IEnumerable<AssemblyMetadataAttribute> attributes)
+    {
+        var matches = attributes.Where(item => item.Key == "NemoClaw.MxcProbeSha256").ToArray();
+        var value = matches.Length == 1 ? matches[0].Value : null;
+        if (value is null || value.Length != 64 || value.Any(c => !(c is >= '0' and <= '9' or >= 'a' and <= 'f')))
+            throw new InvalidOperationException("The packaged MXC capability probe has no unambiguous compiled identity.");
+        return value;
+    }
 
     internal static string ParseTier(string text)
     {
@@ -50,8 +60,7 @@ internal static class NativeHostPreparation
     {
         // Keep the verified file locked against replacement until the child exits.
         using var binary = new FileStream(executable, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (Convert.ToHexString(SHA256.HashData(binary)).ToLowerInvariant() != ProbeSha256)
-            throw new InvalidOperationException("The packaged MXC capability probe differs from its pinned input.");
+        VerifyProbe(binary);
         var info = new ProcessStartInfo(executable)
         {
             UseShellExecute = false, CreateNoWindow = true,
@@ -85,6 +94,13 @@ internal static class NativeHostPreparation
                 if (!child.WaitForExit(5000)) throw new InvalidOperationException("The owned MXC capability probe did not stop.");
             }
         }
+    }
+
+    internal static void VerifyProbe(Stream binary)
+    {
+        var expected = ReadProbeSha256(typeof(NativeHostPreparation).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>());
+        if (Convert.ToHexString(SHA256.HashData(binary)).ToLowerInvariant() != expected)
+            throw new InvalidOperationException("The packaged MXC capability probe differs from its pinned input.");
     }
 
     internal static async Task<string> ReadBoundedAsync(StreamReader stream, CancellationToken token)

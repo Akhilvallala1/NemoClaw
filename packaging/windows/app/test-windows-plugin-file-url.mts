@@ -6,24 +6,30 @@ import path from "node:path";
 import os from "node:os";
 import Module, { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { normalizeWindowsNativePluginRequire } from "./openclaw-app-resources.mts";
+import { createHash } from "node:crypto";
 
 const index = process.argv.indexOf("--source-root");
 if (index < 0 || !process.argv[index + 1])
   throw new Error("The pinned materialized source root is required.");
 const source = path.resolve(process.argv[index + 1]);
-const relative = "dist/plugin-module-loader-cache-uqaaAPup.js";
+const relative = "dist/sdk-alias-BMTmaiMP.js";
 const original = fs.readFileSync(path.join(source, relative), "utf8");
-const patched = normalizeWindowsNativePluginRequire(relative, original);
+assert.equal(
+  createHash("sha256").update(original).digest("hex"),
+  "3644b7cef6e4b4059f6d824d0aac457b4e656ed8d9b40a9319de1954c036ac62",
+  "The reviewed upstream native loader must match the pinned source.",
+);
 const syntax = createRequire(import.meta.url)(
   path.join(source, "node_modules/typescript"),
 ) as typeof import("typescript");
 const names = new Set([
+  "isPluginSourceModulePath",
   "isJavaScriptModulePath",
   "isMissingTargetModuleError",
   "isSourceTransformFallbackError",
   "tryNativeRequireJavaScriptModule",
-  "requireWithOptionalAliases",
+  "tryNativeRequireModule",
+  "toNativeRequirePath",
   "withNativeRequireAliases",
 ]);
 type Result = { ok: boolean; moduleExport?: { identity?: string } };
@@ -50,13 +56,26 @@ function actualLoader(text: string, platform: string) {
     "nodeRequire",
     "fileURLToPath",
     "pathToFileURL",
-    "moduleWithResolver$1",
-    functions.map((item) => item.getText(parsed)).join("\n") +
+    "moduleWithResolver",
+    "createRequire",
+    "nativeModuleLoadFailures",
+    "PLUGIN_SOURCE_MODULE_EXTENSIONS",
+    functions
+      .map((item) => item.getText(parsed))
+      .join("\n")
+      .replaceAll("import.meta.url", JSON.stringify(import.meta.url)) +
       "\nreturn tryNativeRequireJavaScriptModule;",
-  )({ platform }, path, createRequire(import.meta.url), fileURLToPath, pathToFileURL, Module) as (
-    file: string,
-    options: Record<string, unknown>,
-  ) => Result;
+  )(
+    { platform, features: process.features },
+    path,
+    createRequire(import.meta.url),
+    fileURLToPath,
+    pathToFileURL,
+    Module,
+    createRequire,
+    new Map(),
+    [".ts", ".tsx", ".mts", ".cts", ".mtsx", ".ctsx"],
+  ) as (file: string, options: Record<string, unknown>) => Result;
 }
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "native plugin URL ü "));
 const options = {
@@ -70,39 +89,35 @@ try {
   const entry = path.join(root, "entry space ü.js");
   fs.writeFileSync(entry, 'export const identity="native-entry";\n');
   const url = pathToFileURL(entry).href;
-  const before = actualLoader(original, "win32"),
-    after = actualLoader(patched, "win32");
-  assert.equal(before(url, options).ok, false, "The observed file-URL native miss must reproduce.");
-  results.push("original-file-url-native-miss");
-  assert.equal(after(url, options).moduleExport?.identity, "native-entry");
+  const loader = actualLoader(original, "win32");
+  assert.equal(loader(url, options).moduleExport?.identity, "native-entry");
   results.push("windows-file-url-native-esm-hit");
-  assert.equal(after(entry, options).moduleExport?.identity, "native-entry");
+  assert.equal(loader(entry, options).moduleExport?.identity, "native-entry");
   results.push("plain-path-native-hit-preserved");
-  assert.equal(actualLoader(patched, "darwin")(url, options).ok, false);
-  results.push("other-platform-behavior-unchanged");
+  assert.equal(
+    actualLoader(original, "darwin")(url, options).moduleExport?.identity,
+    "native-entry",
+  );
+  results.push("upstream-file-url-loading-on-other-platforms");
+  assert.equal(loader(url, { ...options, allowWindows: false }).ok, false);
+  results.push("windows-loading-requires-explicit-admission");
   for (const target of [
     pathToFileURL(path.join(root, "missing.js")).href,
     "https://invalid.example/entry.js",
     "file:///invalid%2Fencoded.js",
   ])
-    assert.equal(after(target, options).ok, false);
+    assert.equal(loader(target, options).ok, false);
   results.push("missing-nonfile-malformed-targets-not-admitted");
   const alias = path.join(root, "alias.js");
   fs.writeFileSync(alias, 'export {identity} from "reviewed-alias";\n');
   const resolver = (Module as unknown as { _resolveFilename: unknown })._resolveFilename;
   assert.equal(
-    after(pathToFileURL(alias).href, { ...options, aliasMap: { "reviewed-alias": entry } })
+    loader(pathToFileURL(alias).href, { ...options, aliasMap: { "reviewed-alias": entry } })
       .moduleExport?.identity,
     "native-entry",
   );
   assert.equal((Module as unknown as { _resolveFilename: unknown })._resolveFilename, resolver);
   results.push("existing-native-aliases-and-restoration-preserved");
-  assert.equal(normalizeWindowsNativePluginRequire("unrelated.js", original), original);
-  assert.throws(
-    () => normalizeWindowsNativePluginRequire(relative, original + "\n"),
-    /reviewed native plugin loader changed/,
-  );
-  results.push("unrelated-source-unchanged-and-pin-drift-rejected");
   console.log(
     JSON.stringify({
       passed: true,
@@ -110,6 +125,7 @@ try {
       nativePlatform: process.platform,
       branchExercised: "win32",
       realNodeRequire: true,
+      upstreamLoaderUnmodified: true,
       windowsExecutionObserved: process.platform === "win32",
     }),
   );

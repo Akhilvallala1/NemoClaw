@@ -16,6 +16,7 @@ internal sealed class NativeRuntimeAvailability
     private static readonly string[] Agents = { "openclaw", "hermes", "langchain-deepagents-code", "pi", "nemocua" };
     private readonly IReadOnlyDictionary<string, string>? statuses;
     internal bool PrebuiltLocalModelAvailable { get; private init; }
+    internal bool BundledLocalInferenceAvailable { get; private init; }
 
     private NativeRuntimeAvailability(IReadOnlyDictionary<string, string>? statuses) => this.statuses = statuses;
 
@@ -42,10 +43,14 @@ internal sealed class NativeRuntimeAvailability
         using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 5 });
         var root = document.RootElement;
         var hasModelAvailability = root.TryGetProperty("prebuiltLocalModelAvailable", out var modelAvailability);
-        if (hasModelAvailability) ExactFields(root, "schemaVersion", "classification", "runtimeId", "manifestSha256", "sourceRevision", "agents", "prebuiltLocalModelAvailable");
+        var hasEngineAvailability = root.TryGetProperty("bundledLocalInferenceAvailable", out var engineAvailability);
+        if (hasEngineAvailability) ExactFields(root, "schemaVersion", "classification", "runtimeId", "manifestSha256", "sourceRevision", "agents", "prebuiltLocalModelAvailable", "bundledLocalInferenceAvailable");
+        else if (hasModelAvailability) ExactFields(root, "schemaVersion", "classification", "runtimeId", "manifestSha256", "sourceRevision", "agents", "prebuiltLocalModelAvailable");
         else ExactFields(root, "schemaVersion", "classification", "runtimeId", "manifestSha256", "sourceRevision", "agents");
         if (hasModelAvailability && modelAvailability.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             throw new InvalidDataException("The embedded model availability is invalid.");
+        if (hasEngineAvailability && engineAvailability.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            throw new InvalidDataException("The embedded inference runtime availability is invalid.");
         if (root.GetProperty("schemaVersion").GetInt32() != 1
             || root.GetProperty("classification").GetString() != "native-runtime-package-availability"
             || !Hex(root.GetProperty("runtimeId"), 64)
@@ -66,7 +71,7 @@ internal sealed class NativeRuntimeAvailability
                 || !result.TryAdd(agent, status))
                 throw new InvalidDataException("The embedded agent selection is invalid.");
         }
-        return new(result) { PrebuiltLocalModelAvailable = hasModelAvailability && modelAvailability.GetBoolean() };
+        return new(result) { PrebuiltLocalModelAvailable = hasModelAvailability && modelAvailability.GetBoolean(), BundledLocalInferenceAvailable = hasEngineAvailability && engineAvailability.GetBoolean() };
     }
 
     private static bool Hex(JsonElement value, int length) => value.ValueKind == JsonValueKind.String

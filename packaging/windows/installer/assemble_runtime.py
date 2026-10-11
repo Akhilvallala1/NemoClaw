@@ -23,6 +23,7 @@ import subprocess
 
 from assign_runtime_namespace import assign
 from build_runtime_manifest import build, hash_file, validate_relative, MAX_ENTRIES
+from prepare_local_inference import prepare as prepare_inference_bundle, CATALOG as LOCAL_CATALOG
 
 LAYOUT = {
     "openclaw": (
@@ -31,7 +32,7 @@ LAYOUT = {
             "openclaw-app.cjs",
             "openclaw-dynamic-import.cjs",
             "package.json",
-            "dist/control-ui/index.html",
+            "node_modules/openclaw/dist/control-ui/index.html",
             "openclaw-resource-closure.json",
         ],
     ),
@@ -247,10 +248,14 @@ def finished_application(
     required = {
         "native-runtime.cjs",
         "openclaw-invoke.cjs",
+        "openclaw-migrate.cjs",
+        "openclaw-migration-config.json",
         "native-inference-manifest.json",
     }
     if not required.issubset(files):
         raise ValueError("The finished application is missing a static worker.")
+    if read_json(workers / "openclaw-migration-config.json") != {}:
+        raise ValueError("The host migration requires an empty sealed configuration.")
     executable = executable_build / "NemoClaw.Runtime.exe"
     arm64_executable(executable)
     if (
@@ -286,6 +291,8 @@ def finished_application(
         (executable, "app/NemoClaw.Runtime.exe"),
         (workers / "native-runtime.cjs", "workers/native-runtime.cjs"),
         (workers / "openclaw-invoke.cjs", "workers/openclaw-invoke.cjs"),
+        (workers / "openclaw-migrate.cjs", "workers/openclaw-migrate.cjs"),
+        (workers / "openclaw-migration-config.json", "workers/openclaw-migration-config.json"),
         (
             workers / "native-inference-manifest.json",
             "app/native-inference-manifest.json",
@@ -324,9 +331,9 @@ def verify_openclaw_input(root: Path, rows: list[dict]):
         receipt.get("schemaVersion") != 1
         or receipt.get("classification") != "compiled-openclaw-resource-closure"
         or not isinstance(receipt.get("closureAdmitted"), bool)
-        or receipt.get("controlUiRoot") != "dist/control-ui"
+        or receipt.get("controlUiRoot") != "node_modules/openclaw/dist/control-ui"
         or receipt.get("package", {}).get("name") != "openclaw"
-        or receipt.get("package", {}).get("version") != "2026.7.1"
+        or receipt.get("package", {}).get("version") != "2026.9.2"
         or receipt.get("compiler", {}).get("mainSha256")
         != hash_file(root / "openclaw-app.cjs")[1]
         or receipt.get("compiler", {}).get("bridgeSha256")
@@ -1327,6 +1334,7 @@ def assemble(
     worker_build: Path,
     executable_build: Path,
     model_pack: Path | None = None,
+    inference_bundle: Path | None = None,
     hermes_receipt: Path | None = None,
     hermes_executor: Path | None = None,
     hermes_personal_proof: Path | None = None,
@@ -1336,6 +1344,8 @@ def assemble(
 ):
     if not sources or any(agent not in LAYOUT for agent in sources):
         raise ValueError("Runtime assembly requires explicit selected agent inputs.")
+    if model_pack is not None and inference_bundle is not None:
+        raise ValueError("Select either a prebuilt model or guided model downloads.")
     if output.exists() or output.is_symlink():
         raise ValueError("Runtime assembly output must be fresh.")
     ordinary(output.parent, True)
@@ -1408,6 +1418,18 @@ def assemble(
     content.mkdir(parents=True)
     records = []
     try:
+        local_inference = None
+        if inference_bundle is not None:
+            inference_root = content / "inference"
+            inference_root.mkdir()
+            inference_receipt = prepare_inference_bundle(
+                inference_bundle, inference_root / "managed", read_json(LOCAL_CATALOG)
+            )
+            local_inference = {
+                "engineVersion": inference_receipt["engine"]["version"],
+                "bundleSha256": inference_receipt["engine"]["bundleSha256"],
+                "modelsBundled": False,
+            }
         for source, relative in application_files:
             destination = content / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1564,6 +1586,7 @@ def assemble(
             "agents": records,
             "application": application_identity,
             "localModel": model_identity,
+            "localInference": local_inference,
             "deliveryContract": "finished-native-app-v1",
             "buildCompleteForSelectedAgents": True,
             "completePackage": False,
@@ -1602,6 +1625,7 @@ def main():
     parser.add_argument("--worker-build", type=Path, required=True)
     parser.add_argument("--executable-build", type=Path, required=True)
     parser.add_argument("--model-pack", type=Path)
+    parser.add_argument("--inference-bundle", type=Path)
     parser.add_argument("--canonical-hermes-receipt", type=Path)
     parser.add_argument("--hermes-executor-directory", type=Path)
     parser.add_argument("--canonical-hermes-personal-proof", type=Path)
@@ -1628,6 +1652,7 @@ def main():
                 worker_build=args.worker_build,
                 executable_build=args.executable_build,
                 model_pack=args.model_pack,
+                inference_bundle=args.inference_bundle,
                 hermes_receipt=args.canonical_hermes_receipt,
                 hermes_executor=args.hermes_executor_directory,
                 hermes_personal_proof=args.canonical_hermes_personal_proof,

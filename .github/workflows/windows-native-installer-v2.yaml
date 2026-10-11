@@ -396,14 +396,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The helper-proof consumption controls failed.' }
           & python -m unittest discover -s "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer" -p 'test_materialize_compiled_executable.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'The compiled artifact materialization controls failed.' }
+          & python -m unittest discover -s "$env:GITHUB_WORKSPACE\candidate\packaging\windows\app" -p 'test_materialize_openclaw_build.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'The locked OpenClaw dependency materialization controls failed.' }
+          & python -m unittest discover -s "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer" -p 'test_prepare_finished_host.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'The native host inventory and license controls failed.' }
       - name: Check out the pinned OpenShell host source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: NVIDIA/OpenShell
-          ref: bcd517bbe08cc80860c9be57699390cd32e8445f
+          ref: 901338dbd334feeb1436f4cb41533f6d592d3595
           path: openshell
           persist-credentials: false
-      - name: Build and test the current OpenShell derivative
+      - name: Build and test the pinned OpenShell host-supervisor stack
         working-directory: openshell
         shell: pwsh
         env:
@@ -412,33 +416,34 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
           $work = "$env:RUNNER_TEMP\finished-windows"
-          $patch = "$env:GITHUB_WORKSPACE\candidate\packaging\windows\openshell-2721-node-ui.patch"
           $revision = (& git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $revision -cne 'bcd517bbe08cc80860c9be57699390cd32e8445f') { throw 'Unexpected OpenShell source.' }
+          if ($LASTEXITCODE -ne 0 -or $revision -cne '901338dbd334feeb1436f4cb41533f6d592d3595') { throw 'Unexpected OpenShell source.' }
           $status = & git status --porcelain
           if ($LASTEXITCODE -ne 0 -or $status) { throw 'The OpenShell checkout is not clean.' }
-          $patchHash = (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant()
-          & git apply --check -- $patch
-          if ($LASTEXITCODE -ne 0) { throw 'The current OpenShell derivative no longer applies exactly.' }
-          & git apply -- $patch
-          if ($LASTEXITCODE -ne 0) { throw 'Applying the current OpenShell derivative failed.' }
-          $sourceDiff = & git diff --binary
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot record the patched source.' }
           $env:CARGO_TARGET_DIR = "$work\openshell-target"
           if (Test-Path -LiteralPath $env:CARGO_TARGET_DIR) { throw 'OpenShell must build into a fresh target directory.' }
-          . .\tasks\scripts\windows-msvc.ps1 build aarch64-pc-windows-msvc -LogDir "$work\openshell-logs"
+          # Load the pinned build helpers without running their unlocked build action.
+          . .\tasks\scripts\windows-msvc.ps1 artifacts aarch64-pc-windows-msvc -LogDir "$work\openshell-logs"
+          if ($env:Z3_LIBRARY_PATH_OVERRIDE) { throw 'The host build requires the pinned prebuilt Z3, not a machine override.' }
+          $z3Features = Configure-Z3
+          $env:LIBCLANG_PATH = Resolve-LibclangPath
+          Add-PathEntry $env:LIBCLANG_PATH
+          Configure-Arm64CrossBuild @('aarch64-pc-windows-msvc')
+          Invoke-VsCargo -RustTarget 'aarch64-pc-windows-msvc' `
+            -CargoArgs "cargo build --locked --release --target aarch64-pc-windows-msvc --bin openshell --bin openshell-gateway --bin openshell-supervisor --bin openshell-windows-sandbox $($z3Features.WorkspaceFeatures)" `
+            -LogName 'host-supervisor-build.log'
+          Stage-Z3Runtime 'aarch64-pc-windows-msvc'
           Assert-NativeTestTarget 'aarch64-pc-windows-msvc'
           Invoke-VsCargo -RustTarget 'aarch64-pc-windows-msvc' `
             -CargoArgs 'cargo test --locked --release --target aarch64-pc-windows-msvc -p openshell-driver-mxc --lib -- --test-threads=1' `
             -LogName 'mxc-driver-tests.log'
-          $afterDiff = & git diff --binary
-          if ($LASTEXITCODE -ne 0 -or ($sourceDiff -join "`n") -cne ($afterDiff -join "`n") -or `
-              (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant() -cne $patchHash) {
-            throw 'OpenShell source or its derivative patch changed during the build.'
-          }
+          $status = & git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $status) { throw 'OpenShell source changed during the build.' }
+          $afterRevision = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $afterRevision -cne $revision) { throw 'OpenShell revision changed during the build.' }
           $output = "$work\openshell-binaries"
           New-Item -ItemType Directory -Path $output -ErrorAction Stop | Out-Null
-          $files = foreach ($name in @('openshell.exe', 'openshell-gateway.exe')) {
+          $files = foreach ($name in @('openshell.exe', 'openshell-gateway.exe', 'openshell-supervisor.exe', 'openshell-windows-sandbox.exe', 'libz3.dll')) {
             $binary = Join-Path $env:CARGO_TARGET_DIR "aarch64-pc-windows-msvc\release\$name"
             $hash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
             $copy = Join-Path $output $name
@@ -451,7 +456,8 @@ jobs:
             classification = 'ci-built-openshell-host-binaries'
             requestedSourceRevision = $env:GITHUB_SHA
             openshellRevision = $revision
-            derivativePatchSha256 = $patchHash
+            derivativePatchSha256 = $null
+            sourceUnchanged = $true
             rustToolchain = $env:RUSTUP_TOOLCHAIN
             rustTarget = 'aarch64-pc-windows-msvc'
             workflowRunId = $env:GITHUB_RUN_ID
@@ -459,6 +465,65 @@ jobs:
             files = @($files)
             currentPackageQualification = $false
           } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$output\openshell-build.json" -Encoding utf8NoBOM
+      - name: Check out the MXC source used by the Windows-tip qualification
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: microsoft/mxc
+          ref: 7cd00d1ee6af9208322c924ef64e5113f6704639
+          path: mxc
+          persist-credentials: false
+      - name: Build the pinned MXC executor and host preparation tool
+        working-directory: mxc/src
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: 1.93.0-aarch64-pc-windows-msvc
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = "$env:RUNNER_TEMP\finished-windows"
+          $revision = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $revision -cne '7cd00d1ee6af9208322c924ef64e5113f6704639') { throw 'Unexpected MXC source.' }
+          $status = & git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $status) { throw 'The MXC checkout is not clean.' }
+          & rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Installing the pinned MXC Rust toolchain failed.' }
+          $env:CARGO_TARGET_DIR = "$work\mxc-target"
+          if (Test-Path -LiteralPath $env:CARGO_TARGET_DIR) { throw 'MXC must build into a fresh target directory.' }
+          . "$env:GITHUB_WORKSPACE\openshell\tasks\scripts\windows-msvc.ps1" artifacts aarch64-pc-windows-msvc -LogDir "$work\mxc-logs"
+          Assert-NativeTestTarget 'aarch64-pc-windows-msvc'
+          Invoke-VsCargo -RustTarget 'aarch64-pc-windows-msvc' `
+            -CargoArgs 'cargo build --locked --release --target aarch64-pc-windows-msvc --bin wxc-exec --bin wxc-host-prep' `
+            -LogName 'mxc-host-build.log'
+          $status = & git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $status) { throw 'MXC source changed during the build.' }
+          $afterRevision = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $afterRevision -cne $revision) { throw 'MXC revision changed during the build.' }
+          $output = "$work\mxc-binaries"
+          New-Item -ItemType Directory -Path $output -ErrorAction Stop | Out-Null
+          $files = foreach ($name in @('wxc-exec.exe', 'wxc-host-prep.exe')) {
+            $binary = Join-Path $env:CARGO_TARGET_DIR "aarch64-pc-windows-msvc\release\$name"
+            $hash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+            $copy = Join-Path $output $name
+            Copy-Item -LiteralPath $binary -Destination $copy -ErrorAction Stop
+            if ((Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) { throw 'MXC build copy changed.' }
+            @{ file = $name; bytes = (Get-Item -LiteralPath $copy).Length; sha256 = $hash }
+          }
+          Copy-Item -LiteralPath '..\LICENSE.md' -Destination "$output\LICENSE.md" -ErrorAction Stop
+          $licenseHash = (Get-FileHash -LiteralPath "$output\LICENSE.md" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($licenseHash -cne 'd9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb') { throw 'Unexpected MXC license.' }
+          @{
+            schemaVersion = 1
+            classification = 'ci-built-mxc-host-binaries'
+            requestedSourceRevision = $env:CANDIDATE_SHA
+            mxcRevision = $revision
+            sourceUnchanged = $true
+            rustToolchain = $env:RUSTUP_TOOLCHAIN
+            rustTarget = 'aarch64-pc-windows-msvc'
+            workflowRunId = $env:GITHUB_RUN_ID
+            workflowRunAttempt = $env:GITHUB_RUN_ATTEMPT
+            licenseSha256 = $licenseHash
+            files = @($files)
+            currentPackageQualification = $false
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$output\mxc-build.json" -Encoding utf8NoBOM
       - name: Prepare native host files without any legacy agent tree
         shell: pwsh
         run: |
@@ -466,7 +531,7 @@ jobs:
           $work = "$env:RUNNER_TEMP\finished-windows"
           & python "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\prepare-finished-host.py" `
             --source-root "$env:GITHUB_WORKSPACE\candidate" --openshell-binaries "$work\openshell-binaries" `
-            --node-root "$work\application\node" --output "$work\host" --cache "$work\downloads"
+            --mxc-binaries "$work\mxc-binaries" --node-root "$work\application\node" --output "$work\host"
           if ($LASTEXITCODE -ne 0) { throw 'Native host input preparation failed.' }
       - name: Build and prove the exact native system-drive prerequisite
         shell: pwsh
@@ -825,13 +890,144 @@ jobs:
       installer_manifest_sha256: ${{ needs.windows-finished-installer.outputs.installer_manifest_sha256 }}
       application_manifest_sha256: ${{ needs.windows-compiled-application.outputs.application_manifest_sha256 }}
 
+  windows-runtime-preflight:
+    name: Windows observer and cleanup preflight (Node ${{ matrix.node }})
+    needs: windows-finished-request
+    if: ${{ needs.windows-finished-request.result == 'success' && (needs.windows-finished-request.outputs.build_allowed == 'true' || (github.event_name == 'workflow_dispatch' && (inputs.test_native_windows_runtime || (inputs.probe_official_hermes_components && inputs.official_hermes_phase == 'application')))) }}
+    permissions:
+      contents: read
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.23.2", "24.18.1"]
+    steps:
+      - name: Check out the exact candidate preflight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.windows-finished-request.outputs.candidate_repository }}
+          ref: ${{ needs.windows-finished-request.outputs.candidate_sha }}
+          persist-credentials: false
+      - name: Set up pinned ARM64 preflight Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          architecture: arm64
+      - name: Set up the pinned gateway certificate control compiler
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.419
+      - name: Verify private gateway certificate generation and Node interoperability
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'windows-runtime-preflight'
+          [void][IO.Directory]::CreateDirectory($output)
+          $helperRoot = Join-Path $env:RUNNER_TEMP 'gateway-tls-helper'
+          & dotnet publish packaging/windows/tests/gateway-auth/Gateway.Auth.Controls.csproj `
+            --configuration Release --runtime win-arm64 --self-contained true --output $helperRoot
+          if ($LASTEXITCODE -ne 0) { throw 'The self-contained gateway certificate fixture did not build.' }
+          $env:NEMOCLAW_GATEWAY_TLS_CONTROL = Join-Path $helperRoot 'Gateway.Auth.Controls.exe'
+          $log = Join-Path $output 'gateway-certificate-tests.log'
+          try {
+            $ErrorActionPreference = 'Continue'
+            & $env:NEMOCLAW_GATEWAY_TLS_CONTROL 2>&1 | Tee-Object -FilePath $log
+            $result = $LASTEXITCODE
+          } finally { $ErrorActionPreference = 'Stop' }
+          if ($result -ne 0 -or (Get-Content -LiteralPath $log -Raw) -notmatch '(?m)^Gateway TLS controls: 14 passed; no keys written to disk or certificate stores\.\r?$') {
+            throw 'All fourteen gateway certificate controls must execute.'
+          }
+          $log = Join-Path $output 'gateway-tls-node-tests.log'
+          try {
+            $ErrorActionPreference = 'Continue'
+            & node --experimental-strip-types --no-warnings --test --test-reporter=tap `
+              packaging/windows/runtime/native-gateway-tls.test.mts packaging/windows/runtime/native-gateway-session.test.mts `
+              2>&1 | Tee-Object -FilePath $log
+            $result = $LASTEXITCODE
+          } finally { $ErrorActionPreference = 'Stop' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($result -ne 0 -or $text -notmatch '(?m)^# pass 16\r?$' -or $text -notmatch '(?m)^# skipped 0\r?$') {
+            throw 'All sixteen private-session, private-pipe and Node TLS controls must execute without skips.'
+          }
+          $ownerRoot = Join-Path $env:RUNNER_TEMP 'gateway-process-helper'
+          & dotnet publish packaging/windows/tests/gateway-process/Gateway.Process.Controls.csproj `
+            --configuration Release --runtime win-arm64 --self-contained true --output $ownerRoot
+          if ($LASTEXITCODE -ne 0) { throw 'The gateway process-ownership fixture did not build.' }
+          $env:NEMOCLAW_GATEWAY_PROCESS_CONTROL = Join-Path $ownerRoot 'Gateway.Process.Controls.exe'
+          $log = Join-Path $output 'gateway-process-tests.log'
+          try {
+            $ErrorActionPreference = 'Continue'
+            & node --experimental-strip-types --no-warnings --test --test-reporter=tap `
+              packaging/windows/runtime/native-gateway-process.test.mts 2>&1 | Tee-Object -FilePath $log
+            $result = $LASTEXITCODE
+          } finally { $ErrorActionPreference = 'Stop' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($result -ne 0 -or $text -notmatch '(?m)^# pass 6\r?$' -or $text -notmatch '(?m)^# skipped 0\r?$') {
+            throw 'All six gateway process-ownership controls must execute without skips.'
+          }
+      - name: Verify observer shutdown and qualification cleanup before building
+        shell: powershell
+        env:
+          PREFLIGHT_NODE_VERSION: ${{ matrix.node }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $identityText = & node --print 'JSON.stringify({platform:process.platform,arch:process.arch,version:process.versions.node})'
+          if ($LASTEXITCODE -ne 0) { throw 'Preflight Node identity could not be read.' }
+          $identity = $identityText | ConvertFrom-Json
+          if ($identity.platform -cne 'win32' -or $identity.arch -cne 'arm64' -or $identity.version -cne $env:PREFLIGHT_NODE_VERSION) {
+            throw 'Preflight requires the selected native Windows ARM64 Node.'
+          }
+          $output = Join-Path $env:RUNNER_TEMP 'windows-runtime-preflight'
+          [void][IO.Directory]::CreateDirectory($output)
+          $log = Join-Path $output 'observer-cleanup-tests.log'
+          $tests = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/app/runtime-published-resources.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/control-installed-openclaw-input.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/mxc-probe-identity.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-ui-lifecycle.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-gateway-configuration.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-turn-cleanup.test.mts')
+          )
+          try {
+            $ErrorActionPreference = 'Continue'
+            & node --experimental-strip-types --no-warnings --test --test-reporter=tap @tests `
+              2>&1 | Tee-Object -FilePath $log
+            $result = $LASTEXITCODE
+          } finally { $ErrorActionPreference = 'Stop' }
+          if ($result -ne 0) { throw 'Windows observer or qualification cleanup preflight failed.' }
+      - name: Verify compiled MXC probe admission without running MXC
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $env:RUNNER_TEMP 'windows-runtime-preflight\probe-identity-tests.log'
+          try {
+            $ErrorActionPreference = 'Continue'
+            & dotnet run --configuration Release --project `
+              packaging/windows/tests/host-preparation-diagnostics/HostPreparation.Diagnostics.Controls.csproj `
+              2>&1 | Tee-Object -FilePath $log
+            $result = $LASTEXITCODE
+          } finally { $ErrorActionPreference = 'Stop' }
+          if ($result -ne 0) { throw 'The compiled MXC probe admission controls failed.' }
+      - name: Retain preflight results for each Node version
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-runtime-preflight-${{ matrix.node }}-${{ needs.windows-finished-request.outputs.candidate_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-runtime-preflight/*.log
+          if-no-files-found: warn
+          retention-days: 14
+
   windows-compiled-application:
     name: Compile exact Windows application units (ARM64)
-    needs: windows-finished-request
+    needs: [windows-finished-request, windows-runtime-preflight]
     outputs:
       application_cache_key: ${{ steps.transfer_manifest.outputs.cache_key }}
       application_manifest_sha256: ${{ steps.transfer_manifest.outputs.manifest_sha256 }}
-    if: ${{ always() && needs.windows-finished-request.result == 'success' && ((needs.windows-finished-request.outputs.build_allowed == 'true') || (github.event_name == 'workflow_dispatch' && inputs.probe_official_hermes_components && inputs.official_hermes_phase == 'application')) }}
+    if: ${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-runtime-preflight.result == 'success' && ((needs.windows-finished-request.outputs.build_allowed == 'true') || (github.event_name == 'workflow_dispatch' && inputs.probe_official_hermes_components && inputs.official_hermes_phase == 'application')) }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 30
     env:
@@ -892,7 +1088,11 @@ jobs:
             packaging/windows/installer/qualify-installed-hermes.test.mts `
             packaging/windows/installer/windows-native-transfer.test.mts `
             packaging/windows/runtime/native-configuration-credentials.test.mts `
-            packaging/windows/runtime/native-setup-transaction.test.mts
+            packaging/windows/runtime/native-setup-transaction.test.mts `
+            packaging/windows/runtime/native-local-models.test.mts `
+            packaging/windows/runtime/native-bundled-inference.test.mts `
+            packaging/windows/runtime/native-inference.test.mts `
+            packaging/windows/runtime/native-setup-local-models.test.mts
           if ($LASTEXITCODE -ne 0) { throw 'The Windows Hermes and configuration transaction controls failed.' }
           $files = @($tests | ForEach-Object {
             $file = Join-Path $env:GITHUB_WORKSPACE $_
@@ -922,16 +1122,26 @@ jobs:
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
           & "$env:RUNNER_TEMP\compiled-windows-app\node\node.exe" `
             --experimental-strip-types packaging/windows/app/test-windows-plugin-file-url.mts `
-            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\openclaw"
+            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\node_modules\openclaw"
           if ($LASTEXITCODE -ne 0) { throw 'Windows native plugin loading controls failed.' }
           & "$env:RUNNER_TEMP\compiled-windows-app\node\node.exe" `
             --experimental-strip-types packaging/windows/app/test-windows-update-owner.mts `
-            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\openclaw"
+            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\node_modules\openclaw"
           if ($LASTEXITCODE -ne 0) { throw 'Installer-owned update controls failed.' }
           & "$env:RUNNER_TEMP\compiled-windows-app\node\node.exe" `
             --experimental-strip-types packaging/windows/app/test-windows-configured-plugin-install.mts `
-            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\openclaw"
+            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\node_modules\openclaw"
           if ($LASTEXITCODE -ne 0) { throw 'Installer-owned configured-plugin controls failed.' }
+          & "$env:RUNNER_TEMP\compiled-windows-app\node\node.exe" `
+            --experimental-strip-types packaging/windows/app/test-windows-eager-ollama.mts `
+            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\node_modules\openclaw" `
+            --tool-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\tools"
+          if ($LASTEXITCODE -ne 0) { throw 'Eager Ollama compilation controls failed.' }
+          & "$env:RUNNER_TEMP\compiled-windows-app\node\node.exe" `
+            --experimental-strip-types packaging/windows/app/test-prebuilt-plugin-consent-records.mts `
+            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\node_modules\openclaw" `
+            --tool-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\tools"
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged plugin consent persistence controls failed.' }
       - name: Compile the OpenClaw application unit
         if: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' }}
         shell: pwsh
@@ -940,7 +1150,7 @@ jobs:
           & "$env:RUNNER_TEMP\compiled-windows-app\node\node.exe" `
             --experimental-strip-types --max-old-space-size=8192 `
             packaging/windows/app/build-openclaw-app.mts `
-            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\openclaw" `
+            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\node_modules\openclaw" `
             --tool-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\tools" `
             --output "$env:RUNNER_TEMP\compiled-windows-app\build"
           if ($LASTEXITCODE -ne 0) { throw 'The Windows application compilation failed.' }
@@ -967,7 +1177,9 @@ jobs:
           & $ciNode --experimental-strip-types "$source\test-compiled-openclaw-model-tools.mts" `
             --app-root $application --output "$diagnostics\local-model-tools"
           if ($LASTEXITCODE -ne 0) { throw 'The compiled local-provider and actual tool execution checks failed.' }
-          $choices = @('brave', 'discord', 'slack', 'tavily')
+          # OpenClaw Discord is deferred until packaged plugin provenance is supported.
+          # Setup rejects that selection; its upstream trust checks remain unchanged.
+          $choices = @('brave', 'slack', 'tavily')
           $checks = @($choices | ForEach-Object -Parallel {
             $ErrorActionPreference = 'Stop'
             $choice = $_
@@ -978,7 +1190,7 @@ jobs:
             [pscustomobject]@{ choice=$choice; exitCode=$LASTEXITCODE }
           } -ThrottleLimit 4)
           $checks | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath "$diagnostics\configured-choice-results.json" -Encoding utf8
-          if ($checks.Count -ne 4 -or @($checks | Where-Object exitCode -NE 0).Count -ne 0) {
+          if ($checks.Count -ne 3 -or @($checks | Where-Object exitCode -NE 0).Count -ne 0) {
             throw 'A packaged onboarding choice did not complete its configured gateway checks.'
           }
       - name: Verify the compiled dashboard and packaged resources in a real browser
@@ -994,6 +1206,11 @@ jobs:
           )
           $browser = $browsers | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
           if (-not $browser) { throw 'The Windows runner has no preinstalled browser for dashboard validation.' }
+          & "$work\node\node.exe" --experimental-strip-types `
+            packaging/windows/app/test-compiled-openclaw-gateway.mts `
+            --app-root "$work\build\app" --output "$work\first-run-consent-control" `
+            --browser-executable $browser --with-brave --browser-setup-control --browser-plugin-consent-control
+          if ($LASTEXITCODE -ne 0) { throw 'The first-run dashboard or plugin consent control failed.' }
           & "$work\node\node.exe" --experimental-strip-types `
             packaging/windows/app/test-compiled-openclaw-gateway.mts `
             --app-root "$work\build\app" --output "$work\gateway-control" `
@@ -1022,12 +1239,16 @@ jobs:
           $work = "$env:RUNNER_TEMP\compiled-windows-app"
           if ($env:SELECTED_AGENT -eq 'openclaw') {
             New-Item -ItemType Junction -Path "$work\inputs\tools\node_modules\typescript" `
-              -Target "$work\inputs\openclaw\node_modules\typescript" | Out-Null
+              -Target "$work\inputs\node_modules\openclaw\node_modules\typescript" | Out-Null
           }
           New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\node_modules" `
             -Target "$work\inputs\tools\node_modules" | Out-Null
+          & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/app/runtime-external-packages.test.mts
+          if ($LASTEXITCODE -ne 0) { throw 'OpenClaw dependency-location controls failed.' }
           & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/distribution/compile-pi-sdks.test.mts
           if ($LASTEXITCODE -ne 0) { throw 'Pi SDK compilation regression tests failed.' }
+          & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/runtime/native-openclaw-migration.test.mts
+          if ($LASTEXITCODE -ne 0) { throw 'OpenClaw session migration controls failed.' }
           & "$work\node\node.exe" --experimental-strip-types `
             packaging/windows/distribution/build-native-workers.mts "$work\workers"
           if ($LASTEXITCODE -ne 0) { throw 'Static application worker compilation failed.' }
@@ -1101,7 +1322,7 @@ jobs:
             "$work\build\build-receipt.json", "$work\build\build-failure.json",
             "$work\inputs\materialization-receipt.json", "$work\node\node-input.json"
           )
-          foreach ($choice in @('brave', 'discord', 'slack', 'tavily')) {
+          foreach ($choice in @('brave', 'slack', 'tavily')) {
             $choiceRoot = "$work\build\diagnostics\choice-$choice"
             $inputs += @("$choiceRoot\result.json", "$choiceRoot\registered.json")
           }
@@ -1166,7 +1387,9 @@ jobs:
       - name: Verify retained preparation errors and Setup diagnostics
         shell: pwsh
         run: |
-          & dotnet run --project packaging/windows/tests/host-preparation-diagnostics/HostPreparation.Diagnostics.Controls.csproj -- "$env:RUNNER_TEMP\system-drive-inputs\package\bin\arm64\wxc-exec.exe"
+          & dotnet run --project packaging/windows/tests/host-preparation-diagnostics/HostPreparation.Diagnostics.Controls.csproj `
+            -p:MxcProbeSha256=dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503 `
+            -- "$env:RUNNER_TEMP\system-drive-inputs\package\bin\arm64\wxc-exec.exe"
           if ($LASTEXITCODE -ne 0) { throw 'The preparation diagnostic controls failed.' }
       - name: Verify the actual system root and contained Node access
         shell: pwsh
@@ -1946,6 +2169,7 @@ jobs:
 
   windows-runtime-controls:
     name: Native Windows ownership and isolated MSI controls
+    needs: windows-runtime-preflight
     if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.run_windows_native_installer && inputs.test_native_windows_runtime) }}
     permissions:
       contents: read
@@ -1985,13 +2209,18 @@ jobs:
           $log = Join-Path $output 'installed-acceptance-controller-tests.log'
           $tests = @(
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/control-installed-openclaw-input.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-turn-cleanup.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/run-installed-acceptance.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/qualify-finished-package.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-ui-tunnel.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/qualify-installed-hermes.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/windows-native-transfer.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-configuration-credentials.test.mts'),
-            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-setup-transaction.test.mts')
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-setup-transaction.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-local-models.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-bundled-inference.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-inference.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-setup-local-models.test.mts')
           )
           try {
             $ErrorActionPreference = 'Continue'
@@ -2049,8 +2278,8 @@ jobs:
             $result = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           if ($result -ne 0) { throw 'The real native runtime ownership controls failed.' }
-          if ((Get-Content -LiteralPath $log -Raw) -notmatch 'test result: ok\. 18 passed; 0 failed; 0 ignored;') {
-            throw 'The six portable and twelve Windows ownership controls did not all execute.'
+          if ((Get-Content -LiteralPath $log -Raw) -notmatch 'test result: ok\. 19 passed; 0 failed; 0 ignored;') {
+            throw 'The six portable and thirteen Windows ownership controls did not all execute.'
           }
 
       - name: Exercise owned child and grandchild lifetime
@@ -2072,8 +2301,8 @@ jobs:
             $result = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           if ($result -ne 0) { throw 'The native runtime guardian controls failed.' }
-          if ((Get-Content -LiteralPath $log -Raw) -notmatch 'test result: ok\. 21 passed; 0 failed; 0 ignored;') {
-            throw 'The twenty guardian/browser controls and their child-fixture entry did not all execute.'
+          if ((Get-Content -LiteralPath $log -Raw) -notmatch 'test result: ok\. 23 passed; 0 failed; 0 ignored;') {
+            throw 'The twenty-two guardian/browser controls and their child-fixture entry did not all execute.'
           }
 
       - name: Set up pinned tools for isolated MSI fixtures

@@ -3,6 +3,68 @@
 
 # Native Windows candidate package
 
+## Windows-tip migration in progress
+
+The finished-host build now pins OpenShell
+`901338dbd334feeb1436f4cb41533f6d592d3595` and source-built MXC
+`7cd00d1ee6af9208322c924ef64e5113f6704639`. These source revisions were used
+by the separate Windows-tip OpenClaw qualification. The build does not import
+that qualification as installer evidence. It builds both projects in fresh
+target directories, checks their unchanged source, and records same-run hashes.
+The OpenShell inventory includes the CLI, gateway, supervisor, Windows sandbox
+executable, and `libz3.dll`. This Windows sandbox executable implements the
+OpenShell sandbox protocol; it is not Microsoft's Windows Sandbox backend.
+
+The launcher migration is not complete. The older launcher behavior below
+still depends on settings absent from the pinned OpenShell source. Do not
+publish this intermediate state as a usable installer. Required work includes
+OpenShell authorization and supervisor lifecycle validation, network-profile
+compatibility, and the prepared Hermes PTY runtime.
+
+The five launchers now provision fresh TLS and JWT keys through a shared gateway
+session owner. Its sibling session directory permits access only to the Windows
+user and SYSTEM. It contains gateway keys, imported CLI certificates, and supervisor
+state; it is outside the workload share and ordinary logs. The bundled UI helper
+returns certificate material through a bounded pipe without using certificate stores.
+Launchers require HTTPS and mTLS user authentication. Cleanup stops owned processes
+before removing the directory. A failed stop retains the private directory and
+reports a cleanup failure. Component tests exercise the real UI helper and private
+directory controls; they do not establish OpenShell authorization or installed acceptance.
+
+The launchers start the gateway through a native job owner. Windows assigns the
+gateway to the job before it runs; its supervisor and executor inherit ownership.
+Normal gateway exit or a session-bound stop request terminates the job. Private
+state is removed only after the owner reports zero active processes. Killing the
+owner closes the job, but without a verified shutdown record the launcher retains
+private state and reports cleanup failure. Local process controls cover this
+behavior; exact-artifact MXC and real-console validation remain required.
+
+Console launchers now request a sandbox terminal and attach with `sandbox connect`
+through the session's authenticated CLI environment. They no longer request legacy
+host-console sharing. Success requires matching client and contained-agent exit
+statuses. Cleanup stops the private gateway before waiting for the client to drain.
+An undrained client reports failure; the native runtime owner retains responsibility
+for the complete process tree. Hermes dashboard sessions keep their separate PTY
+path. Focused tests cover attachment, exit-status reconciliation, and failure cleanup;
+installed interactive acceptance with the selected runtime remains required.
+
+Hermes reuse now pins base artifact `11637766639` from run `37969718115`, built
+from `371706dfa3173422b8d7ad521c2519010809697a`. This base already contains the
+checked-in startup adapter. Reuse relocates generated path metadata without changing
+the adapter or claiming a historical upgrade. The wheel, Git, export, and Personal
+probe consumers retain the same base identity. Fresh compatibility proof, moved-root
+execution, and installed acceptance remain required. The historical replay and
+finished-runtime qualification pins have not been promoted to this new base.
+
+The passing Windows-tip cycles allowed host loopback through the host-supervisor
+protocol. They did not prove denied host loopback, port-only isolation, an outer
+network fence, or live policy revocation. Keep those limitations separate from
+functional acceptance. Do not replace denied-network evidence with the passing
+preview result. Fresh installed OpenClaw, Hermes, and shipped Pi acceptance must
+use the newly built package and record its actual Windows and runtime identities.
+
+## Existing installer behavior and remaining migration surface
+
 This directory owns the WiX-authored ARM64 MSI and Burn setup executable for
 the native Windows candidate. WiX Toolset 5.0.2 and its standard bootstrapper
 application extension are pinned in the project files.
@@ -73,7 +135,11 @@ client-side watcher after receiving the exact workload result and then deletes
 the sandbox through OpenShell.
 
 Before install or repair, Burn queries its bundled, hash-pinned MXC executable
-with `--probe` and records the selected tier. BaseContainer skips both
+with `--probe` and records the selected tier. Finished packages compile the probe
+digest into Setup from the admitted same-run MXC build and recheck it before Burn
+composition. Missing, ambiguous or substituted probe identities stop the build
+or launch; external files and environment variables cannot override the compiled
+digest. The legacy preview retains its original 0.8.0 probe pin. BaseContainer skips both
 AppContainer host prerequisites without changing root or null-device permissions.
 AppContainer+DACL retains system-drive metadata preparation and the pinned MXC
 null-device preparation through Burn's elevated engine. Existing permission
@@ -103,6 +169,11 @@ launcher remembers the last configured agent. The same native window edits
 settings later. Agent launch is an explicit completion action. Pi and NemoCUA
 remain experimental. `agent-support.json` records the authentic packaged
 implementations and their preview limitations.
+
+The compiled OpenClaw package retains its published workspace templates under
+the canonical package root. Fresh workspace bootstrap needs these files even when
+existing-workspace tool checks pass. Resource composition preserves their bytes
+and inventory hashes and rejects missing directories or linked input files.
 
 Pi packaging keeps the locked 0.84.1 agent and its original CLI and resources.
 Five dependency SDKs have ESM paths too long for the installed Windows namespace.
@@ -141,8 +212,15 @@ arguments. These service integrations do not claim OpenShell-managed credential
 injection or governed provider parity.
 
 OpenClaw offers Brave and Tavily search; Hermes offers its native Tavily backend.
-Telegram, Discord, and Slack choices are restricted to the two agents whose
-packaged runtimes implement them. Messaging requires its selected bot/app keys;
+OpenClaw offers Telegram and Slack; Hermes also offers Discord.
+Discord is deferred for the OpenClaw Windows preview because the packaged plugin
+does not meet OpenClaw's trusted-provenance requirements. Setup disables that choice
+and rejects it before saving configuration or copying service credentials.
+Existing saved options that select OpenClaw Discord fail validation without changing
+the saved file or credentials. Remove the selection through Setup before launching.
+The plugin inputs remain pinned, but their presence does not establish support.
+Plugin trust checks, Hermes Discord behavior, and existing data remain unchanged.
+Messaging requires its selected bot/app keys;
 empty sender lists keep pairing behavior, and Personal network access does not
 authorize arbitrary senders. Hermes starts its actual messaging gateway with the
 interactive session, checks selected-channel connectivity, and uses the upstream

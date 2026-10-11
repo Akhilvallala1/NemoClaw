@@ -4,6 +4,7 @@
 import { fileURLToPath as nativeEntryFile } from "node:url";
 declare const NEMOCLAW_BUNDLED_RUNTIME: boolean | undefined;
 import { nativeWorkerAssets } from "./native-assets.mts";
+import { NativeGatewaySession } from "./native-gateway-session.mts";
 import {
   withNativeRuntimeSession,
   nativeRuntimeWorkerCommand,
@@ -15,7 +16,17 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
-import { nativeQualificationLoopbackConfig, writeNativeGatewayConfig } from "./native-security.mts";
+import {
+  NATIVE_NODE_UI_POLICY,
+  nativeQualificationLoopbackConfig,
+  readOpenedRegularFile,
+  writeNativeGatewayConfig,
+} from "./native-security.mts";
+import {
+  attemptNativeUiCleanup,
+  confirmNativeUiRegistryEmpty,
+  waitForNativeMxcCompletion,
+} from "./native-ui-lifecycle.mts";
 import { nativeDiagnosticTail } from "./native-session-diagnostics.mts";
 
 const TIMEOUT_MS = 300_000;
@@ -127,6 +138,7 @@ export async function run(
   diagnostics?: {
     capture(channel: string, chunk: Buffer | string): void;
   },
+  ownProcess?: (child: ChildProcess) => void,
 ) {
   console.log(`NEMOCLAW> ${label}`);
   const child = spawn(file, args, {
@@ -135,6 +147,7 @@ export async function run(
     windowsHide: true,
   });
   return await new Promise<NativeCommandResult>((resolve, reject) => {
+    ownProcess?.(child);
     let stdout = "";
     let stderr = "";
     let outputExceeded = false;
@@ -385,7 +398,7 @@ writeFileSync(join(configDirectory, "openclaw.json"), JSON.stringify({
   agents: { defaults: { model: { primary: "mock/mock-chat" }, timeoutSeconds: 180, skipBootstrap: true, thinkingDefault: "off" }, list: [{ id: "main", default: true }] },
 }), "utf8");
 const version = await run(["--version"], 30000);
-const normalizedVersion = /\b2026\.7\.1\b/u.test(version.stdout) ? "2026.7.1" : version.stdout.trim();
+const normalizedVersion = /\b2026\.9\.2\b/u.test(version.stdout) ? "2026.9.2" : version.stdout.trim();
 const chat = await run(["agent", "--local", "--agent", "main", "--message", "Reply exactly: CHAT_OK", "--thinking", "off", "--timeout", "180", "--json"]);
 let exactReply = false;
 try {
@@ -396,7 +409,7 @@ try {
 const result = { executionMode: "embedded-worker", version: normalizedVersion, versionExitCode: version.exitCode, versionError: version.stderr.slice(-2000), chatExitCode: chat.exitCode, chatError: chat.stderr.slice(-2000), exactReply, reply: exactReply ? "CHAT_OK" : null };
 writeFileSync(resultPath, JSON.stringify(result), "utf8");
 await new Promise((resolve) => mock.close(resolve));
-process.exit(version.exitCode === 0 && normalizedVersion === "2026.7.1" && chat.exitCode === 0 && exactReply ? 0 : 1);
+process.exit(version.exitCode === 0 && normalizedVersion === "2026.9.2" && chat.exitCode === 0 && exactReply ? 0 : 1);
 `;
 }
 
@@ -434,99 +447,138 @@ async function main(runtimeLease: NativeRuntimeSession) {
   const runRoot = path.join(`${systemDrive}\\`, `NemoClawNativeTurn-${runId}`);
   const shareRoot = path.join(`${systemDrive}\\`, `NemoClawNativeShare-${runId}`);
   const runtimeRoot = path.join(`${systemDrive}\\`, `NemoClawNativeArtifact-${runId}`);
-  if (fs.existsSync(runRoot) || fs.existsSync(shareRoot) || fs.existsSync(runtimeRoot))
-    fail("qualification roots already exist");
-  fs.mkdirSync(runRoot);
-  fs.mkdirSync(shareRoot);
-  fs.mkdirSync(runtimeRoot);
-  const gatewayConfig = writeNativeGatewayConfig(installRoot, runRoot);
-  runtimeLease.assertHeld();
-  console.log("NEMOCLAW> Selecting the sealed installed Node/OpenClaw runtime without copying");
-  const openClawRoot = installedOpenClawRoot;
-  const openClawEntry = requiredFile(
-    path.join(openClawRoot, "openclaw-app.cjs"),
-    "sealed OpenClaw entrypoint",
-  );
   const artifactArgument = argumentValue("--artifact-directory");
   const evidenceRoot = path.resolve(
     artifactArgument ??
-      path.join(process.env.LOCALAPPDATA ?? runRoot, "NVIDIA", "NemoClaw", "evidence"),
+      (process.env.LOCALAPPDATA
+        ? path.join(process.env.LOCALAPPDATA, "NVIDIA", "NemoClaw", "evidence")
+        : fail("an artifact directory is required when LOCALAPPDATA is unavailable")),
   );
-  fs.mkdirSync(evidenceRoot, { recursive: true });
+  for (const root of [runRoot, shareRoot, runtimeRoot]) {
+    const relative = path.relative(root, evidenceRoot);
+    if (
+      !relative ||
+      (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep))
+    )
+      fail("the artifact directory must be outside the qualification roots");
+  }
   const receiptPath = path.join(evidenceRoot, `native-windows-turn-${runId}.json`);
-  const gatewayPort = await freePort();
-  const mockPort = await freePort();
   const sandboxName = `nc-${runId}`;
   const gatewayName = `nemoclaw-gateway-${runId}`;
-  const stateRoot = path.join(runRoot, "state");
-  const configRoot = path.join(runRoot, "config");
-  const home = path.join(shareRoot, "home");
-  const temp = path.join(shareRoot, "temp");
-  for (const directory of [stateRoot, configRoot, home, temp])
-    fs.mkdirSync(directory, { recursive: true });
-  const worker = nativeWorkerAssets(runtimeLease.runtimeRoot, "openclaw-turn");
-  const probePath = requiredFile(worker.entry, "prebuilt OpenClaw worker");
-  const resultPath = path.join(shareRoot, "result.json");
-  const policyPath = path.join(runRoot, "policy.yaml");
-  fs.writeFileSync(
-    policyPath,
-    [
-      "version: 1",
-      "",
-      "filesystem_policy:",
-      "  include_workdir: false",
-      "  read_only:",
-      `    - ${quoteYamlPath(runtimeRoot)}`,
-      ...runtimeLease.readOnlyRoots.map((root) => `    - ${quoteYamlPath(root)}`),
-      "  read_write:",
-      `    - ${quoteYamlPath(shareRoot)}`,
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  const gatewayLog = fs.openSync(path.join(runRoot, "openshell-gateway.log"), "w");
-  const gatewayError = fs.openSync(path.join(runRoot, "openshell-gateway.err.log"), "w");
   const gatewayLogPath = path.join(runRoot, "openshell-gateway.log");
   const gatewayErrorPath = path.join(runRoot, "openshell-gateway.err.log");
-  const gatewayEnvironment = allowlistedWindowsEnvironment({
-    OPENSHELL_DRIVERS: "mxc",
-    OPENSHELL_GATEWAY_CONFIG: gatewayConfig,
-    XDG_CONFIG_HOME: configRoot,
-    XDG_STATE_HOME: stateRoot,
-  });
-  const gateway = spawn(
-    gatewayExecutable,
-    [
-      "--port",
-      String(gatewayPort),
-      "--disable-tls",
-      "--db-url",
-      "sqlite::memory:",
-      "--log-level",
-      "info",
-    ],
-    {
-      env: gatewayEnvironment,
-      stdio: ["ignore", gatewayLog, gatewayError],
-      windowsHide: true,
-    },
-  );
+  const ownedRoots: string[] = [];
+  const ownedLogs = new Set<number>();
+  const gatewaySession = new NativeGatewaySession(installRoot, runRoot);
+  let gateway: ChildProcess | undefined;
+  let create: ChildProcess | null = null;
+  let cliEnvironment: NodeJS.ProcessEnv | undefined;
   let passed = false;
-  let result = null;
-  let cliEnvironment = gatewayEnvironment;
-  let create = null;
-  let createWatcherDetached = false;
-  let logsClosed = false;
+  let primaryFailed = false;
+  let receipt: Record<string, unknown> | undefined;
   try {
+    fs.mkdirSync(evidenceRoot, { recursive: true });
+    for (const directory of [runRoot, shareRoot, runtimeRoot]) {
+      if (fs.existsSync(directory)) fail("qualification roots already exist");
+      fs.mkdirSync(directory);
+      ownedRoots.push(directory);
+    }
+    const gatewayPort = await freePort();
+    const mockPort = await freePort();
+    const gatewayConfig = await writeNativeGatewayConfig(
+      installRoot,
+      runRoot,
+      undefined,
+      async () => ({
+        network: nativeQualificationLoopbackConfig(
+          JSON.parse(
+            (
+              await run(
+                path.join(installRoot, "mxc", "wxc-exec.exe"),
+                ["--probe"],
+                allowlistedWindowsEnvironment(),
+                "Selecting the qualification network policy",
+                15_000,
+              )
+            ).stdout,
+          ),
+          [mockPort],
+        ),
+      }),
+      gatewaySession,
+    );
+    runtimeLease.assertHeld();
+    console.log("NEMOCLAW> Selecting the sealed installed Node/OpenClaw runtime without copying");
+    const openClawRoot = installedOpenClawRoot;
+    const openClawEntry = requiredFile(
+      path.join(openClawRoot, "openclaw-app.cjs"),
+      "sealed OpenClaw entrypoint",
+    );
+    const home = path.join(shareRoot, "home");
+    const temp = path.join(shareRoot, "temp");
+    for (const directory of [home, temp]) fs.mkdirSync(directory, { recursive: true });
+    const worker = nativeWorkerAssets(runtimeLease.runtimeRoot, "openclaw-turn");
+    const probePath = requiredFile(worker.entry, "prebuilt OpenClaw worker");
+    const resultPath = path.join(shareRoot, "result.json");
+    const policyPath = path.join(runRoot, "policy.yaml");
+    fs.writeFileSync(
+      policyPath,
+      [
+        "version: 1",
+        "",
+        ...NATIVE_NODE_UI_POLICY,
+        "filesystem_policy:",
+        "  include_workdir: false",
+        "  read_only:",
+        `    - ${quoteYamlPath(runtimeRoot)}`,
+        ...runtimeLease.readOnlyRoots.map((root) => `    - ${quoteYamlPath(root)}`),
+        "  read_write:",
+        `    - ${quoteYamlPath(shareRoot)}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const gatewayLog = fs.openSync(gatewayLogPath, "w");
+    ownedLogs.add(gatewayLog);
+    const gatewayError = fs.openSync(gatewayErrorPath, "w");
+    ownedLogs.add(gatewayError);
+    await gatewaySession.prepare();
+    const gatewayEnvironment = allowlistedWindowsEnvironment({
+      OPENSHELL_DRIVERS: "mxc",
+      OPENSHELL_GATEWAY_CONFIG: gatewayConfig,
+      ...gatewaySession.environment,
+    });
+    gateway = gatewaySession.spawnGateway(
+      gatewayExecutable,
+      [
+        "--port",
+        String(gatewayPort),
+        "--enable-mtls-auth",
+        "--db-url",
+        "sqlite::memory:",
+        "--log-level",
+        "info",
+      ],
+      {
+        env: gatewayEnvironment,
+        stdio: ["ignore", gatewayLog, gatewayError],
+        windowsHide: true,
+      },
+    );
+    const gatewayFailure = new Promise<never>((_, reject) => gateway!.once("error", reject));
+    void gatewayFailure.catch(() => {});
+    let result = null;
+    cliEnvironment = gatewayEnvironment;
+    let createWatcherDetached = false;
     console.log("NEMOCLAW> Starting installed OpenShell MXC gateway");
-    await waitForPort(gatewayPort, gateway);
+    await Promise.race([waitForPort(gatewayPort, gateway), gatewayFailure]);
     cliEnvironment = allowlistedWindowsEnvironment({
       ...gatewayEnvironment,
       OPENSHELL_GATEWAY: undefined,
     });
     await run(
       openshell,
-      ["gateway", "add", `http://127.0.0.1:${gatewayPort}`, "--local", "--name", gatewayName],
+      ["gateway", "add", `https://127.0.0.1:${gatewayPort}`, "--local", "--name", gatewayName],
       cliEnvironment,
       "Registering qualification gateway",
     );
@@ -569,21 +621,6 @@ async function main(runtimeLease: NativeRuntimeSession) {
         mxc: {
           command: nativeRuntimeWorkerCommand(runtimeLease, probePath),
           cwd: shareRoot,
-          windows_ui: true,
-          ...nativeQualificationLoopbackConfig(
-            JSON.parse(
-              (
-                await run(
-                  path.join(installRoot, "mxc", "wxc-exec.exe"),
-                  ["--probe"],
-                  allowlistedWindowsEnvironment(),
-                  "Selecting the qualification network policy",
-                  15_000,
-                )
-              ).stdout,
-            ),
-            [mockPort],
-          ),
         },
       }),
       "--no-tty",
@@ -604,6 +641,7 @@ async function main(runtimeLease: NativeRuntimeSession) {
     await Promise.race([
       waitForNativeTurnResult(resultPath, create, gateway, createFailure),
       runtimeLease.failure,
+      gatewayFailure,
     ]);
     runtimeLease.assertHeld();
     createWatcherDetached = create.exitCode === null;
@@ -611,7 +649,7 @@ async function main(runtimeLease: NativeRuntimeSession) {
     result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
     const turnPassed =
       result.executionMode === "embedded-worker" &&
-      result.version === "2026.7.1" &&
+      result.version === "2026.9.2" &&
       result.versionExitCode === 0 &&
       result.chatExitCode === 0 &&
       result.exactReply === true &&
@@ -626,8 +664,15 @@ async function main(runtimeLease: NativeRuntimeSession) {
       console.error(`NEMOCLAW> Failed sandbox probe result ${failedProbe}`);
       fail("installed OpenClaw turn result was not exact");
     }
-    if (!(await waitForFileText(gatewayLogPath, "MXC agent exec completed successfully")))
-      fail("OpenShell did not report successful MXC workload termination");
+    const completion = await waitForNativeMxcCompletion(
+      openshell,
+      cliEnvironment,
+      sandboxName,
+      gateway,
+      null,
+    );
+    if (completion === "ExecFailed" || completion === "MainProcessFailed")
+      fail("OpenShell reported failed MXC workload termination");
     console.log("AGENT> CHAT_OK");
     await run(
       openshell,
@@ -635,75 +680,171 @@ async function main(runtimeLease: NativeRuntimeSession) {
       cliEnvironment,
       "Deleting native MXC sandbox",
     );
-    const sandboxList = await run(
-      openshell,
-      ["sandbox", "list", "-o", "json"],
-      cliEnvironment,
-      "Verifying native MXC sandbox registry cleanup",
-    );
-    let sandboxRegistry;
-    try {
-      sandboxRegistry = JSON.parse(sandboxList.stdout.trim());
-    } catch {
-      fail("OpenShell sandbox registry output was not JSON");
-    }
-    if (jsonContainsExactValue(sandboxRegistry, sandboxName))
-      fail("native MXC sandbox remained registered after deletion");
-    if (!(await stopChild(gateway))) fail("OpenShell MXC gateway did not stop");
+    await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+      sandboxName,
+      gateway,
+      stateSession: runtimeLease,
+    });
+    if (!(await gatewaySession.stopGateway())) fail("OpenShell MXC gateway did not stop");
+    await gatewaySession.dispose();
     fs.closeSync(gatewayLog);
+    ownedLogs.delete(gatewayLog);
     fs.closeSync(gatewayError);
-    logsClosed = true;
-    for (const directory of [runRoot, shareRoot, runtimeRoot]) {
+    ownedLogs.delete(gatewayError);
+    for (const directory of ownedRoots) {
       if (!(await removeDirectory(directory)))
         fail(`qualification root remained after cleanup: ${path.basename(directory)}`);
     }
-    fs.writeFileSync(
-      receiptPath,
-      `${JSON.stringify({ schemaVersion: 1, classification: "installed-nemoclaw-native-windows-turn", architecture: "arm64", backend: "process_container", openClawExecutionMode: result.executionMode, openShellCreateWatcherDetached: createWatcherDetached, createWatcherStopped: true, workloadStopped: true, gatewayStopped: true, artifactStagedAtDriveRoot: false, runtimeBytesCopied: 0, runtimeId: runtimeLease.runtimeId, manifestSha256: runtimeLease.manifestSha256, openClawVersion: result.version, exactReply: result.reply, sandboxDeleted: true, sandboxRegistryAbsent: true, qualificationRootsRemoved: true, verdict: "pass" }, null, 2)}\n`,
-      "utf8",
-    );
+    receipt = {
+      schemaVersion: 1,
+      classification: "installed-nemoclaw-native-windows-turn",
+      architecture: "arm64",
+      backend: "process_container",
+      openClawExecutionMode: result.executionMode,
+      openShellCreateWatcherDetached: createWatcherDetached,
+      createWatcherStopped: true,
+      workloadStopped: true,
+      gatewayStopped: true,
+      artifactStagedAtDriveRoot: false,
+      runtimeBytesCopied: 0,
+      runtimeId: runtimeLease.runtimeId,
+      manifestSha256: runtimeLease.manifestSha256,
+      openClawVersion: result.version,
+      exactReply: result.reply,
+      sandboxDeleted: true,
+      sandboxRegistryAbsent: true,
+      qualificationRootsRemoved: true,
+      verdict: "pass",
+    };
     passed = true;
-    console.log(`NEMOCLAW> PASS receipt=${receiptPath}`);
+  } catch (error) {
+    primaryFailed = true;
+    throw error;
   } finally {
-    if (create !== null) await stopChild(create);
-    if (!passed) {
+    const failures = await attemptNativeUiCleanup([
+      [
+        "sandbox request stop",
+        async () => {
+          if (create?.pid && !(await stopChild(create))) throw new Error();
+        },
+      ],
+      [
+        "sandbox removal",
+        async () => {
+          if (!passed && create && cliEnvironment)
+            await run(
+              openshell,
+              ["sandbox", "delete", sandboxName],
+              cliEnvironment,
+              "Failure cleanup sandbox delete",
+              30_000,
+            );
+        },
+      ],
+      [
+        "sandbox registry verification",
+        async () => {
+          if (!passed && create && cliEnvironment)
+            await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+              sandboxName,
+              gateway,
+              stateSession: runtimeLease,
+            });
+        },
+      ],
+      [
+        "gateway stop",
+        async () => {
+          if (gateway?.pid && !(await gatewaySession.stopGateway())) throw new Error();
+        },
+      ],
+      ["private gateway cleanup", () => gatewaySession.dispose()],
+      ...[...ownedLogs].map(
+        (descriptor) =>
+          [
+            "gateway log close",
+            () => {
+              fs.closeSync(descriptor);
+              ownedLogs.delete(descriptor);
+            },
+          ] as const,
+      ),
+      [
+        "failure diagnostic",
+        () => {
+          if (passed || !ownedRoots.includes(runRoot)) return;
+          const diagnosticParts = [gatewayLogPath, gatewayErrorPath]
+            .map((file) =>
+              readOpenedRegularFile(file, { encoding: "utf8", maxBytes: 2 * 1024 * 1024 }),
+            )
+            .filter((text): text is string => text !== null);
+          if (diagnosticParts.length > 0) {
+            const diagnostic = sanitizedDiagnostic(diagnosticParts.join("\n"), [
+              [installRoot, "<install-root>"],
+              [runtimeRoot, "<runtime-root>"],
+              [shareRoot, "<share-root>"],
+              [runRoot, "<run-root>"],
+            ]);
+            const diagnosticPath = path.join(
+              evidenceRoot,
+              `native-windows-turn-diagnostic-${runId}.log`,
+            );
+            fs.writeFileSync(diagnosticPath, diagnostic, "utf8");
+            console.error(`NEMOCLAW> Sanitized MXC diagnostic\n${diagnostic}`);
+          }
+        },
+      ],
+      ...ownedRoots.map(
+        (directory) =>
+          [
+            "temporary root removal: " + path.basename(directory),
+            async () => {
+              if (!(await removeDirectory(directory))) throw new Error();
+            },
+          ] as const,
+      ),
+    ]);
+    if (!passed || failures.length) {
       try {
-        await run(
-          openshell,
-          ["sandbox", "delete", sandboxName],
-          cliEnvironment,
-          "Failure cleanup sandbox delete",
-          30_000,
+        fs.writeFileSync(
+          receiptPath,
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              classification: "installed-nemoclaw-native-windows-turn",
+              verdict: "fail",
+              cleanupFailures: failures,
+              ownedQualificationRootsRemoved:
+                ownedRoots.every((directory) => !fs.existsSync(directory)) &&
+                !fs.existsSync(gatewaySession.root),
+              privateGatewayStateRemoved: !fs.existsSync(gatewaySession.root),
+              retainedPrivateGatewayRoot: fs.existsSync(gatewaySession.root)
+                ? gatewaySession.root
+                : null,
+              retainedQualificationRoots: ownedRoots.filter((directory) =>
+                fs.existsSync(directory),
+              ),
+            },
+            null,
+            2,
+          ) + "\n",
+          "utf8",
         );
-      } catch {}
-    }
-    await stopChild(gateway);
-    if (!logsClosed) {
-      fs.closeSync(gatewayLog);
-      fs.closeSync(gatewayError);
-    }
-    if (!passed) {
-      const diagnosticParts = [gatewayLogPath, gatewayErrorPath]
-        .filter((file) => fs.existsSync(file))
-        .map((file) => fs.readFileSync(file, "utf8"));
-      if (diagnosticParts.length > 0) {
-        const diagnostic = sanitizedDiagnostic(diagnosticParts.join("\n"), [
-          [installRoot, "<install-root>"],
-          [runtimeRoot, "<runtime-root>"],
-          [shareRoot, "<share-root>"],
-          [runRoot, "<run-root>"],
-        ]);
-        const diagnosticPath = path.join(
-          evidenceRoot,
-          `native-windows-turn-diagnostic-${runId}.log`,
-        );
-        fs.writeFileSync(diagnosticPath, diagnostic, "utf8");
-        console.error(`NEMOCLAW> Sanitized MXC diagnostic\n${diagnostic}`);
+      } catch {
+        failures.push("failure receipt write");
       }
     }
-    for (const directory of [runRoot, shareRoot, runtimeRoot]) await removeDirectory(directory);
+    if (failures.length) {
+      console.error(`NEMOCLAW> Cleanup also failed: ${failures.join(", ")}`);
+      if (!primaryFailed) fail(`cleanup failed: ${failures.join(", ")}`);
+    }
   }
+  if (!passed || !receipt) fail("the turn qualification receipt is missing");
+  fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n", "utf8");
+  console.log(`NEMOCLAW> PASS receipt=${receiptPath}`);
 }
+
+export { main as qualifyNativeOpenClawTurn };
 
 async function runLeasedNativeTurn() {
   const installRoot = requiredDirectory(

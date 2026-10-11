@@ -473,6 +473,7 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
             this.result = 0;
             this.cancellation.ResetForRetry();
             this.window.ShowConfiguredSuccess();
+            if (configuration.LaunchAfterSetup) this.LaunchNemoClaw();
         }
         catch (OperationCanceledException)
         {

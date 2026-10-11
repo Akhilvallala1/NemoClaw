@@ -5,9 +5,9 @@
     {
       "id": "openclaw",
       "displayName": "OpenClaw",
-      "version": "2026.7.1",
-      "source": "https://registry.npmjs.org/openclaw/-/openclaw-2026.7.1.tgz",
-      "lockSha256": "248d881ca125bb83da293c4b3f40b46d057095a9fe90b5165255da0de78af9f9",
+      "version": "2026.9.2",
+      "source": "https://registry.npmjs.org/openclaw/-/openclaw-2026.9.2.tgz",
+      "lockSha256": "b44c7f475fe36a378ebc078dbf068bd225f8470002834ce1308872049213b633",
       "interface": "OpenClaw Control UI",
       "status": "candidate",
       "selectable": true,

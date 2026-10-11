@@ -46,6 +46,11 @@ internal static class NativeOnboarding
                         await NativeSetupOperations.SaveAsync(configuration, password, serviceCredentials, window.ShowModelProgress, cancellation.Token);
                         result = 0;
                         window.ShowConfiguredSuccess();
+                        if (configuration.LaunchAfterSetup)
+                        {
+                            try { NativeSetupOperations.Launch(configuration.Agent); window.MarkLaunched(); }
+                            catch (Exception) { window.ShowRecoverableError("Your settings are saved, but the agent could not open. Try Launch again."); }
+                        }
                     }
                     catch (OperationCanceledException)
                     {

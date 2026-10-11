@@ -19,6 +19,8 @@ public partial class DownstreamOptions : UserControl
         this.agent = value;
         this.ClearSecrets();
         foreach (var checkbox in new[] { this.SearchEnabled, this.TelegramEnabled, this.DiscordEnabled, this.SlackEnabled }) checkbox.IsChecked = false;
+        this.DiscordEnabled.IsEnabled = value == "hermes";
+        this.DiscordEnabled.Content = value == "openclaw" ? "Discord (unavailable in this preview)" : "Discord";
         this.SearchProvider.Items.Clear();
         if (value == "openclaw") this.SearchProvider.Items.Add(new ComboBoxItem { Content = "Brave Search", Tag = "brave" });
         if (value is "openclaw" or "hermes") this.SearchProvider.Items.Add(new ComboBoxItem { Content = "Tavily", Tag = "tavily" });
@@ -45,6 +47,7 @@ public partial class DownstreamOptions : UserControl
 
     internal NativeServiceCredentials CopyCredentials()
     {
+        this.ReadOptions();
         var result = new NativeServiceCredentials();
         try
         {

@@ -21,10 +21,13 @@ class FixturePreparationTests(unittest.TestCase):
             license_file = root / "LICENSE"
             license_file.write_text("fixture license")
             helper = root / "helper.exe"
-            header = bytearray(128)
+            header = bytearray(512)
             header[:2] = b"MZ"
             header[60:64] = (64).to_bytes(4, "little")
             header[64:70] = b"PE\0\0\x64\xaa"
+            header[84:86] = (240).to_bytes(2, "little")
+            header[88:90] = (0x20B).to_bytes(2, "little")
+            header[156:158] = (2).to_bytes(2, "little")
             helper.write_bytes(header)
             result = prepare(
                 root / "output", node, license_file, "22.23.2", helper, "a" * 40

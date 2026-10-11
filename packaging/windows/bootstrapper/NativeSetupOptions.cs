@@ -19,6 +19,8 @@ internal sealed class NativeSetupOptions
             throw new InvalidOperationException("Messaging is unavailable for this agent.");
         foreach (var (channel, users) in this.Messaging)
         {
+            if (agent == "openclaw" && channel == "discord")
+                throw new InvalidOperationException("Discord is unavailable for OpenClaw in this Windows preview.");
             if (channel is not ("telegram" or "discord" or "slack") || users.Length > 50)
                 throw new InvalidOperationException("Select a supported channel and at most 50 users.");
             var pattern = channel == "slack" ? "^[UW][A-Z0-9]{6,31}$" : "^[0-9]{1,24}$";

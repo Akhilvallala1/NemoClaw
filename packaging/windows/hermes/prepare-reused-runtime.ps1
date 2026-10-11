@@ -37,7 +37,7 @@ try{
     if((Get-FileHash -LiteralPath $python -Algorithm SHA256).Hash.ToLowerInvariant() -cne '54e17da389d3aae8c56b08a06fea5cd2f5acd57d2a7acb4061fc572964d4108b' -or
        (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant() -cne '97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878'){throw 'Pinned external build interpreters changed.'}
     Assert-ReuseBytes ([string]$reuseSpec.sourceArchive) 69242564 'c1f2401c8096e9372c46fa4ef8bdada18ed3cc84c0f5274562b86b7646ed3a87'
-    Assert-ReuseBytes ([string]$reuseSpec.baseZip) 1099892587 'b6e3683f4248b62e6ba3594d8ecab11d6958a23f161b526a1d11ec07d146d6ed'
+    Assert-ReuseBytes ([string]$reuseSpec.baseZip) 1099967399 'c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc'
     $baseInventory=Join-Path $build 'base-payload-inventory.json'
     $oldBuild=Join-Path $build 'official-runtime-build.json'
     $archive=[IO.Compression.ZipFile]::OpenRead([string]$reuseSpec.baseZip)
@@ -48,12 +48,12 @@ try{
             try{$incoming.CopyTo($destination)}finally{$destination.Dispose();$incoming.Dispose()}
         }
     }finally{$archive.Dispose()}
-    if((Get-FileHash -LiteralPath $baseInventory -Algorithm SHA256).Hash.ToLowerInvariant() -cne '777f6a6fcbefa3790130e795b611aff086775f23682ae109c16cac2f1ff1acd0' -or
-       (Get-FileHash -LiteralPath $oldBuild -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'b28c01a5eb2880cab6d824f812a414df86f91de1e0806452cf9132044d934b26'){throw 'The original inventory/build receipt bytes changed.'}
+    if((Get-FileHash -LiteralPath $baseInventory -Algorithm SHA256).Hash.ToLowerInvariant() -cne '9b2a7161657e9c55acb57fd52fbe36610747e032aa4323f83422696c112e1f4d' -or
+       (Get-FileHash -LiteralPath $oldBuild -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'c50a92fa7cb97c1d65cebcd958af722d94db1da9819cfe6eb4c20e505954f475'){throw 'The original inventory/build receipt bytes changed.'}
     $adaptation=Join-Path $build 'native-adaptation.json'
     Invoke-ReuseTool $python @('-I','-B',(Join-Path $PSScriptRoot 'prepare-native-runtime.py'),'--runtime-root',$RuntimeRoot,
         '--source-root',[string]$reuseSpec.originalBuildRoot,'--target-root',$RuntimeRoot,'--environment','hermes-agent/venv',
-        '--environment','tools/browser-use','--ci-upgrade-startup-adapter','--receipt',$adaptation) 'upgrade-and-relocate-canonical-metadata'
+        '--environment','tools/browser-use','--receipt',$adaptation) 'relocate-current-adapter-canonical-metadata'
     $wheelEvidence=Join-Path $build 'pywinpty'
     $receipt.wheelAttempted=$true;$receipt.buildProcessesClosed=$false
     Invoke-ReuseTool $python @('-I','-B',(Join-Path $PSScriptRoot 'rebuild-pywinpty-conpty.py'),'--runtime-root',$RuntimeRoot,

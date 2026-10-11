@@ -21,9 +21,12 @@ import tomllib
 import zipfile
 
 HERE = Path(__file__).parent
-BASE_HEAD = "47d890728482cca05e840edd27e33e3d495aeabf"
-BASE_ZIP_BYTES = 1099892587
-BASE_ZIP_SHA = "b6e3683f4248b62e6ba3594d8ecab11d6958a23f161b526a1d11ec07d146d6ed"
+BASE_HEAD = "371706dfa3173422b8d7ad521c2519010809697a"
+BASE_RUN = 37969718115
+BASE_ARTIFACT = 11637766639
+BASE_ZIP_BYTES = 1099967399
+BASE_ZIP_SHA = "c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc"
+BASE_MARKER_SHA = "e9a9baffe32dc0ffc5c0e275fa5389c237b9a9d3a9c116279dc27401aed8232b"
 PYTHON_SHA = "54e17da389d3aae8c56b08a06fea5cd2f5acd57d2a7acb4061fc572964d4108b"
 UV_SHA = "dbef885dac7790485a24cf4f67355d63e9ee1eba2e2182bb232a08f9e5d6e729"
 SOURCE = {
@@ -37,7 +40,7 @@ SITE = "hermes-agent/venv/Lib/site-packages/"
 DIST = "pywinpty-2.0.15.dist-info/"
 PACKAGE_ROOTS = (SITE + "winpty", SITE + DIST.rstrip("/"))
 NATIVE = SITE + "winpty/winpty.cp311-win_arm64.pyd"
-OLD_NATIVE_SHA = "c81591d40779ef1a66b6ad60eac31f23834b34d0b82164c4f1342850ad33f374"
+OLD_NATIVE_SHA = "a794add7c2445ded631373407642061869e17bcbaeae837f6b69cd2135d130b7"
 INSTALL_METADATA = {
     SITE + DIST + name
     for name in (
@@ -291,10 +294,94 @@ def validate_installed_record(runtime, installed):
     )
 
 
+def base_identity():
+    return {
+        "artifactId": BASE_ARTIFACT,
+        "runId": BASE_RUN,
+        "sourceRevision": BASE_HEAD,
+        "zipSha256": BASE_ZIP_SHA,
+        "candidateReceiptSha256": "3a15c2101d25cef859591ce7edebc98dc4cdfc6f8c6c0212105415f1e81b1fea",
+        "inventorySha256": "9b2a7161657e9c55acb57fd52fbe36610747e032aa4323f83422696c112e1f4d",
+        "buildReceiptSha256": "c50a92fa7cb97c1d65cebcd958af722d94db1da9819cfe6eb4c20e505954f475",
+    }
+
+
+def metadata_relocation_record():
+    metadata = load("prepare-native-runtime")
+    return {
+        "schemaVersion": 1,
+        "classification": "current-adapter-metadata-relocation",
+        "baseCandidateSource": BASE_HEAD,
+        "previousMarkerSha256": BASE_MARKER_SHA,
+        "startupAdapterSha256": metadata.CURRENT_ADAPTER_SHA256,
+        "hookPaths": list(metadata.UPGRADE_HOOK_PATHS),
+    }
+
+
+def validate_metadata_relocation(prior, adapted, original, before):
+    """Allow path metadata changes, never an adapter upgrade, in this exact base."""
+    metadata = load("prepare-native-runtime")
+    require(
+        adapted.get("schemaVersion") == 1
+        and adapted.get("classification") == "native-hermes-generated-metadata-adaptation"
+        and adapted.get("hermesRevision") == metadata.REVISION
+        and adapted.get("environments") == ["hermes-agent/venv", "tools/browser-use"]
+        and adapted.get("requiresMovedRootProbe") is True
+        and adapted.get("runtimeExecutionQualified") is False
+        and adapted.get("retirements") == []
+        and all(
+            key not in report
+            for report in (prior, adapted)
+            for key in ("startupAdapterUpgrade", "startupAdapterUpgradeApplied", "browserUseStartup")
+        ),
+        "Missing exact current-adapter relocation receipt",
+    )
+    expected, actual = identities(original, False), identities(before, False)
+    require(
+        expected[metadata.MARKER] == {"bytes": 4637, "sha256": BASE_MARKER_SHA},
+        "Original current-adapter marker changed",
+    )
+    prior_paths = {row["path"] for row in prior["files"]}
+    require(
+        len(prior["files"]) == len(prior_paths)
+        and len(adapted["files"]) == len(prior_paths)
+        and {row["path"] for row in adapted["files"]} == prior_paths,
+        "Unexpected adapted metadata set",
+    )
+    relocatable = {
+        "hermes-agent/venv/pyvenv.cfg",
+        "tools/browser-use/pyvenv.cfg",
+        SITE + "hermes_agent-0.21.1.dist-info/direct_url.json",
+        SITE + "hermes_agent-0.21.1.dist-info/RECORD",
+        metadata.MARKER,
+    }
+    for row in adapted["files"]:
+        previous = expected[row["path"]]
+        require(
+            previous["sha256"] == row["beforeSha256"],
+            "Adaptation preimage differs from complete base",
+        )
+        replacement = {key: row[key] for key in ("bytes", "sha256")}
+        require(
+            row["path"] in relocatable or replacement == previous,
+            "Relocation changed code or non-location metadata",
+        )
+        expected[row["path"]] = replacement
+    for hook in metadata.UPGRADE_HOOK_PATHS:
+        require(
+            hook in prior_paths
+            and expected[hook] == {"bytes": 23661, "sha256": metadata.CURRENT_ADAPTER_SHA256},
+            "Relocation changed the current startup adapter",
+        )
+    require(
+        actual == expected and before["directories"] == original["directories"],
+        "Runtime is not the complete base plus the exact metadata plan",
+    )
+
+
 def validate_base(base_zip, adaptation_file, before):
-    admission, metadata, owner = (
+    admission, owner = (
         load("verify-personal-candidate"),
-        load("prepare-native-runtime"),
         load("official-runtime-inventory"),
     )
     admission.verify_zip(base_zip, BASE_ZIP_BYTES, BASE_ZIP_SHA)
@@ -319,42 +406,22 @@ def validate_base(base_zip, adaptation_file, before):
     )
     owner.validate_build_receipt(build)
     adapted = json.loads(adaptation_file.read_text())
+    validate_metadata_relocation(prior, adapted, original, before)
     require(
-        adapted["startupAdapterUpgradeApplied"] is True
-        and adapted["startupAdapterUpgrade"] == metadata.adapter_upgrade_record()
-        and adapted["classification"] == "native-hermes-generated-metadata-adaptation",
-        "Missing exact first upgrade/relocation receipt",
-    )
-    expected, actual = identities(original, False), identities(before, False)
-    prior_paths = {row["path"] for row in prior["files"]}
-    require(
-        len(adapted["files"]) == len(prior_paths)
-        and {row["path"] for row in adapted["files"]} == prior_paths,
-        "Unexpected adapted metadata set",
-    )
-    for row in adapted["files"]:
-        require(
-            expected[row["path"]]["sha256"] == row["beforeSha256"],
-            "Adaptation preimage differs from complete base",
-        )
-        expected[row["path"]] = {key: row[key] for key in ("bytes", "sha256")}
-    require(
-        actual == expected and before["directories"] == original["directories"],
-        "Runtime is not the complete base plus the exact metadata plan",
-    )
-    require(
-        actual[NATIVE]["sha256"] == OLD_NATIVE_SHA,
+        identities(before, False)[NATIVE]["sha256"] == OLD_NATIVE_SHA,
         "Expected original pywinpty extension",
     )
-    return {
-        "artifactId": 10181796438,
-        "runId": 34551706967,
+    observed = {
+        "artifactId": BASE_ARTIFACT,
+        "runId": BASE_RUN,
         "sourceRevision": BASE_HEAD,
         "zipSha256": BASE_ZIP_SHA,
         "candidateReceiptSha256": hashlib.sha256(candidate_bytes).hexdigest(),
         "inventorySha256": candidate["inventorySha256"],
         "buildReceiptSha256": candidate["buildReceiptSha256"],
     }
+    require(observed == base_identity(), "Complete base receipt identities changed")
+    return observed
 
 
 def validate_rebuild_receipt(runtime, receipt, evidence_directory):
@@ -411,9 +478,8 @@ def validate_rebuild_receipt(runtime, receipt, evidence_directory):
             "Build process failed or did not close",
         )
     require(
-        receipt["base"]["artifactId"] == 10181796438
-        and receipt["base"]["runId"] == 34551706967
-        and receipt["base"]["sourceRevision"] == BASE_HEAD,
+        receipt["base"] == base_identity()
+        and receipt.get("metadataRelocation") == metadata_relocation_record(),
         "Complete base identity changed",
     )
     require(
@@ -605,6 +671,7 @@ def main():
     try:
         before = owner.inventory(runtime)
         receipt["base"] = validate_base(args.base_zip, args.adaptation_receipt, before)
+        receipt["metadataRelocation"] = metadata_relocation_record()
         receipt["adaptationReceiptSha256"] = digest(args.adaptation_receipt)
         save(output / "before-inventory.json", before)
         receipt["beforeInventorySha256"] = digest(output / "before-inventory.json")

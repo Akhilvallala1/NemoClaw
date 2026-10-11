@@ -9,10 +9,13 @@ import { createRequire } from "node:module";
 import {
   compiledPluginPlan,
   publishPluginFacades,
+  publishDynamicImportBridges,
   stagePublishedResources,
   resourceInventory,
   PREBUILT_CHOICE_PLUGINS,
   prebuiltPluginRegistrationSource,
+  runtimeExternalPlugin,
+  runtimeInputRoot,
 } from "./openclaw-app-resources.mts";
 
 const require = createRequire(import.meta.url);
@@ -32,6 +35,7 @@ const external = [
   "@snazzah/davey",
   "libopus-wasm",
   "undici",
+  "ws",
   "@discordjs/voice",
 ];
 function argument(name: string) {
@@ -53,11 +57,14 @@ const compiler = require(
 ) as typeof import("esbuild");
 if (compiler.version !== "0.27.4") throw new Error("The reviewed compiler is esbuild 0.27.4.");
 const materializationBytes = fs.readFileSync(
-  path.join(path.dirname(source), "materialization-receipt.json"),
+  path.join(runtimeInputRoot(source), "materialization-receipt.json"),
 );
 const materialization = JSON.parse(materializationBytes.toString("utf8")) as {
   classification: string;
   source: { sha256: string };
+  sourceRoot: string;
+  dependencyLock: { path: string; sha256: string };
+  choiceDependencyLock: { path: string; sha256: string };
   additionalPackages: {
     package: string;
     version: string;
@@ -69,12 +76,19 @@ const materialization = JSON.parse(materializationBytes.toString("utf8")) as {
 if (
   materialization.classification !== "verified-application-build-inputs" ||
   materialization.source.sha256 !==
-    "67ad539d9915efb63d5f294beeb9290b7172d23c92d8052110a9c8355f783458" ||
+    "3431f4cd2d8dbd6b936def2694ac27e19fa0256295cf4ada0f652ecf1c9ee520" ||
+  materialization.sourceRoot !== "node_modules/openclaw" ||
+  materialization.dependencyLock?.path !== "runtime-package-lock.json" ||
+  materialization.dependencyLock.sha256 !==
+    "b44c7f475fe36a378ebc078dbf068bd225f8470002834ce1308872049213b633" ||
+  materialization.choiceDependencyLock?.path !== "choice-package-lock.json" ||
+  materialization.choiceDependencyLock.sha256 !==
+    "8fb7adc7813b4262369d1a1e0efc9206a5fed880d00a32119c8eca132407872d" ||
   !Object.values(PREBUILT_CHOICE_PLUGINS).every((expected) =>
     materialization.additionalPackages?.some(
       (item) =>
         item.package === expected.package &&
-        item.version === "2026.7.1" &&
+        item.version === "2026.9.2" &&
         item.sha256 === expected.sha256,
     ),
   )
@@ -84,8 +98,24 @@ const metadata = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "
   name: string;
   version: string;
 };
-if (metadata.name !== "openclaw" || metadata.version !== "2026.7.1")
+if (metadata.name !== "openclaw" || metadata.version !== "2026.9.2")
   throw new Error("The exact selected OpenClaw package is required.");
+const dependencyLockBytes = fs.readFileSync(
+  path.join(runtimeInputRoot(source), materialization.dependencyLock.path),
+);
+if (
+  createHash("sha256").update(dependencyLockBytes).digest("hex") !==
+  materialization.dependencyLock.sha256
+)
+  throw new Error("The canonical runtime dependency lock changed after materialization.");
+const choiceLockBytes = fs.readFileSync(
+  path.join(runtimeInputRoot(source), materialization.choiceDependencyLock.path),
+);
+if (
+  createHash("sha256").update(choiceLockBytes).digest("hex") !==
+  materialization.choiceDependencyLock.sha256
+)
+  throw new Error("The canonical choice dependency lock changed after materialization.");
 if (fs.existsSync(output)) throw new Error("Compilation output must be fresh.");
 fs.mkdirSync(output, { recursive: true });
 const app = path.join(output, "app");
@@ -122,6 +152,9 @@ function __nemoPrepareAssetRoot() {
 function __nemoExternalRequire(specifier) {
   return require("node:module").createRequire(__nemoFilename)(specifier);
 }
+function __nemoExternalResolve(specifier) {
+  return require("node:module").createRequire(__nemoFilename).resolve(specifier);
+}
 function __nemoExternalImport(specifier) {
   return require("node:module").createRequire(__nemoFilename)("./openclaw-dynamic-import.cjs")(specifier);
 }`;
@@ -140,11 +173,10 @@ try {
     format: "cjs",
     target: "node22.23",
     define: {
-      __OPENCLAW_VERSION__: JSON.stringify(metadata.version),
+      "process.env.OPENCLAW_BUNDLED_VERSION": JSON.stringify(metadata.version),
     },
     banner: { js: banner },
-    plugins: [pluginPlan.plugin],
-    external,
+    plugins: [runtimeExternalPlugin(source, external), pluginPlan.plugin],
     metafile: true,
     sourcemap: "external",
     treeShaking: false,
@@ -181,6 +213,7 @@ try {
       kind: number,
     ): AstNode;
     isCallExpression(node: AstNode): boolean;
+    isPropertyAccessExpression(node: AstNode): boolean;
     forEachChild(node: AstNode, visit: (node: AstNode) => void): void;
   };
   type AstNode = {
@@ -188,6 +221,7 @@ try {
     expression?: AstNode;
     arguments?: AstNode[];
     text?: string;
+    name?: { text?: string };
     getStart(source: AstNode): number;
   };
   const codePath = path.join(app, "openclaw-app.cjs");
@@ -201,6 +235,7 @@ try {
   );
   const imports: number[] = [];
   const standaloneRequires: number[] = [];
+  const standaloneResolves: number[] = [];
   const standalonePackages = new Set([
     // This optional peer remains absent. Keep its lazy Mistral tracing import
     // opaque to the second compiler instead of resolving it at build time.
@@ -219,9 +254,24 @@ try {
       node.expression.text === "require" &&
       node.arguments?.length === 1 &&
       node.arguments[0].kind === ts.SyntaxKind.StringLiteral &&
-      standalonePackages.has(node.arguments[0].text ?? "")
+      (standalonePackages.has(node.arguments[0].text ?? "") ||
+        node.arguments[0].text?.startsWith("./node_modules/") ||
+        node.arguments[0].text?.startsWith("./plugins/"))
     )
       standaloneRequires.push(node.expression.getStart(syntax));
+    if (
+      ts.isCallExpression(node) &&
+      node.expression &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.expression?.kind === ts.SyntaxKind.Identifier &&
+      node.expression.expression.text === "require" &&
+      node.expression.name?.text === "resolve" &&
+      node.arguments?.length === 1 &&
+      node.arguments[0].kind === ts.SyntaxKind.StringLiteral &&
+      (node.arguments[0].text?.startsWith("./node_modules/") ||
+        node.arguments[0].text?.startsWith("./plugins/"))
+    )
+      standaloneResolves.push(node.expression.getStart(syntax));
     ts.forEachChild(node, visit);
   };
   visit(syntax);
@@ -236,6 +286,11 @@ try {
       original: "require",
       replacement: "__nemoExternalRequire",
     })),
+    ...standaloneResolves.map((offset) => ({
+      offset,
+      original: "require.resolve",
+      replacement: "__nemoExternalResolve",
+    })),
   ];
   for (const { offset, original, replacement } of replacements.sort(
     (a, b) => b.offset - a.offset,
@@ -245,8 +300,7 @@ try {
     codeText = codeText.slice(0, offset) + replacement + codeText.slice(offset + original.length);
   }
   fs.writeFileSync(codePath, codeText);
-  const bridge = '"use strict"; module.exports = specifier => import(specifier);\n';
-  fs.writeFileSync(path.join(app, "openclaw-dynamic-import.cjs"), bridge, { flag: "wx" });
+  const bridge = publishDynamicImportBridges(app);
   const code = Buffer.from(codeText);
   publishPluginFacades(app, pluginPlan.entries);
   const admittedPackages = stagePublishedResources(
@@ -254,31 +308,9 @@ try {
     app,
     portable ? process.platform : "win32",
   );
-  const workerResult = await compiler.build({
-    entryPoints: [path.join(source, "dist/audit/audit-event-writer.worker.js")],
-    outfile: path.join(app, "dist/audit/audit-event-writer.worker.js"),
-    bundle: true,
-    platform: "node",
-    format: "cjs",
-    target: "node22.23",
-    external,
-    metafile: true,
-    define: { "import.meta.url": "__workerUrl" },
-    banner: { js: 'const __workerUrl=require("node:url").pathToFileURL(__filename).href;' },
-  });
-  fs.writeFileSync(
-    path.join(app, "dist/audit/package.json"),
-    JSON.stringify({ type: "commonjs" }) + "\n",
-    { flag: "wx" },
-  );
   fs.writeFileSync(
     path.join(diagnostics, "plugin-registry.json"),
     JSON.stringify(pluginPlan.entries, null, 2) + "\n",
-    { flag: "wx" },
-  );
-  fs.writeFileSync(
-    path.join(diagnostics, "audit-worker-metafile.json"),
-    JSON.stringify(workerResult.metafile, null, 2) + "\n",
     { flag: "wx" },
   );
   fs.writeFileSync(
@@ -290,7 +322,8 @@ try {
         sourceVersion: metadata.version,
         materializationReceiptSha256: sha256(materializationBytes),
         sourcePackageSha256: sha256(fs.readFileSync(path.join(source, "package.json"))),
-        sourceLockSha256: sha256(fs.readFileSync(path.join(source, "npm-shrinkwrap.json"))),
+        sourceLockSha256: sha256(dependencyLockBytes),
+        choiceLockSha256: sha256(choiceLockBytes),
         entrySourceSha256: sha256(fs.readFileSync(entry)),
         adapterSha256: sha256(adapter),
         compilerVersion: compiler.version,
@@ -309,6 +342,7 @@ try {
           sha256: sha256(bridge),
           rewrittenGeneratedImports: imports.length,
           rewrittenStandaloneRequires: standaloneRequires.length,
+          rewrittenStandaloneResolves: standaloneResolves.length,
           standalonePackages: [...standalonePackages],
           keepExternalToSea: true,
         },
@@ -335,8 +369,9 @@ try {
     package: {
       name: metadata.name,
       version: metadata.version,
-      sourceArchiveSha256: "67ad539d9915efb63d5f294beeb9290b7172d23c92d8052110a9c8355f783458",
-      shrinkwrapSha256: sha256(fs.readFileSync(path.join(source, "npm-shrinkwrap.json"))),
+      sourceArchiveSha256: "3431f4cd2d8dbd6b936def2694ac27e19fa0256295cf4ada0f652ecf1c9ee520",
+      dependencyLockSha256: sha256(dependencyLockBytes),
+      choiceDependencyLockSha256: sha256(choiceLockBytes),
     },
     compiler: {
       receiptSha256: sha256(fs.readFileSync(path.join(output, "build-receipt.json"))),
@@ -348,7 +383,7 @@ try {
       app,
       pluginPlan.entries.map((entry) => entry.path),
     ),
-    controlUiRoot: "dist/control-ui",
+    controlUiRoot: "node_modules/openclaw/dist/control-ui",
     canonicalPluginEntries: pluginPlan.entries,
     admittedPackages,
     additionalInputArchives: materialization.additionalPackages.map(

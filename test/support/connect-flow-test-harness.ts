@@ -12,9 +12,11 @@ import type {
   OpenShellSandboxBufferedCommandCompletion,
   OpenShellSandboxBufferedCommandRequest,
 } from "../../src/lib/adapters/openshell/sandbox-command";
+import type { DockerSandboxIdentityObservation } from "../../src/lib/adapters/docker/inspect";
 import type { WslDetectionOptions } from "../../src/lib/platform";
 import type { ConfigObject } from "../../src/lib/security/credential-filter";
 import type { SandboxEntry } from "../../src/lib/state/registry";
+import { fingerprintOpenShellSandboxId } from "../../src/lib/adapters/openshell/sandbox-identity";
 
 type ConnectSandbox = (typeof import("../../src/lib/actions/sandbox/connect"))["connectSandbox"];
 type WaitForSandboxReadyOrExit =
@@ -42,6 +44,7 @@ export type ConnectHarness = {
   captureOpenshellSpy: MockInstance;
   captureResolvedOpenshellSpy: MockInstance;
   checkAndRecoverSpy: MockInstance;
+  connectManagedOpenShellSdkSpy: MockInstance;
   waitForStartedHermesGatewayProcessSpy: MockInstance;
   connectSandbox: ConnectSandbox;
   ensureOllamaAuthProxySpy: MockInstance;
@@ -51,6 +54,7 @@ export type ConnectHarness = {
   ensureLiveSandboxSpy: MockInstance;
   getSandboxDockerRuntimeSpy: MockInstance;
   dockerStartSpy: MockInstance;
+  inspectSandboxNameLabeledContainersSpy: MockInstance;
   errorSpy: MockInstance;
   logSpy: MockInstance;
   inspectLaunchReadinessSpy: MockInstance;
@@ -69,6 +73,8 @@ export type ConnectHarness = {
   requalifyPortableAgentAuthoritySpy: MockInstance;
   qualifyHermesPortableAcceptedReadinessAuthoritySpy: MockInstance;
   inspectPortableReceiptDispositionSpy: MockInstance;
+  verifyNativeNvidiaProviderAttachmentSpy: MockInstance;
+  nativeInferenceInvocationSpy: MockInstance;
   registryUpdateSpy: MockInstance;
   registryEntries: SandboxEntry[];
   resolveAgentConfigSpy: MockInstance;
@@ -89,6 +95,11 @@ export type ConnectHarnessOptions = {
   sessionOutcome?: OpenShellSandboxSessionOutcome;
   agentName?: string;
   inferenceGetOutput?: string;
+  inferenceSetResult?: {
+    status: number | null;
+    output?: string;
+    signal?: NodeJS.Signals | null;
+  };
   isWsl?: boolean;
   frontOllamaWithProxy?: boolean;
   inferenceProbeResponses?: Array<
@@ -143,12 +154,14 @@ export type ConnectHarnessOptions = {
       };
   useRealPortableReceipt?: boolean;
   dockerRuntime?: {
+    containerObservationFailed?: boolean;
     health?: string;
     paused?: boolean;
     running?: boolean;
     containerName?: string | null;
   };
   dockerStartStatus?: number | null;
+  sandboxNameLabeledContainers?: DockerSandboxIdentityObservation;
   /** Exit status the mocked `openshell sandbox start` reports. */
   sandboxLifecycleStartStatus?: number | null;
   /** Phase the mocked `openshell sandbox get` reports. */
@@ -238,6 +251,10 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
   const sandboxSession = requireDist("../../src/lib/state/sandbox-session.js");
   const vmDnsMonkeypatch = requireDist("../../src/lib/actions/sandbox/vm-dns-monkeypatch.js");
   const launchReadiness = requireDist("../../src/lib/actions/sandbox/launch-readiness.js");
+  const nativeNvidia = requireDist("../../src/lib/inference/native-nvidia/index.js");
+  const inferenceRouteHealth = requireDist(
+    "../../src/lib/actions/sandbox/inference-route-health.js",
+  );
   const portableAgentLifecycle = requireDist(
     "../../src/lib/onboard/experimental/portable-agent-lifecycle.js",
   );
@@ -442,6 +459,12 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
   const publishLaunchReadinessSpy = vi
     .spyOn(launchReadiness, "publishLaunchReadiness")
     .mockResolvedValue(options.readinessPublicationResult ?? { kind: "published" });
+  const verifyNativeNvidiaProviderAttachmentSpy = vi
+    .spyOn(nativeNvidia, "verifyNativeNvidiaProviderAttachment")
+    .mockImplementation(async (...args: unknown[]) => (args[0] as { expected: unknown }).expected);
+  const nativeInferenceInvocationSpy = vi
+    .spyOn(inferenceRouteHealth, "runSandboxInferenceInvocationProbe")
+    .mockResolvedValue({ ok: true });
   const launchReadinessMutationGateSpy = vi
     .spyOn(launchReadiness, "withLaunchReadinessMutationGate")
     .mockImplementation((async (...args: unknown[]) => {
@@ -463,10 +486,19 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
       paused: options.dockerRuntime?.paused ?? false,
       running: options.dockerRuntime?.running ?? true,
       containerName: options.dockerRuntime?.containerName ?? null,
+      containerObservationFailed: options.dockerRuntime?.containerObservationFailed,
     });
   const dockerStartSpy = vi.spyOn(dockerAdapter, "dockerStart").mockReturnValue({
     status: options.dockerStartStatus === undefined ? 0 : options.dockerStartStatus,
   });
+  const openshellDockerSandboxContainers = requireDist(
+    "../../src/lib/onboard/openshell-docker-sandbox-containers.js",
+  );
+  const inspectSandboxNameLabeledContainersSpy = vi
+    .spyOn(openshellDockerSandboxContainers, "inspectDockerSandboxNameLabeledContainers")
+    .mockReturnValue(
+      options.sandboxNameLabeledContainers ?? { status: "observed", rows: [], malformedRows: 0 },
+    );
   const inferenceProbeResponses = [...(options.inferenceProbeResponses ?? [])];
   const listOutputs = [...(options.listOutputs ?? [])];
   const sandboxRunBufferedSpy = vi.fn(async (request: OpenShellSandboxBufferedCommandRequest) => {
@@ -536,7 +568,10 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
       };
     }
     if (argv[0] === "sandbox" && argv[1] === "get") {
-      return { status: 0, output: `Phase: ${options.sandboxGetPhase ?? "Ready"}\n` };
+      return {
+        status: 0,
+        output: `Phase: ${options.sandboxGetPhase ?? (options.registryEntry?.stopped === true ? "Stopped" : "Ready")}\n`,
+      };
     }
     if (argv[0] === "sandbox" && argv[1] === "list") {
       return {
@@ -556,6 +591,9 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
             ? "Gateway inference:\n  Provider: ollama-local\n  Model: qwen3-vl:4b\n"
             : "Provider: unknown\nModel: unknown\n"),
       };
+    }
+    if (argv[0] === "inference" && argv[1] === "set" && options.inferenceSetResult) {
+      return options.inferenceSetResult;
     }
     if (argv[0] === "forward" && argv[1] === "list") {
       const sandboxName = String(registryEntries[0]?.name ?? "alpha");
@@ -578,10 +616,57 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
   const captureOpenshellSpy = vi
     .spyOn(runtime, "captureOpenshell")
     .mockImplementation(captureOpenshellImplementation);
+  const openShellSdk = requireDist("../../src/lib/adapters/openshell/sdk.js");
+  const connectManagedOpenShellSdkSpy = vi
+    .spyOn(openShellSdk, "connectManagedOpenShellSdk")
+    .mockImplementation(async (...args: unknown[]) => {
+      const target = args[0] as { kind: string; gatewayName?: string };
+      let sandboxPhase = String(
+        options.sandboxGetPhase ?? (options.registryEntry?.stopped === true ? "Stopped" : "Ready"),
+      ).toLowerCase();
+      return {
+        raw: {
+          startSandbox: async ({ name }: { name: string }) => {
+            const invokeCapture = runtime.captureOpenshell as (args: string[]) => {
+              status?: number | null;
+            };
+            const completion = invokeCapture([
+              "sandbox",
+              "start",
+              "-g",
+              target.gatewayName ?? "nemoclaw",
+              name,
+            ]) as { status?: number | null };
+            if (completion.status !== 0) {
+              throw Object.assign(new Error("OpenShell start failed."), {
+                code: String(completion.status ?? "unknown"),
+              });
+            }
+            sandboxPhase = "ready";
+            return { sandbox: { metadata: { id: "alpha-sandbox-id" } } };
+          },
+          stopSandbox: async () => ({ sandbox: { metadata: { id: "alpha-sandbox-id" } } }),
+        },
+        sandbox: {
+          get: async () => ({
+            id: "alpha-sandbox-id",
+            phase: sandboxPhase,
+          }),
+          waitReady: async () => ({ id: "alpha-sandbox-id", phase: "ready" }),
+        },
+      };
+    });
   const captureResolvedOpenshellSpy = vi
     .spyOn(runtime, "captureResolvedOpenshell")
     .mockImplementation(captureOpenshellImplementation);
   const runOpenshellSpy = vi.spyOn(runtime, "runOpenshell").mockReturnValue({ status: 0 });
+  vi.spyOn(runtime, "captureResolvedOpenshellAsync").mockImplementation(async (args, options) => {
+    runtime.runOpenshell(args, {
+      ignoreError: true,
+      timeout: (options as { timeout?: number }).timeout,
+    });
+    return captureOpenshellImplementation(args);
+  });
   const withGatewayRouteMutationLockSpy = vi
     .spyOn(gatewayRouteMutationLock, "withGatewayRouteMutationLock")
     .mockImplementation(
@@ -677,7 +762,7 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
     lifecycleLiveIdentityFingerprint:
       portableDisposition.kind === "hermes"
         ? portableDisposition.liveIdentityFingerprint
-        : undefined,
+        : fingerprintOpenShellSandboxId("alpha-sandbox-id")!,
     gpuEnabled: false,
     ...(portableDisposition.kind === "hermes"
       ? {
@@ -716,6 +801,16 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
           }
         : null;
     },
+  );
+  vi.spyOn(crossPortRegistry, "getSandboxAcrossGatewayRoots").mockImplementation(
+    (name: unknown) => registryEntries.find((candidate) => candidate.name === String(name)) ?? null,
+  );
+  vi.spyOn(crossPortRegistry, "recordSandboxStopIntentAcrossGatewayRoots").mockImplementation(((
+    name: string,
+    stopped: boolean,
+  ) => registry.recordSandboxStopIntent(name, stopped, registry.updateSandbox)) as never);
+  vi.spyOn(crossPortRegistry, "listPublishedSandboxesAcrossGatewayRoots").mockImplementation(
+    () => registryEntries,
   );
   vi.spyOn(registry, "listSandboxes").mockReturnValue({
     sandboxes: registryEntries,
@@ -773,6 +868,7 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
     captureOpenshellSpy,
     captureResolvedOpenshellSpy,
     checkAndRecoverSpy,
+    connectManagedOpenShellSdkSpy,
     waitForStartedHermesGatewayProcessSpy,
     connectSandbox: requireDist(connectModulePath).connectSandbox,
     ensureOllamaAuthProxySpy,
@@ -782,6 +878,7 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
     ensureLiveSandboxSpy,
     getSandboxDockerRuntimeSpy,
     dockerStartSpy,
+    inspectSandboxNameLabeledContainersSpy,
     errorSpy,
     logSpy,
     inspectLaunchReadinessSpy,
@@ -799,6 +896,8 @@ export function createConnectHarness(options: ConnectHarnessOptions = {}): Conne
     requalifyPortableAgentAuthoritySpy,
     qualifyHermesPortableAcceptedReadinessAuthoritySpy,
     inspectPortableReceiptDispositionSpy,
+    verifyNativeNvidiaProviderAttachmentSpy,
+    nativeInferenceInvocationSpy,
     registryUpdateSpy,
     registryEntries,
     resolveAgentConfigSpy,

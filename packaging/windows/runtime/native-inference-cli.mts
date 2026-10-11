@@ -5,6 +5,7 @@ import { fileURLToPath as nativeEntryFile } from "node:url";
 declare const NEMOCLAW_BUNDLED_RUNTIME: boolean | undefined;
 import { createInterface } from "node:readline";
 import path from "node:path";
+import { isDownloadedLocalModel } from "./native-local-models.mts";
 import {
   ensureNativeInference,
   installNativeInference,
@@ -14,11 +15,20 @@ import {
 } from "./native-inference.mts";
 
 async function main() {
-  const [action, ownership] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const action = args.shift() ?? "";
+  const ownership = action === "serve" ? args.shift() : undefined;
+  const localModel =
+    args.length === 2 &&
+    args[0] === "--model" &&
+    isDownloadedLocalModel(args[1]) &&
+    ["install", "install-ready", "ensure-ready", "serve"].includes(action)
+      ? args[1]
+      : undefined;
   if (
-    !["catalog", "install", "ensure-ready", "stop", "serve"].includes(action) ||
+    !["catalog", "install", "install-ready", "ensure-ready", "stop", "serve"].includes(action) ||
     (action === "serve" ? ownership !== "--owned-host" : ownership !== undefined) ||
-    process.argv.length > 4
+    (args.length !== 0 && localModel === undefined)
   )
     throw new Error("The native inference operation is invalid.");
   const installRoot = process.env.NEMOCLAW_NATIVE_INSTALL_ROOT;
@@ -62,8 +72,10 @@ async function main() {
     }
   });
   const options = {
+    localModel,
     installRoot,
     signal: controller.signal,
+    ...(action === "install-ready" ? { readinessTimeoutMs: 2 * 60 * 60 * 1000 } : {}),
     onProgress: (event: unknown) => {
       if (action !== "serve") process.stdout.write(JSON.stringify(event) + "\n");
     },

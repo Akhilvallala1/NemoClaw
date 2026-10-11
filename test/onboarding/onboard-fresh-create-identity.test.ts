@@ -272,6 +272,7 @@ describe("fresh create identity", () => {
 	const runner = require(${runnerPath});
 	const fixtureMocks = require(${onboardScriptMocksPath});
 	fixtureMocks.mockStandaloneGatewayTeardownAuthority();
+	fixtureMocks.mockManagedStateVolumeOnboardLifecycle();
 const _n = (c) => (Array.isArray(c) ? c.join(" ") : String(c)).replace(/'/g, "");
 let _deleted = false;
 const registry = require(${registryPath});
@@ -980,7 +981,7 @@ if (${JSON.stringify(
         assert.ok(profile.inference);
         assert.equal(
           startup.configurationEnvironment.NEMOCLAW_INFERENCE_BASE_URL,
-          "https://inference.local/v1",
+          "https://integrate.api.nvidia.com/v1",
         );
         assert.equal(startup.configurationEnvironment.NEMOCLAW_INFERENCE_PROVIDER_ID, "inference");
         assert.ok(startup.configurationEnvironment.NEMOCLAW_MODEL);

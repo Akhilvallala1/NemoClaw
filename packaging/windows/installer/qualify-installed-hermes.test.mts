@@ -8,6 +8,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import { acceptanceProcessesStopped } from "./qualify-finished-package.mts";
 import {
   recordedHermesTerminal,
@@ -25,6 +26,7 @@ import {
   applyHermesSocketObservations,
   hermesPromptLines,
   hermesPromptFrames,
+  sendHermesPromptFrames,
   sanitizeHermesBrowserDiagnostic,
 } from "./qualify-installed-hermes.mts";
 
@@ -320,6 +322,154 @@ test("multiline Hermes prompts preserve exact bytes without an asynchronous past
     "\r",
   ]);
   assert.throws(() => hermesPromptLines("windows\r\nlines"), /canonical newlines/u);
+});
+
+function dashboardPromptSender(bindings: Record<string, unknown>): typeof sendHermesPromptFrames {
+  // Exercise the actual serialized browser callback without host-module globals.
+  return runInNewContext(
+    `(${sendHermesPromptFrames.toString()})`,
+    { URL, ...bindings },
+    { timeout: 1000 },
+  );
+}
+
+test("Hermes prompt submission selects only the open PTY for its exact origin and channel", async () => {
+  const rejected = [
+    ["ws://127.0.0.1:49153/api/pty?channel=actual", 1],
+    ["ws://127.0.0.1:49152/api/events?channel=actual", 1],
+    ["ws://127.0.0.1:49152/api/pty?channel=sidecar", 1],
+    ["ws://127.0.0.1:49152/api/pty", 1],
+    ["ws://127.0.0.1:49152/api/pty?channel=actual", 0],
+    ["ws://127.0.0.1:49152/api/pty?channel=actual", 2],
+    ["ws://127.0.0.1:49152/api/pty?channel=actual", 3],
+    ["invalid URL", 1],
+  ].map(([url, readyState]) => ({
+    url,
+    socket: { readyState, send: () => assert.fail("Unrelated socket received prompt input") },
+  }));
+  const sent: string[] = [];
+  const selected = {
+    url: "ws://127.0.0.1:49152/api/pty?channel=actual",
+    socket: { readyState: 1, send: (frame: string) => sent.push(frame) },
+  };
+  const sockets = new Map([...rejected, selected].map((entry, index) => [index, entry]));
+  const submit = dashboardPromptSender({ __nemoclawSocketObservation: { sockets } });
+  const input = { channel: "actual", frames: ["\r"], origin: "http://127.0.0.1:49152" };
+  assert.equal((await submit(input)).matches, 1);
+  assert.deepEqual(sent, ["\r"]);
+  sockets.delete(rejected.length);
+  assert.equal((await submit(input)).matches, 0);
+  assert.deepEqual(sent, ["\r"]);
+});
+
+test("Hermes prompt submission sends nothing when PTY ownership is absent or ambiguous", async () => {
+  const entry = {
+    url: "ws://127.0.0.1:49152/api/pty?channel=actual",
+    socket: { readyState: 1, send: () => assert.fail("Ambiguous PTY received prompt input") },
+  };
+  for (const [observation, matches] of [
+    [undefined, 0],
+    [{ sockets: new Map() }, 0],
+    [
+      {
+        sockets: new Map([
+          [1, entry],
+          [2, { ...entry }],
+        ]),
+      },
+      2,
+    ],
+  ] as const) {
+    const submit = dashboardPromptSender({ __nemoclawSocketObservation: observation });
+    assert.equal(
+      (
+        await submit({
+          channel: "actual",
+          frames: ["text", "\r"],
+          origin: "http://127.0.0.1:49152",
+        })
+      ).matches,
+      matches,
+    );
+  }
+});
+
+test("Hermes PTY input waits 50ms between frames and submits only after the final prompt frame", async () => {
+  const sent: string[] = [];
+  const timers: { delay: number; release: () => void }[] = [];
+  const submit = dashboardPromptSender({
+    __nemoclawSocketObservation: {
+      sockets: new Map([
+        [
+          1,
+          {
+            url: "ws://127.0.0.1:49152/api/pty?channel=actual",
+            socket: { readyState: 1, send: (frame: string) => sent.push(frame) },
+          },
+        ],
+      ]),
+    },
+    setTimeout: (release: () => void, delay: number) => timers.push({ delay, release }),
+  });
+  const frames = hermesPromptFrames("first\n\nlast");
+  let settled = false;
+  const pending = Promise.resolve(
+    submit({ channel: "actual", frames, origin: "http://127.0.0.1:49152" }),
+  ).then((result) => {
+    settled = true;
+    return result;
+  });
+  assert.deepEqual(sent, ["first"]);
+  for (let index = 1; index < frames.length; index++) {
+    assert.equal(settled, false);
+    assert.equal(timers.length, 1);
+    const timer = timers.shift();
+    assert(timer);
+    assert.equal(timer.delay, 50);
+    timer.release();
+    await Promise.resolve();
+    assert.deepEqual(sent, frames.slice(0, index + 1));
+  }
+  assert.equal((await pending).matches, 1);
+  assert.equal(settled, true);
+  assert.equal(timers.length, 0);
+  assert.equal(sent.at(-1), "\r");
+});
+
+test("Hermes PTY send failure propagates without sending later frames or reporting success", async () => {
+  const sent: string[] = [];
+  const failure = new Error("controlled socket closure");
+  const submit = dashboardPromptSender({
+    __nemoclawSocketObservation: {
+      sockets: new Map([
+        [
+          1,
+          {
+            url: "ws://127.0.0.1:49152/api/pty?channel=actual",
+            socket: {
+              readyState: 1,
+              send(frame: string) {
+                sent.push(frame);
+                if (sent.length === 2) throw failure;
+              },
+            },
+          },
+        ],
+      ]),
+    },
+    setTimeout: (release: () => void) => release(),
+  });
+  await assert.rejects(
+    Promise.resolve(
+      submit({
+        channel: "actual",
+        frames: ["first", "second", "\r"],
+        origin: "http://127.0.0.1:49152",
+      }),
+    ),
+    (error: unknown) => error === failure,
+  );
+  assert.deepEqual(sent, ["first", "second"]);
 });
 
 test("Hermes browser diagnostics redact WebSocket credentials", () => {

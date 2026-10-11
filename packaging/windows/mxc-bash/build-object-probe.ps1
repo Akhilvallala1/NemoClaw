@@ -18,6 +18,10 @@ $installations=@(& $vswhere -latest -products '*' -property installationPath);if
 $vsdev=Join-Path $installations[0] 'Common7/Tools/VsDevCmd.bat'
 $directory=Split-Path -Parent $binary;$batch=Join-Path $directory 'compile-object-probe.cmd'
 $matrixHeader=Join-Path (Split-Path -Parent $inputSource) 'creation-matrix.h'
+$controlsSource=Join-Path (Split-Path -Parent $inputSource) 'object-probe-controls.cpp'
+$controlsBinary=$binary+'.ownership-controls.exe'
+if(Test-Path -LiteralPath $controlsBinary){throw 'Probe ownership controls output must be fresh.'}
+$controlsSourceHash=(Get-FileHash -LiteralPath $controlsSource -Algorithm SHA256).Hash.ToLowerInvariant()
 $matrixHeaderHash=(Get-FileHash -LiteralPath $matrixHeader -Algorithm SHA256).Hash.ToLowerInvariant()
 $sourceHash=(Get-FileHash -LiteralPath $inputSource -Algorithm SHA256).Hash.ToLowerInvariant()
 $identity=@'
@@ -27,7 +31,7 @@ $cl=Join-Path $env:VCToolsInstallDir 'bin/HostARM64/arm64/cl.exe'
 if((Get-FileHash -LiteralPath $cl -Algorithm SHA256).Hash.ToLowerInvariant() -cne '__CL_SHA__'){throw 'Probe compiler environment selected different bytes.'}
 '@
 $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($identity.Replace('__CL_SHA__',$arm.clSha256)))
-$commands=@('@echo off',('call "'+$vsdev+'" -no_logo -arch=arm64 -host_arch=arm64 -vcvars_ver=14.51.36231 -winsdk=10.0.26100.0'),'if errorlevel 1 exit /b 1',('set "PATH='+([IO.Path]::GetDirectoryName($arm.cl))+';%PATH%"'),('"'+(Join-Path $PSHOME 'pwsh.exe')+'" -NoProfile -EncodedCommand '+$encoded),'if errorlevel 1 exit /b 1',('"'+$arm.cl+'" /nologo /W4 /WX /std:c++20 /EHsc /MT /DUNICODE /D_UNICODE "'+$inputSource+'" /Fo"'+$directory+'\object-probe.obj" /Fe:"'+$binary+'" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO advapi32.lib kernel32.lib user32.lib'),'if errorlevel 1 exit /b 1','exit /b 0')
+$commands=@('@echo off',('call "'+$vsdev+'" -no_logo -arch=arm64 -host_arch=arm64 -vcvars_ver=14.51.36231 -winsdk=10.0.26100.0'),'if errorlevel 1 exit /b 1',('set "PATH='+([IO.Path]::GetDirectoryName($arm.cl))+';%PATH%"'),('"'+(Join-Path $PSHOME 'pwsh.exe')+'" -NoProfile -EncodedCommand '+$encoded),'if errorlevel 1 exit /b 1',('"'+$arm.cl+'" /nologo /W4 /WX /std:c++20 /EHsc /MT /DUNICODE /D_UNICODE "'+$inputSource+'" /Fo"'+$directory+'\object-probe.obj" /Fe:"'+$binary+'" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO advapi32.lib kernel32.lib user32.lib'),'if errorlevel 1 exit /b 1',('"'+$arm.cl+'" /nologo /W4 /WX /std:c++20 /EHsc /MT /DUNICODE /D_UNICODE "'+$controlsSource+'" /Fo"'+$directory+'\object-probe-controls.obj" /Fe:"'+$controlsBinary+'" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO advapi32.lib kernel32.lib user32.lib'),'if errorlevel 1 exit /b 1','exit /b 0')
 [IO.File]::WriteAllText($batch,($commands -join "`r`n")+"`r`n",[Text.UTF8Encoding]::new($false))
 function Invoke-ProbeCompiler([string]$Executable,[string]$Arguments,[int]$TimeoutMs=110000){
  $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$Executable;$start.Arguments=$Arguments;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
@@ -53,9 +57,11 @@ function Invoke-ProbeCompiler([string]$Executable,[string]$Arguments,[int]$Timeo
  if($null -ne $failure){throw $failure}
 }
 Invoke-ProbeCompiler (Join-Path ([Environment]::SystemDirectory) 'cmd.exe') ('/d /s /c ""'+$batch+'""')
+Invoke-ProbeCompiler $controlsBinary '' 10000
 $bytes=[IO.File]::ReadAllBytes($binary);$offset=[BitConverter]::ToInt32($bytes,60)
 if($offset -lt 64 -or $offset+6 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes,$offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes,$offset+4) -ne 0xAA64){throw 'The probe is not ARM64 PE.'}
 if((Get-FileHash -LiteralPath $inputSource -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceHash){throw 'Probe source changed during compilation.'}
 if((Get-FileHash -LiteralPath $matrixHeader -Algorithm SHA256).Hash.ToLowerInvariant() -cne $matrixHeaderHash){throw 'Creation matrix header changed during compilation.'}
-$record=@{schemaVersion=1;matrixHeaderSha256=$matrixHeaderHash;classification='unshimmed-native-object-probe-build';sourceSha256=$sourceHash;toolchain=$arm;bytes=$bytes.Length;sha256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant();machine='arm64';executed=$false}
+if((Get-FileHash -LiteralPath $controlsSource -Algorithm SHA256).Hash.ToLowerInvariant() -cne $controlsSourceHash){throw 'Probe ownership controls changed during compilation.'}
+$record=@{schemaVersion=1;matrixHeaderSha256=$matrixHeaderHash;classification='unshimmed-native-object-probe-build';sourceSha256=$sourceHash;toolchain=$arm;bytes=$bytes.Length;sha256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant();machine='arm64';executed=$false;ownershipControls=@{passed=$true;sourceSha256=$controlsSourceHash}}
 [IO.File]::WriteAllText(($binary+'.json'),($record|ConvertTo-Json -Depth 6)+"`n",[Text.UTF8Encoding]::new($false))

@@ -14,7 +14,7 @@ import {
 } from "../mxc-bash/prepare-msys-aslr.mts";
 
 const sha = (data: Buffer) => createHash("sha256").update(data).digest("hex");
-const inventorySha256 = "777f6a6fcbefa3790130e795b611aff086775f23682ae109c16cac2f1ff1acd0";
+const inventorySha256 = "9b2a7161657e9c55acb57fd52fbe36610747e032aa4323f83422696c112e1f4d";
 const initializedFiles = [
   "clangarm64/libexec/git-core/dlls-copied",
   "etc/hosts",
@@ -92,7 +92,7 @@ export function prepareCanonicalGit(runtimeRoot: string, baseInventory: string, 
   const receipt = {
     schemaVersion: 1,
     classification: "ci-derived-initialized-canonical-hermes-git",
-    baseCandidateSource: "47d890728482cca05e840edd27e33e3d495aeabf",
+    baseCandidateSource: "371706dfa3173422b8d7ad521c2519010809697a",
     baseInventorySha256: inventorySha256,
     upstreamCommit: "2237be355906fbe6065ce1815711eee52b2d646e",
     beforeInventorySha256: sha(Buffer.from(JSON.stringify(before))),

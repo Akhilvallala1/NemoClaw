@@ -105,14 +105,61 @@ export function validatePersonalCompatibility(
   };
 }
 
-export function validateInitializedPersonalGit(git: any, proof: any) {
+const currentBase = {
+  artifactId: 11637766639,
+  runId: 37969718115,
+  sourceRevision: "371706dfa3173422b8d7ad521c2519010809697a",
+  zipSha256: "c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc",
+  inventorySha256: "9b2a7161657e9c55acb57fd52fbe36610747e032aa4323f83422696c112e1f4d",
+  candidateReceiptSha256: "3a15c2101d25cef859591ce7edebc98dc4cdfc6f8c6c0212105415f1e81b1fea",
+  buildReceiptSha256: "c50a92fa7cb97c1d65cebcd958af722d94db1da9819cfe6eb4c20e505954f475",
+} as const;
+const historicalBase = {
+  artifactId: 10181796438,
+  runId: 34551706967,
+  sourceRevision: "47d890728482cca05e840edd27e33e3d495aeabf",
+  zipSha256: "b6e3683f4248b62e6ba3594d8ecab11d6958a23f161b526a1d11ec07d146d6ed",
+  inventorySha256: "777f6a6fcbefa3790130e795b611aff086775f23682ae109c16cac2f1ff1acd0",
+} as const;
+const startupHookPaths = [
+  "hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-aarch64-none/Lib/site-packages/nemoclaw_native_windows.py",
+  "hermes-agent/venv/Lib/site-packages/nemoclaw_native_windows.py",
+  "tools/browser-use/Lib/site-packages/nemoclaw_native_windows.py",
+];
+
+export function validatePersonalBase(
+  derivation: any,
+  adapterSha256: string,
+  immutableReplay = false,
+) {
+  const base = immutableReplay ? historicalBase : currentBase;
+  for (const [key, value] of Object.entries(base)) assert.equal(derivation.base[key], value, key);
+  if (immutableReplay) {
+    assert.equal(adapterSha256, completedPersonalReplayPin.startupAdapterSha256);
+    assert.equal(derivation.metadataRelocation, undefined);
+    assert.equal(derivation.adapterUpgrade.afterSha256, adapterSha256);
+    assert.equal(derivation.adapterUpgrade.baseCandidateSource, base.sourceRevision);
+    assert.deepEqual(derivation.adapterUpgrade.hookPaths, startupHookPaths);
+  } else {
+    assert.equal(adapterSha256, "d8e8b5524ca783dccc0024a1eed61a4c0955cf73b7d45157093787070dc8ed16");
+    assert.equal(derivation.adapterUpgrade, undefined);
+    assert.deepEqual(derivation.metadataRelocation, {
+      schemaVersion: 1,
+      classification: "current-adapter-metadata-relocation",
+      baseCandidateSource: currentBase.sourceRevision,
+      previousMarkerSha256: "e9a9baffe32dc0ffc5c0e275fa5389c237b9a9d3a9c116279dc27401aed8232b",
+      startupAdapterSha256: adapterSha256,
+      hookPaths: startupHookPaths,
+    });
+  }
+}
+
+export function validateInitializedPersonalGit(git: any, proof: any, immutableReplay = false) {
+  const base = immutableReplay ? historicalBase : currentBase;
   assert.equal(git.schemaVersion, 1);
   assert.equal(git.classification, "ci-derived-initialized-canonical-hermes-git");
-  assert.equal(git.baseCandidateSource, "47d890728482cca05e840edd27e33e3d495aeabf");
-  assert.equal(
-    git.baseInventorySha256,
-    "777f6a6fcbefa3790130e795b611aff086775f23682ae109c16cac2f1ff1acd0",
-  );
+  assert.equal(git.baseCandidateSource, base.sourceRevision);
+  assert.equal(git.baseInventorySha256, base.inventorySha256);
   assert.equal(git.upstreamCommit, "2237be355906fbe6065ce1815711eee52b2d646e");
   assert.equal(git.fileCount, 7835);
   assert.equal(git.filesReplacedAtBuild, 3);
@@ -186,6 +233,7 @@ export function validateDerivedPersonalHeader(
   runtime: string,
   adapterSha256: string,
   proof: any,
+  immutableReplay = false,
 ) {
   assert.match(sourceRevision, /^[a-f0-9]{40}$/u);
   assert.match(adapterSha256, /^[a-f0-9]{64}$/u);
@@ -210,20 +258,9 @@ export function validateDerivedPersonalHeader(
   assert.equal(derivation.completeCanonicalBaseVerified, true);
   assert.equal(derivation.fullAgentQualified, false);
   assert.equal(derivation.installedAcceptance, false);
-  assert.equal(derivation.base.artifactId, 10181796438);
-  assert.equal(derivation.base.runId, 34551706967);
-  assert.equal(derivation.base.sourceRevision, "47d890728482cca05e840edd27e33e3d495aeabf");
-  assert.equal(
-    derivation.base.zipSha256,
-    "b6e3683f4248b62e6ba3594d8ecab11d6958a23f161b526a1d11ec07d146d6ed",
-  );
-  assert.equal(
-    derivation.base.inventorySha256,
-    "777f6a6fcbefa3790130e795b611aff086775f23682ae109c16cac2f1ff1acd0",
-  );
+  if (immutableReplay) assert.equal(sourceRevision, completedPersonalReplayPin.sourceRevision);
+  validatePersonalBase(derivation, adapterSha256, immutableReplay);
   assert.equal(candidate.buildReceiptSha256, derivation.base.buildReceiptSha256);
-  assert.equal(derivation.adapterUpgrade.afterSha256, adapterSha256);
-  assert.equal(derivation.adapterUpgrade.baseCandidateSource, derivation.base.sourceRevision);
   assert.equal(wheel.schemaVersion, 1);
   assert.equal(wheel.classification, "ci-targeted-pywinpty-conpty-rebuild");
   assert.equal(wheel.status, "pass");
@@ -242,7 +279,8 @@ export function validateDerivedPersonalHeader(
   assert.equal(wheel.configuration.upstreamUvSettingsPreserved, true);
   assert.equal(wheel.configuration.globalRustFlagsChanged, false);
   assert.equal(wheel.configuration.upstreamSourcesChanged, false);
-  validateInitializedPersonalGit(git, proof);
+  validateInitializedPersonalGit(git, proof, immutableReplay);
+  if (!immutableReplay) assert.deepEqual(wheel.metadataRelocation, derivation.metadataRelocation);
   assert.equal(candidate.fileCount, inventory.files.length);
   assert.equal(
     candidate.logicalBytes,
@@ -412,6 +450,7 @@ function loadDerivedPersonalInputs(
     runtime,
     adapterSha256,
     compatibilityProof.value,
+    replay !== null,
   );
   assert.equal(
     fs.existsSync(derivation.value.originalBuildRoot),
@@ -420,12 +459,8 @@ function loadDerivedPersonalInputs(
   );
   const marker = receiptDocument(path.join(runtime, "nemoclaw-windows-runtime.json"));
   assert.deepEqual(marker.value.startupAdapterUpgrade, derivation.value.adapterUpgrade);
-  const hooks = [
-    "hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-aarch64-none/Lib/site-packages/nemoclaw_native_windows.py",
-    "hermes-agent/venv/Lib/site-packages/nemoclaw_native_windows.py",
-    "tools/browser-use/Lib/site-packages/nemoclaw_native_windows.py",
-  ];
-  assert.deepEqual(derivation.value.adapterUpgrade.hookPaths, hooks);
+  assert.equal(marker.value.startupAdapterSha256, adapterSha256);
+  const hooks = startupHookPaths;
   const inspect = new Set<string>([
     ...personalCriticalFiles,
     ...hooks,

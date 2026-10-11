@@ -10,6 +10,7 @@ type NativeExpressManifest = {
   productName: string;
   serverVersion: string;
   cudaVersion: string;
+  minimumDriverVersion: string;
   model: string;
   modelRepository: string;
   modelRevision: string;
@@ -30,6 +31,7 @@ type NativeExpressManifest = {
 // Shared with the embedded WPF catalog. The packaged, immutable JSON is the
 // single source for native downloads, capacity thresholds, and model settings.
 const manifest = manifestJson as NativeExpressManifest;
+const LOCAL_REASONING_EFFORTS = new Set(["none", "low", "medium", "high"]);
 if (manifest.schemaVersion !== 1)
   throw new Error("The installed native inference manifest version is invalid.");
 export const NATIVE_EXPRESS = Object.freeze({
@@ -62,6 +64,17 @@ export type NativeHardware = {
   gpuCount: number;
 };
 
+function versionAtLeast(actual: string, minimum: string): boolean {
+  if (!/^\d+(?:\.\d+){1,3}$/u.test(actual) || !/^\d+(?:\.\d+){1,3}$/u.test(minimum)) return false;
+  const left = actual.split(".").map(Number);
+  const right = minimum.split(".").map(Number);
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return true;
+}
+
 export function nativeEligibility(
   hardware: NativeHardware,
   options: { prebuilt?: boolean } = {},
@@ -93,19 +106,27 @@ export function nativeEligibility(
     Number(version[1]) < 13 ||
     (Number(version[1]) === 13 && Number(version[2]) < 4) ||
     !/^\d+(?:\.\d+){1,3}$/u.test(hardware.driverVersion) ||
+    !versionAtLeast(hardware.driverVersion, NATIVE_EXPRESS.minimumDriverVersion) ||
     hardware.gpuCount !== 1
   )
     reasons.push(
-      "Install the N1X Windows driver with CUDA 13.4 support; one NVIDIA GPU must be visible.",
+      `Install N1X Windows driver ${NATIVE_EXPRESS.minimumDriverVersion} or later with CUDA 13.4 support; one NVIDIA GPU must be visible.`,
     );
   return reasons;
 }
 
-export function cudaDeviceFromListing(text: string): string {
+export function cudaDeviceFromListing(
+  text: string,
+  minimumBytes = NATIVE_EXPRESS.memoryBytes,
+): string {
   const devices = [...text.matchAll(/^\s*(CUDA\d+):[^\r\n]+\((\d+) MiB, (\d+) MiB free\)\s*$/gmu)];
   if (devices.length !== 1)
     throw new Error("The native CUDA runtime did not find exactly one usable GPU.");
-  if (Number(devices[0][3]) * 1024 * 1024 < NATIVE_EXPRESS.memoryBytes)
+  if (
+    !Number.isSafeInteger(minimumBytes) ||
+    minimumBytes < 1 ||
+    Number(devices[0][3]) * 1024 * 1024 < minimumBytes
+  )
     throw new Error(
       "The CUDA device does not currently have enough available memory for this model.",
     );
@@ -155,6 +176,11 @@ export function nativeServerArguments(modelPath: string, port: number, device: s
     "900",
     "--sleep-idle-seconds",
     "-1",
+    // llama.cpp b10362 classifies the layer-offload summary as trace output.
+    // Keep it within the existing bounded startup capture so readiness can
+    // prove full CUDA offload instead of accepting a CPU fallback.
+    "--log-verbosity",
+    "4",
     "--metrics",
     "--no-webui",
     "--no-slots",
@@ -179,15 +205,14 @@ export function requireFullCudaOffload(log: string): {
   return { offloadedLayers: Number(layers[1]), totalLayers: Number(layers[2]) };
 }
 
-export function guardedNativeChat(value: unknown): Record<string, unknown> {
+export function guardedNativeChat(
+  value: unknown,
+  model = NATIVE_EXPRESS.model,
+): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("The inference request must be an object.");
   const body = value as Record<string, unknown>;
-  if (
-    body.model !== NATIVE_EXPRESS.model ||
-    !Array.isArray(body.messages) ||
-    body.messages.length < 1
-  )
+  if (body.model !== model || !Array.isArray(body.messages) || body.messages.length < 1)
     throw new Error("The request must use the selected local model and chat messages.");
   for (const message of body.messages) {
     if (
@@ -253,6 +278,9 @@ export function guardedNativeChat(value: unknown): Record<string, unknown> {
     if (!allowed.has(key)) throw new Error(`Unsupported local inference parameter: ${key}`);
   if (body.store !== undefined && body.store !== false)
     throw new Error("Server-side conversation storage is not enabled for this local model.");
+  const reasoningEffort = body.reasoning_effort ?? "none";
+  if (typeof reasoningEffort !== "string" || !LOCAL_REASONING_EFFORTS.has(reasoningEffort))
+    throw new Error("Choose a supported local reasoning level.");
   const { store: _store, ...request } = body;
   const limit = Math.min(Number(output), NATIVE_EXPRESS.maxOutputTokens);
   return {
@@ -260,6 +288,7 @@ export function guardedNativeChat(value: unknown): Record<string, unknown> {
     max_tokens: limit,
     max_completion_tokens: limit,
     parallel_tool_calls: false,
+    reasoning_effort: reasoningEffort,
     n: 1,
   };
 }

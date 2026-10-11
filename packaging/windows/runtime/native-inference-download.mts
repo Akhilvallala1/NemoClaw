@@ -8,6 +8,10 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { PinnedAsset, ProgressSink } from "./native-inference-manifest.mts";
 
+// Only a failed integrity check permits preserving a cache entry as corrupt.
+// I/O and progress failures must reach the caller without replacing valid data.
+class PinnedFileVerificationError extends Error {}
+
 export async function* responseChunks(body: ReadableStream<Uint8Array>) {
   const reader = body.getReader();
   try {
@@ -73,11 +77,20 @@ export async function verifyPinnedFile(
       named.dev !== opened.dev ||
       named.ino !== opened.ino
     )
-      throw new Error(`The cached ${asset.name} is not the expected ordinary file.`);
+      throw new PinnedFileVerificationError(
+        `The cached ${asset.name} is not the expected ordinary file.`,
+      );
     const hash = createHash("sha256");
     let bytes = 0;
     let last = 0;
-    for await (const chunk of handle.createReadStream({ autoClose: false, signal })) {
+    // Large model files are verified on every new inference-owner startup. A
+    // larger read buffer preserves the full SHA-256 trust check while avoiding
+    // hundreds of thousands of tiny stream operations on a multi-GB GGUF.
+    for await (const chunk of handle.createReadStream({
+      autoClose: false,
+      highWaterMark: 4 * 1024 * 1024,
+      signal,
+    })) {
       signal.throwIfAborted();
       hash.update(chunk);
       bytes += chunk.length;
@@ -109,7 +122,7 @@ export async function verifyPinnedFile(
       namedAfter.ino !== opened.ino ||
       hash.digest("hex") !== asset.sha256
     )
-      throw new Error(`The SHA-256 verification failed for ${asset.name}.`);
+      throw new PinnedFileVerificationError(`The SHA-256 verification failed for ${asset.name}.`);
   } finally {
     await handle.close();
   }
@@ -165,16 +178,25 @@ export async function downloadPinnedAsset(
   )
     throw new Error("The managed inference asset pin is invalid.");
   const file = path.join(directory, asset.name);
+  let progressFailed = false;
   try {
-    await verifyPinnedFile(file, asset, signal, onProgress);
+    await verifyPinnedFile(file, asset, signal, (event) => {
+      try {
+        onProgress(event);
+      } catch (error) {
+        progressFailed = true;
+        throw error;
+      }
+    });
     return file;
   } catch (error) {
     signal.throwIfAborted();
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+    if (progressFailed) throw error;
+    if (error instanceof PinnedFileVerificationError) {
       // Preserve a corrupted managed artifact for diagnosis; never overwrite an
       // existing cache entry through a link or erase unrelated user data.
       await fs.promises.rename(file, path.join(directory, `corrupt-${randomUUID()}-${asset.name}`));
-    }
+    } else if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
   }
   const partial = path.join(directory, `.download-${randomUUID()}`);
   try {
@@ -192,15 +214,24 @@ export async function downloadPinnedAsset(
         hash.update(chunk);
         if (Date.now() - last >= 250 || bytes === asset.bytes) {
           last = Date.now();
-          onProgress({
-            schemaVersion: 1,
-            event: "progress",
-            phase: "downloading",
-            message: `Downloading ${asset.name}`,
-            asset: asset.name,
-            completedBytes: bytes,
-            totalBytes: asset.bytes,
-          });
+          try {
+            onProgress({
+              schemaVersion: 1,
+              event: "progress",
+              phase: "downloading",
+              message: `Downloading ${asset.name}`,
+              asset: asset.name,
+              completedBytes: bytes,
+              totalBytes: asset.bytes,
+            });
+          } catch (error) {
+            callback(
+              error instanceof Error
+                ? error
+                : new Error("Download progress failed.", { cause: error }),
+            );
+            return;
+          }
         }
         callback(null, chunk);
       },

@@ -47,6 +47,8 @@ unsafe extern "system" {
         user: *mut FileTime,
     ) -> i32;
     fn CancelSynchronousIo(thread: RawHandle) -> i32;
+    fn GetStdHandle(kind: u32) -> RawHandle;
+    fn SetHandleInformation(handle: RawHandle, mask: u32, flags: u32) -> i32;
     fn LocalFree(value: *mut c_void) -> *mut c_void;
 }
 #[link(name = "advapi32")]
@@ -127,7 +129,7 @@ fn read_action(file: &mut std::fs::File) -> Result<String, &'static str> {
         if byte[0] == b'\n' {
             return String::from_utf8(value).map_err(|_| "runtime-service-request");
         }
-        if !byte[0].is_ascii_lowercase() {
+        if !byte[0].is_ascii_lowercase() && !byte[0].is_ascii_digit() {
             return Err("runtime-service-request");
         }
         value.push(byte[0]);
@@ -138,7 +140,31 @@ fn reply(file: &mut std::fs::File, value: &str) -> Result<(), &'static str> {
     file.write_all(value.as_bytes())
         .map_err(|_| "runtime-service-channel")
 }
-fn start_existing(installation: &Path) -> Result<Child, &'static str> {
+fn selected_model(action: &str) -> Result<Option<&'static str>, &'static str> {
+    match action {
+        "start" => Ok(None),
+        "start27" => Ok(Some("qwen3.8-27b")),
+        "start35" => Ok(Some("qwen3.6-35b-a3b")),
+        _ => Err("runtime-service-request"),
+    }
+}
+pub(super) fn prevent_diagnostic_handle_inheritance() -> Result<(), &'static str> {
+    // The inference owner is intentionally detached after admission. Do not let
+    // that long-lived process retain the short-lived installer's redirected
+    // stdout/stderr pipe handles, or the installer can wait forever for EOF.
+    for kind in [(-11i32) as u32, (-12i32) as u32] {
+        let handle = unsafe { GetStdHandle(kind) };
+        if !handle.is_null()
+            && handle as isize != -1
+            && unsafe { SetHandleInformation(handle, 1, 0) } == 0
+        {
+            return Err("runtime-service-diagnostic-handle");
+        }
+    }
+    Ok(())
+}
+fn start_existing(installation: &Path, model: Option<&str>) -> Result<Child, &'static str> {
+    prevent_diagnostic_handle_inheritance()?;
     let mut command = Command::new(installation.join("bin").join("NemoClaw.exe"));
     command
         .args(["--native-inference", "serve", "--startup-owned"])
@@ -148,6 +174,9 @@ fn start_existing(installation: &Path) -> Result<Child, &'static str> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_clear();
+    if let Some(model) = model {
+        command.args(["--model", model]);
+    }
     for (key, value) in std::env::vars_os() {
         if matches!(
             key.to_string_lossy().to_ascii_lowercase().as_str(),
@@ -173,7 +202,7 @@ fn start_existing(installation: &Path) -> Result<Child, &'static str> {
     command
         .env("PATH", path)
         .env("NEMOCLAW_NATIVE_INSTALL_ROOT", installation);
-    command.spawn().map_err(|_| "runtime-service-start")
+    super::spawn_command(&mut command).map_err(|_| "runtime-service-start")
 }
 fn cancel_started(child: &mut Child) -> Result<(), &'static str> {
     if child
@@ -311,13 +340,12 @@ impl Pending {
             if stopped(&stop, &agent) {
                 return Ok(());
             }
-            if read_action(&mut file)? != "start" {
-                return Err("runtime-service-request");
-            }
+            let selection = read_action(&mut file)?;
+            let model = selected_model(&selection)?;
             if stopped(&stop, &agent) {
                 return Ok(());
             }
-            child = Some(start_existing(&self.installation)?);
+            child = Some(start_existing(&self.installation, model)?);
             let started = child.as_ref().ok_or("runtime-service-identity")?;
             let identity = creation(started.as_raw_handle())?;
             let pid = started.id();
@@ -379,6 +407,29 @@ impl Pending {
             Ok(())
         } else {
             result
+        }
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::selected_model;
+
+    #[test]
+    fn model_selection_admits_only_fixed_catalog_actions() {
+        assert_eq!(selected_model("start"), Ok(None));
+        assert_eq!(selected_model("start27"), Ok(Some("qwen3.8-27b")));
+        assert_eq!(selected_model("start35"), Ok(Some("qwen3.6-35b-a3b")));
+        for action in [
+            "start26",
+            "start35 --model other",
+            "",
+            "status",
+            "cancel",
+            "START27",
+            "start27\n",
+        ] {
+            assert_eq!(selected_model(action), Err("runtime-service-request"));
         }
     }
 }

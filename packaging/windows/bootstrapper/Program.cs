@@ -11,6 +11,11 @@ internal static class Program
 {
     private static int Main(string[] arguments)
     {
+        // This private-pipe operation must never enter the bootstrapper log path.
+        if (arguments.Length > 0 && arguments[0] == "--gateway-tls-material")
+            return arguments.Length == 1 ? NativeGatewayTls.Run() : 2;
+        if (arguments.Length > 0 && arguments[0] == "--gateway-process")
+            return NativeGatewayProcess.RunInstalled(arguments);
         var startupLog = Path.Combine(
             Path.GetTempPath(),
             $"NemoClaw.Bootstrapper.{Environment.ProcessId}.startup.log");

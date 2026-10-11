@@ -33,6 +33,7 @@ const mutations: Mutation[] = [
     "windows-finished-installer",
     "windows-finished-installed-startup",
     "windows-runtime-controls",
+    "windows-runtime-preflight",
   ].flatMap((name) => [
     {
       name: "a protected environment on " + name,
@@ -103,6 +104,63 @@ const mutations: Mutation[] = [
         value.workflow.jobs["windows-runtime-controls"],
         "Set up actual ARM64 Node for controller preflight and shared-file fixtures",
       ).with!["node-version"] = "latest";
+    },
+  },
+  {
+    name: "a missing preflight Node version",
+    mutate: (value) => {
+      value.workflow.jobs["windows-runtime-preflight"].strategy!.matrix!.node = ["24.18.1"];
+    },
+  },
+  {
+    name: "cancellation of the other preflight Node result",
+    mutate: (value) => {
+      value.workflow.jobs["windows-runtime-preflight"].strategy!["fail-fast"] = true;
+    },
+  },
+  {
+    name: "preflight of a different candidate commit",
+    mutate: (value) => {
+      step(
+        value.workflow.jobs["windows-runtime-preflight"],
+        "Check out the exact candidate preflight",
+      ).with!.ref = "main";
+    },
+  },
+  {
+    name: "unpinned preflight Node",
+    mutate: (value) => {
+      step(
+        value.workflow.jobs["windows-runtime-preflight"],
+        "Set up pinned ARM64 preflight Node",
+      ).with!["node-version"] = "latest";
+    },
+  },
+  ...[
+    "control-installed-openclaw-input.test.mts",
+    "native-turn-cleanup.test.mts",
+    "runtime-published-resources.test.mts",
+  ].map((file) => ({
+    name: "missing early " + file,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const entry = step(
+        value.workflow.jobs["windows-runtime-preflight"],
+        "Verify observer shutdown and qualification cleanup before building",
+      );
+      entry.run = entry.run!.replaceAll(file, "unrelated.test.mts");
+    },
+  })),
+  ...["windows-compiled-application", "windows-runtime-controls"].map((name) => ({
+    name: "missing preflight dependency in " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      value.workflow.jobs[name].needs = ["windows-finished-request"];
+    },
+  })),
+  {
+    name: "compilation without successful preflight",
+    mutate: (value) => {
+      const job = value.workflow.jobs["windows-compiled-application"];
+      job.if = job.if!.replace("needs.windows-runtime-preflight.result == 'success'", "true");
     },
   },
   ...["windows-finished-installer", "windows-finished-installed-startup"].flatMap((name) => [

@@ -37,11 +37,20 @@ import {
 import { acquireNativeStateSession } from "./native-state.mts";
 import { responseChunks } from "./native-inference-download.mts";
 import { createNativeInferenceGuard } from "./native-inference-guard.mts";
+import { readBundledNativeEngine } from "./native-bundled-inference.mts";
+import {
+  isDownloadedLocalModel,
+  selectLocalModel,
+  downloadLocalModelAssets,
+  downloadedModelArguments,
+} from "./native-local-models.mts";
 
 export type NativeInferenceOptions = {
+  localModel?: string;
   installRoot: string;
   signal?: AbortSignal;
   onProgress?: ProgressSink;
+  readinessTimeoutMs?: number;
 };
 export type NativeInferenceConnection = {
   endpoint: string;
@@ -50,6 +59,22 @@ export type NativeInferenceConnection = {
   credential: string;
 };
 const quiet: ProgressSink = () => undefined;
+
+export async function verifyNativeUpstreamAuthentication(
+  upstreamPort: number,
+  signal: AbortSignal = AbortSignal.timeout(5000),
+) {
+  // llama.cpp intentionally exposes discovery routes such as /v1/models
+  // without authentication. Probe a protected metadata route instead.
+  const rejected = await fetch(`http://127.0.0.1:${upstreamPort}/props`, {
+    headers: { authorization: "Bearer invalid-native-qualification-key" },
+    signal,
+    redirect: "error",
+  });
+  await rejected.body?.cancel();
+  if (rejected.status !== 401)
+    throw new Error("The native model server did not reject an incorrect credential.");
+}
 
 async function responseJson(response: Response, maximum = 512 * 1024): Promise<unknown> {
   if (!response.body) throw new Error("The local inference response is empty.");
@@ -124,8 +149,8 @@ function connection(owner: {
     throw new Error("The local model has not completed native CUDA readiness.");
   return {
     endpoint: `http://127.0.0.1:${owner.record.port}/v1`,
-    model: NATIVE_EXPRESS.model,
-    localModel: NATIVE_EXPRESS.id,
+    model: owner.record.model,
+    localModel: owner.record.localModel,
     credential: owner.credential,
   };
 }
@@ -148,6 +173,41 @@ export async function nativeInferenceCatalog(options: NativeInferenceOptions) {
 export async function installNativeInference(options: NativeInferenceOptions) {
   options.signal?.throwIfAborted();
   const layout = installLayout(options.installRoot);
+  if (isDownloadedLocalModel(options.localModel)) {
+    const model = selectLocalModel(options.localModel);
+    return withNativeRuntimeSession(
+      layout.launcher,
+      options.installRoot,
+      "inference",
+      async (lease) => {
+        readBundledNativeEngine(lease);
+        const state = await acquireNativeStateSession(layout.launcher, "inference");
+        let failure: unknown;
+        try {
+          await downloadLocalModelAssets(
+            model,
+            state,
+            options.signal ?? new AbortController().signal,
+            options.onProgress ?? quiet,
+          );
+          return { schemaVersion: 1, event: "downloaded", localModel: model.id };
+        } catch (error) {
+          failure = error;
+          throw error;
+        } finally {
+          try {
+            await state.release();
+          } catch (cleanup) {
+            throw failure
+              ? new AggregateError([failure, cleanup], "Model setup and state cleanup both failed.")
+              : cleanup;
+          }
+        }
+      },
+    );
+  }
+  if (options.localModel && options.localModel !== NATIVE_EXPRESS.id)
+    throw new Error("The local model selection is invalid.");
   const prebuilt = await inspectPrebuiltNativeModel(options.installRoot, layout.launcher);
   return { schemaVersion: 1, event: "available", localModel: NATIVE_EXPRESS.id, prebuilt };
 }
@@ -155,9 +215,18 @@ export async function installNativeInference(options: NativeInferenceOptions) {
 export async function ensureNativeInference(
   options: NativeInferenceOptions,
 ): Promise<NativeInferenceConnection> {
+  const selected = options.localModel ?? NATIVE_EXPRESS.id;
+  if (selected !== NATIVE_EXPRESS.id) selectLocalModel(selected);
+  const readinessTimeoutMs = options.readinessTimeoutMs ?? NATIVE_EXPRESS.readinessTimeoutMs;
+  if (
+    !Number.isSafeInteger(readinessTimeoutMs) ||
+    readinessTimeoutMs < 1 ||
+    readinessTimeoutMs > 7_200_000
+  )
+    throw new Error("The native model readiness time limit is invalid.");
   const signal = AbortSignal.any([
     options.signal ?? new AbortController().signal,
-    AbortSignal.timeout(NATIVE_EXPRESS.readinessTimeoutMs),
+    AbortSignal.timeout(readinessTimeoutMs),
   ]);
   const layout = installLayout(options.installRoot);
   const progress = options.onProgress ?? quiet;
@@ -171,6 +240,10 @@ export async function ensureNativeInference(
       signal.throwIfAborted();
       const existing = await existingOwner(options.installRoot, signal).catch(() => null);
       if (existing) {
+        if (existing.record.localModel !== selected)
+          throw new Error(
+            "A different local model is already in use. Stop it before switching models.",
+          );
         ownerInstance = existing.record.instance;
         if (supervisor?.pid === existing.record.launcherPid)
           ownedInstance = existing.record.instance;
@@ -188,7 +261,7 @@ export async function ensureNativeInference(
         if (existing.record.status === "error")
           throw new Error(existing.record.failure ?? "The local model could not start.");
       } else if (!supervisor && !ownerInstance) {
-        supervisor = await startNativeRuntimeInferenceSupervisor(signal);
+        supervisor = await startNativeRuntimeInferenceSupervisor(signal, selected);
       }
       if (supervisor) {
         await supervisor.refresh();
@@ -204,12 +277,16 @@ export async function ensureNativeInference(
         }
         throw new Error(detail);
       }
-      progress({
-        schemaVersion: 1,
-        event: "progress",
-        phase: "loading",
-        message: "Waiting for the local model to finish its on-device checks",
-      });
+      // Keep the authenticated owner's phase and counts visible between polls.
+      // Replacing them with "loading" resets the UI's verification progress.
+      if (!existing?.record.progress) {
+        progress({
+          schemaVersion: 1,
+          event: "progress",
+          phase: "loading",
+          message: "Waiting for the local model to finish its on-device checks",
+        });
+      }
       await sleep(500, undefined, { signal });
     }
   } finally {
@@ -352,6 +429,10 @@ async function servePrebuiltNativeInference(
 ): Promise<void> {
   options.signal?.throwIfAborted();
   const layout = installLayout(options.installRoot);
+  const selected = options.localModel ?? NATIVE_EXPRESS.id;
+  const downloaded = isDownloadedLocalModel(selected) ? selectLocalModel(selected) : undefined;
+  if (!downloaded && selected !== NATIVE_EXPRESS.id)
+    throw new Error("The local model selection is invalid.");
   const state = await acquireNativeStateSession(layout.launcher, "inference");
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -363,15 +444,15 @@ async function servePrebuiltNativeInference(
   const record: NativeOwnerRecord = {
     schemaVersion: 1,
     instance: randomUUID(),
-    localModel: NATIVE_EXPRESS.id,
-    model: NATIVE_EXPRESS.model,
+    localModel: selected,
+    model: downloaded?.id ?? NATIVE_EXPRESS.model,
     port: 1,
     pid: process.pid,
     launcherPid: process.ppid,
     status: "starting",
   };
   let prepared:
-    | (ReturnType<typeof readPrebuiltNativeModel> & {
+    | ({ executable: string; runtimeRoot: string; modelPath: string; projector?: string } & {
         environment: NodeJS.ProcessEnv;
         device: string;
       })
@@ -405,9 +486,13 @@ async function servePrebuiltNativeInference(
     });
     record.port = (guard.address() as { port: number }).port;
     writeOwnerRecord(record, credential);
-    const pack = readPrebuiltNativeModel(runtimeLease);
-    const catalog = await hardwareCatalog(options.installRoot, signal, { prebuilt: true });
-    if (!catalog.eligible) throw new Error(catalog.reasons.join(" "));
+    const pack = downloaded
+      ? { ...readBundledNativeEngine(runtimeLease), modelPath: "" }
+      : readPrebuiltNativeModel(runtimeLease);
+    if (!downloaded) {
+      const catalog = await hardwareCatalog(options.installRoot, signal, { prebuilt: true });
+      if (!catalog.eligible) throw new Error(catalog.reasons.join(" "));
+    }
     const environment = nativeHostEnvironment({
       PATH: `${pack.runtimeRoot};${path.join(layout.systemRoot, "System32")};${layout.systemRoot}`,
     });
@@ -418,18 +503,29 @@ async function servePrebuiltNativeInference(
         environment,
         cwd: pack.runtimeRoot,
       }),
+      downloaded ? downloaded.weights.bytes + 4 * 1024 ** 3 : NATIVE_EXPRESS.memoryBytes,
     );
     prepared = { ...pack, environment, device };
+    if (downloaded) {
+      // One owned pass verifies and reuses the cache or safely resumes the
+      // pinned download, then hands the already-verified file to llama.cpp.
+      // Installer setup previously hashed a multi-GB model here immediately
+      // after hashing it in a separate download helper.
+      const files = await downloadLocalModelAssets(downloaded, state, signal, onProgress);
+      prepared.modelPath = files.weights;
+    }
     upstreamPort = await nativeFreePort();
     onProgress({
       schemaVersion: 1,
       event: "progress",
       phase: "loading",
-      message: "Loading Qwen 3.6 on the native CUDA GPU",
+      message: `Loading ${downloaded?.displayName ?? "Qwen 3.6"} on the native CUDA GPU`,
     });
     serverProcess = spawn(
       prepared.executable,
-      nativeServerArguments(prepared.modelPath, upstreamPort, prepared.device),
+      downloaded
+        ? downloadedModelArguments(downloaded, prepared.modelPath, upstreamPort, prepared.device)
+        : nativeServerArguments(prepared.modelPath, upstreamPort, prepared.device),
       {
         env: { ...prepared.environment, LLAMA_API_KEY: upstreamCredential },
         cwd: prepared.runtimeRoot,
@@ -497,7 +593,7 @@ async function servePrebuiltNativeInference(
     const models = (await responseJson(await upstream("/v1/models"))) as {
       data?: Array<{ id?: string }>;
     };
-    if (!models.data?.some((model) => model.id === NATIVE_EXPRESS.model))
+    if (!models.data?.some((model) => model.id === record.model))
       throw new Error("The native server loaded an unexpected model.");
     const props = (await responseJson(await upstream("/props"))) as {
       total_slots?: number;
@@ -506,24 +602,18 @@ async function servePrebuiltNativeInference(
     };
     if (
       props.total_slots !== 1 ||
-      props.default_generation_settings?.n_ctx !== NATIVE_EXPRESS.contextSize ||
+      props.default_generation_settings?.n_ctx !==
+        (downloaded ? 65536 : NATIVE_EXPRESS.contextSize) ||
       props.model_path?.replaceAll("/", "\\").toLowerCase() !==
         prepared.modelPath.replaceAll("/", "\\").toLowerCase()
     )
       throw new Error("The native model properties do not match the selected recipe.");
-    const rejected = await fetch(`http://127.0.0.1:${upstreamPort}/v1/models`, {
-      headers: { authorization: "Bearer invalid-native-qualification-key" },
-      signal: AbortSignal.timeout(5000),
-      redirect: "error",
-    });
-    await rejected.body?.cancel();
-    if (rejected.status !== 401)
-      throw new Error("The native model server did not reject an incorrect credential.");
+    await verifyNativeUpstreamAuthentication(upstreamPort);
     const completion = (await responseJson(
       await upstream("/v1/chat/completions", {
         method: "POST",
         body: JSON.stringify({
-          model: NATIVE_EXPRESS.model,
+          model: record.model,
           messages: [{ role: "user", content: "Reply with OK." }],
           max_tokens: 32,
           temperature: 0,

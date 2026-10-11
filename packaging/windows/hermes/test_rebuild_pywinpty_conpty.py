@@ -11,7 +11,7 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tempfile
@@ -93,7 +93,7 @@ class TargetedPywinpty(unittest.TestCase):
         package_dirs = {
             str(parent)
             for name in self.wheel_files
-            for parent in Path(name).parents
+            for parent in PurePosixPath(name).parents
             if helper.in_package(str(parent))
         }
         self.before["directories"] = sorted(
@@ -170,12 +170,8 @@ class TargetedPywinpty(unittest.TestCase):
             "classification": "ci-targeted-pywinpty-conpty-rebuild",
             "status": "pass",
             "runtimeRoot": "C:\\owned",
-            "base": {
-                "zipSha256": helper.BASE_ZIP_SHA,
-                "artifactId": 10181796438,
-                "runId": 34551706967,
-                "sourceRevision": helper.BASE_HEAD,
-            },
+            "base": helper.base_identity(),
+            "metadataRelocation": helper.metadata_relocation_record(),
             "source": {
                 **helper.SOURCE,
                 "cargoLockSha256": helper.CARGO_LOCK_SHA,
@@ -327,6 +323,18 @@ class TargetedPywinpty(unittest.TestCase):
         (self.evidence / "conpty-smoke.json").write_text("{}")
         with self.assertRaises(ValueError):
             helper.validate_rebuild_receipt(self.runtime, receipt, self.evidence)
+
+    def test_export_rejects_mixed_base_receipts_and_missing_relocation(self):
+        receipt = self.successful_receipt()
+        for key in receipt["base"]:
+            changed = copy.deepcopy(receipt)
+            changed["base"][key] = 1 if isinstance(changed["base"][key], int) else "0" * 64
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                helper.validate_rebuild_receipt(self.runtime, changed, self.evidence)
+        changed = copy.deepcopy(receipt)
+        changed.pop("metadataRelocation")
+        with self.assertRaisesRegex(ValueError, "base identity"):
+            helper.validate_rebuild_receipt(self.runtime, changed, self.evidence)
 
     def test_exact_uv_cache_metadata_requires_valid_record_and_rejects_other_extras(
         self,
@@ -606,6 +614,111 @@ class TargetedPywinpty(unittest.TestCase):
         self.assertEqual(
             [item.value for item in commands[0].args[0].elts[:3]], ["-I", "-B", "-c"]
         )
+
+
+class CurrentBaseRelocation(unittest.TestCase):
+    def setUp(self):
+        metadata = helper.load("prepare-native-runtime")
+        rows = [
+            {"path": path, "bytes": 23661, "sha256": metadata.CURRENT_ADAPTER_SHA256}
+            for path in metadata.UPGRADE_HOOK_PATHS
+        ]
+        rows += [
+            {"path": metadata.MARKER, "bytes": 4637, "sha256": helper.BASE_MARKER_SHA},
+            {"path": "hermes-agent/venv/pyvenv.cfg", **identity(b"old home")},
+            {"path": "bin/hermes.cmd", **identity(b"unchanged delegate")},
+        ]
+        self.original = {
+            "files": rows + [{"path": "unrelated.bin", **identity(b"retained")}],
+            "directories": ["bin", "retained-empty"],
+        }
+        self.prior = {"files": copy.deepcopy(rows)}
+        self.adapted = {
+            "schemaVersion": 1,
+            "classification": "native-hermes-generated-metadata-adaptation",
+            "hermesRevision": metadata.REVISION,
+            "environments": ["hermes-agent/venv", "tools/browser-use"],
+            "requiresMovedRootProbe": True,
+            "runtimeExecutionQualified": False,
+            "retirements": [],
+            "files": [{**row, "beforeSha256": row["sha256"]} for row in rows],
+        }
+        self.adapted["files"][-2].update(identity(b"new home"))
+
+    def relocated(self):
+        indexed = {row["path"]: row for row in self.adapted["files"]}
+        return {
+            "directories": copy.deepcopy(self.original["directories"]),
+            "files": [
+                {key: indexed.get(row["path"], row)[key] for key in ("path", "bytes", "sha256")}
+                for row in self.original["files"]
+            ],
+        }
+
+    def validate(self, before=None):
+        helper.validate_metadata_relocation(
+            self.prior, self.adapted, self.original,
+            self.relocated() if before is None else before,
+        )
+
+    def test_current_adapter_metadata_can_relocate_without_upgrade(self):
+        self.validate()
+        self.assertEqual(
+            helper.metadata_relocation_record()["baseCandidateSource"], helper.BASE_HEAD
+        )
+
+    def test_upgrade_and_activation_claims_are_rejected(self):
+        for key, value in [
+            ("startupAdapterUpgrade", {}),
+            ("startupAdapterUpgradeApplied", False),
+            ("browserUseStartup", {}),
+            ("runtimeExecutionQualified", True),
+            ("retirements", [{"path": "bin/hermes.exe"}]),
+        ]:
+            with self.subTest(key=key):
+                changed = {**self.adapted, key: value}
+                with self.assertRaisesRegex(ValueError, "current-adapter relocation"):
+                    helper.validate_metadata_relocation(
+                        self.prior, changed, self.original, self.relocated()
+                    )
+
+    def test_legacy_marker_is_rejected(self):
+        self.original["files"][3]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "marker changed"):
+            self.validate()
+
+    def test_code_change_is_rejected_even_when_full_inventory_agrees(self):
+        for index in [0, -1]:
+            with self.subTest(index=index):
+                saved = copy.deepcopy(self.adapted["files"][index])
+                self.adapted["files"][index].update(identity(b"changed code"))
+                with self.assertRaisesRegex(ValueError, "code or non-location metadata"):
+                    self.validate()
+                self.adapted["files"][index] = saved
+
+    def test_preimage_drift_is_rejected(self):
+        self.adapted["files"][-2]["beforeSha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "preimage"):
+            self.validate()
+
+    def test_missing_and_duplicate_adaptation_rows_are_rejected(self):
+        rows = copy.deepcopy(self.adapted["files"])
+        for changed in [rows[:-1], rows + [rows[0]], rows[:-1] + [rows[0]]]:
+            with self.subTest(rows=len(changed)):
+                self.adapted["files"] = changed
+                with self.assertRaisesRegex(ValueError, "metadata set"):
+                    self.validate()
+
+    def test_unrelated_files_and_directories_cannot_change(self):
+        for directory in [False, True]:
+            with self.subTest(directory=directory):
+                before = self.relocated()
+                if directory:
+                    before["directories"].remove("retained-empty")
+                else:
+                    before["files"][-1].update(identity(b"unrecorded change"))
+                with self.assertRaisesRegex(ValueError, "complete base"):
+                    self.validate(before)
 
 
 if __name__ == "__main__":

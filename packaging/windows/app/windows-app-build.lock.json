@@ -2,11 +2,21 @@
   "schemaVersion": 1,
   "classification": "windows-application-build-inputs",
   "openclaw": {
-    "version": "2026.7.1",
-    "url": "https://registry.npmjs.org/openclaw/-/openclaw-2026.7.1.tgz",
-    "integrity": "sha512-ge/Xss99CHAjPL/ikmH/UFoiOrjcxDB4sW3y9mhyCD+dYW3wzV7TKbAVdkrXFgAG2d2BjpJofP97zUZ+umxo8g==",
-    "sha256": "67ad539d9915efb63d5f294beeb9290b7172d23c92d8052110a9c8355f783458",
-    "bytes": 19887736
+    "version": "2026.9.2",
+    "url": "https://registry.npmjs.org/openclaw/-/openclaw-2026.9.2.tgz",
+    "integrity": "sha512-M6C7UsnX815nv26qBJFYGe6aGzv+ftZLRzV6S9oRXUtXg2Yn67eVntpssT94kgkquKVSeUxerUg0j1ONp4WYQg==",
+    "sha256": "3431f4cd2d8dbd6b936def2694ac27e19fa0256295cf4ada0f652ecf1c9ee520",
+    "bytes": 58392574
+  },
+  "dependencyLock": {
+    "path": "../../../agents/openclaw/openclaw-runtime/package-lock.json",
+    "sha256": "b44c7f475fe36a378ebc078dbf068bd225f8470002834ce1308872049213b633"
+  },
+  "choiceDependencyLock": {
+    "path": "../../../agents/openclaw/managed-image-messaging-runtime/package-lock.json",
+    "sha256": "8fb7adc7813b4262369d1a1e0efc9206a5fed880d00a32119c8eca132407872d",
+    "packages": ["@openclaw/discord", "@openclaw/slack"],
+    "sharedPackages": ["@emnapi/core", "@emnapi/runtime", "@emnapi/wasi-threads", "tslib"]
   },
   "compilerPackages": [
     {
@@ -39,38 +49,38 @@
   "additionalPackages": [
     {
       "package": "@openclaw/brave-plugin",
-      "version": "2026.7.1",
+      "version": "2026.9.2",
       "target": "plugins/brave",
-      "url": "https://registry.npmjs.org/@openclaw/brave-plugin/-/brave-plugin-2026.7.1.tgz",
-      "integrity": "sha512-7Z+GZ/6K6a8LlkTsWVnAZ1hv8EarORzHQvFHD7ekcg033FGJOXYPEZSbvvE3qR9vM+vnoZplNjMZ7vFMRcvQgw==",
-      "sha256": "f5198ea18ea0adebc376c669b8e5e1100781f07ec2d9e24e86c90cb82acb039c",
-      "bytes": 8149
+      "url": "https://registry.npmjs.org/@openclaw/brave-plugin/-/brave-plugin-2026.9.2.tgz",
+      "integrity": "sha512-6416aPlfnAKlu8IBrrjgfoiss/10xB32ywFwnIf/fkVMQE61qsmzA/qxUniQuDwOB6EBFNEkNs54DhIT7g3UVg==",
+      "sha256": "40c0cf23e8373f2285034b8f0a575cc51ec1ed53d081b0e1592d219dd411e54d",
+      "bytes": 7980
     },
     {
       "package": "@openclaw/discord",
-      "version": "2026.7.1",
-      "url": "https://registry.npmjs.org/@openclaw/discord/-/discord-2026.7.1.tgz",
-      "integrity": "sha512-tZfdC1YA8oVLvc2BK1w0F6rUljS5ugCOp2uWe0vPsbG1fbzVVIO4V32RoqZznGHe5u2R9u4n1aV5Z/qa1m2oFg==",
-      "sha256": "28f1511de04906def70f7ff6950cd2d26f52be0ec93c5efce8f5c07cb46bc521",
-      "bytes": 14438562,
+      "version": "2026.9.2",
+      "url": "https://registry.npmjs.org/@openclaw/discord/-/discord-2026.9.2.tgz",
+      "integrity": "sha512-j+fSHxbXA+DSxwbL8SvtsDNL6tvBX4+RmH+EerVW6dCbeIwSconXj6J/+AaN/mhzZI4g0jPPj30TUhdCRRbc2w==",
+      "sha256": "358b88763e7697e29eb1807240ab5cdc04e38662462fb93c14e2b563ca7521d6",
+      "bytes": 6237335,
       "target": "plugins/discord"
     },
     {
       "package": "@openclaw/slack",
-      "version": "2026.7.1",
-      "url": "https://registry.npmjs.org/@openclaw/slack/-/slack-2026.7.1.tgz",
-      "integrity": "sha512-dwVGEVCmoTQrOIeZaSCIOPg8pT7hB883QQEXdp9EZUDzTGuvSc+KxH2iERSOV/59hROQctYdcobGn/vdB1H4XA==",
-      "sha256": "d6ae8745867d812560e917707e633c8b66b36f7270124a8cca9602c6dc98ef46",
-      "bytes": 3860207,
+      "version": "2026.9.2",
+      "url": "https://registry.npmjs.org/@openclaw/slack/-/slack-2026.9.2.tgz",
+      "integrity": "sha512-6M1M6gL3iXahpalNsYAUuA+wvnV8lbMlNNH2ToegFvaSJcIll4S9kFa5mv3GFoquhMRHQjEjnkXPHP/pXwaWcA==",
+      "sha256": "79ad40233b041c2081408efe59c93c2d38ca508429e016dd9843cccffc8cf49a",
+      "bytes": 4238253,
       "target": "plugins/slack"
     },
     {
       "package": "@openclaw/tavily-plugin",
-      "version": "2026.7.1",
-      "url": "https://registry.npmjs.org/@openclaw/tavily-plugin/-/tavily-plugin-2026.7.1.tgz",
-      "integrity": "sha512-JI9RIGmZVmtCnt8F+OwQb973pOTa7X0b/tDi7B8cIjYr5Ieq9IlzgLNTgnUBNZbSnJSh7p89QIaeUQ98LFVAHQ==",
-      "sha256": "c8d7c2fb40b0c6a3f8ad99e927c1851ef501bef89ce049e88ab79083ff6dcb09",
-      "bytes": 262410,
+      "version": "2026.9.2",
+      "url": "https://registry.npmjs.org/@openclaw/tavily-plugin/-/tavily-plugin-2026.9.2.tgz",
+      "integrity": "sha512-FYK2e7aXagwcGiTRQfidS3PThIfJkAQoqYEtlkadiGxmgeChYY71YLeD6nQAHZKHmTAOw9U7njDxMBvYyXPf5w==",
+      "sha256": "c5d65ff201a8178ec914736887802c38d33628c667be5b2453b890fe44086984",
+      "bytes": 267514,
       "target": "plugins/tavily"
     }
   ]

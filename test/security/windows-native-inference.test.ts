@@ -44,28 +44,36 @@ const hardware: NativeHardware = {
   totalMemoryBytes: 64 * 1024 ** 3,
   availableMemoryBytes: 60 * 1024 ** 3,
   availableStorageBytes: 100 * 1024 ** 3,
-  driverVersion: "612.01",
+  driverVersion: "616.52",
   cudaVersion: "13.4",
   gpuCount: 1,
 };
 const chat = { model: NATIVE_EXPRESS.model, messages: [{ role: "user", content: "Hello" }] };
 
 describe("configured native local inference", () => {
-  it.each(["hermes", "pi"])(
-    "passes the authenticated supervisor connection to %s",
-    async (agent) => {
+  it.each(
+    ["openclaw", "hermes", "pi"].flatMap((agent) =>
+      [NATIVE_EXPRESS.id, "qwen3.8-27b", "qwen3.6-35b-a3b"].map((localModel) => ({
+        agent,
+        localModel,
+        model: localModel === NATIVE_EXPRESS.id ? NATIVE_EXPRESS.model : localModel,
+      })),
+    ),
+  )(
+    "passes the authenticated supervisor connection to $agent for $localModel",
+    async ({ agent, localModel, model }) => {
       const configuration = {
         agent,
         inference: "local",
-        localModel: NATIVE_EXPRESS.id,
+        localModel,
         model: "stale-model",
         endpoint: "http://127.0.0.1:1/v1",
         credentialStored: false,
         profile: "personal",
       };
       const connection = {
-        localModel: NATIVE_EXPRESS.id,
-        model: NATIVE_EXPRESS.model,
+        localModel,
+        model,
         endpoint: "http://127.0.0.1:54321/v1",
         credential: "supervisor-owned-test-credential",
       };
@@ -84,6 +92,7 @@ describe("configured native local inference", () => {
         },
       );
       expect(supervisor).toHaveBeenCalledExactlyOnceWith({
+        localModel,
         installRoot: "installed-root",
         signal,
         onProgress,
@@ -93,6 +102,10 @@ describe("configured native local inference", () => {
         credential: connection.credential,
       });
       supervisor.mockResolvedValue({ ...connection, localModel: "another-model" });
+      await expect(
+        resolveNativeConfiguredInference("installed-root", "unused-launcher", configuration),
+      ).rejects.toThrow("The running local model does not match the installed selection.");
+      supervisor.mockResolvedValue({ ...connection, model: "foreign-model" });
       await expect(
         resolveNativeConfiguredInference("installed-root", "unused-launcher", configuration),
       ).rejects.toThrow("The running local model does not match the installed selection.");
@@ -113,6 +126,7 @@ describe("native Express eligibility and CUDA contract", () => {
     { availableMemoryBytes: NATIVE_EXPRESS.memoryBytes - 1 },
     { availableStorageBytes: NATIVE_EXPRESS.storageBytes - 1 },
     { driverVersion: "unknown" },
+    { driverVersion: "616.40" },
     { cudaVersion: "13.3" },
     { gpuCount: 0 },
   ])("rejects ineligible native hardware %j", (difference) => {
@@ -267,6 +281,118 @@ describe("pinned native inference downloads", () => {
     const preserved = fs.readdirSync(directory).find((name) => name.startsWith("corrupt-"));
     expect(preserved).toBeDefined();
     expect(fs.readFileSync(path.join(directory, preserved!), "utf8")).toBe("corrupted old cache");
+  });
+
+  it.each([undefined, "ENOENT"])(
+    "preserves valid cached data when verification progress fails with code %s",
+    async (code) => {
+      const { directory, bytes, asset } = fixture();
+      const file = path.join(directory, asset.name);
+      fs.writeFileSync(file, bytes);
+      const failure = Object.assign(new Error("fixture progress failure"), { code });
+      const progress = vi.fn().mockImplementationOnce(() => {
+        throw failure;
+      });
+      const request = vi.fn<typeof fetch>(async () => new Response(bytes));
+      await expect(
+        downloadPinnedAsset(asset, directory, new AbortController().signal, progress, request),
+      ).rejects.toBe(failure);
+      expect(request).not.toHaveBeenCalled();
+      expect(fs.readdirSync(directory)).toEqual([asset.name]);
+      expect(fs.readFileSync(file)).toEqual(bytes);
+    },
+  );
+
+  it("rejects failed transfer progress and removes only its partial download", async () => {
+    const { directory, bytes, asset } = fixture();
+    fs.writeFileSync(path.join(directory, "user-marker"), "retain me");
+    const failure = new Error("fixture transfer progress failure");
+    const request = vi.fn<typeof fetch>(async () => new Response(bytes));
+    await expect(
+      downloadPinnedAsset(
+        asset,
+        directory,
+        new AbortController().signal,
+        () => {
+          throw failure;
+        },
+        request,
+      ),
+    ).rejects.toBe(failure);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(directory)).toEqual(["user-marker"]);
+    expect(fs.readFileSync(path.join(directory, "user-marker"), "utf8")).toBe("retain me");
+  });
+
+  it("preserves cached data when its read fails without an integrity result", async () => {
+    const { directory, bytes, asset } = fixture();
+    const file = path.join(directory, asset.name);
+    fs.writeFileSync(file, bytes);
+    const failure = Object.assign(new Error("fixture read failure"), { code: "EIO" });
+    const open = vi.spyOn(fs.promises, "open").mockRejectedValueOnce(failure);
+    const request = vi.fn<typeof fetch>(async () => new Response(bytes));
+    try {
+      await expect(
+        downloadPinnedAsset(
+          asset,
+          directory,
+          new AbortController().signal,
+          () => undefined,
+          request,
+        ),
+      ).rejects.toBe(failure);
+      expect(request).not.toHaveBeenCalled();
+      expect(fs.readdirSync(directory)).toEqual([asset.name]);
+      expect(fs.readFileSync(file)).toEqual(bytes);
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it("rejects non-Error transfer progress failures through the same cleanup path", async () => {
+    const { directory, bytes, asset } = fixture();
+    const request = vi.fn<typeof fetch>(async () => new Response(bytes));
+    await expect(
+      downloadPinnedAsset(
+        asset,
+        directory,
+        new AbortController().signal,
+        () => {
+          throw "fixture progress failure";
+        },
+        request,
+      ),
+    ).rejects.toMatchObject({
+      message: "Download progress failed.",
+      cause: "fixture progress failure",
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(directory)).toEqual([]);
+  });
+
+  it("retains verified downloaded bytes when completion progress fails", async () => {
+    const { directory, bytes, asset } = fixture();
+    const failure = new Error("fixture completion progress failure");
+    const request = vi.fn<typeof fetch>(async () => new Response(bytes));
+    const onProgress = vi
+      .fn<Parameters<typeof downloadPinnedAsset>[3]>()
+      .mockImplementationOnce((event) => {
+        expect(event.phase).toBe("downloading");
+      })
+      .mockImplementation((event) => {
+        expect(event.phase).toBe("verifying");
+        throw failure;
+      });
+    await expect(
+      downloadPinnedAsset(asset, directory, new AbortController().signal, onProgress, request),
+    ).rejects.toBe(failure);
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(fs.readdirSync(directory)).toEqual([asset.name]);
+    expect(fs.readFileSync(path.join(directory, asset.name))).toEqual(bytes);
+    await expect(
+      downloadPinnedAsset(asset, directory, new AbortController().signal, () => undefined, request),
+    ).resolves.toBe(path.join(directory, asset.name));
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it.each([".", "..", "..."])(

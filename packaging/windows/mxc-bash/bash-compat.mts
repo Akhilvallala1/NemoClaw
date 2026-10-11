@@ -1117,6 +1117,11 @@ async function main() {
   assert.equal(objectBuild.executed, false);
   assert.match(objectBuild.sourceSha256, /^[a-f0-9]{64}$/u);
   assert.match(objectBuild.matrixHeaderSha256, /^[a-f0-9]{64}$/u);
+  assert.equal(objectBuild.ownershipControls.passed, true);
+  assert.equal(
+    objectBuild.ownershipControls.sourceSha256,
+    sha(path.join(path.dirname(fileURLToPath(import.meta.url)), "object-probe-controls.cpp")),
+  );
   assert.equal(fs.statSync(probe).size, objectBuild.bytes);
   assert.equal(sha(probe), objectBuild.sha256);
   assert.equal(build.files.length, 3);

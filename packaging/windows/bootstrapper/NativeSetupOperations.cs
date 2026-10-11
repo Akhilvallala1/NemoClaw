@@ -62,6 +62,12 @@ internal static class NativeSetupOperations
             if (transaction is not null) CryptographicOperations.ZeroMemory(transaction);
             foreach (var bytes in serviceBytes.Values) CryptographicOperations.ZeroMemory(bytes);
         }
+        if (NativeDownloadedModelSetup.IsModel(configuration.LocalModel))
+        {
+            // Commit and secret-buffer cleanup finish before cancellable model work starts.
+            progress?.Invoke(new("checking", "Checking or resuming the selected model before GPU startup.", null, null));
+            await NativeDownloadedModelSetup.EnsureReadyAsync(launcher, configuration.LocalModel!, progress, cancellation);
+        }
     }
 
     private static byte[] SerializeTransaction(byte[] configuration, byte[] credential, Dictionary<string, byte[]> services)
@@ -94,13 +100,13 @@ internal static class NativeSetupOperations
     {
         if (agent is not ("openclaw" or "hermes" or "langchain-deepagents-code" or "pi" or "nemocua")) throw new InvalidOperationException("The selected agent is invalid.");
         var launcher = InstalledLauncher();
-        Process.Start(new ProcessStartInfo
+        using var child = Process.Start(new ProcessStartInfo
         {
             FileName = launcher,
             Arguments = $"--configured --agent {agent}",
             UseShellExecute = true,
             WorkingDirectory = Path.GetDirectoryName(launcher)!,
-        })?.Dispose();
+        }) ?? throw new InvalidOperationException("The configured agent could not start.");
     }
 
     private static async Task<string> RunSetupHelperAsync(string launcher, string[] arguments, byte[] input, bool captureOutput = false)
@@ -164,7 +170,8 @@ internal static class NativeSetupOperations
         if (localModel is not null)
         {
             if (inference.ValueKind != JsonValueKind.Null) throw new InvalidOperationException("The local model must not request an external credential binding.");
-            NativeExpressSetup.ValidatePrebuiltSelection(root, localModel);
+            if (NativeDownloadedModelSetup.IsModel(localModel)) NativeDownloadedModelSetup.ValidateSelection(root, localModel);
+            else NativeExpressSetup.ValidatePrebuiltSelection(root, localModel);
             return (null, bindings);
         }
         return (ReadBinding(inference), bindings);

@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { guardWindowsConfiguredPluginInstall } from "./openclaw-app-resources.mts";
 
 const source = path.resolve(process.argv[process.argv.indexOf("--source-root") + 1] ?? "");
-const relative = "dist/missing-configured-plugin-install-jsvFew4a.js";
+const relative = "dist/missing-configured-plugin-install-B3eZm5tD.js";
 const original = fs.readFileSync(path.join(source, relative), "utf8");
 const patched = guardWindowsConfiguredPluginInstall(relative, original);
 const syntax = createRequire(import.meta.url)(
@@ -21,21 +21,44 @@ function body(text: string) {
     true,
     syntax.ScriptKind.JS,
   );
+  const names = new Set([
+    "resolveConfiguredPluginInstallContext",
+    "repairMissingPluginInstalls",
+    "repairMissingPluginInstallsWithLease",
+  ]);
   const functions = tree.statements
     .filter(syntax.isFunctionDeclaration)
-    .filter((node) => node.name?.text === "repairMissingPluginInstalls");
-  assert.equal(functions.length, 1);
-  return functions[0].getText(tree);
+    .filter((node) => node.name && names.has(node.name.text));
+  assert.equal(functions.length, names.size);
+  return (
+    functions.map((node) => node.getText(tree)).join("\n") + "\nreturn repairMissingPluginInstalls;"
+  );
 }
 async function control(text: string, platform: string, mode: "new" | "recorded" | "healthy") {
   const calls: string[] = [];
-  const records: Record<string, { source: string; healthy: boolean }> =
-    mode === "new" ? {} : { discord: { source: "path", healthy: mode === "healthy" } };
+  const records: Record<string, { source: string; healthy: boolean; installPath: string }> =
+    mode === "new"
+      ? {}
+      : {
+          discord: { source: "path", healthy: mode === "healthy", installPath: "/plugins/discord" },
+        };
+  let leases = 0;
   const bindings = {
     process: { platform, env: {} },
-    VERSION: "2026.7.1",
+    VERSION: "2026.9.2",
+    path,
+    safeRealpathSync: (value: string) => value,
+    resolveUserPath: (value: string) => value,
+    withPluginLifecycleLease: async (_options: unknown, action: () => Promise<unknown>) => {
+      leases++;
+      return await action();
+    },
+    normalizePluginsConfig: (value: unknown) => value,
     loadManifestMetadataSnapshot: () => ({
-      plugins: mode === "healthy" ? [{ id: "discord", origin: "config" }] : [],
+      plugins:
+        mode === "healthy"
+          ? [{ id: "discord", origin: "config", rootDir: "/plugins/discord" }]
+          : [],
     }),
     loadInstalledPluginIndex: () => ({ plugins: [] }),
     collectEffectiveConfiguredChannelOwnerPluginIds: () => new Map(),
@@ -48,9 +71,9 @@ async function control(text: string, platform: string, mode: "new" | "recorded" 
     collectOfficialReplacementInstallCandidates: () => new Map(),
     isLegacyPackageUpdateDoctorPass: () => false,
     shouldDeferConfiguredPluginInstallRepair: () => false,
-    isInstalledRecordMissingOnDisk: (record: { healthy?: boolean }) => !record.healthy,
+    isPayloadMissing: () => mode !== "healthy",
     forceNpmInstallRecordRepair: (record: unknown) => record,
-    resolveCompatibilityHostVersion: () => "2026.7.1",
+    resolveCompatibilityHostVersion: () => "2026.9.2",
     updateNpmInstalledPlugins: async () => {
       calls.push("package-manager-repair");
       return {
@@ -83,12 +106,13 @@ async function control(text: string, platform: string, mode: "new" | "recorded" 
   };
   // Execute the actual source function with install APIs replaced by observation
   // boundaries. No package manager, filesystem writer or network client runs.
-  const invoke = new Function(...Object.keys(bindings), `return (${body(text)});`)(
-    ...Object.values(bindings),
-  );
+  const invoke = new Function(...Object.keys(bindings), body(text))(...Object.values(bindings));
   try {
-    return { calls, result: await invoke(params), error: null };
+    const result = await invoke(params);
+    assert.equal(leases, 1, "The upstream lifecycle lease must still wrap repair.");
+    return { calls, result, error: null };
   } catch (error) {
+    assert.equal(leases, 1, "The upstream lifecycle lease must still wrap refusal.");
     return { calls, result: null, error };
   }
 }

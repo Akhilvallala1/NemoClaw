@@ -4,6 +4,7 @@
 import { fileURLToPath as nativeEntryFile } from "node:url";
 declare const NEMOCLAW_BUNDLED_RUNTIME: boolean | undefined;
 import { nativeWorkerAssets, nativeDistributionAsset } from "./native-assets.mts";
+import { NativeGatewaySession } from "./native-gateway-session.mts";
 import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
 import { Readable } from "node:stream";
 import {
@@ -38,6 +39,7 @@ import { startNativeInferenceBroker } from "./native-inference-broker.mts";
 import { startNativeBrokerRelay } from "./native-broker-relay.mts";
 import { startFileTcpRelay } from "./native-ui-relay.mts";
 import { acquireNativeStateSession } from "./native-state.mts";
+import { migrateNativeOpenClawSessions } from "./native-openclaw-migration.mts";
 import {
   withNativeRuntimeSession,
   usingNativeRuntimeSession,
@@ -49,6 +51,7 @@ import { resolveNativeConfiguredInference } from "./native-configured-inference.
 import type { NativeInferenceProgress } from "./native-inference-manifest.mts";
 
 import {
+  NATIVE_NODE_UI_POLICY,
   nativeQualificationLoopbackConfig,
   readOpenedRegularFile,
   writeNativeGatewayConfig,
@@ -371,7 +374,7 @@ writeFileSync(join(configDirectory, "openclaw.json"), JSON.stringify({
     mode: "local",
     bind: "loopback",
     auth: { mode: "none" },
-    controlUi: { root: join(process.env.OPENCLAW_COMPILED_ASSET_ROOT, "dist", "control-ui"), allowedOrigins: ["http://127.0.0.1:" + uiPort, "http://localhost:" + uiPort] },
+    controlUi: { root: join(process.env.OPENCLAW_COMPILED_ASSET_ROOT, "node_modules", "openclaw", "dist", "control-ui"), allowedOrigins: ["http://127.0.0.1:" + uiPort, "http://localhost:" + uiPort] },
   },
   models: { mode: "merge", providers: { nemoclawNative: {
     baseUrl: "http://127.0.0.1:" + modelPort + "/v1",
@@ -978,7 +981,14 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     "OpenClaw entrypoint",
   );
   requiredFile(
-    path.join(installedOpenClawRoot, "dist", "control-ui", "index.html"),
+    path.join(
+      installedOpenClawRoot,
+      "node_modules",
+      "openclaw",
+      "dist",
+      "control-ui",
+      "index.html",
+    ),
     "sealed OpenClaw control UI",
   );
   requiredFile(path.join(installRoot, "config", "mxc-gateway.toml"), "MXC gateway configuration");
@@ -1099,6 +1109,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     let brokerRelay: Awaited<ReturnType<typeof startNativeBrokerRelay>> | null = null;
     let uiRelay: Awaited<ReturnType<typeof startFileTcpRelay>> | null = null;
     let gateway: ChildProcess | null = null;
+    let gatewaySession: NativeGatewaySession | undefined;
     let create: ChildProcessByStdio<null, Readable, Readable> | null = null;
     let onboarding: Awaited<ReturnType<typeof startOnboardingServer>> | null = null;
     let cliEnvironment: NodeJS.ProcessEnv;
@@ -1165,7 +1176,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
                 gateway,
                 stateSession,
               );
-              if (completion === "ExecFailed")
+              if (completion === "ExecFailed" || completion === "MainProcessFailed")
                 throw new Error("The native OpenClaw executor failed during shutdown.");
             }
           },
@@ -1193,13 +1204,23 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           "sandbox registry",
           async () => {
             if (!create) return;
-            await confirmNativeUiRegistryEmpty(openshell, cliEnvironment);
+            await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+              sandboxName,
+              gateway,
+              stateSession,
+            });
           },
         ],
         [
           "OpenShell gateway",
           async () => {
-            if (gateway && gateway.pid && !(await stopChild(gateway))) throw new Error();
+            if (gateway && gateway.pid && !(await gatewaySession!.stopGateway())) throw new Error();
+          },
+        ],
+        [
+          "private gateway cleanup",
+          async () => {
+            await gatewaySession?.dispose();
           },
         ],
         [
@@ -1276,6 +1297,21 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         ],
       ]));
     try {
+      if (stateSession) {
+        diagnostics.stage("runtime");
+        await migrateNativeOpenClawSessions({
+          home: stateSession.stateRoot,
+          node: installedNode,
+          runtimeRoot: runtimeLease.runtimeRoot,
+          entry: installedOpenClawEntry,
+          signal: webSession?.signal ?? runtimeLease.signal,
+          assertHeld: () => {
+            stateSession.assertHeld();
+            runtimeLease.assertHeld();
+          },
+          onProgress: () => webSession?.progress("runtime"),
+        });
+      }
       diagnostics.stage("broker");
       const services = configuredIdentity
         ? await readNativeServiceEnvironment(
@@ -1312,7 +1348,36 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         ownedRoots.push(directory);
       }
       diagnostics.secret(runRoot, shareRoot, runtimeRoot);
-      const gatewayConfig = writeNativeGatewayConfig(installRoot, runRoot);
+      const openShellPort = await freePort();
+      const uiPort = await freePort();
+      const modelPort = inferenceBroker === null ? await freePort() : null;
+      gatewaySession = new NativeGatewaySession(installRoot, runRoot);
+      const gatewayConfig = await writeNativeGatewayConfig(
+        installRoot,
+        runRoot,
+        undefined,
+        async () => ({
+          network:
+            configuredIdentity !== null
+              ? { kind: "personal" }
+              : nativeQualificationLoopbackConfig(
+                  JSON.parse(
+                    (
+                      await run(
+                        path.join(installRoot, "mxc", "wxc-exec.exe"),
+                        ["--probe"],
+                        allowlistedWindowsEnvironment(),
+                        "Selecting the qualification network policy",
+                        15_000,
+                        diagnostics,
+                      )
+                    ).stdout,
+                  ),
+                  [uiPort, modelPort ?? fail("Qualification mock model port is unavailable")],
+                ),
+        }),
+        gatewaySession,
+      );
       if (inferenceBroker) {
         brokerRelayRoot = path.join(shareRoot, "inference-relay");
         brokerRelayToken = randomBytes(32).toString("base64url");
@@ -1350,6 +1415,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         [
           "version: 1",
           "",
+          ...NATIVE_NODE_UI_POLICY,
           "filesystem_policy:",
           "  include_workdir: false",
           "  read_only:",
@@ -1364,14 +1430,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         ].join("\n"),
         "utf8",
       );
-      const configRoot = path.join(runRoot, "config");
-      const stateRoot = path.join(runRoot, "state");
       const temp = path.join(shareRoot, "temp");
-      for (const directory of [configRoot, stateRoot, home, temp])
-        fs.mkdirSync(directory, { recursive: true });
-      const openShellPort = await freePort();
-      const uiPort = await freePort();
-      const modelPort = inferenceBroker === null ? await freePort() : null;
+      for (const directory of [home, temp]) fs.mkdirSync(directory, { recursive: true });
       sandboxName = `nc-ui-${runId}`;
       const gatewayName = `nemoclaw-ui-${runId}`;
       gatewayLogPath = path.join(runRoot, "openshell-gateway.log");
@@ -1380,22 +1440,22 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       ownedLogs.push(gatewayLog);
       const gatewayError = fs.openSync(gatewayErrorPath, "w");
       ownedLogs.push(gatewayError);
+      await gatewaySession.prepare();
       const gatewayEnvironment = allowlistedWindowsEnvironment({
         OPENSHELL_DRIVERS: "mxc",
         OPENSHELL_GATEWAY_CONFIG: gatewayConfig,
-        XDG_CONFIG_HOME: configRoot,
-        XDG_STATE_HOME: stateRoot,
+        ...gatewaySession.environment,
       });
       webSession?.assertRunning();
       stateSession?.assertHeld();
       webSession?.progress("gateway");
       diagnostics.stage("gateway");
-      gateway = spawn(
+      gateway = gatewaySession.spawnGateway(
         gatewayExecutable,
         [
           "--port",
           String(openShellPort),
-          "--disable-tls",
+          "--enable-mtls-auth",
           "--db-url",
           "sqlite::memory:",
           "--log-level",
@@ -1426,7 +1486,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       });
       await run(
         openshell,
-        ["gateway", "add", `http://127.0.0.1:${openShellPort}`, "--local", "--name", gatewayName],
+        ["gateway", "add", `https://127.0.0.1:${openShellPort}`, "--local", "--name", gatewayName],
         cliEnvironment,
         "Registering the native UI gateway",
         undefined,
@@ -1482,28 +1542,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         "--driver-config-json",
         JSON.stringify({
           mxc: {
-            windows_ui: true,
             command: nativeRuntimeWorkerCommand(runtimeLease, gatewayScript),
             cwd: shareRoot,
-            host_loopback: configuredIdentity !== null,
-            personal_network: configuredIdentity !== null,
-            ...(configuredIdentity === null
-              ? nativeQualificationLoopbackConfig(
-                  JSON.parse(
-                    (
-                      await run(
-                        path.join(installRoot, "mxc", "wxc-exec.exe"),
-                        ["--probe"],
-                        allowlistedWindowsEnvironment(),
-                        "Selecting the qualification network policy",
-                        15_000,
-                        diagnostics,
-                      )
-                    ).stdout,
-                  ),
-                  [uiPort, modelPort ?? fail("Qualification mock model port is unavailable")],
-                )
-              : {}),
           },
         }),
         "--no-tty",

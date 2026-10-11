@@ -998,7 +998,7 @@ void logChromeAsUser(const ChromeAsUserObservation& call, bool returned, DWORD c
     if (!call.sequence) return;
     const DWORD saved = GetLastError();
     DWORD pid = 0;
-    __try { if (returned && output) pid = output->dwProcessId; }
+    __try { if (returned && result && output) pid = output->dwProcessId; }
     __except (EXCEPTION_EXECUTE_HANDLER) { pid = 0; }
     char line[1024];
     const int length = _snprintf_s(line, sizeof(line), _TRUNCATE,

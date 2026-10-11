@@ -285,13 +285,19 @@ def validate_reuse(runtime, inputs, output, inventory_owner, *, payload=None):
             "sha256": digest(destination),
         }
     marker = json.loads((runtime / "nemoclaw-windows-runtime.json").read_text())
+    if (
+        "startupAdapterUpgrade" in marker
+        or marker.get("startupAdapterSha256")
+        != wheel_receipt["metadataRelocation"]["startupAdapterSha256"]
+    ):
+        raise ValueError("Reused current-adapter base must not claim an adapter upgrade")
     result = {
         "schemaVersion": 1,
         "classification": "reused-complete-canonical-hermes-runtime",
         "base": wheel_receipt["base"],
         "runtimeRootAtExport": str(runtime),
         "originalBuildRoot": str(original),
-        "adapterUpgrade": marker["startupAdapterUpgrade"],
+        "metadataRelocation": wheel_receipt["metadataRelocation"],
         "onlyRecordedChanges": True,
         "completeCanonicalBaseVerified": True,
         "fullAgentQualified": False,

@@ -59,6 +59,8 @@ export function normalizeNativeOptions(agent: string, value: unknown): NativeOpt
     for (const channel of ["telegram", "discord", "slack"] as const) {
       const config = value.messaging[channel];
       if (config === undefined) continue;
+      if (agent === "openclaw" && channel === "discord")
+        throw new Error("Discord is unavailable for OpenClaw in this Windows preview.");
       if (!record(config)) throw new Error("Messaging configuration is invalid.");
       exactKeys(
         config,

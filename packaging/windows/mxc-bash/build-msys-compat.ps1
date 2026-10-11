@@ -46,7 +46,7 @@ function Invoke-CompatibilityBuild([string]$Batch,[string]$Label){
     if($null -ne $failure){throw $failure}
 }
 try{
-    foreach($name in @('compat-launcher.cpp','process-propagation.cpp','process-propagation.h','namespace-compat.cpp','namespace-path.h','namespace-security.h','namespace-controls.cpp','compat.def')){
+    foreach($name in @('compat-launcher.cpp','process-propagation.cpp','process-propagation.h','namespace-compat.cpp','namespace-path.h','namespace-security.h','namespace-controls.cpp','namespace-adapter-controls.cpp','compat.def')){
         $file=Join-Path $PSScriptRoot $name
         if(-not(Test-Path -LiteralPath $file -PathType Leaf)){throw ('Missing coordinated source '+$name)}
         $receipt.sourceFiles+=@{path=$name;sha256=(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()}
@@ -84,6 +84,7 @@ $record=@{target=$target;cl=$cl;clSha256=(Get-FileHash -LiteralPath $cl -Algorit
         if($target -ceq 'arm64'){
             $commands+=@(('cl '+$common+' "'+$PSScriptRoot+'\compat-launcher.cpp" "'+$targetRoot+'\process-propagation.obj" "'+$detours+'\lib.'+$machine+'\detours.lib" /Fe:"'+$output+'\NemoClawMsysLauncher.exe" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO advapi32.lib kernel32.lib'),'if errorlevel 1 exit /b 1')
             $commands+=@(('cl '+$common+' "'+$PSScriptRoot+'\namespace-controls.cpp" /Fe:"'+$targetRoot+'\namespace-controls.exe" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO advapi32.lib kernel32.lib'),'if errorlevel 1 exit /b 1',('"'+$targetRoot+'\namespace-controls.exe"'),'if errorlevel 1 exit /b 1')
+            $commands+=@(('cl '+$common+' "'+$PSScriptRoot+'\namespace-adapter-controls.cpp" "'+$targetRoot+'\process-propagation.obj" "'+$detours+'\lib.'+$machine+'\detours.lib" /Fe:"'+$targetRoot+'\namespace-adapter-controls.exe" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO advapi32.lib ntdll.lib kernel32.lib'),'if errorlevel 1 exit /b 1',('"'+$targetRoot+'\namespace-adapter-controls.exe"'),'if errorlevel 1 exit /b 1')
         }
         $commands+='exit /b 0'
         $batch=Join-Path $targetRoot 'compile.cmd';[IO.File]::WriteAllText($batch,($commands -join "`r`n")+"`r`n",[Text.UTF8Encoding]::new($false))

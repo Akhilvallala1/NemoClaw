@@ -32,6 +32,13 @@ struct Handle {
 };
 struct View {void* value=nullptr;~View(){if(value)UnmapViewOfFile(value);}};
 void require(bool value,const char* why){if(!value)throw std::runtime_error(why);}
+template<typename Invoke> NTSTATUS own_nt_object(Handle& owner,Invoke invoke){
+  require(owner.value==nullptr,"nt-output-already-owned");
+  HANDLE output=nullptr;const NTSTATUS result=invoke(&output);
+  // Failed NT outputs are not handles we own, even when the API writes them.
+  if(result>=0){require(output&&output!=INVALID_HANDLE_VALUE,"nt-success-handle");owner.value=output;}
+  return result;
+}
 std::string utf8(const std::wstring& text){
   if(text.empty())return {};
   int count=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text.data(),static_cast<int>(text.size()),nullptr,0,nullptr,nullptr);
@@ -90,14 +97,14 @@ Identity identity(Api& api){
   DWORD processSession=0;require(ProcessIdToSessionId(GetCurrentProcessId(),&processSession)!=0&&processSession==result.session,"process-token-session-match");
   line("{\"kind\":\"namespace-root-input\",\"rawProbeUnshimmed\":true,\"sid\":"+quote(utf8(result.sid))+",\"session\":"+std::to_string(result.session)+",\"rawApiPath\":"+quote(utf8(result.rawRoot))+"}");
   result.root=resolve_private_root(result.rawRoot,result.sid,result.session);
-  Handle root;Name object(result.root);NTSTATUS opened=api.openDirectory(&root.value,0x1,&object.attributes);
+  Handle root;Name object(result.root);NTSTATUS opened=own_nt_object(root,[&](PHANDLE output){return api.openDirectory(output,0x1,&object.attributes);});
   line("{\"kind\":\"namespace-root-validation\",\"rawProbeUnshimmed\":true,\"resolvedNtPath\":"+quote(utf8(result.root))+",\"directoryQueryStatus\":"+status(opened)+"}");
   require(opened==0,"private-root-original-open");return result;
 }
 std::wstring globalLeaf(const std::wstring& key){return L"NemoClawMsys-G-msys-2.0S5-"+key;}
 std::wstring sessionLeaf(DWORD session,const std::wstring& key){return L"NemoClawMsys-S"+std::to_wstring(session)+L"-msys-2.0S5-"+key;}
 std::wstring absolute(std::wstring root,const std::wstring& leaf){return root+L"\\"+leaf;}
-NTSTATUS openDir(Api& api,std::wstring name,Handle& result){Name object(name);return api.openDirectory(&result.value,0x2000f,&object.attributes);}
+NTSTATUS openDir(Api& api,std::wstring name,Handle& result){Name object(name);return own_nt_object(result,[&](PHANDLE output){return api.openDirectory(output,0x2000f,&object.attributes);});}
 bool missing(NTSTATUS value){auto code=static_cast<std::uint32_t>(value);return code==0xc0000034||code==0xc000003a;}
 std::string identityFields(const Identity& id){return "\"pid\":"+std::to_string(GetCurrentProcessId())+",\"session\":"+std::to_string(id.session)+",\"sid\":"+quote(utf8(id.sid))+",\"rawApiPath\":"+quote(utf8(id.rawRoot))+",\"privateRoot\":"+quote(utf8(id.root))+",\"rawProbeUnshimmed\":true";}
 void line(const std::string& text){std::cout<<text<<'\n';std::cout.flush();require(std::cout.good(),"stdout-write");}
@@ -659,8 +666,8 @@ int wmain(int argc,wchar_t** argv){
     // Match MSYS child-object behavior: an explicit NULL DACL, not a stronger
     // test ACL that could hide a namespace traversal/isolation failure.
     SECURITY_DESCRIPTOR security{};require(InitializeSecurityDescriptor(&security,SECURITY_DESCRIPTOR_REVISION)!=0,"sd-init");require(SetSecurityDescriptorDacl(&security,TRUE,nullptr,FALSE)!=0,"null-dacl");
-    Name eventName(eventLeaf,g.value,&security);NTSTATUS es=api.createEvent(&event.value,EVENT_ALL_ACCESS,&eventName.attributes,0,FALSE);require(es==0,"own-event-create");
-    LARGE_INTEGER size{};size.QuadPart=4096;Name sectionName(sectionLeaf,g.value,&security);NTSTATUS ms=api.createSection(&section.value,0xf001f,&sectionName.attributes,&size,PAGE_READWRITE,SEC_COMMIT,nullptr);require(ms==0,"own-section-create");
+    Name eventName(eventLeaf,g.value,&security);NTSTATUS es=own_nt_object(event,[&](PHANDLE output){return api.createEvent(output,EVENT_ALL_ACCESS,&eventName.attributes,0,FALSE);});require(es==0,"own-event-create");
+    LARGE_INTEGER size{};size.QuadPart=4096;Name sectionName(sectionLeaf,g.value,&security);NTSTATUS ms=own_nt_object(section,[&](PHANDLE output){return api.createSection(output,0xf001f,&sectionName.attributes,&size,PAGE_READWRITE,SEC_COMMIT,nullptr);});require(ms==0,"own-section-create");
     View view;view.value=MapViewOfFile(section.value,FILE_MAP_READ|FILE_MAP_WRITE,0,0,4096);require(view.value!=nullptr,"own-section-map");std::string marker="NEMOCLAW_SECTION_"+utf8(nonce);memcpy(view.value,marker.data(),marker.size());require(memcmp(view.value,marker.data(),marker.size())==0,"own-section-readback");
     PipeProof pipe(id,api,key,nonce);pipe.before();
     PipeProof ordinaryPipe(id,api,key,nonce,true);ordinaryPipe.before();ordinaryPipe.tracker();
@@ -675,9 +682,9 @@ int wmain(int argc,wchar_t** argv){
       std::wstring ep=absolute(foreign,eventLeaf),mp=absolute(foreign,sectionLeaf);
       // Each minimal right is requested independently. Denial of ALL_ACCESS
       // alone would not rule out a usable synchronization or mapping handle.
-      auto directory=[&](std::wstring name,ACCESS_MASK mask){Handle opened;Name object(name);return api.openDirectory(&opened.value,mask,&object.attributes);};
-      auto eventOpen=[&](ACCESS_MASK mask){Handle opened;Name object(ep);return api.openEvent(&opened.value,mask,&object.attributes);};
-      auto sectionOpen=[&](ACCESS_MASK mask){Handle opened;Name object(mp);return api.openSection(&opened.value,mask,&object.attributes);};
+      auto directory=[&](std::wstring name,ACCESS_MASK mask){Handle opened;Name object(name);return own_nt_object(opened,[&](PHANDLE output){return api.openDirectory(output,mask,&object.attributes);});};
+      auto eventOpen=[&](ACCESS_MASK mask){Handle opened;Name object(ep);return own_nt_object(opened,[&](PHANDLE output){return api.openEvent(output,mask,&object.attributes);});};
+      auto sectionOpen=[&](ACCESS_MASK mask){Handle opened;Name object(mp);return own_nt_object(opened,[&](PHANDLE output){return api.openSection(output,mask,&object.attributes);});};
       std::vector<std::pair<std::string,NTSTATUS>> checks={
         {"foreignDirectory",directory(foreign,0x2000f)},
         {"foreignGlobalQuery",directory(foreign,0x1)},
@@ -693,7 +700,7 @@ int wmain(int argc,wchar_t** argv){
         {"foreignSectionMapWrite",sectionOpen(SECTION_MAP_WRITE)}
       };
       std::wstring original=L"\\BaseNamedObjects\\msys-2.0S5-"+key;Name originalName(original,nullptr,&security,0x80);Handle glob;
-      checks.emplace_back("originalGlobalCreate",api.createDirectory(&glob.value,0x2000f,&originalName.attributes));
+      checks.emplace_back("originalGlobalCreate",own_nt_object(glob,[&](PHANDLE output){return api.createDirectory(output,0x2000f,&originalName.attributes);}));
       std::string fields;bool allDenied=true;constexpr auto denied=static_cast<NTSTATUS>(0xc0000022u);
       for(const auto& check:checks){fields+=","+quote(check.first)+":"+status(check.second);allDenied=allDenied&&check.second==denied;}
       const auto pipeDenials=pipe.foreign(peerPipe,other);const auto ordinaryDenials=ordinaryPipe.foreign(peerOrdinary,other);

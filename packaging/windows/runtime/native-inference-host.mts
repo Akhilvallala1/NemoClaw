@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,7 @@ import {
   type NativeInferenceProgress,
 } from "./native-inference-manifest.mts";
 import { readOpenedRegularFile } from "./native-security.mts";
+import { isDownloadedLocalModel } from "./native-local-models.mts";
 
 export function nativeHostEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const allowed = new Set([
@@ -75,7 +76,7 @@ export function installLayout(installRoot: string) {
   const root = path.resolve(installRoot);
   const launcher = path.join(root, "bin", "NemoClaw.exe");
   const python = path.join(root, "python", "python.exe");
-  for (const file of [launcher, python]) {
+  for (const file of [launcher]) {
     if (!fs.lstatSync(file).isFile())
       throw new Error("The installed native inference helpers are incomplete.");
   }
@@ -204,13 +205,43 @@ export function recordSignature(record: NativeOwnerRecord, credential: string): 
 
 export function writeOwnerRecord(record: NativeOwnerRecord, credential: string): void {
   const file = ownerRecordPath(true);
-  const temporary = `${file}.${record.instance}.tmp`;
-  fs.writeFileSync(
-    temporary,
-    JSON.stringify({ ...record, signature: recordSignature(record, credential) }) + "\n",
-    { flag: "wx", mode: 0o600 },
-  );
-  fs.renameSync(temporary, file);
+  const temporary = `${file}.${record.instance}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    fs.writeFileSync(
+      temporary,
+      JSON.stringify({ ...record, signature: recordSignature(record, credential) }) + "\n",
+      { flag: "wx", mode: 0o600 },
+    );
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        fs.renameSync(temporary, file);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (
+          process.platform !== "win32" ||
+          !["EACCES", "EBUSY", "EPERM"].includes(code ?? "") ||
+          attempt >= 99
+        )
+          throw error;
+        // Windows cannot replace an opened destination whose reader omitted
+        // FILE_SHARE_DELETE. Security scanners and diagnostic readers can hold
+        // that handle briefly, so preserve the old authenticated record and
+        // retry the same-directory atomic replacement for at most one second.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
+  } catch (error) {
+    try {
+      fs.rmSync(temporary, { force: true });
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "The native inference owner record and its temporary file could not be updated.",
+      );
+    }
+    throw error;
+  }
 }
 
 export function readOwnerRecord(credential: string): NativeOwnerRecord | null {
@@ -219,8 +250,10 @@ export function readOwnerRecord(credential: string): NativeOwnerRecord | null {
   const record = JSON.parse(raw) as NativeOwnerRecord;
   if (
     record.schemaVersion !== 1 ||
-    record.localModel !== NATIVE_EXPRESS.id ||
-    record.model !== NATIVE_EXPRESS.model ||
+    !(
+      (record.localModel === NATIVE_EXPRESS.id && record.model === NATIVE_EXPRESS.model) ||
+      (isDownloadedLocalModel(record.localModel) && record.model === record.localModel)
+    ) ||
     !Number.isInteger(record.port) ||
     record.port < 1 ||
     record.port > 65_535 ||
@@ -280,9 +313,10 @@ export async function hardwareCatalog(
       hardware.driverVersion =
         /<driver_version>([\d.]+)<\/driver_version>/u.exec(gpu.value)?.[1] ?? "";
       hardware.cudaVersion = /<cuda_version>([\d.]+)<\/cuda_version>/u.exec(gpu.value)?.[1] ?? "";
-      hardware.gpuCount = Number(
-        /<attached_gpus>(\d+)<\/attached_gpus>/u.exec(gpu.value)?.[1] ?? "0",
-      );
+      // N1X exposes its RTX GPU and an NVIDIA NPU through nvidia-smi. Only the
+      // RTX Spark entries are CUDA model devices; the NPU must not make a valid
+      // one-GPU host fail admission.
+      hardware.gpuCount = n1xGpuCount(gpu.value);
     }
   }
   signal?.throwIfAborted();
@@ -309,6 +343,11 @@ export async function hardwareCatalog(
       },
     ],
   };
+}
+
+export function n1xGpuCount(nvidiaSmiXml: string): number {
+  return [...nvidiaSmiXml.matchAll(/<product_name>[^<]*RTX Spark N1X[^<]*<\/product_name>/giu)]
+    .length;
 }
 
 export function controlProof(

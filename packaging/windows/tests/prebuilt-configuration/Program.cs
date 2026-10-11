@@ -40,6 +40,21 @@ void Rejected(Action run)
 }
 void Read(JsonObject preparation) => NativeSetupOperations.ReadBindings(preparation.ToJsonString(), new[] { "tavily" }, NativeExpressSetup.Id);
 
+Pass("OpenClaw refuses deferred Discord before serialization", () =>
+{
+    var options = new NativeSetupOptions { Messaging = new() { ["discord"] = new[] { "1234" } } };
+    Rejected(() => options.Validate("openclaw"));
+    var configuration = new NativeSetupConfiguration("openclaw", "local", null, NativeExpressSetup.Model, false)
+        { LocalModel = NativeExpressSetup.Id, Options = options };
+    Rejected(() => configuration.Serialize());
+    Require(options.Messaging["discord"].SequenceEqual(new[] { "1234" }));
+});
+Pass("Hermes retains Discord and OpenClaw retains Telegram and Slack", () =>
+{
+    new NativeSetupOptions { Messaging = new() { ["discord"] = new[] { "1234" } } }.Validate("hermes");
+    new NativeSetupOptions { Messaging = new() { ["telegram"] = new[] { "1234" }, ["slack"] = new[] { "U123456" } } }.Validate("openclaw");
+});
+
 Pass("logical local model preserves service binding without external inference binding", () =>
 {
     var bindings = NativeSetupOperations.ReadBindings(Preparation().ToJsonString(), new[] { "tavily" }, NativeExpressSetup.Id);
@@ -85,6 +100,40 @@ Pass("local configuration refuses a placeholder endpoint", () =>
     var configuration = new NativeSetupConfiguration("openclaw", "local", "http://127.0.0.1:8000/v1", NativeExpressSetup.Model, false) { LocalModel = NativeExpressSetup.Id };
     Rejected(() => configuration.Serialize());
 });
+foreach (var model in NativeDownloadedModelSetup.Models)
+{
+    var id = model.GetProperty("id").GetString()!;
+    Pass("downloaded model metadata binds its catalog and installed runtime: " + id, () =>
+    {
+        var p = Preparation();
+        var local = p["localModel"]!;
+        local["id"] = id;
+        local["model"] = id;
+        local["modelRevision"] = model.GetProperty("revision").GetString();
+        local["weightsSha256"] = model.GetProperty("weights").GetProperty("sha256").GetString();
+        local["weightsBytes"] = model.GetProperty("weights").GetProperty("bytes").GetInt64();
+        local["availability"] = "download-on-setup";
+        var bindings = NativeSetupOperations.ReadBindings(p.ToJsonString(), new[] { "tavily" }, id);
+        Require(bindings.Inference is null);
+        foreach (var field in new[] { "id", "model", "modelRevision", "weightsSha256", "runtimeId", "availability" })
+        {
+            var invalid = (JsonObject)p.DeepClone();
+            invalid["localModel"]![field] = "foreign";
+            Rejected(() => NativeSetupOperations.ReadBindings(invalid.ToJsonString(), new[] { "tavily" }, id));
+        }
+    });
+    Pass("downloaded configuration only launches valid local OpenClaw automatically: " + id, () =>
+    {
+        var configuration = new NativeSetupConfiguration("openclaw", "local", null, id, false) { LocalModel = id };
+        using var value = JsonDocument.Parse(configuration.Serialize());
+        Require(configuration.LaunchAfterSetup && !value.RootElement.TryGetProperty("endpoint", out _));
+        Require(!(configuration with { Agent = "hermes" }).LaunchAfterSetup);
+        Require(!(configuration with { Model = "foreign" }).LaunchAfterSetup);
+        Rejected(() => (configuration with { Model = "foreign" }).Serialize());
+        Rejected(() => (configuration with { CredentialStored = true }).Serialize());
+        Rejected(() => (configuration with { Endpoint = "http://127.0.0.1:1" }).Serialize());
+    });
+}
 Console.WriteLine(JsonSerializer.Serialize(new { schemaVersion = 1, passed = controls.Count, failed = 0, controls, installedModelAuthorityTested = false, windowsExecutionRequired = OperatingSystem.IsWindows() }));
 
 namespace Nvidia.NemoClaw.Bootstrapper

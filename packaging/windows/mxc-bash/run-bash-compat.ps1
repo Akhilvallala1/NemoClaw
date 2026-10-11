@@ -159,6 +159,7 @@ public static class MsysImageChecksum {
  $objectBinary=Join-Path $tools 'NemoClawMsysObjectProbe.exe'
  $objectReceipt=Get-Content -LiteralPath ($objectBinary+'.json') -Raw|ConvertFrom-Json
  if($objectReceipt.classification -cne 'unshimmed-native-object-probe-build' -or $objectReceipt.executed -cne $false -or $objectReceipt.sourceSha256 -cne (Get-FileHash -LiteralPath (Join-Path $SourceRoot 'packaging/windows/mxc-bash/object-probe.cpp') -Algorithm SHA256).Hash.ToLowerInvariant() -or $objectReceipt.matrixHeaderSha256 -cne (Get-FileHash -LiteralPath (Join-Path $SourceRoot 'packaging/windows/mxc-bash/creation-matrix.h') -Algorithm SHA256).Hash.ToLowerInvariant()){throw 'Creation matrix probe build is incomplete or differs from reviewed sources.'}
+ if($objectReceipt.ownershipControls.passed -cne $true -or $objectReceipt.ownershipControls.sourceSha256 -cne (Get-FileHash -LiteralPath (Join-Path $SourceRoot 'packaging/windows/mxc-bash/object-probe-controls.cpp') -Algorithm SHA256).Hash.ToLowerInvariant()){throw 'Native object ownership controls are missing or differ from reviewed sources.'}
  Assert-Bytes $objectBinary $objectReceipt.bytes $objectReceipt.sha256
  Invoke-Owned (Join-Path $tools 'node.exe') @('--experimental-strip-types','--no-warnings',(Join-Path $SourceRoot 'packaging/windows/mxc-bash/bash-compat.mts'),'--work-root',$work,'--output',$out,'--mxc',(Join-Path $tools 'wxc-exec.exe')) 'contained-qualification' 420
  $proof=Get-Content -LiteralPath (Join-Path $out 'result.json') -Raw|ConvertFrom-Json

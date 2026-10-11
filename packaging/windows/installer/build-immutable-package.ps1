@@ -52,6 +52,43 @@ function Invoke-BuildTool {
     if ($code -ne 0) { throw "The owned $Label command failed with exit code $code; its output is retained." }
 }
 
+function Get-PackagedMxcProbeSha256 {
+    param([string]$HostPayload, [string]$Payload, [string]$ExpectedSource, [string]$RunId, [string]$RunAttempt)
+    $receiptPath = Join-Path $HostPayload 'runtime-payload-receipt.json'
+    $receiptFile = Get-Item -LiteralPath $receiptPath -Force
+    if ($receiptFile -isnot [IO.FileInfo] -or $receiptFile.Length -gt 65536 -or
+        ($receiptFile.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'The MXC host receipt is not a bounded ordinary file.'
+    }
+    $hostReceipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+    $build = $hostReceipt.mxcBuild
+    if ($ExpectedSource -cnotmatch '^[a-f0-9]{40}$' -or $RunId -cnotmatch '^[1-9][0-9]*$' -or $RunAttempt -cnotmatch '^[1-9][0-9]*$' -or
+        $hostReceipt.schemaVersion -ne 1 -or $hostReceipt.classification -cne 'finished-native-host-components' -or
+        $hostReceipt.sourceRevision -cne $ExpectedSource -or $build.schemaVersion -ne 1 -or
+        $build.classification -cne 'ci-built-mxc-host-binaries' -or $build.requestedSourceRevision -cne $ExpectedSource -or
+        $build.sourceUnchanged -isnot [bool] -or $build.sourceUnchanged -ne $true -or
+        $build.currentPackageQualification -isnot [bool] -or $build.currentPackageQualification -ne $false -or
+        $build.workflowRunId -cne $RunId -or $build.workflowRunAttempt -cne $RunAttempt -or
+        $build.mxcRevision -cnotmatch '^[a-f0-9]{40}$' -or $build.mxcRevision -cne $hostReceipt.mxcSourceRevision -or
+        $build.rustTarget -cne 'aarch64-pc-windows-msvc') {
+        throw 'The packaged MXC probe requires its admitted same-source, same-run ARM64 receipt.'
+    }
+    $built = @($build.files | Where-Object file -CEQ 'wxc-exec.exe')
+    $staged = @($hostReceipt.files | Where-Object file -CEQ 'mxc/wxc-exec.exe')
+    if ($built.Count -ne 1 -or $staged.Count -ne 1 -or
+        $built[0].sha256 -cnotmatch '^[a-f0-9]{64}$' -or $built[0].bytes -le 0 -or
+        $staged[0].sha256 -cne $built[0].sha256 -or $staged[0].bytes -ne $built[0].bytes) {
+        throw 'The packaged MXC probe has no unique matching build and staging identity.'
+    }
+    $probe = Get-Item -LiteralPath (Join-Path $Payload 'mxc\wxc-exec.exe') -Force
+    if ($probe -isnot [IO.FileInfo] -or ($probe.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $probe.Length -ne $built[0].bytes -or
+        (Get-FileHash -LiteralPath $probe.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $built[0].sha256) {
+        throw 'The packaged MXC probe differs from its admitted build.'
+    }
+    return [string]$built[0].sha256
+}
+
 # Read only the two compiled tables; do not enumerate/hash customer runtime bytes.
 function Get-CompiledMsiCounts([string]$Path) {
     $installer = $null; $database = $null
@@ -192,7 +229,8 @@ try {
     $project = Join-Path $windows 'bootstrapper\NemoClaw.Bootstrapper.csproj'
     $publish = Join-Path $work 'bootstrapper'
     $availability = Join-Path $payload 'runtime-package-availability.json'
-    $properties = @('-p:PublishReadyToRun=true', "-p:ProductVersion=$ProductVersion", '-p:ImmutableRuntimePackage=true', "-p:ImmutableRuntimeAvailabilityFile=$availability")
+    $mxcProbeSha = Get-PackagedMxcProbeSha256 $HostPayloadRoot $payload $SourceRevision $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT
+    $properties = @('-p:PublishReadyToRun=true', "-p:ProductVersion=$ProductVersion", '-p:ImmutableRuntimePackage=true', "-p:ImmutableRuntimeAvailabilityFile=$availability", "-p:MxcProbeSha256=$mxcProbeSha")
     Invoke-BuildTool $DotNetPath (@('restore', $project, '--runtime', 'win-arm64') + $properties) 'bootstrapper-restore'
     Invoke-BuildTool $DotNetPath (@('publish', $project, '-c', 'Release', '--runtime', 'win-arm64', '--self-contained', 'true',
         '--no-restore', '--disable-build-servers', '--output', $publish) + $properties) 'bootstrapper-publish'
@@ -254,6 +292,10 @@ try {
     $payloadFiles = @(Get-ChildItem -LiteralPath $payload -Recurse -File)
     $receipt['payload'] = @{ fileCount = $payloadFiles.Count; bytes = [long](($payloadFiles | Measure-Object -Property Length -Sum).Sum) }
     $receipt.phase = 'native-burn-build'
+    if ((Get-PackagedMxcProbeSha256 $HostPayloadRoot $payload $SourceRevision $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT) -cne $mxcProbeSha) {
+        throw 'The admitted MXC probe identity changed after Setup compilation.'
+    }
+    $receipt['mxcProbeSha256'] = $mxcProbeSha
     # Consume the same executed binary; the package builder never rebuilds it.
     if ((Get-FileHash -LiteralPath $SystemDrivePrepPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $systemDriveSha) {
         throw 'The proven system-drive helper changed before Burn composition.'

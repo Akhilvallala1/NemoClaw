@@ -4,7 +4,12 @@
 import { fileURLToPath as nativeEntryFile } from "node:url";
 declare const NEMOCLAW_BUNDLED_RUNTIME: boolean | undefined;
 import { nativeWorkerAssets } from "./native-assets.mts";
-import { execFile, spawn } from "node:child_process";
+import { NativeGatewaySession } from "./native-gateway-session.mts";
+import {
+  openNativeConsoleAttachment,
+  reconcileNativeConsoleExit,
+} from "./native-console-attachment.mts";
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -21,7 +26,10 @@ import { hermesDashboardPythonSource } from "./native-hermes-dashboard.mts";
 import { openNativeUiFileOwner } from "./native-ui-file-owner.mts";
 import { startFileTcpRelay } from "./native-ui-relay.mts";
 import { openNativeWebSession } from "./native-web-session.mts";
-import { waitForNativeMxcCompletion } from "./native-ui-lifecycle.mts";
+import {
+  confirmNativeUiRegistryEmpty,
+  waitForNativeMxcCompletion,
+} from "./native-ui-lifecycle.mts";
 import {
   createNativeSessionDiagnostics,
   NativeSessionFailure,
@@ -36,19 +44,21 @@ import { acquireNativeStateSession } from "./native-state.mts";
 import { resolveNativeConfiguredInference } from "./native-configured-inference.mts";
 import type { NativeInferenceProgress } from "./native-inference-manifest.mts";
 
-import { readOpenedRegularFile, writeNativeGatewayConfig } from "./native-security.mts";
+import {
+  NATIVE_NODE_UI_POLICY,
+  readOpenedRegularFile,
+  writeNativeGatewayConfig,
+} from "./native-security.mts";
 
 import {
   allowlistedWindowsEnvironment,
   argumentValue,
   freePort,
-  jsonContainsExactValue,
   quoteYamlPath,
   removeDirectory,
   requiredDirectory,
   requiredFile,
   run,
-  stopChild,
   waitForPort,
 } from "./run-installed-native-turn.mts";
 
@@ -98,7 +108,10 @@ async function waitForConsoleAgentExit(
         gateway,
         stateSession,
       );
-      if (completion === "ExecFailed" && receipt.exitCode === 0)
+      if (
+        (completion === "ExecFailed" || completion === "MainProcessFailed") &&
+        receipt.exitCode === 0
+      )
         fail("MXC failed after the agent reported its exit status");
       return receipt.exitCode;
     }
@@ -124,7 +137,7 @@ async function waitForConsoleAgentExit(
       }
       if (status?.name !== sandboxName || typeof status?.phase !== "string")
         fail("the native agent status did not match its sandbox");
-      if (["Error", "Stopped", "Stopping", "Deleting"].includes(status.phase))
+      if (["Completed", "Error", "Stopped", "Stopping", "Deleting"].includes(status.phase))
         fail("the contained agent stopped before it published an exit receipt");
       nextStatusCheck = Date.now() + 5000;
     }
@@ -789,6 +802,8 @@ async function runNativeConsoleAgentInternal(
   let statusRoot;
   let statusFiles;
   let dashboardGatewayStopped = false;
+  let gatewaySession: NativeGatewaySession | undefined;
+  let consoleAttachment: ReturnType<typeof openNativeConsoleAttachment> | undefined;
   try {
     const services = await readNativeServiceEnvironment(launcher, agentId, config.options);
     diagnostics.secret(...Object.values(services.environment));
@@ -887,10 +902,13 @@ async function runNativeConsoleAgentInternal(
       }
       diagnostics.stage("runtime");
     }
-    const gatewayConfig = writeNativeGatewayConfig(
+    gatewaySession = new NativeGatewaySession(installRoot, runRoot);
+    const gatewayConfig = await writeNativeGatewayConfig(
       installRoot,
       runRoot,
       agentId === "hermes" ? runtimeLease : undefined,
+      { network: { kind: "personal" }, hostConsole: false },
+      gatewaySession,
     );
     runtimeLease.assertHeld();
     const node = installedNode;
@@ -922,6 +940,7 @@ async function runNativeConsoleAgentInternal(
       [
         "version: 1",
         "",
+        ...NATIVE_NODE_UI_POLICY,
         "filesystem_policy:",
         "  include_workdir: false",
         "  read_only:",
@@ -937,31 +956,28 @@ async function runNativeConsoleAgentInternal(
       ].join("\n"),
       "utf8",
     );
-    const configRoot = path.join(runRoot, "config");
-    const gatewayState = path.join(runRoot, "state");
     const temp = path.join(agentRuntimeRoot, "temp");
-    for (const directory of [configRoot, gatewayState, temp])
-      fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(temp, { recursive: true });
     const gatewayPort = await freePort();
     const sandboxName = `${adapter.sandboxPrefix}-${runId}`;
     const gatewayName = `nemoclaw-${agentId}-${runId}`;
     stateSession.assertHeld();
+    await gatewaySession.prepare();
     const gatewayEnvironment = allowlistedWindowsEnvironment({
       ...(agentId === "hermes"
         ? { NEMOCLAW_MSYS_TOKEN_INSPECTION: "hermes-query", NEMOCLAW_HERMES_PRIVATE_DESKTOP: "1" }
         : {}),
       OPENSHELL_DRIVERS: "mxc",
       OPENSHELL_GATEWAY_CONFIG: gatewayConfig,
-      XDG_CONFIG_HOME: configRoot,
-      XDG_STATE_HOME: gatewayState,
+      ...gatewaySession.environment,
     });
     diagnostics.stage("gateway");
-    const gateway = spawn(
+    const gateway = gatewaySession.spawnGateway(
       gatewayExecutable,
       [
         "--port",
         String(gatewayPort),
-        "--disable-tls",
+        "--enable-mtls-auth",
         "--db-url",
         "sqlite::memory:",
         "--log-level",
@@ -997,7 +1013,7 @@ async function runNativeConsoleAgentInternal(
       });
       await run(
         openshell,
-        ["gateway", "add", `http://127.0.0.1:${gatewayPort}`, "--local", "--name", gatewayName],
+        ["gateway", "add", `https://127.0.0.1:${gatewayPort}`, "--local", "--name", gatewayName],
         cliEnvironment,
         "Registering the native gateway",
         undefined,
@@ -1087,16 +1103,12 @@ async function runNativeConsoleAgentInternal(
         "--driver-config-json",
         JSON.stringify({
           mxc: {
-            windows_ui: true,
             command: nativeRuntimeWorkerCommand(runtimeLease, workload),
             cwd: agentRuntimeRoot,
-            host_loopback: false,
-            host_console: !dashboard,
-            personal_network: true,
           },
         }),
         "--detach",
-        "--no-tty",
+        dashboard ? "--no-tty" : "--tty",
       ];
       for (const [name, value] of Object.entries(environment))
         createArgs.push("--env", `${name}=${value}`);
@@ -1108,7 +1120,7 @@ async function runNativeConsoleAgentInternal(
             schemaVersion: 1,
             agent: agentId,
             nodeProcessId: process.pid,
-            gatewayProcessId: gateway.pid,
+            gatewayProcessId: gatewaySession.gatewayProcessId,
             runRoot,
             runtimeRoot,
             agentRuntimeRoot,
@@ -1245,6 +1257,10 @@ async function runNativeConsoleAgentInternal(
       }
       diagnostics.stage("bootstrap");
       webSession?.progress("bootstrap");
+      if (!dashboard) {
+        stateSession.assertHeld();
+        consoleAttachment = openNativeConsoleAttachment(openshell, sandboxName, cliEnvironment);
+      }
       const bootstrapMonitoring = new AbortController();
       const bootstrapResult = publishBootstrap(true, bootstrapMonitoring.signal);
       try {
@@ -1253,6 +1269,13 @@ async function runNativeConsoleAgentInternal(
           brokerRelay.failure,
           ...(browserRelay ? [browserRelay.failure] : []),
           ...(edge ? [edge.failure] : []),
+          ...(consoleAttachment
+            ? [
+                consoleAttachment.exited.then(() => {
+                  throw new Error("The native terminal closed before bootstrap finished.");
+                }),
+              ]
+            : []),
         ]);
       } finally {
         bootstrapMonitoring.abort();
@@ -1313,7 +1336,7 @@ async function runNativeConsoleAgentInternal(
                 sessionId: runId,
                 url,
                 nodeProcessId: process.pid,
-                gatewayProcessId: gateway.pid,
+                gatewayProcessId: gatewaySession.gatewayProcessId,
                 runRoot,
                 runtimeRoot,
                 agentRuntimeRoot,
@@ -1355,12 +1378,18 @@ async function runNativeConsoleAgentInternal(
         }
       } else {
         diagnostics.stage("agent");
-        exitCode = await Promise.race([
-          agentExit,
-          brokerRelay.failure,
-          ...(browserRelay ? [browserRelay.failure] : []),
-          ...(edge ? [edge.failure] : []),
-        ]);
+        try {
+          if (!consoleAttachment) fail("the native terminal attachment is missing");
+          exitCode = await Promise.race([
+            reconcileNativeConsoleExit(consoleAttachment.exited, agentExit),
+            brokerRelay.failure,
+            ...(browserRelay ? [browserRelay.failure] : []),
+            ...(edge ? [edge.failure] : []),
+          ]);
+        } finally {
+          monitoring.abort();
+          await agentExit.catch(() => {});
+        }
       }
       if (exitCode !== 0) fail(`${adapter.displayName} exited with status ${exitCode}`);
       diagnostics.stage("cleanup");
@@ -1370,14 +1399,11 @@ async function runNativeConsoleAgentInternal(
         cliEnvironment,
         "Deleting the native agent sandbox",
       );
-      const sandboxList = await run(
-        openshell,
-        ["sandbox", "list", "-o", "json"],
-        cliEnvironment,
-        "Verifying native sandbox cleanup",
-      );
-      if (jsonContainsExactValue(JSON.parse(sandboxList.stdout.trim()), sandboxName))
-        fail("the native agent sandbox remained registered");
+      await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+        sandboxName,
+        gateway,
+        stateSession,
+      });
       passed = true;
       sessionPassed = true;
       console.log(`\n${adapter.displayName} closed. NemoClaw removed the temporary sandbox.`);
@@ -1424,13 +1450,22 @@ async function runNativeConsoleAgentInternal(
             diagnostics,
           ),
         );
+        await cleanup("native sandbox registry", () =>
+          confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
+            sandboxName,
+            gateway,
+            stateSession,
+          }),
+        );
       }
-      const gatewayStopped = await stopChild(gateway);
+      const gatewayStopped = await gatewaySession.stopGateway();
       dashboardGatewayStopped = gatewayStopped;
       if (!gatewayStopped) {
         sessionPassed = false;
         fail("the native gateway could not be stopped");
       }
+      await consoleAttachment?.dispose();
+      await gatewaySession.dispose();
       if (relay) await relay.close();
       if (relay) await relay.dispose();
       for (const directory of [runRoot, runtimeRoot]) await removeDirectory(directory);
@@ -1454,7 +1489,10 @@ async function runNativeConsoleAgentInternal(
             agent: agentId,
             sandboxDeleted: passed,
             gatewayStopped,
-            ephemeralRootsRemoved: !fs.existsSync(runRoot) && !fs.existsSync(runtimeRoot),
+            ephemeralRootsRemoved:
+              !fs.existsSync(runRoot) &&
+              !fs.existsSync(runtimeRoot) &&
+              !fs.existsSync(gatewaySession.root),
             persistentStateRetained: fs.existsSync(agentRuntimeRoot),
           }) + "\n",
           { flag: "wx", mode: 0o600 },
@@ -1506,6 +1544,14 @@ async function runNativeConsoleAgentInternal(
       await closed;
     });
     let rootsRemoved = true;
+    await attempt("private gateway cleanup", async () => {
+      if (consoleAttachment) {
+        if (!(await gatewaySession?.stopGateway()))
+          throw new Error("The private gateway did not stop before terminal cleanup.");
+        await consoleAttachment.dispose();
+      }
+      await gatewaySession?.dispose();
+    });
     for (const directory of [
       runRoot,
       runtimeRoot,
@@ -1550,10 +1596,13 @@ async function runNativeConsoleAgentInternal(
             gatewayStopped: dashboardGatewayStopped,
             ephemeralRootsRemoved:
               rootsRemoved &&
+              (!gatewaySession || !fs.existsSync(gatewaySession.root)) &&
               [runRoot, runtimeRoot, dashboardRelayRoot, statusRoot].every(
                 (root) => !root || !fs.existsSync(root),
               ),
             stateRetained: fs.existsSync(agentRuntimeRoot),
+            retainedPrivateGatewayRoot:
+              gatewaySession && fs.existsSync(gatewaySession.root) ? gatewaySession.root : null,
             leaseReleased: released,
             cleanupSucceeded: cleanupFailures.length === 0,
           }) + "\n",

@@ -1,57 +1,138 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-// Bounded CI composition control. This is not browser/model/MXC qualification.
+// Bounded gateway/browser controls with a local provider; no GPU/MXC qualification.
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
+import http from "node:http";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { createHash } from "node:crypto";
-import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 
-async function auditWorkerControl(appRoot: string, stateDir: string) {
+async function archiveWorkerControl(appRoot: string, environment: NodeJS.ProcessEnv) {
+  const outcomes = [];
+  for (const operation of ["materialize", "publish", "invalid"]) {
+    const worker = new Worker(
+      path.join(
+        appRoot,
+        "node_modules/openclaw/dist/config/sessions/session-accessor.sqlite-archive.worker.js",
+      ),
+      {
+        env: environment,
+        execArgv: [],
+        workerData: { type: "sqlite-transcript-archive-v2", operation, plans: [] },
+      },
+    );
+    const messages: unknown[] = [];
+    let failure: Error | undefined;
+    worker.on("message", (message) => messages.push(message));
+    worker.on("error", (error) => {
+      failure = error;
+    });
+    const exited = new Promise<number>((resolve) => worker.once("exit", resolve));
+    let expired = false;
+    const timeout = setTimeout(() => {
+      expired = true;
+      void worker.terminate();
+    }, 15_000);
+    try {
+      const code = await exited;
+      assert.equal(expired, false, "The archive worker must finish within its bound.");
+      assert.equal(code, operation === "invalid" ? 1 : 0, failure?.message);
+      assert.deepEqual(
+        messages,
+        operation === "publish" ? [{ type: "published", results: [] }] : [],
+      );
+      if (operation === "invalid")
+        assert.match(failure?.message ?? "", /requires a supported operation/);
+      else assert.equal(failure, undefined);
+      outcomes.push({ operation, exitCode: code });
+    } finally {
+      clearTimeout(timeout);
+      await worker.terminate();
+    }
+  }
+  return { outcomes, userArchivesReadOrWritten: false };
+}
+
+async function auditRecorderControl(
+  appRoot: string,
+  stateDir: string,
+  environment: NodeJS.ProcessEnv,
+) {
   fs.mkdirSync(stateDir);
-  const worker = new Worker(path.join(appRoot, "dist/audit/audit-event-writer.worker.js"), {
-    workerData: { stateDir },
-    execArgv: [],
+  const source = `
+  (async () => {
+    const api = require(${JSON.stringify(path.join(appRoot, "openclaw-app.cjs"))});
+    await api.registerPrebuiltPlugins({});
+    const registry = globalThis[Symbol.for("nemoclaw.compiled-openclaw.plugins.v1")];
+    const { t: createRecorder } = registry.load("node_modules/openclaw/dist/audit-recorder-BCaTSxYZ.js");
+    const recorder = createRecorder({ stateDir: process.env.OPENCLAW_STATE_DIR, messageMode: "off" });
+    process.once("message", async message => {
+      try {
+        if (message !== "record-and-stop") throw Error("Unexpected audit control message");
+        recorder.recordTool({ type: "tool.execution.completed", seq: 1, ts: Date.now(),
+          agentId: "main", runId: "owned-audit-recorder-control", toolCallId: "call-1",
+          toolName: "owned-local-control" });
+        await recorder.stop();
+        process.send({ type: "stopped" }, () => process.disconnect());
+      } catch (error) {
+        console.error(error); process.exitCode = 1; process.disconnect();
+      }
+    });
+    process.send({ type: "ready" });
+  })().catch(error => { console.error(error); process.exitCode = 1; process.disconnect(); });`;
+  const child = spawn(process.execPath, ["--input-type=commonjs", "-e", source], {
+    env: { ...environment, OPENCLAW_STATE_DIR: stateDir, OPENCLAW_COMPILED_ASSET_ROOT: appRoot },
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+    windowsHide: true,
   });
-  const exit = new Promise<number>((resolve) => worker.once("exit", resolve));
-  const message = () => once(worker, "message", { signal: AbortSignal.timeout(15_000) });
+  let closed = false;
+  let diagnostic = "";
+  child.stdout!.on("data", (chunk: Buffer) => {
+    diagnostic = (diagnostic + chunk.toString("utf8")).slice(-8192);
+  });
+  child.stderr!.on("data", (chunk: Buffer) => {
+    diagnostic = (diagnostic + chunk.toString("utf8")).slice(-8192);
+  });
+  child.once("error", (error) => {
+    diagnostic = error.message;
+  });
+  const exit = new Promise<number | null>((resolve) =>
+    child.once("close", (code) => {
+      closed = true;
+      resolve(code);
+    }),
+  );
+  const message = () =>
+    Promise.race([
+      once(child, "message", { signal: AbortSignal.timeout(15_000) }),
+      exit.then((code) => {
+        throw new Error(`Audit recorder exited ${code} before acknowledgement: ${diagnostic}`);
+      }),
+    ]);
+  let failed = false;
+  let primary: unknown;
   try {
     assert.deepEqual((await message())[0], { type: "ready" });
-    const recorded = message();
-    worker.postMessage({
-      type: "record",
-      input: {
-        sourceSequence: 1,
-        occurredAt: Date.now(),
-        kind: "tool",
-        action: "invoke",
-        status: "succeeded",
-        actorType: "agent",
-        actorId: "owned-control",
-        agentId: "main",
-        runId: "owned-audit-worker-control",
-        toolCallId: "call-1",
-        toolName: "owned-local-control",
-      },
-    });
-    assert.deepEqual((await recorded)[0], { type: "recorded" });
     const stopped = message();
-    worker.postMessage({ type: "stop" });
+    child.send("record-and-stop");
     assert.deepEqual((await stopped)[0], { type: "stopped" });
     assert.equal(
       await Promise.race([
         exit,
         delay(15_000, undefined, { ref: false }).then(() => {
-          throw new Error("Audit worker did not exit after Stop.");
+          throw new Error("Audit recorder process did not exit after Stop.");
         }),
       ]),
       0,
+      diagnostic,
     );
     const database = new DatabaseSync(path.join(stateDir, "state/openclaw.sqlite"), {
       readOnly: true,
@@ -60,23 +141,26 @@ async function auditWorkerControl(appRoot: string, stateDir: string) {
     try {
       row = database
         .prepare(
-          "select source_sequence,kind,action,status,agent_id,run_id,tool_name from audit_events",
+          "select source_sequence,kind,action,status,agent_id,run_id,tool_name,tool_call_id from audit_events",
         )
-        .get();
+        .all();
     } finally {
       database.close();
     }
     assert.deepEqual(
-      { ...row },
-      {
-        source_sequence: 1,
-        kind: "tool",
-        action: "invoke",
-        status: "succeeded",
-        agent_id: "main",
-        run_id: "owned-audit-worker-control",
-        tool_name: "owned-local-control",
-      },
+      row.map((item) => ({ ...item })),
+      [
+        {
+          source_sequence: 1,
+          kind: "tool_action",
+          action: "tool.action.finished",
+          status: "succeeded",
+          agent_id: "main",
+          run_id: "owned-audit-recorder-control",
+          tool_name: "owned-local-control",
+          tool_call_id: "sha256:" + createHash("sha256").update("call-1").digest("hex"),
+        },
+      ],
     );
     return {
       ready: true,
@@ -84,26 +168,80 @@ async function auditWorkerControl(appRoot: string, stateDir: string) {
       stopped: true,
       exitCode: 0,
       persistedMetadataMatched: true,
+      implementation: "process-owned-upstream-recorder",
     };
+  } catch (error) {
+    failed = true;
+    primary = error;
+    throw error;
   } finally {
-    await worker.terminate();
+    if (!closed) {
+      try {
+        child.kill();
+        await Promise.race([
+          exit,
+          delay(5000, undefined, { ref: false }).then(() => {
+            throw new Error("Audit recorder process remained after failure cleanup.");
+          }),
+        ]);
+      } catch (cleanup) {
+        if (failed)
+          throw new AggregateError([primary, cleanup], "Audit recorder and cleanup failed.");
+        throw cleanup;
+      }
+    }
   }
 }
+type BrowserLocator = {
+  count(): Promise<number>;
+  first(): BrowserLocator;
+  getByRole(role: "button", options: { name: string; exact: boolean }): BrowserLocator;
+  waitFor(options: { state: "visible" | "hidden"; timeout: number }): Promise<void>;
+  isEnabled(): Promise<boolean>;
+  click(options?: { timeout: number }): Promise<void>;
+  textContent(): Promise<string | null>;
+};
 type BrowserPage = {
   goto(url: string, options: { waitUntil: "domcontentloaded"; timeout: number }): Promise<unknown>;
-  locator(selector: string): {
-    first(): {
-      waitFor(options: { state: "visible"; timeout: number }): Promise<void>;
-      isEnabled(): Promise<boolean>;
-    };
-  };
+  on(
+    event: "websocket",
+    listener: (socket: {
+      on(
+        event: "framesent" | "framereceived",
+        listener: (frame: { payload: string | Buffer }) => void,
+      ): void;
+    }) => void,
+  ): void;
+  locator(selector: string): BrowserLocator;
   screenshot(options: { path: string }): Promise<unknown>;
 };
+async function inspectBraveConsent(appRoot: string, environment: NodeJS.ProcessEnv) {
+  const entry = path.join(appRoot, "openclaw-app.cjs");
+  const source = `const entry=${JSON.stringify(entry)};process.argv=[process.execPath,entry,"plugins","inspect","brave","--runtime","--json"];require(entry).runCli(process.argv).catch(error=>{console.error(error);process.exitCode=1;});`;
+  const { stdout } = await promisify(execFile)(process.execPath, ["-e", source], {
+    cwd: appRoot,
+    env: environment,
+    timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+    windowsHide: true,
+  });
+  return JSON.parse(stdout) as {
+    install: {
+      source: string;
+      acceptedSurface?: { contracts: string[] };
+      acceptedSurfaceHash?: string;
+    };
+    diagnostics: { message: string }[];
+  };
+}
 async function browserControl(
   appRoot: string,
   origin: string,
   directory: string,
   executablePath: string,
+  firstRun: boolean,
+  pluginConsent: boolean,
+  environment: NodeJS.ProcessEnv,
 ) {
   const playwright = createRequire(path.join(appRoot, "openclaw-app.cjs"))("playwright-core") as {
     chromium: {
@@ -122,12 +260,125 @@ async function browserControl(
   let page: BrowserPage | undefined;
   try {
     page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-    await page.goto(origin + "/chat#token=owned-compiled-gateway-control-token", {
+    let detectionId: string | undefined;
+    let detection:
+      | { ok?: boolean; payload?: { setupComplete?: boolean }; error?: unknown }
+      | undefined;
+    let verificationId: string | undefined;
+    let verification: { ok?: boolean; payload?: { ok?: boolean; modelRef?: string } } | undefined;
+    page.on("websocket", (socket) => {
+      socket.on("framesent", (frame) => {
+        const message = JSON.parse(String(frame.payload));
+        if (message.type === "req" && message.method === "openclaw.setup.detect")
+          detectionId = message.id;
+        if (message.type === "req" && message.method === "openclaw.setup.verify")
+          verificationId = message.id;
+      });
+      socket.on("framereceived", (frame) => {
+        const message = JSON.parse(String(frame.payload));
+        if (message.type === "res" && detectionId && message.id === detectionId)
+          detection = message;
+        if (message.type === "res" && verificationId && message.id === verificationId)
+          verification = message;
+      });
+    });
+    const route = firstRun ? "/chat" : "/settings/model-setup?firstRun=1";
+    await page.goto(origin + route + "#token=owned-compiled-gateway-control-token", {
       waitUntil: "domcontentloaded",
       timeout: 90_000,
     });
+    if (firstRun) {
+      // The real dashboard must receive a successful worker-backed detection.
+      // No model is configured in this fixture, so conversation readiness stays false.
+      const deadline = performance.now() + 45_000;
+      while (!detection && performance.now() < deadline) await delay(100);
+      assert.equal(detection?.ok, true, "The dashboard model-detection RPC must succeed.");
+      assert.equal(detection?.payload?.setupComplete, false);
+      await page
+        .locator(".model-setup__intro")
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await page
+        .locator(".model-setup__manual")
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal(await page.locator(".model-setup__failure").count(), 0);
+      assert.equal(
+        await page.locator(".agent-chat__composer-combobox > textarea:enabled").count(),
+        0,
+      );
+      await page.screenshot({ path: path.join(directory, "compiled-model-setup.png") });
+      if (pluginConsent) {
+        // All mutations belong to this disposable, credential-free Brave fixture.
+        // Cancellation must leave it disabled before a separate explicit acceptance.
+        const before = await inspectBraveConsent(appRoot, environment);
+        assert.equal(before.install.source, "path");
+        assert.equal(before.install.acceptedSurface, undefined);
+        assert.equal(before.diagnostics.length, 1);
+        assert.match(before.diagnostics[0].message, /requires capability consent/);
+        await page.goto(origin + "/settings/plugins", {
+          waitUntil: "domcontentloaded",
+          timeout: 30_000,
+        });
+        const row = page.locator('article[data-plugin-id="brave"]');
+        await row.waitFor({ state: "visible", timeout: 30_000 });
+        await row.getByRole("button", { name: "Disable", exact: true }).click();
+        const enable = row.getByRole("button", { name: "Enable", exact: true });
+        await enable.waitFor({ state: "visible", timeout: 30_000 });
+        await enable.click();
+        const consent = page.locator('.plugins-consent[data-plugin-consent="enable"]');
+        await consent.waitFor({ state: "visible", timeout: 30_000 });
+        assert.match((await consent.textContent()) ?? "", /webSearchProviders: brave/);
+        await page.screenshot({ path: path.join(directory, "compiled-plugin-consent.png") });
+        await consent.getByRole("button", { name: "Cancel", exact: true }).click();
+        await consent.waitFor({ state: "hidden", timeout: 10_000 });
+        await enable.waitFor({ state: "visible", timeout: 10_000 });
+        assert.equal(
+          (await inspectBraveConsent(appRoot, environment)).install.acceptedSurface,
+          undefined,
+        );
+        await enable.click();
+        await consent.waitFor({ state: "visible", timeout: 30_000 });
+        await consent.getByRole("button", { name: "Enable Brave", exact: true }).click();
+        await consent.waitFor({ state: "hidden", timeout: 30_000 });
+        await row
+          .getByRole("button", { name: "Disable", exact: true })
+          .waitFor({ state: "visible", timeout: 30_000 });
+        const after = await inspectBraveConsent(appRoot, environment);
+        assert.equal(after.install.source, "path");
+        assert(after.install.acceptedSurface?.contracts.includes("webSearchProviders: brave"));
+        assert.match(after.install.acceptedSurfaceHash ?? "", /^[a-f0-9]{64}$/);
+        assert.deepEqual(after.diagnostics, []);
+      }
+      return {
+        modelDetectionSucceeded: true,
+        setupComplete: false,
+        enabledComposer: false,
+        modelRequestSent: false,
+        ...(pluginConsent
+          ? {
+              pluginConsent: {
+                plugin: "brave",
+                cancelledThenExplicitlyAccepted: true,
+                acceptancePersisted: true,
+                diagnostics: [],
+                liveSearchTested: false,
+              },
+            }
+          : {}),
+      };
+    }
     const composer = page.locator(".agent-chat__composer-combobox > textarea").first();
     await composer.waitFor({ state: "visible", timeout: 90_000 });
+    assert.equal(detection?.ok, true, "Configured model detection must succeed.");
+    assert.equal(detection?.payload?.setupComplete, true);
+    assert.equal(verification?.ok, true, "The actual dashboard verification RPC must succeed.");
+    assert.equal(
+      verification?.payload?.ok,
+      true,
+      "The compiled runtime must verify the local provider.",
+    );
+    assert.equal(verification?.payload?.modelRef, "nemoclawnative/fixture");
     const deadline = performance.now() + 30_000;
     while (!(await composer.isEnabled()) && performance.now() < deadline) await delay(100);
     assert.equal(
@@ -136,7 +387,14 @@ async function browserControl(
       "The actual published dashboard composer must become enabled.",
     );
     await page.screenshot({ path: path.join(directory, "compiled-dashboard.png") });
-    return { visibleComposer: true, enabledComposer: true, modelRequestSent: false };
+    return {
+      visibleComposer: true,
+      enabledComposer: true,
+      modelRequestSent: true,
+      localProvider: true,
+      externalModelRequest: false,
+      modelVerificationSucceeded: true,
+    };
   } catch (error) {
     failed = true;
     try {
@@ -163,9 +421,17 @@ const app = argument("--app-root");
 const output = argument("--output");
 const portable = process.argv.includes("--portable-proof");
 const withBrave = process.argv.includes("--with-brave");
+const browserSetupControl = process.argv.includes("--browser-setup-control");
+const browserPluginConsentControl = process.argv.includes("--browser-plugin-consent-control");
 const browserExecutable = process.argv.includes("--browser-executable")
   ? argument("--browser-executable")
   : undefined;
+if (browserSetupControl && !browserExecutable)
+  throw new Error("The browser setup control requires a browser executable.");
+if (browserPluginConsentControl && (!browserSetupControl || !withBrave))
+  throw new Error(
+    "The plugin consent control requires the browser setup control and Brave fixture.",
+  );
 if (
   !portable &&
   (process.platform !== "win32" || process.arch !== "arm64" || process.versions.node !== "22.23.2")
@@ -196,6 +462,68 @@ await new Promise<void>((resolve, reject) =>
   allocator.close((error) => (error ? reject(error) : resolve())),
 );
 const origin = `http://127.0.0.1:${port}`;
+// A configured model must pass OpenClaw's real first-run verification before chat.
+// Only the model endpoint is a fixture; the browser, gateway and verification are real.
+const configuredModelControl = Boolean(browserExecutable && !browserSetupControl);
+const modelAllocator = net.createServer();
+let modelPort = 0;
+if (configuredModelControl) {
+  await new Promise<void>((resolve, reject) => {
+    modelAllocator.once("error", reject);
+    modelAllocator.listen(0, "127.0.0.1", resolve);
+  });
+  modelPort = (modelAllocator.address() as net.AddressInfo).port;
+  await new Promise<void>((resolve, reject) =>
+    modelAllocator.close((error) => (error ? reject(error) : resolve())),
+  );
+}
+let modelRequests = 0;
+let modelError: unknown;
+const modelServer = http.createServer(async (request, response) => {
+  try {
+    assert(configuredModelControl);
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/v1/chat/completions");
+    assert.equal(request.headers.authorization, "Bearer owned-local-model-control");
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for await (const chunk of request) {
+      bytes += chunk.length;
+      assert(bytes <= 1024 * 1024);
+      chunks.push(chunk);
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    assert.equal(body.model, "fixture");
+    assert.equal(body.stream, true);
+    assert(
+      JSON.stringify(body.messages).includes("Reply with the single word OK. Do not use tools."),
+    );
+    assert(++modelRequests <= 3, "The bounded verification must not loop.");
+    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+    for (const [delta, finish_reason] of [
+      [{ role: "assistant", content: "OK" }, null],
+      [{}, "stop"],
+    ]) {
+      response.write(
+        "data: " +
+          JSON.stringify({
+            id: "owned-model-verification",
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: "fixture",
+            choices: [{ index: 0, delta, finish_reason }],
+          }) +
+          "\n\n",
+      );
+    }
+    response.end("data: [DONE]\n\n");
+  } catch (error) {
+    modelError ??= error;
+    response.writeHead(500);
+    response.end("Controlled model rejected request");
+  }
+});
+modelServer.requestTimeout = 15_000;
 const inherited: NodeJS.ProcessEnv = {};
 for (const name of [
   "SystemRoot",
@@ -250,9 +578,47 @@ fs.writeFileSync(
       bind: "loopback",
       port,
       auth: { mode: "token", token: "owned-compiled-gateway-control-token" },
-      controlUi: { root: path.join(app, "dist/control-ui"), allowedOrigins: [origin] },
+      terminal: { enabled: false },
+      controlUi: {
+        root: path.join(app, "node_modules/openclaw/dist/control-ui"),
+        allowedOrigins: [origin],
+      },
     },
-    agents: { list: [{ id: "main", default: true }], defaults: { skipBootstrap: true } },
+    update: { checkOnStart: false, auto: { enabled: false } },
+    agents: {
+      list: [{ id: "main", default: true }],
+      defaults: {
+        skipBootstrap: true,
+        workspace: path.join(output, "workspace"),
+        ...(configuredModelControl
+          ? { model: { primary: "nemoclawnative/fixture" }, thinkingDefault: "off" }
+          : {}),
+      },
+    },
+    ...(configuredModelControl
+      ? {
+          models: {
+            mode: "merge",
+            providers: {
+              nemoclawnative: {
+                baseUrl: `http://127.0.0.1:${modelPort}/v1`,
+                apiKey: "owned-local-model-control",
+                api: "openai-completions",
+                models: [
+                  {
+                    id: "fixture",
+                    name: "fixture",
+                    reasoning: false,
+                    input: ["text"],
+                    contextWindow: 131072,
+                    maxTokens: 4096,
+                  },
+                ],
+              },
+            },
+          },
+        }
+      : {}),
     ...(withBrave
       ? {
           plugins: {
@@ -273,7 +639,7 @@ fs.writeFileSync(
   driver,
   `const entry=process.argv[2];process.argv=[process.execPath,entry,...process.argv.slice(3)];
 process.on("message",message=>{if(message==="owned-gateway-stop")process.emit("SIGTERM");});
-require(entry).runCli(process.argv).catch(error=>{console.error(error);process.exitCode=1;});\n`,
+const api=require(entry);Promise.resolve(${withBrave ? 'api.registerPrebuiltPlugins(JSON.parse(require("node:fs").readFileSync(require("node:path").join(process.env.OPENCLAW_STATE_DIR,"openclaw.json"),"utf8")))' : "undefined"}).then(()=>api.runCli(process.argv)).catch(error=>{console.error(error);process.exitCode=1;});\n`,
   { flag: "wx" },
 );
 const child = spawn(
@@ -326,6 +692,11 @@ const result: Record<string, unknown> = {
 let primary: unknown;
 let failed = false;
 try {
+  if (configuredModelControl)
+    await new Promise<void>((resolve, reject) => {
+      modelServer.once("error", reject);
+      modelServer.listen(modelPort, "127.0.0.1", resolve);
+    });
   let healthy = false;
   while (!closed && performance.now() - started < 45_000) {
     try {
@@ -343,7 +714,10 @@ try {
   if (spawnError) throw spawnError;
   assert.equal(healthy, true, "The compiled gateway must become healthy within the control bound.");
   result.healthMs = performance.now() - started;
-  const page = await fetch(`${origin}/chat`, { signal: AbortSignal.timeout(5_000) });
+  const page = await fetch(`${origin}/chat`, {
+    headers: { Accept: "text/html" },
+    signal: AbortSignal.timeout(5_000),
+  });
   assert.equal(page.status, 200);
   const html = await page.text();
   assert.match(html, /<openclaw-app/);
@@ -352,7 +726,8 @@ try {
   assert.ok(ui.length > 100, "The canonical published frontend resources must be inventoried.");
   let resourceBytes = 0;
   for (const file of ui) {
-    const relative = file.path.slice("dist/control-ui/".length);
+    assert(file.path.startsWith("node_modules/openclaw/dist/control-ui/"));
+    const relative = file.path.slice("node_modules/openclaw/dist/control-ui/".length);
     const response = await fetch(
       `${origin}/${relative.split("/").map(encodeURIComponent).join("/")}`,
       { signal: AbortSignal.timeout(5_000) },
@@ -362,10 +737,29 @@ try {
     if (relative === "index.html") {
       const original = fs.readFileSync(path.join(app, file.path));
       assert.equal(hash(original), file.sha256);
-      // Pinned serveResolvedIndexHtml adds this fixed setting at the root mount.
-      const expected = original
+      // 9.2 anchors asset links and replaces document settings. This fixture uses
+      // an explicit root (not a bundled root), no base path/environment, and no terminal.
+      let expected = original
         .toString("utf8")
-        .replace(/<html\b/i, '<html data-openclaw-terminal-enabled="false"');
+        .replaceAll('src="./assets/', 'src="/assets/')
+        .replaceAll('href="./assets/', 'href="/assets/');
+      for (const asset of [
+        "apple-touch-icon.png",
+        "favicon-32.png",
+        "favicon.ico",
+        "favicon.svg",
+        "manifest.webmanifest",
+        "sw.js",
+      ])
+        expected = expected.replaceAll(`href="./${asset}"`, `href="/${asset}"`);
+      expected = expected.replace(/<html\b[^>]*>/i, (tag) =>
+        tag
+          .replace(/\sdata-openclaw-control-ui-build-id="[^"]*"/g, "")
+          .replace(
+            /<html\b/i,
+            '<html data-openclaw-control-ui-base-path="" data-openclaw-terminal-enabled="false"',
+          ),
+      );
       assert.equal(
         content.toString("utf8"),
         expected,
@@ -395,16 +789,29 @@ try {
   for (const required of [
     "browser",
     "canvas",
+    "cua-computer",
     "device-pair",
     "file-transfer",
+    "geolocation",
+    "linux-node",
     "memory-core",
     "ollama",
-    "phone-control",
     "talk-voice",
   ])
     assert.ok(plugins.includes(required), `Canonical active plugin required: ${required}`);
-  if (withBrave)
-    assert.ok(plugins.includes("brave"), "Configured Brave must register successfully.");
+  if (withBrave) {
+    // 9.2 defers Brave until use. test-prebuilt-choice-plugins.mts owns actual
+    // runtime registration, persisted installation and fresh-process convergence.
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(app, "plugins/brave/openclaw.plugin.json"), "utf8"),
+    );
+    assert.equal(manifest.activation.onStartup, false);
+    assert.equal(
+      plugins.includes("brave"),
+      false,
+      "Brave must retain upstream deferred activation.",
+    );
+  }
   result.brave = {
     requested: withBrave,
     observed: plugins.includes("brave"),
@@ -427,16 +834,42 @@ try {
   assert.match(trace, /loaderSourceTransformForcedCount=0\.0(?: |$)/);
   assert.match(trace, /loaderSourceTransformFallbacksCount=0\.0(?: |$)/);
   result.pluginLoaderTrace = trace;
-  result.auditWorker = await auditWorkerControl(app, path.join(output, "audit-worker-state"));
+  result.auditRecorder = await auditRecorderControl(
+    app,
+    path.join(output, "audit-recorder-state"),
+    env,
+  );
+  result.archiveWorker = await archiveWorkerControl(app, env);
   if (browserExecutable) {
-    result.browser = await browserControl(app, origin, output, browserExecutable);
+    result.browser = await browserControl(
+      app,
+      origin,
+      output,
+      browserExecutable,
+      browserSetupControl,
+      browserPluginConsentControl,
+      env,
+    );
     result.browserObserved = true;
+    if (configuredModelControl) {
+      if (modelError) throw modelError;
+      assert(modelRequests > 0, "Browser readiness requires an actual local model request.");
+      result.modelRequestSent = true;
+    }
   }
   result.gatewayObserved = true;
 } catch (error) {
   failed = true;
   primary = error;
 } finally {
+  modelServer.closeAllConnections();
+  if (modelServer.listening)
+    await new Promise<void>((resolve) => modelServer.close(() => resolve()));
+  result.localModelVerificationRequests = modelRequests;
+  result.modelRequestSent = modelRequests > 0;
+  result.externalModelRequest = false;
+  if (modelError)
+    result.localModelError = modelError instanceof Error ? modelError.message : String(modelError);
   if (!closed && child.connected)
     child.send("owned-gateway-stop", (error) => {
       if (error && !closed) child.kill();

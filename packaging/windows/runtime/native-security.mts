@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { nativeHermesCompatibility, type NativeRuntimeLaunchLease } from "./native-runtime.mts";
+import type { NativeGatewaySession } from "./native-gateway-session.mts";
 
 type NativeMessage = { role: "system" | "user" | "assistant"; content: string };
 type ReadOpenedRegularFileOptions = {
@@ -15,19 +16,45 @@ type ReadOpenedRegularFileOptions = {
 };
 export type BrokerOperation = "models" | "chat-completions";
 export type NativeCredentialIdentity = { agent: string; inference: string; endpoint: string };
+export type NativeGatewayNetwork =
+  | { kind: "deny" }
+  | { kind: "personal" }
+  | { kind: "loopback"; ports: readonly number[] };
+export type NativeGatewayOptions = { network?: NativeGatewayNetwork; hostConsole?: boolean };
+
+export const NATIVE_NODE_UI_POLICY = Object.freeze([
+  "ui:",
+  "  allow_graphical_ui: true",
+  "  clipboard: none",
+  "  allow_input_injection: false",
+  "",
+]);
 
 function fail(message: string): never {
   throw new Error(`NemoClaw native runtime security boundary failed: ${message}`);
 }
 
-export function nativeQualificationLoopbackConfig(probe: unknown, ports: readonly number[]) {
-  if (!ports.length || ports.some((port) => !Number.isInteger(port) || port < 1 || port > 65535))
+function validatedLoopbackPorts(ports: readonly number[]): number[] {
+  if (
+    !Array.isArray(ports) ||
+    !ports.length ||
+    Array.from(ports).some((port) => !Number.isInteger(port) || port < 1 || port > 65535)
+  )
     fail("qualification loopback ports are invalid");
+  return [...new Set(ports)];
+}
+
+export function nativeQualificationLoopbackConfig(
+  probe: unknown,
+  ports: readonly number[],
+): NativeGatewayNetwork {
+  const validated = validatedLoopbackPorts(ports);
   if (!probe || typeof probe !== "object") fail("the MXC qualification probe is invalid");
   const value = probe as { tier?: unknown; needsDaclAugmentation?: unknown };
   if (value.tier === "base-container" && value.needsDaclAugmentation === false)
-    return { loopback_ports: [...new Set(ports)] };
-  if (value.tier === "appcontainer-dacl" && value.needsDaclAugmentation === true) return {};
+    return { kind: "loopback", ports: validated };
+  if (value.tier === "appcontainer-dacl" && value.needsDaclAugmentation === true)
+    return { kind: "deny" };
   fail("the MXC qualification tier is unknown or inconsistent");
 }
 
@@ -302,11 +329,13 @@ export function readOpenedRegularFile(
   }
 }
 
-export function writeNativeGatewayConfig(
+export async function writeNativeGatewayConfig(
   installRoot: string,
   runRoot: string,
   hermesRuntime?: NativeRuntimeLaunchLease,
-): string {
+  options: NativeGatewayOptions | (() => Promise<NativeGatewayOptions>) = {},
+  gatewaySession?: NativeGatewaySession,
+): Promise<string> {
   const installation = path.resolve(installRoot);
   if (Buffer.from(installation, "utf8").toString("utf8") !== installation)
     fail("the installation path contains invalid Unicode");
@@ -323,9 +352,20 @@ export function writeNativeGatewayConfig(
     maxBytes: 64 * 1024,
   });
   if (template === null) fail("the installed gateway configuration template is missing");
-  const rendered = renderNativeGatewayConfig(template, installation, hermesRuntime);
+  // Validate the installed template before a deferred profile can probe the MXC host.
+  if (typeof options === "function") {
+    const validated = renderNativeGatewayConfig(template, installation, hermesRuntime);
+    gatewaySession?.configuration(validated);
+  }
+  const selected = typeof options === "function" ? await options() : options;
+  const rendered = renderNativeGatewayConfig(template, installation, hermesRuntime, selected);
   const output = path.join(resolvedRunRoot, "mxc-gateway.toml");
-  fs.writeFileSync(output, rendered, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  fs.writeFileSync(output, gatewaySession ? gatewaySession.configuration(rendered) : rendered, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  gatewaySession?.preflightConfiguration(output);
   return output;
 }
 
@@ -333,7 +373,9 @@ export function renderNativeGatewayConfig(
   template: string,
   installRoot: string,
   hermesRuntime?: NativeRuntimeLaunchLease,
+  options: NativeGatewayOptions = {},
 ): string {
+  const profile = nativeGatewayProfile(options);
   const compatibility = hermesRuntime ? nativeHermesCompatibility(hermesRuntime) : null;
   if (
     compatibility &&
@@ -354,18 +396,59 @@ export function renderNativeGatewayConfig(
         inMxc = /^\s*\[\s*openshell\.drivers\.mxc\s*\]\s*(?:#.*)?$/u.test(line);
         if (inMxc) sections += 1;
       }
+      if (
+        inMxc &&
+        /^\s*(?:pc_network_allow|pc_allow_local_network|pc_host_console|pc_loopback_ports|egress_proxy|egress_proxy_addr|pc_relay_spawner_path|pc_relay_target_port)\s*=/u.test(
+          line,
+        )
+      )
+        fail("the gateway template cannot override session-owned settings");
       if (!inMxc || !/^\s*wxc_exec_path\s*=/u.test(line)) return line;
       const setting = /^(\s*wxc_exec_path\s*=\s*)(?:"(?:[^"\\]|\\.)*"|'[^']*')(\s*(?:#.*)?)$/u.exec(
         line,
       );
       if (!setting) fail("the gateway template executable path must be a single-line TOML string");
       executablePaths += 1;
-      return `${setting[1]}${executable}${setting[2]}`;
+      return [`${setting[1]}${executable}${setting[2]}`, ...profile].join(
+        template.includes("\r\n") ? "\r\n" : "\n",
+      );
     })
     .join(template.includes("\r\n") ? "\r\n" : "\n");
   if (sections !== 1 || executablePaths !== 1)
     fail("the gateway template must declare one MXC section and executable path");
   return rendered;
+}
+
+function nativeGatewayProfile(options: NativeGatewayOptions): string[] {
+  if (
+    !options ||
+    typeof options !== "object" ||
+    Array.isArray(options) ||
+    Object.keys(options).some((key) => key !== "network" && key !== "hostConsole") ||
+    options.network === null ||
+    (options.hostConsole !== undefined && typeof options.hostConsole !== "boolean")
+  )
+    fail("the gateway profile is invalid");
+  const network = options.network ?? { kind: "deny" };
+  if (
+    !network ||
+    typeof network !== "object" ||
+    Array.isArray(network) ||
+    !["deny", "personal", "loopback"].includes(network.kind) ||
+    Object.keys(network).some(
+      (key) => key !== "kind" && !(network.kind === "loopback" && key === "ports"),
+    )
+  )
+    fail("the gateway profile network is invalid");
+  const ports = network.kind === "loopback" ? validatedLoopbackPorts(network.ports) : [];
+  const personal = network.kind === "personal";
+  // Each launcher owns a private gateway. Profiles never enter per-sandbox driver_config.
+  return [
+    `pc_network_allow = ${personal}`,
+    `pc_allow_local_network = ${personal}`,
+    `pc_host_console = ${options.hostConsole ?? false}`,
+    `pc_loopback_ports = ${JSON.stringify(ports)}`,
+  ];
 }
 
 export function validatedChatMessages(body: unknown): NativeMessage[] {

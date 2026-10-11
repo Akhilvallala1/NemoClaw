@@ -146,34 +146,76 @@ it("stops the guarded polling owner when an outer relay failure cancels it", asy
 });
 
 describe.each(routes)("native %s result cleanup", (route) => {
-  it("keeps a successful result's sandbox until its executor completes", async () => {
-    const fixture = createNativeAgentCompletionFixture(route);
-    const pending = fixture.finish();
-    expect(fixture.queries).toEqual([
-      ["owned-openshell", fixture.environment, "owned-sandbox", fixture.gateway, null],
-    ]);
-    expect(fixture.deletions).toEqual([]);
+  it("waits for confirmed absence after deletion acknowledgement", async () => {
+    const fixture = createNativeAgentCompletionFixture(route, true);
+    let finished = false;
+    const pending = fixture.finish().then(() => {
+      finished = true;
+    });
+    fixture.complete("MainProcessCompleted");
     await delay(25);
-    expect(fixture.deletions).toEqual([]);
-    fixture.complete("AgentCompleted");
-    await pending;
-    expect(fixture.deletions).toEqual([
+    expect(fixture.deletions).toHaveLength(1);
+    expect(fixture.registryQueries).toEqual([
       [
         "owned-openshell",
-        ["sandbox", "delete", "owned-sandbox"],
         fixture.environment,
-        expect.any(String),
+        {
+          sandboxName: "owned-sandbox",
+          gateway: fixture.gateway,
+          stateSession: fixture.runtimeLease,
+        },
       ],
     ]);
+    expect(finished).toBe(false);
+    fixture.confirmAbsent();
+    await pending;
+    expect(finished).toBe(true);
   });
 
-  it("rejects failed execution instead of entering successful deletion", async () => {
-    const fixture = createNativeAgentCompletionFixture(route);
+  it("propagates absence verification failure after deletion acknowledgement", async () => {
+    const fixture = createNativeAgentCompletionFixture(route, true);
     const pending = fixture.finish();
-    fixture.complete("ExecFailed");
-    await expect(pending).rejects.toThrow("executor failed during cleanup");
-    expect(fixture.deletions).toEqual([]);
+    const failure = new Error("owned sandbox removal was not confirmed");
+    fixture.complete("MainProcessCompleted");
+    fixture.rejectAbsence(failure);
+    await expect(pending).rejects.toBe(failure);
+    expect(fixture.deletions).toHaveLength(1);
+    expect(fixture.registryQueries).toHaveLength(1);
   });
+  it.each(["AgentCompleted", "MainProcessCompleted"] as const)(
+    "deletes the owned sandbox after %s",
+    async (completion) => {
+      const fixture = createNativeAgentCompletionFixture(route);
+      const pending = fixture.finish();
+      expect(fixture.queries).toEqual([
+        ["owned-openshell", fixture.environment, "owned-sandbox", fixture.gateway, null],
+      ]);
+      expect(fixture.deletions).toEqual([]);
+      await delay(25);
+      expect(fixture.deletions).toEqual([]);
+      fixture.complete(completion);
+      await pending;
+      expect(fixture.deletions).toEqual([
+        [
+          "owned-openshell",
+          ["sandbox", "delete", "owned-sandbox"],
+          fixture.environment,
+          expect.any(String),
+        ],
+      ]);
+    },
+  );
+
+  it.each(["ExecFailed", "MainProcessFailed"] as const)(
+    "rejects %s before successful deletion",
+    async (completion) => {
+      const fixture = createNativeAgentCompletionFixture(route);
+      const pending = fixture.finish();
+      fixture.complete(completion);
+      await expect(pending).rejects.toThrow("execution failed");
+      expect(fixture.deletions).toEqual([]);
+    },
+  );
 
   it("preserves completion-observation failure for owned failure cleanup", async () => {
     const fixture = createNativeAgentCompletionFixture(route);
@@ -252,6 +294,7 @@ describe("native one-shot result ownership", () => {
   it.each([
     { name: "failed workload", result: { ...validNativeTurnResult, chatExitCode: 1 } },
     { name: "wrong reply", result: { ...validNativeTurnResult, reply: "NOT_CHAT_OK" } },
+    { name: "old runtime version", result: { ...validNativeTurnResult, version: "2026.7.1" } },
   ])("rejects the actual $name result", async ({ result }) => {
     const fixture = await openNativeTurnResultFixture();
     try {

@@ -22,6 +22,24 @@ const reply = (status: unknown) => ({ stdout: JSON.stringify(status), stderr: ""
 beforeEach(() => mocks.invoke.mockReset());
 
 describe("native MXC execution completion", () => {
+  it.each([
+    ["Completed", 0, "MainProcessCompleted"],
+    ["Error", 7, "MainProcessFailed"],
+  ])("reports %s without claiming runtime teardown", async (phase, exitCode, reason) => {
+    mocks.invoke.mockResolvedValue(
+      reply({
+        name: "owned",
+        phase,
+        exit_code: exitCode,
+        conditions: [{ type: "Ready", status: "False", reason }],
+      }),
+    );
+    await expect(
+      waitForNativeMxcCompletion("openshell.exe", {}, "owned", gateway, null),
+    ).resolves.toBe(reason);
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(mocks.invoke.mock.calls[0][1]).toEqual(["sandbox", "get", "owned", "-o", "json"]);
+  });
   it("waits past a running agent until the executor reports completion", async () => {
     mocks.invoke
       .mockResolvedValueOnce(
@@ -87,7 +105,7 @@ describe("native MXC execution completion", () => {
     mocks.invoke.mockResolvedValue(reply({ name: "owned", phase: "Ready", ready_condition: null }));
     await expect(
       waitForNativeMxcCompletion("openshell.exe", {}, "owned", gateway, null, 200),
-    ).rejects.toThrow("did not finish cleanup");
+    ).rejects.toThrow("did not complete");
   });
 
   it("rejects a stopped gateway before querying it", async () => {

@@ -232,12 +232,13 @@ async function main(): Promise<void> {
     const temp = path.join(shareRoot, "temp");
     for (const directory of [home, temp, path.join(runRoot, "state"), path.join(runRoot, "config")])
       fs.mkdirSync(directory);
-    const gatewayConfig = security.writeNativeGatewayConfig(installRoot, runRoot);
+    const gatewayConfig = await security.writeNativeGatewayConfig(installRoot, runRoot);
     const policyPath = path.join(runRoot, "policy.yaml");
     fs.writeFileSync(
       policyPath,
       [
         "version: 1",
+        ...security.NATIVE_NODE_UI_POLICY,
         "filesystem_policy:",
         "  include_workdir: false",
         "  read_only:",
@@ -329,7 +330,6 @@ async function main(): Promise<void> {
             ...(cacheExperiment ? [cacheManifest!] : []),
           ],
           cwd: shareRoot,
-          windows_ui: true,
         },
       }),
       "--no-tty",
@@ -449,7 +449,7 @@ async function main(): Promise<void> {
       null,
     );
     receipt.completion = completion;
-    if (completion !== "AgentCompleted")
+    if (completion !== "AgentCompleted" && completion !== "MainProcessCompleted")
       throw new Error("MXC did not confirm successful component workload termination.");
     cleanup.workloadStopped = true;
     await captureAcl("after");
@@ -469,8 +469,8 @@ async function main(): Promise<void> {
       }
     }
   } finally {
-    // A failed, nonce-bound workload result still needs its executor teardown
-    // observed before deletion. Keep the workload exception primary.
+    // Observe the failed workload's exit before deleting its sandbox. Deletion
+    // still owns runtime teardown. Keep the workload exception primary.
     if (
       created &&
       workloadResultObserved &&
@@ -497,14 +497,12 @@ async function main(): Promise<void> {
       try {
         await checked(["sandbox", "delete", sandboxName], "Deleting the owned component sandbox");
         cleanup.sandboxDeleted = true;
-        const list = await checked(
-          ["sandbox", "list", "-o", "json"],
-          "Verifying component registry cleanup",
-        );
-        cleanup.sandboxRegistryAbsent = !helpers.jsonContainsExactValue(
-          JSON.parse(list.stdout),
+        await lifecycle.confirmNativeUiRegistryEmpty(openshell, environment, {
           sandboxName,
-        );
+          gateway,
+          stateSession: null,
+        });
+        cleanup.sandboxRegistryAbsent = true;
       } catch (error) {
         cleanupErrors.push(errorDetail(error));
       }

@@ -132,6 +132,7 @@ class PackageComposition(unittest.TestCase):
 
     def test_build_presence_does_not_become_qualification(self):
         document, references = package.availability(self.assembly, None)
+        self.assertFalse(document["bundledLocalInferenceAvailable"])
         self.assertEqual(references, [])
         self.assertEqual(
             document["agents"][0], {"agent": "openclaw", "status": "unqualified"}
@@ -148,6 +149,35 @@ class PackageComposition(unittest.TestCase):
         decision["runtime"] = {**decision["runtime"], "manifestSha256": "e" * 64}
         with self.assertRaisesRegex(ValueError, "different runtime"):
             package.availability(self.assembly, decision)
+
+    def test_host_z3_notice_reaches_the_composed_payload_and_msi_file_inventory(self):
+        source_notice = Path(package.__file__).parents[1] / "Z3-LICENSE.txt"
+        shutil.copy2(source_notice, self.host / source_notice.name)
+        self.compose()
+        self.assertEqual(
+            (self.output / source_notice.name).read_bytes(), source_notice.read_bytes()
+        )
+        authoring = self.fixture.root / "host-notice.wxs"
+        package.payload_authoring(self.output, authoring)
+        root = ET.parse(authoring).getroot()
+        notices = root.findall(f".//{{{package.NAMESPACE}}}File[@Name='Z3-LICENSE.txt']")
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(
+            Path(notices[0].attrib["Source"]).read_bytes(), source_notice.read_bytes()
+        )
+
+    def test_engine_presence_enables_model_selection_without_granting_qualification(self):
+        assembly = {**self.assembly, "localInference": {
+            "engineVersion": "fixture", "bundleSha256": "a" * 64,
+            "modelsBundled": False,
+        }}
+        document, references = package.availability(assembly, None)
+        self.assertTrue(document["bundledLocalInferenceAvailable"])
+        self.assertFalse(document["prebuiltLocalModelAvailable"])
+        self.assertEqual(references, [])
+        self.assertEqual(document["agents"][0], {
+            "agent": "openclaw", "status": "unqualified",
+        })
 
     def test_modified_sealed_file_is_refused_before_package_copy(self):
         content = (

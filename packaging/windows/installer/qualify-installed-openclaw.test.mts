@@ -15,11 +15,68 @@ import {
   exactChatAddress,
   recordedExec,
   recordedFileTool,
+  requestVisibleGateway,
   sanitizedFailure,
   toolIds,
   verifyToolOutput,
   visibleChatReady,
 } from "./qualify-installed-openclaw.mts";
+
+test("the browser RPC uses the connected OpenClaw9.2 snapshot and rejects stale clients", async () => {
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const request = new Function(
+    `return (${requestVisibleGateway.toString()});`,
+  )() as typeof requestVisibleGateway;
+  const params = { agentId: "main", includePlugins: true };
+  const result = { agentId: "main", groups: [] };
+  const calls: unknown[][] = [];
+  const client = {
+    async request(method: string, input: unknown) {
+      calls.push([method, input]);
+      return result;
+    },
+  };
+  let app: unknown;
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelector(selector: string) {
+        assert.equal(selector, "openclaw-app");
+        return app;
+      },
+    },
+  });
+  try {
+    for (const snapshot of [
+      undefined,
+      { connected: true, client },
+      { phase: "connected", client: null },
+      ...["stopped", "connecting", "reconnecting", "offline", "reload-required"].map((phase) => ({
+        phase,
+        connected: true,
+        client,
+      })),
+    ]) {
+      app = { context: { gateway: { snapshot } } };
+      await assert.rejects(request({ method: "tools.catalog", params }), /disconnected/u);
+    }
+    app = null;
+    await assert.rejects(request({ method: "tools.catalog", params }), /disconnected/u);
+    assert.deepEqual(calls, []);
+    app = { context: { gateway: { snapshot: { phase: "connected", client } } } };
+    assert.equal(await request({ method: "tools.catalog", params }), result);
+    assert.deepEqual(calls, [["tools.catalog", params]]);
+    assert.equal(calls[0][1], params);
+    const failure = new Error("actual gateway request failed");
+    client.request = async () => {
+      throw failure;
+    };
+    await assert.rejects(request({ method: "chat.history", params }), (error) => error === failure);
+  } finally {
+    if (oldDocument) Object.defineProperty(globalThis, "document", oldDocument);
+    else Reflect.deleteProperty(globalThis, "document");
+  }
+});
 
 test("an enabled composer waits for its actual session identity", () => {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, "document");

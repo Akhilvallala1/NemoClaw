@@ -8,7 +8,11 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { nativeOpenClawOptions, type NativeOptions } from "../runtime/native-options.mts";
+import {
+  nativeOpenClawOptions,
+  normalizeNativeOptions,
+  type NativeOptions,
+} from "../runtime/native-options.mts";
 function javascriptStringLiteral(value: string) {
   return JSON.stringify(value).replace(
     /[<>/\u2028\u2029]/gu,
@@ -23,7 +27,7 @@ const argument = (name: string) => {
 const app = path.resolve(argument("--app-root")),
   output = path.resolve(argument("--output")),
   choice = argument("--choice");
-assert(["brave", "discord", "slack", "tavily"].includes(choice));
+assert(["brave", "slack", "tavily"].includes(choice));
 if (!process.argv.includes("--portable-proof")) {
   assert.equal(process.platform, "win32");
   assert.equal(process.arch, "arm64");
@@ -52,7 +56,7 @@ const options: NativeOptions =
           },
         },
       };
-const selected = nativeOpenClawOptions(options);
+const selected = nativeOpenClawOptions(normalizeNativeOptions("openclaw", options));
 const config = {
   ...selected,
   plugins: { ...selected.plugins, load: { paths: [path.join(app, "plugins", choice)] } },
@@ -151,6 +155,12 @@ async function finish(child: ReturnType<typeof start>, milliseconds: number) {
     child.save();
   }
 }
+function command(label: string, args: string[]) {
+  return start(
+    label,
+    `const entry=${JSON.stringify(code)};process.argv=[process.execPath,entry,...${JSON.stringify(args)}];require(entry).runCli(process.argv).catch(error=>{console.error(error);process.exitCode=1;});`,
+  );
+}
 async function observeRecurringHealth(_origin: string) {
   const samples: { ts: number; observedAtMs: number; ok: boolean }[] = [];
   for (const index of [0, 1]) {
@@ -196,15 +206,77 @@ try {
   );
   assert.equal(await finish(inspect, 30000), 0);
   assert.deepEqual(JSON.parse(fs.readFileSync(registered, "utf8")).registered, [choice]);
-  const report = JSON.parse(inspect.stdout());
+  let report = JSON.parse(inspect.stdout());
   assert.equal(report.plugin?.id, choice);
   assert.equal(report.plugin?.status, "loaded");
   assert.equal(report.plugin?.imported, true);
   assert.equal(report.install?.source, "path");
   assert.equal(report.install?.installPath, path.join(app, "plugins", choice));
   assert.equal(report.install?.sourcePath, report.install.installPath);
-  assert.equal(report.install?.version, "2026.7.1");
+  assert.equal(report.install?.version, "2026.9.2");
+  assert.equal(report.install.acceptedSurface, undefined);
+  assert.equal(report.diagnostics.length, 1);
+  assert.match(report.diagnostics[0].message, /requires capability consent/);
+  // Explicit fixture approval, not installer behavior. The browser control owns
+  // the user-facing Cancel/Accept path; this control covers each packaged choice.
+  const disabled = command("disable", ["plugins", "disable", choice]);
+  assert.equal(await finish(disabled, 30000), 0, disabled.stderr());
+  const denied = command("enable-without-consent", ["plugins", "enable", choice]);
+  assert.equal(await finish(denied, 30000), 1, denied.stderr());
+  assert.match(denied.stderr(), /requires capability consent/);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(state, "openclaw.json"), "utf8")).plugins.entries[choice]
+      .enabled,
+    false,
+  );
+  const accepted = command("enable-with-consent", [
+    "plugins",
+    "enable",
+    choice,
+    "--accept-capabilities",
+  ]);
+  assert.equal(await finish(accepted, 30000), 0, accepted.stderr());
+  const verified = command("inspect-after-consent", [
+    "plugins",
+    "inspect",
+    choice,
+    "--runtime",
+    "--json",
+  ]);
+  assert.equal(await finish(verified, 30000), 0, verified.stderr());
+  report = JSON.parse(verified.stdout());
+  assert.equal(report.plugin?.status, "loaded");
+  assert.equal(report.plugin?.imported, true);
+  assert.equal(report.install.source, "path");
+  assert(report.install.acceptedSurface);
+  assert.match(report.install.acceptedSurfaceHash, /^[a-f0-9]{64}$/);
   assert.deepEqual(report.diagnostics, []);
+  const acceptedSurfaceHash = report.install.acceptedSurfaceHash;
+  const acceptedSurfaceIntegrity = report.install.acceptedSurfaceIntegrity;
+  assert.equal(acceptedSurfaceIntegrity, report.install.integrity);
+  assert.match(acceptedSurfaceIntegrity, /^sha256-[A-Za-z0-9+/]{43}=$/);
+  const registeredAgain = start(
+    "register-after-consent",
+    `const entry=${JSON.stringify(code)};require(entry).registerPrebuiltPlugins(${JSON.stringify(config)}).catch(error=>{console.error(error);process.exitCode=1;});`,
+  );
+  assert.equal(await finish(registeredAgain, 30000), 0, registeredAgain.stderr());
+  const persisted = command("inspect-after-registration", [
+    "plugins",
+    "inspect",
+    choice,
+    "--runtime",
+    "--json",
+  ]);
+  assert.equal(await finish(persisted, 30000), 0, persisted.stderr());
+  const afterRegistration = JSON.parse(persisted.stdout());
+  assert.equal(afterRegistration.install.acceptedSurfaceHash, acceptedSurfaceHash);
+  assert.equal(afterRegistration.install.acceptedSurfaceIntegrity, acceptedSurfaceIntegrity);
+  assert.deepEqual(afterRegistration.diagnostics, []);
+  result.capabilityConsent = {
+    missingConsentDenied: true,
+    explicitlyAccepted: true,
+    acceptancePersisted: true,
+  };
   result.runtimeInspection = {
     status: report.plugin.status,
     capabilities: report.capabilities,
@@ -222,7 +294,10 @@ try {
       bind: "loopback",
       port,
       auth: { mode: "none" },
-      controlUi: { root: path.join(app, "dist/control-ui"), allowedOrigins: [origin] },
+      controlUi: {
+        root: path.join(app, "node_modules/openclaw/dist/control-ui"),
+        allowedOrigins: [origin],
+      },
     },
     logging: { file: path.join(output, "gateway.jsonl") },
   };

@@ -462,12 +462,27 @@ fn main() {
             .unwrap_or("");
         let provisional = cfg!(feature = "immutable-runtime")
             && action == "serve"
-            && forwarded.len() == 3
-            && forwarded[2] == "--startup-owned";
-        if (forwarded.len() != 2 && !provisional)
+            && forwarded
+                .get(2)
+                .is_some_and(|value| value == "--startup-owned");
+        let model_start = if provisional { 3 } else { 2 };
+        let selected_model = if forwarded.len() == model_start + 2
+            && forwarded[model_start] == "--model"
+            && matches!(
+                action,
+                "install" | "install-ready" | "ensure-ready" | "serve"
+            ) {
+            match forwarded[model_start + 1].to_str() {
+                Some(model @ ("qwen3.8-27b" | "qwen3.6-35b-a3b")) => Some(model),
+                _ => credential_error("The native local model is invalid."),
+            }
+        } else {
+            None
+        };
+        if (forwarded.len() != model_start && selected_model.is_none())
             || !matches!(
                 action,
-                "catalog" | "install" | "ensure-ready" | "stop" | "serve"
+                "catalog" | "install" | "install-ready" | "ensure-ready" | "stop" | "serve"
             )
         {
             credential_error("The native local inference action is invalid.");
@@ -506,11 +521,14 @@ fn main() {
             .current_dir(&install)
             .env("NEMOCLAW_NATIVE_INSTALL_ROOT", &install)
             .creation_flags(CREATE_NO_WINDOW);
+        if action == "serve" {
+            command.arg("--owned-host");
+        }
+        if let Some(model) = selected_model {
+            command.args(["--model", model]);
+        }
         #[cfg(feature = "immutable-runtime")]
         {
-            if action == "serve" {
-                command.arg("--owned-host");
-            }
             let code = runtime_host::run_managed(
                 command,
                 CREATE_NO_WINDOW,
@@ -528,7 +546,6 @@ fn main() {
         }
         #[cfg(not(feature = "immutable-runtime"))]
         if action == "serve" {
-            command.arg("--owned-host");
             match inference_job::run(command) {
                 Ok(code) => exit(code),
                 Err(message) => credential_error(&message),

@@ -182,6 +182,42 @@ export function hermesPromptFrames(prompt: string) {
   return frames;
 }
 
+// Playwright serializes this callback into the dashboard; keep it self-contained.
+export function sendHermesPromptFrames({
+  channel,
+  frames,
+  origin,
+}: {
+  channel: string;
+  frames: string[];
+  origin: string;
+}) {
+  const observation = (globalThis as any).__nemoclawSocketObservation;
+  if (!observation?.sockets) return { matches: 0 };
+  const matches = [...observation.sockets.values()].filter((entry: any) => {
+    try {
+      const url = new URL(entry.url);
+      return (
+        url.origin.replace(/^ws/u, "http") === origin &&
+        url.pathname === "/api/pty" &&
+        url.searchParams.get("channel") === channel &&
+        entry.socket.readyState === 1
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (matches.length === 1)
+    return (async () => {
+      for (const [index, frame] of frames.entries()) {
+        matches[0].socket.send(frame);
+        if (index + 1 < frames.length) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return { matches: 1 };
+    })();
+  return { matches: matches.length };
+}
+
 export function sanitizeHermesBrowserDiagnostic(value: unknown, secrets: string[] = []) {
   let text = String(value);
   for (const secret of secrets) {
@@ -1114,36 +1150,11 @@ async function main() {
       const channel = pty.snapshot().channel;
       assert(channel, "The actual Hermes PTY channel is unavailable");
       const frames = hermesPromptFrames(prompt);
-      const result = await page.evaluate(
-        ({ channel, frames, origin }: { channel: string; frames: string[]; origin: string }) => {
-          const observation = (globalThis as any).__nemoclawSocketObservation;
-          if (!observation?.sockets) return { matches: 0 };
-          const matches = [...observation.sockets.values()].filter((entry: any) => {
-            try {
-              const url = new URL(entry.url);
-              return (
-                url.origin.replace(/^ws/u, "http") === origin &&
-                url.pathname === "/api/pty" &&
-                url.searchParams.get("channel") === channel &&
-                entry.socket.readyState === 1
-              );
-            } catch {
-              return false;
-            }
-          });
-          if (matches.length === 1)
-            return (async () => {
-              for (const [index, frame] of frames.entries()) {
-                matches[0].socket.send(frame);
-                if (index + 1 < frames.length)
-                  await new Promise((resolve) => setTimeout(resolve, 50));
-              }
-              return { matches: 1 };
-            })();
-          return { matches: matches.length };
-        },
-        { channel, frames, origin: origin.origin },
-      );
+      const result = await page.evaluate(sendHermesPromptFrames, {
+        channel,
+        frames,
+        origin: origin.origin,
+      });
       assert.equal(result.matches, 1, "The actual dashboard does not own one live PTY input");
     };
     const turn = async (prompt: string, accept: (messages: any[]) => unknown) => {

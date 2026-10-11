@@ -68,7 +68,11 @@ describe("native optional services", () => {
     const options = normalizeNativeOptions("openclaw", {
       messaging: {
         telegram: { credentialStored: true, allowedUsers: [] },
-        discord: { credentialStored: true, allowedUsers: ["1234", "1234"] },
+        slack: {
+          credentialStored: true,
+          appCredentialStored: true,
+          allowedUsers: ["U123456", "U123456"],
+        },
       },
     });
     expect(nativeOpenClawOptions(options).channels).toEqual({
@@ -76,18 +80,35 @@ describe("native optional services", () => {
         enabled: true,
         accounts: { default: { enabled: true, dmPolicy: "pairing", groupPolicy: "disabled" } },
       },
-      discord: {
+      slack: {
         enabled: true,
         accounts: {
           default: {
             enabled: true,
             dmPolicy: "allowlist",
-            allowFrom: ["1234"],
+            allowFrom: ["U123456"],
             groupPolicy: "disabled",
           },
         },
       },
     });
+  });
+
+  it("rejects deferred OpenClaw Discord without changing the supplied configuration", () => {
+    const options = { messaging: { discord: { credentialStored: true, allowedUsers: ["1234"] } } };
+    const before = structuredClone(options);
+    expect(() => normalizeNativeOptions("openclaw", options)).toThrow(
+      "Discord is unavailable for OpenClaw in this Windows preview.",
+    );
+    expect(options).toEqual(before);
+  });
+
+  it("preserves Hermes Discord selection and sender deduplication", () => {
+    expect(
+      normalizeNativeOptions("hermes", {
+        messaging: { discord: { credentialStored: true, allowedUsers: ["1234", "1234"] } },
+      }),
+    ).toEqual({ messaging: { discord: { credentialStored: true, allowedUsers: ["1234"] } } });
   });
 
   it("domain-separates service, agent, and inference credentials", () => {

@@ -864,6 +864,7 @@ debug = false
     }
     Copy-Item -LiteralPath (Join-Path $candidate 'packaging\windows\runtime\native-ui-relay.mts') -Destination $qualificationRoot
     Copy-Item -LiteralPath (Join-Path $candidate 'packaging\windows\runtime\native-ui-lifecycle.mts') -Destination $qualificationRoot
+    Copy-Item -LiteralPath (Join-Path $candidate 'packaging\windows\runtime\native-console-attachment.mts') -Destination $qualificationRoot
     foreach ($inferenceFile in @('native-inference.mts', 'native-inference-cli.mts', 'native-inference-host.mts', 'native-inference-install.mts', 'native-inference-download.mts', 'native-inference-manifest.mts', 'native-inference-manifest.json', 'native-inference-guard.mts', 'native-inference-unpack.py', 'native-configured-inference.mts')) {
         Copy-Item -LiteralPath (Join-Path $candidate "packaging\windows\runtime\$inferenceFile") -Destination $qualificationRoot
     }

@@ -147,6 +147,7 @@ def availability(assembly, selection):
         "manifestSha256": identity["manifestSha256"],
         "sourceRevision": identity["sourceRevision"],
         "prebuiltLocalModelAvailable": assembly.get("localModel") is not None,
+        "bundledLocalInferenceAvailable": assembly.get("localInference") is not None,
         "agents": [
             {
                 "agent": agent,

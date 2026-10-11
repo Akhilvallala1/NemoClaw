@@ -80,7 +80,22 @@ def verify_helper(helper: Path, expected_sha256: str):
         or data[pe + 4 : pe + 6] != b"\x64\xaa"
     ):
         raise ValueError("The transaction helper is not native Windows ARM64.")
-    return {"sha256": expected_sha256, "bytes": len(data), "architecture": "arm64"}
+    optional = pe + 24
+    optional_size = int.from_bytes(data[pe + 20 : pe + 22], "little")
+    if (
+        optional > len(data)
+        or optional_size < 112
+        or optional + optional_size > len(data)
+        or int.from_bytes(data[optional : optional + 2], "little") != 0x20B
+        or int.from_bytes(data[optional + 68 : optional + 70], "little") != 2
+    ):
+        raise ValueError("The transaction helper requires a Windows GUI PE32+ header.")
+    return {
+        "sha256": expected_sha256,
+        "bytes": len(data),
+        "architecture": "arm64",
+        "subsystem": "windows",
+    }
 
 
 def author(identity, helper: Path, expected_sha256: str):

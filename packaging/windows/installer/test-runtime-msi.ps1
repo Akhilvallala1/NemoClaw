@@ -284,8 +284,15 @@ try {
     } finally { $ErrorActionPreference = 'Stop' }
     if ($buildExit -ne 0) { throw 'The actual native MSI fixture helper did not build.' }
     $helper = Join-Path $target 'aarch64-pc-windows-msvc\release\NemoClawRuntimeTransaction.exe'
-    $identity = (& $helper --fixture-identify | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $identity -cne 'NEMOCLAW_MSI_FIXTURE_COMMIT_FAILURE_V1') { throw 'The fault-control helper variant was not selected.' }
+    $priorHelperFixture = $env:NEMOCLAW_TEST_TRANSACTION_HELPER
+    try {
+        $env:NEMOCLAW_TEST_TRANSACTION_HELPER = $helper
+        & $NodePath --test (Join-Path $owner 'transaction-helper-process.test.mts')
+        if ($LASTEXITCODE -ne 0) { throw 'The compiled helper did not preserve redirected output and failure status.' }
+    } finally {
+        if ($null -eq $priorHelperFixture) { Remove-Item Env:NEMOCLAW_TEST_TRANSACTION_HELPER -ErrorAction SilentlyContinue }
+        else { $env:NEMOCLAW_TEST_TRANSACTION_HELPER = $priorHelperFixture }
+    }
     $receipt.helperSha256 = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant()
     $fixtureDirectory = Join-Path $ArtifactDirectory 'fixtures'
     & $PythonPath (Join-Path $owner 'build_msi_fixtures.py') --output $fixtureDirectory --node $NodePath --node-license $NodeLicensePath `

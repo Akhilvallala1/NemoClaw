@@ -5,7 +5,19 @@ import { createConnection } from "node:net";
 
 // A request to the existing native guardian, not a command or process-ID API.
 // That guardian starts the existing inference owner outside the agent's job.
-export async function startNativeRuntimeInferenceSupervisor(signal?: AbortSignal) {
+export async function startNativeRuntimeInferenceSupervisor(
+  signal?: AbortSignal,
+  model = "n1x-qwen3.6-35b-a3b",
+) {
+  const startAction =
+    model === "n1x-qwen3.6-35b-a3b"
+      ? "start"
+      : model === "qwen3.8-27b"
+        ? "start27"
+        : model === "qwen3.6-35b-a3b"
+          ? "start35"
+          : null;
+  if (!startAction) throw new Error("The native inference model selection is invalid.");
   const pipe = process.env.NEMOCLAW_RUNTIME_SERVICE_PIPE;
   if (!pipe || !/^\\\\\.\\pipe\\NemoClawRuntime-[a-f0-9]{32}$/u.test(pipe))
     throw new Error("The native inference lifetime owner is unavailable.");
@@ -47,7 +59,9 @@ export async function startNativeRuntimeInferenceSupervisor(signal?: AbortSignal
     pending = undefined;
     receiver.resolve(reply);
   });
-  const request = async (action: "start" | "status" | "commit" | "cancel") => {
+  const request = async (
+    action: "start" | "start27" | "start35" | "status" | "commit" | "cancel",
+  ) => {
     if (closed || error || pending)
       throw error ?? new Error("The native lifetime channel is unavailable.");
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -79,7 +93,7 @@ export async function startNativeRuntimeInferenceSupervisor(signal?: AbortSignal
   signal?.addEventListener("abort", abort, { once: true });
   try {
     if (signal?.aborted) abort();
-    const reply = await request("start");
+    const reply = await request(startAction);
     const match = /^started ([1-9][0-9]{0,9}) ([a-f0-9]{16})$/u.exec(reply);
     if (!match || Number(match[1]) > 0xffffffff)
       throw new Error("The native inference owner identity is invalid.");

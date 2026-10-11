@@ -48,11 +48,14 @@ agent's process environment. Keys are not written into setup JSON or passed as
 process arguments. Native state ownership and the UI relay's native file owner
 protect their filesystem boundaries through shutdown.
 
-The OpenShell binary is built from NVIDIA/OpenShell#2721 merge commit
-bcd517bbe08cc80860c9be57699390cd32e8445f with the installed, hash-recorded
-OPENSHELL-NODE-UI-COMPATIBILITY.patch. That derivative supports contained Node
-initialization, explicit host-console sharing, and the selected Personal network
-mode. It does not establish production LPAC or governed network-policy parity.
+The host build pins OpenShell 901338dbd334feeb1436f4cb41533f6d592d3595
+and source-built MXC 7cd00d1ee6af9208322c924ef64e5113f6704639.
+It includes the OpenShell supervisor, Windows sandbox executable, and Z3 DLL.
+The older launcher settings still require migration to that protocol.
+This intermediate source state is not a usable or qualified installer.
+The separate Windows-tip cycles allowed host loopback. They do not establish
+denied host loopback, port-only isolation, live policy revocation, or production
+LPAC and governed network-policy parity. New package bytes need new acceptance.
 
 Microsoft MXC's native elevated system-drive and null-device preparation runs
 before MSI installation. Windows resets the null-device preparation at reboot;

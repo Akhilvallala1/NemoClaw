@@ -9,6 +9,7 @@ const execFileAsync = promisify(execFile);
 type GatewayState = Pick<ChildProcess, "exitCode" | "signalCode">;
 type StateLease = { assertHeld(): void };
 type CleanupStep = readonly [label: string, action: () => unknown];
+type MxcCompletion = "AgentCompleted" | "ExecFailed" | "MainProcessCompleted" | "MainProcessFailed";
 
 export function observeNativeSandboxCreation(child: ChildProcess) {
   let rejected = false;
@@ -50,23 +51,163 @@ export function observeNativeSandboxCreation(child: ChildProcess) {
 export async function confirmNativeUiRegistryEmpty(
   openshell: string,
   environment: NodeJS.ProcessEnv,
+  removal?: {
+    sandboxName: string;
+    gateway: GatewayState | null | undefined;
+    stateSession: StateLease | null;
+    timeout?: number;
+  },
 ) {
-  const result = await execFileAsync(openshell, ["sandbox", "list", "-o", "json"], {
-    env: environment,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 10_000,
-    maxBuffer: 1024 * 1024,
-  });
-  const registry: unknown = JSON.parse(result.stdout);
-  // This gateway belongs to one session. Malformed output or any retained entry
-  // must not turn a failed create request into permission to skip cleanup.
-  if (!Array.isArray(registry) || registry.length !== 0)
-    throw new Error("The private UI gateway registry is not confirmed empty.");
+  const timeout = removal?.timeout ?? (removal ? 30_000 : 10_000);
+  const deadlineFailure = () =>
+    new Error("The private UI gateway registry was not empty before its deadline.");
+  if (!Number.isSafeInteger(timeout) || timeout <= 0 || timeout > 30_000) throw deadlineFailure();
+  const deadline = Date.now() + timeout;
+  const assertOwnership = () => {
+    if (!removal) return;
+    removal.stateSession?.assertHeld();
+    if (
+      !removal.gateway ||
+      removal.gateway.exitCode !== null ||
+      removal.gateway.signalCode !== null
+    )
+      throw new Error("The native gateway stopped before sandbox removal was confirmed.");
+  };
+  while (Date.now() < deadline) {
+    assertOwnership();
+    let registry: unknown;
+    try {
+      const result = await execFileAsync(openshell, ["sandbox", "list", "-o", "json"], {
+        env: environment,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: Math.min(10_000, Math.max(1, deadline - Date.now())),
+        maxBuffer: 1024 * 1024,
+      });
+      registry = JSON.parse(result.stdout);
+    } catch {
+      if (Date.now() >= deadline) throw deadlineFailure();
+      throw new Error("The private UI gateway registry could not be read.");
+    }
+    assertOwnership();
+    if (Date.now() >= deadline) throw deadlineFailure();
+    // Newer CLI versions wrap the collection in a paginated envelope. An empty
+    // first page cannot prove absence if another page remains unexamined.
+    if (
+      registry !== null &&
+      typeof registry === "object" &&
+      !Array.isArray(registry) &&
+      "sandboxes" in registry &&
+      "next_page_token" in registry &&
+      registry.next_page_token === ""
+    )
+      registry = registry.sandboxes;
+    if (Array.isArray(registry) && registry.length === 0) return;
+    // Only an accepted deletion of this session's sandbox may still be pending.
+    // Do not retry mutations, failed reads, unexpected entries or rejected creates.
+    if (
+      !removal ||
+      !Array.isArray(registry) ||
+      registry.length !== 1 ||
+      registry[0] === null ||
+      typeof registry[0] !== "object" ||
+      registry[0].name !== removal.sandboxName ||
+      registry[0].phase !== "Deleting"
+    )
+      throw new Error("The private UI gateway registry is not confirmed empty.");
+    await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
+  }
+  throw deadlineFailure();
 }
 
-// The workload's receipt precedes its process exit. Wait for the MXC executor
-// itself to finish teardown before deletion can terminate its process monitor.
+export function nativeMxcCompletion(status: unknown, sandboxName: string): MxcCompletion | null {
+  if (
+    typeof status !== "object" ||
+    status === null ||
+    !("name" in status) ||
+    status.name !== sandboxName ||
+    !("phase" in status) ||
+    typeof status.phase !== "string"
+  )
+    throw new Error("The MXC cleanup status did not match the owned sandbox.");
+  let condition: unknown = null;
+  if ("conditions" in status) {
+    if (!Array.isArray(status.conditions))
+      throw new Error("The MXC cleanup conditions are malformed.");
+    for (const entry of status.conditions as unknown[]) {
+      if (
+        entry === null ||
+        typeof entry !== "object" ||
+        Array.isArray(entry) ||
+        !("type" in entry) ||
+        typeof entry.type !== "string" ||
+        !("status" in entry) ||
+        typeof entry.status !== "string" ||
+        !("reason" in entry) ||
+        typeof entry.reason !== "string"
+      )
+        throw new Error("The MXC cleanup conditions are malformed.");
+      if (entry.type === "Ready") {
+        if (condition !== null)
+          throw new Error("The MXC cleanup conditions contain duplicate readiness records.");
+        condition = entry;
+      }
+    }
+  } else {
+    // Older packaged OpenShell exposes only this derivative field. Never use it
+    // to override missing or conflicting evidence in the upstream conditions array.
+    condition = "ready_condition" in status ? status.ready_condition : null;
+  }
+  if (
+    condition !== null &&
+    typeof condition === "object" &&
+    "status" in condition &&
+    "reason" in condition
+  ) {
+    if (condition.reason === "MainProcessCompleted" || condition.reason === "MainProcessFailed") {
+      // Canonical main exit is not executor teardown. The caller must still
+      // delete its sandbox and verify absence before releasing owned resources.
+      const exitCode = "exit_code" in status ? status.exit_code : undefined;
+      if (
+        "conditions" in status &&
+        condition.status === "False" &&
+        typeof exitCode === "number" &&
+        Number.isInteger(exitCode) &&
+        exitCode >= -2147483648 &&
+        exitCode <= 2147483647
+      ) {
+        if (
+          status.phase === "Completed" &&
+          condition.reason === "MainProcessCompleted" &&
+          exitCode === 0
+        )
+          return "MainProcessCompleted";
+        if (status.phase === "Error" && condition.reason === "MainProcessFailed" && exitCode !== 0)
+          return "MainProcessFailed";
+      }
+      throw new Error("The MXC main-process exit evidence is inconsistent.");
+    }
+    if (
+      status.phase === "Ready" &&
+      condition.status === "True" &&
+      condition.reason === "AgentCompleted"
+    )
+      return "AgentCompleted";
+    if (
+      status.phase === "Error" &&
+      condition.status === "False" &&
+      condition.reason === "ExecFailed"
+    )
+      return "ExecFailed";
+  }
+  if (["Completed", "Error", "Stopped", "Stopping", "Deleting"].includes(status.phase))
+    throw new Error("MXC stopped without confirming execution cleanup.");
+  return null;
+}
+
+// A workload receipt precedes process exit. Legacy MXC reports executor teardown;
+// newer MXC reports main exit and retains its supervisor until sandbox deletion.
+// Neither return value replaces the caller's deletion and registry absence checks.
 export async function waitForNativeMxcCompletion(
   openshell: string,
   environment: NodeJS.ProcessEnv,
@@ -74,12 +215,12 @@ export async function waitForNativeMxcCompletion(
   gateway: GatewayState,
   stateSession: StateLease | null,
   timeout = 45_000,
-): Promise<"AgentCompleted" | "ExecFailed"> {
+): Promise<MxcCompletion> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     stateSession?.assertHeld();
     if (gateway.exitCode !== null || gateway.signalCode !== null)
-      throw new Error("The native gateway stopped before MXC execution cleanup completed.");
+      throw new Error("The native gateway stopped before MXC execution completed.");
     const result = await execFileAsync(openshell, ["sandbox", "get", sandboxName, "-o", "json"], {
       env: environment,
       encoding: "utf8",
@@ -87,41 +228,11 @@ export async function waitForNativeMxcCompletion(
       timeout: Math.min(10_000, Math.max(1, deadline - Date.now())),
       maxBuffer: 1024 * 1024,
     });
-    const status: unknown = JSON.parse(result.stdout);
-    if (
-      typeof status !== "object" ||
-      status === null ||
-      !("name" in status) ||
-      status.name !== sandboxName ||
-      !("phase" in status) ||
-      typeof status.phase !== "string"
-    )
-      throw new Error("The MXC cleanup status did not match the owned sandbox.");
-    const condition = "ready_condition" in status ? status.ready_condition : null;
-    if (
-      condition !== null &&
-      typeof condition === "object" &&
-      "status" in condition &&
-      "reason" in condition
-    ) {
-      if (
-        status.phase === "Ready" &&
-        condition.status === "True" &&
-        condition.reason === "AgentCompleted"
-      )
-        return "AgentCompleted";
-      if (
-        status.phase === "Error" &&
-        condition.status === "False" &&
-        condition.reason === "ExecFailed"
-      )
-        return "ExecFailed";
-    }
-    if (["Error", "Stopped", "Stopping", "Deleting"].includes(status.phase))
-      throw new Error("MXC stopped without confirming execution cleanup.");
+    const completion = nativeMxcCompletion(JSON.parse(result.stdout), sandboxName);
+    if (completion !== null) return completion;
     await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
   }
-  throw new Error("The native MXC executor did not finish cleanup before its deadline.");
+  throw new Error("The native MXC execution did not complete before its deadline.");
 }
 
 export async function watchNativeUiSandbox(
@@ -158,7 +269,7 @@ export async function watchNativeUiSandbox(
       status.name !== sandboxName ||
       !("phase" in status) ||
       typeof status.phase !== "string" ||
-      ["Error", "Stopped", "Stopping", "Deleting"].includes(status.phase)
+      ["Completed", "Error", "Stopped", "Stopping", "Deleting"].includes(status.phase)
     )
       throw new Error("The contained OpenClaw session stopped while its Web UI was open.");
     for (let elapsed = 0; elapsed < 5000 && !signal.aborted; elapsed += 100) await sleep(100);

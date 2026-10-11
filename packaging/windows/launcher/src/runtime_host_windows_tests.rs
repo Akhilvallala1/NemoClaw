@@ -98,6 +98,13 @@ fn wait_for(path: &Path) {
     }
 }
 
+fn publish_pid(path: &Path) {
+    // Existence is the reader's readiness signal; publish only complete bytes.
+    let pending = path.with_extension("pending");
+    fs::write(&pending, std::process::id().to_string()).unwrap();
+    fs::rename(pending, path).unwrap();
+}
+
 // The test executable is the actual owned child/grandchild. Invoking this case
 // without its private mode is only the fixture entry, not an OS-control claim.
 #[test]
@@ -108,6 +115,18 @@ fn owned_process_fixture() {
     let root = PathBuf::from(std::env::var_os("NEMOCLAW_GUARDIAN_TEST_ROOT").unwrap());
     match mode.as_str() {
         "exit23" => std::process::exit(23),
+        "diagnostic-child" => std::thread::sleep(Duration::from_secs(4)),
+        "diagnostic-parent" => {
+            super::inference_owner::prevent_diagnostic_handle_inheritance().unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", FIXTURE, "--nocapture"])
+                .env("NEMOCLAW_GUARDIAN_TEST_MODE", "diagnostic-child")
+                .current_dir(std::env::temp_dir())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            spawn_command(&mut command).unwrap();
+        }
         "stdin" => {
             let mut line = String::new();
             std::io::stdin().lock().read_line(&mut line).unwrap();
@@ -121,7 +140,7 @@ fn owned_process_fixture() {
                 .args(["--exact", FIXTURE, "--nocapture"])
                 .env("NEMOCLAW_GUARDIAN_TEST_MODE", "grandchild")
                 .current_dir(&root);
-            let mut child = command.spawn().unwrap();
+            let mut child = spawn_command(&mut command).unwrap();
             fs::write(root.join("grandchild-pid"), child.id().to_string()).unwrap();
             wait_for(&root.join("child-pid"));
             if mode == "parent" {
@@ -130,7 +149,7 @@ fn owned_process_fixture() {
             event(&root, "parent-exiting");
         }
         "grandchild" => {
-            fs::write(root.join("child-pid"), std::process::id().to_string()).unwrap();
+            publish_pid(&root.join("child-pid"));
             wait_for(&root.join("release"));
             event(&root, "grandchild-finished");
         }
@@ -183,16 +202,32 @@ fn owned_process_fixture() {
             command
                 .args(["--exact", FIXTURE, "--nocapture"])
                 .env("NEMOCLAW_GUARDIAN_TEST_MODE", "browser-foreign-child");
-            assert!(command.status().unwrap().success());
+            assert!(
+                spawn_command(&mut command)
+                    .unwrap()
+                    .wait()
+                    .unwrap()
+                    .success()
+            );
         }
-        "pipe-invalid" => {
+        "pipe-invalid" | "pipe-foreign-child" => {
             let pipe = std::env::var_os("NEMOCLAW_RUNTIME_SERVICE_PIPE").unwrap();
             let mut channel = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(pipe)
                 .unwrap();
-            channel.write_all(b"unknown\n").unwrap();
+            let write = channel.write_all(b"unknown\n");
+            if mode == "pipe-foreign-child" {
+                if let Err(error) = write {
+                    // The server rejects this PID before reading its request.
+                    // Immediate closure is a successful denial, not a child panic.
+                    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+                    return;
+                }
+            } else {
+                write.unwrap();
+            }
             let mut response = Vec::new();
             assert!(channel.read_to_end(&mut response).is_err() || response.is_empty());
         }
@@ -200,23 +235,25 @@ fn owned_process_fixture() {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command
                 .args(["--exact", FIXTURE, "--nocapture"])
-                .env("NEMOCLAW_GUARDIAN_TEST_MODE", "pipe-invalid")
+                .env("NEMOCLAW_GUARDIAN_TEST_MODE", "pipe-foreign-child")
                 .current_dir(&root);
-            assert!(command.status().unwrap().success());
+            assert!(
+                spawn_command(&mut command)
+                    .unwrap()
+                    .wait()
+                    .unwrap()
+                    .success()
+            );
         }
         "service-loop" => {
             let mut line = String::new();
             std::io::stdin().lock().read_line(&mut line).unwrap();
             assert_eq!(line, "start\n");
-            fs::write(root.join("service-pid"), std::process::id().to_string()).unwrap();
+            publish_pid(&root.join("service-pid"));
             wait_for(&root.join("release"));
         }
         "service-owner" => {
-            fs::write(
-                root.join("service-owner-pid"),
-                std::process::id().to_string(),
-            )
-            .unwrap();
+            publish_pid(&root.join("service-owner-pid"));
             let lease = OpenOptions::new()
                 .read(true)
                 .share_mode(1)
@@ -237,7 +274,7 @@ fn owned_process_fixture() {
                 .env("NEMOCLAW_GUARDIAN_TEST_MODE", "service-owner")
                 .current_dir(&root)
                 .stdin(std::process::Stdio::piped());
-            let mut service = command.spawn().unwrap();
+            let mut service = spawn_command(&mut command).unwrap();
             let _provisional_writer = service.stdin.take().unwrap();
             wait_for(&root.join("service-pid"));
             loop {
@@ -439,7 +476,7 @@ fn provisional_service_parent_eof_stops_its_actual_owned_job() {
     let mut fixture = Fixture::new();
     let mut command = fixture.command("service-owner");
     command.stdin(std::process::Stdio::piped());
-    let mut service = OwnedChild(command.spawn().unwrap());
+    let mut service = OwnedChild(spawn_command(&mut command).unwrap());
     let process = OwnedDescendant::from_fixture(&fixture.root.join("service-pid"));
     drop(fixture.lease.take());
     assert!(fs::remove_file(fixture.root.join("lease")).is_err());
@@ -453,7 +490,7 @@ fn committed_service_outlives_request_pipe_and_keeps_its_own_lease_until_stop() 
     let mut fixture = Fixture::new();
     let mut command = fixture.command("service-owner");
     command.stdin(std::process::Stdio::piped());
-    let mut service = OwnedChild(command.spawn().unwrap());
+    let mut service = OwnedChild(spawn_command(&mut command).unwrap());
     let process = OwnedDescendant::from_fixture(&fixture.root.join("service-pid"));
     let mut provisional = service.0.stdin.take().unwrap();
     provisional.write_all(b"commit\n").unwrap();
@@ -469,9 +506,23 @@ fn committed_service_outlives_request_pipe_and_keeps_its_own_lease_until_stop() 
     finish(fixture);
 }
 #[test]
+fn detached_service_does_not_retain_the_requesters_diagnostic_pipe() {
+    let fixture = Fixture::new();
+    let started = Instant::now();
+    let output = fixture
+        .command("diagnostic-parent")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    finish(fixture);
+}
+#[test]
 fn abruptly_killed_requester_cannot_strand_its_uncommitted_service() {
     let mut fixture = Fixture::new();
-    let mut starter = OwnedChild(fixture.command("service-starter").spawn().unwrap());
+    let mut starter = OwnedChild(spawn_command(&mut fixture.command("service-starter")).unwrap());
     let process = OwnedDescendant::from_fixture(&fixture.root.join("service-pid"));
     let service = OwnedDescendant::from_fixture(&fixture.root.join("service-owner-pid"));
     drop(fixture.lease.take());

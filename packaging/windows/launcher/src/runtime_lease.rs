@@ -301,6 +301,12 @@ pub(crate) mod native {
     }
     #[link(name = "advapi32")]
     unsafe extern "system" {
+        fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            value: *const u16,
+            revision: u32,
+            descriptor: *mut *mut c_void,
+            size: *mut u32,
+        ) -> i32;
         fn ConvertSidToStringSidW(sid: *const c_void, value: *mut *mut u16) -> i32;
         fn GetSecurityInfo(
             handle: RawHandle,
@@ -396,6 +402,28 @@ pub(crate) mod native {
             maximum: (wide.len() * 2) as u16,
             buffer: wide.as_mut_ptr(),
         };
+        // FILE_CREATE must not inherit the caller's default owner: an elevated
+        // installer can still have an ordinary user as its token owner. Set the
+        // installer owner at creation, retaining normal parent ACL inheritance.
+        // FILE_OPEN never repairs or changes an existing object's security.
+        let security = if disposition == 2 {
+            let owner = "O:BA\0".encode_utf16().collect::<Vec<_>>();
+            let mut descriptor = null_mut();
+            if unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    owner.as_ptr(),
+                    1,
+                    &mut descriptor,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return Err("runtime-permissions");
+            }
+            Some(LocalMemory(descriptor))
+        } else {
+            None
+        };
         let mut attributes = ObjectAttributes {
             length: std::mem::size_of::<ObjectAttributes>() as u32,
             root: parent.map_or(null_mut(), |v| v.0),
@@ -406,7 +434,7 @@ pub(crate) mod native {
                 } else {
                     0
                 },
-            security: null_mut(),
+            security: security.as_ref().map_or(null_mut(), |value| value.0),
             quality: null_mut(),
         };
         let mut handle = null_mut();
