@@ -14,6 +14,10 @@ import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
+import {
+  gatewayControlModelProviders,
+  isGatewayControlDiscoveryRequest,
+} from "./gateway-control-model-fixture.mts";
 
 async function archiveWorkerControl(appRoot: string, environment: NodeJS.ProcessEnv) {
   const outcomes = [];
@@ -33,7 +37,7 @@ async function archiveWorkerControl(appRoot: string, environment: NodeJS.Process
     let failure: Error | undefined;
     worker.on("message", (message) => messages.push(message));
     worker.on("error", (error) => {
-      failure = error;
+      failure = error instanceof Error ? error : new Error(String(error));
     });
     const exited = new Promise<number>((resolve) => worker.once("exit", resolve));
     let expired = false;
@@ -195,6 +199,7 @@ async function auditRecorderControl(
 type BrowserLocator = {
   count(): Promise<number>;
   first(): BrowserLocator;
+  filter(options: { hasText: string }): BrowserLocator;
   getByRole(role: "button", options: { name: string; exact: boolean }): BrowserLocator;
   waitFor(options: { state: "visible" | "hidden"; timeout: number }): Promise<void>;
   isEnabled(): Promise<boolean>;
@@ -327,7 +332,10 @@ async function browserControl(
         await enable.waitFor({ state: "visible", timeout: 30_000 });
         await enable.click();
         const consent = page.locator('.plugins-consent[data-plugin-consent="enable"]');
-        await consent.waitFor({ state: "visible", timeout: 30_000 });
+        // The dialog opens before its capability inspection finishes.
+        await consent
+          .filter({ hasText: "webSearchProviders: brave" })
+          .waitFor({ state: "visible", timeout: 30_000 });
         assert.match((await consent.textContent()) ?? "", /webSearchProviders: brave/);
         await page.screenshot({ path: path.join(directory, "compiled-plugin-consent.png") });
         await consent.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -465,9 +473,10 @@ const origin = `http://127.0.0.1:${port}`;
 // A configured model must pass OpenClaw's real first-run verification before chat.
 // Only the model endpoint is a fixture; the browser, gateway and verification are real.
 const configuredModelControl = Boolean(browserExecutable && !browserSetupControl);
+const modelEndpointControl = Boolean(browserExecutable);
 const modelAllocator = net.createServer();
 let modelPort = 0;
-if (configuredModelControl) {
+if (modelEndpointControl) {
   await new Promise<void>((resolve, reject) => {
     modelAllocator.once("error", reject);
     modelAllocator.listen(0, "127.0.0.1", resolve);
@@ -478,9 +487,16 @@ if (configuredModelControl) {
   );
 }
 let modelRequests = 0;
+let discoveryRequests = 0;
 let modelError: unknown;
 const modelServer = http.createServer(async (request, response) => {
   try {
+    if (isGatewayControlDiscoveryRequest(request.method, request.url)) {
+      discoveryRequests++;
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(JSON.stringify({ models: [] }));
+      return;
+    }
     assert(configuredModelControl);
     assert.equal(request.method, "POST");
     assert.equal(request.url, "/v1/chat/completions");
@@ -595,27 +611,11 @@ fs.writeFileSync(
           : {}),
       },
     },
-    ...(configuredModelControl
+    ...(modelEndpointControl
       ? {
           models: {
             mode: "merge",
-            providers: {
-              nemoclawnative: {
-                baseUrl: `http://127.0.0.1:${modelPort}/v1`,
-                apiKey: "owned-local-model-control",
-                api: "openai-completions",
-                models: [
-                  {
-                    id: "fixture",
-                    name: "fixture",
-                    reasoning: false,
-                    input: ["text"],
-                    contextWindow: 131072,
-                    maxTokens: 4096,
-                  },
-                ],
-              },
-            },
+            providers: gatewayControlModelProviders(modelPort, configuredModelControl),
           },
         }
       : {}),
@@ -692,7 +692,7 @@ const result: Record<string, unknown> = {
 let primary: unknown;
 let failed = false;
 try {
-  if (configuredModelControl)
+  if (modelEndpointControl)
     await new Promise<void>((resolve, reject) => {
       modelServer.once("error", reject);
       modelServer.listen(modelPort, "127.0.0.1", resolve);
@@ -851,8 +851,8 @@ try {
       env,
     );
     result.browserObserved = true;
+    if (modelError) throw modelError;
     if (configuredModelControl) {
-      if (modelError) throw modelError;
       assert(modelRequests > 0, "Browser readiness requires an actual local model request.");
       result.modelRequestSent = true;
     }
@@ -866,6 +866,7 @@ try {
   if (modelServer.listening)
     await new Promise<void>((resolve) => modelServer.close(() => resolve()));
   result.localModelVerificationRequests = modelRequests;
+  result.localModelDiscoveryRequests = discoveryRequests;
   result.modelRequestSent = modelRequests > 0;
   result.externalModelRequest = false;
   if (modelError)

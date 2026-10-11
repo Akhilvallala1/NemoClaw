@@ -1,0 +1,190 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test, { type TestContext } from "node:test";
+import { removeNativeAgentData } from "./native-remove-data.mts";
+import { NATIVE_EXPRESS } from "./native-inference-manifest.mts";
+import { NATIVE_LOCAL_MODELS } from "./native-local-models.mts";
+import { NATIVE_SERVICES, nativeServiceBinding } from "./native-options.mts";
+import { nativeCredentialBinding } from "./native-security.mts";
+
+const hosted = {
+  schemaVersion: 1,
+  classification: "nemoclaw-native-windows-agent-configuration",
+  agent: "openclaw",
+  inference: "compatible",
+  endpoint: "https://example.invalid/v1",
+  model: "test-model",
+  credentialStored: true,
+  profile: "personal",
+  options: {},
+};
+const selections = [
+  { id: NATIVE_EXPRESS.id, model: NATIVE_EXPRESS.model },
+  ...NATIVE_LOCAL_MODELS.models.map(({ id }) => ({ id, model: id })),
+];
+
+function fixture(t: TestContext, configuration: object) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-removal-"));
+  const previous = process.env.LOCALAPPDATA;
+  // A double-leading slash is also absolute to path.win32 on the portable runner.
+  process.env.LOCALAPPDATA = process.platform === "win32" ? directory : `/${directory}`;
+  const root = path.join(directory, "NVIDIA", "NemoClaw");
+  const selected = path.join(root, "agents", "openclaw");
+  const config = path.join(selected, "native-windows.json");
+  const other = path.join(root, "agents", "pi", "retained.txt");
+  const shared = path.join(root, "inference", "retained-model.gguf");
+  fs.mkdirSync(selected, { recursive: true });
+  fs.mkdirSync(path.dirname(other), { recursive: true });
+  fs.mkdirSync(path.dirname(shared), { recursive: true });
+  fs.writeFileSync(config, JSON.stringify(configuration));
+  fs.writeFileSync(other, "other-agent");
+  fs.writeFileSync(shared, "shared-model");
+  const active = path.join(root, "active-agent.txt");
+  fs.writeFileSync(active, "openclaw\n");
+  t.after(() => {
+    if (previous === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previous;
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  return { selected, config, other, shared, active };
+}
+
+function owner() {
+  const deleted: { provider: string; binding: string }[] = [];
+  let held = false;
+  let released = false;
+  let acquired = 0;
+  const dependencies = {
+    acquireRemoval: async (_launcher: string, agent: string) => {
+      assert.equal(agent, "openclaw");
+      acquired++;
+      held = true;
+      return {
+        stateRoot: "C:\\NemoClawState-S-1-5-21-1-openclaw",
+        created: false,
+        removed: true,
+        assertHeld() {
+          assert(held);
+        },
+        async release() {
+          held = false;
+          released = true;
+        },
+      };
+    },
+    deleteCredential: async (_launcher: string, provider: string, binding: string) => {
+      assert(held);
+      deleted.push({ provider, binding });
+    },
+  };
+  return { dependencies, deleted, acquired: () => acquired, released: () => released };
+}
+
+for (const selection of selections) {
+  test(`removal accepts logical local model ${selection.id} without an external credential`, async (t) => {
+    const { endpoint: _endpoint, ...metadata } = hosted;
+    const files = fixture(t, {
+      ...metadata,
+      inference: "local",
+      credentialStored: false,
+      localModel: selection.id,
+      model: selection.model,
+    });
+    const state = owner();
+    await removeNativeAgentData("unused", "openclaw", state.dependencies);
+    assert.deepEqual(
+      state.deleted,
+      Object.keys(NATIVE_SERVICES).map((provider) => ({
+        provider,
+        binding: nativeServiceBinding("openclaw", provider),
+      })),
+    );
+    assert.equal(fs.existsSync(files.selected), false);
+    assert.equal(fs.existsSync(files.active), false);
+    assert.equal(fs.readFileSync(files.other, "utf8"), "other-agent");
+    assert.equal(fs.readFileSync(files.shared, "utf8"), "shared-model");
+    assert.equal(state.released(), true);
+  });
+}
+
+test("hosted removal deletes its endpoint-bound key and preserves another active agent", async (t) => {
+  const files = fixture(t, hosted);
+  fs.writeFileSync(files.active, "pi\n");
+  const state = owner();
+  await removeNativeAgentData("unused", "openclaw", state.dependencies);
+  assert.deepEqual(state.deleted[0], {
+    provider: "compatible",
+    binding: nativeCredentialBinding(hosted),
+  });
+  assert.equal(state.deleted.length, 1 + Object.keys(NATIVE_SERVICES).length);
+  assert.equal(fs.existsSync(files.selected), false);
+  assert.equal(fs.readFileSync(files.active, "utf8"), "pi\n");
+  assert.equal(fs.readFileSync(files.other, "utf8"), "other-agent");
+  assert.equal(fs.readFileSync(files.shared, "utf8"), "shared-model");
+  assert.equal(state.released(), true);
+});
+
+for (const [name, override] of [
+  ["foreign model", { localModel: "unknown" }],
+  ["mismatched model", { model: "foreign" }],
+  ["external endpoint", { endpoint: hosted.endpoint }],
+  ["stored credential", { credentialStored: true }],
+  ["hosted provider", { inference: "compatible" }],
+  ["wrong agent", { agent: "pi" }],
+] as const) {
+  test(`removal rejects ${name} before removing private state`, async (t) => {
+    const { endpoint: _endpoint, ...metadata } = hosted;
+    const files = fixture(t, {
+      ...metadata,
+      inference: "local",
+      credentialStored: false,
+      localModel: selections[0].id,
+      model: selections[0].model,
+      ...override,
+    });
+    const state = owner();
+    await assert.rejects(removeNativeAgentData("unused", "openclaw", state.dependencies));
+    assert.equal(state.acquired(), 0);
+    assert.deepEqual(state.deleted, []);
+    assert.equal(fs.existsSync(files.config), true);
+    assert.equal(fs.readFileSync(files.active, "utf8"), "openclaw\n");
+  });
+}
+
+test("removal reads the current credential binding after acquiring its state lease", async (t) => {
+  const files = fixture(t, hosted);
+  const state = owner();
+  const latest = { ...hosted, endpoint: "https://updated.invalid/v1" };
+  const acquire = state.dependencies.acquireRemoval;
+  state.dependencies.acquireRemoval = async (...args) => {
+    // A save completes while removal is opening the native state owner.
+    fs.writeFileSync(files.config, JSON.stringify(latest));
+    return await acquire(...args);
+  };
+  await removeNativeAgentData("unused", "openclaw", state.dependencies);
+  assert.deepEqual(state.deleted[0], {
+    provider: "compatible",
+    binding: nativeCredentialBinding(latest),
+  });
+  assert.equal(state.released(), true);
+});
+
+test("failed credential cleanup preserves settings and releases the removal lease", async (t) => {
+  const files = fixture(t, hosted);
+  const state = owner();
+  state.dependencies.deleteCredential = async () => {
+    throw new Error("credential failure");
+  };
+  await assert.rejects(
+    removeNativeAgentData("unused", "openclaw", state.dependencies),
+    /credential failure/,
+  );
+  assert.equal(fs.existsSync(files.config), true);
+  assert.equal(fs.readFileSync(files.active, "utf8"), "openclaw\n");
+  assert.equal(state.released(), true);
+});

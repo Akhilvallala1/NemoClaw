@@ -4,7 +4,8 @@
 param([Parameter(Mandatory)][string]$HelperPath,
     [Parameter(Mandatory)][string]$MxcDirectory,
     [Parameter(Mandatory)][string]$NodePath,
-    [Parameter(Mandatory)][string]$ArtifactDirectory)
+    [Parameter(Mandatory)][string]$ArtifactDirectory,
+    [string]$HostPayloadReceipt = '')
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:OS  -cne  'Windows_NT'  -or  $env:GITHUB_ACTIONS  -cne  'true') {
@@ -79,6 +80,48 @@ function Get-ProofIsolationTier([string]$Log) {
     return $tier
 }
 
+function Get-ProofMxcInput([string]$ReceiptPath, [string]$Directory, [string]$SourceRevision,
+    [string]$RunId, [string]$RunAttempt) {
+    $inputFile = Get-Item -LiteralPath $ReceiptPath -Force
+    if ($inputFile -isnot [IO.FileInfo] -or ($inputFile.Attributes -band 0x400) -ne 0 -or
+        $inputFile.Length -le 0 -or $inputFile.Length -gt 1048576) { throw 'Invalid host input receipt.' }
+    $hostInput = Get-Content -LiteralPath $ReceiptPath -Raw | ConvertFrom-Json
+    $build = $hostInput.mxcBuild
+    if ($SourceRevision -cnotmatch '^[a-f0-9]{40}$' -or $RunId -cnotmatch '^[1-9][0-9]*$' -or
+        $RunAttempt -cnotmatch '^[1-9][0-9]*$' -or
+        $hostInput.schemaVersion -ne 1 -or $hostInput.classification -cne 'finished-native-host-components' -or
+        $hostInput.sourceRevision -cne $SourceRevision -or
+        $hostInput.mxcSourceRevision -cne '7cd00d1ee6af9208322c924ef64e5113f6704639' -or
+        $build.schemaVersion -ne 1 -or $build.classification -cne 'ci-built-mxc-host-binaries' -or
+        $build.requestedSourceRevision -cne $SourceRevision -or $build.mxcRevision -cne $hostInput.mxcSourceRevision -or
+        $build.workflowRunId -cne $RunId -or $build.workflowRunAttempt -cne $RunAttempt -or
+        $build.sourceUnchanged -isnot [bool] -or -not $build.sourceUnchanged -or
+        $build.currentPackageQualification -isnot [bool] -or $build.currentPackageQualification -or
+        $build.rustToolchain -cne '1.93.0-aarch64-pc-windows-msvc' -or
+        $build.rustTarget -cne 'aarch64-pc-windows-msvc' -or
+        $build.licenseSha256 -cne 'd9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb' -or
+        @($build.files).Count -ne 2) { throw 'The proof requires admitted same-source, same-run MXC inputs.' }
+    $files = @(foreach ($name in @('wxc-exec.exe','wxc-host-prep.exe')) {
+        $built = @($build.files | Where-Object file -CEQ $name)
+        $staged = @($hostInput.files | Where-Object file -CEQ ('mxc/' + $name))
+        if ($built.Count -ne 1 -or $staged.Count -ne 1 -or
+            $built[0].sha256 -cnotmatch '^[a-f0-9]{64}$' -or $built[0].bytes -le 0 -or
+            $built[0].bytes -gt 134217728 -or ($built[0].bytes -isnot [int] -and $built[0].bytes -isnot [long]) -or
+            $staged[0].sha256 -cne $built[0].sha256 -or $staged[0].bytes -ne $built[0].bytes) {
+            throw 'The proof MXC build and staging identities differ.'
+        }
+        $binary = Get-Item -LiteralPath (Join-Path $Directory $name) -Force
+        if ($binary -isnot [IO.FileInfo] -or ($binary.Attributes -band 0x400) -ne 0 -or
+            $binary.Length -ne $built[0].bytes -or
+            (Get-FileHash -LiteralPath $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $built[0].sha256) {
+            throw 'The proof MXC executable differs from its admitted build.'
+        }
+        [ordered]@{file=$name;bytes=$binary.Length;sha256=$built[0].sha256}
+    })
+    return [ordered]@{hostReceiptSha256=(Get-FileHash -LiteralPath $ReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant();
+        sourceRevision=$SourceRevision;workflowRunId=$RunId;workflowRunAttempt=$RunAttempt;mxcRevision=$build.mxcRevision;files=$files}
+}
+
 function Invoke-ProofProcess {
     param([string]$Executable,[string[]]$Arguments,[string]$Label,[int]$Seconds=30)
     $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$Executable
@@ -132,11 +175,18 @@ function Invoke-ProofProcess {
 }
 
 try {
-    foreach($pin in @(
-        @($NodePath,'97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878'),
+    $pins = ,@($NodePath,'97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878')
+    if ($HostPayloadReceipt) {
+        $receipt.mxcInput = Get-ProofMxcInput $HostPayloadReceipt $MxcDirectory $env:GITHUB_SHA $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT
+        $receipt.requestProfile = 'same-run-node-file-access'
+    } else {
+        # The Personal preview replay still uses the pinned SDK0.8 inputs.
+        $pins += @(
         @($wxc,'dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503'),
         @($nullPrep,'c8ddcf0461ae3d7ddff4656abb87b51236146742bb711a2e03fdc23cb8a966b0')
-    )) {
+        )
+    }
+    foreach($pin in $pins) {
         if((Get-FileHash -LiteralPath $pin[0] -Algorithm SHA256).Hash.ToLowerInvariant()  -cne  $pin[1]){throw 'A proof executable differs from its immutable input.'}
     }
     $selection=(Invoke-ProofProcess $wxc @('--probe') 'mxc-tier-probe' 20)|ConvertFrom-Json
@@ -288,9 +338,15 @@ console.log('NEMOCLAW_SYSTEM_METADATA_MXC_OK');
         processContainer=@{leastPrivilege=$false;capabilities=@('privateNetworkClientServer','internetClient')};ui=@{disable=$false}
         network=@{defaultPolicy='allow';allowedHosts=@();blockedHosts=@();allowLocalNetwork=$true};filesystem=@{readonlyPaths=@($NodePath,$preauthorized);readwritePaths=@($work)}
         lifecycle=@{destroyOnExit=$false;preservePolicy=$false}}
+    if ($HostPayloadReceipt) {
+        $request.version = '1.0.0'
+        # Preserve this file-access proof's existing network posture. It does
+        # not qualify networking; installed isolation remains a separate gate.
+        $request.network = @{egress=@{default='allow'};ingress=@{default='allow';hostLoopback='allow'}}
+    }
     [IO.File]::WriteAllText($policy,($request|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
     $receipt.policySha256=(Get-FileHash -LiteralPath $policy -Algorithm SHA256).Hash.ToLowerInvariant()
-    $receipt.requestPolicy=[ordered]@{leastPrivilege=$request.processContainer.leastPrivilege;capabilities=$request.processContainer.capabilities;win32kDisabled=$request.ui.disable;networkDefaultPolicy=$request.network.defaultPolicy;allowLocalNetwork=$request.network.allowLocalNetwork;childTimeoutMilliseconds=$request.process.timeout}
+    $receipt.requestPolicy=[ordered]@{leastPrivilege=$request.processContainer.leastPrivilege;capabilities=$request.processContainer.capabilities;win32kDisabled=$request.ui.disable;networkDefaultPolicy='allow';allowLocalNetwork=$true;childTimeoutMilliseconds=$request.process.timeout}
     $mxcAttempted=$true;$mxcStopped=$false
     $null=Invoke-ProofProcess $wxc @($policy,'--log-file',(Join-Path $output 'mxc-native.log')) 'mxc-execution' 40
     $mxcStopped=$commands[$commands.Count-1].stopped

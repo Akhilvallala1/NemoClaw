@@ -204,6 +204,29 @@ const mutations: Mutation[] = [
       )!.with!.path = "unqualified.exe";
     },
   },
+  ...["first-run-consent-control", "gateway-control"].flatMap((directory) => [
+    ...["gateway-control.json", "stdout.log", "stderr.log"].map((file) => ({
+      name: `missing ${directory}/${file} diagnostics`,
+      mutate: (value: WindowsInstallerWorkflowSources) => {
+        const staging = step(
+          value.workflow.jobs["windows-compiled-application"],
+          "Stage only non-runnable application diagnostics",
+        );
+        staging.run = staging.run!.replaceAll(`"$work\\${directory}\\${file}"`, '"omitted"');
+      },
+    })),
+    {
+      name: `unbounded ${directory} diagnostics`,
+      mutate: (value: WindowsInstallerWorkflowSources) => {
+        const staging = step(
+          value.workflow.jobs["windows-compiled-application"],
+          "Stage only non-runnable application diagnostics",
+        );
+        const report = `"$work\\${directory}\\gateway-control.json"`;
+        staging.run = staging.run!.replace(report, `"$work\\${directory}", ${report}`);
+      },
+    },
+  ]),
   ...(["workflow", "trusted"] as const).flatMap((owner) =>
     [
       ".head.sha",

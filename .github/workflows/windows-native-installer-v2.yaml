@@ -542,7 +542,8 @@ jobs:
           & "$owner\build-helper.ps1" -OutputDirectory "$work\system-drive-helper"
           & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -File "$owner\test-system-root-mxc.ps1" `
             -HelperPath "$work\system-drive-helper\NemoClawHostPreparation.exe" -MxcDirectory "$work\host\mxc" `
-            -NodePath "$work\host\bin\node.exe" -ArtifactDirectory "$work\system-drive-proof"
+            -NodePath "$work\host\bin\node.exe" -ArtifactDirectory "$work\system-drive-proof" `
+            -HostPayloadReceipt "$work\host\runtime-payload-receipt.json"
           if ($LASTEXITCODE -ne 0) { throw 'The exact helper did not pass actual system-root and contained Node proof.' }
       - name: Seal the finished application and selected OpenClaw resources
         if: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' }}
@@ -1089,6 +1090,7 @@ jobs:
             packaging/windows/installer/windows-native-transfer.test.mts `
             packaging/windows/runtime/native-configuration-credentials.test.mts `
             packaging/windows/runtime/native-setup-transaction.test.mts `
+            packaging/windows/runtime/native-remove-data.test.mts `
             packaging/windows/runtime/native-local-models.test.mts `
             packaging/windows/runtime/native-bundled-inference.test.mts `
             packaging/windows/runtime/native-inference.test.mts `
@@ -1310,6 +1312,8 @@ jobs:
             "$work\controls\compiled-openclaw\direct-version.log",
             "$work\controls\compiled-openclaw\worker-version.log",
             "$work\controls\compiled-openclaw\config-validate.log",
+            "$work\first-run-consent-control\gateway-control.json",
+            "$work\first-run-consent-control\stdout.log", "$work\first-run-consent-control\stderr.log",
             "$work\gateway-control\gateway-control.json",
             "$work\gateway-control\stdout.log", "$work\gateway-control\stderr.log",
             "$work\workers\build.json", "$work\workers\source-adaptation.json",
@@ -1405,7 +1409,7 @@ jobs:
         with:
           python-version: 3.13.13
           architecture: arm64
-      - name: Bind the actual proof to the package verifier
+      - name: Verify the historical SDK proof without package admission
         shell: pwsh
         run: |
           & python packaging/windows/installer/verify-system-drive-proof.py `
@@ -1414,8 +1418,9 @@ jobs:
             --proof-directory "$env:RUNNER_TEMP\system-root-mxc-proof" `
             --source-root $env:GITHUB_WORKSPACE --source-revision $env:GITHUB_SHA `
             --node-path "$env:RUNNER_TEMP\system-drive-inputs\node\node.exe" `
-            --output "$env:RUNNER_TEMP\system-root-mxc-proof\system-drive-build-gate.json"
-          if ($LASTEXITCODE -ne 0) { throw 'The package verifier rejected the actual system-drive proof.' }
+            --legacy-mxc-directory "$env:RUNNER_TEMP\system-drive-inputs\package\bin\arm64" `
+            --output "$env:RUNNER_TEMP\system-root-mxc-proof\historical-sdk-proof.json"
+          if ($LASTEXITCODE -ne 0) { throw 'The verifier rejected the historical SDK system-drive proof.' }
           & python packaging/windows/hermes/test-native-adapter-paths.py -v
           if ($LASTEXITCODE -ne 0) { throw 'The native Hermes adapter path controls failed.' }
           & python packaging/windows/hermes/test_generated_finder_paths.py -v
@@ -2217,6 +2222,7 @@ jobs:
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/windows-native-transfer.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-configuration-credentials.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-setup-transaction.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-remove-data.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-local-models.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-bundled-inference.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-inference.test.mts'),

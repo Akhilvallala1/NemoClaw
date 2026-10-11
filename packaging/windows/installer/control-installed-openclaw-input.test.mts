@@ -19,11 +19,26 @@ async function heldSentinelControl(reader: string, contents: string) {
     `$ErrorActionPreference='Stop'
 $stopSentinelPath = '${sentinel.replaceAll("'", "''")}'
 ${reader}
+$controlWatch = [Diagnostics.Stopwatch]::StartNew()
+function Write-ControlStage([string]$Stage) {
+  [Console]::Error.WriteLine('[observer-sentinel-control] ' + $Stage + ' elapsedMs=' + $controlWatch.ElapsedMilliseconds)
+  [Console]::Error.Flush()
+}
+Write-ControlStage 'initial-check-start'
 if (Test-OwnedStopSentinel) { throw 'Stop arrived before discovery.' }
+Write-ControlStage 'initial-check-finished'
 [Console]::Out.WriteLine('before-sentinel'); [Console]::Out.Flush()
 [Console]::Out.WriteLine('discovery-entered'); [Console]::Out.Flush()
-while (-not (Test-OwnedStopSentinel)) {
+$pollCount = 0
+while ($true) {
+  if ($pollCount -lt 2) { Write-ControlStage 'poll-check-start' }
+  $observed = Test-OwnedStopSentinel
+  if ($pollCount -lt 2) { Write-ControlStage 'poll-check-finished' }
+  if ($observed) { break }
+  if ($pollCount -lt 2) { Write-ControlStage 'poll-sleep-start' }
   Start-Sleep -Milliseconds 10
+  if ($pollCount -lt 2) { Write-ControlStage 'poll-sleep-finished' }
+  $pollCount++
 }
 [Console]::Out.WriteLine('stop-observed'); [Console]::Out.Flush()
 `,

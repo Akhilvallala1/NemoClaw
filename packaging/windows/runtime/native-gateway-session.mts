@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createPrivateShareRoot } from "./native-private-share.mts";
 import { preflightNativeGatewayConfig } from "./native-gateway-preflight.mts";
+import { readOpenedRegularFile } from "./native-security.mts";
 import {
   allowlistedWindowsEnvironment,
   requiredFile,
@@ -25,6 +26,17 @@ type TlsMaterial = {
 
 function fail(message: string): never {
   throw new Error(`Native gateway session failed: ${message}`);
+}
+
+function readGatewayReceipt(file: string) {
+  const text = readOpenedRegularFile(file, {
+    encoding: "utf8",
+    maxBytes: 512,
+    rejectLinks: true,
+    rejectHardLinks: true,
+  });
+  if (text === null) fail("the gateway receipt is missing");
+  return JSON.parse(text);
 }
 
 function parseMaterial(bytes: Buffer): TlsMaterial {
@@ -239,10 +251,7 @@ export class NativeGatewaySession {
     // it drained. Missing/invalid evidence retains the private credentials.
     try {
       const file = path.join(this.root, "gateway-stopped.json");
-      const stat = fs.lstatSync(file);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 512)
-        return false;
-      const receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+      const receipt = readGatewayReceipt(file);
       this.gatewayDrained =
         receipt.schemaVersion === 1 &&
         receipt.nonce === this.stopNonce &&
@@ -262,10 +271,7 @@ export class NativeGatewaySession {
     if (!this.gateway || this.disposed) fail("the gateway session is not running");
     try {
       const file = path.join(this.root, "gateway-stopped.json.started");
-      const stat = fs.lstatSync(file);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 512)
-        throw new Error();
-      const receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+      const receipt = readGatewayReceipt(file);
       if (
         receipt.schemaVersion !== 1 ||
         receipt.nonce !== this.stopNonce ||

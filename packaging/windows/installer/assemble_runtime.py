@@ -590,18 +590,22 @@ def verify_hermes_input(root: Path, actual: list[dict], candidate_receipt: Path)
 
 
 def hermes_final_path_plan(module, root, target, browser_use_adapter):
-    # The pinned candidate predates the current reviewed startup adapter. Upgrade
-    # that adapter in-place on the complete CI copy, then perform the ordinary
-    # final-path relocation and Browser Use addition against the upgraded marker.
-    # Neither phase installs or resolves packages.
-    upgrade, _ = module.prepare_plan(
-        root,
-        root,
-        root,
-        ["hermes-agent/venv", "tools/browser-use"],
-        ci_upgrade_edge_adapter=True,
-    )
-    module.apply_plan(upgrade)
+    # Upgrade only the reviewed previous adapter. A current adapter can proceed
+    # directly to final-path relocation; prepare_plan still verifies its bytes
+    # and metadata. Neither path installs or resolves packages.
+    marker, _ = bound_document(root / module.MARKER, limit=16 * 1024)
+    adapter = marker.get("startupAdapterSha256")
+    if adapter == module.EDGE_PREVIOUS_ADAPTER_SHA256:
+        upgrade, _ = module.prepare_plan(
+            root,
+            root,
+            root,
+            ["hermes-agent/venv", "tools/browser-use"],
+            ci_upgrade_edge_adapter=True,
+        )
+        module.apply_plan(upgrade)
+    elif adapter != module.CURRENT_ADAPTER_SHA256:
+        raise ValueError("Hermes final-path preparation requires a reviewed startup adapter.")
     changes, receipt = module.prepare_plan(
         root,
         root,

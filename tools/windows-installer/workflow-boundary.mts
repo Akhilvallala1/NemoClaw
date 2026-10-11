@@ -379,11 +379,15 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       assert.ok(
         evidenceRun?.includes("$work\\controls\\compiled-openclaw\\compiled-controls.json"),
       );
-      assert.ok(evidenceRun?.includes("$work\\gateway-control\\gateway-control.json"));
+      for (const directory of ["first-run-consent-control", "gateway-control"]) {
+        for (const file of ["gateway-control.json", "stdout.log", "stderr.log"]) {
+          assert.ok(evidenceRun.includes(`"$work\\${directory}\\${file}"`));
+        }
+        assert.ok(!evidenceRun.includes(`"$work\\${directory}",`));
+      }
       assert.ok(evidenceRun?.includes("$work\\build\\diagnostics\\local-model-tools\\result.json"));
       assert.ok(evidenceRun?.includes("$choiceRoot\\result.json"));
       assert.ok(!evidenceRun?.includes('"$work\\controls",'));
-      assert.ok(!evidenceRun?.includes('"$work\\gateway-control",'));
       assert.ok(!evidenceRun?.includes('"$work\\build\\diagnostics",'));
     })(scenario);
   }

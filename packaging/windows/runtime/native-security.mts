@@ -13,6 +13,7 @@ type ReadOpenedRegularFileOptions = {
   encoding?: BufferEncoding;
   maxBytes?: number;
   rejectLinks?: boolean;
+  rejectHardLinks?: boolean;
 };
 export type BrokerOperation = "models" | "chat-completions";
 export type NativeCredentialIdentity = { agent: string; inference: string; endpoint: string };
@@ -286,7 +287,12 @@ export function readOpenedRegularFile(
 ): Buffer | null;
 export function readOpenedRegularFile(
   file: string,
-  { encoding, maxBytes = 2 * 1024 * 1024, rejectLinks = false }: ReadOpenedRegularFileOptions = {},
+  {
+    encoding,
+    maxBytes = 2 * 1024 * 1024,
+    rejectLinks = false,
+    rejectHardLinks = false,
+  }: ReadOpenedRegularFileOptions = {},
 ): Buffer | string | null {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
     fail("the opened file byte limit is invalid");
@@ -300,6 +306,7 @@ export function readOpenedRegularFile(
   try {
     const stat = fs.fstatSync(descriptor);
     if (!stat.isFile()) fail("the opened relay or diagnostic path is not a regular file");
+    if (rejectHardLinks && stat.nlink !== 1) fail("the opened file has multiple links");
     if (rejectLinks) {
       const named = fs.lstatSync(file);
       if (

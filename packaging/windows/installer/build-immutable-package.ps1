@@ -135,6 +135,7 @@ try {
         '--helper', $SystemDrivePrepPath, '--build-receipt', $SystemDriveBuildReceipt,
         '--proof-directory', $SystemDriveProofDirectory, '--source-root', $SourceRoot,
         '--source-revision', $SourceRevision, '--node-path', (Join-Path $HostPayloadRoot 'bin\node.exe'),
+        '--host-payload-root', $HostPayloadRoot,
         '--output', $systemDriveGatePath) 'system-drive-proof-verification'
     $systemDriveGate = Get-Content -LiteralPath $systemDriveGatePath -Raw | ConvertFrom-Json
     $systemDriveSha = [string]$systemDriveGate.helperSha256

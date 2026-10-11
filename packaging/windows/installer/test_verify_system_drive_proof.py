@@ -6,12 +6,14 @@ import copy
 import importlib.util
 import json
 import ntpath
+import os
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 MODULE = Path(__file__).with_name("verify-system-drive-proof.py")
@@ -56,6 +58,40 @@ class SystemDriveProofTests(unittest.TestCase):
             "[1789582933] selected isolation tier: [1789582933] appcontainer-dacl[1789582933] \n"
         )
         self.revision = "a" * 40
+        self.run_id, self.run_attempt = "123456", "1"
+        self.enterContext(mock.patch.dict(os.environ, {
+            "GITHUB_RUN_ID": self.run_id, "GITHUB_RUN_ATTEMPT": self.run_attempt,
+        }))
+        self.host_root = self.root / "host"
+        (self.host_root / "mxc").mkdir(parents=True)
+        mxc_files = []
+        for name in ("wxc-exec.exe", "wxc-host-prep.exe"):
+            data = binary + name.encode()
+            (self.host_root / "mxc" / name).write_bytes(data)
+            mxc_files.append({"file": name, "bytes": len(data), "sha256": gate.sha(data)})
+        self.host = {
+            "schemaVersion": 1,
+            "classification": "finished-native-host-components",
+            "sourceRevision": self.revision,
+            "mxcSourceRevision": gate.MXC_SOURCE,
+            "mxcBuild": {
+                "schemaVersion": 1,
+                "classification": "ci-built-mxc-host-binaries",
+                "requestedSourceRevision": self.revision,
+                "mxcRevision": gate.MXC_SOURCE,
+                "workflowRunId": self.run_id,
+                "workflowRunAttempt": self.run_attempt,
+                "sourceUnchanged": True,
+                "currentPackageQualification": False,
+                "rustToolchain": "1.93.0-aarch64-pc-windows-msvc",
+                "rustTarget": "aarch64-pc-windows-msvc",
+                "licenseSha256": "d9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb",
+                "files": mxc_files,
+            },
+            "files": [{**row, "file": "mxc/" + row["file"]} for row in mxc_files],
+        }
+        self.host_receipt = self.host_root / "runtime-payload-receipt.json"
+        self.host_receipt.write_text(json.dumps(self.host))
         self.node_path = r"D:\host\bin\node.exe"
         self.preauthorized_path = ntpath.join(
             ntpath.normpath(str(self.proof_dir.absolute())),
@@ -80,19 +116,14 @@ class SystemDriveProofTests(unittest.TestCase):
             "admissionAllowed": False,
         }
         self.policy = {
-            "version": "0.6.0-alpha",
+            "version": "1.0.0",
             "containment": "processcontainer",
             "processContainer": {
                 "leastPrivilege": False,
                 "capabilities": gate.PROFILE["capabilities"],
             },
             "ui": {"disable": False},
-            "network": {
-                "defaultPolicy": "allow",
-                "allowedHosts": [],
-                "blockedHosts": [],
-                "allowLocalNetwork": True,
-            },
+            "network": copy.deepcopy(gate.MXC_NETWORK),
             "process": {
                 "timeout": 30000,
                 "cwd": r"C:\NemoClawHostPrepProof-0123456789ab",
@@ -146,7 +177,9 @@ class SystemDriveProofTests(unittest.TestCase):
             "sourceRevision": self.revision,
             "helperSha256": gate.sha(binary),
             "systemDriveRoot": "C:\\",
-            "requestProfile": "existing-personal-node-compatibility",
+            "requestProfile": "same-run-node-file-access",
+            "networkAccessTested": False,
+            "mxcInput": gate.verify_mxc_input(self.host_root, self.revision, self.run_id, self.run_attempt),
             "selectedIsolationTier": "appcontainer-dacl",
             "needsDaclAugmentation": True,
             "stdio": "explicit-pipes-with-closed-input",
@@ -262,7 +295,7 @@ class SystemDriveProofTests(unittest.TestCase):
             json.dumps(self.proof)
         )
 
-    def verify(self):
+    def verify(self, *, legacy=False):
         return gate.verify(
             self.helper,
             self.build_path,
@@ -270,6 +303,10 @@ class SystemDriveProofTests(unittest.TestCase):
             self.source,
             self.revision,
             self.node_path,
+            None if legacy else self.host_root,
+            self.run_id,
+            self.run_attempt,
+            legacy_mxc_directory=self.host_root / "mxc" if legacy else None,
         )
 
     def command(self, output):
@@ -290,6 +327,8 @@ class SystemDriveProofTests(unittest.TestCase):
             self.node_path,
             "--output",
             str(output),
+            "--host-payload-root",
+            str(self.host_root),
         ]
 
     def test_actual_cli_binds_exact_files_without_claiming_publication(self):
@@ -312,6 +351,186 @@ class SystemDriveProofTests(unittest.TestCase):
             stream.write(b"changed")
         with self.assertRaisesRegex(ValueError, "exact executable"):
             self.verify()
+
+    def test_current_mxc_requires_source_run_attempt_and_build_provenance(self):
+        changes = {
+            "requestedSourceRevision": "b" * 40,
+            "mxcRevision": "b" * 40,
+            "workflowRunId": "123457",
+            "workflowRunAttempt": "2",
+            "sourceUnchanged": False,
+            "currentPackageQualification": True,
+            "rustToolchain": "unbound",
+            "rustTarget": "x86_64-pc-windows-msvc",
+            "licenseSha256": "b" * 64,
+        }
+        for field, value in changes.items():
+            with self.subTest(field=field):
+                changed = copy.deepcopy(self.host)
+                changed["mxcBuild"][field] = value
+                self.host_receipt.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(ValueError, "same-source, same-run"):
+                    self.verify()
+        self.host_receipt.write_text(json.dumps(self.host))
+        for identity in ("", "0", "123456:1"):
+            with self.subTest(run_id=identity):
+                with self.assertRaises(ValueError):
+                    gate.verify_mxc_input(self.host_root, self.revision, identity, self.run_attempt)
+
+    def test_both_mxc_binaries_and_staged_inventory_must_match_proof(self):
+        for index in range(2):
+            for field, value in (("sha256", "b" * 64), ("bytes", 1)):
+                with self.subTest(index=index, field=field):
+                    changed = copy.deepcopy(self.host)
+                    changed["files"][index][field] = value
+                    self.host_receipt.write_text(json.dumps(changed))
+                    with self.assertRaisesRegex(ValueError, "staging identities"):
+                        self.verify()
+            self.host_receipt.write_text(json.dumps(self.host))
+            file = self.host_root / "mxc" / self.host["mxcBuild"]["files"][index]["file"]
+            original = file.read_bytes()
+            file.write_bytes(original + b"changed")
+            with self.assertRaisesRegex(ValueError, "executable differs"):
+                self.verify()
+            file.write_bytes(original)
+        for files in ([], self.host["mxcBuild"]["files"] * 2,
+                      [self.host["mxcBuild"]["files"][0]] * 2):
+            changed = copy.deepcopy(self.host)
+            changed["mxcBuild"]["files"] = files
+            self.host_receipt.write_text(json.dumps(changed))
+            with self.assertRaises(ValueError):
+                self.verify()
+
+    def test_old_or_cross_run_proof_cannot_qualify_current_mxc(self):
+        for field, value in (
+            ("requestProfile", "existing-personal-node-compatibility"),
+            ("mxcInput", {}),
+            ("networkAccessTested", True),
+        ):
+            original = self.proof[field]
+            self.proof[field] = value
+            self.save()
+            with self.assertRaisesRegex(ValueError, "Same-source"):
+                self.verify()
+            self.proof[field] = original
+        self.policy["version"] = "0.6.0-alpha"
+        self.save()
+        with self.assertRaisesRegex(ValueError, "hashed actual request"):
+            self.verify()
+        self.policy["version"] = "1.0.0"
+        self.policy["network"] = {
+            "defaultPolicy": "allow", "allowedHosts": [],
+            "blockedHosts": [], "allowLocalNetwork": True,
+        }
+        self.save()
+        with self.assertRaisesRegex(ValueError, "hashed actual request"):
+            self.verify()
+
+    def test_cli_requires_current_run_identity_without_creating_gate(self):
+        output = self.root / "missing-run.json"
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}}
+        run = subprocess.run(self.command(output), capture_output=True, text=True, env=environment)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("same-source, same-run", run.stderr)
+        self.assertFalse(output.exists())
+
+    def legacy_fixture(self):
+        self.proof["requestProfile"] = "existing-personal-node-compatibility"
+        del self.proof["mxcInput"]
+        self.policy["version"] = "0.6.0-alpha"
+        self.policy["network"] = copy.deepcopy(gate.LEGACY_MXC_NETWORK)
+        self.save()
+        # Synthetic PE bytes remain inert; only the fixture's expected hashes change.
+        return mock.patch.object(gate, "LEGACY_MXC_FILES", {
+            row["file"]: row["sha256"] for row in self.host["mxcBuild"]["files"]
+        })
+
+    def test_legacy_evidence_cannot_be_reported_as_current_package_admission(self):
+        with self.legacy_fixture():
+            result = self.verify(legacy=True)
+        self.assertEqual(result["classification"], "historical-sdk-system-drive-proof")
+        self.assertEqual(result["mxcInput"]["sdkVersion"], "0.8.0")
+        self.assertFalse(result["sameJobHostAlreadyPrepared"])
+        self.assertFalse(result["installedAcceptance"])
+        self.assertFalse(result["publicationApproved"])
+        with self.assertRaisesRegex(ValueError, "Same-source"):
+            self.verify()
+
+    def test_legacy_still_requires_profile_denial_and_cleanup_evidence(self):
+        with self.legacy_fixture():
+            cases = (
+                (self.proof, "mxcInput", {}),
+                (self.proof, "requestProfile", "same-run-node-file-access"),
+                (self.proof, "networkAccessTested", True),
+                (self.policy, "version", "1.0.0"),
+                (self.policy, "network", gate.MXC_NETWORK),
+                (self.proof["guest"], "deniedRead", False),
+                (self.proof, "workspaceRemoved", False),
+                (self.proof, "mxcStopped", False),
+            )
+            for owner, field, value in cases:
+                with self.subTest(field=field):
+                    present, original = field in owner, owner.get(field)
+                    owner[field] = value
+                    self.save()
+                    with self.assertRaises(ValueError):
+                        self.verify(legacy=True)
+                    if present:
+                        owner[field] = original
+                    else:
+                        del owner[field]
+
+    def test_legacy_rejects_substitution_of_either_binary(self):
+        with self.legacy_fixture():
+            for name in gate.LEGACY_MXC_FILES:
+                path = self.host_root / "mxc" / name
+                original = path.read_bytes()
+                path.write_bytes(original + b"substitution")
+                with self.assertRaisesRegex(ValueError, "immutable input"):
+                    self.verify(legacy=True)
+                path.write_bytes(original)
+
+    def test_legacy_cli_checks_real_sdk_pins_without_creating_output(self):
+        self.assertEqual(gate.LEGACY_MXC_FILES, {
+            "wxc-exec.exe": "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503",
+            "wxc-host-prep.exe": "c8ddcf0461ae3d7ddff4656abb87b51236146742bb711a2e03fdc23cb8a966b0",
+        })
+        output = self.root / "legacy.json"
+        command = self.command(output)[:-2] + [
+            "--legacy-mxc-directory", str(self.host_root / "mxc"),
+        ]
+        run = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("immutable input", run.stderr)
+        self.assertFalse(output.exists())
+
+    def test_cli_rejects_absent_or_ambiguous_input_mode(self):
+        output = self.root / "ambiguous.json"
+        for command in (
+            self.command(output)[:-2],
+            self.command(output) + ["--legacy-mxc-directory", str(self.host_root / "mxc")],
+        ):
+            run = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 2, run.stderr)
+            self.assertFalse(output.exists())
+
+    def test_proof_cannot_be_reused_for_rebuilt_same_run_mxc(self):
+        for row in self.host["mxcBuild"]["files"]:
+            file = self.host_root / "mxc" / row["file"]
+            data = file.read_bytes() + b"rebuilt"
+            file.write_bytes(data)
+            row.update(bytes=len(data), sha256=gate.sha(data))
+        self.host["files"] = [{**row, "file": "mxc/" + row["file"]}
+                              for row in self.host["mxcBuild"]["files"]]
+        self.host_receipt.write_text(json.dumps(self.host))
+        with self.assertRaisesRegex(ValueError, "Same-source"):
+            self.verify()
+        self.proof["mxcInput"] = gate.verify_mxc_input(
+            self.host_root, self.revision, self.run_id, self.run_attempt,
+        )
+        self.save()
+        self.assertEqual(self.verify()["mxcInput"], self.proof["mxcInput"])
 
     def test_base_container_is_not_reported_as_appcontainer_dacl_evidence(self):
         self.proof["selectedIsolationTier"] = "base-container"
@@ -692,6 +911,39 @@ $tierResults=@(foreach($log in (Get-Content -LiteralPath $Tiers -Raw|ConvertFrom
                     gate.isolation_tier(log)
             else:
                 self.assertEqual(gate.isolation_tier(log), expected)
+
+    def test_actual_powershell_mxc_admission_matches_packaging_verifier(self):
+        powershell = shutil.which("pwsh") or shutil.which("powershell.exe")
+        self.assertIsNotNone(powershell, "These controls require PowerShell.")
+        producer = MODULE.parent.parent / "host-preparation/test-system-root-mxc.ps1"
+        script = self.root / "mxc-input.ps1"
+        script.write_text(r'''param([string]$Source,[string]$Receipt,[string]$Directory,[string]$Revision)
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'The proof producer does not parse.'}
+$owner=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-ProofMxcInput'},$true))
+if($owner.Count -ne 1){throw 'The proof input owner is missing.'}
+. ([ScriptBlock]::Create($owner[0].Extent.Text))
+$accepted=Get-ProofMxcInput $Receipt $Directory $Revision '123456' '1'
+$rejected=0
+foreach($case in @(@(('b'*40),'123456','1'),@($Revision,'123457','1'),@($Revision,'123456','2'),@($Revision,'','1'))){
+    try{$null=Get-ProofMxcInput $Receipt $Directory $case[0] $case[1] $case[2]}
+    catch{$rejected++;continue}
+    throw 'An unbound MXC input was accepted.'
+}
+@{accepted=$accepted;rejected=$rejected}|ConvertTo-Json -Depth 8
+''')
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-File", str(script), str(producer),
+             str(self.host_receipt), str(self.host_root / "mxc"), self.revision],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        actual = json.loads(result.stdout)
+        self.assertEqual(actual["accepted"], self.proof["mxcInput"])
+        self.assertEqual(actual["rejected"], 4)
 
     def test_failure_never_overwrites_existing_gate_receipt(self):
         output = self.root / "gate.json"

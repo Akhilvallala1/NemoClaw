@@ -19,14 +19,18 @@ import assemble_runtime as assembler
 
 
 class RuntimeAssembly(unittest.TestCase):
-    def test_hermes_final_path_upgrades_the_pinned_adapter_before_relocation(self):
+    def hermes_plan_fixture(self, adapter):
         calls = []
 
         class Module:
+            MARKER = "nemoclaw-windows-runtime.json"
+            EDGE_PREVIOUS_ADAPTER_SHA256 = "b" * 64
+            CURRENT_ADAPTER_SHA256 = "c" * 64
+
             @staticmethod
             def prepare_plan(root, source, target, environments, **options):
                 calls.append((root, source, target, environments, options))
-                name = "upgrade" if options.get("ci_upgrade_startup_adapter") else "relocate"
+                name = "upgrade" if options.get("ci_upgrade_edge_adapter") else "relocate"
                 return ({Path(root) / name: b"x"}, {})
 
             @staticmethod
@@ -34,15 +38,68 @@ class RuntimeAssembly(unittest.TestCase):
                 calls.append(("apply", changes))
 
         root = self.root / "runtime"
+        root.mkdir()
+        (root / Module.MARKER).write_text(json.dumps({"startupAdapterSha256": adapter}))
         target = PureWindowsPath(r"C:\Program Files\NVIDIA\NemoClaw\runtime")
         browser = {"bytes": 10, "sha256": "a" * 64}
+        return Module, calls, root, target, browser
+
+    def test_hermes_final_path_upgrades_the_pinned_adapter_before_relocation(self):
+        Module, calls, root, target, browser = self.hermes_plan_fixture("b" * 64)
         changes, _ = assembler.hermes_final_path_plan(Module, root, target, browser)
         self.assertEqual(calls[0][2], root)
         self.assertEqual(calls[0][4], {"ci_upgrade_edge_adapter": True})
-        self.assertEqual(calls[1][0], "apply")
+        self.assertEqual(calls[1], ("apply", {root / "upgrade": b"x"}))
         self.assertEqual(calls[2][2], Path(str(target)))
         self.assertEqual(calls[2][4], {"ci_browser_use_adapter": browser})
         self.assertIn(root / "relocate", changes)
+
+    def test_hermes_final_path_relocates_current_adapter_without_upgrade(self):
+        Module, calls, root, target, browser = self.hermes_plan_fixture("c" * 64)
+        before = (root / Module.MARKER).read_bytes()
+        changes, _ = assembler.hermes_final_path_plan(Module, root, target, browser)
+        self.assertEqual(
+            calls,
+            [
+                (
+                    root,
+                    root,
+                    Path(str(target)),
+                    ["hermes-agent/venv", "tools/browser-use"],
+                    {"ci_browser_use_adapter": browser},
+                )
+            ],
+        )
+        self.assertIn(root / "relocate", changes)
+        self.assertEqual((root / Module.MARKER).read_bytes(), before)
+
+    def test_hermes_final_path_rejects_unknown_adapter_before_planning(self):
+        Module, calls, root, target, browser = self.hermes_plan_fixture(None)
+        for adapter in (None, "0" * 64, ["c" * 64]):
+            with self.subTest(adapter=adapter):
+                marker = root / Module.MARKER
+                marker.write_text(json.dumps({"startupAdapterSha256": adapter}))
+                before = marker.read_bytes()
+                with self.assertRaisesRegex(ValueError, "reviewed startup adapter"):
+                    assembler.hermes_final_path_plan(Module, root, target, browser)
+                self.assertEqual(calls, [])
+                self.assertEqual(marker.read_bytes(), before)
+
+    def test_hermes_final_path_preserves_adapter_validation_failures(self):
+        Module, calls, root, target, browser = self.hermes_plan_fixture(None)
+        for adapter in (Module.EDGE_PREVIOUS_ADAPTER_SHA256, Module.CURRENT_ADAPTER_SHA256):
+            with self.subTest(adapter=adapter):
+                marker = root / Module.MARKER
+                marker.write_text(json.dumps({"startupAdapterSha256": adapter}))
+                before = marker.read_bytes()
+                with mock.patch.object(
+                    Module, "prepare_plan", side_effect=ValueError("invalid adapter bytes")
+                ) as prepare:
+                    with self.assertRaisesRegex(ValueError, "invalid adapter bytes"):
+                        assembler.hermes_final_path_plan(Module, root, target, browser)
+                    prepare.assert_called_once()
+                self.assertEqual(calls, [])
+                self.assertEqual(marker.read_bytes(), before)
 
     def setUp(self):
         fixture = tempfile.TemporaryDirectory()

@@ -8,6 +8,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { NativeGatewaySession } from "../../packaging/windows/runtime/native-gateway-session.mts";
 
 import {
   brokerOperationForRequest,
@@ -20,7 +21,10 @@ import {
 } from "../../packaging/windows/runtime/native-security.mts";
 
 const { credentialSpawn } = vi.hoisted(() => ({ credentialSpawn: vi.fn() }));
-vi.mock("node:child_process", () => ({ spawn: credentialSpawn }));
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+  spawn: credentialSpawn,
+}));
 const nvidiaCredentialIdentity = {
   agent: "openclaw",
   inference: "nvidia",
@@ -61,13 +65,13 @@ describe("qualification loopback policy selection", () => {
         { tier: "base-container", needsDaclAugmentation: false },
         [12345, 23456, 12345],
       ),
-    ).toEqual({ loopback_ports: [12345, 23456] });
+    ).toEqual({ kind: "loopback", ports: [12345, 23456] });
     expect(
       nativeQualificationLoopbackConfig(
         { tier: "appcontainer-dacl", needsDaclAugmentation: true },
         [12345],
       ),
-    ).toEqual({});
+    ).toEqual({ kind: "deny" });
   });
   it.each([
     null,
@@ -275,6 +279,187 @@ describe("native Windows runtime security boundaries", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("rejects linked receipts when a single owned file is required", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-receipt-links-"));
+    try {
+      const file = path.join(directory, "receipt");
+      const alias = path.join(directory, "alias");
+      fs.writeFileSync(file, "bounded");
+      const options = {
+        encoding: "utf8" as const,
+        maxBytes: 512,
+        rejectLinks: true,
+        rejectHardLinks: true,
+      };
+      expect(readOpenedRegularFile(file, options)).toBe("bounded");
+      fs.linkSync(file, alias);
+      expect(() => readOpenedRegularFile(file, options)).toThrow(/multiple links/u);
+      expect(() => readOpenedRegularFile(alias, options)).toThrow(/multiple links/u);
+      expect(readOpenedRegularFile(file, { encoding: "utf8" })).toBe("bounded");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects receipt identity changes and reads only the checked descriptor", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-receipt-identity-"));
+    const originalLstat = fs.lstatSync;
+    try {
+      const file = path.join(directory, "receipt");
+      const replacement = path.join(directory, "replacement");
+      fs.writeFileSync(file, "owned");
+      fs.writeFileSync(replacement, "replacement");
+      const options = {
+        encoding: "utf8" as const,
+        maxBytes: 512,
+        rejectLinks: true,
+        rejectHardLinks: true,
+      };
+      const replacementStat = originalLstat(replacement);
+      vi.spyOn(fs, "lstatSync").mockReturnValueOnce(replacementStat);
+      expect(() => readOpenedRegularFile(file, options)).toThrow(/changed identity/u);
+      vi.mocked(fs.lstatSync).mockImplementationOnce(
+        (...args: Parameters<typeof originalLstat>) => {
+          const checked = originalLstat(...args);
+          fs.renameSync(file, path.join(directory, "checked"));
+          fs.renameSync(replacement, file);
+          return checked;
+        },
+      );
+      expect(readOpenedRegularFile(file, options)).toBe("owned");
+      expect(fs.readFileSync(file, "utf8")).toBe("replacement");
+    } finally {
+      vi.restoreAllMocks();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["started", "stopped"] as const)(
+    "reads the checked %s gateway receipt even when its path is replaced",
+    async (kind) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-gateway-receipt-"));
+      const session = new NativeGatewaySession(
+        path.join(directory, "install"),
+        path.join(directory, "run"),
+      );
+      // Exercise receipt consumption without starting a Windows process. The
+      // native gateway session suite separately owns process and DACL evidence.
+      Object.assign(session, { gateway: { pid: 1234, exitCode: 0, signalCode: null } });
+      const nonce = Reflect.get(session, "stopNonce");
+      const value = {
+        schemaVersion: 1,
+        nonce,
+        gatewayProcessId: 42,
+        stopped: true,
+        activeProcesses: 0,
+        requested: true,
+        gatewayExitCode: 0,
+      };
+      const file = path.join(
+        session.root,
+        "gateway-stopped.json" + (kind === "started" ? ".started" : ""),
+      );
+      const originalLstat = fs.lstatSync;
+      try {
+        fs.mkdirSync(session.root);
+        fs.writeFileSync(file, JSON.stringify(value));
+        const replacement = path.join(session.root, "replacement");
+        fs.writeFileSync(replacement, JSON.stringify({ ...value, nonce: "wrong-owner" }));
+        vi.spyOn(fs, "lstatSync").mockImplementationOnce(
+          (...args: Parameters<typeof originalLstat>) => {
+            const checked = originalLstat(...args);
+            fs.renameSync(file, path.join(session.root, "checked"));
+            fs.renameSync(replacement, file);
+            return checked;
+          },
+        );
+        const observed = await {
+          started: async () => session.gatewayProcessId,
+          stopped: async () => session.stopGateway(),
+        }[kind]();
+        expect(observed).toBe({ started: 42, stopped: true }[kind]);
+        expect(JSON.parse(fs.readFileSync(file, "utf8")).nonce).toBe("wrong-owner");
+      } finally {
+        vi.restoreAllMocks();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(
+    (["started", "stopped"] as const).flatMap((kind) => [
+      ...["null", "{", "x".repeat(513)].map((text, index) => ({
+        kind,
+        name: ["null", "malformed JSON", "oversized"][index],
+        serialize: (_value: Record<string, unknown>) => text,
+      })),
+      ...[
+        { nonce: "wrong-owner" },
+        { schemaVersion: 2 },
+        ...(kind === "started"
+          ? [0, -1, 1.5, 0x100000000].map((gatewayProcessId) => ({ gatewayProcessId }))
+          : [
+              { stopped: false },
+              { activeProcesses: 1 },
+              { requested: "true" },
+              { gatewayExitCode: -1 },
+              { gatewayExitCode: 1.5 },
+              { gatewayExitCode: 0x100000000 },
+            ]),
+      ].map((overrides) => ({
+        kind,
+        name: JSON.stringify(overrides),
+        serialize: (value: Record<string, unknown>) => JSON.stringify({ ...value, ...overrides }),
+      })),
+    ]),
+  )(
+    "rejects $name in a $kind gateway receipt and preserves recovery",
+    async ({ kind, serialize }) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-gateway-invalid-receipt-"));
+      const session = new NativeGatewaySession(
+        path.join(directory, "install"),
+        path.join(directory, "run"),
+      );
+      Object.assign(session, { gateway: { pid: 1234, exitCode: 0, signalCode: null } });
+      const value = {
+        schemaVersion: 1,
+        nonce: Reflect.get(session, "stopNonce"),
+        gatewayProcessId: 42,
+        stopped: true,
+        activeProcesses: 0,
+        requested: true,
+        gatewayExitCode: 0,
+      };
+      const file = path.join(
+        session.root,
+        "gateway-stopped.json" + (kind === "started" ? ".started" : ""),
+      );
+      const rejectReceipt = {
+        started: async () =>
+          expect(() => session.gatewayProcessId).toThrow(/identity is not available/u),
+        stopped: async () => expect(await session.stopGateway()).toBe(false),
+      }[kind];
+      try {
+        fs.mkdirSync(session.root);
+        await rejectReceipt();
+        fs.writeFileSync(file, serialize(value));
+        await rejectReceipt();
+        fs.writeFileSync(file, JSON.stringify(value));
+        const alias = path.join(session.root, "alias");
+        fs.linkSync(file, alias);
+        await rejectReceipt();
+        fs.unlinkSync(alias);
+        const observed = await {
+          started: async () => session.gatewayProcessId,
+          stopped: async () => session.stopGateway(),
+        }[kind]();
+        expect(observed).toBe({ started: 42, stopped: true }[kind]);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("projects NemoCUA model requests through a bounded message schema", () => {
     expect(

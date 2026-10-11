@@ -97,6 +97,9 @@ Object.assign(env, {
   OPENCLAW_SKIP_CHANNELS: "1",
   OPENCLAW_NO_AUTO_UPDATE: "1",
   OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+  // Gateway startup tracing does not cover `plugins inspect`. Keep the pinned
+  // runtime's plugin phase timings in the existing bounded stderr evidence.
+  OPENCLAW_PLUGIN_LIFECYCLE_TRACE: "1",
   NODE_DISABLE_COMPILE_CACHE: "1",
 });
 const systemRoot = Object.entries(env).find(([name]) => name.toUpperCase() === "SYSTEMROOT")?.[1];
@@ -202,9 +205,11 @@ try {
   const registered = path.join(output, "registered.json");
   const inspect = start(
     "inspect",
-    `const entry=${JSON.stringify(code)},api=require(entry);process.argv=[process.execPath,entry,"plugins","inspect",${JSON.stringify(choice)},"--runtime","--json"];api.registerPrebuiltPlugins(${JSON.stringify(config)}).then(result=>{fs.writeFileSync(${JSON.stringify(registered)},JSON.stringify(result));return api.runCli(process.argv);}).catch(error=>{console.error(error);process.exitCode=1;});`,
+    // Fixed stage names and elapsed times distinguish a blocked CLI from a child
+    // that finished its work but did not exit. Do not print configuration values.
+    `const started=performance.now(),mark=stage=>console.error("[nemoclaw-choice-inspect] "+stage+" elapsedMs="+Math.round(performance.now()-started));mark("load-start");const entry=${JSON.stringify(code)},api=require(entry);mark("load-finished");process.argv=[process.execPath,entry,"plugins","inspect",${JSON.stringify(choice)},"--runtime","--json"];api.registerPrebuiltPlugins(${JSON.stringify(config)}).then(result=>{fs.writeFileSync(${JSON.stringify(registered)},JSON.stringify(result));mark("registration-finished");mark("cli-start");return api.runCli(process.argv);}).then(()=>mark("cli-finished")).catch(error=>{mark("failed");console.error(error);process.exitCode=1;});`,
   );
-  assert.equal(await finish(inspect, 30000), 0);
+  assert.equal(await finish(inspect, 30000), 0, inspect.stderr());
   assert.deepEqual(JSON.parse(fs.readFileSync(registered, "utf8")).registered, [choice]);
   let report = JSON.parse(inspect.stdout());
   assert.equal(report.plugin?.id, choice);

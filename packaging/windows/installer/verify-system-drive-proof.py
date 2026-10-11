@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import ntpath
+import os
 import re
 import stat
 import struct
@@ -32,6 +33,19 @@ IMAGE_ACL = (
     "system-and-administrators-full-authenticated-users-and-appcontainer-"
     "packages-read-execute; administrators-owned"
 )
+MXC_SOURCE = "7cd00d1ee6af9208322c924ef64e5113f6704639"
+MXC_NETWORK = {
+    "egress": {"default": "allow"},
+    "ingress": {"default": "allow", "hostLoopback": "allow"},
+}
+LEGACY_MXC_FILES = {
+    "wxc-exec.exe": "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503",
+    "wxc-host-prep.exe": "c8ddcf0461ae3d7ddff4656abb87b51236146742bb711a2e03fdc23cb8a966b0",
+}
+LEGACY_MXC_NETWORK = {
+    "defaultPolicy": "allow", "allowedHosts": [],
+    "blockedHosts": [], "allowLocalNetwork": True,
+}
 
 
 def require(condition, message):
@@ -67,6 +81,91 @@ def read_json(path):
     result = json.loads(data)
     require(type(result) is dict, "Proof input must be an object.")
     return result, sha(data)
+
+
+def verify_mxc_input(host_root, source_revision, run_id, run_attempt):
+    host_root = Path(host_root)
+    host, receipt_sha = read_json(host_root / "runtime-payload-receipt.json")
+    build = host.get("mxcBuild")
+    require(
+        re.fullmatch(r"[a-f0-9]{40}", source_revision)
+        and re.fullmatch(r"[1-9][0-9]*", run_id)
+        and re.fullmatch(r"[1-9][0-9]*", run_attempt)
+        and host.get("schemaVersion") == 1
+        and host.get("classification") == "finished-native-host-components"
+        and host.get("sourceRevision") == source_revision
+        and host.get("mxcSourceRevision") == MXC_SOURCE
+        and type(build) is dict
+        and build.get("schemaVersion") == 1
+        and build.get("classification") == "ci-built-mxc-host-binaries"
+        and build.get("requestedSourceRevision") == source_revision
+        and build.get("mxcRevision") == MXC_SOURCE
+        and build.get("workflowRunId") == run_id
+        and build.get("workflowRunAttempt") == run_attempt
+        and build.get("sourceUnchanged") is True
+        and build.get("currentPackageQualification") is False
+        and build.get("rustToolchain") == "1.93.0-aarch64-pc-windows-msvc"
+        and build.get("rustTarget") == "aarch64-pc-windows-msvc"
+        and build.get("licenseSha256")
+        == "d9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb",
+        "The proof requires admitted same-source, same-run MXC inputs.",
+    )
+    built, staged = build.get("files"), host.get("files")
+    require(
+        type(built) is list and len(built) == 2
+        and type(staged) is list
+        and all(type(row) is dict for row in built + staged),
+        "Invalid proof MXC file inventory.",
+    )
+    files = []
+    for name in ("wxc-exec.exe", "wxc-host-prep.exe"):
+        build_rows = [row for row in built if row.get("file") == name]
+        staged_rows = [row for row in staged if row.get("file") == "mxc/" + name]
+        require(len(build_rows) == len(staged_rows) == 1, "Ambiguous proof MXC identity.")
+        row, copied = build_rows[0], staged_rows[0]
+        require(
+            type(row.get("bytes")) is int and row["bytes"] > 0
+            and type(row.get("sha256")) is str
+            and re.fullmatch(r"[a-f0-9]{64}", row["sha256"])
+            and copied.get("bytes") == row["bytes"]
+            and copied.get("sha256") == row["sha256"],
+            "The proof MXC build and staging identities differ.",
+        )
+        binary = host_root / "mxc" / name
+        data = read_file(binary, 128 * 1024 * 1024)
+        require(binary.stat().st_nlink == 1, "The proof MXC input has multiple links.")
+        offset = int.from_bytes(data[60:64], "little")
+        require(
+            len(data) >= 64 and data[:2] == b"MZ" and offset >= 64
+            and data[offset : offset + 6] == b"PE\0\0\x64\xaa",
+            "The proof MXC input is not Windows ARM64.",
+        )
+        require(
+            len(data) == row["bytes"] and sha(data) == row["sha256"],
+            "The proof MXC executable differs from its admitted build.",
+        )
+        files.append({"file": name, "bytes": len(data), "sha256": sha(data)})
+    return {
+        "hostReceiptSha256": receipt_sha,
+        "sourceRevision": source_revision,
+        "workflowRunId": run_id,
+        "workflowRunAttempt": run_attempt,
+        "mxcRevision": MXC_SOURCE,
+        "files": files,
+    }
+
+
+def verify_legacy_mxc_input(directory):
+    files = []
+    for name, expected in LEGACY_MXC_FILES.items():
+        path = Path(directory) / name
+        data = read_file(path, 128 * 1024 * 1024)
+        require(
+            path.stat().st_nlink == 1 and sha(data) == expected,
+            "The legacy MXC SDK executable differs from its immutable input.",
+        )
+        files.append({"file": name, "bytes": len(data), "sha256": expected})
+    return {"sdkVersion": "0.8.0", "files": files}
 
 
 def compare_node_acl(before, after, before_attributes, after_attributes):
@@ -227,9 +326,19 @@ def verify_preauthorized_runtime(record):
 
 
 def verify(
-    helper, build_receipt, proof_directory, source_root, source_revision, node_path
+    helper, build_receipt, proof_directory, source_root, source_revision, node_path,
+    host_payload_root, run_id, run_attempt, *, legacy_mxc_directory=None,
 ):
     require(re.fullmatch(r"[0-9a-f]{40}", source_revision), "Invalid source revision.")
+    require(
+        (host_payload_root is None) != (legacy_mxc_directory is None),
+        "Select either current host inputs or the historical MXC SDK proof.",
+    )
+    legacy = legacy_mxc_directory is not None
+    mxc_input = (
+        verify_legacy_mxc_input(legacy_mxc_directory)
+        if legacy else verify_mxc_input(host_payload_root, source_revision, run_id, run_attempt)
+    )
     binary = read_file(helper, 16 * 1024 * 1024)
     require(len(binary) >= 64 and binary[:2] == b"MZ", "Helper is not a PE executable.")
     offset = struct.unpack_from("<I", binary, 0x3C)[0]
@@ -284,7 +393,11 @@ def verify(
         and proof.get("status") == "pass"
         and proof.get("sourceRevision") == source_revision
         and proof.get("helperSha256") == helper_sha
-        and proof.get("requestProfile") == "existing-personal-node-compatibility"
+        and proof.get("requestProfile") == (
+            "existing-personal-node-compatibility" if legacy else "same-run-node-file-access"
+        )
+        and ("mxcInput" not in proof if legacy else proof.get("mxcInput") == mxc_input)
+        and proof.get("networkAccessTested") is False
         and proof.get("stdio") == "explicit-pipes-with-closed-input"
         and proof.get("policySha256") == policy_sha
         and proof.get("requestPolicy") == PROFILE
@@ -308,20 +421,15 @@ def verify(
         "The recorded isolation tier differs from the native execution log.",
     )
     require(
-        policy.get("version") == "0.6.0-alpha"
+        policy.get("version") == ("0.6.0-alpha" if legacy else "1.0.0")
         and policy.get("containment") == "processcontainer"
         and policy.get("processContainer")
         == {"leastPrivilege": False, "capabilities": PROFILE["capabilities"]}
         and policy.get("ui") == {"disable": False}
         and policy.get("network")
-        == {
-            "defaultPolicy": "allow",
-            "allowedHosts": [],
-            "blockedHosts": [],
-            "allowLocalNetwork": True,
-        }
+        == (LEGACY_MXC_NETWORK if legacy else MXC_NETWORK)
         and policy.get("process", {}).get("timeout") == 30000,
-        "The hashed actual request differs from the existing Personal compatibility profile.",
+        "The hashed actual request differs from the selected file-access proof profile.",
     )
     filesystem = policy.get("filesystem", {})
     cwd = policy.get("process", {}).get("cwd", "")
@@ -432,7 +540,10 @@ def verify(
     )
     return {
         "schemaVersion": 1,
-        "classification": "same-job-system-drive-helper-build-gate",
+        "classification": (
+            "historical-sdk-system-drive-proof" if legacy
+            else "same-job-system-drive-helper-build-gate"
+        ),
         "sourceRevision": source_revision,
         "helperSha256": helper_sha,
         "buildReceiptSha256": build_sha,
@@ -442,6 +553,8 @@ def verify(
             read_file(owner / "test-system-root-mxc.ps1", 1024 * 1024)
         ),
         "requestProfile": proof["requestProfile"],
+        "mxcInput": mxc_input,
+        "networkAccessTested": False,
         "needsDaclAugmentation": proof["needsDaclAugmentation"],
         "nodeAclComparison": node_comparison,
         "proofCommands": [
@@ -453,7 +566,7 @@ def verify(
         "nativeLogSha256": sha(native_log),
         "appContainerDaclExecution": tier == "appcontainer-dacl",
         "preauthorizedRuntimeReadOnly": True,
-        "sameJobHostAlreadyPrepared": True,
+        "sameJobHostAlreadyPrepared": not legacy,
         "installedAcceptance": False,
         "publicationApproved": False,
     }
@@ -471,6 +584,12 @@ def main():
         "output",
     ):
         parser.add_argument("--" + name, required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--host-payload-root")
+    inputs.add_argument(
+        "--legacy-mxc-directory",
+        help="Verify SDK0.8.0 diagnostics only; cannot produce a current package build gate.",
+    )
     args = parser.parse_args()
     result = verify(
         args.helper,
@@ -479,6 +598,10 @@ def main():
         args.source_root,
         args.source_revision,
         args.node_path,
+        args.host_payload_root,
+        os.environ.get("GITHUB_RUN_ID", ""),
+        os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        legacy_mxc_directory=args.legacy_mxc_directory,
     )
     with Path(args.output).open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
