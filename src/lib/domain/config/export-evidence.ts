@@ -76,6 +76,7 @@ export const EXPORT_REGISTRY_EVIDENCE_KEYS = [
   "name",
   "nativeNvidiaProviderAttachment",
   "nativeLocalProviderAttachment",
+  "nativeHostedProviderAttachment",
   "nimContainer",
   "observabilityEnabled",
   "openshellDriver",

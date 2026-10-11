@@ -3212,7 +3212,7 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
               GATEWAY_NAME,
               agent?.name ?? "openclaw",
               liveFinalFlowContext,
-              registry.getSandbox(name)?.nativeLocalProviderAttachment,
+              registry.getSandbox(name),
             );
             return verifyDeploymentModule.verifyDeployment(
               name,

@@ -12,7 +12,7 @@ import {
   createDeps,
   nativeLocalTestReceipt,
   createFailingNativeLocalRestoreAdapter,
-} from "./inference-set.test-support";
+} from "../../../test/helpers/inference-set";
 
 describe("runInferenceSet live rollback authority", () => {
   it("does not reapply or report restoration when the observed route already matches the rejected route", async () => {

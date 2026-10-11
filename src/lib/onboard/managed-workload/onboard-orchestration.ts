@@ -4,6 +4,7 @@
 import { isCandidateAgent, readCandidateQualificationReceipt } from "../../agent/candidate";
 import type { AgentDefinition } from "../../agent/defs";
 import { getVersion } from "../../core/version";
+import { usesNativeLocalInference } from "../../inference/config";
 import type { SandboxMessagingPlan } from "../../messaging/manifest";
 import type { SandboxEntry, SandboxWorkloadReceipt } from "../../state/registry/types";
 import type { ToolDisclosure } from "../../tool-disclosure";
@@ -199,6 +200,7 @@ export interface CreateManagedWorkloadOnboardRuntimeInput {
   readonly preferredInferenceApi: string | null;
   readonly endpointUrl: string | null;
   readonly nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
+  readonly nativeProvider?: boolean;
   readonly startupProfile: ManagedProfileInput;
   readonly note: (message: string) => void;
   readonly fallbackBuildEstimate: () => string | null;
@@ -400,9 +402,11 @@ export function createManagedWorkloadOnboardRuntime(
       input.agentName === "openclaw" || input.agentName === "langchain-deepagents-code"
         ? input.nativeLocalProviderAttachment
         : undefined;
-    const endpointUrl = nativeLocalProviderAttachment?.endpointUrl ?? input.endpointUrl;
     const selectedModel = input.model?.trim() || "";
     const selectedProvider = input.provider?.trim() || null;
+    const endpointUrl =
+      nativeLocalProviderAttachment?.endpointUrl ??
+      (usesNativeLocalInference(selectedProvider, input.endpointUrl) ? null : input.endpointUrl);
     const inferenceApi =
       input.agentName === "langchain-deepagents-code"
         ? "openai-completions"
@@ -415,7 +419,8 @@ export function createManagedWorkloadOnboardRuntime(
       selectedModel,
       selectedProvider,
       inferenceApi,
-      nativeLocalProviderAttachment?.endpointUrl ?? null,
+      input.nativeProvider ?? true,
+      endpointUrl,
     );
     preparedProfile = buildManagedStartupOnboardProfile({
       agentName: input.agentName,

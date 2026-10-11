@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { normalizeNativeLocalProviderAttachment } from "../inference/native-local/contract";
+import { requireHostedProviderAttachment } from "../inference/native-provider/hosted-attachment";
 
 import { isDeepStrictEqual } from "node:util";
 import type { AgentDefinition } from "../agent/defs";
@@ -15,7 +16,10 @@ import {
   inferenceSelectionRegistryFields,
   normalizeInferenceSelection,
 } from "../inference/selection";
-import { normalizeNativeNvidiaProviderAttachment } from "../inference/native-nvidia/contract";
+import {
+  normalizeNativeNvidiaProviderAttachment,
+  nativeInferenceProviderForSandbox,
+} from "../inference/native-nvidia";
 import { type WebSearchConfig, webSearchProviderForConfig } from "../inference/web-search";
 import { MessagingSetupApplier } from "../messaging/applier/setup-applier";
 import * as onboardSession from "../state/onboard-session";
@@ -87,6 +91,7 @@ export interface CreatedSandboxRegistryEntryInput {
   hostLocalInferenceProvenance?: SandboxEntry["hostLocalInferenceProvenance"];
   nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
   nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+  nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
   deferredN1xManagedVllmPreviewIntent?: true;
   toolDisclosure?: ToolDisclosure;
   observabilityEnabled?: boolean;
@@ -247,6 +252,10 @@ export function buildCreatedSandboxRegistryEntry(
   );
   if (input.nativeLocalProviderAttachment !== undefined && !nativeLocalProviderAttachment)
     throw new Error("Invalid native local provider attachment.");
+  const nativeHostedProviderAttachment = requireHostedProviderAttachment(
+    input.nativeHostedProviderAttachment,
+    input.inferenceSelection.provider,
+  );
   const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
     input.nativeNvidiaProviderAttachment,
   );
@@ -306,6 +315,7 @@ export function buildCreatedSandboxRegistryEntry(
     ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
     ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
     ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
+    ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
     ...(deferredN1xManagedVllmAccepted ? { deferredN1xManagedVllmAccepted: true as const } : {}),
     toolDisclosure: input.toolDisclosure ?? DEFAULT_TOOL_DISCLOSURE,
     observabilityEnabled: input.observabilityEnabled === true,
@@ -395,9 +405,14 @@ export function prepareCreatedSandboxRegistration(
     input.nativeNvidiaProviderAttachment !== undefined
       ? input.nativeNvidiaProviderAttachment
       : pending?.nativeNvidiaProviderAttachment;
+  const pendingNativeHostedProviderAttachment =
+    input.nativeHostedProviderAttachment ?? pending?.nativeHostedProviderAttachment;
   const entry = buildCreatedSandboxRegistryEntry({
     ...input,
-    inferenceSelection: effectiveSelection,
+    nativeHostedProviderAttachment: pendingNativeHostedProviderAttachment,
+    inferenceSelection: pendingRoute
+      ? { ...input.inferenceSelection, ...pendingRoute }
+      : effectiveSelection,
     ...(pendingHostLocalInferenceReceipt === undefined
       ? {}
       : { hostLocalInferenceReceipt: pendingHostLocalInferenceReceipt }),
@@ -489,4 +504,34 @@ export function registerPreparedCreatedSandbox(
 
 export function registerCreatedSandbox(input: CreatedSandboxRegistrationInput): SandboxEntry {
   return publishCreatedSandboxRegistration(input, prepareCreatedSandboxRegistration(input));
+}
+
+export function nativeInferenceCreateIntentFields(
+  provider: string | null | undefined,
+  entry: SandboxEntry | null,
+): {
+  inferenceProvider: string | null;
+  nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
+  nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+  nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
+} {
+  const nativeLocalProviderAttachment = normalizeNativeLocalProviderAttachment(
+    entry?.nativeLocalProviderAttachment,
+  );
+  const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
+    entry?.nativeNvidiaProviderAttachment,
+  );
+  const hostedAttachment = requireHostedProviderAttachment(
+    entry?.nativeHostedProviderAttachment,
+    provider,
+  );
+  return {
+    inferenceProvider:
+      nativeLocalProviderAttachment?.providerName ??
+      hostedAttachment?.providerName ??
+      nativeInferenceProviderForSandbox(provider),
+    ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
+    nativeHostedProviderAttachment: hostedAttachment,
+    ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
+  };
 }

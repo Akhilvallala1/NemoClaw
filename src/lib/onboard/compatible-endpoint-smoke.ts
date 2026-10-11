@@ -1,10 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-  normalizeNativeLocalProviderAttachment,
-  type NativeLocalProviderAttachment,
-} from "../inference/native-local/contract";
 import { NATIVE_LOCAL_RUNTIME_REFERENCE_PATTERN } from "../inference/native-local/agent-config";
 import { verifyNativeLocalProviderAttachment } from "../inference/native-local/profile";
 import type { StdioOptions } from "node:child_process";
@@ -12,7 +8,12 @@ import type { OpenShellSandboxBufferedCommandExecutor } from "../adapters/opensh
 import { createCliOpenShellProviderAdapter } from "../adapters/openshell/provider-adapter-cli";
 import { shellQuote } from "../core/shell-quote";
 import { compactText } from "../core/url-utils";
-import { INFERENCE_ROUTE_URL, MANAGED_PROVIDER_ID } from "../inference/config";
+import {
+  INFERENCE_ROUTE_URL,
+  MANAGED_PROVIDER_ID,
+  normalizeNativeLocalProviderAttachment,
+  type NativeLocalProviderAttachment,
+} from "../inference/config";
 import { resolveMaxTokensField } from "../inference/max-tokens-field";
 import type { HostLocalInferenceSandboxProofAuthority } from "./runtime-provider/host-local-inference-routing";
 import {

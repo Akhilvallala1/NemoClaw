@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { NativeLocalProviderAttachment } from "../inference/native-local/contract";
+import type { NativeProviderAttachment } from "../inference/native-provider/contract";
 
 import type { SandboxHostMount } from "../state/registry/types";
 import type { NativeNvidiaProviderAttachment } from "../inference/native-nvidia";
@@ -52,6 +53,7 @@ export type SandboxCreateIntent = {
   readonly inferenceProvider: string | null;
   readonly nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   readonly nativeNvidiaProviderAttachment?: NativeNvidiaProviderAttachment;
+  readonly nativeHostedProviderAttachment?: NativeProviderAttachment;
   readonly activeMessagingChannels: readonly string[];
   readonly messagingProviderRequests: readonly SandboxCreateMessagingProviderRequest[];
   readonly reusableMessagingProviders: readonly string[];
@@ -75,6 +77,7 @@ export type ResolveSandboxCreateIntentInput = {
   inferenceProvider?: string | null;
   nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeNvidiaProviderAttachment?: NativeNvidiaProviderAttachment;
+  nativeHostedProviderAttachment?: NativeProviderAttachment;
   hostLocalInferenceRouteOnly?: boolean;
   channels: readonly MessagingChannel[];
   enabledChannels: string[] | null;

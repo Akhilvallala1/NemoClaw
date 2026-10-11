@@ -1,15 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { normalizeNativeLocalProviderAttachment } from "../../../inference/gateway-route-compatibility";
-
 import {
   type CurrentGatewayRouteCompatibilityCheck,
   formatGatewayRouteConflict,
   type GatewayRouteCompatibilityResult,
   isAdvisoryGatewayRouteConflict,
-  nativeInferenceProviderForSandbox,
-  normalizeNativeNvidiaProviderAttachment,
 } from "../../../inference/gateway-route-compatibility";
 import type { InferenceEndpointSource } from "../../../inference/selection";
 import {
@@ -102,6 +98,7 @@ import {
   selectedGatewayForSandboxRecreate,
 } from "../../sandbox-recreate-transaction";
 import {
+  nativeInferenceCreateIntentFields,
   sandboxCreateInferenceSelection,
   withSandboxImageRegistrationFence,
 } from "../../sandbox-registration";
@@ -136,28 +133,6 @@ type SandboxRecreateWorkloadSkipReason = Extract<
   ReplacedSandboxWorkloadCleanupResult,
   { readonly status: "skipped" }
 >["reason"];
-
-function nativeInferenceCreateIntentFields(
-  provider: string | null | undefined,
-  entry: SandboxEntry | null,
-): {
-  inferenceProvider: string | null;
-  nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
-  nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
-} {
-  const nativeLocalProviderAttachment = normalizeNativeLocalProviderAttachment(
-    entry?.nativeLocalProviderAttachment,
-  );
-  const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
-    entry?.nativeNvidiaProviderAttachment,
-  );
-  return {
-    inferenceProvider:
-      nativeLocalProviderAttachment?.providerName ?? nativeInferenceProviderForSandbox(provider),
-    ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
-    ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
-  };
-}
 
 const SANDBOX_RECREATE_WORKLOAD_SKIP_DIAGNOSTIC = {
   "replacement-unproven": "  Obsolete sandbox image retirement skipped: replacement-unproven",
@@ -383,6 +358,7 @@ export interface SandboxStateOptions<
       inferenceProvider?: string | null;
       nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
       nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+      nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
       hostLocalInferenceRouteOnly?: boolean;
       enabledChannels: readonly string[];
       webSearchConfig: WebSearchConfig | null;

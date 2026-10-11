@@ -15,7 +15,6 @@ import type {
 import { WATCHER_STATUS_TIMEOUT_MS } from "../../actions/sandbox/auto-pair-warmup";
 import { sanitizeWedgeLogLine } from "../../actions/sandbox/gateway-wedge-diagnostics";
 import { OPENSHELL_DEFAULT_WORKSPACE } from "../../adapters/openshell/sandbox-ssh-host";
-import type { SandboxEntry } from "../../state/registry/types";
 
 export {
   OPENCLAW_ONBOARDING_PAIRING_FINAL_OBSERVATION_TIMEOUT_MS,
@@ -378,12 +377,9 @@ export function ordinaryOpenClawPairingIncompleteMessage(
   return `OpenClaw onboarding for '${name}' is incomplete because ${cause}. Resume or rerun onboarding.`;
 }
 
-function readRegistryInferenceRoute(name: string): (SandboxEntry & { gatewayName: string }) | null {
+function readRegistrySandbox(name: string) {
   try {
-    const entry = finalizationHandlerRuntime.loadRegistryPersistence().load().sandboxes[name];
-    return typeof entry?.gatewayName === "string" && entry.gatewayName
-      ? { ...entry, gatewayName: entry.gatewayName }
-      : null;
+    return finalizationHandlerRuntime.loadRegistryPersistence().load().sandboxes[name] ?? null;
   } catch {
     return null;
   }
@@ -397,17 +393,18 @@ export const finalizationHandlerDeps = {
     model: string;
     preferredInferenceApi: string | null;
   }): Promise<{ ok: boolean; detail?: string }> {
-    const route = readRegistryInferenceRoute(input.sandboxName);
-    if (!route) {
+    const entry = readRegistrySandbox(input.sandboxName);
+    const gatewayName = entry?.gatewayName;
+    if (typeof gatewayName !== "string" || !gatewayName) {
       return { ok: false, detail: "the sandbox gateway identity is unavailable" };
     }
     const verification = finalizationHandlerRuntime.loadVerifyDeployment();
     const context = verification.onboardInferenceVerificationContext(
       input.sandboxName,
-      route.gatewayName,
+      gatewayName,
       input.agentName,
-      { ...input, endpointUrl: route.endpointUrl },
-      route.nativeLocalProviderAttachment,
+      { ...input, endpointUrl: entry.endpointUrl },
+      entry,
     );
     return verification.probeOnboardInferenceInvocation(context.invocation);
   },

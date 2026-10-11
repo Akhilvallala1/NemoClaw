@@ -9,7 +9,7 @@ import {
   createCompatibleProviderCapture,
   createDeps,
   nativeLocalTestReceipt,
-} from "./inference-set.test-support";
+} from "../../../test/helpers/inference-set";
 
 const CONFIG = {
   agents: { defaults: { model: { primary: "inference/model-a" } } },
@@ -131,6 +131,73 @@ describe("inference selection for existing no-auth endpoints", () => {
       ),
     ).rejects.toThrow(/credential/);
     expect(prepare).not.toHaveBeenCalled();
+  });
+  it("keeps a recorded legacy no-auth route after the proxy port moves", async () => {
+    vi.stubEnv("NEMOCLAW_OLLAMA_PROXY_PORT", "12435");
+    vi.resetModules();
+    try {
+      const [{ runInferenceSet: runWithMovedProxy }, support] = await Promise.all([
+        import("./inference-set"),
+        import("../../../test/helpers/inference-set"),
+      ]);
+      const endpointUrl = "http://127.0.0.1:11435/v1";
+      const entry = { ...noAuthEntry(), endpointUrl } as SandboxEntry;
+      const session = support.baseSession({
+        provider: "compatible-endpoint",
+        model: "model-a",
+        endpointUrl,
+        credentialEnv: NO_AUTH_CREDENTIAL_ENV,
+        preferredInferenceApi: "openai-completions",
+      });
+      const captureOpenshell = support.createCompatibleProviderCapture({
+        name: "compatible-endpoint",
+        type: "openai",
+        credentialEnv: NO_AUTH_CREDENTIAL_ENV,
+        configKey: "OPENAI_BASE_URL",
+        initiallyPresent: true,
+      });
+      const deps = support.createDeps({
+        config: structuredClone(CONFIG),
+        entry,
+        session,
+        captureOpenshell,
+      });
+
+      await runWithMovedProxy({ provider: "compatible-endpoint", model: "model-b" }, deps);
+
+      expect(providerMutationArgs(captureOpenshell)).toEqual([]);
+      expect(inferenceSetArgs(captureOpenshell)).toEqual([
+        [
+          "inference",
+          "set",
+          "-g",
+          "nemoclaw",
+          "--no-verify",
+          "--provider",
+          "compatible-endpoint",
+          "--model",
+          "model-b",
+        ],
+      ]);
+      expect(deps.calls.probeSandboxRoute).toHaveBeenCalledWith({
+        gatewayName: "nemoclaw",
+        sandboxName: "alpha",
+        provider: "compatible-endpoint",
+        model: "model-b",
+        preferredInferenceApi: "openai-completions",
+      });
+      expect(
+        deps.calls.updateSandbox.mock.calls
+          .filter(([, fields]) => fields.provider !== undefined)
+          .at(-1),
+      ).toEqual([
+        "alpha",
+        expect.objectContaining({ endpointUrl, credentialEnv: NO_AUTH_CREDENTIAL_ENV }),
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
   it("keeps host-side verification and the canonical credential for an authenticated endpoint", async () => {
     const captureOpenshell = createCompatibleProviderCapture({

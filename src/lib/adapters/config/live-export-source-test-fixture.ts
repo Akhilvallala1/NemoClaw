@@ -147,6 +147,7 @@ export function ollamaSource(
     "ollama-local",
     model,
     "openai-completions",
+    true,
     nativeEndpointUrl,
   );
   const built = buildManagedStartupProfile({
