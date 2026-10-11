@@ -226,43 +226,49 @@ describe("native custom Hermes policy (#12636)", () => {
       "anthropic-messages",
       "https://api.example.com",
     ],
-  ])("accepts %s only with its owned credential reference", async (provider, key, api, baseUrl) => {
-    const prepared = await prepareNativeCustomProfile({
-      sandboxName: "hermes-custom",
-      provider,
-      endpointUrl: "https://api.example.com/v1",
-      api,
-      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
-    });
-    const attachment = customAttachmentFromPrepared(prepared, {
-      schemaVersion: 1,
-      profileId: prepared.profile.id,
-      providerName: prepared.providerName,
-      providerId: "native-provider-id",
-    });
-    const inference = getSandboxInferenceConfig("test-model", provider, api, attachment);
-    const policy = buildHermesManagedPolicy(
-      {
-        ...SETTINGS,
-        upstreamProvider: provider,
-        baseUrl: inference.inferenceBaseUrl,
-        inferenceApi: inference.inferenceApi,
-      },
-      {},
-    );
-    expect(loadWithPython(policy).status).toBe(0);
-    expect(policy.config.model).toMatchObject({
-      base_url: baseUrl,
-      api_key: `sk-OPENSHELL-RESOLVE-ENV-${key}`,
-    });
-    const serialized = JSON.stringify(policy);
-    expect(serialized).toContain(`sk-OPENSHELL-RESOLVE-ENV-${key}`);
-    const malformed = {
-      ...policy,
-      config: { ...policy.config, model: { ...policy.config.model, api_key: "raw-custom-secret" } },
-    };
-    const result = loadWithPython(malformed);
-    expect(result.status).toBe(1);
-    expect(result.stderr).not.toContain("raw-custom-secret");
-  });
+  ] as const)(
+    "accepts %s only with its owned credential reference",
+    async (provider, key, api, baseUrl) => {
+      const prepared = await prepareNativeCustomProfile({
+        sandboxName: "hermes-custom",
+        provider,
+        endpointUrl: "https://api.example.com/v1",
+        api,
+        lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      });
+      const attachment = customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "native-provider-id",
+      });
+      const inference = getSandboxInferenceConfig("test-model", provider, api, attachment);
+      const policy = buildHermesManagedPolicy(
+        {
+          ...SETTINGS,
+          upstreamProvider: provider,
+          baseUrl: inference.inferenceBaseUrl,
+          inferenceApi: inference.inferenceApi,
+        },
+        {},
+      );
+      expect(loadWithPython(policy).status).toBe(0);
+      expect(policy.config.model).toMatchObject({
+        base_url: baseUrl,
+        api_key: `sk-OPENSHELL-RESOLVE-ENV-${key}`,
+      });
+      const serialized = JSON.stringify(policy);
+      expect(serialized).toContain(`sk-OPENSHELL-RESOLVE-ENV-${key}`);
+      const malformed = {
+        ...policy,
+        config: {
+          ...policy.config,
+          model: { ...policy.config.model, api_key: "raw-custom-secret" },
+        },
+      };
+      const result = loadWithPython(malformed);
+      expect(result.status).toBe(1);
+      expect(result.stderr).not.toContain("raw-custom-secret");
+    },
+  );
 });
