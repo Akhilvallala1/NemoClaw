@@ -7,8 +7,15 @@ import type { SandboxRegistry } from "./types";
 
 type Authorities = NonNullable<SandboxRegistry["nativeCustomProviderAuthorities"]>;
 
+function invalidAuthority(): never {
+  throw new Error(
+    "Invalid native custom provider authority. Reconcile the retained ownership records before continuing.",
+  );
+}
+
 export function normalizeNativeCustomProviderAuthorities(value: unknown): Authorities | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalidAuthority();
   const result: Authorities = Object.create(null);
   for (const [gateway, candidates] of Object.entries(value)) {
     if (
@@ -17,10 +24,10 @@ export function normalizeNativeCustomProviderAuthorities(value: unknown): Author
       typeof candidates !== "object" ||
       Array.isArray(candidates)
     )
-      continue;
+      invalidAuthority();
     for (const [name, candidate] of Object.entries(candidates)) {
       const receipt = normalizeNativeCustomProviderAttachment(candidate);
-      if (!receipt || receipt.providerName !== name) continue;
+      if (!receipt || receipt.providerName !== name) invalidAuthority();
       (result[gateway] ??= Object.create(null))[name] = receipt;
     }
   }

@@ -138,43 +138,35 @@ it.each([true, false])(
   },
 );
 
-it.each(["missing", "malformed"])(
-  "verifies provider absence from the sandbox receipt when gateway authority is %s (#12636)",
-  async (state) => {
-    const { harness, retire, receipt } = await fixture();
-    const file = nativeCustomDestroyRegistryFile();
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    data.nativeCustomProviderAuthorities =
-      state === "missing"
-        ? undefined
-        : {
-            "nemoclaw-19080": { [receipt.providerName]: { ...receipt, providerId: "" } },
-          };
-    fs.writeFileSync(file, JSON.stringify(data));
-    const store = nativeCustomDestroyAuthorityStore();
-    const getProvider = vi.fn(async () => ({
-      ok: false,
-      error: { kind: "command", reason: "not_found", message: "missing" },
-    }));
-    retire.mockImplementation((input) =>
-      retireNativeCustomProviders({
-        ...input,
-        receipts: store.listNativeCustomProviderAuthorities(input.gatewayName, input.sandboxName),
-        clearAuthority: store.clearNativeCustomProviderAuthority,
-        adapter: { getProvider } as unknown as OpenShellProviderAdapter,
-      }),
-    );
-    await harness.destroySandbox("alpha", { yes: true, cleanupGateway: false });
-    expect(getProvider).toHaveBeenCalledWith({
-      target: { kind: "named", gatewayName: "nemoclaw-19080" },
-      providerName: receipt.providerName,
-    });
-    expect(harness.removeSandboxSpy).toHaveBeenCalled();
-    expect(getProvider.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.removeSandboxSpy.mock.invocationCallOrder[0]!,
-    );
-  },
-);
+it("verifies provider absence from the sandbox receipt when gateway authority is missing (#12636)", async () => {
+  const { harness, retire, receipt } = await fixture();
+  const file = nativeCustomDestroyRegistryFile();
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  delete data.nativeCustomProviderAuthorities;
+  fs.writeFileSync(file, JSON.stringify(data));
+  const store = nativeCustomDestroyAuthorityStore();
+  const getProvider = vi.fn(async () => ({
+    ok: false,
+    error: { kind: "command", reason: "not_found", message: "missing" },
+  }));
+  retire.mockImplementation((input) =>
+    retireNativeCustomProviders({
+      ...input,
+      receipts: store.listNativeCustomProviderAuthorities(input.gatewayName, input.sandboxName),
+      clearAuthority: store.clearNativeCustomProviderAuthority,
+      adapter: { getProvider } as unknown as OpenShellProviderAdapter,
+    }),
+  );
+  await harness.destroySandbox("alpha", { yes: true, cleanupGateway: false });
+  expect(getProvider).toHaveBeenCalledWith({
+    target: { kind: "named", gatewayName: "nemoclaw-19080" },
+    providerName: receipt.providerName,
+  });
+  expect(harness.removeSandboxSpy).toHaveBeenCalled();
+  expect(getProvider.mock.invocationCallOrder[0]).toBeLessThan(
+    harness.removeSandboxSpy.mock.invocationCallOrder[0]!,
+  );
+});
 
 it("reports a redacted native cleanup cause and preserves authority after confirmed deletion (#12636)", async () => {
   const { harness, retire } = await fixture();
@@ -198,3 +190,33 @@ it("reports a redacted native cleanup cause and preserves authority after confir
     ),
   ).toHaveLength(1);
 });
+
+it.each([
+  { attached: false, force: false },
+  { attached: false, force: true },
+  { attached: true, force: false },
+])(
+  "retains malformed native ownership before destroy with attachment $attached and force $force (#12636)",
+  async ({ attached, force }) => {
+    const { harness, retire, receipt } = await fixture(attached, force);
+    const file = nativeCustomDestroyRegistryFile();
+    const original = fs.readFileSync(file, "utf8");
+    const data = JSON.parse(original);
+    data.sandboxes.alpha = harness.registry.getSandbox("alpha");
+    vi.mocked(harness.registry.getSandbox).mockRestore();
+    data.nativeCustomProviderAuthorities["nemoclaw-19080"][receipt.providerName].providerId = "";
+    const before = JSON.stringify(data);
+    fs.writeFileSync(file, before);
+    try {
+      await expect(harness.destroySandbox("alpha", { yes: true, force })).rejects.toThrow(
+        /native custom.*authority/i,
+      );
+      expect(harness.events).not.toContain("delete");
+      expect(retire).not.toHaveBeenCalled();
+      expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
+      expect(fs.readFileSync(file, "utf8")).toBe(before);
+    } finally {
+      fs.writeFileSync(file, original);
+    }
+  },
+);

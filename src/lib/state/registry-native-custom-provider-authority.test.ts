@@ -114,3 +114,48 @@ it("rejects tampered persisted native authority instead of recovering through a 
   await fs.writeFile(registry.REGISTRY_FILE, JSON.stringify(disk));
   expect(() => registry.getSandbox("alpha")).toThrow(/invalid native custom/i);
 });
+
+it("preserves malformed gateway ownership instead of dropping it during registry reads or writes (#12636)", async () => {
+  const registry = await import("./registry");
+  const authority = await import("./registry/native-custom-provider-authority");
+  const alpha = await receipt("alpha");
+  registry.registerSandbox({ name: "alpha", provider: "compatible-endpoint", model: "model-a" });
+  const disk = JSON.parse(await fs.readFile(registry.REGISTRY_FILE, "utf8"));
+  disk.nativeCustomProviderAuthorities = {
+    nemoclaw: { [alpha.providerName]: { ...alpha, providerId: "" } },
+  };
+  const before = JSON.stringify(disk);
+  await fs.writeFile(registry.REGISTRY_FILE, before);
+  expect(() => registry.getSandbox("alpha")).toThrow(/native custom.*authority/i);
+  expect(() => authority.listNativeCustomProviderAuthorities("nemoclaw", "alpha")).toThrow(
+    /native custom.*authority/i,
+  );
+  expect(() => registry.registerSandbox({ name: "beta", model: "model-b" })).toThrow(
+    /native custom.*authority/i,
+  );
+  expect(await fs.readFile(registry.REGISTRY_FILE, "utf8")).toBe(before);
+});
+
+it.each([8080, 19080])(
+  "rejects malformed native ownership in the owning gateway root on port %s (#12636)",
+  async (gatewayPort) => {
+    const { findSandboxAcrossGatewayRoots } = await import("./registry/cross-port");
+    const { nemoclawStateRoot } = await import("./state-root");
+    const { DEFAULT_GATEWAY_PORT } = await import("../core/ports");
+    const alpha = await receipt("alpha");
+    const gatewayName =
+      gatewayPort === DEFAULT_GATEWAY_PORT ? "nemoclaw" : `nemoclaw-${gatewayPort}`;
+    const root = nemoclawStateRoot(home, gatewayPort);
+    await fs.mkdir(root, { recursive: true });
+    const file = path.join(root, "sandboxes.json");
+    const before = JSON.stringify({
+      sandboxes: { alpha: { name: "alpha", gatewayName, gatewayPort } },
+      nativeCustomProviderAuthorities: {
+        [gatewayName]: { [alpha.providerName]: { ...alpha, providerId: "" } },
+      },
+    });
+    await fs.writeFile(file, before);
+    expect(() => findSandboxAcrossGatewayRoots("alpha", home)).toThrow(/native custom.*authority/i);
+    expect(await fs.readFile(file, "utf8")).toBe(before);
+  },
+);

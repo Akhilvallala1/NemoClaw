@@ -14,6 +14,7 @@ import { registryEntryGatewayPort, resolveGatewayName } from "../onboard/gateway
 export { registryEntryGatewayPort } from "../onboard/gateway-binding/identity";
 import { GATEWAYS_SUBDIR, nemoclawStateRoot } from "./state-root";
 import { normalizePendingSandboxCreateIdentity } from "./registry/pending-create-identity";
+import { normalizeNativeCustomProviderAuthorities } from "./registry/native-custom-provider-authority-state";
 
 export { GATEWAYS_SUBDIR, resolveHome } from "./state-root";
 export { DEFAULT_GATEWAY_PORT } from "../core/ports";
@@ -159,6 +160,7 @@ function parseRegistry(filePath: string, raw: string): GatewayRegistryDocument {
         ? { ...(value as GatewayRegistryEntry), dashboardPort: null }
         : (value as GatewayRegistryEntry);
   }
+  normalizeNativeCustomProviderAuthorities(parsed.nativeCustomProviderAuthorities);
   return {
     ...parsed,
     defaultSandbox: typeof parsed.defaultSandbox === "string" ? parsed.defaultSandbox : null,
