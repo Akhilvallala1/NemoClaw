@@ -53,7 +53,7 @@ If the last retry fails or times out, validation stops without another Chat Comp
 <AgentOnly variant="deepagents">
 
 The managed Deep Agents runtime keeps `use_responses_api = false` and uses Chat Completions.
-NVIDIA Endpoints and fresh hosted custom endpoints use sandbox-attached OpenShell providers, their native endpoint URLs, and supervisor-issued credentials.
+Selections with a native provider attachment use their recorded endpoint URLs and supervisor-issued credentials.
 Host-local and existing shared-route sandboxes continue to use `https://inference.local/v1`.
 `NEMOCLAW_PREFERRED_API` does not change that runtime selection.
 
