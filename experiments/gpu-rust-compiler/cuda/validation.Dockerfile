@@ -8,7 +8,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Validation-only distro packages resolve at build time; CI retains their versions.
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates clang-18 g++ python3 cmake ninja-build git curl xz-utils zlib1g-dev libzstd-dev libxml2-dev \
+    && apt-get install --yes --no-install-recommends ca-certificates clang-18 g++ python3 cmake ninja-build git curl jq xz-utils zlib1g-dev libzstd-dev libxml2-dev \
     && ln -s /usr/bin/clang-18 /usr/local/bin/clang \
     && rm -rf /var/lib/apt/lists/*
 
@@ -16,6 +16,15 @@ RUN apt-get update \
 # library for fallback; the 126 MB llc executable is not a required compiler asset.
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
 ENV PATH=/opt/cargo/bin:/opt/llvm/bin:$PATH
+# Match versions.json for the complete NemoClaw corpus build.
+RUN curl --fail --location --retry 3 \
+      https://github.com/protocolbuffers/protobuf/releases/download/v36.1/protoc-36.1-linux-x86_64.zip \
+      --output /tmp/protoc.zip \
+    && echo 'c4bc672d9d49214dc8cafdceadf4df92182d6ca8e3ec65a56b2d7de5602669b4  /tmp/protoc.zip' | sha256sum --check - \
+    && python3 -m zipfile -e /tmp/protoc.zip /opt/protoc \
+    && chmod +x /opt/protoc/bin/protoc \
+    && rm /tmp/protoc.zip
+ENV PROTOC=/opt/protoc/bin/protoc
 RUN curl --fail --location --retry 3 \
       https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz \
       --output /tmp/llvm.tar.xz \

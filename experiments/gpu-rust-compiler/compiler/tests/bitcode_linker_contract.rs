@@ -229,6 +229,7 @@ fn setup(temporary: &Temporary) -> (WrapperOptions, Vec<OsString>) {
         receipt_directory: temporary.0.join("receipts"),
         quality: "fast".into(),
         gpu: None,
+        capture_directory: None,
     };
     let args = vec![
         source.into_os_string(),
@@ -276,6 +277,97 @@ fn compiler_objects_are_replaced_once_before_rust_only_links_saved_metadata() {
         .unwrap()
         .contains("gpu-object-bridge"));
     assert!(!outcome.report.staging_directory.unwrap().exists());
+}
+
+#[test]
+fn audit_capture_preserves_exact_frontend_bitcode_after_native_object_replacement() {
+    let temporary = Temporary::new();
+    let (mut options, mut arguments) = setup(&temporary);
+    options.capture_directory = Some(temporary.0.join("capture"));
+    arguments.extend(args(&["-Copt-level=1"]));
+    let mut runner = FixtureRunner::new();
+    let outcome = run_with(Path::new("rustc"), &arguments, &options, &mut runner).unwrap();
+    assert_eq!(outcome.exit_code, 0);
+    let path = outcome
+        .report
+        .capture_manifest
+        .expect("bitcode capture manifest was not retained");
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(manifest["schema"], "gpu-rust-bitcode-capture");
+    assert_eq!(manifest["status"], "success");
+    assert_eq!(manifest["llvm_codegen_opt_level"], 1);
+    assert_eq!(manifest["units"].as_array().unwrap().len(), 1);
+    let unit = &manifest["units"][0];
+    let input = path
+        .parent()
+        .unwrap()
+        .join(unit["captured_filename"].as_str().unwrap());
+    assert_eq!(fs::read(input).unwrap(), b"BC\xc0\xde-fixture");
+    assert_eq!(unit["input_bytes"], 12);
+    assert_eq!(unit["input_sha256"], outcome.report.units[0].input_sha256);
+    assert_eq!(unit["target"], "x86_64-unknown-linux-gnu");
+    assert_eq!(unit["emission_receipt"]["backend"], "llvm");
+    assert!(!outcome.report.staging_directory.unwrap().exists());
+}
+
+#[test]
+fn failed_emission_retains_audit_bitcode_without_a_successful_emission_claim() {
+    let temporary = Temporary::new();
+    let (mut options, arguments) = setup(&temporary);
+    options.capture_directory = Some(temporary.0.join("capture"));
+    let mut runner = FixtureRunner::new();
+    runner.controller_exit = 3;
+    let outcome = run_with(Path::new("rustc"), &arguments, &options, &mut runner).unwrap();
+    assert_ne!(outcome.exit_code, 0);
+    let path = outcome.report.capture_manifest.unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(manifest["status"], "failed");
+    assert!(manifest["units"][0]["emission_receipt"].is_null());
+    let input = path
+        .parent()
+        .unwrap()
+        .join(manifest["units"][0]["captured_filename"].as_str().unwrap());
+    assert_eq!(fs::read(input).unwrap(), b"BC\xc0\xde-fixture");
+    assert!(!temporary.0.join("deps/app").exists());
+}
+
+#[test]
+fn repeated_audit_captures_use_distinct_owned_directories_and_preserve_other_data() {
+    let temporary = Temporary::new();
+    let (mut options, arguments) = setup(&temporary);
+    let root = temporary.0.join("capture");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("other.bc"), b"other owned data").unwrap();
+    options.capture_directory = Some(root.clone());
+    let first = run_with(
+        Path::new("rustc"),
+        &arguments,
+        &options,
+        &mut FixtureRunner::new(),
+    )
+    .unwrap();
+    let second = run_with(
+        Path::new("rustc"),
+        &arguments,
+        &options,
+        &mut FixtureRunner::new(),
+    )
+    .unwrap();
+    assert_ne!(
+        first.report.capture_manifest,
+        second.report.capture_manifest
+    );
+    assert_eq!(
+        fs::read(root.join("other.bc")).unwrap(),
+        b"other owned data"
+    );
+    for path in [
+        first.report.capture_manifest.unwrap(),
+        second.report.capture_manifest.unwrap(),
+    ] {
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(value["status"], "success");
+    }
 }
 
 #[test]

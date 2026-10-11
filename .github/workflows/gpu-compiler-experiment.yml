@@ -94,6 +94,8 @@ jobs:
           cp .build/compiler/release/gpu-codegen .build/ci-native/gpu-codegen
           cp .build/compiler/release/gpu-emit-module .build/ci-native/gpu-emit-module
           cp .build/compiler/release/gpu-verify-pipeline .build/ci-native/gpu-verify-pipeline
+          cp .build/compiler/release/gpu-corpus-census .build/ci-native/gpu-corpus-census
+          cp .build/compiler/release/gpu-corpus-replay .build/ci-native/gpu-corpus-replay
           cargo +1.98.1 test --locked --manifest-path fast-backend/Cargo.toml --target-dir .build/fast-controller
           cargo +1.98.1 build --locked --release --bins --manifest-path fast-backend/Cargo.toml --target-dir .build/fast-controller
           cp .build/fast-controller/release/nemoclaw-fast-backend .build/ci-native/nemoclaw-fast-backend
@@ -101,7 +103,8 @@ jobs:
           RUSTUP_TOOLCHAIN=1.98.1 .build/compiler/release/gpu-reference-programs .build/ci-native/references
           (cd .build/ci-native && sha256sum gpu-rust-compiler gpu-cpu-liveness \
             gpu-native-benchmark gpu-cargo gpu-bitcode-linker gpu-codegen gpu-emit-module \
-            gpu-verify-pipeline nemoclaw-fast-backend rust-llvm-llc source-sha.txt references/* > binary.sha256)
+            gpu-verify-pipeline gpu-corpus-census gpu-corpus-replay \
+            nemoclaw-fast-backend rust-llvm-llc source-sha.txt references/* > binary.sha256)
 
       - name: Identify the exact-head frontend artifact
         id: identity
@@ -203,7 +206,7 @@ jobs:
     name: Experiment / CUDA on RTX PRO 6000
     needs: native-cpu
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CONTAINER_IMAGE: gpu-rust-compiler-experiment:${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -236,7 +239,8 @@ jobs:
             .build/compiler/release/gpu-cargo .build/compiler/release/gpu-bitcode-linker \
             .build/compiler/release/gpu-codegen .build/compiler/release/gpu-emit-module \
             .build/compiler/release/gpu-verify-pipeline .build/compiler/release/nemoclaw-fast-backend \
-            .build/compiler/release/rust-llvm-llc
+            .build/compiler/release/rust-llvm-llc .build/compiler/release/gpu-corpus-census \
+            .build/compiler/release/gpu-corpus-replay
           chmod +x .build/compiler/release/references/*-reference
           mkdir -p results .build/verification/cuda
           jq --null-input \
@@ -262,6 +266,22 @@ jobs:
             --tag "$CONTAINER_IMAGE" cuda 2>&1 | tee results/container-build.log
           docker image inspect "$CONTAINER_IMAGE" > results/container-image.json
 
+      - name: Fetch locked Rust inputs before the offline corpus audit
+        working-directory: experiments/gpu-rust-compiler
+        run: |
+          set -euo pipefail
+          mkdir -p .build/corpus-cargo
+          docker run --rm --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1g,mode=1777 \
+            --mount "type=bind,source=$PWD/../..,target=/workspace,readonly" \
+            --mount "type=bind,source=$PWD/.build,target=/lab/.build" \
+            --env CARGO_HOME=/lab/.build/corpus-cargo \
+            "$CONTAINER_IMAGE" bash --noprofile --norc -euo pipefail -c '
+              cargo +1.98.1 fetch --locked --manifest-path /workspace/Cargo.toml
+            ' 2>&1 | tee results/corpus-fetch.log
+
       - name: Verify CUDA and compile the supported subset
         working-directory: experiments/gpu-rust-compiler
         run: |
@@ -271,9 +291,11 @@ jobs:
             --user "$(id -u):$(id -g)" \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1g,mode=1777 \
             --mount "type=bind,source=$PWD,target=/lab,readonly" \
+            --mount "type=bind,source=$PWD/../..,target=/workspace,readonly" \
             --mount "type=bind,source=$PWD/.build,target=/lab/.build" \
             --mount "type=bind,source=$PWD/results,target=/lab/results" \
             --workdir /lab --env CANDIDATE_SHA \
+            --env CARGO_HOME=/lab/.build/corpus-cargo --env CARGO_INCREMENTAL=0 \
             --env PYTHONUNBUFFERED=1 --env PYTHONDONTWRITEBYTECODE=1 \
             "$CONTAINER_IMAGE" bash --noprofile --norc -euo pipefail -c '
               nvcc --version > results/nvcc-container.txt
@@ -287,6 +309,27 @@ jobs:
               cmake --build .build/tpde-native --target tpde-rust-bridge --parallel 4
               nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC native/codegen_cuda.cu \
                 -o .build/verification/cuda/libgpuemit_cuda.so
+              GPU_LINK_CAPTURE_DIR=/lab/.build/nemoclaw-corpus \
+              .build/compiler/release/gpu-cargo build --manifest-path /workspace/Cargo.toml \
+                --package nemoclaw-cli --bin nemoclaw --quality fast --placement cpu --offline \
+                --object-backend llvm-bitcode --bitcode-wrapper .build/compiler/release/gpu-bitcode-linker \
+                --tpde-controller .build/compiler/release/nemoclaw-fast-backend \
+                --tpde-bridge .build/tpde-native/tpde-rust-bridge \
+                --llvm-llc .build/compiler/release/rust-llvm-llc \
+                --target-root /lab/.build/nemoclaw-corpus-target \
+                --report /lab/results/nemoclaw-corpus-build.json
+              candidate=$(jq -r .artifact.path results/nemoclaw-corpus-build.json)
+              "$candidate" --version > results/nemoclaw-corpus-version.txt
+              .build/compiler/release/gpu-corpus-census \
+                --corpus-root .build/nemoclaw-corpus --build-report results/nemoclaw-corpus-build.json \
+                --bridge .build/tpde-native/tpde-rust-bridge \
+                --packet-dir .build/nemoclaw-corpus-packets --report results/nemoclaw-corpus-census.json
+              eligible=$(jq -r .eligible_units results/nemoclaw-corpus-census.json)
+              if [ "$eligible" -gt 0 ]; then
+                .build/compiler/release/gpu-corpus-replay --manifest results/nemoclaw-corpus-census.json \
+                  --backend cuda --library .build/verification/cuda/libgpuemit_cuda.so \
+                  --devices 0 --cpu-workers 4 --repeats 5 --report results/nemoclaw-corpus-replay.json
+              fi
               .build/compiler/release/gpu-codegen --backend cuda --functions 128 \
                 --batch-functions 32 --repeats 5 --cpu-workers 4 --devices 0 \
                 --library .build/verification/cuda/libgpuemit_cuda.so \
@@ -345,6 +388,9 @@ jobs:
             experiments/gpu-rust-compiler/.build/verification/codegen-cuda/
             experiments/gpu-rust-compiler/.build/verification/codegen-cpu/
             experiments/gpu-rust-compiler/.build/verification/full-rust-cuda/
+            experiments/gpu-rust-compiler/.build/nemoclaw-corpus/
+            experiments/gpu-rust-compiler/.build/nemoclaw-corpus-packets/
+            experiments/gpu-rust-compiler/.build/nemoclaw-corpus-target/fast/*/.gpu-link-receipts/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

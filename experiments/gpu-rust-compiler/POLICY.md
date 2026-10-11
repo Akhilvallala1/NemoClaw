@@ -82,6 +82,14 @@ levels use the pinned compiler's target-machine mapping and retain IR size
 attributes. The standalone controller/helper keep O0 as their default baseline;
 `--llvm-codegen-opt-level 0|1|2|3` selects only machine-code generation.
 
+For the final coverage audit, set `GPU_LINK_CAPTURE_DIR` to an unused corpus
+root while building `llvm-bitcode` into a fresh target root. The wrapper retains
+each exact frontend bitcode module and its manifest before replacing the private
+input with a native object. Capture costs remain in the audit's timings; it
+cannot establish a performance win. `gpu-corpus-census --help` and
+`gpu-corpus-replay --help` describe the capture verification and persistent
+replay commands. [The final gate](FINAL_GPU_GATE.md) defines the stopping rule.
+
 Alternate modes reject an inherited `RUST_LLVM_LIBRARY` override. They resolve
 and hash the pinned sysroot library, explicitly select it only for child Cargo,
 and verify the compact helper's loaded-library report. External `llc` remains

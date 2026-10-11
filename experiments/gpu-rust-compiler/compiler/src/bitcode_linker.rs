@@ -223,6 +223,7 @@ pub struct WrapperOptions {
     pub receipt_directory: PathBuf,
     pub quality: String,
     pub gpu: Option<GpuOptions>,
+    pub capture_directory: Option<PathBuf>,
 }
 #[derive(Clone, Debug)]
 pub struct GpuOptions {
@@ -282,11 +283,22 @@ impl WrapperOptions {
             receipt_directory: path("GPU_LINK_RECEIPTS")?,
             quality: env::var("GPU_LINK_QUALITY").unwrap_or_else(|_| "unspecified".into()),
             gpu,
+            capture_directory: env::var_os("GPU_LINK_CAPTURE_DIR")
+                .map(|path| {
+                    if path.is_empty() {
+                        Err(String::from(
+                            "GPU_LINK_CAPTURE_DIR must be nonempty when set",
+                        ))
+                    } else {
+                        Ok(PathBuf::from(path))
+                    }
+                })
+                .transpose()?,
         })
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UnitReport {
     pub input_kind: String,
     pub input_sha256: String,
@@ -300,6 +312,34 @@ pub struct UnitReport {
     pub device_id: Option<String>,
     pub kernel_dispatches: u64,
     pub kernel_output_used: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CapturedUnit {
+    unit_index: usize,
+    original_filename: String,
+    captured_filename: String,
+    input_sha256: String,
+    input_bytes: u64,
+    llvm_codegen_opt_level: u32,
+    target: Option<String>,
+    controller_elapsed_ms: Option<f64>,
+    emission_receipt: Option<UnitReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct CaptureManifest {
+    schema: &'static str,
+    version: u32,
+    scope: &'static str,
+    status: String,
+    rustc_version_verbose: String,
+    source: PathBuf,
+    input_arguments_sha256: String,
+    requested_backend: String,
+    quality: String,
+    llvm_codegen_opt_level: u32,
+    units: Vec<CapturedUnit>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InvocationReport {
@@ -319,6 +359,7 @@ pub struct InvocationReport {
     pub input_arguments_sha256: String,
     pub source: Option<PathBuf>,
     pub staging_directory: Option<PathBuf>,
+    pub capture_manifest: Option<PathBuf>,
     pub frontend_ms: f64,
     pub materialize_ms: f64,
     pub emit_ms: f64,
@@ -680,6 +721,7 @@ pub fn run_with(
     let start = Instant::now();
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     let identifier = format!("gpu-object-bridge-{}-{number}", std::process::id());
+    let mut capture: Option<CaptureManifest> = None;
     let mut report = InvocationReport {
         schema: "gpu-rust-object-bridge".into(),
         version: 1,
@@ -697,6 +739,7 @@ pub fn run_with(
         input_arguments_sha256: argument_digest(arguments),
         source: None,
         staging_directory: None,
+        capture_manifest: None,
         frontend_ms: 0.0,
         materialize_ms: 0.0,
         emit_ms: 0.0,
@@ -739,6 +782,28 @@ pub fn run_with(
         fs::create_dir(&stage)
             .map_err(|e| format!("create exclusively owned compiler staging: {e}"))?;
         report.staging_directory = Some(stage.clone());
+        if let Some(root) = &options.capture_directory {
+            let root = absolute(root)?;
+            fs::create_dir_all(&root)
+                .map_err(|error| format!("Create audit capture parent: {error}"))?;
+            let directory = root.join(&identifier);
+            fs::create_dir(&directory)
+                .map_err(|error| format!("Claim exclusive audit capture directory: {error}"))?;
+            report.capture_manifest = Some(directory.join("manifest.json"));
+            capture = Some(CaptureManifest {
+                schema: "gpu-rust-bitcode-capture",
+                version: 1,
+                scope: "audit-only exact frontend bitcode corpus",
+                status: "failed".into(),
+                rustc_version_verbose: report.rustc_version_verbose.clone(),
+                source: report.source.clone().ok_or("Capture has no source")?,
+                input_arguments_sha256: report.input_arguments_sha256.clone(),
+                requested_backend: options.backend.clone(),
+                quality: options.quality.clone(),
+                llvm_codegen_opt_level: plan.llvm_codegen_opt_level,
+                units: Vec::new(),
+            });
+        }
         let relay = DiagnosticRelay {
             stage: stage.clone(),
             destination,
@@ -813,6 +878,36 @@ pub fn run_with(
                 );
             }
             let input_sha256 = digest(&bytes);
+            if let Some(capture) = capture.as_mut() {
+                let captured_filename = format!("unit-{index}.bc");
+                let directory = report
+                    .capture_manifest
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .ok_or("Audit capture has no owned directory")?;
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(directory.join(&captured_filename))
+                    .map_err(|error| format!("Create immutable bitcode capture: {error}"))?;
+                file.write_all(&bytes)
+                    .map_err(|error| format!("Write immutable bitcode capture: {error}"))?;
+                capture.units.push(CapturedUnit {
+                    unit_index: index,
+                    original_filename: object
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or("Captured input name is not UTF-8")?
+                        .into(),
+                    captured_filename,
+                    input_sha256: input_sha256.clone(),
+                    input_bytes: bytes.len() as u64,
+                    llvm_codegen_opt_level: plan.llvm_codegen_opt_level,
+                    target: None,
+                    controller_elapsed_ms: None,
+                    emission_receipt: None,
+                });
+            }
             let converted = backend_stage.join(format!("{index}.o"));
             let receipt = backend_stage.join(format!("{index}.json"));
             report.materialize_ms += elapsed(time);
@@ -897,6 +992,19 @@ pub fn run_with(
                 controller_receipt: value,
             });
             report.gpu_executed |= physical_gpu;
+            if let Some(capture) = capture.as_mut() {
+                let emitted = report
+                    .units
+                    .last()
+                    .ok_or("Captured module has no emission receipt")?;
+                let captured = capture
+                    .units
+                    .last_mut()
+                    .ok_or("Captured module was not saved")?;
+                captured.target = Some(emitted.target.clone());
+                captured.controller_elapsed_ms = Some(controller_elapsed_ms);
+                captured.emission_receipt = Some(emitted.clone());
+            }
             // Replace only an object in this invocation's private directory.
             fs::rename(converted, object).map_err(|e| e.to_string())?;
             report.materialize_ms += elapsed(time);
@@ -963,6 +1071,22 @@ pub fn run_with(
         "success"
     }
     .into();
+    if let Some(mut capture) = capture {
+        let time = Instant::now();
+        capture.status = report.status.clone();
+        let path = report
+            .capture_manifest
+            .as_ref()
+            .ok_or("Capture manifest path is missing")?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| format!("Create final audit capture manifest: {error}"))?;
+        serde_json::to_writer(&mut file, &capture)
+            .map_err(|error| format!("Write final audit capture manifest: {error}"))?;
+        report.materialize_ms += elapsed(time);
+    }
     report.total_ms = elapsed(start);
     fs::create_dir_all(&options.receipt_directory).map_err(|e| e.to_string())?;
     let path = options.receipt_directory.join(format!("{identifier}.json"));

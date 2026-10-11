@@ -161,13 +161,20 @@ build and CPU resources fixed; throughput studies disclose added host resources.
 More optimization search at fixed release-time budget is a separate quality
 experiment, not proof of faster compilation.
 
-Next: measure TPDE on full Linux NemoClaw and pinned Omarchy Rust
-components, expand GPU eligibility to substantial captured bodies, and connect
-the scheduler to a Cargo-wide service with jobserver accounting. The decisive
-gate is a repeated whole fast-build GPU win over the strongest compatible CPU
-backend with materialization, transfers, verification, metadata, fallback,
-linking, and size-accounting costs included. Then measure physical 1/2/4-GPU
-latency and unique-build throughput.
+The final bounded test first captures every module from a complete fast build
+and verifies whole-module GPU eligibility. The local Mac corpus contains 3,536
+modules and zero eligible modules; it gives this implementation no available
+GPU work. The workflow repeats the audit on the NVIDIA runner. Nonzero eligible
+work enters persistent parallel CPU/GPU replay before any complete-build
+qualification. The continuation gate requires a repeatable improvement of at
+least 10% over the strongest compatible CPU fast build, including preparation,
+transfers, verification, metadata, fallback, linking and both size limits.
+Zero eligibility parks this GPU route. See [the gate](FINAL_GPU_GATE.md).
+
+Persistent CPU emission and full Linux TPDE qualification remain research leads.
+The bounded GPU test does not authorize a Cargo-wide daemon, expanded Rust
+semantics or multi-GPU work. Physical 1/2/4-GPU measurements would follow a
+qualified single-GPU complete-build win.
 
 The CPU lead is [TPDE's CGO 2026 paper](https://aengelke.net/pubs/2602-cgo1.pdf):
 its reported 8–26 times backend improvement and 9–24% C/C++ whole-build reductions
