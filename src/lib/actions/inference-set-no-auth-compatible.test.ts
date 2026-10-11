@@ -108,6 +108,8 @@ describe("runInferenceSet on a loopback no-auth compatible endpoint", () => {
       provider: "compatible-endpoint",
       model: "model-b",
       preferredInferenceApi: "openai-completions",
+      nativeProvider: false,
+      nativeEndpointUrl: undefined,
     });
     expect(
       deps.calls.updateSandbox.mock.calls
@@ -216,6 +218,8 @@ describe("runInferenceSet on a loopback no-auth compatible endpoint", () => {
         provider: "compatible-endpoint",
         model: "model-b",
         preferredInferenceApi: "openai-completions",
+        nativeProvider: false,
+        nativeEndpointUrl: undefined,
       });
       expect(
         deps.calls.updateSandbox.mock.calls

@@ -6,6 +6,8 @@
 // SECURITY: this file writes only non-secret provider/model metadata. Real
 // provider credentials stay outside ~/.deepagents files.
 
+import { nativeHostedAgentConfig } from "../../src/lib/inference/native-provider/agent-config.ts";
+
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -163,6 +165,7 @@ function providerConfigLines(
   reasoningEffort: ReasoningEffort | null,
   upstreamProvider: string,
 ): string[] {
+  const nativeHosted = nativeHostedAgentConfig(upstreamProvider, baseUrl);
   const customKey =
     upstreamProvider === "compatible-endpoint"
       ? "COMPATIBLE_API_KEY"
@@ -174,13 +177,20 @@ function providerConfigLines(
       ? ATTACHED_PROVIDER_API_KEY_ENV
       : customKey && new URL(baseUrl).hostname !== "inference.local"
         ? customKey
-        : MANAGED_INFERENCE_API_KEY_ENV;
+        : (nativeHosted?.credentialEnv ?? MANAGED_INFERENCE_API_KEY_ENV);
   return [
     `[models.providers.${provider}]`,
     `models = ${tomlArray([model])}`,
     `api_key_env = ${tomlString(apiKeyEnv)}`,
     `base_url = ${tomlString(baseUrl)}`,
     "enabled = true",
+    ...(nativeHosted?.headers
+      ? [
+          "",
+          `[models.providers.${provider}.params.${tomlString(model)}]`,
+          `default_headers = { "HTTP-Referer" = "https://www.nvidia.com/nemoclaw/", "X-OpenRouter-Title" = "NVIDIA NemoClaw" }`,
+        ]
+      : []),
     ...(provider === "openai"
       ? [
           "",

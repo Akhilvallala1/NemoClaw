@@ -88,6 +88,19 @@ function loadWithPython(document: unknown) {
 }
 
 describe("Hermes managed policy", () => {
+  it.each([[], "do-not-echo", { provider: ["do-not-echo"] }])(
+    "rejects malformed upstream authority without an unhandled exception (%j)",
+    (upstream) => {
+      const policy = buildHermesManagedPolicy(SETTINGS, {});
+      Object.assign(policy.config, { _nemoclaw_upstream: upstream });
+      const result = loadWithPython(policy);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("managed policy");
+      expect(result.stderr).not.toContain("Traceback");
+      expect(result.stderr).not.toContain("do-not-echo");
+    },
+  );
+
   it.each(HOSTED_NATIVE_PROVIDERS)(
     "accepts the runtime credential reference for $label",
     (provider) => {

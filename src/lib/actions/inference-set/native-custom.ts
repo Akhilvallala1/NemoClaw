@@ -464,6 +464,11 @@ export async function runNativeCustomInferenceSwitch(
       {
         agentName,
         configChanged: patched.changed || entry.openClawConfigSyncPending === true,
+        hermesGatewayRestart:
+          agentName === "hermes" &&
+          (!isDeepStrictEqual(previous, attachment) || Boolean(previousNative))
+            ? { gatewayName: expectedGatewayName }
+            : undefined,
         openClawPairingTarget:
           agentName === "openclaw"
             ? {

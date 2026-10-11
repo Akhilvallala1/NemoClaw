@@ -832,7 +832,7 @@ const { createSandbox } = require(${onboardPath});
     30_000,
   );
 
-  it("accepts a complete configured legacy custom route from the typed observer", async () => {
+  it("accepts a complete configured host-local custom route from the typed observer", async () => {
     const route = createInferenceRouteHelpers({
       observeInferenceRoute: () => ({
         ok: true,
@@ -861,7 +861,7 @@ const { createSandbox } = require(${onboardPath});
         "test-box",
         "gpt-5.4",
         "compatible-endpoint",
-        "https://api.openai.com/v1",
+        "http://host.openshell.internal:8000/v1",
         "OPENAI_API_KEY",
       );
 

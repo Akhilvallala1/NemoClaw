@@ -1016,7 +1016,13 @@ export async function finalizeCreatedSandbox(
           options.preferredInferenceApi,
           options.gatewayName,
           deps.revalidateSandboxIdentity,
-          preparedRegistration!.nativeCustomProviderAttachment,
+          preparedRegistration!.nativeCustomProviderAttachment ?? {
+            endpointUrl: preparedRegistration!.endpointUrl,
+            nativeProvider: Boolean(
+              preparedRegistration!.nativeHostedProviderAttachment ||
+              preparedRegistration!.nativeNvidiaProviderAttachment,
+            ),
+          },
         );
       } catch (error) {
         await abortOpenClawRestoreWindow();

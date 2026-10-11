@@ -10,6 +10,38 @@ import {
   NATIVE_NVIDIA_URLS,
 } from "../fixtures/native-nvidia-inference-urls";
 
+it.each([
+  ["compatible-endpoint", "COMPATIBLE_API_KEY"],
+  ["compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
+])("uses compiled native custom credentials for %s", (provider, credentialEnv) => {
+  const env = {
+    ...baseOpenClawGenerationEnv(),
+    NEMOCLAW_INFERENCE_PROVIDER_ID: "inference",
+    NEMOCLAW_UPSTREAM_PROVIDER: provider,
+    NEMOCLAW_INFERENCE_BASE_URL: "https://custom.example/v1",
+    NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: credentialEnv,
+  };
+  expect(buildConfig(env).models.providers.inference.apiKey).toBe(
+    `openshell:resolve:env:${credentialEnv}`,
+  );
+  expect(() =>
+    buildConfig({ ...env, NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: "OPENAI_API_KEY" }),
+  ).toThrow("Native custom credential does not match its compiled provider selection.");
+});
+
+it.each(["http://host.openshell.internal:11435/v1", "host.openshell.internal:8000/v1"])(
+  "retains shared-route credentials without compiled custom authority at %s",
+  (baseUrl) => {
+    const config = buildConfig({
+      ...baseOpenClawGenerationEnv(),
+      NEMOCLAW_INFERENCE_PROVIDER_ID: "inference",
+      NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+      NEMOCLAW_INFERENCE_BASE_URL: baseUrl,
+    });
+    expect(config.models.providers.inference.apiKey).toBe("unused");
+  },
+);
+
 it.each(NATIVE_NVIDIA_URLS)(
   "uses a resolvable credential for native NVIDIA inference at %s",
   (baseUrl) => {

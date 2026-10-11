@@ -705,6 +705,15 @@ export function reserveSandboxInferenceRoute(
         );
       }
     }
+    const retainedCustomAttachment =
+      existing?.nativeCustomProviderAttachment &&
+      existing.provider === normalized.provider &&
+      existing.endpointUrl === normalized.endpointUrl &&
+      existing.credentialEnv === normalized.credentialEnv &&
+      existing.preferredInferenceApi === normalized.preferredInferenceApi &&
+      existing.gatewayName === route.gatewayName
+        ? existing.nativeCustomProviderAttachment
+        : undefined;
     const sameExplicitHostLocalRoute =
       existing?.hostLocalInferenceProvenance !== undefined &&
       Boolean(provenance) &&
@@ -743,7 +752,7 @@ export function reserveSandboxInferenceRoute(
           ) &&
           isDeepStrictEqual(
             existing.nativeCustomProviderAttachment,
-            nativeCustomProviderAttachment ?? existing.nativeCustomProviderAttachment,
+            nativeCustomProviderAttachment ?? retainedCustomAttachment,
           ) &&
           isDeepStrictEqual(
             existing.nativeHostedProviderAttachment,
@@ -795,7 +804,7 @@ export function reserveSandboxInferenceRoute(
         existing ?? undefined,
       ),
       nativeCustomProviderAttachment: isNativeCustomProvider(normalized.provider)
-        ? (nativeCustomProviderAttachment ?? existing?.nativeCustomProviderAttachment)
+        ? (nativeCustomProviderAttachment ?? retainedCustomAttachment)
         : undefined,
       nativeNvidiaProviderAttachment: isNativeNvidiaProvider(normalized.provider)
         ? (nativeNvidiaProviderAttachment ?? existing?.nativeNvidiaProviderAttachment)

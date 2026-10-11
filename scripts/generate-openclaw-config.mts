@@ -974,17 +974,25 @@ export function buildConfig(env: Env = process.env): JsonObject {
     });
   }
   const nativeHosted = nativeHostedAgentConfig(upstreamProvider, inferenceBaseUrl);
+  const nativeCustomCredential = env.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV || "";
+  const expectedCustomCredential =
+    upstreamProvider === "compatible-endpoint"
+      ? "COMPATIBLE_API_KEY"
+      : upstreamProvider === "compatible-anthropic-endpoint"
+        ? "COMPATIBLE_ANTHROPIC_API_KEY"
+        : null;
+  if (
+    nativeCustomCredential &&
+    (providerless || nativeCustomCredential !== expectedCustomCredential)
+  ) {
+    throw new Error("Native custom credential does not match its compiled provider selection.");
+  }
   const providers = {
     [providerKey]: {
       baseUrl: inferenceBaseUrl,
-      apiKey:
-        !providerless &&
-        ["compatible-endpoint", "compatible-anthropic-endpoint"].includes(
-          env.NEMOCLAW_UPSTREAM_PROVIDER || "",
-        ) &&
-        new URL(inferenceBaseUrl).hostname !== "inference.local"
-          ? `openshell:resolve:env:${env.NEMOCLAW_UPSTREAM_PROVIDER === "compatible-endpoint" ? "COMPATIBLE_API_KEY" : "COMPATIBLE_ANTHROPIC_API_KEY"}`
-          : (nativeHosted?.apiKey ?? managedInferenceApiKey(inferenceBaseUrl, "unused")),
+      apiKey: nativeCustomCredential
+        ? `openshell:resolve:env:${nativeCustomCredential}`
+        : (nativeHosted?.apiKey ?? managedInferenceApiKey(inferenceBaseUrl, "unused")),
       ...(nativeHosted?.headers ? { headers: nativeHosted.headers } : {}),
       api: inferenceApi,
       timeoutSeconds: agentTimeout,

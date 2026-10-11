@@ -929,6 +929,8 @@ describe("runInferenceSet compatible providers", () => {
       provider: "compatible-anthropic-endpoint",
       model: "mock-anthropic-model",
       preferredInferenceApi: "anthropic-messages",
+      nativeProvider: false,
+      nativeEndpointUrl: undefined,
     });
     expect(deps.calls.probeSandboxRoute.mock.invocationCallOrder[0]).toBeLessThan(
       deps.calls.updateSandbox.mock.invocationCallOrder[0],

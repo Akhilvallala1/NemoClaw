@@ -232,6 +232,7 @@ export async function prepareSandboxDockerfilePatch({
           ? { wslDashboardExposure: managedOpenClawWslExposure }
           : {}),
         ...(endpointUrl ? { upstreamEndpointUrl: endpointUrl } : {}),
+        ...(nativeCustomProviderAttachment ? { nativeCustomProviderAttachment } : {}),
         ...(compatibleEndpointReasoning ? { compatibleEndpointReasoning } : {}),
         ...(dcodeAutoApprovalMode ? { dcodeAutoApprovalMode } : {}),
         requireToolDisclosureContract: Boolean(fromDockerfile),

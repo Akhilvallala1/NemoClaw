@@ -159,3 +159,51 @@ it.each([8080, 19080])(
     expect(await fs.readFile(file, "utf8")).toBe(before);
   },
 );
+
+it.each([
+  {
+    endpointUrl: "http://host.openshell.internal:11434/v1",
+    credentialEnv: "COMPATIBLE_API_KEY",
+    retained: false,
+  },
+  {
+    endpointUrl: "https://api.example.com/v1",
+    credentialEnv: "NEMOCLAW_OLLAMA_PROXY_TOKEN",
+    retained: false,
+  },
+  {
+    endpointUrl: "https://api.example.com/v1",
+    credentialEnv: "COMPATIBLE_API_KEY",
+    retained: true,
+  },
+])(
+  "retains custom attachment only for matching endpoint and credential: $endpointUrl / $credentialEnv (#12636)",
+  async ({ endpointUrl, credentialEnv, retained }) => {
+    const registry = await import("./registry");
+    const attachment = await receipt("alpha");
+    registry.registerSandbox({
+      name: "alpha",
+      gatewayName: "nemoclaw",
+      provider: "compatible-endpoint",
+      model: "old-model",
+      endpointUrl: "https://api.example.com/v1",
+      credentialEnv: "COMPATIBLE_API_KEY",
+      preferredInferenceApi: "openai-completions",
+      nativeCustomProviderAttachment: attachment,
+    });
+    expect(
+      registry.reserveSandboxInferenceRoute("alpha", {
+        gatewayName: "nemoclaw",
+        provider: "compatible-endpoint",
+        model: "new-model",
+        endpointUrl,
+        credentialEnv,
+        preferredInferenceApi: "openai-completions",
+        reservationSessionId: "resume-selection",
+      }),
+    ).toBe(true);
+    expect(registry.getSandbox("alpha")?.nativeCustomProviderAttachment).toEqual(
+      retained ? attachment : undefined,
+    );
+  },
+);

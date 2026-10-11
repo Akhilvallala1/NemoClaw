@@ -307,7 +307,8 @@ export function nativeSelectionConfigCredentials(
         baseUrl,
         typeof existingApiKey === "string" &&
           existingApiKey &&
-          existingApiKey !== NVIDIA_INFERENCE_PLACEHOLDER
+          existingApiKey !== NVIDIA_INFERENCE_PLACEHOLDER &&
+          !existingApiKey.startsWith("openshell:resolve:env:")
           ? existingApiKey
           : "unused",
       ),

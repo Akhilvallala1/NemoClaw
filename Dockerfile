@@ -1575,6 +1575,7 @@ ARG NEMOCLAW_DASHBOARD_BIND=
 ARG NEMOCLAW_WSL_DASHBOARD_EXPOSURE=0
 ARG NEMOCLAW_INFERENCE_BASE_URL=https://inference.local/v1
 ARG NEMOCLAW_INFERENCE_API=openai-completions
+ARG NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV=
 ARG NEMOCLAW_CONTEXT_WINDOW=131072
 ARG NEMOCLAW_MAX_TOKENS=4096
 ARG NEMOCLAW_REASONING=false
@@ -1661,6 +1662,7 @@ ENV NEMOCLAW_MODEL=${NEMOCLAW_MODEL} \
     CHAT_UI_URL=${CHAT_UI_URL} \
     NEMOCLAW_INFERENCE_BASE_URL=${NEMOCLAW_INFERENCE_BASE_URL} \
     NEMOCLAW_INFERENCE_API=${NEMOCLAW_INFERENCE_API} \
+    NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV=${NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV} \
     NEMOCLAW_CONTEXT_WINDOW=${NEMOCLAW_CONTEXT_WINDOW} \
     NEMOCLAW_MAX_TOKENS=${NEMOCLAW_MAX_TOKENS} \
     NEMOCLAW_REASONING=${NEMOCLAW_REASONING} \
@@ -1950,10 +1952,7 @@ RUN chmod 755 /usr/local/bin/nemoclaw-start /usr/local/bin/nemoclaw-codex-acp \
         /usr/local/lib/nemoclaw/sandbox-init.sh \
         /scripts/generate-openclaw-config.mts \
         /scripts/validate-openclaw-tool-search.mts /src /src/lib \
-    && chmod 444 /src/lib/*.ts \
-        /usr/local/lib/nemoclaw/entrypoint-env-wrapper.sh \
-    && chmod 444 /usr/local/lib/nemoclaw/entrypoint-env-wrapper.sh \
-        /usr/local/lib/nemoclaw/sandbox-rlimits.sh \
+    && chmod 444 /src/lib/*.ts /usr/local/lib/nemoclaw/entrypoint-env-wrapper.sh /usr/local/lib/nemoclaw/sandbox-rlimits.sh \
     && chmod 644 /usr/local/lib/nemoclaw/openclaw_device_approval_policy.py \
         /usr/local/lib/nemoclaw/openclaw_pairing_state.py \
     && if [ -d /usr/local/lib/nemoclaw/preloads-compiled-channels ]; then \
@@ -2001,7 +2000,6 @@ RUN NPM_CONFIG_IGNORE_SCRIPTS=true npm_config_ignore_scripts=true \
         \) -prune -exec rm -rf {} +; \
     fi
 
-# Apply messaging render and post-agent-install build-file hooks after agent/plugin installation.
 # hadolint ignore=DL3059,DL4006
 RUN OPENCLAW_VERSION="${OPENCLAW_VERSION}" node /src/lib/messaging/applier/build/messaging-build-applier.mts --agent openclaw --phase post-agent-install
 

@@ -21,7 +21,7 @@ import {
   retainedDefaultSandbox,
 } from "../registry-normalization";
 import * as reversibleRemoval from "../registry-reversible-removal";
-import { SANDBOX_REGISTRY_FILE } from "../paths";
+import { SANDBOX_REGISTRY_FILE } from "./path";
 import {
   cloneSandboxHostLocalInferenceProvenance,
   cloneSandboxHostLocalInferenceReceipt,

@@ -193,6 +193,7 @@ export interface PatchStagedDockerfileOptions {
   dcodeAutoApprovalMode?: DcodeAutoApprovalMode;
   upstreamEndpointUrl?: string | null;
   nativeProvider?: boolean;
+  nativeCustomProviderAttachment?: import("../inference/native-custom").NativeCustomProviderAttachment;
   compatibleEndpointReasoning?: "true" | "false";
   wslDashboardExposure?: boolean;
 }
@@ -310,7 +311,7 @@ export function patchStagedDockerfile(
     sanitizedModel,
     provider,
     preferredInferenceApi,
-    options.nativeProvider,
+    options.nativeCustomProviderAttachment ?? options.nativeProvider,
     options.upstreamEndpointUrl,
   );
   const { providerKey, primaryModelRef, inferenceApi, inferenceCompat } = providerless
@@ -461,6 +462,10 @@ export function patchStagedDockerfile(
   dockerfile = dockerfile.replace(
     /^ARG NEMOCLAW_INFERENCE_API=.*$/m,
     `ARG NEMOCLAW_INFERENCE_API=${sanitizeDockerArg(inferenceApi)}`,
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV=.*$/m,
+    `ARG NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV=${options.nativeCustomProviderAttachment?.credentialEnv ?? ""}`,
   );
   dockerfile = dockerfile.replace(
     /^ARG NEMOCLAW_INFERENCE_COMPAT_B64=.*$/m,

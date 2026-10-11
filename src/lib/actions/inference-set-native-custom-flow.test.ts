@@ -238,6 +238,7 @@ it("restores the previous attachment when a native selected-model probe fails (#
 it("writes matching issued Hermes references rather than the shared-route sentinel (#12636)", async () => {
   const f = await fixture("hermes");
   await runInferenceSet({ provider: "compatible-endpoint", model: "new-model" }, f.deps);
+  expect(f.deps.calls.restartSandboxGateway).not.toHaveBeenCalled();
   const written = f.deps.calls.writeSandboxConfig.mock.calls[0][2];
   expect(written.model).toMatchObject({
     base_url: f.receipt.endpointUrl,
@@ -444,6 +445,7 @@ it.each(["openclaw", "hermes"])(
   async (agent) => {
     const f = await fixedHostedFixture(agent);
     await runInferenceSet(customEndpointSelection, f.deps);
+    expect(f.deps.calls.restartSandboxGateway).toHaveBeenCalledExactlyOnceWith("alpha", "nemoclaw");
     const selected = f.entry.nativeCustomProviderAttachment;
     expect([...f.attachments]).toEqual([selected.providerName]);
     expect(f.events.indexOf(`detach:${f.fixed.providerName}`)).toBeLessThan(

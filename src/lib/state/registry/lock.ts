@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isErrnoException } from "../../core/errno";
 import { ensureConfigDir } from "../config-io";
-import { SANDBOX_REGISTRY_FILE as REGISTRY_FILE } from "../paths";
+import { SANDBOX_REGISTRY_FILE as REGISTRY_FILE } from "./path";
 
 export const LOCK_DIR = `${REGISTRY_FILE}.lock`;
 export const LOCK_OWNER = path.join(LOCK_DIR, "owner");

@@ -199,7 +199,7 @@ This check is stricter than the HTTP 200–499 reachability diagnostic used by o
 </AgentOnly>
 <AgentOnly variant="deepagents">
 Every configured route must serve a valid response to a bounded request for the recorded model before NemoClaw accepts or publishes launch readiness.
-The models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models`.
+The models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
 A failed request rejects launch readiness and identifies the inference request as the failed check.
 </AgentOnly>
 <AgentOnly variant="openclaw">
