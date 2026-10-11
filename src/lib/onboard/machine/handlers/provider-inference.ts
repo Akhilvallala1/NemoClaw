@@ -73,7 +73,15 @@ import {
   type ProviderInferenceProbeRoute,
 } from "./provider-inference-route-containment";
 
-export type ProviderInferenceRetry = { retry: "selection" } | { ok: true; retry?: undefined };
+export type ProviderInferenceRetry = import("../../inference-providers/types").SetupInferenceResult;
+
+function selectedNativeInference(
+  nativeInference: { endpointUrl: string; credentialEnv: string } | undefined,
+  endpointUrl: string | null,
+  credentialEnv: string | null,
+) {
+  return nativeInference ?? { endpointUrl, credentialEnv };
+}
 
 function nativeCustomRebuildAttachmentOptions(session: Session | null | undefined, reuse = true) {
   return reuse && session?.nativeCustomProviderAttachment
@@ -1887,12 +1895,19 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
           forceProviderSelection = true;
           continue;
         }
+        ({ endpointUrl, credentialEnv } = selectedNativeInference(
+          inferenceResult?.nativeInference,
+          endpointUrl,
+          credentialEnv,
+        ));
         session = await deps.recordStepComplete(
           "inference",
           deps.toSessionUpdates({
             ...provenanceUpdate(),
             provider,
             model,
+            endpointUrl,
+            credentialEnv,
             hermesAuthMethod,
             compatibleEndpointReasoning,
             compatibleEndpointReasoningEffort,
@@ -2191,6 +2206,11 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       forceProviderSelection = true;
       continue;
     }
+    ({ endpointUrl, credentialEnv } = selectedNativeInference(
+      inferenceResult?.nativeInference,
+      endpointUrl,
+      credentialEnv,
+    ));
     const hostLocalRoute = resolvedHostLocalInferenceRoute(
       activeHostLocalInferenceSetupOptions.hostLocalInference,
       { endpointUrl, endpointSource, onboardEndpointUrl },
@@ -2232,6 +2252,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         ...provenanceUpdate(),
         provider,
         model,
+        ...inferenceResult?.nativeInference,
         hermesAuthMethod,
         compatibleEndpointReasoning,
         compatibleEndpointReasoningEffort,
