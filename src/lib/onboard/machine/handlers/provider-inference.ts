@@ -6,6 +6,7 @@ import { clearAutoDetectedCompatibleContextWindow } from "../../../inference/com
 import {
   resolveAgentProviderInferenceApi,
   usesNativeLocalInference,
+  usesNativeLocalInferenceForAgent,
 } from "../../../inference/config";
 import type { TrustedPrivateEndpointCapability } from "../../../inference/endpoint-ssrf-preflight";
 import {
@@ -1474,13 +1475,13 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
     let managedLlamaCppRecovered = false;
     if (resumeProviderSelection) {
       assertOnboardReasoningEffortRoute(reasoningEffortRequest, provider, preferredInferenceApi);
-      assertProviderInferenceRouteCompatible(deps, gatewayName, sandboxName, {
-        provider,
-        model,
-        endpointUrl,
-        credentialEnv,
-        preferredInferenceApi,
-      });
+      assertProviderInferenceRouteCompatible(
+        deps,
+        gatewayName,
+        sandboxName,
+        { provider, model, endpointUrl, credentialEnv, preferredInferenceApi },
+        usesNativeLocalInferenceForAgent(agentName(agent), provider, endpointUrl),
+      );
       // A completed provider-selection checkpoint is not proof that a managed
       // host runtime survived a process or gateway restart. Recover the exact
       // gateway-owned llama.cpp lifecycle before the selection shortcut can
@@ -1608,11 +1609,25 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
             agent,
             recoverRecordedProvider,
             gatewayName,
-            (route) => guardProviderInferenceRouteSelection(deps, gatewayName, sandboxName, route),
+            (route) =>
+              guardProviderInferenceRouteSelection(
+                deps,
+                gatewayName,
+                sandboxName,
+                usesNativeLocalInferenceForAgent(
+                  agentName(agent),
+                  route.provider,
+                  route.endpointUrl,
+                ),
+                route,
+              ),
             (provider) => {
               const preflight = deps.preflightGatewayRouteDiscovery({
                 gatewayName,
                 sandboxName,
+                ...(usesNativeLocalInferenceForAgent(agentName(agent), provider)
+                  ? { nativeLocalSelection: true }
+                  : {}),
                 route: {
                   provider,
                   model: null,
@@ -1700,13 +1715,13 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
     );
     if (!resumeProviderSelection) {
       assertOnboardReasoningEffortRoute(reasoningEffortRequest, provider, preferredInferenceApi);
-      assertProviderInferenceRouteCompatible(deps, gatewayName, sandboxName, {
-        provider,
-        model,
-        endpointUrl,
-        credentialEnv,
-        preferredInferenceApi,
-      });
+      assertProviderInferenceRouteCompatible(
+        deps,
+        gatewayName,
+        sandboxName,
+        { provider, model, endpointUrl, credentialEnv, preferredInferenceApi },
+        usesNativeLocalInferenceForAgent(agentName(agent), provider, endpointUrl),
+      );
     }
     if (
       shouldRecordProviderSelection &&
@@ -1914,13 +1929,19 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         const getRouterPort = deps.getModelRouterPort ?? resolveModelRouterPort;
         const routedRepair = await deps.withGatewayRouteMutationLock(gatewayName, () =>
           withRouterPortLifecycleLock(getRouterPort(), async () => {
-            assertProviderInferenceRouteCompatible(deps, gatewayName, sandboxName, {
-              provider: selectedProvider,
-              model: selectedModel,
-              endpointUrl,
-              credentialEnv,
-              preferredInferenceApi,
-            });
+            assertProviderInferenceRouteCompatible(
+              deps,
+              gatewayName,
+              sandboxName,
+              {
+                provider: selectedProvider,
+                model: selectedModel,
+                endpointUrl,
+                credentialEnv,
+                preferredInferenceApi,
+              },
+              usesNativeLocalInferenceForAgent(agentName(agent), selectedProvider, endpointUrl),
+            );
             try {
               await deps.reconcileModelRouter();
             } catch (err) {
@@ -1977,13 +1998,19 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       }
       if (resumeReservationName && !routedInferenceProvider) {
         const reserved = await deps.withGatewayRouteMutationLock(gatewayName, () => {
-          assertProviderInferenceRouteCompatible(deps, gatewayName, resumeReservationName, {
-            provider: selectedProvider,
-            model: selectedModel,
-            endpointUrl,
-            credentialEnv,
-            preferredInferenceApi,
-          });
+          assertProviderInferenceRouteCompatible(
+            deps,
+            gatewayName,
+            resumeReservationName,
+            {
+              provider: selectedProvider,
+              model: selectedModel,
+              endpointUrl,
+              credentialEnv,
+              preferredInferenceApi,
+            },
+            usesNativeLocalInferenceForAgent(agentName(agent), selectedProvider, endpointUrl),
+          );
           return reserveRecoveredSandboxInferenceRoute(
             deps.reserveSandboxInferenceRoute,
             resumeReservationName,
