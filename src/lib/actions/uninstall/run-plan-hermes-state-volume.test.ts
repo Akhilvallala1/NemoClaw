@@ -150,14 +150,18 @@ describe("managed agent state volume uninstall", () => {
     },
   );
 
-  it.each([false, true])(
-    "uninstall retains originals without restoring them on fresh onboarding (destroy-user-data=%s)",
-    async (destroyUserData) => {
+  it.each([
+    [false, "default"],
+    [true, "selected-workspace"],
+  ] as const)(
+    "uninstall retains originals without restoring them on fresh onboarding (destroy-user-data=%s, workspace=%s)",
+    async (destroyUserData, workspace) => {
       const harness = await runManagedHermesVolumeUninstall(
         "migrated",
         destroyUserData,
         "absent",
         "openclaw",
+        workspace,
       );
       const h = harness.migration!;
       expect(harness.result.exitCode, harness.errors.join("\n")).toBe(0);
@@ -169,6 +173,7 @@ describe("managed agent state volume uninstall", () => {
       const callsBefore = h.calls.length;
       const fresh = prepareManagedStateVolumes(h.input, {
         ...h.deps,
+        workspace,
         migrationStateDir: path.join(harness.stateDir, "state"),
       })!;
       fresh.commit();

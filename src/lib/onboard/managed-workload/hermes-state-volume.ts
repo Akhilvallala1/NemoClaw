@@ -126,6 +126,7 @@ function genericDeps(
   const runtimeProvider =
     deps.runtimeProvider ?? selectedRuntimeProvider(runtimeProviderId, deps.runtimeProviders);
   return {
+    workspace: deps.workspace,
     ...(deps.runDocker && !runtimeProvider ? { runContainerEngine: deps.runDocker } : {}),
     ...(runtimeProvider ? { runtimeProvider } : {}),
     ...(deps.registerExitCleanup ? { registerExitCleanup: deps.registerExitCleanup } : {}),
@@ -165,6 +166,7 @@ export function removeManagedHermesStateVolume(
   deps: Pick<
     ManagedHermesStateVolumeDeps,
     | "runDocker"
+    | "workspace"
     | "runtimeProvider"
     | "runtimeProviders"
     | "migrationStateDir"
@@ -187,6 +189,7 @@ export function removeManagedAgentStateVolumes(
   deps: Pick<
     ManagedHermesStateVolumeDeps,
     | "runDocker"
+    | "workspace"
     | "runtimeProvider"
     | "runtimeProviders"
     | "migrationStateDir"

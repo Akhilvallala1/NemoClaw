@@ -46,6 +46,7 @@ export async function runManagedHermesVolumeUninstall(
   destroyUserData: boolean,
   containerMode: "absent" | "foreign" | "owned" = "absent",
   agent: "hermes" | "openclaw" = "hermes",
+  workspace = "default",
 ) {
   const migration = mode === "migrated" ? createMigrationHarness(agent, "hermes") : undefined;
   const home =
@@ -53,6 +54,7 @@ export async function runManagedHermesVolumeUninstall(
     fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-uninstall-hermes-volume-"));
   const stateDir = path.join(home, ".nemoclaw");
   if (migration) {
+    vi.stubEnv("OPENSHELL_WORKSPACE", workspace);
     prepareManagedStateVolumes(migration.input, {
       ...migration.deps,
       migrationStateDir: path.join(stateDir, "state"),
@@ -63,6 +65,7 @@ export async function runManagedHermesVolumeUninstall(
       Labels: { owner: "other" },
     });
     fs.writeFileSync(path.join(stateDir, "state", "obsolete"), "remove\n");
+    vi.stubEnv("OPENSHELL_WORKSPACE", "unrelated-parent-workspace");
   }
   const registryFile = path.join(stateDir, "sandboxes.json");
   const root = managedStartupStateRoots({
@@ -181,7 +184,10 @@ export async function runManagedHermesVolumeUninstall(
       { assumeYes: true, deleteModels: false, destroyUserData, keepOpenShell: false },
       {
         commandExists: () => true,
-        env: { HOME: home } as NodeJS.ProcessEnv,
+        env: {
+          HOME: home,
+          OPENSHELL_WORKSPACE: workspace === "default" ? undefined : workspace,
+        } as NodeJS.ProcessEnv,
         error: (line) => errors.push(line),
         existsSync: (target) => target.startsWith(home) && fs.existsSync(target),
         hasPortableRuntimeCleanup: () => false,

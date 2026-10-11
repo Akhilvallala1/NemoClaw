@@ -59,6 +59,7 @@ type ContainerEngineRun = (
 ) => ContainerEngineRunResult;
 
 export type ManagedStateVolumeDeps = {
+  readonly workspace?: string;
   readonly runContainerEngine?: ContainerEngineRun;
   readonly runtimeProvider?: RuntimeProviderBundle;
   readonly registerExitCleanup?: (cleanup: () => void) => () => void;
@@ -211,7 +212,7 @@ function supportsManagedStateVolumes(provider?: RuntimeProviderBundle): boolean 
 function migrationContext(deps: ManagedStateVolumeDeps): ManagedVolumeMigrationContext {
   return {
     providerId: deps.runtimeProvider?.identity.id ?? "docker",
-    workspace: process.env.OPENSHELL_WORKSPACE ?? OPENSHELL_DEFAULT_WORKSPACE,
+    workspace: deps.workspace ?? process.env.OPENSHELL_WORKSPACE ?? OPENSHELL_DEFAULT_WORKSPACE,
     ...(deps.migrationStateDir ? { stateDir: deps.migrationStateDir } : {}),
   };
 }
@@ -296,7 +297,8 @@ export function prepareManagedStateVolumes(
           throw new Error("Managed state volumes require runtime provider authority.");
         })());
   // Match the OpenShell create CLI selector, not the unrelated /sandbox directory.
-  const workspace = process.env.OPENSHELL_WORKSPACE ?? OPENSHELL_DEFAULT_WORKSPACE;
+  const context = migrationContext(deps);
+  const workspace = context.workspace;
   if (!workspace || workspace.trim() !== workspace || /[\0\r\n]/u.test(workspace)) {
     throw new Error("Managed state volume requires an exact OpenShell workspace.");
   }
@@ -309,7 +311,6 @@ export function prepareManagedStateVolumes(
   const selectedRoots: ManagedStartupStateRoot[] = [];
   const replacementRoots: ManagedStartupStateRoot[] = [];
   const engine = migrationEngine(deps);
-  const context = migrationContext(deps);
   try {
     for (const original of input.roots) {
       const prepare = () => {

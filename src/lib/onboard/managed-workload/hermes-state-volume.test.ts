@@ -34,16 +34,21 @@ const context = {
 describe("managed Hermes state volume", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([undefined, "team-ml"])("approves a new volume only for workspace %s", (workspace) => {
+  it.each([
+    [undefined, undefined],
+    ["team-ml", undefined],
+    ["other", "selected"],
+  ])("approves a new volume for ambient %s and selected workspace %s", (workspace, selected) => {
     vi.stubEnv("OPENSHELL_WORKSPACE", workspace);
     const docker = dockerHarness();
     const scope = prepareManagedHermesStateVolume(context, {
+      workspace: selected,
       runDocker: docker.runDocker as never,
       registerExitCleanup: () => () => undefined,
     });
     expect(docker.volume?.labels).toMatchObject({
       "openshell.ai/sandbox-attachable": "true",
-      "openshell.ai/sandbox-attachable-workspace": workspace ?? "default",
+      "openshell.ai/sandbox-attachable-workspace": selected ?? workspace ?? "default",
     });
     expect(scope?.reused).toBe(false);
   });
