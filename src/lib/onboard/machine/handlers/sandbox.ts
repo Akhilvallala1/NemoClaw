@@ -8,8 +8,6 @@ import {
   formatGatewayRouteConflict,
   type GatewayRouteCompatibilityResult,
   isAdvisoryGatewayRouteConflict,
-  nativeInferenceProviderForSandbox,
-  normalizeNativeNvidiaProviderAttachment,
 } from "../../../inference/gateway-route-compatibility";
 import type { InferenceEndpointSource } from "../../../inference/selection";
 import {
@@ -102,6 +100,7 @@ import {
   selectedGatewayForSandboxRecreate,
 } from "../../sandbox-recreate-transaction";
 import {
+  nativeInferenceCreateIntentFields,
   sandboxCreateInferenceSelection,
   withSandboxImageRegistrationFence,
 } from "../../sandbox-registration";
@@ -383,6 +382,7 @@ export interface SandboxStateOptions<
       inferenceProvider?: string | null;
       nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
       nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+      nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
       hostLocalInferenceRouteOnly?: boolean;
       enabledChannels: readonly string[];
       webSearchConfig: WebSearchConfig | null;

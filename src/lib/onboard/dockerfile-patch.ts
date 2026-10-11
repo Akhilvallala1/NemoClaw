@@ -194,6 +194,7 @@ export interface PatchStagedDockerfileOptions {
   baseImageResolutionMetadata?: SandboxBaseImageResolutionMetadata | null;
   dcodeAutoApprovalMode?: DcodeAutoApprovalMode;
   upstreamEndpointUrl?: string | null;
+  nativeProvider?: boolean;
   compatibleEndpointReasoning?: "true" | "false";
   wslDashboardExposure?: boolean;
 }
@@ -311,6 +312,8 @@ export function patchStagedDockerfile(
     sanitizedModel,
     provider,
     preferredInferenceApi,
+    options.nativeProvider,
+    options.upstreamEndpointUrl,
   );
   const { providerKey, primaryModelRef, inferenceApi, inferenceCompat } = providerless
     ? { providerKey: "", primaryModelRef: "", inferenceApi: "", inferenceCompat: null }

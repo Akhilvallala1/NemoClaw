@@ -4,13 +4,15 @@
 import { normalizeNativeLocalProviderAuthorities } from "../../inference/native-local/contract";
 
 import path from "node:path";
+import { requireHostedProviderAttachment } from "../../inference/native-provider/hosted-attachment";
+import { normalizeNativeHostedProviderAuthorities } from "./native-provider-authority-state";
 import { isObjectRecord } from "../../core/json-types";
 import { GATEWAY_PORT } from "../../core/ports";
 import { isDeferredN1xManagedVllmAcceptanceRoute } from "../../domain/sandbox/n1x-managed-vllm-rebuild";
 import { parseServingProfileProvenance } from "../../inference/serving/profile-provenance";
 import { readConfigFile, writeConfigFile } from "../config-io";
 import { normalizeExtraProviders } from "../extra-providers";
-import { normalizeNativeNvidiaProviderAuthorities } from "./native-nvidia-provider-authority-state";
+import { normalizeNativeNvidiaProviderAuthorities } from "./native-provider-authority-state";
 import {
   cloneSandboxMessagingState,
   serializeSandboxMessagingStateForDisk,
@@ -151,6 +153,11 @@ function normalizeRegistry(value: unknown): SandboxRegistry {
     sandboxes,
   };
   if (extraProviders) base.extraProviders = extraProviders;
+  const nativeHostedProviderAuthorities = normalizeNativeHostedProviderAuthorities(
+    data.nativeHostedProviderAuthorities,
+  );
+  if (nativeHostedProviderAuthorities)
+    base.nativeHostedProviderAuthorities = nativeHostedProviderAuthorities;
   if (nativeLocalProviderAuthorities)
     base.nativeLocalProviderAuthorities = nativeLocalProviderAuthorities;
   if (nativeNvidiaProviderAuthorities) {
@@ -186,6 +193,11 @@ function serializeRegistryForDisk(data: SandboxRegistry): SandboxRegistry {
     sandboxes,
   };
   if (extraProviders) base.extraProviders = extraProviders;
+  const nativeHostedProviderAuthorities = normalizeNativeHostedProviderAuthorities(
+    data.nativeHostedProviderAuthorities,
+  );
+  if (nativeHostedProviderAuthorities)
+    base.nativeHostedProviderAuthorities = nativeHostedProviderAuthorities;
   if (nativeLocalProviderAuthorities)
     base.nativeLocalProviderAuthorities = nativeLocalProviderAuthorities;
   if (nativeNvidiaProviderAuthorities) {
@@ -220,6 +232,7 @@ function normalizeSandboxEntryForRuntime(entry: SandboxEntry): SandboxEntry {
     hostLocalInferenceProvenance: _hostLocalInferenceProvenance,
     servingProfileProvenance: _servingProfileProvenance,
     deferredN1xManagedVllmAccepted: _deferredN1xManagedVllmAccepted,
+    nativeHostedProviderAttachment: hostedAttachment,
     nativeNvidiaProviderAuthority: _legacyNativeNvidiaProviderAuthority,
     mcp: _legacyMcp,
     ...rest
@@ -228,8 +241,13 @@ function normalizeSandboxEntryForRuntime(entry: SandboxEntry): SandboxEntry {
     nativeNvidiaProviderAuthority?: unknown;
     mcp?: unknown;
   };
+  const nativeHostedProviderAttachment = requireHostedProviderAttachment(
+    hostedAttachment,
+    rest.provider,
+  );
   return {
     ...rest,
+    ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
     ...(workload ? { workload } : {}),
     ...(hostLocalInferenceReceipt !== undefined ? { hostLocalInferenceReceipt } : {}),
     ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
@@ -284,6 +302,7 @@ function serializeSandboxEntryForDisk(entry: SandboxEntry): SandboxEntry {
     hostLocalInferenceProvenance: _hostLocalInferenceProvenance,
     servingProfileProvenance: _servingProfileProvenance,
     deferredN1xManagedVllmAccepted: _deferredN1xManagedVllmAccepted,
+    nativeHostedProviderAttachment: hostedAttachment,
     nativeNvidiaProviderAuthority: _legacyNativeNvidiaProviderAuthority,
     mcp: _legacyMcp,
     ...rest
@@ -292,8 +311,13 @@ function serializeSandboxEntryForDisk(entry: SandboxEntry): SandboxEntry {
     nativeNvidiaProviderAuthority?: unknown;
     mcp?: unknown;
   };
+  const nativeHostedProviderAttachment = requireHostedProviderAttachment(
+    hostedAttachment,
+    rest.provider,
+  );
   return {
     ...rest,
+    ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
     ...(rest.dashboardPort === 0 ? { dashboardPort: null } : {}),
     ...(workload ? { workload } : {}),
     ...(hostLocalInferenceReceipt !== undefined ? { hostLocalInferenceReceipt } : {}),

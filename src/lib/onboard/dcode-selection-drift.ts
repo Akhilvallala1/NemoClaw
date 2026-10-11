@@ -17,6 +17,7 @@ export type DcodeInferenceIdentity = {
 export type DcodeSelectionDriftDeps = {
   getGatewayName(): string;
   requestedEndpointUrl?: string | null;
+  nativeProvider: boolean;
   commandExecutor: OpenShellSandboxBufferedCommandExecutor;
 };
 
@@ -26,6 +27,7 @@ export type DcodeSelectionDriftReader = (
   requestedModel: string | null,
   preferredInferenceApi: string | null,
   requestedEndpointUrl: string | null,
+  nativeProvider: boolean,
 ) => Promise<SelectionDrift>;
 
 const IDENTITY_FIELDS = ["Route", "Provider", "Model", "Endpoint"] as const;
@@ -89,6 +91,7 @@ export function getExpectedDcodeInferenceIdentity(
   requestedModel: string | null,
   preferredInferenceApi: string | null,
   requestedEndpointUrl?: string | null,
+  nativeProvider = false,
 ): DcodeInferenceIdentity | null {
   if (requestedModel === null) return null;
 
@@ -96,6 +99,7 @@ export function getExpectedDcodeInferenceIdentity(
     requestedModel,
     requestedProvider,
     preferredInferenceApi,
+    nativeProvider,
     requestedEndpointUrl,
   );
   const managedIdentity = resolveManagedDcodeIdentity(
@@ -126,6 +130,7 @@ export async function getDcodeSelectionDrift(
     requestedModel,
     preferredInferenceApi,
     deps.requestedEndpointUrl,
+    deps.nativeProvider,
   );
   if (!sandboxName || !expected) return { ...UNKNOWN_SELECTION_DRIFT };
 
@@ -171,10 +176,12 @@ export function createDcodeSelectionDriftReader(
     requestedModel,
     preferredInferenceApi,
     requestedEndpointUrl,
+    nativeProvider,
   ) =>
     getDcodeSelectionDrift(sandboxName, requestedProvider, requestedModel, preferredInferenceApi, {
       getGatewayName,
       commandExecutor,
       requestedEndpointUrl,
+      nativeProvider,
     });
 }

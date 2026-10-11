@@ -424,51 +424,56 @@ describe("created DCode sandbox finalization", () => {
     }
   });
 
-  it("publishes fresh metadata after endpoint-aware OpenRouter validation (#9555)", async () => {
-    const endpointUrl = "https://openrouter.ai/api/v1";
-    const getDcodeSelectionDrift = vi.fn(async () => ({
-      changed: false,
-      providerChanged: false,
-      modelChanged: false,
-      existingProvider: "openrouter",
-      existingModel: "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
-      unknown: false,
-    }));
-    const register = vi.fn();
+  it.each([false, true])(
+    "passes native attachment selection %s before registry publication",
+    async (nativeProvider) => {
+      const endpointUrl = "https://openrouter.ai/api/v1";
+      const getDcodeSelectionDrift = vi.fn(async () => ({
+        changed: false,
+        providerChanged: false,
+        modelChanged: false,
+        existingProvider: "openrouter",
+        existingModel: "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
+        unknown: false,
+      }));
+      const register = vi.fn();
 
-    await finalizeCreatedSandbox(
-      {
-        sandboxName: "dcode",
-        restoreBackupPath: null,
-        preUpgradeBackup: false,
-        targetAgentType: "langchain-deepagents-code",
-        validateManagedDcode: true,
-        provider: "compatible-endpoint",
-        model: "nvidia/nemotron-3-ultra-550b-a55b",
-        preferredInferenceApi: "openai-completions",
-        endpointUrl,
-      },
-      {
-        restoreRecreatedSandboxState: vi.fn(),
-        getDcodeSelectionDrift,
-        register,
-        note: vi.fn(),
-        error: vi.fn(),
-        exitProcess: (code): never => {
-          throw new Error(`exit ${code}`);
+      await finalizeCreatedSandbox(
+        {
+          sandboxName: "dcode",
+          restoreBackupPath: null,
+          preUpgradeBackup: false,
+          targetAgentType: "langchain-deepagents-code",
+          validateManagedDcode: true,
+          provider: "compatible-endpoint",
+          model: "nvidia/nemotron-3-ultra-550b-a55b",
+          preferredInferenceApi: "openai-completions",
+          endpointUrl,
+          nativeProvider,
         },
-      },
-    );
+        {
+          restoreRecreatedSandboxState: vi.fn(),
+          getDcodeSelectionDrift,
+          register,
+          note: vi.fn(),
+          error: vi.fn(),
+          exitProcess: (code): never => {
+            throw new Error(`exit ${code}`);
+          },
+        },
+      );
 
-    expect(getDcodeSelectionDrift).toHaveBeenCalledWith(
-      "dcode",
-      "compatible-endpoint",
-      "nvidia/nemotron-3-ultra-550b-a55b",
-      "openai-completions",
-      endpointUrl,
-    );
-    expect(register).toHaveBeenCalledOnce();
-  });
+      expect(getDcodeSelectionDrift).toHaveBeenCalledWith(
+        "dcode",
+        "compatible-endpoint",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "openai-completions",
+        endpointUrl,
+        nativeProvider,
+      );
+      expect(register).toHaveBeenCalledOnce();
+    },
+  );
 
   it("passes the fresh create endpoint through the production completion constructor (#9555)", async () => {
     const endpointUrl = "https://openrouter.ai/api/v1";
@@ -1415,6 +1420,69 @@ describe("created sandbox completion actions", () => {
       expect(registerCreatedSandbox).not.toHaveBeenCalled();
       expect(retireNativeLocalProviders).not.toHaveBeenCalled();
 
+describe("restored OpenClaw selection reconciliation", () => {
+  const options = {
+    sandboxName: "openclaw",
+    gatewayName: "nemoclaw-9090",
+    restoreBackupPath: "/tmp/managed-openclaw-backup",
+    preUpgradeBackup: false,
+    targetAgentType: "openclaw",
+    validateManagedDcode: false,
+    provider: "compatible-endpoint",
+    model: "changed-model",
+    preferredInferenceApi: null,
+    reconcileOpenClawInference: true,
+  };
+
+  function deps(order: string[]) {
+    return {
+      ...preparedRestoreAuthority("openclaw"),
+      restoreRecreatedSandboxState: async () => {
+        order.push("restore");
+        return {
+          success: true,
+          restoredDirs: ["."],
+          restoredFiles: [],
+          failedDirs: [],
+          failedFiles: [],
+        };
+      },
+      writeRestoredOpenclawInferenceRoute: vi.fn(async () => {
+        order.push("selection");
+      }),
+      getDcodeSelectionDrift: vi.fn(),
+      register: vi.fn(() => {
+        order.push("register");
+      }),
+      note: vi.fn(),
+      error: vi.fn(),
+      exitProcess: (code: number): never => {
+        throw new Error(`unexpected exit ${code}`);
+      },
+    };
+  }
+
+  it("applies the selected model after restore and before restart and publication (#12667)", async () => {
+    const order: string[] = [];
+    const dependencies = deps(order);
+    vi.mocked(restoreWindow.finishUnregisteredOpenClawPostRestoreDoctor).mockImplementation(
+      async () => {
+        order.push("restart");
+        return { ok: true };
+      },
+    );
+    await finalizeCreatedSandbox(options, dependencies);
+    expect(order).toEqual(["restore", "selection", "restart", "register"]);
+    expect(dependencies.writeRestoredOpenclawInferenceRoute).toHaveBeenCalledExactlyOnceWith(
+      "openclaw",
+      "changed-model",
+      "compatible-endpoint",
+      null,
+      "nemoclaw-9090",
+      undefined,
+      { endpointUrl: undefined, nativeProvider: false },
+    );
+  });
       const cleanupFailure = new Error("Provider absence was not confirmed; authority retained");
       retireNativeLocalProviders.mockRejectedValueOnce(cleanupFailure);
       await expect(

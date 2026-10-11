@@ -7,6 +7,7 @@ vi.mock("../adapters/openshell/provider-policy", () => ({
 }));
 
 import { runInferenceSet } from "./inference-set";
+import { createCompatibleProviderCapture, createDeps } from "../../../test/helpers/inference-set";
 import {
   createCompatibleProviderCapture,
   createDeps,

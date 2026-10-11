@@ -378,6 +378,9 @@ export function ordinaryOpenClawPairingIncompleteMessage(
   return `OpenClaw onboarding for '${name}' is incomplete because ${cause}. Resume or rerun onboarding.`;
 }
 
+function readRegistrySandbox(name: string) {
+  try {
+    return finalizationHandlerRuntime.loadRegistryPersistence().load().sandboxes[name] ?? null;
 function readRegistryInferenceRoute(name: string): (SandboxEntry & { gatewayName: string }) | null {
   try {
     const entry = finalizationHandlerRuntime.loadRegistryPersistence().load().sandboxes[name];
@@ -397,6 +400,16 @@ export const finalizationHandlerDeps = {
     model: string;
     preferredInferenceApi: string | null;
   }): Promise<{ ok: boolean; detail?: string }> {
+    const entry = readRegistrySandbox(input.sandboxName);
+    const gatewayName = entry?.gatewayName;
+    if (typeof gatewayName !== "string" || !gatewayName) {
+      return { ok: false, detail: "the sandbox gateway identity is unavailable" };
+    }
+    return finalizationHandlerRuntime.loadVerifyDeployment().probeOnboardInferenceInvocation({
+      ...entry,
+      ...input,
+      gatewayName,
+    });
     const route = readRegistryInferenceRoute(input.sandboxName);
     if (!route) {
       return { ok: false, detail: "the sandbox gateway identity is unavailable" };

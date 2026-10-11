@@ -10,6 +10,7 @@ import {
   baseSession,
   createCompatibleProviderCapture,
   createDeps,
+} from "../../../test/helpers/inference-set";
   nativeLocalTestReceipt,
 } from "./inference-set.test-support";
 

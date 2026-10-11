@@ -699,6 +699,7 @@ COPY scripts/codex-acp-wrapper.sh /usr/local/bin/nemoclaw-codex-acp
 COPY scripts/generate-openclaw-config.mts scripts/validate-openclaw-tool-search.mts /scripts/
 COPY --from=managed-startup-runtime-builder /out/managed-startup-image-runtime.cjs /usr/local/lib/nemoclaw/managed-startup-image-runtime.cjs
 COPY src/lib/extra-agents-validation.ts src/lib/tool-disclosure.ts src/lib/providerless-inference.ts src/lib/inference-credential.ts /src/lib/
+COPY src/lib/inference/native-provider/agent-config.ts src/lib/inference/native-provider/hosted.ts src/lib/inference/native-provider/contract.ts /src/lib/inference/native-provider/
 COPY src/lib/inference/native-local/agent-config.ts /src/lib/inference/native-local/
 COPY nemoclaw-blueprint/openclaw-plugins/ /usr/local/share/nemoclaw/openclaw-plugins/
 COPY --from=mcp-tool-discovery-runtime /opt/mcp-tool-discovery-runtime/dist/ /usr/local/lib/nemoclaw/mcp-tool-discovery-runtime/
@@ -1544,6 +1545,10 @@ RUN node /usr/local/lib/nemoclaw/patch-openclaw-shared-state-permissions.mts \
 RUN mkdir -p /sandbox/.nemoclaw/blueprints/0.1.0 \
     && cp -r /opt/nemoclaw-blueprint/* /sandbox/.nemoclaw/blueprints/0.1.0/
 
+# Reuse managed config inputs.
+COPY --from=openclaw-runtime-payload /scripts/ /scripts/
+COPY --from=openclaw-runtime-payload /src/ /src/
+COPY --from=openclaw-runtime-payload /usr/local/share/ /usr/local/share/
 # Config inputs precede the cached plugin install.
 COPY scripts/generate-openclaw-config.mts scripts/validate-openclaw-tool-search.mts /scripts/
 COPY src/lib/extra-agents-validation.ts src/lib/tool-disclosure.ts src/lib/providerless-inference.ts src/lib/inference-credential.ts /src/lib/

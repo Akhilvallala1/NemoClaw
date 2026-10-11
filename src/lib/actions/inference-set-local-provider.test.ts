@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { ConfigObject } from "../security/credential-filter";
 import { runInferenceSet } from "./inference-set";
-import { baseSession, createDeps } from "./inference-set.test-support";
+import { baseSession, createDeps } from "../../../test/helpers/inference-set";
 
 describe("runInferenceSet local-provider verification", () => {
   const localConfig = (): ConfigObject => ({
@@ -108,6 +108,7 @@ describe("runInferenceSet local-provider verification", () => {
     expect(deps.calls.updateSandbox).not.toHaveBeenCalled();
   });
 
+  it("does not run local validation or mutate the shared route for native cloud providers", async () => {
   it("does not change selection when the gateway prerequisite is missing (#12558)", async () => {
     const deps = createDeps({ config: localConfig(), session: baseSession() });
     deps.requireNativeProviderPolicy = async () => {
@@ -131,7 +132,9 @@ describe("runInferenceSet local-provider verification", () => {
 
     expect(deps.calls.validateLocalProvider).not.toHaveBeenCalled();
     expect(deps.calls.ensureLocalProviderReachable).not.toHaveBeenCalled();
-    const args = deps.calls.captureOpenshell.mock.calls[0][0] as string[];
-    expect(args).not.toContain("--no-verify");
+    expect(deps.calls.captureOpenshell).not.toHaveBeenCalled();
+    expect(deps.calls.probeSandboxRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-api", nativeProvider: true }),
+    );
   });
 });

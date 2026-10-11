@@ -75,6 +75,7 @@ export const EXPORT_REGISTRY_EVIDENCE_KEYS = [
   "model",
   "name",
   "nativeNvidiaProviderAttachment",
+  "nativeHostedProviderAttachment",
   "nativeLocalProviderAttachment",
   "nimContainer",
   "observabilityEnabled",
@@ -154,6 +155,18 @@ export interface ObservedExportEndpointEvidence {
     readonly profileWorkspace?: string;
     /** null means the OpenAI profile was read at its binding and confirmed absent. */
     readonly managedProfile?: {
+      readonly id:
+        | "brave"
+        | "openai"
+        | "tavily"
+        | "tavily-hermes-v1"
+        | "nemoclaw-nvidia-inference-v1"
+        | "nemoclaw-openai-inference-v1"
+        | "nemoclaw-anthropic-inference-v1"
+        | "nemoclaw-gemini-inference-v1"
+        | "nemoclaw-openrouter-inference-v1"
+        | "nemoclaw-hermes-inference-v1"
+        | `nemoclaw-hermes-inference-${string}-v1`;
       readonly id: string;
       readonly source: "builtin" | "user";
       readonly scope: "" | "platform" | "workspace";

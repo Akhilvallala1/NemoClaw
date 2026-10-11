@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import os from "node:os";
-import { isDeepStrictEqual } from "node:util";
+import {
+  providerContract,
+  matchesProviderMetadata,
+  resolveExportInferenceSelection,
+  type NativeInferenceReceipt,
+} from "./live-export-inference-contract";
 import { isValidNemoClawPort } from "../../config/model";
 
 import { createProviders, type Provider } from "../openshell/providers";
@@ -29,12 +34,10 @@ import type {
   ObservedExportSandboxIdentity,
   RawExportSnapshot,
 } from "../../domain/config/export-evidence";
-import { VLLM_LOCAL_CREDENTIAL_ENV } from "../../inference/serving/vllm-credential-contract";
 import { observeManagedVllmForExport } from "../../inference/serving/vllm-export-runtime";
 import { createOllamaExportProbe } from "../../inference/ollama/proxy";
-import { OLLAMA_LOCAL_CREDENTIAL_ENV } from "../../inference/ollama/contract";
 import { observeOllamaProxy } from "../../inference/ollama/proxy-observation";
-import { normalizeInferenceSelection } from "../../inference/selection";
+import type { normalizeInferenceSelection } from "../../inference/selection";
 import { resolveGatewayName } from "../../onboard/gateway-binding/identity";
 import {
   managedGatewayStateRootOwnershipFailure,
@@ -128,14 +131,6 @@ async function readInferenceRoute(entry: Readonly<SandboxEntry>, gatewayName: st
   return live;
 }
 
-function providerContract(api: string | null | undefined) {
-  if (api?.startsWith("anthropic")) {
-    return { type: "anthropic", configKey: "ANTHROPIC_BASE_URL" } as const;
-  }
-  const type = api?.startsWith("openai") ? "openai" : null;
-  return { type, configKey: "OPENAI_BASE_URL" } as const;
-}
-
 function providerIdentity(
   provider: Provider,
   gatewayName: string,
@@ -153,16 +148,6 @@ function providerIdentity(
   };
 }
 
-function expectedCredentialKeys(credentialEnv: string | null, routeProvider: string): string[] {
-  // vLLM onboarding always registers this gateway-owned key, including for
-  // legacy host-local installs whose registry credential remains null.
-  if (routeProvider === "vllm-local") return [VLLM_LOCAL_CREDENTIAL_ENV];
-  // Ollama onboarding has no user credential; its managed proxy still authenticates the route.
-  if (routeProvider === "ollama-local" && credentialEnv === null)
-    return [OLLAMA_LOCAL_CREDENTIAL_ENV];
-  return credentialEnv === null ? [] : [credentialEnv];
-}
-
 function inferenceTopology(
   entry: Readonly<SandboxEntry>,
   managed: boolean,
@@ -174,6 +159,14 @@ function inferenceTopology(
     : "hosted";
 }
 
+function profileContractFor(
+  routeProvider: string,
+  nativeReceipt: NativeInferenceReceipt | undefined,
+): "native-nvidia" | "native-hosted" | "openai" | undefined {
+  if (nativeReceipt)
+    return nativeReceipt.profileId === "nemoclaw-nvidia-inference-v1"
+      ? "native-nvidia"
+      : "native-hosted";
 type NativeInferenceReceipt = NonNullable<ReturnType<typeof exportNativeInferenceReceipt>>;
 
 function matchesNativeProviderMetadata(
@@ -275,6 +268,12 @@ async function readProviderEvidence(
     workspace: "default",
     name: routeProvider,
     ...(profileContract ? { profileContract } : {}),
+    ...(nativeReceipt?.endpointUrl
+      ? {
+          nativeHostedEndpoint: nativeReceipt.endpointUrl,
+          nativeHostedAllowedIps: nativeReceipt.allowedIps,
+        }
+      : {}),
     configKeys: [configKey],
     signal,
   });
@@ -323,8 +322,10 @@ async function inferenceFor(
   sandbox: ObservedExportSandboxIdentity,
   managedServing?: ObservedManagedVllmRuntime,
 ): Promise<ObservedExportInference> {
-  const normalized = normalizeInferenceSelection(entry);
+  const { normalized, nativeReceipt } = resolveExportInferenceSelection(entry);
   const gateway = resolveGatewayBinding(entry);
+  if (nativeReceipt && !sandbox.providerNames.includes(nativeReceipt.providerName)) {
+    throw new Error("The native provider is not attached to the sandbox.");
   const nativeReceipt = exportNativeInferenceReceipt(entry);
   if (nativeReceipt === null)
     throw new Error("The native local export binding is invalid or unsupported.");

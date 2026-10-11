@@ -21,6 +21,29 @@ type NativeProfileResponse = Readonly<{
   }>;
 }>;
 
+export type NativeProfileBoundary<Id extends string = string> = Readonly<{
+  profileId: Id;
+  credentialEnv: string;
+  authStyle: "bearer" | "header";
+  headerName: string;
+  host: string;
+  port?: number;
+  allowedIps?: readonly string[];
+  rules: readonly Readonly<{ method: "GET" | "POST"; path: string }>[];
+}>;
+
+const nvidiaBoundary = {
+  profileId: "nemoclaw-nvidia-inference-v1",
+  credentialEnv: "NVIDIA_INFERENCE_API_KEY",
+  authStyle: "bearer",
+  headerName: "authorization",
+  host: "integrate.api.nvidia.com",
+  rules: [
+    { method: "GET", path: "/v1/models" },
+    { method: "POST", path: "/v1/chat/completions" },
+  ],
+} as const satisfies NativeProfileBoundary;
+
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -115,10 +138,7 @@ function nativeEndpoint(value: unknown, expected: NativeBoundary): boolean {
 
 function nativeBinaries(value: unknown, expected: readonly string[]): boolean {
   if (!Array.isArray(value)) return false;
-  return stringArrayEquals(
-    value.map((item) => record(item)?.path),
-    expected,
-  );
+  return stringArrayEquals(value.map((item) => record(item)?.path), expected);
 }
 
 /** Verify the live custom profile at the credential, egress, and binary security boundary. */

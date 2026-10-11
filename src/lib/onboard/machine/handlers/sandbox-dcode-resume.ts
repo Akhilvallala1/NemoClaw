@@ -18,6 +18,7 @@ export interface Deps {
     model: string,
     preferredInferenceApi: string | null,
     endpointUrl: string | null,
+    nativeProvider: boolean,
   ): Promise<{ changed: boolean; unknown: boolean }>;
   error(message?: string): void;
   exitProcess(code: number): never;
@@ -118,6 +119,10 @@ export async function resolveSignals<Agent>(
     options.provider,
     options.model,
     options.preferredInferenceApi,
+    options.endpointUrl,
+    Boolean(
+      registryEntry.nativeHostedProviderAttachment || registryEntry.nativeNvidiaProviderAttachment,
+    ),
     registryEntry.nativeLocalProviderAttachment?.endpointUrl ?? options.endpointUrl,
   );
   return {
