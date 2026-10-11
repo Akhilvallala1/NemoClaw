@@ -91,6 +91,7 @@ describe("restored OpenClaw selection reconciliation", () => {
       null,
       "nemoclaw-9090",
       undefined,
+      { nativeProvider: false, endpointUrl: undefined },
     );
   });
 

@@ -1704,6 +1704,7 @@ async function runInferenceSetWithoutHostLock(
       if (!probe.ok) {
         await rejectInferenceSelectionProbe({
           nativeLocal: selectingNativeLocal,
+          selectingNative,
           sandboxName,
           provider,
           model,

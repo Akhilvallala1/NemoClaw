@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { InferenceSetError } from "./inference-set-error";
+import { InferenceSetError, inferenceProbeRecoveryMessage } from "./inference-set-error";
 import type { OpenShellInferenceRouteMutationError } from "../adapters/openshell/inference-route";
 import {
   type CaptureOpenShellInferenceRoute,
@@ -90,6 +90,7 @@ export async function buildInferenceSetFailure(
 /** Report the failed path after its owning compensation, without implying native fallback. */
 export async function rejectInferenceSelectionProbe(input: {
   nativeLocal: boolean;
+  selectingNative: boolean;
   sandboxName: string;
   provider: string;
   model: string;
@@ -112,6 +113,11 @@ export async function rejectInferenceSelectionProbe(input: {
   }
   throw new InferenceSetError(
     `Sandbox-side verification rejected provider '${input.provider}' / '${input.model}': ${input.detail}. ` +
-      `The previous OpenShell inference selection was restored to '${input.previousProvider}' / '${input.previousModel}'.`,
+      inferenceProbeRecoveryMessage(
+        input.selectingNative,
+        input.previousProvider,
+        input.previousModel,
+        null,
+      ),
   );
 }

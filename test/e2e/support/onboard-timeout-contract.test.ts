@@ -39,7 +39,11 @@ import { CONFIG_EXPORT_EXPECTATIONS, type ConfigExportExpectation } from "../reg
 
 const MINUTE_MS = 60_000;
 const finalHandoffTimeoutMs = getDockerGpuSupervisorReconnectTimeoutSecs(1, {}) * 1_000;
-const affectedTargetIds = ["inference-routing", "onboard-resume"] as const;
+const affectedTargetIds = [
+  "inference-routing",
+  "onboard-resume",
+  "pi-agent-qualification-amd64",
+] as const;
 const timeoutContractPath = "tools/e2e/onboard-timeout-contract.mts";
 const commandDiagnosticHeadroomMs = 10 * MINUTE_MS;
 const testHeadroomMs = 10 * MINUTE_MS;
@@ -180,7 +184,7 @@ describe("onboard final-handoff timeout contract", () => {
     },
   );
 
-  it("selects both affected targets when the shared timeout contract changes", () => {
+  it("selects affected targets when the shared timeout contract changes", () => {
     expect(
       catalogueTargetsForChangedFiles([timeoutContractPath])
         .map((target) => target.id)
