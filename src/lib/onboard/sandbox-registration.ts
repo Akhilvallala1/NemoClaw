@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { normalizeNativeLocalProviderAttachment } from "../inference/native-local/contract";
+import {
+  normalizeNativeLocalProviderAttachment,
+  usesNativeLocalInferenceForAgent,
+} from "../inference/native-local/contract";
 import { requireHostedProviderAttachment } from "../inference/native-provider/hosted-attachment";
 
 import { isDeepStrictEqual } from "node:util";
@@ -504,6 +507,39 @@ export function registerPreparedCreatedSandbox(
 
 export function registerCreatedSandbox(input: CreatedSandboxRegistrationInput): SandboxEntry {
   return publishCreatedSandboxRegistration(input, prepareCreatedSandboxRegistration(input));
+}
+
+/** The sandbox phase may bypass a shared route only for its exact native local reservation. */
+export function nativeLocalReservationStatus(input: {
+  entry: SandboxEntry;
+  agentName: string;
+  sandboxName: string;
+  gatewayName: string;
+  provider: string;
+  model: string;
+  endpointUrl: string | null;
+  endpointSource: InferenceEndpointSource | null;
+  credentialEnv: string | null;
+  preferredInferenceApi: string | null;
+}): "shared" | "exact" | "changed" {
+  if (!usesNativeLocalInferenceForAgent(input.agentName, input.provider, input.endpointUrl)) {
+    return "shared";
+  }
+  const attachment = normalizeNativeLocalProviderAttachment(
+    input.entry.nativeLocalProviderAttachment,
+  );
+  return attachment &&
+    attachment.sandboxName === input.sandboxName &&
+    attachment.gatewayName === input.gatewayName &&
+    attachment.provider === input.provider &&
+    input.entry.provider === input.provider &&
+    input.entry.model === input.model &&
+    input.entry.endpointUrl === input.endpointUrl &&
+    (input.entry.endpointSource ?? null) === input.endpointSource &&
+    (input.entry.credentialEnv ?? null) === input.credentialEnv &&
+    (input.entry.preferredInferenceApi ?? null) === input.preferredInferenceApi
+    ? "exact"
+    : "changed";
 }
 
 export function nativeInferenceCreateIntentFields(
