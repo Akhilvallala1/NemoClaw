@@ -595,11 +595,11 @@ fn main() {
     }
     if forwarded
         .first()
-        .is_some_and(|value| value == "--state-session")
+        .is_some_and(|value| value == "--state-session" || value == "--state-configure")
     {
         let agent = forwarded.get(1).and_then(|value| value.to_str());
         let result = if forwarded.len() == 2 {
-            state_session::run(agent.unwrap_or(""))
+            state_session::run(agent.unwrap_or(""), forwarded[0] == "--state-configure")
         } else {
             Err("A single native state agent is required.".into())
         };

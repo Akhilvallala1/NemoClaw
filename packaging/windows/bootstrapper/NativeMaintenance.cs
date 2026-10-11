@@ -16,6 +16,11 @@ internal static class NativeMaintenance
     private const string ProductUpgradeCode = "{52718EC2-AD6D-4A84-9FBF-3D73C9B11864}";
     private const string BundleUpgradeCode = "{1BA739B8-B632-4A8C-BB02-95058CC3A960}";
 
+    // The operation deadline ended, not the external Windows Installer transaction.
+    // Callers must not offer another maintenance action in this installer window.
+    internal sealed class RelatedActionPendingException(string message, Exception inner)
+        : InvalidOperationException(message, inner);
+
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
     private static extern uint MsiEnumRelatedProductsW(string upgradeCode, uint reserved, uint index, StringBuilder productCode);
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
@@ -137,10 +142,10 @@ internal static class NativeMaintenance
         }
         catch (OperationCanceledException error)
         {
-            // Windows Installer owns rollback. Returning control is safe, but
-            // killing its live process would strand an external transaction.
+            // Windows Installer owns rollback. Do not kill the external transaction
+            // or expose a retry when its completion has not been established.
             var reason = cancellation.IsCancellationRequested ? "was cancelled" : "exceeded its deadline";
-            throw new InvalidOperationException($"The cached NemoClaw installer {action} action {reason} while Windows Installer is still running. Cached bundle: {cachedBundle}. Wait for that action to finish, then retry.", error);
+            throw new RelatedActionPendingException($"The cached NemoClaw installer {action} action {reason}; Windows Installer completion is unconfirmed. Cached bundle: {cachedBundle}. Close this window. Wait for that action to finish before reopening the installer.", error);
         }
     }
 

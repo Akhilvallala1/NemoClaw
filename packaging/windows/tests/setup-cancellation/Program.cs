@@ -301,6 +301,11 @@ internal static class Program
         var recovery = ProductionMethod(application, "private void ShowRecoverableMaintenanceError", "private async Task PrepareHeadlessMaintenanceAsync");
         var resetIndex = recovery.IndexOf("this.cancellation.ResetForRetry();", StringComparison.Ordinal);
         var maintenanceIndex = recovery.IndexOf("this.window?.ShowMaintenance();", StringComparison.Ordinal);
+        var pendingIndex = recovery.IndexOf("error is NativeMaintenance.RelatedActionPendingException", StringComparison.Ordinal);
+        var closeOnlyIndex = recovery.IndexOf("this.window?.ShowFailure(error.Message, this.BundleLogPath());", StringComparison.Ordinal);
+        var returnIndex = recovery.IndexOf("return;", StringComparison.Ordinal);
+        if (pendingIndex < 0 || closeOnlyIndex <= pendingIndex || returnIndex <= closeOnlyIndex || resetIndex <= returnIndex)
+            throw new InvalidOperationException("Unconfirmed Windows Installer completion must take the close-only path before any retry state is reset.");
         if (resetIndex < 0 || maintenanceIndex < resetIndex)
             throw new InvalidOperationException("The recoverable maintenance path no longer resets cancellation before restoring maintenance UI.");
 

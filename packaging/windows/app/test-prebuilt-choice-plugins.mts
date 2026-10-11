@@ -8,6 +8,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { choiceInspectChildDiagnostics } from "./choice-inspect-diagnostics.mts";
 import {
   nativeOpenClawOptions,
   normalizeNativeOptions,
@@ -111,7 +112,11 @@ const attempts = path.join(output, "package-manager-attempt");
 const trap = `const cp=require("node:child_process"),fs=require("node:fs");for(const name of ["spawn","spawnSync","execFile","execFileSync"]){const original=cp[name];cp[name]=function(...args){if(/(?:npm|npx|pnpm|yarn|pip)(?:\\b|[-.])/i.test(JSON.stringify(args.slice(0,2)))){fs.appendFileSync(${javascriptStringLiteral(attempts)},name+"\\n");throw Error("Unexpected package-manager invocation");}return original.apply(this,args);};}require("node:module").syncBuiltinESMExports();`;
 function start(label: string, source: string) {
   const file = path.join(output, label + ".cjs");
-  fs.writeFileSync(file, trap + source, { flag: "wx" });
+  fs.writeFileSync(
+    file,
+    trap + (label === "inspect" ? choiceInspectChildDiagnostics : "") + source,
+    { flag: "wx" },
+  );
   const child = spawn(process.execPath, [file], {
     cwd: app,
     env:

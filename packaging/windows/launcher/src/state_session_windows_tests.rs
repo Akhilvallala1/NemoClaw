@@ -145,6 +145,47 @@ fn an_active_directory_cannot_be_replaced() {
 }
 
 #[test]
+fn configuration_and_removal_share_ownership_without_serializing_agent_sessions() {
+    let sid = current_sid().unwrap();
+    let first = unique_name();
+    let second = unique_name();
+    let owner = acquire_owner(&sid, &first, true).unwrap();
+    let other_sid = sid.clone();
+    let other_agent = second.clone();
+    std::thread::spawn(move || {
+        // Another agent cannot change account-wide metadata during this operation.
+        assert!(acquire_owner(&other_sid, &other_agent, true).is_err());
+        // Its ordinary runtime session does not own account-wide configuration.
+        let _session = acquire_owner(&other_sid, &other_agent, false).unwrap();
+    })
+    .join()
+    .unwrap();
+    drop(owner);
+    let other_sid = sid.clone();
+    let other_agent = second.clone();
+    std::thread::spawn(move || {
+        let _retry = acquire_owner(&other_sid, &other_agent, true).unwrap();
+    })
+    .join()
+    .unwrap();
+
+    let session = acquire_owner(&sid, &first, false).unwrap();
+    let other_sid = sid.clone();
+    std::thread::spawn(move || {
+        // Failure to take the agent lease must also release the shared lease.
+        assert!(acquire_owner(&other_sid, &first, true).is_err());
+    })
+    .join()
+    .unwrap();
+    std::thread::spawn(move || {
+        let _retry = acquire_owner(&sid, &second, true).unwrap();
+    })
+    .join()
+    .unwrap();
+    drop(session);
+}
+
+#[test]
 fn a_held_state_root_allows_child_data_and_nested_atomic_updates() {
     let fixture = Fixture::new();
     let (handle, _) = state_directory(&fixture.root, &fixture.sid).unwrap();

@@ -12,6 +12,31 @@ import {
   migrateNativeOpenClawSessions,
 } from "./native-openclaw-migration.mts";
 
+// Match the pinned OpenClaw doctor's report and archive layout, not a private test format.
+function migrationApp(
+  beforeImport = "",
+  importAction = "fs.renameSync(store, archive);",
+  alterReport = "",
+) {
+  return `exports.runOpenClaw = async argv => {
+    const fs = require('node:fs'); const path = require('node:path');
+    const mode = argv[4]; const store = argv[6];
+    const archiveDir = path.join(path.dirname(path.dirname(store)), 'session-sqlite-import-archive');
+    const archive = path.join(archiveDir, 'legacy-store.sessions.json.imported-123456');
+    ${beforeImport}
+    if (mode === 'import') {
+      fs.mkdirSync(archiveDir, {recursive:true});
+      ${importAction}
+    }
+    const report = {mode, targets:[{agentId:'main', storePath:store,
+      archivedLegacyStoreFiles:mode === 'import' ? [archive] : []}],
+      totals:{issues:0,targets:1,archivedLegacyStoreFiles:mode === 'import' ? 1 : 0}};
+    if (mode === 'import') { ${alterReport} }
+    console.log(JSON.stringify(report));
+    throw Object.assign(new Error('done'),{name:'ExitError',code:0});
+  };`;
+}
+
 async function fixture(t: test.TestContext, source?: string, compileWorker = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-migration-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -42,22 +67,18 @@ async function fixture(t: test.TestContext, source?: string, compileWorker = fal
   }
   fs.writeFileSync(path.join(workers, "openclaw-migration-config.json"), "{}");
   const entry = path.join(runtimeRoot, "app.cjs");
-  fs.writeFileSync(
-    entry,
-    source ??
-      `exports.runOpenClaw = async argv => {
-    const fs=require('node:fs'); const mode=argv[4]; const store=argv[6];
-    if (mode==='import') fs.renameSync(store,store+'.archive');
-    console.log(JSON.stringify({mode,totals:{issues:0,targets:1}}));
-    throw Object.assign(new Error('done'),{name:'ExitError',code:0});
-  };`,
-  );
+  fs.writeFileSync(entry, source ?? migrationApp());
   return {
     root,
     home,
     sessions,
     transcript,
     store,
+    archive: path.join(
+      path.dirname(sessions),
+      "session-sqlite-import-archive",
+      "legacy-store.sessions.json.imported-123456",
+    ),
     runtimeRoot,
     entry,
     node: process.execPath,
@@ -69,9 +90,53 @@ test("migration runs dry-run and import, preserves originals, and skips migrated
   const f = await fixture(t, undefined, true);
   const original = fs.readFileSync(f.store);
   assert.equal(await migrateNativeOpenClawSessions(f), true);
-  assert.deepEqual(fs.readFileSync(f.store + ".archive"), original);
+  assert.deepEqual(fs.readFileSync(f.archive), original);
   assert.equal(await migrateNativeOpenClawSessions(f), false);
 });
+
+for (const [name, action, reportChange] of [
+  ["deleted source without an archive", "fs.unlinkSync(store);", ""],
+  [
+    "changed archive content",
+    "fs.renameSync(store, archive); fs.writeFileSync(archive, '{}');",
+    "",
+  ],
+  ["missing archive receipt", "fs.renameSync(store, archive);", "delete report.targets;"],
+  [
+    "wrong store receipt",
+    "fs.renameSync(store, archive);",
+    "report.targets[0].storePath += '.other';",
+  ],
+  ["wrong agent receipt", "fs.renameSync(store, archive);", "report.targets[0].agentId = 'other';"],
+  [
+    "inconsistent archive count",
+    "fs.renameSync(store, archive);",
+    "report.totals.archivedLegacyStoreFiles = 0;",
+  ],
+  [
+    "outside archive path",
+    "fs.renameSync(store, archive);",
+    "report.targets[0].archivedLegacyStoreFiles = [store + '.outside'];",
+  ],
+  [
+    "hard-linked archive",
+    "fs.renameSync(store, archive); fs.linkSync(archive, archive + '.link');",
+    "",
+  ],
+  [
+    "redirected archive directory",
+    `fs.rmdirSync(archiveDir);
+    const other = path.join(path.dirname(archiveDir), 'redirected-archive'); fs.mkdirSync(other);
+    fs.symlinkSync(other, archiveDir, process.platform === 'win32' ? 'junction' : 'dir');
+    fs.renameSync(store, archive);`,
+    "",
+  ],
+]) {
+  test(`migration rejects ${name} instead of reporting successful preservation`, async (t) => {
+    const f = await fixture(t, migrationApp("", action, reportChange));
+    await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+  });
+}
 
 test("migration rejects transcript paths outside the main session directory", async (t) => {
   const f = await fixture(t);
@@ -130,21 +195,17 @@ test("migration rejects incomplete reports without importing history", async (t)
     const original = fs.readFileSync(f.store);
     await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
     assert.deepEqual(fs.readFileSync(f.store), original);
-    assert.equal(fs.existsSync(f.store + ".archive"), false);
+    assert.equal(fs.existsSync(f.archive), false);
   }
 });
 
 test("migration process uses sealed configuration and does not inherit provider secrets", async (t) => {
   const f = await fixture(
     t,
-    `exports.runOpenClaw=async argv=>{
-    const assert=require('node:assert/strict'); const fs=require('node:fs'); const path=require('node:path');
+    migrationApp(`const assert=require('node:assert/strict');
     assert.equal(process.env.NVIDIA_API_KEY,undefined); assert.equal(process.env.NODE_OPTIONS,undefined);
     assert.equal(process.env.OPENCLAW_CONFIG_PATH,path.join(__dirname,'workers','openclaw-migration-config.json'));
-    assert.deepEqual(JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,'utf8')),{});
-    const mode=argv[4]; if(mode==='import')fs.renameSync(argv[6],argv[6]+'.archive');
-    console.log(JSON.stringify({mode,totals:{issues:0,targets:1}}));
-  };`,
+    assert.deepEqual(JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,'utf8')),{});`),
   );
   const previousKey = process.env.NVIDIA_API_KEY;
   const previousOptions = process.env.NODE_OPTIONS;

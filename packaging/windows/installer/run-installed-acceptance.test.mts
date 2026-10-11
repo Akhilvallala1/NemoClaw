@@ -19,6 +19,83 @@ function powershellEnvironment(extra: NodeJS.ProcessEnv = {}) {
   };
 }
 
+test("setup receives only installation environment while the controller retains credentials", (context) => {
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:ACCEPTANCE_SOURCE, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Acceptance source does not parse.' }
+$owner = $ast.Find({ param($node)
+  $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-OwnedSetup'
+}, $true)
+if ($null -eq $owner) { throw 'Setup process owner is missing.' }
+$launch = '[Diagnostics.Process]::Start($info)'
+if ($owner.Extent.Text.Split($launch).Count -ne 2) { throw 'Setup process boundary is ambiguous.' }
+. ([scriptblock]::Create($owner.Extent.Text.Replace($launch, '(Start-Fixture $info)')))
+$setup = 'owned-setup-fixture'
+$timings = @{ stages = @{} }
+$allowed = @('SystemRoot','WINDIR','SystemDrive','COMSPEC','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA','ProgramData','ProgramFiles','ProgramFiles(x86)','CommonProgramFiles','CommonProgramFiles(x86)','PROCESSOR_ARCHITECTURE','PROCESSOR_ARCHITEW6432','NUMBER_OF_PROCESSORS','OS','PATH')
+$script:starts = 0; $script:waits = 0; $script:disposals = 0
+function Start-Fixture($Info) {
+  $script:starts++
+  if ($Info.FileName -cne $setup -or $Info.UseShellExecute -or -not $Info.CreateNoWindow) { throw 'Setup process options changed.' }
+  if (($Info.ArgumentList -join '|') -cne ($action + '|-quiet|-norestart|-log|fixture.log')) { throw 'Setup arguments changed.' }
+  foreach ($name in $Info.Environment.Keys) {
+    if ($name -notin $allowed) { throw 'Setup inherited an unapproved environment variable.' }
+  }
+  foreach ($name in @('NVIDIA_API_KEY','NVIDIA_INFERENCE_API_KEY','nvidia_api_key','GITHUB_TOKEN','NODE_OPTIONS','UNRELATED_SECRET')) {
+    if ($Info.Environment.ContainsKey($name)) { throw 'Setup inherited a controller credential or override.' }
+  }
+  if ($Info.Environment['TEMP'] -cne $env:TEMP -or $Info.Environment['USERPROFILE'] -cne $env:USERPROFILE) { throw 'Required installation environment was lost.' }
+  $expectedPath = [Environment]::SystemDirectory + ';' + [Environment]::GetEnvironmentVariable('SystemRoot')
+  if ($Info.Environment['PATH'] -cne $expectedPath) { throw 'Setup inherited executable search paths.' }
+  $process = [pscustomobject]@{ ExitCode = $exitCode }
+  $process | Add-Member ScriptMethod WaitForExit { $script:waits++ }
+  $process | Add-Member ScriptMethod Dispose { $script:disposals++ }
+  return $process
+}
+foreach ($action in @('-install','-uninstall')) {
+  foreach ($exitCode in @(0,17)) {
+    $caught = $null
+    try { Invoke-OwnedSetup $action 'fixture.log' } catch { $caught = $_ }
+    if ($exitCode -eq 0 -and $null -ne $caught) { throw $caught }
+    if ($exitCode -ne 0 -and ($null -eq $caught -or $caught.Exception.Message -cne "Finished preview $action failed with status $exitCode.")) { throw 'Setup process failure was lost.' }
+    if ($timings.stages[$action].exitCode -ne $exitCode) { throw 'Setup evidence lost the process result.' }
+    if ($env:NVIDIA_API_KEY -cne 'synthetic-api-canary' -or $env:NVIDIA_INFERENCE_API_KEY -cne 'synthetic-inference-canary') { throw 'Controller credentials were changed.' }
+  }
+}
+if ($script:starts -ne 4 -or $script:waits -ne 4 -or $script:disposals -ne 4) { throw 'Setup process lifecycle changed.' }
+Write-Output 'SETUP_ENVIRONMENT_4_PASS'
+`;
+  const result = spawnSync(
+    process.platform === "win32" ? "pwsh.exe" : "pwsh",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      env: powershellEnvironment({
+        ACCEPTANCE_SOURCE: fileURLToPath(new URL("run-installed-acceptance.ps1", import.meta.url)),
+        NVIDIA_API_KEY: "synthetic-api-canary",
+        NVIDIA_INFERENCE_API_KEY: "synthetic-inference-canary",
+        GITHUB_TOKEN: "synthetic-github-canary",
+        NODE_OPTIONS: "synthetic-override-canary",
+        UNRELATED_SECRET: "synthetic-unrelated-canary",
+        TEMP: process.env.TEMP ?? "/tmp",
+        USERPROFILE: process.env.USERPROFILE ?? "/tmp",
+      }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30000,
+    },
+  );
+  if (process.platform !== "win32" && result.error?.code === "ENOENT") {
+    context.skip("PowerShell is unavailable on this non-Windows host.");
+    return;
+  }
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /SETUP_ENVIRONMENT_4_PASS/u);
+  assert.doesNotMatch(result.stdout + result.stderr, /synthetic-.*-canary/u);
+});
+
 test("legacy reset claims fresh Hermes state before normal Hermes setup", (context) => {
   const script = String.raw`
 $ErrorActionPreference = 'Stop'

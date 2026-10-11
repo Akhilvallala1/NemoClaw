@@ -97,6 +97,14 @@ $timings = [ordered]@{ schemaVersion = 1; sourceRevision = $ArtifactSourceRevisi
 function Invoke-OwnedSetup([string]$Action, [string]$Log) {
   $info = [Diagnostics.ProcessStartInfo]::new()
   $info.FileName = $setup; $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+  # Installation and uninstall must not receive the controller's inference keys
+  # or runtime overrides. Keep credentials in this process for later acceptance.
+  $info.Environment.Clear()
+  foreach ($name in @('SystemRoot','WINDIR','SystemDrive','COMSPEC','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA','ProgramData','ProgramFiles','ProgramFiles(x86)','CommonProgramFiles','CommonProgramFiles(x86)','PROCESSOR_ARCHITECTURE','PROCESSOR_ARCHITEW6432','NUMBER_OF_PROCESSORS','OS')) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if ($null -ne $value) { $info.Environment[$name] = $value }
+  }
+  $info.Environment['PATH'] = [Environment]::SystemDirectory + ';' + [Environment]::GetEnvironmentVariable('SystemRoot')
   foreach ($value in @($Action, '-quiet', '-norestart', '-log', $Log)) { $info.ArgumentList.Add($value) }
   $clock = [Diagnostics.Stopwatch]::StartNew()
   $process = [Diagnostics.Process]::Start($info)

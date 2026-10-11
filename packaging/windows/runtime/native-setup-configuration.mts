@@ -22,7 +22,7 @@ import {
   readOpenedRegularFile,
   readWindowsCredential,
 } from "./native-security.mts";
-import { acquireNativeStateSession } from "./native-state.mts";
+import { acquireNativeStateConfiguration } from "./native-state.mts";
 import {
   nativeConfigurationCredentialStore,
   withNativeCredentialTransaction,
@@ -248,7 +248,7 @@ export async function configureNativeFromStdin(
       | Awaited<ReturnType<typeof inspectPrebuiltNativeModel>>
       | Awaited<ReturnType<typeof inspectBundledNativeModel>>
     >;
-    acquireState?: typeof acquireNativeStateSession;
+    acquireState?: typeof acquireNativeStateConfiguration;
     readCredential?: typeof readWindowsCredential;
     readServices?: typeof readNativeServiceEnvironment;
     deleteCredential?: typeof deleteCredentialByBinding;
@@ -402,7 +402,7 @@ export async function configureNativeFromStdin(
     output.write(binding);
     return;
   }
-  const state = await (dependencies.acquireState ?? acquireNativeStateSession)(
+  const state = await (dependencies.acquireState ?? acquireNativeStateConfiguration)(
     launcher,
     normalized.agent,
   );

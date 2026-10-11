@@ -104,7 +104,14 @@ inference, file/code/ripgrep tools, optional capability configuration, install
 under 30 seconds, cold/warm startup, idle resource use and uninstall remain
 unperformed for a Hermes installer. Tavily live lookup remains explicitly waived.
 
-The required canonical shell is incompatible with this tested MXC boundary.
-Hermes stays unavailable in the finished installer until compatible upstream
-behavior is established and the complete installed acceptance passes. No shell
-substitution, timeout increase or permission relaxation is used to bypass it.
+The required canonical shell failed in the historical MXC probe described above.
+That result does not determine whether a current candidate includes Hermes.
+The candidate installer makes an included Hermes runtime selectable, with a
+preview warning when its full runtime checks are pending. A package that omits
+Hermes keeps that choice unavailable.
+
+Selectable preview status is not qualification or release approval. The selected
+runtime must pass the required shell and complete installed acceptance checks
+before it can be called qualified. Credentialed acceptance requires the trusted
+controller on `main`; the historical probe does not satisfy that gate. No shell
+substitution, timeout increase or permission relaxation bypasses these checks.

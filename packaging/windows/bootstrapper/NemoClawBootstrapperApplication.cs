@@ -358,6 +358,13 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
 
     private void ShowRecoverableMaintenanceError(Exception error)
     {
+        if (error is NativeMaintenance.RelatedActionPendingException)
+        {
+            // ShowFailure exposes only Close and the log, not another transaction.
+            // The cached installer still owns completion or rollback.
+            this.window?.ShowFailure(error.Message, this.BundleLogPath());
+            return;
+        }
         this.cancellation.ResetForRetry();
         this.window?.ShowMaintenance();
         this.window?.ShowRecoverableError(error.Message);

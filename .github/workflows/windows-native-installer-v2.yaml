@@ -1055,6 +1055,7 @@ jobs:
             2>"$output\installed-acceptance-controller.stderr.log"
           if ($LASTEXITCODE -ne 0) { throw 'The Windows installed-acceptance controller controls failed.' }
           & "$work\node\node.exe" --experimental-strip-types --no-warnings --test `
+            packaging/windows/app/choice-inspect-diagnostics.test.mts `
             packaging/windows/installer/qualify-installed-hermes.test.mts `
             packaging/windows/installer/windows-native-transfer.test.mts `
             packaging/windows/runtime/native-configuration-credentials.test.mts `
@@ -2255,6 +2256,27 @@ jobs:
             throw 'The six portable and thirteen Windows ownership controls did not all execute.'
           }
 
+      - name: Exercise shared configuration and per-agent state ownership
+        shell: powershell
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'windows-runtime-controls'
+          $log = Join-Path $output 'state-session-tests.log'
+          try {
+            $ErrorActionPreference = 'Continue'
+            & rustup run 1.95.0-aarch64-pc-windows-msvc cargo test --locked `
+              --manifest-path "$env:GITHUB_WORKSPACE\packaging\windows\launcher\Cargo.toml" `
+              --target aarch64-pc-windows-msvc state_session:: -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath $log
+            $result = $LASTEXITCODE
+          } finally { $ErrorActionPreference = 'Stop' }
+          $text = [string](Get-Content -LiteralPath $log -Raw)
+          if ($result -ne 0 -or $text -notmatch '(?m)^test result: ok\. 14 passed; 0 failed; 0 ignored;') {
+            throw 'The shared configuration and per-agent state ownership controls did not all pass.'
+          }
+
       - name: Exercise owned child and grandchild lifetime
         shell: powershell
         env:
@@ -2401,8 +2423,9 @@ jobs:
             & python -m unittest discover -s "$env:GITHUB_WORKSPACE\packaging\windows\installer" -p 'test_*.py' -v 2>&1 | Tee-Object -FilePath $pythonLog
             $pythonResult = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
-          if ($pythonResult -ne 0 -or (Get-Content -LiteralPath $pythonLog -Raw) -notmatch 'Ran 89 tests') {
-            throw 'The eighty-nine MSI build and metadata controls did not all pass.'
+          $pythonText = [string](Get-Content -LiteralPath $pythonLog -Raw)
+          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 130 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
+            throw 'The 130 MSI build and metadata controls did not all pass.'
           }
 
       - name: Build and exercise actual isolated MSI transactions

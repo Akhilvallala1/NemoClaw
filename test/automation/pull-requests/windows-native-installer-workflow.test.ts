@@ -379,6 +379,58 @@ describe("Windows installer workflow boundary validation", () => {
 });
 
 it.skipIf(process.platform !== "win32")(
+  "accepts only a complete successful MSI Python test result",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "windows-msi-result-"));
+    const script = join(root, "result-controls.ps1");
+    const run = step(
+      sources().workflow.jobs["windows-runtime-controls"],
+      "Check MSI manifest controls",
+    ).run!;
+    try {
+      mkdirSync(join(root, "windows-runtime-controls"));
+      writeFileSync(
+        script,
+        `
+$ErrorActionPreference = 'Stop'
+$gate = {
+${run}
+}
+function python {
+  $global:LASTEXITCODE = $case.ExitCode
+  Write-Output $case.Text
+}
+foreach ($case in @(
+  @{ ExitCode = 0; Text = "Ran 130 tests in 1.2s\nOK"; Reject = $false },
+  @{ ExitCode = 1; Text = "Ran 130 tests in 1.2s\nOK"; Reject = $true },
+  @{ ExitCode = 0; Text = "Ran 89 tests in 1.2s\nOK"; Reject = $true },
+  @{ ExitCode = 0; Text = "Ran 130 tests in 1.2s\nOK (skipped=1)"; Reject = $true },
+  @{ ExitCode = 0; Text = "Ran 130 tests in 1.2s\nFAILED"; Reject = $true },
+  @{ ExitCode = 0; Text = "Ran 1300 tests in 1.2s\nOK"; Reject = $true },
+  @{ ExitCode = 0; Text = ''; Reject = $true }
+)) {
+  $rejected = $false
+  try { & $gate | Out-Null } catch { $rejected = $true }
+  if ($rejected -ne $case.Reject) { throw 'MSI test result was misclassified.' }
+}
+Write-Output '7 result controls passed'
+`,
+      );
+      const result = spawnSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-File", script], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30000,
+        env: { ...process.env, RUNNER_TEMP: root, GITHUB_WORKSPACE: repoRoot },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain("7 result controls passed");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(process.platform !== "win32")(
   "rejects a manifest-valid extra publication executable",
   () => {
     const root = mkdtempSync(join(tmpdir(), "windows-native-transfer-"));

@@ -30,13 +30,14 @@ internal static class Program
                 cancel ? TimeSpan.FromSeconds(10) : TimeSpan.FromMilliseconds(100));
             throw new InvalidOperationException("A non-exiting maintenance action was accepted.");
         }
-        catch (InvalidOperationException error)
+        catch (NativeMaintenance.RelatedActionPendingException error)
         {
             var expected = cancel ? "was cancelled" : "exceeded its deadline";
             if (!error.Message.Contains(expected, StringComparison.Ordinal) ||
                 !error.Message.Contains("uninstall", StringComparison.Ordinal) ||
-                !error.Message.Contains(cached, StringComparison.Ordinal) || child.HasExited)
-                throw new InvalidOperationException("The recoverable maintenance result lost its action, cache path, or live-child guarantee.", error);
+                !error.Message.Contains(cached, StringComparison.Ordinal) ||
+                !error.Message.Contains("Close this window", StringComparison.Ordinal) || child.HasExited)
+                throw new InvalidOperationException("The pending maintenance result lost its action, cache path, close-only instruction, or live-child guarantee.", error);
         }
         finally
         {
@@ -73,7 +74,7 @@ internal static class Program
             }
             catch (OperationCanceledException error) when (error.CancellationToken == cancelled.Token) { }
         }
-        Console.WriteLine("6 maintenance controls passed; pre-cancelled operations do not start and live Windows Installer waits remain recoverable.");
+        Console.WriteLine("6 maintenance controls passed; pre-cancelled operations do not start and unconfirmed Windows Installer completion forbids immediate retry.");
         return 0;
     }
 }

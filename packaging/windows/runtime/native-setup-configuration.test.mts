@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { configureNativeFromStdin } from "./native-setup-configuration.mts";
 import {
@@ -794,7 +794,7 @@ test("metadata input is bounded before parsing or credential access", async () =
   await assert.rejects(prepare({ ...configuration, model: "x".repeat(17 * 1024) }), /size limit/u);
 });
 
-test("configuration waits for the per-agent removal lease before any mutation", async () => {
+test("configuration waits for combined configuration and agent ownership before any mutation", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-configuration-lease-"));
   const previousLocalAppData = process.env.LOCALAPPDATA;
   process.env.LOCALAPPDATA = root;
@@ -877,6 +877,188 @@ test("configuration waits for the per-agent removal lease before any mutation", 
     if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
     else process.env.LOCALAPPDATA = previousLocalAppData;
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("configuration requires the shared-owner protocol, not an ordinary session receipt", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-configuration-protocol-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const mock = path.join(root, "process-boundary.mjs");
+  fs.writeFileSync(
+    mock,
+    `
+    import {EventEmitter} from 'node:events';
+    import {PassThrough} from 'node:stream';
+    export const calls = [];
+    let override;
+    let shared = false;
+    const agents = new Set();
+    export function setReceiptKind(value) { override = value; }
+    export function spawn(launcher, args) {
+      calls.push({launcher, args});
+      const child = new EventEmitter();
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      child.kill = () => child.emit('close', 1);
+      const mode = args[0] === '--state-configure' ? 'configuration' : args[0].slice('--state-'.length);
+      const ownsShared = mode !== 'session';
+      if (agents.has(args[1]) || (ownsShared && shared)) {
+        queueMicrotask(() => child.emit('close', 2));
+        return child;
+      }
+      if (ownsShared) shared = true;
+      agents.add(args[1]);
+      child.stdin.on('finish', () => {
+        if (ownsShared) shared = false;
+        agents.delete(args[1]);
+        child.emit('close', 0);
+      });
+      queueMicrotask(() => child.stdout.write(JSON.stringify({schemaVersion:1,
+        kind:override ?? 'native-state-' + mode, agent:args[1],
+        stateRoot:'C:\\\\NemoClawState-S-1-5-21-1-' + args[1],
+        created:false, removed:true, leaseHeld:true}) + '\\n'));
+      return child;
+    }
+  `,
+  );
+  const output = path.join(root, "state-protocol.mjs");
+  const stateSource = fileURLToPath(new URL("./native-state.mts", import.meta.url));
+  const setupSource = fileURLToPath(new URL("./native-setup-configuration.mts", import.meta.url));
+  const removalSource = fileURLToPath(new URL("./native-remove-data.mts", import.meta.url));
+  const { build } = await import("esbuild");
+  await build({
+    stdin: {
+      contents: `export * from ${JSON.stringify(stateSource)};
+      export {configureNativeFromStdin} from ${JSON.stringify(setupSource)};
+      export {removeNativeAgentData} from ${JSON.stringify(removalSource)};
+      export {calls,setReceiptKind} from ${JSON.stringify(mock)};`,
+      resolveDir: root,
+    },
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    outfile: output,
+    plugins: [
+      {
+        name: "owned-process-fixture",
+        setup(builder) {
+          builder.onResolve({ filter: /^node:child_process$/ }, () => ({ path: mock }));
+        },
+      },
+    ],
+  });
+  const owner = await import(pathToFileURL(output).href);
+  for (const [operation, command] of [
+    [owner.acquireNativeStateConfiguration, "--state-configure"],
+    [owner.acquireNativeStateSession, "--state-session"],
+    [owner.acquireNativeStateRemoval, "--state-remove"],
+  ] as const) {
+    const lease = await operation("owned-launcher", "hermes");
+    assert.deepEqual(owner.calls.at(-1), { launcher: "owned-launcher", args: [command, "hermes"] });
+    lease.assertHeld();
+    await lease.release();
+    assert.throws(() => lease.assertHeld(), /lease is closed/u);
+  }
+  owner.setReceiptKind("native-state-session");
+  await assert.rejects(
+    owner.acquireNativeStateConfiguration("owned-launcher", "hermes"),
+    /receipt is invalid/u,
+  );
+  const calls = owner.calls.length;
+  await assert.rejects(
+    owner.acquireNativeStateConfiguration("owned-launcher", "pi"),
+    /supported native agent/u,
+  );
+  assert.equal(owner.calls.length, calls);
+  owner.setReceiptKind(undefined);
+  const previous = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = process.platform === "win32" ? root : `/${root}`;
+  try {
+    // Exercise the default setup owner, not the injected acquireState test seam.
+    const configureHermes = () =>
+      owner.configureNativeFromStdin(
+        "owned-launcher",
+        [],
+        Readable.from([
+          Buffer.from(
+            JSON.stringify({
+              ...configuration,
+              inference: "compatible",
+              endpoint: "https://example.invalid/v1",
+              credentialStored: false,
+              options: {},
+            }),
+          ),
+        ]),
+        process.stdout,
+        {
+          readCredential: async () => "",
+          readServices: async () => ({ options: {}, environment: {} }),
+          deleteCredential: async () => {},
+        },
+      );
+    await configureHermes();
+    assert.deepEqual(owner.calls.at(-1).args, ["--state-configure", "hermes"]);
+    assert.equal(
+      fs.readFileSync(path.join(root, "NVIDIA", "NemoClaw", "active-agent.txt"), "utf8"),
+      "hermes\n",
+    );
+    const openclaw = path.join(root, "NVIDIA", "NemoClaw", "agents", "openclaw");
+    fs.mkdirSync(openclaw);
+    fs.writeFileSync(
+      path.join(openclaw, "native-windows.json"),
+      JSON.stringify({
+        ...configuration,
+        agent: "openclaw",
+        inference: "compatible",
+        endpoint: "https://example.invalid/v1",
+        credentialStored: false,
+        options: {},
+      }),
+    );
+    const activePath = path.join(root, "NVIDIA", "NemoClaw", "active-agent.txt");
+    fs.writeFileSync(activePath, "openclaw\n");
+    let pause!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      pause = resolve;
+    });
+    const resumed = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const removal = owner.removeNativeAgentData("owned-launcher", "openclaw", {
+      deleteCredential: async () => {
+        pause();
+        await resumed;
+      },
+    });
+    try {
+      await paused;
+      await assert.rejects(configureHermes(), /already in use/u);
+      assert.equal(fs.readFileSync(activePath, "utf8"), "openclaw\n");
+    } finally {
+      resume();
+      await removal;
+    }
+    assert.equal(fs.existsSync(activePath), false);
+    await configureHermes();
+    assert.equal(fs.readFileSync(activePath, "utf8"), "hermes\n");
+    // Repeated OpenClaw removal must preserve the later Hermes selection and settings.
+    await owner.removeNativeAgentData("owned-launcher", "openclaw", {
+      deleteCredential: async () => {},
+    });
+    assert.equal(fs.readFileSync(activePath, "utf8"), "hermes\n");
+    assert.equal(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(root, "NVIDIA", "NemoClaw", "agents", "hermes", "native-windows.json"),
+          "utf8",
+        ),
+      ).agent,
+      "hermes",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previous;
   }
 });
 

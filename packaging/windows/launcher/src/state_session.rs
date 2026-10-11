@@ -33,10 +33,15 @@ fn state_location(drive: char, sid: &str, agent: &str) -> Result<String, String>
     ))
 }
 
-fn readiness(agent: &str, root: &str, created: bool) -> String {
+fn readiness(agent: &str, root: &str, created: bool, configuration: bool) -> String {
     // Both strings originate from the bounded ASCII validators above.
+    let kind = if configuration {
+        "native-state-configuration"
+    } else {
+        "native-state-session"
+    };
     format!(
-        "{{\"schemaVersion\":1,\"kind\":\"native-state-session\",\"agent\":\"{agent}\",\"stateRoot\":\"{}\",\"created\":{created},\"leaseHeld\":true}}\n",
+        "{{\"schemaVersion\":1,\"kind\":\"{kind}\",\"agent\":\"{agent}\",\"stateRoot\":\"{}\",\"created\":{created},\"leaseHeld\":true}}\n",
         root.replace('\\', "\\\\")
     )
 }
@@ -370,6 +375,24 @@ mod native {
         }
     }
 
+    fn acquire_owner(
+        sid: &str,
+        agent: &str,
+        configuration: bool,
+    ) -> Result<(Option<Lease>, Lease), String> {
+        // Configuration and removal also mutate the account-wide active-agent pointer.
+        // Take that shared mutex first, before per-agent ownership or any mutation.
+        // Ordinary sessions keep independent per-agent leases and can run concurrently.
+        let shared = if configuration {
+            Some(acquire(sid, "configuration").map_err(|_| {
+                "Native agent settings are in use or their ownership could not be verified. Close the other setup or removal operation before retrying.".to_string()
+            })?)
+        } else {
+            None
+        };
+        Ok((shared, acquire(sid, agent)?))
+    }
+
     fn state_directory(root: &str, sid: &str) -> Result<(Handle, bool), String> {
         let security = descriptor(sid, true)?;
         let attributes = SecurityAttributes {
@@ -451,16 +474,19 @@ mod native {
             .ok_or_else(|| "The Windows system drive is invalid.".into())
     }
 
-    pub(super) fn run(agent: &str) -> Result<(), String> {
+    pub(super) fn run(agent: &str, configuration: bool) -> Result<(), String> {
         super::validate_agent(agent)?;
+        if configuration && !matches!(agent, "openclaw" | "hermes") {
+            return Err("Select a supported native agent to configure.".into());
+        }
         let sid = current_sid()?;
         let drive = windows_drive()?;
         let root = super::state_location(drive, &sid, agent)?;
-        let _lease = acquire(&sid, agent)?;
+        let _leases = acquire_owner(&sid, agent, configuration)?;
         let (directory, created) = state_directory(&root, &sid)?;
         let mut stdout = std::io::stdout().lock();
         stdout
-            .write_all(super::readiness(agent, &root, created).as_bytes())
+            .write_all(super::readiness(agent, &root, created, configuration).as_bytes())
             .and_then(|_| stdout.flush())
             .map_err(|_| "The native state readiness receipt could not be written.")?;
         drop(stdout);
@@ -582,7 +608,7 @@ mod native {
         }
         let sid = current_sid()?;
         let root = super::state_location(windows_drive()?, &sid, agent)?;
-        let _lease = acquire(&sid, agent)?;
+        let _leases = acquire_owner(&sid, agent, true)?;
         let removed = remove_owned_tree(&root, &sid)?;
         let receipt = format!(
             "{{\"schemaVersion\":1,\"kind\":\"native-state-remove\",\"agent\":\"{agent}\",\"stateRoot\":\"{}\",\"removed\":{removed},\"leaseHeld\":true}}\n",
@@ -610,8 +636,8 @@ mod native {
 }
 
 #[cfg(windows)]
-pub fn run(agent: &str) -> Result<(), String> {
-    native::run(agent)
+pub fn run(agent: &str, configuration: bool) -> Result<(), String> {
+    native::run(agent, configuration)
 }
 
 #[cfg(windows)]
@@ -668,12 +694,15 @@ mod tests {
     #[test]
     fn readiness_is_one_bounded_json_line_with_escaped_windows_path() {
         let root = state_location('C', "S-1-5-21-1001", "hermes").unwrap();
-        let line = readiness("hermes", &root, true);
+        let line = readiness("hermes", &root, true, false);
         assert_eq!(
             line,
             "{\"schemaVersion\":1,\"kind\":\"native-state-session\",\"agent\":\"hermes\",\"stateRoot\":\"C:\\\\NemoClawState-S-1-5-21-1001-hermes\",\"created\":true,\"leaseHeld\":true}\n"
         );
         assert_eq!(line.lines().count(), 1);
         assert!(line.len() < 1024);
+        let configuration = readiness("hermes", &root, false, true);
+        assert!(configuration.contains("\"kind\":\"native-state-configuration\""));
+        assert!(!configuration.contains("\"kind\":\"native-state-session\""));
     }
 }

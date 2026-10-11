@@ -4,11 +4,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readOpenedRegularFile } from "./native-security.mts";
 
 const failure = () =>
   new Error(
-    "Chat history could not be upgraded safely. Original files and migration archives are retained. Close OpenClaw and contact support before retrying.",
+    "Chat history could not be upgraded safely. Keep any remaining original files and migration archives. Close OpenClaw and contact support before retrying.",
   );
 
 function inspectPath(file: string) {
@@ -21,6 +22,77 @@ function inspectPath(file: string) {
   )
     throw failure();
   return stat;
+}
+
+function storeDigest(file: string): string {
+  try {
+    const content = readOpenedRegularFile(file, {
+      rejectLinks: true,
+      rejectHardLinks: true,
+      maxBytes: 16 * 1024 * 1024,
+    });
+    if (content === null) throw failure();
+    try {
+      return createHash("sha256").update(content).digest("hex");
+    } finally {
+      content.fill(0);
+    }
+  } catch {
+    throw failure();
+  }
+}
+
+function verifyArchivedStore(
+  store: string,
+  originalDigest: string,
+  report: {
+    targets?: { agentId?: unknown; storePath?: unknown; archivedLegacyStoreFiles?: unknown }[];
+    totals?: { archivedLegacyStoreFiles?: unknown };
+  },
+) {
+  const target =
+    Array.isArray(report.targets) && report.targets.length === 1 ? report.targets[0] : undefined;
+  const archives = target?.archivedLegacyStoreFiles;
+  if (
+    target?.agentId !== "main" ||
+    typeof target.storePath !== "string" ||
+    !path.isAbsolute(target.storePath) ||
+    path.relative(store, target.storePath) !== "" ||
+    report.totals?.archivedLegacyStoreFiles !== 1 ||
+    !Array.isArray(archives) ||
+    archives.length !== 1 ||
+    typeof archives[0] !== "string"
+  )
+    throw failure();
+  const archive: string = archives[0];
+  // Pinned OpenClaw publishes the original store into this sibling directory.
+  const archiveDirectory = path.join(
+    path.dirname(path.dirname(store)),
+    "session-sqlite-import-archive",
+  );
+  if (
+    !path.isAbsolute(archive) ||
+    path.relative(archiveDirectory, path.dirname(archive)) !== "" ||
+    !/^legacy-store\.sessions\.json\.imported-[0-9]+(?:\.[0-9]+)?$/u.test(path.basename(archive))
+  )
+    throw failure();
+  try {
+    for (let current = archiveDirectory; ; current = path.dirname(current)) {
+      if (!inspectPath(current).isDirectory()) throw failure();
+      if (path.dirname(current) === current) break;
+    }
+    if (!inspectPath(archive).isFile() || storeDigest(archive) !== originalDigest) throw failure();
+  } catch {
+    throw failure();
+  }
+  // A dangling link at the old name is not proof that the legacy store was removed.
+  try {
+    fs.lstatSync(store);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw failure();
+  }
+  throw failure();
 }
 
 /** The caller holds the private state lease; no sandbox may be using this tree. */
@@ -105,6 +177,7 @@ export async function migrateNativeOpenClawSessions(options: {
   options.signal?.throwIfAborted();
   const store = inspectLegacyOpenClawSessions(options.home);
   if (!store) return false;
+  const originalDigest = storeDigest(store);
   options.onProgress?.();
   const state = path.join(options.home, ".openclaw");
   const workers = path.join(options.runtimeRoot, "workers");
@@ -113,6 +186,7 @@ export async function migrateNativeOpenClawSessions(options: {
     options.assertHeld();
     options.signal?.throwIfAborted();
     if (inspectLegacyOpenClawSessions(options.home) !== store) throw failure();
+    if (storeDigest(store) !== originalDigest) throw failure();
     const result = await new Promise<string>((resolve, reject) => {
       const child = spawn(
         options.node,
@@ -195,7 +269,9 @@ export async function migrateNativeOpenClawSessions(options: {
       report.totals?.targets !== 1
     )
       throw failure();
+    if (mode === "import") verifyArchivedStore(store, originalDigest, report);
   }
-  if (fs.existsSync(store)) throw failure();
+  options.assertHeld();
+  options.signal?.throwIfAborted();
   return true;
 }

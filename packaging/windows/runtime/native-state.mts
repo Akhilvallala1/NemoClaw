@@ -5,23 +5,35 @@ import { spawn } from "node:child_process";
 import { createNativeDiagnosticCapture } from "./native-session-diagnostics.mts";
 
 export async function acquireNativeStateSession(launcher: string, purpose: string) {
-  return await acquireStateOwner(launcher, purpose, false);
+  return await acquireStateOwner(launcher, purpose, "session");
+}
+
+export async function acquireNativeStateConfiguration(launcher: string, purpose: string) {
+  if (!["openclaw", "hermes"].includes(purpose))
+    throw new Error("Select a supported native agent to configure.");
+  return await acquireStateOwner(launcher, purpose, "configuration");
 }
 
 export async function acquireNativeStateRemoval(launcher: string, purpose: string) {
   if (purpose === "inference")
     throw new Error("Agent removal cannot remove shared inference state.");
-  return await acquireStateOwner(launcher, purpose, true);
+  return await acquireStateOwner(launcher, purpose, "remove");
 }
 
-async function acquireStateOwner(launcher: string, purpose: string, removal: boolean) {
+async function acquireStateOwner(
+  launcher: string,
+  purpose: string,
+  mode: "session" | "configuration" | "remove",
+) {
+  const removal = mode === "remove";
   if (
     !["openclaw", "nemocua", "pi", "hermes", "langchain-deepagents-code", "inference"].includes(
       purpose,
     )
   )
     throw new Error("The native state purpose is invalid.");
-  const child = spawn(launcher, [removal ? "--state-remove" : "--state-session", purpose], {
+  const command = mode === "configuration" ? "--state-configure" : `--state-${mode}`;
+  const child = spawn(launcher, [command, purpose], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -73,7 +85,7 @@ async function acquireStateOwner(launcher: string, purpose: string, removal: boo
             const suffix = `-${purpose}`;
             if (
               record.schemaVersion !== 1 ||
-              record.kind !== (removal ? "native-state-remove" : "native-state-session") ||
+              record.kind !== `native-state-${mode}` ||
               record.agent !== purpose ||
               record.leaseHeld !== true ||
               (removal
