@@ -9,7 +9,7 @@ keywords: ["switch nemoclaw provider", "change inference provider", "nemoclaw in
 content:
   type: "how_to"
 ---
-Move a sandbox to another provider family while keeping the OpenShell route, agent configuration, and host registry aligned.
+Move a sandbox to another provider family while keeping the selected inference path, agent configuration, and host registry aligned.
 Use onboarding first when the target is neither `compatible-endpoint` nor `compatible-anthropic-endpoint` and is not registered.
 The compatible endpoint workflow below can register an absent custom provider from complete route metadata.
 
@@ -77,7 +77,7 @@ The gateway, CLI, TUI, and Web Dashboard all read that shared configuration; a n
 
 <AgentOnly variant="openclaw">
 
-If NemoClaw cannot confirm the native OpenClaw config batch, the OpenShell route and host registry remain committed, but `inference set` exits nonzero.
+For shared-route switches, if NemoClaw cannot confirm the native OpenClaw config batch, the OpenShell route and host registry remain committed, but `inference set` exits nonzero.
 Rerun the same `inference set` command to converge the config.
 A rebuild restores the previous native `openclaw.json`, so it does not repair this failure.
 
@@ -138,6 +138,41 @@ $$nemoclaw inference set \
   --sandbox <name>
 ```
 
+### Hosted Native Attachments
+
+For a sandbox with a native custom attachment, or a switch from another provider family to a hosted compatible endpoint, NemoClaw attaches an endpoint-specific provider only to the selected sandbox.
+It validates the endpoint, API, and provider ownership, then verifies an authenticated model request through that attachment before recording the selection.
+The shared `inference.local` route and other sandboxes remain unchanged.
+A failed native request does not fall back to the shared route.
+
+Run `$$nemoclaw <name> inference get` after the switch.
+Check that it reports the selected provider and model.
+It displays the recorded endpoint when the path is safe to show; otherwise, follow the endpoint recovery guidance in [View the Selected Inference Path](view-active-inference-route).
+The command rejects an attachment that it cannot verify.
+
+To change only the model, omit the endpoint options.
+NemoClaw reuses the recorded attachment and its credential.
+To change the endpoint or API, supply the complete new binding and its credential.
+NemoClaw verifies the new attachment and retires only the selected sandbox's proven-owned departed providers.
+A rebuild preserves the recorded endpoint rather than selecting a new one.
+
+DNS-backed HTTPS endpoints retain the host HTTPS pinning adapter.
+Classified AWS Bedrock Runtime endpoints retain the host credential and translation adapter.
+Refer to [Custom Endpoint Security](../custom-endpoints/custom-endpoint-security) for credential custody and endpoint admission.
+
+If configuration synchronization fails after the selection is recorded, retry the same switch or rebuild the selected sandbox as directed by the error.
+If previous-attachment recovery cannot be verified, resolve the reported sandbox or gateway state before retrying.
+NemoClaw retains ownership records for recovery and cleanup; it does not discard them or use a shared-route fallback.
+
+Supported API-family values are `openai-completions`, `anthropic-messages`, and `openai-responses`.
+For a Hermes `compatible-anthropic-endpoint` target, omit `--inference-api` because NemoClaw selects `openai-completions`.
+An explicit different API family is rejected for that route.
+
+### Host-Local and Retained Shared Routes
+
+Host-local endpoints and existing beta sandboxes without native attachment authority retain their shared-route behavior.
+The following registration, replacement, and recovery rules apply to those selections.
+
 NemoClaw validates the endpoint before it changes the route.
 For an HTTPS IP-literal or DNS-pinned HTTP endpoint, NemoClaw registers and verifies an absent provider before selecting the route.
 If OpenShell still reports the provider as absent, NemoClaw retries the switch once.
@@ -147,10 +182,6 @@ Run `$$nemoclaw <name> inference get` to inspect the selected sandbox's gateway 
 NemoClaw removes the provider only when it can verify the revision created by this switch.
 If removal was not attempted or could not be confirmed, rerun onboarding before using that provider route or retrying the switch.
 For a DNS-backed HTTPS endpoint, NemoClaw registers the HTTPS Pin Runtime provider before the first route attempt.
-
-Supported API-family values are `openai-completions`, `anthropic-messages`, and `openai-responses`.
-For a Hermes `compatible-anthropic-endpoint` target, omit `--inference-api` because NemoClaw selects `openai-completions`.
-An explicit different API family is rejected for that route.
 
 To switch only the model for an existing compatible provider, omit the endpoint options.
 NemoClaw reuses the endpoint in the sandbox registry and verifies the selected route.
@@ -173,9 +204,10 @@ Then rerun onboarding before you use the route.
 
 ## Account for Shared Gateways
 
-One gateway has one live route even when NemoClaw records different intended routes for its sandboxes.
+Shared-route sandboxes on one gateway use one live route, even when NemoClaw records different intended routes for them.
 Review [Use Shared Gateway Routes](use-shared-gateway-routes) before changing a provider that another registered sandbox shares.
-Runtime `inference set` also refuses a change that would leave another registered sandbox with a different recorded route.
+For a shared-route selection, runtime `inference set` refuses a change that would leave another shared-route sandbox with a different recorded route.
+Hosted native attachments are scoped to their selected sandbox and do not change that shared route.
 
 ## Related Topics
 

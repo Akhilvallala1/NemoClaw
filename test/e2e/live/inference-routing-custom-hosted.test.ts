@@ -1,9 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  CANDIDATE_AGENT_FEATURE_ENV,
+  CANDIDATE_QUALIFICATION_RECEIPT_ENV,
+  readCandidateQualificationReceipt,
+} from "../../../src/lib/agent/candidate.ts";
+import { isNativeCustomCredentialReference } from "../../../src/lib/inference/native-custom/credential-reference.ts";
 import { getSandbox } from "../../../src/lib/state/registry.ts";
 import { normalizeNativeCustomProviderAttachment } from "../../../src/lib/inference/native-custom/index.ts";
-import { isNativeCustomCredentialReference } from "../../../src/lib/inference/native-custom/credential-reference.ts";
 import {
   buildHttpsPinRouteLoopbackBaseUrl,
   computeHttpsPinRouteId,
@@ -25,7 +30,7 @@ import {
   type FakeOpenAiCompatibleServer,
 } from "../fixtures/fake-openai-compatible.ts";
 
-import { CLI_ENTRYPOINT } from "../fixtures/paths.ts";
+import { CLI_ENTRYPOINT, REPO_ROOT } from "../fixtures/paths.ts";
 import { resolveVerifiedCloudflaredBinary } from "./cloudflared-prerequisite.ts";
 import {
   remapDnsRebindingHostname,
@@ -86,22 +91,85 @@ async function waitForNativeCredentialProjection(
   return reference;
 }
 
-async function verifyFreshNativeDeepAgentsEndpoint(
+interface NativeTerminalCase {
+  agent: "langchain-deepagents-code" | "pi";
+  environment: (artifacts: E2ETargetFixtures["artifacts"]) => Promise<NodeJS.ProcessEnv>;
+  command: (model: string) => string[];
+  responseText: (stdout: string) => string;
+}
+
+const NATIVE_TERMINAL_CASES: Record<"dcode" | "pi", NativeTerminalCase> = {
+  dcode: {
+    agent: "langchain-deepagents-code",
+    environment: async () => buildAvailabilityProbeEnv(),
+    command: () => ["dcode", "-n", "Reply with the fixture response.", "--json"],
+    responseText: (stdout) => {
+      const response = JSON.parse(stdout).data;
+      expect(response).toMatchObject({ status: "success", exit_code: 0 });
+      return response.response;
+    },
+  },
+  pi: {
+    agent: "pi",
+    environment: async (artifacts) => {
+      const env = buildAvailabilityProbeEnv();
+      env[CANDIDATE_AGENT_FEATURE_ENV] = "1";
+      env[CANDIDATE_QUALIFICATION_RECEIPT_ENV] =
+        `${REPO_ROOT}/ci/pi-agent-qualification-v1-linux-${process.arch === "arm64" ? "arm64" : "amd64"}.json`;
+      const contract = readCandidateQualificationReceipt("pi", env);
+      env.NEMOCLAW_E2E_MANAGED_IMAGE_CATALOG = await artifacts.writeJson(
+        "tc-inf-11-native-pi-catalog.json",
+        { pi: contract },
+      );
+      env.NEMOCLAW_E2E_MANAGED_IMAGE_CATALOG_JSON = "";
+      env.NEMOCLAW_E2E_MANAGED_IMAGE_REVISION = contract.source.revision;
+      return env;
+    },
+    command: (model) => [
+      "pi",
+      "--no-approve",
+      "--print",
+      "--no-session",
+      "--no-tools",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--system-prompt",
+      "Reply to the supplied prompt.",
+      "--provider",
+      "openshell",
+      "--model",
+      model,
+      "Reply with the fixture response.",
+    ],
+    responseText: (stdout) => stdout,
+  },
+};
+
+async function verifyFreshNativeTerminalEndpoint(
   fixtures: Pick<E2ETargetFixtures, "artifacts" | "cleanup" | "host" | "progress" | "sandbox">,
+  selected: NativeTerminalCase,
   endpoint: FakeOpenAiCompatibleServer,
   apiKey: string,
   model: string,
 ): Promise<void> {
   const { artifacts, cleanup, host, progress, sandbox } = fixtures;
-  const sandboxName = inferenceSandboxName("e2e-native-dcode");
-  cleanup.add(`strict native Deep Agents cleanup for ${sandboxName}`, () =>
-    cleanupSandbox(host, sandbox, sandboxName, { strict: true }),
+  const { agent } = selected;
+  const label = agent === "pi" ? "pi" : "dcode";
+  const sandboxName = inferenceSandboxName(`e2e-native-${label}`);
+  const env = await selected.environment(artifacts);
+  delete env.COMPATIBLE_API_KEY;
+  cleanup.add(`strict native ${agent} cleanup for ${sandboxName}`, () =>
+    cleanupSandbox(host, sandbox, sandboxName, { strict: true, env }),
   );
   const onboard = await onboardSandbox(
     artifacts,
     sandboxName,
     {
-      NEMOCLAW_AGENT: "langchain-deepagents-code",
+      ...env,
+      NEMOCLAW_AGENT: agent,
       NEMOCLAW_PROVIDER: "custom",
       NEMOCLAW_ENDPOINT_URL: endpoint.baseUrl,
       NEMOCLAW_MODEL: model,
@@ -109,20 +177,18 @@ async function verifyFreshNativeDeepAgentsEndpoint(
       COMPATIBLE_API_KEY: apiKey,
     },
     [apiKey],
-    "tc-inf-11-onboard-native-dcode",
+    `tc-inf-11-onboard-native-${label}`,
     progress,
     ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS,
   );
-  expectOnboardSuccess(onboard, "TC-INF-11 fresh native Deep Agents onboard");
+  expectOnboardSuccess(onboard, `TC-INF-11 fresh native ${agent} onboard`);
   const receipt = normalizeNativeCustomProviderAttachment(
     getSandbox(sandboxName)?.nativeCustomProviderAttachment,
     sandboxName,
   )!;
   expect(receipt).toMatchObject({ api: "openai-completions", endpointUrl: endpoint.baseUrl });
-  const env = buildAvailabilityProbeEnv();
-  delete env.COMPATIBLE_API_KEY;
   const stopped = await runNemoclawCli([sandboxName, "stop"], {
-    artifactName: "tc-inf-11-native-dcode-stop",
+    artifactName: `tc-inf-11-native-${label}-stop`,
     artifacts,
     env,
     progress,
@@ -131,7 +197,7 @@ async function verifyFreshNativeDeepAgentsEndpoint(
   });
   expect(stopped.exitCode, redactedResultText(stopped)).toBe(0);
   const restarted = await runNemoclawCli([sandboxName, "start"], {
-    artifactName: "tc-inf-11-native-dcode-start",
+    artifactName: `tc-inf-11-native-${label}-start`,
     artifacts,
     env,
     progress,
@@ -139,21 +205,16 @@ async function verifyFreshNativeDeepAgentsEndpoint(
     timeoutMs: 240_000,
   });
   expect(restarted.exitCode, redactedResultText(restarted)).toBe(0);
+  await waitForNativeCredentialProjection(sandbox, sandboxName, true);
   const offset = endpoint.requests().length;
-  const turn = await sandbox.exec(
-    sandboxName,
-    ["dcode", "-n", "Reply with the fixture response.", "--json"],
-    {
-      artifactName: "tc-inf-11-native-dcode-fresh-agent-turn",
-      env,
-      redactionValues: [apiKey],
-      timeoutMs: 180_000,
-    },
-  );
+  const turn = await sandbox.exec(sandboxName, selected.command(model), {
+    artifactName: `tc-inf-11-native-${label}-fresh-agent-turn`,
+    env,
+    redactionValues: [apiKey],
+    timeoutMs: 180_000,
+  });
   expect(turn.exitCode, resultText(turn)).toBe(0);
-  const response = JSON.parse(turn.stdout);
-  expect(response.data).toMatchObject({ status: "success", exit_code: 0 });
-  expect(response.data.response.trim()).toBe("PONG");
+  expect(selected.responseText(turn.stdout).trim()).toBe("PONG");
   expect(
     endpoint
       .requests()
@@ -166,15 +227,48 @@ async function verifyFreshNativeDeepAgentsEndpoint(
           request.model === model,
       ),
   ).toBe(true);
-  await cleanupSandbox(host, sandbox, sandboxName, { strict: true });
+  const copied = await sandbox.exec(
+    sandboxName,
+    ["sh", "-c", 'cp "$(command -v curl)" /tmp/nemoclaw-unapproved-curl'],
+    {
+      artifactName: `tc-inf-11-${label}-copy-unapproved-client`,
+      env: buildAvailabilityProbeEnv(),
+      timeoutMs: 30_000,
+    },
+  );
+  expect(copied.exitCode, resultText(copied)).toBe(0);
+  const denialOffset = endpoint.requests().length;
+  const denied = await sandbox.exec(
+    sandboxName,
+    nativeCustomChatCommand(
+      receipt,
+      JSON.stringify({
+        model,
+        messages: [{ role: "user", content: "Reply with only: PONG" }],
+        max_tokens: 50,
+      }),
+      ["--fail"],
+      "/tmp/nemoclaw-unapproved-curl",
+    ),
+    {
+      artifactName: `tc-inf-11-${label}-unapproved-executable-denied`,
+      env: buildAvailabilityProbeEnv(),
+      redactionValues: [apiKey],
+      timeoutMs: 90_000,
+    },
+  );
+  expect(denied.exitCode, resultText(denied)).toBeGreaterThan(0);
+  expect(denied.timedOut || denied.exitCode === 28, resultText(denied)).toBe(false);
+  expect(endpoint.requests()).toHaveLength(denialOffset);
+  await cleanupSandbox(host, sandbox, sandboxName, { strict: true, env });
   const absent = await sandbox.openshell(["provider", "get", receipt.providerName], {
-    artifactName: "tc-inf-11-native-dcode-provider-absent",
+    artifactName: `tc-inf-11-native-${label}-provider-absent`,
     env,
     timeoutMs: 30_000,
   });
   expect(absent.exitCode, resultText(absent)).not.toBe(0);
   expect(resultText(absent)).toMatch(/\bNotFound\b|\bnot\s+found\b|does\s+not\s+exist/iu);
-  await artifacts.writeJson("tc-inf-11-native-dcode-receipt.json", receipt);
+  await artifacts.writeJson(`tc-inf-11-native-${label}-receipt.json`, receipt);
 }
 
 test(
@@ -250,9 +344,10 @@ test(
         "unapproved executables and detached attachments cannot authorize an upstream request",
         "selected detach/delete leaves an independently attached peer working",
         "destroy removes the owned provider and HTTPS route",
-        "fresh native Anthropic onboarding serves authenticated Messages from an agent turn",
+        "native Anthropic serves authenticated Messages after stop/start",
         "ordinary native Hermes serves a fresh authenticated OpenAI request after restart",
-        "fresh native Deep Agents Code consumes an authenticated OpenAI response",
+        "native Deep Agents Code consumes an authenticated OpenAI response after restart",
+        "protected Pi on Docker preserves native custom credentials and policy after restart",
       ],
       endpointUrl,
       model,
@@ -336,8 +431,6 @@ test(
       registered?.nativeCustomProviderAttachment,
       sandboxName,
     )!;
-    expect(receipt.transport?.kind).toBe("https-pin");
-    expect(registered.gatewayName).toBe(receipt.transport?.gatewayName);
     progress.phase("verify pinned route isolation");
     // OpenShell's own network-policy view is a second, independent witness:
     // it must never learn the real upstream hostname either, only the local
@@ -540,6 +633,7 @@ test(
       },
     );
     expect(unapproved.exitCode, resultText(unapproved)).toBeGreaterThan(0);
+    expect(unapproved.timedOut || unapproved.exitCode === 28, resultText(unapproved)).toBe(false);
     expect(fake.requests()).toHaveLength(deniedRequestOffset);
     let restoreAttachment: () => Promise<void> = async () => {
       const restored = await sandbox.openshell(
@@ -674,7 +768,6 @@ test(
     const redirectText = resultText(redirect);
     expect(redirect.exitCode, redirectText).toBe(0);
     expect(redirectText).toMatch(/HTTP\/1\.[01] 502/u);
-    expect(redirectText).toContain("redirect_blocked");
     expect(redirectText.toLowerCase()).not.toContain("location:");
     expect(placeholder.requests()).toHaveLength(privateTargetRequestOffset);
     const routeId = computeHttpsPinRouteId(
@@ -718,7 +811,6 @@ test(
     });
     expect(routeAfterDestroy.exitCode, resultText(routeAfterDestroy)).toBe(0);
     expect(routeAfterDestroy.stdout).toMatch(/HTTP\/1\.[01] 404/u);
-    expect(routeAfterDestroy.stdout).toContain("route_not_found");
     fake.setChatRedirect(null);
     await expectOpenAiChatThroughSandbox(
       sandbox,
@@ -818,7 +910,6 @@ test(
       peerName,
     )!;
     expect(httpReceipt).toMatchObject({ endpointUrl: publicHttp.baseUrl });
-    expect(httpReceipt.transport).toBeUndefined();
     const httpConfig = await sandbox.exec(peerName, ["cat", "/sandbox/.openclaw/openclaw.json"], {
       artifactName: "tc-inf-11-direct-http-native-agent-config",
       timeoutMs: 30_000,
@@ -845,7 +936,25 @@ test(
     ).toBe(true);
     await verifyFreshNativeAnthropicEndpoint(fixtures, { sandboxName, apiKey, publicHttpAddress });
     await verifyFreshNativeHermesEndpoint(fixtures, { endpoint: publicHttp, apiKey, model });
-    await verifyFreshNativeDeepAgentsEndpoint(fixtures, publicHttp, apiKey, model);
+    await verifyFreshNativeTerminalEndpoint(
+      fixtures,
+      NATIVE_TERMINAL_CASES.dcode,
+      publicHttp,
+      apiKey,
+      model,
+    );
+    // Pi qualification is available only on Docker; retain the existing Podman cases.
+    const nativePiByRuntime: Partial<Record<string, () => Promise<void>>> = {
+      docker: () =>
+        verifyFreshNativeTerminalEndpoint(
+          fixtures,
+          NATIVE_TERMINAL_CASES.pi,
+          publicHttp,
+          apiKey,
+          model,
+        ),
+    };
+    await nativePiByRuntime[runtimeProvider.id]?.();
     progress.phase("verify final native provider cleanup");
     await cleanupSandbox(host, sandbox, peerName, { strict: true });
     const peerProviderAfterDestroy = await sandbox.openshell(

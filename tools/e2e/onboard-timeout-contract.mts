@@ -38,6 +38,8 @@ export const ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES = 75;
 // Ordinary Hermes adds one fresh onboard and a bounded stop/start, config,
 // local agent API request and strict owned cleanup using the existing fixture.
 // Deep Agents Code adds one fresh onboard, agent request and owned cleanup.
+// Docker-only Pi consumes one onboarding bound from the existing operation
+// allowance; the total test and target deadlines remain unchanged.
 export const CUSTOM_HOSTED_LIFECYCLE_OPERATION_BUDGET_MS = 120 * MINUTE_MS;
 export const CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS =
   5 * ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS +

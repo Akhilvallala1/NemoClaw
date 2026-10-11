@@ -10,6 +10,7 @@ export const E2E_AGENT_RUNTIMES = [
   "openclaw + hermes",
   "openclaw + langchain-deepagents-code",
   "openclaw + hermes + langchain-deepagents-code",
+  "openclaw + hermes + langchain-deepagents-code + pi",
   "unresolved",
 ] as const;
 

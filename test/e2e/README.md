@@ -1795,13 +1795,16 @@ with a sandbox-specific native provider. It verifies a fresh OpenClaw turn after
 selected `inference get` and status, DNS pinning, redirect rejection, executable denial,
 detach/reattach, and provider/route deletion. A second native sandbox proves that selected
 detach/delete preserves peer access. After direct public HTTP verification, a fresh native
-Anthropic sandbox proves an authenticated Messages request from a fresh OpenClaw turn.
+Anthropic sandbox proves an authenticated Messages request from a fresh OpenClaw turn after stop/start.
 An ordinary native Hermes sandbox uses the same authenticated public HTTP fixture and proves
 a fresh OpenAI request after stop/start, with native endpoint and scoped credential configuration.
 A fresh native Deep Agents Code sandbox uses the same fixture and proves an authenticated
-selected-model request and response from its installed CLI before scoped cleanup.
-Its 330-minute test deadline contains five 40-minute onboarding bounds, 120 minutes for
-lifecycle operations, and 10 minutes of test headroom.
+selected-model request and response from its installed CLI after stop/start. On Docker, a protected
+Pi sandbox exercises the same native Chat Completions lifecycle using its existing accepted image
+receipt. Both terminal agents verify projected credentials, executable denial and scoped cleanup.
+The 330-minute test deadline is unchanged: its original allocation contains five 40-minute
+onboarding bounds, 120 minutes for lifecycle operations, and 10 minutes of test headroom.
+Pi consumes one 40-minute onboarding bound from that existing lifecycle allowance.
 The target adds 20 minutes of job headroom, for a 350-minute target budget.
 These are maximum deadlines, not expected durations. The fixture owns all selected sandboxes,
 the public tunnel, DNS restoration, and local servers.

@@ -1040,8 +1040,9 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     targetId: "inference-routing",
     shard: "custom-hosted",
     displayName: "Inference: proves native custom hosted lifecycle and isolation",
-    agentRuntime: "openclaw + hermes + langchain-deepagents-code",
-    environmentOrInferenceEndpoint: "Ubuntu; native custom HTTPS, HTTP and Anthropic fixtures",
+    agentRuntime: "openclaw + hermes + langchain-deepagents-code + pi",
+    environmentOrInferenceEndpoint:
+      "Ubuntu; native custom HTTPS, HTTP and Anthropic fixtures; protected Pi on Docker",
     profile: "standard",
     timeoutMinutes: CUSTOM_HOSTED_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
     installMode: "none",

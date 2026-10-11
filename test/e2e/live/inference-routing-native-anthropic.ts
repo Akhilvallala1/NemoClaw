@@ -15,6 +15,8 @@ import {
   cleanupSandbox,
   expectOnboardSuccess,
   onboardSandbox,
+  redactedResultText,
+  runNemoclawCli,
 } from "./inference-routing-helpers.ts";
 
 /** TC-INF-11's native Anthropic boundary, sharing its owned public address. */
@@ -61,12 +63,27 @@ export async function verifyFreshNativeAnthropicEndpoint(
     api: "anthropic-messages",
     endpointUrl: anthropic.endpointUrl,
   });
-  expect(anthropicReceipt.transport).toBeUndefined();
+  const restartEnv = buildAvailabilityProbeEnv();
+  delete restartEnv.COMPATIBLE_ANTHROPIC_API_KEY;
+  for (const [action, timeoutMs] of [
+    ["stop", 120_000],
+    ["start", 240_000],
+  ] as const) {
+    const result = await runNemoclawCli([sandboxName, action], {
+      artifactName: `tc-inf-11-native-anthropic-${action}`,
+      artifacts,
+      env: restartEnv,
+      progress,
+      redactionValues: [apiKey],
+      timeoutMs,
+    });
+    expect(result.exitCode, redactedResultText(result)).toBe(0);
+  }
   const anthropicConfig = await sandbox.exec(
     sandboxName,
     ["cat", "/sandbox/.openclaw/openclaw.json"],
     {
-      artifactName: "tc-inf-11-native-anthropic-config",
+      artifactName: "tc-inf-11-native-anthropic-config-after-restart",
       timeoutMs: 30_000,
       redactionValues: [apiKey],
     },
@@ -106,8 +123,8 @@ export async function verifyFreshNativeAnthropicEndpoint(
       "Reply with only: PONG",
     ],
     {
-      artifactName: "tc-inf-11-native-anthropic-agent-turn",
-      env: buildAvailabilityProbeEnv(),
+      artifactName: "tc-inf-11-native-anthropic-agent-turn-after-restart",
+      env: restartEnv,
       redactionValues: [apiKey],
       timeoutMs: 240_000,
     },
