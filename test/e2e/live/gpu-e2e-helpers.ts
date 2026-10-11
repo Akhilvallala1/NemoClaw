@@ -6,6 +6,7 @@ import path from "node:path";
 import { ownChildProcess } from "../../helpers/child-process-lifecycle.ts";
 
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
+import type { ArtifactSink } from "../fixtures/artifacts.ts";
 import type { HostCliClient } from "../fixtures/clients/host.ts";
 import { resultText } from "../fixtures/clients/index.ts";
 import { type SandboxClient, validateSandboxName } from "../fixtures/clients/sandbox.ts";
@@ -216,6 +217,30 @@ export function assertAgentExecutionSucceeded(
       stage: "assistant",
     }),
   );
+}
+
+/** Retain the serving process result even when the following agent assertion fails. */
+export async function captureManagedRuntimeLogArtifact(
+  artifacts: Pick<ArtifactSink, "writeJson">,
+  phase: "setup" | "pre-approval-agent" | "post-agent",
+  providerId: string,
+  runtimeId: string,
+  capture: () => {
+    status: number | null;
+    error?: { message: string } | null;
+    stdout: string;
+    stderr: string;
+  },
+): Promise<void> {
+  const runtimeLogs = capture();
+  await artifacts.writeJson(`managed-runtime-logs-${phase}.json`, {
+    providerId,
+    runtimeId,
+    status: runtimeLogs.status,
+    error: runtimeLogs.error?.message ?? null,
+    stdout: runtimeLogs.stdout,
+    stderr: runtimeLogs.stderr,
+  });
 }
 
 export async function cleanupGpu(

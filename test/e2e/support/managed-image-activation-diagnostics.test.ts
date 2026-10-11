@@ -22,6 +22,7 @@ import {
   ADMIN_APPROVAL_TEST_OPENSHELL_SH,
 } from "../../support/admin-approval-connect-fixture.ts";
 import { ArtifactSink } from "../fixtures/artifacts.ts";
+import { captureManagedRuntimeLogArtifact } from "../live/gpu-e2e-helpers.ts";
 import {
   captureManagedImageOnboardPairingDiagnostics,
   collectOnboardFailureRuntimeDiagnostics,
@@ -189,6 +190,34 @@ printf '%s\n' "$@" >"$MANAGED_ACTIVATION_FIXTURE/openclaw-args"
 }
 
 describe("managed image activation failure diagnostics", () => {
+  it("retains redacted llama.cpp logs before a failed agent assertion", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-llama-agent-logs-"));
+    const secret = "fixture-runtime-secret";
+    try {
+      const artifacts = new ArtifactSink(directory, [secret]);
+      await captureManagedRuntimeLogArtifact(
+        artifacts,
+        "pre-approval-agent",
+        "docker",
+        "fixture-runtime",
+        () => ({
+          status: 0,
+          error: null,
+          stdout: "",
+          stderr: `agent request failed with ${secret}`,
+        }),
+      );
+      const recorded = fs.readFileSync(
+        path.join(directory, "managed-runtime-logs-pre-approval-agent.json"),
+        "utf8",
+      );
+      expect(recorded).toContain('"status": 0');
+      expect(recorded).toContain("[REDACTED]");
+      expect(recorded).not.toContain(secret);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it.each<{
     diagnostic: string;
     expectedRequestId?: string;

@@ -219,17 +219,24 @@ async function cleanupSandbox(
 
   // Observe absence while the gateway is still running. Public destroy may
   // stop the last gateway after reconciling its registry and provider ownership.
-  const listing = await sandbox.list({
-    artifactName: `cleanup-openshell-sandbox-list-${sandboxName}`,
-    env: rawOpenShellEnv(),
-    timeoutMs: 30_000,
-  });
-  cleanupEvidence.push(probeSummary("openshell sandbox list", listing));
-  const absenceVerified =
-    listing.exitCode === 0 &&
-    !listing.timedOut &&
-    listing.signal === null &&
-    !outputContainsSandbox(listing, sandboxName);
+  let absenceVerified = false;
+  try {
+    const listing = await sandbox.list({
+      artifactName: `cleanup-openshell-sandbox-list-${sandboxName}`,
+      env: rawOpenShellEnv(),
+      timeoutMs: 30_000,
+    });
+    cleanupEvidence.push(probeSummary("openshell sandbox list", listing));
+    absenceVerified =
+      listing.exitCode === 0 &&
+      !listing.timedOut &&
+      listing.signal === null &&
+      !outputContainsSandbox(listing, sandboxName);
+  } catch (error) {
+    cleanupEvidence.push(
+      `openshell sandbox list threw: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   let destroySucceeded = false;
   try {

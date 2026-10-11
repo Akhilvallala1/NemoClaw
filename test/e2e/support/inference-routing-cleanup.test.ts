@@ -27,7 +27,7 @@ function result(stdout = "", exitCode = 0): ShellProbeResult {
     artifacts: { stdout: "", stderr: "", result: "" },
   };
 }
-function fixture(listing: ShellProbeResult, destroy: ShellProbeResult | Error = result()) {
+function fixture(listing: ShellProbeResult | Error, destroy: ShellProbeResult | Error = result()) {
   fs.mkdirSync(path.join(home, ".nemoclaw"), { recursive: true });
   const calls: string[] = [];
   const sandbox = new SandboxClient({
@@ -38,7 +38,7 @@ function fixture(listing: ShellProbeResult, destroy: ShellProbeResult | Error = 
         ["sandbox delete fixture", result()],
       ]).get(command.args.join(" "));
       expect(response, `unsupported command: ${command.args.join(" ")}`).toBeDefined();
-      return response!;
+      return response instanceof Error ? Promise.reject(response) : response!;
     },
   });
   const host = {
@@ -71,6 +71,27 @@ describe("inference routing strict cleanup", () => {
     const f = fixture(response);
     await expect(f.run()).rejects.toThrow("absence was not verified");
     expect(f.calls).toEqual(["sandbox delete fixture", "sandbox list", "public destroy"]);
+  });
+  it("attempts public destroy and clears state when sandbox listing throws (#12558)", async () => {
+    const f = fixture(new Error("gateway read unavailable"));
+    fs.writeFileSync(path.join(home, ".nemoclaw", "onboard-session.json"), "fixture");
+    await expect(f.run()).rejects.toThrow(
+      /absence was not verified[\s\S]*gateway read unavailable/,
+    );
+    expect(f.calls).toEqual(["sandbox delete fixture", "sandbox list", "public destroy"]);
+    expect(fs.existsSync(path.join(home, ".nemoclaw", "onboard-session.json"))).toBe(false);
+  });
+  it("reports both failures and clears state when listing and public destroy throw (#12558)", async () => {
+    const f = fixture(
+      new Error("gateway read unavailable"),
+      new Error("provider retirement unavailable"),
+    );
+    fs.writeFileSync(path.join(home, ".nemoclaw", "onboard-session.json"), "fixture");
+    await expect(f.run()).rejects.toThrow(
+      /absence was not verified[\s\S]*gateway read unavailable[\s\S]*provider retirement unavailable/,
+    );
+    expect(f.calls).toEqual(["sandbox delete fixture", "sandbox list", "public destroy"]);
+    expect(fs.existsSync(path.join(home, ".nemoclaw", "onboard-session.json"))).toBe(false);
   });
   it("does not mistake a sibling's name for the target (#12558)", async () => {
     const f = fixture(result("fixture-sibling Ready\n"));

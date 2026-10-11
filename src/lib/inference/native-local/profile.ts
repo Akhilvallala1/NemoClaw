@@ -69,6 +69,7 @@ export function prepareNativeLocalProfile(input: NativeLocalBinding) {
         },
       ],
       binaries: [
+        "/usr/local/bin/openclaw",
         "/usr/local/bin/node",
         "/usr/bin/node",
         "/usr/bin/python3",
