@@ -285,38 +285,63 @@ describe("managed Hermes state volume", () => {
     expect(foreign.volume).not.toBeNull();
   });
 
-  it("projects and retires the declared OpenClaw state root through the generic volume path", () => {
-    const docker = dockerHarness();
-    const roots = managedStartupStateRoots({
-      agent: "openclaw",
-      sandboxName: "alpha",
-      agentIdentity: managedImageRuntimeIdentity("openclaw"),
-    });
-    const scope = prepareManagedStateVolumes(
-      { roots },
-      {
-        runContainerEngine: docker.runDocker as never,
-        registerExitCleanup: () => () => undefined,
-      },
-    );
+  it.each([
+    ["openclaw", null],
+    ["openclaw", "hermes"],
+    ["openclaw", "openclaw"],
+    ["hermes", "openclaw"],
+    ["hermes", "hermes"],
+  ] as const)(
+    "retires only %s source roots not owned by the recreated target %s",
+    (sourceAgent, targetAgent) => {
+      const docker = dockerHarness();
+      const roots = managedStartupStateRoots({
+        agent: sourceAgent,
+        sandboxName: "alpha",
+        agentIdentity: managedImageRuntimeIdentity(sourceAgent),
+      });
+      const scope = prepareManagedStateVolumes(
+        { roots },
+        {
+          runContainerEngine: docker.runDocker as never,
+          registerExitCleanup: () => () => undefined,
+        },
+      );
 
-    expect(scope?.mounts).toEqual([
-      {
-        type: "volume",
-        source: "nemoclaw-openclaw-state-v1-alpha",
-        target: MANAGED_OPENCLAW_STATE_ROOT,
-        read_only: false,
-      },
-    ]);
-    scope!.commit();
-    expect(
-      removeManagedAgentStateVolumes(
-        { ...context, agentName: "openclaw" },
-        { runDocker: docker.runDocker as never },
-      ),
-    ).toEqual([{ status: "removed" }]);
-    expect(docker.volume).toBeNull();
-  });
+      expect(scope?.mounts).toEqual([
+        {
+          type: "volume",
+          source: `nemoclaw-${sourceAgent}-state-v1-alpha`,
+          target:
+            sourceAgent === "openclaw" ? MANAGED_OPENCLAW_STATE_ROOT : MANAGED_HERMES_STATE_ROOT,
+          read_only: false,
+        },
+      ]);
+      scope!.commit();
+      expect(
+        removeManagedAgentStateVolumes(
+          {
+            ...context,
+            agentName: sourceAgent,
+            retainedRoots: targetAgent
+              ? managedStartupStateRoots({
+                  agent: targetAgent,
+                  sandboxName: "alpha",
+                  agentIdentity: managedImageRuntimeIdentity(targetAgent),
+                })
+              : [],
+          },
+          { runDocker: docker.runDocker as never },
+        ),
+      ).toEqual(targetAgent === sourceAgent ? [] : [{ status: "removed" }]);
+      expect(docker.volume?.name ?? null).toBe(
+        targetAgent === sourceAgent ? `nemoclaw-${sourceAgent}-state-v1-alpha` : null,
+      );
+      expect(docker.calls.filter((args) => args[0] === "rm")).toEqual(
+        targetAgent === sourceAgent ? [] : [["rm", `nemoclaw-${sourceAgent}-state-v1-alpha`]],
+      );
+    },
+  );
 
   it.each([
     ["agent", { ...context, agentName: "openclaw" }],

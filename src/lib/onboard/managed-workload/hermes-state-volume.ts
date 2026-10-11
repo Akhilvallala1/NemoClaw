@@ -7,6 +7,7 @@ import {
   managedHermesStateVolumeName,
   managedStartupStateRoots,
   MANAGED_HERMES_STATE_ROOT,
+  type ManagedStartupStateRoot,
 } from "../managed-startup/state-roots";
 import type {
   RuntimeProviderBundle,
@@ -185,7 +186,9 @@ export function removeManagedHermesStateVolume(
 }
 
 export function removeManagedAgentStateVolumes(
-  context: ManagedHermesStateVolumeContext,
+  context: ManagedHermesStateVolumeContext & {
+    readonly retainedRoots?: readonly ManagedStartupStateRoot[];
+  },
   deps: Pick<
     ManagedHermesStateVolumeDeps,
     | "runDocker"
@@ -207,7 +210,14 @@ export function removeManagedAgentStateVolumes(
       : supportsContainerEngineOperation(runtimeProvider, "workload-cleanup");
   if (!hasCleanupAuthority) return [];
   return removeManagedStateVolumes(
-    { roots: managedAgentStateRoots(context) },
+    {
+      roots: managedAgentStateRoots(context).filter(
+        (source) =>
+          !context.retainedRoots?.some(
+            (target) => target.resourceIdentity === source.resourceIdentity,
+          ),
+      ),
+    },
     genericDeps(deps, context.runtimeProviderId),
   );
 }
