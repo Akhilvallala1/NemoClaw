@@ -403,8 +403,11 @@ export function applyProviderManagedStartupRootRequest(
           }
           const lease = executeExact(
             runtime,
-            ["/usr/bin/env", "-i", ...FIXED_ROOT_ENV, "python3", "-I", "-c", leaseObserver],
-            { timeoutMs: OPENCLAW_OWNER_LEASE_EXECUTION_TIMEOUT_MS },
+            ["/usr/bin/env", "-i", ...FIXED_ROOT_ENV, "python3", "-I", "-"],
+            {
+              input: Buffer.from(leaseObserver, "utf8"),
+              timeoutMs: OPENCLAW_OWNER_LEASE_EXECUTION_TIMEOUT_MS,
+            },
           );
           if (lease.status !== 0 || lease.error) {
             lastFailure = "OpenClaw owner lease did not settle before managed startup";

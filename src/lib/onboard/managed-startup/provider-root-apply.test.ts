@@ -5,6 +5,9 @@ import { spawnSync } from "node:child_process";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { createContainerEngineCommand } from "../../adapters/container-engine";
+import type { ContainerEngineOperationScope } from "../../adapters/container-engine";
+
 import {
   MANAGED_STARTUP_E2E_CORPORATE_CA_PEM,
   managedStartupE2eProfile,
@@ -562,19 +565,22 @@ describe("provider-owned managed startup root application", () => {
           return { status: 0, stdout: "", stderr: "" };
       }
     });
-    const engine = (operation: string) => ({
-      operation,
-      engineId: "podman",
-      displayName: "Podman",
-      authorityId: "podman:test",
+    const engine = (operation: ContainerEngineOperationScope) => ({
+      ...createContainerEngineCommand({
+        operation,
+        engineId: "podman",
+        displayName: "Podman",
+        authorityId: "podman:test",
+        endpointAuthorityId: "podman:test",
+        executable: "podman",
+        capture: (_executable, args, timeoutMs, input) => capture(args, timeoutMs, input),
+      }),
       endpointAuthorityId: "podman:test",
-      capture,
-      captureHost: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
     });
     const runtimeProvider = createPodmanRuntimeProviderBundle({
       engines: {
-        hostDoctor: engine("host-doctor") as never,
-        sandboxLifecycle: engine("sandbox-lifecycle") as never,
+        hostDoctor: engine("host-doctor"),
+        sandboxLifecycle: engine("sandbox-lifecycle"),
       },
     });
     const profile = managedStartupE2eProfile("openclaw", false, true, true);
@@ -644,6 +650,10 @@ describe("provider-owned managed startup root application", () => {
     expect(calls.some(({ args }) => args.includes("--apply-root-stdin"))).toBe(true);
     expect(calls.some(({ args }) => args.includes("--commit-shared-state-transaction"))).toBe(true);
     expect(calls.some(({ args }) => args.includes("--release-startup-hold"))).toBe(true);
+    const observation = calls.find(({ args }) => args.includes("python3"));
+    expect(observation?.args.slice(-3)).toEqual(["python3", "-I", "-"]);
+    expect(observation?.args).toContain("--interactive");
+    expect(observation?.input?.toString("utf8")).toBe(ownerLease.buildOpenClawOwnerLeaseObserver());
     expect(releaseAttempts).toBe(2);
     expect(JSON.stringify(calls.map(({ args }) => args))).not.toContain("docker");
   });
