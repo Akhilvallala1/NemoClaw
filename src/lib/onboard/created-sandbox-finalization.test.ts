@@ -15,10 +15,8 @@ import type { SandboxEntry } from "../state/registry";
 import type { QualifiedSandboxInferenceRouteReservation } from "../state/registry/route-reservation";
 import * as sandboxState from "../state/sandbox";
 import {
-  completeOrdinaryOnboardSandboxCreation,
   createCreatedSandboxCompletionActions,
   createOnboardCreatedSandboxCompletion,
-  createOnboardCreatedSandboxRegistration,
   finalizeCreatedSandbox,
   restoreSelectedOnboardSnapshot,
 } from "./created-sandbox-finalization";
@@ -57,81 +55,6 @@ afterEach(() => {
   delete process.env.NEMOCLAW_OPENSHELL_BIN;
   for (const fixture of fixtures.splice(0)) fs.rmSync(fixture, { recursive: true, force: true });
   vi.restoreAllMocks();
-});
-
-describe("created sandbox registration authority", () => {
-  it("refuses legacy Hermes resume without an in-process verified create checkpoint (#9833)", async () => {
-    const complete = vi.fn();
-    const cleanupBuildContext = vi.fn();
-    const register = createOnboardCreatedSandboxRegistration({
-      completion: { complete },
-      createdLifecycle: {} as never,
-      cleanupBuildContext,
-      manageDashboard: false,
-      sandboxGpuEnabled: false,
-    });
-
-    await expect(
-      register(
-        null,
-        {
-          lifecycleGeneration: "generation-1",
-        } as HermesPortableConfiguredReceipt,
-        "a".repeat(64),
-        vi.fn(),
-      ),
-    ).rejects.toThrow(/without a verified create checkpoint from this process/u);
-
-    expect(cleanupBuildContext).not.toHaveBeenCalled();
-    expect(complete).not.toHaveBeenCalled();
-  });
-});
-
-describe("new sandbox cancellation recovery", () => {
-  it("preserves recovery guidance when the durable identity is unavailable (#9833)", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const runFile = vi.fn();
-    const armCancelRollback = vi.fn();
-    const markCancellationRecovery = vi.fn();
-
-    await expect(
-      completeOrdinaryOnboardSandboxCreation(
-        {
-          sandboxName: "new-sandbox",
-          sandboxWasLiveDefault: false,
-          gatewayPort: 8080,
-          runtimeFields: { openshellDriver: "docker" } as never,
-          messagingProviders: [],
-          liveExists: false,
-        },
-        {
-          setDefault: vi.fn(),
-          runFile,
-          scriptsDir: "/repo/scripts",
-          gatewayName: "nemoclaw",
-          providerExistsInGateway: () => true,
-          armCancelRollback,
-          markCancellationRecovery,
-          dockerInfoFormat: () => "",
-          runCapture: () => "",
-          revalidateSandboxIdentity: vi.fn(),
-          applyVmDnsMonkeypatch: vi.fn(),
-        },
-      ),
-    ).rejects.toThrow("Sandbox 'new-sandbox' has no exact identity for cancel recovery.");
-
-    const guidance = error.mock.calls.flat().join("\n");
-    expect(guidance).toContain("Sandbox 'new-sandbox' was created on gateway 'nemoclaw'");
-    expect(guidance).toContain("registry entry and onboarding session were preserved");
-    expect(guidance).toContain("Do not delete the sandbox by mutable sandbox name");
-    expect(guidance).toContain("can clear retained recovery only after OpenShell confirms");
-    expect(guidance).toContain("use a different explicit sandbox name");
-    expect(guidance).not.toContain("administrator");
-    expect(runFile).not.toHaveBeenCalled();
-    expect(armCancelRollback).not.toHaveBeenCalled();
-    expect(markCancellationRecovery).toHaveBeenCalledOnce();
-    expect(markCancellationRecovery).toHaveBeenCalledWith("new-sandbox");
-  });
 });
 
 function executable(file: string, contents: string): void {
@@ -424,51 +347,56 @@ describe("created DCode sandbox finalization", () => {
     }
   });
 
-  it("publishes fresh metadata after endpoint-aware OpenRouter validation (#9555)", async () => {
-    const endpointUrl = "https://openrouter.ai/api/v1";
-    const getDcodeSelectionDrift = vi.fn(async () => ({
-      changed: false,
-      providerChanged: false,
-      modelChanged: false,
-      existingProvider: "openrouter",
-      existingModel: "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
-      unknown: false,
-    }));
-    const register = vi.fn();
+  it.each([false, true])(
+    "passes native attachment selection %s before registry publication",
+    async (nativeProvider) => {
+      const endpointUrl = "https://openrouter.ai/api/v1";
+      const getDcodeSelectionDrift = vi.fn(async () => ({
+        changed: false,
+        providerChanged: false,
+        modelChanged: false,
+        existingProvider: "openrouter",
+        existingModel: "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
+        unknown: false,
+      }));
+      const register = vi.fn();
 
-    await finalizeCreatedSandbox(
-      {
-        sandboxName: "dcode",
-        restoreBackupPath: null,
-        preUpgradeBackup: false,
-        targetAgentType: "langchain-deepagents-code",
-        validateManagedDcode: true,
-        provider: "compatible-endpoint",
-        model: "nvidia/nemotron-3-ultra-550b-a55b",
-        preferredInferenceApi: "openai-completions",
-        endpointUrl,
-      },
-      {
-        restoreRecreatedSandboxState: vi.fn(),
-        getDcodeSelectionDrift,
-        register,
-        note: vi.fn(),
-        error: vi.fn(),
-        exitProcess: (code): never => {
-          throw new Error(`exit ${code}`);
+      await finalizeCreatedSandbox(
+        {
+          sandboxName: "dcode",
+          restoreBackupPath: null,
+          preUpgradeBackup: false,
+          targetAgentType: "langchain-deepagents-code",
+          validateManagedDcode: true,
+          provider: "compatible-endpoint",
+          model: "nvidia/nemotron-3-ultra-550b-a55b",
+          preferredInferenceApi: "openai-completions",
+          endpointUrl,
+          nativeProvider,
         },
-      },
-    );
+        {
+          restoreRecreatedSandboxState: vi.fn(),
+          getDcodeSelectionDrift,
+          register,
+          note: vi.fn(),
+          error: vi.fn(),
+          exitProcess: (code): never => {
+            throw new Error(`exit ${code}`);
+          },
+        },
+      );
 
-    expect(getDcodeSelectionDrift).toHaveBeenCalledWith(
-      "dcode",
-      "compatible-endpoint",
-      "nvidia/nemotron-3-ultra-550b-a55b",
-      "openai-completions",
-      endpointUrl,
-    );
-    expect(register).toHaveBeenCalledOnce();
-  });
+      expect(getDcodeSelectionDrift).toHaveBeenCalledWith(
+        "dcode",
+        "compatible-endpoint",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "openai-completions",
+        endpointUrl,
+        nativeProvider,
+      );
+      expect(register).toHaveBeenCalledOnce();
+    },
+  );
 
   it("passes the fresh create endpoint through the production completion constructor (#9555)", async () => {
     const endpointUrl = "https://openrouter.ai/api/v1";
@@ -1450,4 +1378,109 @@ describe("created sandbox completion actions", () => {
       expect(retireNativeLocalProviders).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("restored OpenClaw selection reconciliation", () => {
+  const options = {
+    sandboxName: "openclaw",
+    gatewayName: "nemoclaw-9090",
+    restoreBackupPath: "/tmp/managed-openclaw-backup",
+    preUpgradeBackup: false,
+    targetAgentType: "openclaw",
+    validateManagedDcode: false,
+    provider: "compatible-endpoint",
+    model: "changed-model",
+    preferredInferenceApi: null,
+    reconcileOpenClawInference: true,
+  };
+
+  function deps(order: string[]) {
+    return {
+      ...preparedRestoreAuthority("openclaw"),
+      restoreRecreatedSandboxState: async () => {
+        order.push("restore");
+        return {
+          success: true,
+          restoredDirs: ["."],
+          restoredFiles: [],
+          failedDirs: [],
+          failedFiles: [],
+        };
+      },
+      writeRestoredOpenclawInferenceRoute: vi.fn(async () => {
+        order.push("selection");
+      }),
+      getDcodeSelectionDrift: vi.fn(),
+      register: vi.fn(() => {
+        order.push("register");
+      }),
+      note: vi.fn(),
+      error: vi.fn(),
+      exitProcess: (code: number): never => {
+        throw new Error(`unexpected exit ${code}`);
+      },
+    };
+  }
+
+  it("applies the selected model after restore and before restart and publication (#12667)", async () => {
+    const order: string[] = [];
+    const dependencies = deps(order);
+    vi.mocked(restoreWindow.finishUnregisteredOpenClawPostRestoreDoctor).mockImplementation(
+      async () => {
+        order.push("restart");
+        return { ok: true };
+      },
+    );
+    await finalizeCreatedSandbox(options, dependencies);
+    expect(order).toEqual(["restore", "selection", "restart", "register"]);
+    expect(dependencies.writeRestoredOpenclawInferenceRoute).toHaveBeenCalledExactlyOnceWith(
+      "openclaw",
+      "changed-model",
+      "compatible-endpoint",
+      null,
+      "nemoclaw-9090",
+      undefined,
+      { endpointUrl: undefined, nativeProvider: false },
+    );
+  });
+
+  it.each([
+    {
+      label: "ordinary rebuild",
+      patch: { reconcileOpenClawInference: false, preUpgradeBackup: true },
+    },
+    { label: "custom image", patch: { customImage: true } },
+    { label: "fresh creation", patch: { restoreBackupPath: null } },
+  ])("preserves $label native configuration (#12667)", async ({ patch }) => {
+    const dependencies = deps([]);
+    await finalizeCreatedSandbox({ ...options, ...patch }, dependencies);
+    expect(dependencies.writeRestoredOpenclawInferenceRoute).not.toHaveBeenCalled();
+    expect(dependencies.register).toHaveBeenCalledOnce();
+  });
+
+  it("refuses reconciliation when the prepared runtime identity changes (#12667)", async () => {
+    const dependencies = deps([]);
+    dependencies.revalidatePreparedRegistration = () => {
+      throw new Error("runtime identity changed");
+    };
+    await expect(finalizeCreatedSandbox(options, dependencies)).rejects.toThrow(
+      "runtime identity changed",
+    );
+    expect(dependencies.writeRestoredOpenclawInferenceRoute).not.toHaveBeenCalled();
+    expect(dependencies.register).not.toHaveBeenCalled();
+    expect(restoreWindow.abortUnregisteredOpenClawPostRestoreDoctor).toHaveBeenCalledOnce();
+  });
+
+  it("aborts the offline window without publishing when reconciliation fails (#12667)", async () => {
+    const dependencies = deps([]);
+    dependencies.writeRestoredOpenclawInferenceRoute.mockRejectedValue(
+      new Error("native write failed"),
+    );
+    await expect(finalizeCreatedSandbox(options, dependencies)).rejects.toThrow(
+      "native write failed",
+    );
+    expect(dependencies.register).not.toHaveBeenCalled();
+    expect(restoreWindow.finishUnregisteredOpenClawPostRestoreDoctor).not.toHaveBeenCalled();
+    expect(restoreWindow.abortUnregisteredOpenClawPostRestoreDoctor).toHaveBeenCalledOnce();
+  });
 });

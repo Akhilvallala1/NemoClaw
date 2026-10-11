@@ -6,7 +6,7 @@ import {
   type NativeLocalProviderAttachment,
 } from "../../inference/native-local/contract";
 import { GATEWAY_PORT } from "../../core/ports";
-import { normalizeNativeNvidiaProviderAttachment } from "../../inference/native-nvidia";
+import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import {
   resolveGatewayPortFromName,
   resolveSandboxGatewayName,
@@ -20,6 +20,7 @@ export type DcodeRebuildRegistryEntry = SandboxGatewayBinding & {
   dashboardPort?: number | null;
   nativeNvidiaProviderAttachment?: unknown;
   nativeLocalProviderAttachment?: unknown;
+  nativeHostedProviderAttachment?: unknown;
 };
 
 export type DcodeRebuildResumeConfig = {
@@ -32,6 +33,7 @@ export type DcodeRebuildResumeConfig = {
 export type ResolvedDcodeRebuildTarget = {
   nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeProvider?: boolean;
+  nativeEndpointUrl?: string;
   agent: typeof DCODE_AGENT_NAME;
   gatewayName: string;
   gatewayPort: number;
@@ -76,6 +78,10 @@ export function resolveDcodeRebuildTarget(
   if (entry.nativeLocalProviderAttachment !== undefined && !nativeLocalProviderAttachment) {
     throw new Error("Malformed native local provider attachment; sandbox is untouched");
   }
+  const nativeAttachment = recordedNativeProviderAttachment({
+    ...entry,
+    provider: resumeConfig.provider,
+  });
   return {
     agent: DCODE_AGENT_NAME,
     gatewayName,
@@ -84,8 +90,13 @@ export function resolveDcodeRebuildTarget(
     model: requiredString(resumeConfig.model, "inference model"),
     preferredInferenceApi: resumeConfig.preferredInferenceApi,
     ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
-    ...(normalizeNativeNvidiaProviderAttachment(entry.nativeNvidiaProviderAttachment)
-      ? { nativeProvider: true }
+    ...(nativeAttachment
+      ? {
+          nativeProvider: true,
+          ...(nativeAttachment.endpointUrl
+            ? { nativeEndpointUrl: nativeAttachment.endpointUrl }
+            : {}),
+        }
       : {}),
   };
 }

@@ -122,8 +122,8 @@ import {
   type ProbeTimingRecorder,
   publicationFromDecision,
   publishLaunchReadiness,
-  getNativeNvidiaProviderAttachment,
-  requireNativeNvidiaInferenceHealth,
+  getNativeProviderAttachment,
+  requireNativeInferenceHealth,
   settlePortableOpenClawPairing,
   withLaunchReadinessMutationGate,
 } from "./launch-readiness";
@@ -1717,9 +1717,9 @@ async function ensureSandboxInferenceRouteUnlocked(
     assertNoOpenShellGatewayEndpointOverride();
     const { provider, model } = inference;
     const gatewayName = getPersistedSandboxTargetGatewayName(sb);
-    const nativeNvidiaAttachment = getNativeNvidiaProviderAttachment(sb);
-    if (nativeNvidiaAttachment || sb.nativeLocalProviderAttachment !== undefined) {
-      await requireNativeNvidiaInferenceHealth({
+    const nativeAttachment = getNativeProviderAttachment(sb);
+    if (nativeAttachment || sb.nativeLocalProviderAttachment !== undefined) {
+      await requireNativeInferenceHealth({
         sandboxName,
         gatewayName,
         agentName: agent?.name,
@@ -1880,7 +1880,7 @@ async function ensureSandboxInferenceRoute(
   if (registry.getSandboxEntryInference(snapshot).kind !== "configured")
     return { sandbox: snapshot, routeHealthy: null };
   if (
-    getNativeNvidiaProviderAttachment(snapshot) ||
+    getNativeProviderAttachment(snapshot) ||
     snapshot.nativeLocalProviderAttachment !== undefined
   ) {
     return ensureSandboxInferenceRouteUnlocked(sandboxName, agent, { quiet });

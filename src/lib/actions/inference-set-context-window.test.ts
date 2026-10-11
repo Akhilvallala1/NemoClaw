@@ -11,7 +11,7 @@ import {
   createCompatibleProviderCapture,
   createDeps,
   nativeLocalTestReceipt,
-} from "./inference-set.test-support";
+} from "../../../test/helpers/inference-set";
 
 describe("runInferenceSet context window", () => {
   const ollamaConfig = (): ConfigObject => ({

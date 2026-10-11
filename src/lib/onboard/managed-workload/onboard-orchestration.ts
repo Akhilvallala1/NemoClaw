@@ -199,6 +199,7 @@ export interface CreateManagedWorkloadOnboardRuntimeInput {
   readonly preferredInferenceApi: string | null;
   readonly endpointUrl: string | null;
   readonly nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
+  readonly nativeProvider?: boolean;
   readonly startupProfile: ManagedProfileInput;
   readonly note: (message: string) => void;
   readonly fallbackBuildEstimate: () => string | null;
@@ -411,6 +412,7 @@ export function createManagedWorkloadOnboardRuntime(
       selectedModel,
       selectedProvider,
       inferenceApi,
+      input.nativeProvider ?? true,
       endpointUrl,
     );
     preparedProfile = buildManagedStartupOnboardProfile({

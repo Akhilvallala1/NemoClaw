@@ -10,6 +10,7 @@ import {
   nativeLocalCredentialReference,
   NATIVE_LOCAL_CREDENTIAL_ENV,
 } from "../../src/lib/inference/native-local/agent-config.ts";
+import { nativeHostedAgentConfig } from "../../src/lib/inference/native-provider/agent-config.ts";
 
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -168,17 +169,25 @@ function providerConfigLines(
   reasoningEffort: ReasoningEffort | null,
   upstreamProvider: string,
 ): string[] {
+  const nativeHosted = nativeHostedAgentConfig(upstreamProvider, baseUrl);
   const apiKeyEnv = nativeLocalCredentialReference(upstreamProvider, baseUrl)
     ? NATIVE_LOCAL_CREDENTIAL_ENV
     : baseUrl === NVIDIA_HOSTED_NATIVE_ENDPOINT
       ? ATTACHED_PROVIDER_API_KEY_ENV
-      : MANAGED_INFERENCE_API_KEY_ENV;
+      : (nativeHosted?.credentialEnv ?? MANAGED_INFERENCE_API_KEY_ENV);
   return [
     `[models.providers.${provider}]`,
     `models = ${tomlArray([model])}`,
     `api_key_env = ${tomlString(apiKeyEnv)}`,
     `base_url = ${tomlString(baseUrl)}`,
     "enabled = true",
+    ...(nativeHosted?.headers
+      ? [
+          "",
+          `[models.providers.${provider}.params.${tomlString(model)}]`,
+          `default_headers = { "HTTP-Referer" = "https://www.nvidia.com/nemoclaw/", "X-OpenRouter-Title" = "NVIDIA NemoClaw" }`,
+        ]
+      : []),
     ...(provider === "openai"
       ? [
           "",

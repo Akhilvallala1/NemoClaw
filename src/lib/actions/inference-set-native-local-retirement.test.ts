@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { retireUnselectedNativeLocalProviders } from "../inference/native-local/selection";
 import type { OpenShellProviderAdapter } from "../adapters/openshell/provider-adapter";
 import { runInferenceSet } from "./inference-set";
-import { createDeps, nativeLocalTestReceipt } from "./inference-set.test-support";
+import { createDeps, nativeLocalTestReceipt } from "../../../test/helpers/inference-set";
 import type { NativeLocalProviderAttachment } from "../inference/native-local/contract";
 
 function fixture() {

@@ -34,6 +34,7 @@ const CONTEXT_DOCKERFILE_RELATIVE_PATH = "Dockerfile" as const;
 // must carry that hold and its identity-bound completion/release protocol.
 const LOCAL_COPY_SOURCES = [
   "agents/hermes/a2a-neutral.patch",
+  "agents/hermes/check-native-credentials.ts",
   "agents/hermes/config/",
   "agents/hermes/cron-restore-control.py",
   "agents/hermes/dashboard-external-host.patch",
@@ -88,6 +89,9 @@ const LOCAL_COPY_SOURCES = [
   "src/lib/actions/sandbox/openshell-child-visible-credentials.v0.0.116.json",
   "src/lib/hermes-managed-route.ts",
   "src/lib/inference/native-local/agent-config.ts",
+  "src/lib/inference/native-provider/agent-config.ts",
+  "src/lib/inference/native-provider/contract.ts",
+  "src/lib/inference/native-provider/hosted.ts",
   "src/lib/inference-credential.ts",
   "src/lib/messaging/",
   "src/lib/messaging/channels/googlechat/runtime/hermes-adapter.py",

@@ -2,24 +2,39 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { prepareNativeLocalProfile } from "../../inference/native-local/profile";
-type NativeLocalBinding = Parameters<typeof prepareNativeLocalProfile>[0];
 
-type NativeBoundary = {
-  id: string;
-  credentialEnv: string;
-  endpointUrl: string;
-  allowedIps: readonly string[];
-  binaries: readonly string[];
-};
-
-type NativeProfileResponse = Readonly<{
+type NativeProfileResponse<Id extends string> = Readonly<{
   profile: Readonly<{
-    id: string;
+    id: Id;
     source: "user";
     scope: "platform" | "workspace";
     resourceVersion: bigint | string;
   }>;
 }>;
+
+export type NativeProfileBoundary<Id extends string = string> = Readonly<{
+  profileId: Id;
+  credentialEnv: string;
+  authStyle: "bearer" | "header";
+  headerName: string;
+  host: string;
+  port?: number;
+  allowedIps?: readonly string[];
+  binaries?: readonly string[];
+  rules: readonly Readonly<{ method: "GET" | "POST"; path: string }>[];
+}>;
+
+const nvidiaBoundary = {
+  profileId: "nemoclaw-nvidia-inference-v1",
+  credentialEnv: "NVIDIA_INFERENCE_API_KEY",
+  authStyle: "bearer",
+  headerName: "authorization",
+  host: "integrate.api.nvidia.com",
+  rules: [
+    { method: "GET", path: "/v1/models" },
+    { method: "POST", path: "/v1/chat/completions" },
+  ],
+} as const satisfies NativeProfileBoundary;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -44,15 +59,15 @@ function stringArrayEquals(value: unknown, expected: readonly string[]): boolean
   );
 }
 
-function nativeCredential(value: unknown, credentialEnv: string): boolean {
+function nativeCredential(value: unknown, expected: NativeProfileBoundary): boolean {
   const credential = record(value);
   return (
     credential !== null &&
     credential.name === "api_key" &&
-    stringArrayEquals(credential.envVars, [credentialEnv]) &&
+    stringArrayEquals(credential.envVars, [expected.credentialEnv]) &&
     credential.required === true &&
-    credential.authStyle === "bearer" &&
-    credential.headerName === "authorization" &&
+    credential.authStyle === expected.authStyle &&
+    credential.headerName === expected.headerName &&
     credential.queryParam === "" &&
     credential.pathTemplate === "" &&
     credential.refresh === undefined &&
@@ -77,24 +92,22 @@ function nativeRule(value: unknown, method: "GET" | "POST", path: string): boole
   );
 }
 
-function nativeEndpoint(value: unknown, expected: NativeBoundary): boolean {
-  const url = new URL(expected.endpointUrl);
+function nativeEndpoint(value: unknown, expected: NativeProfileBoundary): boolean {
   const endpoint = record(value);
   const rules = endpoint?.rules;
   return (
     endpoint !== null &&
-    endpoint.host === url.hostname &&
-    endpoint.port === Number(url.port || (url.protocol === "https:" ? 443 : 80)) &&
+    endpoint.host === expected.host &&
+    endpoint.port === (expected.port ?? 443) &&
     emptyArray(endpoint.ports) &&
     endpoint.protocol === "rest" &&
     endpoint.tls === "" &&
     endpoint.enforcement === "enforce" &&
     endpoint.access === "" &&
     Array.isArray(rules) &&
-    rules.length === 2 &&
-    nativeRule(rules[0], "GET", `${url.pathname}/models`) &&
-    nativeRule(rules[1], "POST", `${url.pathname}/chat/completions`) &&
-    stringArrayEquals(endpoint.allowedIps, expected.allowedIps) &&
+    rules.length === expected.rules.length &&
+    expected.rules.every((rule, index) => nativeRule(rules[index], rule.method, rule.path)) &&
+    stringArrayEquals(endpoint.allowedIps, expected.allowedIps ?? []) &&
     emptyArray(endpoint.denyRules) &&
     endpoint.allowEncodedSlash === false &&
     endpoint.persistedQueries === "" &&
@@ -113,19 +126,28 @@ function nativeEndpoint(value: unknown, expected: NativeBoundary): boolean {
   );
 }
 
-function nativeBinaries(value: unknown, expected: readonly string[]): boolean {
+function nativeBinaries(value: unknown, expected?: readonly string[]): boolean {
   if (!Array.isArray(value)) return false;
+  const paths = value.map((item) => record(item)?.path);
   return stringArrayEquals(
-    value.map((item) => record(item)?.path),
-    expected,
+    paths,
+    expected ?? [
+      "/usr/local/bin/node",
+      "/usr/bin/node",
+      "/opt/hermes/.venv/bin/python",
+      "/opt/hermes/.venv/bin/python3",
+      "/opt/venv/bin/python3",
+      "/usr/local/bin/curl",
+      "/usr/bin/curl",
+    ],
   );
 }
 
 /** Verify the live custom profile at the credential, egress, and binary security boundary. */
-function isManagedNativeProfileResponse(
+export function isManagedNativeProfileResponse<Id extends string>(
   value: unknown,
-  expected: NativeBoundary,
-): value is NativeProfileResponse {
+  expected: NativeProfileBoundary<Id>,
+): value is NativeProfileResponse<Id> {
   const response = record(value);
   const profile = record(response?.profile);
   const revision = profile?.resourceVersion;
@@ -133,7 +155,7 @@ function isManagedNativeProfileResponse(
   const endpoints = profile?.endpoints;
   return (
     profile !== null &&
-    profile.id === expected.id &&
+    profile.id === expected.profileId &&
     profile.source === "user" &&
     (profile.scope === "platform" || profile.scope === "workspace") &&
     (typeof revision === "bigint" || typeof revision === "string") &&
@@ -142,7 +164,7 @@ function isManagedNativeProfileResponse(
     profile.discovery === undefined &&
     Array.isArray(credentials) &&
     credentials.length === 1 &&
-    nativeCredential(credentials[0], expected.credentialEnv) &&
+    nativeCredential(credentials[0], expected) &&
     Array.isArray(endpoints) &&
     endpoints.length === 1 &&
     nativeEndpoint(endpoints[0], expected) &&
@@ -152,36 +174,30 @@ function isManagedNativeProfileResponse(
 
 export function isManagedNativeNvidiaProfileResponse(
   value: unknown,
-): value is NativeProfileResponse {
-  return isManagedNativeProfileResponse(value, {
-    id: "nemoclaw-nvidia-inference-v1",
-    credentialEnv: "NVIDIA_INFERENCE_API_KEY",
-    endpointUrl: "https://integrate.api.nvidia.com/v1",
-    allowedIps: [],
-    binaries: [
-      "/usr/local/bin/node",
-      "/usr/bin/node",
-      "/opt/hermes/.venv/bin/python",
-      "/opt/hermes/.venv/bin/python3",
-      "/opt/venv/bin/python3",
-      "/usr/local/bin/curl",
-      "/usr/bin/curl",
-    ],
-  });
+): value is NativeProfileResponse<typeof nvidiaBoundary.profileId> {
+  return isManagedNativeProfileResponse(value, nvidiaBoundary);
 }
 
 export function isManagedNativeLocalProfileResponse(
   value: unknown,
-  binding: NativeLocalBinding,
-): value is NativeProfileResponse {
+  binding: Parameters<typeof prepareNativeLocalProfile>[0],
+): value is NativeProfileResponse<string> {
   const expected = prepareNativeLocalProfile(binding);
   const endpoint = expected.document.endpoints[0];
   if (!endpoint) return false;
+  const url = new URL(binding.endpointUrl);
   return isManagedNativeProfileResponse(value, {
-    id: expected.profileId,
+    profileId: expected.profileId,
     credentialEnv: binding.credentialEnv,
-    endpointUrl: binding.endpointUrl,
+    authStyle: "bearer",
+    headerName: "authorization",
+    host: url.hostname,
+    port: Number(url.port || (url.protocol === "https:" ? 443 : 80)),
     allowedIps: endpoint.allowed_ips,
     binaries: expected.document.binaries,
+    rules: [
+      { method: "GET", path: `${url.pathname}/models` },
+      { method: "POST", path: `${url.pathname}/chat/completions` },
+    ],
   });
 }

@@ -59,6 +59,7 @@ function mockManagedVllmSource(
     "vllm-local",
     model,
     "openai-completions",
+    native,
     native ? "http://host.openshell.internal:18000/v1" : undefined,
   );
   const environment: NodeJS.ProcessEnv = {};
