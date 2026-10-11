@@ -505,7 +505,7 @@ npx tsx tools/e2e/credential-free-tests.mts
 OpenShell target work in issue #9872. The trusted workflow downloads and
 verifies the exact OpenShell SDK archive with package-read permission. The
 candidate job receives the archive but no package credential. It calls a local
-OpenShell 0.0.116 gateway over HTTPS with an explicit CA. The target confirms
+OpenShell 0.1.2 gateway over HTTPS with an explicit CA. The target confirms
 that its configured authentication file path does not exist before and after
 the health request. A successful request proves that public health does not
 require a credential read or make an authenticated gateway call.
@@ -556,7 +556,7 @@ Successful-export schema, secret, and pinned-consumer checks remain on Docker be
 The fixture contract and runtime refusal are covered in `support/e2e-phase-config-export-validation.test.ts`.
 
 The OpenClaw shard of the pinned Docker `mcp-bridge` target also owns Error-state recovery for
-OpenShell 0.0.116. After its healthy-source rebuild checks, it kills only the runtime bound to the
+OpenShell 0.1.2. After its healthy-source rebuild checks, it kills only the runtime bound to the
 test-created native sandbox ID, observes Error, and rebuilds without reintroducing the MCP host
 secret. A different container must preserve a workspace marker and complete the authenticated MCP
 tool call with the existing denial rule. The Podman and explicit-only development-runtime targets
@@ -1104,6 +1104,14 @@ syntax, retaining a read-only source on both engines. Each test declares its own
 phase callbacks; helpers invoke them only when the corresponding operation starts.
 Migration and activation results remain separate, including their cleanup evidence.
 
+`managed-state-volume-migration.test.ts` connects the onboarding lifecycle to the
+production create-plan materializer for Docker and Podman. It checks the selected
+mount in the generated driver configuration and retry after a rejected plan.
+A verified copy remains selected after plan rejection; the original remains untouched.
+This is deterministic wiring evidence, not proof of attachment to a running sandbox.
+When inference setup fails before sandbox creation, as tracked in #12558, activation
+does not prove that attachment. The independent copy test does not close that gap.
+
 The migration case fits the existing assertion budget by removing duplicate or
 deterministic checks from the activation helper:
 
@@ -1166,7 +1174,7 @@ then uploads the verified bytes under a content-addressed name with the shared
 14-day E2E retention policy.
 
 `mcp-bridge-dev` is an explicit-only compatibility lane. Empty-selector full-suite
-dispatches qualify the exact stable OpenShell 0.0.116 product contract and do not
+dispatches qualify the exact stable OpenShell 0.1.2 product contract and do not
 select the development runtime.
 
 The OpenClaw, Hermes, and LangChain Deep Agents Code shards restore and verify that same artifact with the trusted workflow revision.

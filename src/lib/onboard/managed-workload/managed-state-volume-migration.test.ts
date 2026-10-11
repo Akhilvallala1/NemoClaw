@@ -17,6 +17,7 @@ import {
 } from "./managed-state-volumes";
 import { MANAGED_STATE_COPY_IMAGE } from "./managed-state-volume-copy";
 import { createManagedStateVolumeOnboardLifecycle } from "./onboard-orchestration";
+import { materializeSandboxCreatePlan, resolveSandboxCreateIntent } from "../sandbox-create-plan";
 import type { RuntimeProviderBundle } from "../runtime-provider/contract";
 
 import {
@@ -55,11 +56,69 @@ describe("retained managed volume migration", () => {
       expect(h.volumes.size).toBe(1);
       expect(h.calls.every((args) => args[0] === "volume" && args[1] === "inspect")).toBe(true);
       h.attached.delete(h.source.Name);
-      await lifecycle.materializeSandboxCreatePlan({} as never, async (input) => {
-        expect(input.managedStateMountDriverId).toBe(providerId);
-        expect(input.managedStateMounts?.[0]?.source).not.toBe(h.source.Name);
-        return {} as never;
+      const materializeInput = {
+        intent: resolveSandboxCreateIntent({
+          basePolicyPath: "/repo/policy.yaml",
+          sandboxName: "alpha",
+          channels: [],
+          enabledChannels: [],
+          disabledChannelNames: new Set<string>(),
+          messagingProviderRequests: [],
+          primaryMessagingCredentialEnvKeys: [],
+          reusableMessagingChannels: [],
+          reusableMessagingProviders: [],
+          hermesToolGateways: [],
+          sandboxGpuConfig: {
+            sandboxGpuEnabled: false,
+            sandboxGpuDevice: null,
+            hostGpuDetected: false,
+          },
+          gpuCreateArgs: [],
+          gpuRoutePlan: "none",
+          sandboxGpuLogMessage: null,
+          agentName: "openclaw",
+        }),
+        fromRef: MANAGED_STATE_COPY_IMAGE,
+        messagingTokenDefs: [],
+        prepareInitialSandboxCreatePolicy: () => ({
+          policyPath: "/tmp/policy.yaml",
+          appliedPresets: [],
+        }),
+        upsertMessagingProviders: () => [],
+        getHermesToolGatewayProviderName: () => "unused",
+      };
+      await expect(
+        lifecycle.materializeSandboxCreatePlan(
+          {
+            ...materializeInput,
+            intent: {
+              ...materializeInput.intent,
+              hostMounts: [{ source: "/host/state", target: h.root.mountTarget, readOnly: true }],
+            },
+          },
+          materializeSandboxCreatePlan,
+        ),
+      ).rejects.toThrow("conflicts with the managed state root");
+      // A verified copy survives later plan rejection; commit does not roll the journal back.
+      const selected = resolveMigratedManagedStateRoot(h.root, h.context).resourceIdentity;
+      expect(selected).not.toBe(h.source.Name);
+      expect([h.source.bytes, h.volumes.get(selected)!.bytes]).toEqual([
+        "retained user state",
+        "retained user state",
+      ]);
+      const copies = h.calls.filter((args) => args[0] === "start").length;
+      const plan = await lifecycle.materializeSandboxCreatePlan(
+        materializeInput,
+        materializeSandboxCreatePlan,
+      );
+      expect(JSON.parse(plan.createRequest.driverConfigJson!)).toEqual({
+        [providerId]: {
+          mounts: [
+            { type: "volume", source: selected, target: h.root.mountTarget, read_only: false },
+          ],
+        },
       });
+      expect(h.calls.filter((args) => args[0] === "start")).toHaveLength(copies);
       lifecycle.commit();
       expect(h.volumes.size).toBe(2);
       const copyArgs = h.calls.find((args) => args[0] === "create")!;
