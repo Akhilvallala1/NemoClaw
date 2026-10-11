@@ -68,8 +68,8 @@ function nativeCredential(value: unknown, expected: NativeProfileBoundary): bool
     credential.name === "api_key" &&
     stringArrayEquals(credential.envVars, [expected.credentialEnv]) &&
     credential.required === true &&
-    credential.authStyle === expected.authStyle &&
-    credential.headerName === expected.headerName &&
+    credential.authStyle === "bearer" &&
+    credential.headerName === "authorization" &&
     credential.queryParam === "" &&
     credential.pathTemplate === "" &&
     credential.refresh === undefined &&
