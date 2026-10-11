@@ -30,7 +30,7 @@ import {
 const AUTHORITY_ID = `mxc-endpoint:${"a".repeat(64)}`;
 const BINDING_SHA256 = "b".repeat(64);
 const PROBE_IMAGE = `quay.io/curl/curl@sha256:${"c".repeat(64)}`;
-const AGENTS = ["openclaw", "hermes", "langchain-deepagents-code"] as const;
+const AGENTS = ["openclaw", "hermes", "langchain-deepagents-code", "pi"] as const;
 const SERVICES = ["ollama", "nim", "vllm"] as const;
 const PROVIDER_SERVICES = [...SERVICES, "llama-cpp"] as const;
 

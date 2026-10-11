@@ -8,7 +8,7 @@ import { createSetupInference, type SetupInferenceDeps } from "../../setup-infer
 import { handleProviderInferenceState } from "./provider-inference";
 import { baseOptions, baseSelection, createDeps } from "./provider-inference.test-support";
 
-it.each(["openclaw", "langchain-deepagents-code"])(
+it.each(["openclaw", "langchain-deepagents-code", "pi"])(
   "admits selected %s local inference when the prior registration was Hermes",
   async (name) => {
     const { deps, calls } = createDeps();

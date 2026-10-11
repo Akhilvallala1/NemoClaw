@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { ModelSelectionProvenance } from "../../../domain/telemetry/provenance";
 import { clearAutoDetectedCompatibleContextWindow } from "../../../inference/compatible-endpoint-context";
 import {
   resolveAgentProviderInferenceApi,
@@ -61,7 +62,13 @@ import {
 import { reserveRecoveredSandboxInferenceRoute } from "../../sandbox-lifecycle";
 import { withInferenceTrace, withProviderSelectionTrace } from "../../tracing";
 import { advanceTo, type OnboardStateTransitionResult, retryTo } from "../result";
-import { createRecovery, type RecoveryAuthority } from "./provider-inference-recovery";
+import {
+  createRecovery,
+  providerModelProvenanceUpdate,
+  readModelSelectionProvenance,
+  selectedOrRecoveredModelProvenance,
+  type RecoveryAuthority,
+} from "./provider-inference-recovery";
 import {
   assertProviderInferenceRouteCompatible,
   guardProviderInferenceRouteSelection,
@@ -121,6 +128,7 @@ function legacyRecordedNoAuthEndpointSetupOptions(options: {
 }
 
 export interface ProviderSelectionResult {
+  modelSelectionProvenance?: ModelSelectionProvenance;
   model: string | null;
   provider: string;
   endpointUrl: string | null;
@@ -1266,6 +1274,14 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
   // compatible OpenAI Completions route can apply it.
   const reasoningEffortRequest = resolveReasoningEffortRequest(null, env);
   let model = initial.model;
+  let modelSelectionProvenance = readModelSelectionProvenance(session?.modelSelectionProvenance);
+  const provenanceUpdate = () =>
+    providerModelProvenanceUpdate(modelSelectionProvenance, {
+      model,
+      provider,
+      endpointUrl,
+      preferredInferenceApi,
+    });
   let provider = initial.provider;
   let endpointUrl = initial.endpointUrl;
   let credentialEnv = initial.credentialEnv;
@@ -1614,6 +1630,10 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         hostLocalInferenceProofAuthority = null;
         prospectiveHostLocalPolicyRoute = null;
       }
+      modelSelectionProvenance = selectedOrRecoveredModelProvenance(
+        selection,
+        modelSelectionProvenance,
+      );
       endpointUrl = selection.endpointUrl;
       credentialEnv = selection.credentialEnv;
       hermesAuthMethod = selection.hermesAuthMethod;
@@ -1691,6 +1711,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       session = await deps.recordStepComplete(
         "provider_selection",
         deps.toSessionUpdates({
+          ...provenanceUpdate(),
           provider,
           model,
           endpointUrl,
@@ -1847,6 +1868,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         session = await deps.recordStepComplete(
           "inference",
           deps.toSessionUpdates({
+            ...provenanceUpdate(),
             provider,
             model,
             hermesAuthMethod,
@@ -1977,6 +1999,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       session = await deps.recordStepComplete(
         "inference",
         deps.toSessionUpdates({
+          ...provenanceUpdate(),
           provider,
           model,
           hermesAuthMethod,
@@ -2064,6 +2087,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         session = await deps.recordStepComplete(
           "provider_selection",
           deps.toSessionUpdates({
+            ...provenanceUpdate(),
             provider,
             model,
             endpointUrl,
@@ -2162,6 +2186,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       session = await deps.recordStepComplete(
         "provider_selection",
         deps.toSessionUpdates({
+          ...provenanceUpdate(),
           provider,
           model,
           endpointUrl,
@@ -2182,6 +2207,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
     session = await deps.recordStepComplete(
       "inference",
       deps.toSessionUpdates({
+        ...provenanceUpdate(),
         provider,
         model,
         hermesAuthMethod,

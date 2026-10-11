@@ -682,6 +682,35 @@ describe("OpenAI-compatible no-auth provider registration", () => {
     expect(process.env[NO_AUTH_ENV]).toBe("proxy-token");
   });
 
+  it.each([
+    { outcome: "rejected", reserve: () => false },
+    {
+      outcome: "thrown",
+      reserve: () => {
+        throw new Error("reservation write outcome unknown");
+      },
+    },
+  ])(
+    "reports retained native proxy ownership when reservation is $outcome",
+    async ({ reserve }) => {
+      const harness = createHarness();
+      const persist = vi.fn();
+      const restore = vi.fn();
+      vi.mocked(noAuthProxy).mockReturnValue({
+        baseUrl: "http://host.openshell.internal:11435/v1",
+        credentialValue: "proxy-token",
+        persist,
+        restore,
+      });
+      harness.deps.reserveSandboxInferenceRoute.mockImplementation(reserve);
+      await expect(
+        setupRemoteProviderInference(args, { ...harness.deps, nativeLocalInference: true }),
+      ).rejects.toThrow(/The proxy was retained.*reconcile ownership/);
+      expect(persist).toHaveBeenCalledOnce();
+      expect(restore).not.toHaveBeenCalled();
+    },
+  );
+
   it("stops before registration when proxy startup fails (#7424)", async () => {
     const harness = createHarness();
     vi.mocked(noAuthProxy).mockImplementation(() => {

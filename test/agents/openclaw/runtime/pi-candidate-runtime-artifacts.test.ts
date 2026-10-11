@@ -137,6 +137,96 @@ describe("Pi managed model catalog generation", () => {
     expect(config.providers.openshell.apiKey).toBe("nemoclaw-managed-inference");
   });
 
+  function nativeCatalog() {
+    const { home, status, stderr } = generate({
+      NEMOCLAW_MODEL: "selected-local-model",
+      NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+      NEMOCLAW_INFERENCE_BASE_URL: "http://host.openshell.internal:19000/v1",
+      NEMOCLAW_LOCAL_INFERENCE_TOKEN: "raw-build-secret-must-not-be-serialized",
+    });
+    try {
+      expect(status, stderr).toBe(0);
+      const text = fs.readFileSync(path.join(home, ".pi", "agent", "models.json"), "utf8");
+      expect(text).not.toContain("raw-build-secret-must-not-be-serialized");
+      return JSON.parse(text).providers.openshell as {
+        apiKey: string;
+        headers: { Authorization: string };
+      };
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  // Execute Pi's supported command-config boundary with a fresh process, as the
+  // runtime does when resolving a models.json credential or header.
+  function resolveCommand(value: string, token: string) {
+    expect(value.startsWith("!")).toBe(true);
+    return spawnSync("/bin/sh", ["-c", value.slice(1)], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", NEMOCLAW_LOCAL_INFERENCE_TOKEN: token },
+    });
+  }
+
+  it.each(["v2", `s${"a".repeat(64)}`])(
+    "resolves a fresh Pi native request with the issued %s credential",
+    (identity) => {
+      const provider = nativeCatalog();
+      const token = `openshell:resolve:env:${identity}_NEMOCLAW_LOCAL_INFERENCE_TOKEN`;
+      const key = resolveCommand(provider.apiKey, token);
+      expect(key.status, key.stderr).toBe(0);
+      expect(key.stdout).toBe(token);
+      // An explicit header protects this route from a persisted legacy Pi key.
+      const header = resolveCommand(provider.headers.Authorization, token);
+      expect(header.status, header.stderr).toBe(0);
+      expect(header.stdout).toBe(`Bearer ${token}`);
+    },
+  );
+
+  it.each([
+    "",
+    "raw-host-secret",
+    "openshell:resolve:env:NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+    "openshell:resolve:env:v2_OTHER_TOKEN",
+    "openshell:resolve:env:v2_NEMOCLAW_LOCAL_INFERENCE_TOKEN\n",
+    "$(printf injected)",
+  ])("refuses invalid Pi native credential %j without disclosing it", (token) => {
+    const provider = nativeCatalog();
+    const key = resolveCommand(provider.apiKey, token);
+    expect(key.status).not.toBe(0);
+    expect(key.stdout).toBe("");
+    expect(key.stderr).toBe("");
+    const header = resolveCommand(provider.headers.Authorization, token);
+    expect(header.status).not.toBe(0);
+    expect(header.stdout).toBe("");
+    expect(header.stderr).toBe("");
+  });
+
+  it.each([
+    ["ollama-local", "http://host.openshell.internal:11434/v1", true],
+    ["vllm-local", "http://host.docker.internal:8000/v1", true],
+    ["llama-cpp-local", "http://192.168.1.2:8080/v1", true],
+    ["compatible-endpoint", "http://10.0.0.2:9000/v1", true],
+    ["compatible-endpoint", "https://inference.local/v1", false],
+    ["compatible-endpoint", "https://api.example.com/v1", false],
+    ["nvidia", "http://host.openshell.internal:8000/v1", false],
+  ])("keeps Pi %s at %s on the selected credential route", (provider, endpoint, native) => {
+    const { home, status, stderr } = generate({
+      NEMOCLAW_MODEL: "selected-model",
+      NEMOCLAW_UPSTREAM_PROVIDER: provider,
+      NEMOCLAW_INFERENCE_BASE_URL: endpoint,
+    });
+    try {
+      expect(status, stderr).toBe(0);
+      const config = JSON.parse(fs.readFileSync(path.join(home, ".pi/agent/models.json"), "utf8"));
+      expect(config.providers.openshell.baseUrl).toBe(endpoint);
+      expect(config.providers.openshell.models[0].id).toBe("selected-model");
+      expect(config.providers.openshell.apiKey.startsWith("!")).toBe(native);
+      expect(config.providers.openshell.headers !== undefined).toBe(native);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a model name that is empty after trimming", () => {
     const { status, stderr } = generate({
       NEMOCLAW_MODEL: "   ",
