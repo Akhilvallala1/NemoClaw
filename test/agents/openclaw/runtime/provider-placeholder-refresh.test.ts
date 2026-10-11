@@ -27,7 +27,7 @@ function execFileResult(file, args, options) {
   );
 }
 
-describe.concurrent("native NVIDIA handle refresh", () => {
+describe.concurrent("native inference handle refresh", () => {
   const src = fs.readFileSync(START_SCRIPT, "utf-8");
   async function runRefresh(
     config: unknown,
@@ -85,24 +85,41 @@ describe.concurrent("native NVIDIA handle refresh", () => {
     }
   }
 
-  it.each([false, true])(
-    "refreshes a persisted native NVIDIA handle after provider revision and supervisor restart (root=%s)",
-    async (rootMode) => {
-      const oldHandle = "openshell:resolve:env:v42_NVIDIA_INFERENCE_API_KEY";
-      const currentHandle = "openshell:resolve:env:v43_NVIDIA_INFERENCE_API_KEY";
+  it.each([
+    [false, "NVIDIA_INFERENCE_API_KEY", "https://integrate.api.nvidia.com/v1", "v43"],
+    [true, "NVIDIA_INFERENCE_API_KEY", "https://integrate.api.nvidia.com/v1", "v43"],
+    [
+      false,
+      "COMPATIBLE_API_KEY",
+      "http://host.openshell.internal:11438/route/test/v1",
+      `s${"a".repeat(64)}`,
+    ],
+    [
+      true,
+      "COMPATIBLE_API_KEY",
+      "http://host.openshell.internal:11438/route/test/v1",
+      `s${"a".repeat(64)}`,
+    ],
+    [false, "COMPATIBLE_ANTHROPIC_API_KEY", "https://example.com/v1", `s${"b".repeat(64)}`],
+    [true, "COMPATIBLE_ANTHROPIC_API_KEY", "https://example.com/v1", `s${"b".repeat(64)}`],
+  ])(
+    "refreshes only the selected native inference handle after supervisor restart (root=%s, key=%s)",
+    async (rootMode, key, endpoint, scope) => {
+      const oldHandle = `openshell:resolve:env:v42_${key}`;
+      const currentHandle = `openshell:resolve:env:${scope}_${key}`;
       const run = await runRefresh(
         {
           models: {
             providers: {
               inference: {
-                baseUrl: "https://integrate.api.nvidia.com/v1",
+                baseUrl: endpoint,
                 apiKey: oldHandle,
               },
             },
           },
           channels: { telegram: { botToken: oldHandle } },
         },
-        { NVIDIA_INFERENCE_API_KEY: currentHandle },
+        { [key]: currentHandle },
         rootMode,
       );
 
@@ -110,7 +127,7 @@ describe.concurrent("native NVIDIA handle refresh", () => {
       expect(run.config.models.providers.inference.apiKey).toBe(currentHandle);
       expect(run.config.channels.telegram.botToken).toBe(oldHandle);
       expect(run.result.stderr).toContain(
-        "Refreshed provider placeholders from OpenShell runtime env: NVIDIA_INFERENCE_API_KEY",
+        `Refreshed provider placeholders from OpenShell runtime env: ${key}`,
       );
     },
   );
@@ -134,13 +151,34 @@ describe.concurrent("native NVIDIA handle refresh", () => {
       runtime: "",
       rootMode: false,
     },
+    {
+      reason: "raw custom credential in root environment",
+      key: "COMPATIBLE_API_KEY",
+      endpoint: "https://example.com/v1",
+      runtime: "nvapi-raw-secret",
+      rootMode: true,
+    },
+    {
+      reason: "missing custom runtime handle",
+      key: "COMPATIBLE_ANTHROPIC_API_KEY",
+      endpoint: "https://example.com/v1",
+      runtime: "",
+      rootMode: false,
+    },
+    {
+      reason: "wrong custom credential key",
+      key: "COMPATIBLE_API_KEY",
+      endpoint: "https://example.com/v1",
+      runtime: "openshell:resolve:env:v43_COMPATIBLE_ANTHROPIC_API_KEY",
+      rootMode: true,
+    },
   ])(
-    "keeps a persisted native NVIDIA handle when refresh has $reason",
-    async ({ endpoint, runtime, rootMode }) => {
-      const saved = "openshell:resolve:env:v42_NVIDIA_INFERENCE_API_KEY";
+    "keeps the persisted native inference handle when refresh has $reason",
+    async ({ endpoint, runtime, rootMode, key = "NVIDIA_INFERENCE_API_KEY" }) => {
+      const saved = `openshell:resolve:env:v42_${key}`;
       const run = await runRefresh(
         { models: { providers: { inference: { baseUrl: endpoint, apiKey: saved } } } },
-        runtime ? { NVIDIA_INFERENCE_API_KEY: runtime } : {},
+        runtime ? { [key]: runtime } : {},
         rootMode,
       );
 
