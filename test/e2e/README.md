@@ -2185,7 +2185,7 @@ sandbox isolation, restart, and failed-operation recovery.
 Each selected case requires its matching approved model variable, listed below. The smoke does not select a default model.
 The Hermes smoke uses `NOUS_API_KEY`. It does not prove interactive OAuth login or token refresh.
 Credentials remain in the test host environment and OpenShell provider store; artifacts redact them.
-The existing cleanup helper destroys each test sandbox. After successful onboarding, strict cleanup checks sandbox absence only.
+The existing cleanup helper destroys each test sandbox. After successful onboarding, strict cleanup checks sandbox absence and requires public `nemoclaw destroy` to succeed so provider retirement cannot be silently skipped.
 Failed onboarding uses best-effort cleanup. Neither path proves removal of credentials from the OpenShell provider store.
 Discard the approved disposable gateway after each run, including failed onboarding. Use a fresh gateway for a retry.
 

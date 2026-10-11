@@ -417,9 +417,23 @@ export async function setupRemoteProviderInference(
             // A failed registry write may already have committed, so retain it.
             proxy.persist();
             proxySettled = true;
-            if (!reserveSandboxInferenceRoute(sandboxName, { model, provider })) {
+            let reservationFailure: string | null = null;
+            try {
+              if (!reserveSandboxInferenceRoute(sandboxName, { model, provider })) {
+                reservationFailure = "reservation returned false";
+              }
+            } catch (reservationError) {
+              reservationFailure = compactText(
+                redact(
+                  reservationError instanceof Error
+                    ? reservationError.message
+                    : String(reservationError),
+                ),
+              );
+            }
+            if (reservationFailure) {
               throw new Error(
-                "Native local inference could not publish its proxy owner. The proxy was retained.",
+                `Native local inference could not publish its proxy owner: ${reservationFailure}. The proxy was retained.`,
               );
             }
           }

@@ -225,17 +225,13 @@ async function cleanupSandbox(
     timeoutMs: 30_000,
   });
   cleanupEvidence.push(probeSummary("openshell sandbox list", listing));
-  if (
-    listing.exitCode !== 0 ||
-    listing.timedOut ||
-    listing.signal !== null ||
-    outputContainsSandbox(listing, sandboxName)
-  ) {
-    throw new Error(
-      `sandbox '${sandboxName}' absence was not verified after strict cleanup\n${cleanupEvidence.join("\n")}`,
-    );
-  }
+  const absenceVerified =
+    listing.exitCode === 0 &&
+    !listing.timedOut &&
+    listing.signal === null &&
+    !outputContainsSandbox(listing, sandboxName);
 
+  let destroySucceeded = false;
   try {
     const destroy = await host.command(
       process.execPath,
@@ -247,13 +243,22 @@ async function cleanupSandbox(
       },
     );
     cleanupEvidence.push(probeSummary("nemoclaw destroy", destroy));
+    destroySucceeded = destroy.exitCode === 0 && !destroy.timedOut && destroy.signal === null;
+    if (destroy.timedOut) cleanupEvidence.push("nemoclaw destroy timed out");
+    if (destroy.signal !== null) cleanupEvidence.push(`nemoclaw destroy signal=${destroy.signal}`);
   } catch (error) {
     cleanupEvidence.push(
       `nemoclaw destroy threw: ${error instanceof Error ? error.message : String(error)}`,
     );
+  } finally {
+    clearOnboardState();
   }
-
-  clearOnboardState();
+  if (!absenceVerified || !destroySucceeded) {
+    const reason = absenceVerified ? "public destroy was not verified" : "absence was not verified";
+    throw new Error(
+      `sandbox '${sandboxName}' ${reason} after strict cleanup\n${cleanupEvidence.join("\n")}`,
+    );
+  }
 }
 
 async function expectNoActiveSandbox(host: HostCliClient, sandboxName: string): Promise<void> {

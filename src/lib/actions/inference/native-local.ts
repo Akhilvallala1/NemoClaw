@@ -111,12 +111,17 @@ export async function prepareNativeLocalSwitch(input: {
         "Native attachment failure could not be reconciled. Provider ownership was retained; inspect sandbox attachments before retrying.",
         { cause: error },
       );
-    if (previousDetached)
-      await ensureNativeLocalProviderAttached({
-        adapter: input.adapter,
-        sandboxName: input.sandboxName,
-        expected: input.previous!,
-      });
+    if (previousDetached) {
+      try {
+        await ensureNativeLocalProviderAttached({
+          adapter: input.adapter,
+          sandboxName: input.sandboxName,
+          expected: input.previous!,
+        });
+      } catch (restoreError) {
+        throw nativeLocalRestorationFailure(error, restoreError);
+      }
+    }
     throw error;
   }
 }
@@ -212,14 +217,28 @@ export async function detachPreviousNativeLocalBeforePublish(input: {
       expected: input.previous,
     });
   } catch (error) {
-    await ensureNativeLocalProviderAttached({
-      adapter: input.adapter,
-      sandboxName: input.sandboxName,
-      expected: input.previous,
-    });
+    try {
+      await ensureNativeLocalProviderAttached({
+        adapter: input.adapter,
+        sandboxName: input.sandboxName,
+        expected: input.previous,
+      });
+    } catch (restoreError) {
+      throw nativeLocalRestorationFailure(error, restoreError);
+    }
     throw error;
   }
   return true;
+}
+
+function nativeLocalRestorationFailure(original: unknown, restoration: unknown): Error {
+  const originalDetail = original instanceof Error ? original.message : String(original);
+  const restorationDetail =
+    restoration instanceof Error ? restoration.message : String(restoration);
+  return new Error(
+    `${originalDetail}\n  Restoring the previous native local provider attachment also failed: ${restorationDetail}`,
+    { cause: new AggregateError([original, restoration]) },
+  );
 }
 
 export function nativeLocalSelectionRegistryFields(

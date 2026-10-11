@@ -121,6 +121,15 @@ describe("native local inference replacement", () => {
       expected: previous,
     });
   });
+  it("reports both attachment and restoration failures (#12558)", async () => {
+    const input = fixture();
+    vi.mocked(ensureNativeLocalProviderAttached)
+      .mockRejectedValueOnce(new Error("attachment denied"))
+      .mockRejectedValueOnce(new Error("restore unavailable"));
+    await expect(prepareNativeLocalSwitch(input)).rejects.toThrow(
+      /attachment denied[\s\S]*restoring the previous native local provider attachment also failed: restore unavailable/i,
+    );
+  });
   it("does not mutate again when failed attachment observation is inconclusive (#12558)", async () => {
     const input = fixture();
     vi.mocked(input.adapter.listProviderAttachments).mockResolvedValue({
@@ -265,6 +274,8 @@ describe.each([
     vi.mocked(ensureNativeLocalProviderAttached).mockRejectedValueOnce(
       new Error("restore unavailable"),
     );
-    await expect(execute(input)).rejects.toThrow("restore unavailable");
+    await expect(execute(input)).rejects.toThrow(
+      /detach readback unavailable[\s\S]*restoring the previous native local provider attachment also failed: restore unavailable/i,
+    );
   });
 });

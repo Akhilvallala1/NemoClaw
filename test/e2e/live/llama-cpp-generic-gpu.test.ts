@@ -172,7 +172,9 @@ test(
     const runtimeId = receipt.runtime.runtimeId;
     const runtimeOperation = runtimeProvider.hostLocalInference.createOperation({ env: env() });
     runtimeOperation.assertAuthority();
-    const captureManagedRuntimeLogs = async (phase: "setup" | "post-agent") => {
+    const captureManagedRuntimeLogs = async (
+      phase: "setup" | "pre-approval-agent" | "post-agent",
+    ) => {
       const runtimeLogs = runtimeOperation.engine.capture(
         ["container", "logs", "--tail", "20000", runtimeId],
         30_000,
@@ -345,6 +347,7 @@ NODE`),
       env: env(),
       timeoutMs: 12 * 60_000,
     });
+    await captureManagedRuntimeLogs("pre-approval-agent");
     expect(preApprovalAgent.exitCode, resultText(preApprovalAgent)).toBe(0);
     assertAgentExecutionSucceeded(
       preApprovalAgent.stdout,
