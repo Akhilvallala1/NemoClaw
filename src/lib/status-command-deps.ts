@@ -30,7 +30,7 @@ import * as policy from "./policy";
 import { summarizeForDebug } from "./state/onboard-session";
 import * as registry from "./state/registry";
 import { getHermesPortableHostAuthorityEntryCount } from "./state/portable-uninstall-retirement";
-import { createSystemDeps, parseSshProcesses } from "./state/sandbox-session";
+import { createSystemDeps, getActiveSandboxSessions } from "./state/sandbox-session";
 import { getServiceStatuses, showStatus as showServiceStatus } from "./tunnel/services";
 
 const INVENTORY_POLICY_PROBE_TIMEOUT_MS = 2_000;
@@ -260,11 +260,6 @@ export function buildStatusCommandDeps(rootDir: string): ShowStatusCommandDeps {
     captureOpenshell(rootDir, args, { maxBuffer: opts.maxBuffer, timeout: opts.timeout }),
   );
 
-  // Resolving a sandbox ID costs one OpenShell call, so only pay it when the
-  // process list actually contains a proxied connection that needs one (#9316).
-  const resolveSandboxIdForSessions = (sshOutput: string, name: string): string | null =>
-    sshOutput.includes("--sandbox-id") ? (sessionDeps?.resolveSandboxId?.(name) ?? null) : null;
-
   const getCachedSshOutput = (): string | null => {
     if (cachedSshOutput === undefined && sessionDeps) {
       try {
@@ -301,12 +296,11 @@ export function buildStatusCommandDeps(rootDir: string): ShowStatusCommandDeps {
           try {
             const sshOutput = getCachedSshOutput();
             if (sshOutput === null) return null;
-            return parseSshProcesses(
-              sshOutput,
+            return getActiveSandboxSessions(
               name,
-              resolveSandboxIdForSessions(sshOutput, name) ?? null,
+              { ...sessionDeps, getSshProcesses: () => sshOutput },
               registry.getSandbox(name)?.gatewayName ?? resolveGatewayName(GATEWAY_PORT),
-            ).length;
+            ).sessions.length;
           } catch {
             return null;
           }

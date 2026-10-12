@@ -5,7 +5,7 @@ import * as onboardSession from "./state/onboard-session";
 import { getSelectedGatewayName } from "./actions/sandbox/gateway-target";
 import type { ListSandboxesCommandDeps, SandboxEntry } from "./inventory";
 import { createSynchronousCliOpenShellInferenceRouteObserver } from "./adapters/openshell/inference-route-cli";
-import { parseSshProcesses, createSystemDeps } from "./state/sandbox-session";
+import { getActiveSandboxSessions, createSystemDeps } from "./state/sandbox-session";
 import { resolveOpenshell } from "./adapters/openshell/resolve";
 import { captureOpenshell } from "./adapters/openshell/runtime";
 import { recoverRegistryEntries } from "./registry-recovery-action";
@@ -56,11 +56,6 @@ export function buildListCommandDeps(): ListSandboxesCommandDeps {
   const inferenceRouteObserver =
     createSynchronousCliOpenShellInferenceRouteObserver(captureOpenshell);
 
-  // Resolving a sandbox ID costs one OpenShell call, so only pay it when the
-  // process list actually contains a proxied connection that needs one (#9316).
-  const resolveSandboxIdForSessions = (sshOutput: string, name: string): string | null =>
-    sshOutput.includes("--sandbox-id") ? (sessionDeps?.resolveSandboxId?.(name) ?? null) : null;
-
   const getCachedSshOutput = () => {
     if (cachedSshOutput === undefined && sessionDeps) {
       try {
@@ -105,12 +100,11 @@ export function buildListCommandDeps(): ListSandboxesCommandDeps {
           try {
             const sshOutput = getCachedSshOutput();
             if (sshOutput === null) return null;
-            return parseSshProcesses(
-              sshOutput,
+            return getActiveSandboxSessions(
               name,
-              resolveSandboxIdForSessions(sshOutput, name),
+              { ...sessionDeps, getSshProcesses: () => sshOutput },
               registry.getSandbox(name)?.gatewayName ?? getSelectedGatewayName(),
-            ).length;
+            ).sessions.length;
           } catch {
             return null;
           }

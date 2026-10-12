@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -134,6 +135,34 @@ exit 0
     );
     expect(deps.readGatewayLog?.("alpha")).toBeNull();
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "counts sessions with the gateway evidence resolver",
+    () => {
+      writeExecutable(openshell, "#!/usr/bin/env bash\nexit 0\n");
+      const sandboxName = `status-count-${process.pid}`;
+      vi.spyOn(registry, "getSandbox").mockReturnValue({
+        name: sandboxName,
+        gatewayName: "nemoclaw",
+      } as never);
+      const command = `openshell sandbox exec --name ${sandboxName} --tty -- /bin/bash -i`;
+      const startSession = (gateway: string) =>
+        spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+          argv0: command,
+          env: { ...process.env, OPENSHELL_GATEWAY: gateway },
+          stdio: "ignore",
+        });
+      const selected = startSession("nemoclaw");
+      const sibling = startSession("nemoclaw-9090");
+      try {
+        const deps = buildStatusCommandDeps(tmp);
+        expect(deps.getActiveSessionCount?.(sandboxName)).toBe(1);
+      } finally {
+        selected.kill();
+        sibling.kill();
+      }
+    },
+  );
 
   it("parses live gateway inference through the OpenShell override", async () => {
     writeExecutable(
