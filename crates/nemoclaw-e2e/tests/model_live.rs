@@ -49,6 +49,13 @@ fn service_container(directory: &Path) -> String {
     assert_eq!(containers.len(), 1, "one model service container");
     containers[0].1.clone()
 }
+/// Resources whose identity recovery and destroy must keep: the workspace,
+/// gateway storage, and the model's storage volume.
+fn durable(address: &str) -> bool {
+    address.starts_with("nemoclaw_")
+        || address.starts_with("openshell_")
+        || address.starts_with("docker_volume.inference_storage_")
+}
 /// Whether the container runs, or None when it is gone.
 async fn running(engine: &Engine, container: &str) -> Option<bool> {
     let observed = engine.container(container).await.unwrap()?;
@@ -194,9 +201,7 @@ async fn exercise(fresh: bool) {
     );
     deployment.apply(&document, &cancel).await.unwrap();
     let recovered = bindings(&directory);
-    for (address, id) in before.iter().filter(|(address, _)| {
-        address.starts_with("nemoclaw_") || address.starts_with("openshell_")
-    }) {
+    for (address, id) in before.iter().filter(|(address, _)| durable(address)) {
         assert_eq!(
             recovered.get(address),
             Some(id),
@@ -223,7 +228,7 @@ async fn exercise(fresh: bool) {
         "nemoclaw_gateway_storage.runtime",
         before
             .keys()
-            .find(|address| address.starts_with("nemoclaw_inference_storage."))
+            .find(|address| address.starts_with("docker_volume.inference_storage_"))
             .unwrap()
             .as_str(),
     ] {
