@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { isNativeCustomCredentialReference } from "./inference/native-custom/credential-reference.ts";
 import { managedInferenceApiKey } from "./inference-credential.ts";
 import { nativeHostedAgentConfig } from "./inference/native-provider/agent-config.ts";
 
@@ -97,12 +98,7 @@ export function applyHermesManagedRoute(
       route.upstreamProvider === "compatible-endpoint"
         ? "COMPATIBLE_API_KEY"
         : "COMPATIBLE_ANTHROPIC_API_KEY";
-    if (
-      !nativeCustom ||
-      !new RegExp(`^openshell:resolve:env:(?:v[0-9]{1,20}|s[a-f0-9]{64})_${key}$`, "u").test(
-        route.credentialReference,
-      )
-    )
+    if (!nativeCustom || !isNativeCustomCredentialReference(route.credentialReference, key))
       throw new Error(
         "Hermes native custom inference requires its matching issued credential reference.",
       );

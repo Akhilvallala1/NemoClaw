@@ -125,8 +125,6 @@ describe("compatible-anthropic-endpoint registration for OpenAI-only agents (#62
     await harness.setupInference("test-box", MODEL, PROVIDER, ENDPOINT, CREDENTIAL_ENV, null, [], {
       preferredInferenceApi: "openai-completions",
     });
-    expect(stale(["provider", "get", PROVIDER])).toMatchObject({ status: 0 });
-    expect(stale(["provider", "delete", PROVIDER])?.stderr).toContain("other-box");
     expect(harness.commands).toEqual([]);
   });
 

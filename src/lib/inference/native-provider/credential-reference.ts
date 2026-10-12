@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { captureResolvedOpenshellAsync } from "../../adapters/openshell/runtime";
-import { isValidName } from "../../name-validation";
 
 export function isNativeProviderCredentialReference(value: string, key: string): boolean {
   return (
@@ -22,6 +21,7 @@ export async function resolveNativeProviderCredentialReference(
   },
   capture?: typeof captureResolvedOpenshellAsync,
 ): Promise<string> {
+  const { isValidName } = await import("../../name-validation.ts");
   if (
     !isValidName(input.sandboxName) ||
     !isValidName(input.gatewayName) ||
@@ -60,11 +60,9 @@ export async function resolveNativeProviderCredentialReference(
         timeout: Math.min(15_000, Math.max(1, Math.ceil(deadline - performance.now()))),
       },
     );
-    const result = await (label === "NVIDIA"
-      ? pending.catch(() => {
-          throw new Error("Native NVIDIA credential reference could not be read.");
-        })
-      : pending);
+    const result = await pending.catch(() => {
+      throw new Error(`Native ${label} credential reference could not be read.`);
+    });
     const value = (result.stdout ?? "").trim();
     if (result.status !== 0) break;
     if (isNativeProviderCredentialReference(value, input.credentialEnv)) return value;

@@ -282,6 +282,22 @@ function copyConfigGeneratorFixture(fixtureRoot: string): string {
     path.join(import.meta.dirname, "../..", nativeConfigDir, "contract.ts"),
     path.join(fixtureRoot, nativeConfigDir, "contract.ts"),
   );
+  fs.copyFileSync(
+    path.join(import.meta.dirname, "../..", nativeConfigDir, "credential-reference.ts"),
+    path.join(fixtureRoot, nativeConfigDir, "credential-reference.ts"),
+  );
+  const customCredentialPath = path.join(
+    "src",
+    "lib",
+    "inference",
+    "native-custom",
+    "credential-reference.ts",
+  );
+  fs.mkdirSync(path.dirname(path.join(fixtureRoot, customCredentialPath)), { recursive: true });
+  fs.copyFileSync(
+    path.join(import.meta.dirname, "../..", customCredentialPath),
+    path.join(fixtureRoot, customCredentialPath),
+  );
   return fixtureScriptPath;
 }
 

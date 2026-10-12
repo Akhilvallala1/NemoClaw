@@ -91,3 +91,15 @@ it("waits for the selected custom credential projection before config synchroniz
     vi.useRealTimers();
   }
 });
+
+it.each(["COMPATIBLE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY"])(
+  "redacts transport capture failures for custom credential scope %s (#12636)",
+  async (credentialEnv) => {
+    const capture = vi.fn(async () => {
+      throw new Error("credential-capture-secret-canary");
+    });
+    await expect(
+      resolveNativeCustomCredentialReference({ ...scope, credentialEnv }, capture),
+    ).rejects.toThrow("Native custom credential reference could not be read.");
+  },
+);

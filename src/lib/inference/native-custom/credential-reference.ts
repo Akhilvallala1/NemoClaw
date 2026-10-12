@@ -4,7 +4,7 @@
 import {
   isNativeProviderCredentialReference,
   resolveNativeProviderCredentialReference,
-} from "../native-provider/credential-reference";
+} from "../native-provider/credential-reference.ts";
 
 export function isNativeCustomCredentialReference(value: string, key: string): boolean {
   return (
