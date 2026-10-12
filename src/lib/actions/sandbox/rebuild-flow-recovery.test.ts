@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -16,8 +19,8 @@ import {
   openClawLifecycle,
   snapshotBackup,
   pairingSettlement,
+  registerHarnessRebuildBackup,
 } from "../../../../test/helpers/rebuild-flow-harness";
-import os from "node:os";
 import * as sandboxState from "../../state/sandbox";
 import { textContainsHighConfidenceCredential } from "../../security/credential-filter";
 import { fingerprintSandboxLiveIdentity } from "../../onboard/sandbox-recreate-transaction";
@@ -200,8 +203,61 @@ describe("rebuildSandbox flow: recovery", () => {
     }
   });
 
-  it("rebuilds a fresh not-ready sandbox from captured state without inspecting or starting the source", async () => {
+  it("restores captured state for a fresh not-ready sandbox without inspecting or starting the source", async () => {
     const { captured, harness } = stoppedRecoveryHarness("openclaw", "not_ready");
+    const marker = "captured-not-ready-native-state";
+    const markerPath = path.join(captured.nativeDirectory, ".openclaw", "recovery-marker.txt");
+    const replacementDirectory = path.join(harness.backupPath, "replacement-native");
+    fs.writeFileSync(markerPath, marker);
+    const originalBackup = harness.backupSandboxStateSpy.getMockImplementation();
+    expect(originalBackup).toBeDefined();
+    harness.backupSandboxStateSpy.mockImplementation((...args) => {
+      const result = originalBackup!(...args);
+      expect(result.success).toBe(true);
+      const options = args[1] as { nativeStateSource: { directory: string } };
+      const manifest = result.manifest as {
+        backupPath: string;
+        nativeState: { archive: string; sha256: string };
+      };
+      const archivePath = path.join(manifest.backupPath, manifest.nativeState.archive);
+      execFileSync("tar", [
+        "-C",
+        options.nativeStateSource.directory,
+        "-cf",
+        archivePath,
+        "--",
+        ".",
+      ]);
+      manifest.nativeState.sha256 = createHash("sha256")
+        .update(fs.readFileSync(archivePath))
+        .digest("hex");
+      fs.writeFileSync(
+        path.join(manifest.backupPath, "rebuild-manifest.json"),
+        `${JSON.stringify(manifest, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+      registerHarnessRebuildBackup(manifest as ReturnType<typeof sandboxState.listBackups>[number]);
+      return result;
+    });
+    harness.restoreSandboxStateSpy.mockImplementation((_sandboxName, backupPath) => {
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(backupPath, "rebuild-manifest.json"), "utf8"),
+      ) as { nativeState: { archive: string } };
+      fs.mkdirSync(replacementDirectory, { recursive: true });
+      execFileSync("tar", [
+        "-xf",
+        path.join(backupPath, manifest.nativeState.archive),
+        "-C",
+        replacementDirectory,
+      ]);
+      return {
+        success: true,
+        restoredDirs: ["workspace"],
+        restoredFiles: ["user.md"],
+        failedDirs: [],
+        failedFiles: [],
+      };
+    });
     try {
       await expect(
         harness.rebuildSandbox("alpha", ["--yes"], { throwOnError: true }),
@@ -217,6 +273,20 @@ describe("rebuildSandbox flow: recovery", () => {
           validateBeforePublish: expect.any(Function),
         }),
       );
+      const backupResult = harness.backupSandboxStateSpy.mock.results[0]?.value as {
+        manifest: { backupPath: string };
+      };
+      expect(harness.restoreSandboxStateSpy).toHaveBeenCalledWith(
+        "alpha",
+        backupResult.manifest.backupPath,
+        expect.objectContaining({ targetAgentType: "openclaw" }),
+      );
+      expect(
+        fs.readFileSync(
+          path.join(replacementDirectory, ".openclaw", "recovery-marker.txt"),
+          "utf8",
+        ),
+      ).toBe(marker);
       expect(harness.onboardSpy).toHaveBeenCalled();
       expect(mcpBridgeSource.inspectAgentMcpSources).not.toHaveBeenCalled();
       expect(
