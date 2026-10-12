@@ -367,7 +367,7 @@ describe("compiled gateway navigation diagnostics", () => {
     { label: "null", ignored: null },
     { label: "string", ignored: "worker-secret-never-publish" },
     { label: "unknown type", ignored: { type: "worker-secret-never-publish" } },
-    { label: "non-string type", ignored: { type: { toString: () => "sw-updated" } } },
+    { label: "non-string type", ignored: { type: { toString: (): string => "sw-updated" } } },
   ])("observes worker activation without responding or retaining $label data", ({ ignored }) => {
     const secret = "worker-secret-never-publish";
     const events = new Map<string, (event: { data?: unknown }) => void>();
