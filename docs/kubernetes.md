@@ -124,6 +124,7 @@ Models, image digests, hardware profiles, serving budgets, and storage sizes rem
 There is no cluster-specific model allowlist.
 
 Both examples set `serving.contextTokens` and the route's `settings.model_metadata.contextWindow` to `32768` to leave room for OpenClaw's initial prompt and a reply.
+These limits and models do not suit Hermes, which requires at least `64000` context tokens; see [Hermes context sizing](inference.md#size-the-context-for-hermes).
 Follow [OpenClaw context budgeting](inference.md#tune-openclaws-primary-route) to keep those limits aligned, size memory, and interpret the advisory emitted by plan and apply.
 
 The settings below reserve CPU and memory and limit their use for one service.

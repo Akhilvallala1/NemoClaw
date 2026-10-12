@@ -41,6 +41,12 @@ async fn context_warnings(document: &Document, apply: bool) -> Vec<String> {
         .collect()
 }
 
+fn with_hermes(source: &[u8], context: i64) -> Value {
+    let mut document = with_context(source, context);
+    document["spec"]["sandboxes"][0]["harness"]["kind"] = json!("nvidia.fabric.hermes");
+    document
+}
+
 fn budget_warnings(warnings: &[String]) -> Vec<&str> {
     warnings
         .iter()
@@ -314,6 +320,11 @@ async fn context_advisory_uses_the_selected_harness_and_service_budget() {
     other_harness["spec"]["sandboxes"][0]["harness"]["kind"] = json!("nvidia.fabric.codex");
     let document = Document::parse(other_harness.to_string().as_bytes()).unwrap();
     assert!(context_warnings(&document, false).await.is_empty());
+    let document = Document::parse(with_hermes(CLUSTER_VLLM, 8192).to_string().as_bytes()).unwrap();
+    let warnings = context_warnings(&document, false).await;
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(budget_warnings(&warnings).is_empty(), "{warnings:?}");
+    assert!(warnings[0].starts_with("Hermes sandbox"), "{}", warnings[0]);
 
     let mut external = with_context(CLUSTER_VLLM, 8192);
     external["spec"]["inferenceProviders"][0]
@@ -351,4 +362,53 @@ async fn context_advisory_resolves_referenced_harnesses_and_local_providers() {
     let warnings = context_warnings(&document, false).await;
     assert_eq!(warnings.len(), 2);
     assert_eq!(budget_warnings(&warnings).len(), 1);
+}
+
+#[tokio::test]
+async fn hermes_routes_to_managed_services_below_its_minimum_context_warn() {
+    for source in [CLUSTER_VLLM, CLUSTER_OLLAMA, DOCKER_VLLM, DOCKER_OLLAMA] {
+        for context in [8192, 32768, 40960, 63999] {
+            let document =
+                Document::parse(with_hermes(source, context).to_string().as_bytes()).unwrap();
+            for apply in [false, true] {
+                let warnings = context_warnings(&document, apply).await;
+                assert_eq!(warnings.len(), 1, "{warnings:?}");
+                let context = context.to_string();
+                for detail in ["Hermes", "assistant", "primary", "qwen", &context, "64000"] {
+                    assert!(
+                        warnings[0].contains(detail),
+                        "missing {detail}: {}",
+                        warnings[0]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn hermes_routes_at_its_minimum_context_need_no_warning_whatever_the_route_metadata() {
+    for source in [CLUSTER_VLLM, CLUSTER_OLLAMA, DOCKER_VLLM, DOCKER_OLLAMA] {
+        for context in [64000, 65536] {
+            // OpenClaw's route metadata does not set the Hermes window.
+            for metadata in [None, Some(json!({"contextWindow": 8192}))] {
+                let mut input = with_hermes(source, context);
+                let overrides = &mut input["spec"]["sandboxes"][0]["agent"]["inference"]["routes"]
+                    [0]["overrides"];
+                match metadata {
+                    Some(metadata) => overrides["settings"]["model_metadata"] = metadata,
+                    None => {
+                        overrides.as_object_mut().unwrap().remove("settings");
+                    }
+                }
+                let document = Document::parse(input.to_string().as_bytes()).unwrap();
+                for apply in [false, true] {
+                    assert!(
+                        context_warnings(&document, apply).await.is_empty(),
+                        "{input}"
+                    );
+                }
+            }
+        }
+    }
 }

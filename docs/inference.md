@@ -408,6 +408,7 @@ These settings do not resize a managed inference server; configure that service'
 The SDK does not infer native support from an adapter name or from accepting the YAML structure.
 
 The managed Ollama examples and [cluster examples](kubernetes.md#run-a-managed-model-service) set both the service's `serving.contextTokens` and the route's `overrides.settings.model_metadata.contextWindow` to `32768`.
+That suits OpenClaw; [Hermes needs at least `64000`](#size-the-context-for-hermes).
 The [operator-reported prompt](design/cluster-inference-compatibility.md#openclaw-context-budget) used 19,947 tokens in one setup, before allowing space for a reply.
 Keep the two limits aligned and size the model, KV cache, and GPU memory for the selected context.
 
@@ -425,6 +426,20 @@ These budgets do not qualify a model, GPU, or deployment path.
 
 Pi's native model metadata likewise belongs in `overrides.settings.model_metadata`; see the [Pi example](../examples/fabric-pi.yaml).
 Nested null values remain intact in opaque native settings.
+
+## Size the Context for Hermes
+
+The pinned Hermes Agent requires a model context window of at least 64,000 tokens.
+It reads the window from the model server; route settings such as `overrides.settings.model_metadata` do not change it.
+For a Hermes route to managed vLLM or Ollama, set `serving.contextTokens` between `64000` and the schema maximum, `65536`, and choose a model that supports that context.
+The models in the managed Ollama and cluster examples, `qwen3:0.6b` and `Qwen/Qwen3-4B`, have 40,960-token native context windows and cannot serve Hermes.
+In one operator test, Hermes answered a request through cluster vLLM serving `Qwen/Qwen3-4B-Instruct-2507` with `serving.contextTokens: 65536`; that test does not qualify the model.
+
+Plan and apply warn when a Hermes route uses a managed vLLM or Ollama service whose `serving.contextTokens` is below `64000`, on Docker as well as Kubernetes; the warning does not reject the configuration.
+Below the minimum, Hermes refuses to start when it can read the server's window.
+In operator tests it could not read the window through the sandbox proxy and started anyway: bearer vLLM answered its `GET /v1/models` with 401, and the proxy does not pass Ollama's `/api/show`.
+Longer conversations can then exceed the server limit.
+
 ## Authenticate Hermes through the Provider
 
 Declare an external HTTPS provider with a credential reference, then select it from the route and enable Hermes authentication:

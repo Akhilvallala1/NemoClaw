@@ -37,6 +37,12 @@ use std::{
 
 pub use timing::StepOutcome;
 
+/// Smallest model context window the pinned Hermes Agent accepts
+/// (`MINIMUM_CONTEXT_LENGTH` in its `agent/model_metadata.py`, at the
+/// `HERMES_REVISION` in `image/fabric/Dockerfile`). Hermes reads the window from
+/// the server, not from route settings.
+const HERMES_MINIMUM_CONTEXT_TOKENS: i64 = 64_000;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Progress {
     /// An authored deployment condition that requires operator attention.
@@ -255,9 +261,11 @@ impl Deployment {
             }
         }
         for sandbox in &document.spec.sandboxes {
-            if document.sandbox_harness(sandbox)?.kind.as_str() != "nvidia.fabric.openclaw" {
-                continue;
-            }
+            let hermes = match document.sandbox_harness(sandbox)?.kind.as_str() {
+                "nvidia.fabric.openclaw" => false,
+                "nvidia.fabric.hermes" => true,
+                _ => continue,
+            };
             let inference = document.scoped_inference(sandbox)?;
             for route in &inference.inference.routes {
                 let provider = document.route_provider(route, &inference)?;
@@ -275,6 +283,17 @@ impl Deployment {
                     }
                     _ => continue,
                 };
+                if hermes {
+                    if context < HERMES_MINIMUM_CONTEXT_TOKENS {
+                        (self.progress)(Progress::Warning {
+                            message: format!(
+                                "Hermes sandbox {} route {} uses managed service {name} with serving.contextTokens={context}; Hermes requires a model context window of at least {HERMES_MINIMUM_CONTEXT_TOKENS} tokens and can refuse to start or fail longer conversations below it. Set serving.contextTokens to {HERMES_MINIMUM_CONTEXT_TOKENS} or more on a model that supports that context, and size model/GPU memory for it.",
+                                sandbox.name, route.name
+                            ),
+                        });
+                    }
+                    continue;
+                }
                 let metadata = route
                     .overrides
                     .settings
