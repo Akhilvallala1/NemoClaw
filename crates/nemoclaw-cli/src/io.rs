@@ -5,11 +5,12 @@ use nemoclaw_sdk::{CancellationToken, Error, config::Document};
 use std::{fs::File, io::Write, path::Path};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+/// Read and validate a configuration, returning its deprecation warnings.
 pub(crate) async fn document<R: AsyncRead + Unpin>(
     file: &Path,
     stdin: R,
     cancel: &CancellationToken,
-) -> Result<Document, Box<dyn std::error::Error>> {
+) -> Result<(Document, Vec<String>), Box<dyn std::error::Error>> {
     if file != Path::new("-") {
         let input = tokio::select! {
             biased;
@@ -24,11 +25,11 @@ pub(crate) async fn document<R: AsyncRead + Unpin>(
 async fn read_document<R: AsyncRead + Unpin>(
     input: R,
     cancel: &CancellationToken,
-) -> Result<Document, Box<dyn std::error::Error>> {
+) -> Result<(Document, Vec<String>), Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
     let mut input = input.take(nemoclaw_sdk::config::MAX_DOCUMENT_BYTES + 1);
     tokio::select! {biased; ()=cancel.cancelled()=>return Err(Error::Cancelled.into()),result=input.read_to_end(&mut bytes)=>{result?;}}
-    Ok(Document::parse(bytes.as_slice())?)
+    Ok(Document::parse_with_warnings(bytes.as_slice())?)
 }
 pub(crate) fn write_output(
     path: Option<&Path>,
@@ -70,8 +71,8 @@ mod tests {
         let path = directory.path().join("input.yaml");
         std::fs::write(&path, YAML).unwrap();
         let cancel = CancellationToken::new();
-        let file = document(&path, tokio::io::empty(), &cancel).await.unwrap();
-        let stdin = document(Path::new("-"), YAML, &cancel).await.unwrap();
+        let (file, _) = document(&path, tokio::io::empty(), &cancel).await.unwrap();
+        let (stdin, _) = document(Path::new("-"), YAML, &cancel).await.unwrap();
         assert_eq!(file.yaml().unwrap(), stdin.yaml().unwrap());
     }
 

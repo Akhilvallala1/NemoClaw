@@ -37,7 +37,12 @@ pub(crate) async fn run<R: AsyncRead + Unpin>(
         let saved = nemoclaw_onboarding::author(source, output, true, cancel).await?;
         return Ok(CommandResult::Authored(saved.then(|| output.clone())));
     }
-    let mut deployment = deployment(&state_dir, bundle_dir.as_deref(), progress)?;
+    let mut deployment = deployment(&state_dir, bundle_dir.as_deref(), progress.clone())?;
+    let warn = |warnings: Vec<String>| {
+        for message in warnings {
+            progress(Progress::Warning { message });
+        }
+    };
     let result = match command {
         Command::Plan { destroy: true, .. } => deployment.plan_destroy(cancel).await?,
         Command::Plan {
@@ -45,7 +50,8 @@ pub(crate) async fn run<R: AsyncRead + Unpin>(
             non_interactive,
             ..
         } => {
-            let document = document(&file, &mut stdin, cancel).await?;
+            let (document, warnings) = document(&file, &mut stdin, cancel).await?;
+            warn(warnings);
             let mut lines = tokio::io::BufReader::new(stdin).lines();
             deployment = credentials::attach(
                 deployment,
@@ -63,7 +69,8 @@ pub(crate) async fn run<R: AsyncRead + Unpin>(
             non_interactive,
             ..
         } => {
-            let document = document(&file, &mut stdin, cancel).await?;
+            let (document, warnings) = document(&file, &mut stdin, cancel).await?;
+            warn(warnings);
             let mut lines = tokio::io::BufReader::new(stdin).lines();
             deployment = credentials::attach(
                 deployment,
@@ -157,6 +164,73 @@ mod tests {
             .unwrap();
             assert!(!error.to_string().contains("secret-sentinel"));
             assert!(!state.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_cluster_service_fields_warn_with_their_current_locations() {
+        let mut legacy: serde_json::Value =
+            serde_saphyr::from_str(include_str!("../../../examples/kubernetes/local-vllm.yaml"))
+                .unwrap();
+        let service = &mut legacy["spec"]["services"]["qwen"];
+        let container = service
+            .as_object_mut()
+            .unwrap()
+            .remove("container")
+            .unwrap();
+        for field in ["cpuLimitMillis", "memoryLimitGiB"] {
+            service["kubernetes"][field] = container[field].clone();
+        }
+        service["kubernetes"]["updatePolicy"] = "Recreate".into();
+        let legacy = legacy.to_string();
+        let current = include_str!("../../../examples/kubernetes/local-vllm.yaml");
+        for command in ["plan", "apply"] {
+            for (input, expected) in [(legacy.as_str(), 3), (current, 0)] {
+                let directory = tempfile::tempdir().unwrap();
+                let mut cli = Cli::try_parse_from(["nemoclaw", command, "-"]).unwrap();
+                cli.state_dir = directory.path().join("state");
+                cli.bundle_dir = Some(directory.path().join("missing-bundle"));
+                let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let saved = events.clone();
+                // The missing bundle stops the operation after input validation.
+                assert!(
+                    run(
+                        cli,
+                        input.as_bytes(),
+                        &CancellationToken::new(),
+                        Arc::new(move |event| saved.lock().unwrap().push(event)),
+                    )
+                    .await
+                    .is_err()
+                );
+                let warnings: Vec<_> = events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|event| match event {
+                        Progress::Warning { message } if message.contains("deprecated") => {
+                            Some(message.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(warnings.len(), expected, "{command}: {warnings:?}");
+                for (old, new) in [
+                    ("kubernetes.cpuLimitMillis", "container.cpuLimitMillis"),
+                    ("kubernetes.memoryLimitGiB", "container.memoryLimitGiB"),
+                    ("kubernetes.updatePolicy", "spec.services.qwen.updatePolicy"),
+                ]
+                .iter()
+                .take(expected)
+                {
+                    assert!(
+                        warnings.iter().any(|warning| warning
+                            .contains(&format!("spec.services.qwen.{old}"))
+                            && warning.contains(new)),
+                        "{command}: {old} -> {new}: {warnings:?}"
+                    );
+                }
+            }
         }
     }
 }

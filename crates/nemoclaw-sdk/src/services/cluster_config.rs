@@ -234,15 +234,17 @@ pub enum TolerationEffect {
     NoExecute,
 }
 
-pub(crate) fn normalize(document: &mut Value) -> Result<bool, crate::config::ConfigError> {
+/// Move legacy Kubernetes limit and update-policy fields to their current
+/// locations, returning a deprecation warning for each moved field.
+pub(crate) fn normalize(document: &mut Value) -> Result<Vec<String>, crate::config::ConfigError> {
     let Some(services) = document
         .pointer_mut("/spec/services")
         .and_then(Value::as_object_mut)
     else {
-        return Ok(false);
+        return Ok(Vec::new());
     };
-    let mut changed = false;
-    for service in services.values_mut() {
+    let mut moved = Vec::new();
+    for (name, service) in services.iter_mut() {
         for field in ["cpuLimitMillis", "memoryLimitGiB", "updatePolicy"] {
             let Some(value) = service
                 .get_mut("kubernetes")
@@ -268,10 +270,17 @@ pub(crate) fn normalize(document: &mut Value) -> Result<bool, crate::config::Con
                 ));
             }
             destination.insert(field.into(), value);
-            changed = true;
+            let current = if field == "updatePolicy" {
+                format!("spec.services.{name}.{field}")
+            } else {
+                format!("spec.services.{name}.container.{field}")
+            };
+            moved.push(format!(
+                "spec.services.{name}.kubernetes.{field} is deprecated; use {current}"
+            ));
         }
     }
-    Ok(changed)
+    Ok(moved)
 }
 
 pub(crate) fn constrain(defs: &mut serde_json::Map<String, Value>, normalized: bool) {
@@ -346,18 +355,33 @@ pub(crate) fn constrain(defs: &mut serde_json::Map<String, Value>, normalized: b
             "updatePolicy",
             json!({"default":ServiceUpdatePolicy::default()}),
         );
+        // Messages name both accepted locations; otherwise a missing or duplicated
+        // limit is reported only as the failed anyOf or not keyword.
         let mut limits = Vec::new();
+        let mut duplicates = Vec::new();
         for field in ["cpuLimitMillis", "memoryLimitGiB"] {
             let current = at(&format!("container/{field}"), json!({}), true);
-            limits.push(if normalized {
-                current
-            } else {
-                json!({"oneOf":[current, at(&format!("kubernetes/{field}"), json!({}), true)]})
-            });
+            if normalized {
+                limits.push(current);
+                continue;
+            }
+            let legacy = at(&format!("kubernetes/{field}"), json!({}), true);
+            limits.push(json!({
+                "anyOf": [current, legacy],
+                "x-nemoclaw-error": format!("cluster model services require container.{field} (or legacy kubernetes.{field})")
+            }));
+            duplicates.push(json!({
+                "not": {"allOf": [current, legacy]},
+                "x-nemoclaw-error": format!("declare container.{field} or legacy kubernetes.{field}, not both")
+            }));
         }
         let mut rules = vec![json!({"if":{"required":["kubernetes"]}, "then":{"allOf":limits}})];
+        rules.extend(duplicates);
         if !normalized {
-            rules.push(json!({"not":{"allOf":[at("updatePolicy",json!({}),true),at("kubernetes/updatePolicy",json!({}),true)]}}));
+            rules.push(json!({
+                "not": {"allOf": [at("updatePolicy",json!({}),true), at("kubernetes/updatePolicy",json!({}),true)]},
+                "x-nemoclaw-error": "declare updatePolicy or legacy kubernetes.updatePolicy, not both"
+            }));
         }
         if let Some(existing) = service["allOf"].as_array_mut() {
             existing.extend(rules);

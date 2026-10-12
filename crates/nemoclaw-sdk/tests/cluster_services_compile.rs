@@ -80,9 +80,19 @@ fn portable_service_settings_preserve_cluster_resource_specs_across_legacy_migra
                 .unwrap()
                 .remove("updatePolicy")
                 .unwrap();
-            let old = Document::parse(legacy.to_string().as_bytes()).unwrap();
-            let new = Document::parse(portable.to_string().as_bytes())
+            let (old, warnings) =
+                Document::parse_with_warnings(legacy.to_string().as_bytes()).unwrap();
+            assert_eq!(
+                warnings,
+                [
+                    "spec.services.qwen.kubernetes.cpuLimitMillis is deprecated; use spec.services.qwen.container.cpuLimitMillis",
+                    "spec.services.qwen.kubernetes.memoryLimitGiB is deprecated; use spec.services.qwen.container.memoryLimitGiB",
+                    "spec.services.qwen.kubernetes.updatePolicy is deprecated; use spec.services.qwen.updatePolicy",
+                ]
+            );
+            let (new, warnings) = Document::parse_with_warnings(portable.to_string().as_bytes())
                 .expect("portable limits and update policy must configure cluster services");
+            assert!(warnings.is_empty(), "{warnings:?}");
             let old_graph = compile::compile_runtime(&old, &generations(), "0.1.0").unwrap();
             let new_graph = compile::compile_runtime(&new, &generations(), "0.1.0").unwrap();
             assert_eq!(

@@ -13,7 +13,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Record, Error> {
     let mut stored: Value = serde_json::from_slice(bytes).map_err(|_| corrupt())?;
     let original = stored.get("document").cloned().ok_or_else(corrupt)?;
     let mut normalized = original.clone();
-    if !crate::services::cluster_config::normalize(&mut normalized).map_err(|_| corrupt())? {
+    if crate::services::cluster_config::normalize(&mut normalized)
+        .map_err(|_| corrupt())?
+        .is_empty()
+    {
         return serde_json::from_slice(bytes).map_err(|_| corrupt());
     }
     // Validate the authored compatibility shape before normalization. This rejects

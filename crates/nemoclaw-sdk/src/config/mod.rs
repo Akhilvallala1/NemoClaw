@@ -90,15 +90,23 @@ impl Document {
     /// # Errors
     /// Returns an error for unreadable, oversized, malformed, or invalid input.
     pub fn parse(input: impl Read) -> Result<Self, ConfigError> {
+        Self::parse_with_warnings(input).map(|(document, _)| document)
+    }
+    /// Parse like [`Document::parse`], also returning one warning for each
+    /// deprecated field location that the input uses.
+    ///
+    /// # Errors
+    /// Returns an error for unreadable, oversized, malformed, or invalid input.
+    pub fn parse_with_warnings(input: impl Read) -> Result<(Self, Vec<String>), ConfigError> {
         let (text, mut tree) = read_yaml(input)?;
         schema::validate_input(&tree, Some(&text))?;
-        crate::services::cluster_config::normalize(&mut tree)?;
+        let warnings = crate::services::cluster_config::normalize(&mut tree)?;
         let mut document: Self = serde_json::from_value(tree).map_err(|_| {
             ConfigError::new("configuration contains an unknown field or invalid field type")
         })?;
         document.defaults();
         document.validate()?;
-        Ok(document)
+        Ok((document, warnings))
     }
     /// Serialize a valid configuration to YAML.
     ///

@@ -105,6 +105,57 @@ fn portable_cluster_limits_and_update_policy_reject_invalid_or_ambiguous_declara
 }
 
 #[test]
+fn missing_or_duplicated_moved_fields_report_their_current_and_legacy_paths() {
+    let error = |input: &Value| {
+        Document::parse(input.to_string().as_bytes())
+            .unwrap_err()
+            .to_string()
+    };
+    for kind in ["vllm", "ollama"] {
+        for field in ["cpuLimitMillis", "memoryLimitGiB"] {
+            let mut input = portable_cluster_document(kind);
+            input["spec"]["services"]["qwen"]["container"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            let message = error(&input);
+            for expected in [
+                "spec.services.qwen",
+                &format!("container.{field}"),
+                &format!("kubernetes.{field}"),
+            ] {
+                assert!(message.contains(expected), "missing {expected}: {message}");
+            }
+
+            let mut input = portable_cluster_document(kind);
+            let service = &mut input["spec"]["services"]["qwen"];
+            service["kubernetes"][field] = service["container"][field].clone();
+            let message = error(&input);
+            for expected in [
+                "spec.services.qwen",
+                &format!("container.{field}"),
+                &format!("kubernetes.{field}"),
+                "not both",
+            ] {
+                assert!(message.contains(expected), "missing {expected}: {message}");
+            }
+        }
+        let mut input = portable_cluster_document(kind);
+        input["spec"]["services"]["qwen"]["updatePolicy"] = json!("Recreate");
+        input["spec"]["services"]["qwen"]["kubernetes"]["updatePolicy"] = json!("Recreate");
+        let message = error(&input);
+        for expected in [
+            "spec.services.qwen",
+            "updatePolicy",
+            "kubernetes.updatePolicy",
+            "not both",
+        ] {
+            assert!(message.contains(expected), "missing {expected}: {message}");
+        }
+    }
+}
+
+#[test]
 fn portable_cluster_requests_must_fit_the_common_container_limits() {
     for kind in ["vllm", "ollama"] {
         for (request, limit) in [

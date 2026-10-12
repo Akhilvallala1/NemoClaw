@@ -2507,7 +2507,7 @@
               "then": {
                 "allOf": [
                   {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "properties": {
                           "container": {
@@ -2538,10 +2538,11 @@
                           "kubernetes"
                         ]
                       }
-                    ]
+                    ],
+                    "x-nemoclaw-error": "cluster model services require container.cpuLimitMillis (or legacy kubernetes.cpuLimitMillis)"
                   },
                   {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "properties": {
                           "container": {
@@ -2572,10 +2573,85 @@
                           "kubernetes"
                         ]
                       }
-                    ]
+                    ],
+                    "x-nemoclaw-error": "cluster model services require container.memoryLimitGiB (or legacy kubernetes.memoryLimitGiB)"
                   }
                 ]
               }
+            },
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "container": {
+                        "properties": {
+                          "cpuLimitMillis": {}
+                        },
+                        "required": [
+                          "cpuLimitMillis"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "kubernetes": {
+                        "properties": {
+                          "cpuLimitMillis": {}
+                        },
+                        "required": [
+                          "cpuLimitMillis"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kubernetes"
+                    ]
+                  }
+                ]
+              },
+              "x-nemoclaw-error": "declare container.cpuLimitMillis or legacy kubernetes.cpuLimitMillis, not both"
+            },
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "container": {
+                        "properties": {
+                          "memoryLimitGiB": {}
+                        },
+                        "required": [
+                          "memoryLimitGiB"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "kubernetes": {
+                        "properties": {
+                          "memoryLimitGiB": {}
+                        },
+                        "required": [
+                          "memoryLimitGiB"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kubernetes"
+                    ]
+                  }
+                ]
+              },
+              "x-nemoclaw-error": "declare container.memoryLimitGiB or legacy kubernetes.memoryLimitGiB, not both"
             },
             {
               "not": {
@@ -2604,7 +2680,8 @@
                     ]
                   }
                 ]
-              }
+              },
+              "x-nemoclaw-error": "declare updatePolicy or legacy kubernetes.updatePolicy, not both"
             }
           ],
           "dependentRequired": {
@@ -2908,7 +2985,7 @@
               "then": {
                 "allOf": [
                   {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "properties": {
                           "container": {
@@ -2939,10 +3016,11 @@
                           "kubernetes"
                         ]
                       }
-                    ]
+                    ],
+                    "x-nemoclaw-error": "cluster model services require container.cpuLimitMillis (or legacy kubernetes.cpuLimitMillis)"
                   },
                   {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "properties": {
                           "container": {
@@ -2973,10 +3051,85 @@
                           "kubernetes"
                         ]
                       }
-                    ]
+                    ],
+                    "x-nemoclaw-error": "cluster model services require container.memoryLimitGiB (or legacy kubernetes.memoryLimitGiB)"
                   }
                 ]
               }
+            },
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "container": {
+                        "properties": {
+                          "cpuLimitMillis": {}
+                        },
+                        "required": [
+                          "cpuLimitMillis"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "kubernetes": {
+                        "properties": {
+                          "cpuLimitMillis": {}
+                        },
+                        "required": [
+                          "cpuLimitMillis"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kubernetes"
+                    ]
+                  }
+                ]
+              },
+              "x-nemoclaw-error": "declare container.cpuLimitMillis or legacy kubernetes.cpuLimitMillis, not both"
+            },
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "container": {
+                        "properties": {
+                          "memoryLimitGiB": {}
+                        },
+                        "required": [
+                          "memoryLimitGiB"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "kubernetes": {
+                        "properties": {
+                          "memoryLimitGiB": {}
+                        },
+                        "required": [
+                          "memoryLimitGiB"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kubernetes"
+                    ]
+                  }
+                ]
+              },
+              "x-nemoclaw-error": "declare container.memoryLimitGiB or legacy kubernetes.memoryLimitGiB, not both"
             },
             {
               "not": {
@@ -3005,7 +3158,8 @@
                     ]
                   }
                 ]
-              }
+              },
+              "x-nemoclaw-error": "declare updatePolicy or legacy kubernetes.updatePolicy, not both"
             }
           ],
           "dependentRequired": {

@@ -137,6 +137,7 @@ Earlier cluster YAML placed `cpuLimitMillis`, `memoryLimitGiB`, and `updatePolic
 For managed Kubernetes and OpenShift, parsing still accepts those legacy fields and normalizes limits into `container` and policy into the service; export writes the new locations.
 Supply each moved field in only one location: declaring both the legacy and new location is rejected even when their values match.
 The legacy CPU and memory fields satisfy the cluster's explicit-limit requirement when normalized.
+Plan and apply warn for each legacy field and name its current location.
 This compatibility does not make `kubernetes` settings valid for Docker or Podman.
 Moving these YAML fields does not change their values or authorize replacement; retain the existing state directory and review the plan.
 
