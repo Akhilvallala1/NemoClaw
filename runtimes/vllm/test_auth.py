@@ -3,8 +3,10 @@
 """GPU-free bearer-route checks run in each vLLM runtime image build."""
 import asyncio
 import os
+import re
 import secrets
 import unittest
+from unittest import mock
 
 from vllm import envs
 from vllm.entrypoints.serve.utils.server_utils import AuthenticationMiddleware
@@ -13,6 +15,77 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 import model_hosting_container_standards.sagemaker as sagemaker
+
+NOT_FOUND = (404, {"error": "Not found"})
+
+
+def build_vllm_app():
+    """Build vLLM's own application with the arguments the runtime passes in bearer mode."""
+    from vllm.entrypoints.openai import api_server
+    from vllm.entrypoints.openai.cli_args import make_arg_parser
+    from vllm.utils.argparse_utils import FlexibleArgumentParser
+
+    args = make_arg_parser(FlexibleArgumentParser()).parse_args([
+        "--model", "/nonexistent", "--served-model-name", "fixture", "--host", "0.0.0.0",
+        "--tensor-parallel-size", "1", "--load-format", "safetensors",
+        "--middleware", "nemoclaw_vllm_routes.OpenAIRoutes", "--port", "18888",
+    ])
+    return api_server.build_app(args, supported_tasks=("generate",), model_config=None)
+
+
+def registered_requests(app):
+    """Each method and concrete path vLLM routes, with path parameters filled in."""
+    for route in app.routes:
+        path = re.sub(r"\{[^}]*\}", "fixture", route.path)
+        for method in sorted(getattr(route, "methods", None) or {"GET"}):
+            yield method, path
+
+
+class RealApplicationTest(unittest.TestCase):
+    """Checks vLLM's real build_app, so an upstream middleware or route change cannot bypass the filter."""
+
+    def setUp(self):
+        self.key = secrets.token_hex(32)
+        environment = mock.patch.dict(os.environ, {"VLLM_API_KEY": self.key})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def request(self, client, method, path, token=None, headers=None):
+        headers = dict(headers or {})
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        response = client.request(method, path, headers=headers, json={})
+        if response.headers.get("content-type") == "application/json" and response.content:
+            return response.status_code, response.json()
+        return response.status_code, None
+
+    def test_route_filter_is_the_outermost_user_middleware(self):
+        app = build_vllm_app()
+        self.assertIs(app.user_middleware[0].cls, OpenAIRoutes)
+
+    def test_routes_outside_v1_return_not_found_before_vllm(self):
+        app = build_vllm_app()
+        client = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
+        requests = [request for request in registered_requests(app)
+                    if not request[1].startswith("/v1/") and request != ("GET", "/health")]
+        for path in ["/invocations", "/tokenize", "/metrics", "/ping", "/version", "/load",
+                     "/inference/v1/generate", "/openapi.json", "/docs"]:
+            self.assertIn(path, {path for _, path in requests})
+        for method, path in requests:
+            for token in [None, "wrong", self.key]:
+                with self.subTest(method=method, path=path, token=token is not None):
+                    status, body = self.request(client, method, path, token)
+                    self.assertEqual(status, 404)
+                    if method != "HEAD":
+                        self.assertEqual((status, body), NOT_FOUND)
+
+    def test_v1_routes_require_the_key(self):
+        client = TestClient(build_vllm_app(), raise_server_exceptions=False)
+        for method, path in [("GET", "/v1/models"), ("POST", "/v1/chat/completions"),
+                             ("POST", "/v1/completions")]:
+            for token in [None, "wrong"]:
+                with self.subTest(method=method, path=path, token=token):
+                    self.assertEqual(self.request(client, method, path, token)[0], 401)
 
 
 class NativeAuthenticationTest(unittest.TestCase):
