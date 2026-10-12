@@ -489,9 +489,11 @@ export async function collectSandboxStatusSnapshot(
     ((name: string) =>
       getReconciledSandboxGatewayState(name, {
         getState: getSandboxGatewayStateForStatus,
-        ...(isUnlockedSandboxStatusRead() || initialPreflight?.intentionalStopConfirmed
-          ? { gatewayRecovery: "observe" as const }
-          : {}),
+        ...(isUnlockedSandboxStatusRead()
+          ? { gatewayRecovery: "observe" as const, selectOwningGateway: false }
+          : initialPreflight?.intentionalStopConfirmed
+            ? { gatewayRecovery: "observe" as const }
+            : {}),
       }));
   let lookup: SandboxGatewayState;
   try {

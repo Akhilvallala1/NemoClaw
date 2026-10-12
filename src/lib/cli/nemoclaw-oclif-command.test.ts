@@ -91,6 +91,16 @@ class ParsedUnsupportedSandboxCommand extends NemoClawCommand {
   }
 }
 
+class GlobalStatusReadCommand extends NemoClawCommand {
+  static id = "status";
+  static flags = {};
+  static operation: () => Promise<void> = async () => undefined;
+
+  public async run(): Promise<void> {
+    await GlobalStatusReadCommand.operation();
+  }
+}
+
 class ParsedSupportedSandboxCommand extends NemoClawCommand {
   static id = "sandbox:status";
   static args = { sandboxName: Args.string({ required: true }) };
@@ -243,6 +253,7 @@ describe("NemoClawCommand", () => {
     RawSandboxDoctorCommand.ran = false;
     ParsedUnsupportedSandboxCommand.ran = false;
     ParsedSupportedSandboxCommand.operation = async () => undefined;
+    GlobalStatusReadCommand.operation = async () => undefined;
     GlobalUnsupportedMutationCommand.ran = false;
     GlobalUseMutationCommand.ran = false;
     ProbeOnlyConnectCommand.operation = async () => undefined;
@@ -285,6 +296,20 @@ describe("NemoClawCommand", () => {
     );
     expect(operation).not.toHaveBeenCalled();
     expect(portableHostAuthority.withCurrentPortableHostFenceTry).toHaveBeenCalledOnce();
+  });
+
+  it("fails fast for global status when the portable host fence is busy", async () => {
+    const fence = acquireProcessBoundLockAt(portableHostAuthority.portableHostFencePath(stateDir));
+    const operation = vi.fn(async () => undefined);
+    GlobalStatusReadCommand.operation = operation;
+    try {
+      await expect(GlobalStatusReadCommand.run([], process.cwd())).rejects.toThrow(
+        portableHostAuthority.PORTABLE_HOST_FENCE_BUSY_MESSAGE,
+      );
+      expect(operation).not.toHaveBeenCalled();
+    } finally {
+      releaseProcessBoundLock(fence);
+    }
   });
 
   it("records status-like command results without throwing", () => {
