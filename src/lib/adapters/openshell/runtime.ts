@@ -32,6 +32,11 @@ export {
 
 export { buildOpenShellSubprocessEnv, OPENSHELL_OPERATION_TIMEOUT_MS, OPENSHELL_PROBE_TIMEOUT_MS };
 export { classifyManagedGatewayEndpointBinding } from "./command-execution";
+export {
+  assertNoOpenShellGatewayEndpointOverride,
+  scopeGatewayOpenshellArgs,
+  type OpenShellGatewayEndpointEnvironment,
+} from "./gateway-scope";
 export { runCaptureEx } from "../../runner";
 
 type RunnerOptions = {

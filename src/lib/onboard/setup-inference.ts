@@ -60,9 +60,10 @@ import {
 } from "../inference/ollama/proxy";
 import {
   assertNoOpenShellGatewayEndpointOverride,
+  captureSandboxPhasesForGateway,
   scopeGatewayOpenshellArgs,
   type OpenShellGatewayEndpointEnvironment,
-} from "../adapters/openshell/gateway-scope";
+} from "../adapters/openshell/runtime";
 import type { withSandboxMutationLock } from "../state/mcp-lifecycle-lock";
 import type { Session } from "../state/onboard-session";
 import { createSandboxHostLocalInferenceProvenance } from "../state/registry/host-local-inference";
@@ -590,21 +591,7 @@ export function releaseSupersededOllamaModel(
       );
       const environment = deps.environment ?? process.env;
       const captureOwnershipPhases: OllamaOwnershipPhaseCapture =
-        deps.captureOllamaOwnershipPhases ??
-        ((gatewayName, captureEnvironment) => {
-          const result = deps.runOpenshell(["sandbox", "list", "-g", gatewayName], {
-            env: captureEnvironment,
-            ignoreError: true,
-            maxBuffer: 1024 * 1024,
-            stdio: "pipe",
-            suppressOutput: true,
-            timeout: 10_000,
-          });
-          return {
-            status: result.status,
-            output: [result.stdout ?? "", result.stderr ?? ""].join("\n"),
-          };
-        });
+        deps.captureOllamaOwnershipPhases ?? captureSandboxPhasesForGateway;
       const discoverPeers = (owners: readonly OllamaModelHolder[]) =>
         deps.discoverActiveOllamaSandboxNames
           ? deps.discoverActiveOllamaSandboxNames(owners, environment)

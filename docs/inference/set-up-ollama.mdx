@@ -428,7 +428,13 @@ Before manually releasing a listed model, verify that no active sandbox on this 
    ollama ps
    ```
 
-Do not delete or edit the legacy receipt to force an automatic retry. Keep the model loaded whenever ownership cannot be verified.
+5. After the ownership checks succeed and every listed model is confirmed absent from `ollama ps`, acknowledge the completed manual recovery by removing only that sandbox's legacy receipt:
+
+   ```bash
+   rm -- "$HOME/.nemoclaw/ollama-pending-model-cleanup/<sandbox-name>.json"
+   ```
+
+   Replace `<sandbox-name>` with the exact sandbox name printed in the warning. This only retires the obsolete warning receipt; it does not trigger cleanup. If any ownership check is incomplete or a listed model remains active, keep the receipt and do not stop a model owned by an active sandbox. Do not delete or edit the receipt to force an automatic retry.
 
 ## Related Topics
 

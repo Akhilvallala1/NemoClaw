@@ -223,7 +223,7 @@ describe("releaseSupersededOllamaModel", () => {
     }
   });
 
-  it("uses suppressed OpenShell output in the default cross-gateway discovery path", () => {
+  it("uses the injected phase capture for cross-gateway discovery", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-ollama-default-discovery-"));
     vi.stubEnv("HOME", home);
     const gatewayRoot = path.join(home, ".nemoclaw", "gateways", "32665");
@@ -248,28 +248,20 @@ describe("releaseSupersededOllamaModel", () => {
       useProductionPeerSource: true,
       useProductionDiscovery: true,
     });
-    const runOpenshell = vi.fn(() => ({
+    const captureOllamaOwnershipPhases = vi.fn(() => ({
       status: 0,
-      stdout: "NAME CREATED PHASE\nactive-peer 2026-08-25 Ready\n",
-      stderr: "",
+      output: "NAME CREATED PHASE\nactive-peer 2026-08-25 Ready\n",
     }));
     const deps = harness.deps as SetupInferenceDeps;
-    deps.runOpenshell = runOpenshell as unknown as SetupInferenceDeps["runOpenshell"];
+    deps.captureOllamaOwnershipPhases = captureOllamaOwnershipPhases;
     deps.resolveOllamaOwnershipGateway = (sandbox) => sandbox.gatewayName!;
 
     try {
       releaseToNvidia(previousLocalOllamaRoute, deps);
 
-      expect(runOpenshell).toHaveBeenCalledExactlyOnceWith(
-        ["sandbox", "list", "-g", "nemoclaw-32665"],
-        expect.objectContaining({
-          env: process.env,
-          ignoreError: true,
-          maxBuffer: 1024 * 1024,
-          stdio: "pipe",
-          suppressOutput: true,
-          timeout: 10_000,
-        }),
+      expect(captureOllamaOwnershipPhases).toHaveBeenCalledExactlyOnceWith(
+        "nemoclaw-32665",
+        process.env,
       );
       expect(harness.discoverActiveOllamaSandboxNames).not.toHaveBeenCalled();
       expect(harness.unloadOllamaModels).not.toHaveBeenCalled();

@@ -1240,33 +1240,38 @@ async function destroySandboxUnlocked(
       }
     }
   }
-  try {
-    const shouldStopHostServices = shouldStopHostServicesAfterDestroy({
-      deleteSucceededOrAlreadyGone,
-      registeredSandboxCount: listRegisteredSandboxes().sandboxes.length,
-      sandboxStillRegistered: !!getRegisteredSandbox(sandboxName),
-    });
-    await cleanupSandboxServices(
-      sandboxName,
-      {
-        gatewayPort:
-          registeredSandbox === null
-            ? (retainedRecoveryAuthority?.gatewayPort ?? registryAuthority.gatewayPort)
-            : registryAuthority.gatewayPort,
-        stopHostServices: shouldStopHostServices,
-        sandboxSnapshot: sandbox,
-        ...(destroyChannelStopTransport
-          ? { channelStopTransport: destroyChannelStopTransport }
-          : {}),
-      },
-      {
-        getSandbox: getRegisteredSandbox,
-        runOpenshell: cleanupRunOpenshell,
-      },
-    );
-  } catch (error) {
-    preparedManagedLlamaCppCleanup?.abort();
-    throw error;
+  // stopHostServices=false protects shared daemons but cleanupSandboxServices also
+  // releases sandbox-scoped models and providers. Do not run any of it until the
+  // gateway confirms deletion or absence; --force cannot establish that proof.
+  if (deleteSucceededOrAlreadyGone) {
+    try {
+      const shouldStopHostServices = shouldStopHostServicesAfterDestroy({
+        deleteSucceededOrAlreadyGone,
+        registeredSandboxCount: listRegisteredSandboxes().sandboxes.length,
+        sandboxStillRegistered: !!getRegisteredSandbox(sandboxName),
+      });
+      await cleanupSandboxServices(
+        sandboxName,
+        {
+          gatewayPort:
+            registeredSandbox === null
+              ? (retainedRecoveryAuthority?.gatewayPort ?? registryAuthority.gatewayPort)
+              : registryAuthority.gatewayPort,
+          stopHostServices: shouldStopHostServices,
+          sandboxSnapshot: sandbox,
+          ...(destroyChannelStopTransport
+            ? { channelStopTransport: destroyChannelStopTransport }
+            : {}),
+        },
+        {
+          getSandbox: getRegisteredSandbox,
+          runOpenshell: cleanupRunOpenshell,
+        },
+      );
+    } catch (error) {
+      preparedManagedLlamaCppCleanup?.abort();
+      throw error;
+    }
   }
   if (deleteSucceededOrAlreadyGone && commonLlamaCppAuthorityRetired === true) {
     preparedManagedLlamaCppCleanup?.abort();

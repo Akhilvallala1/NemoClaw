@@ -421,6 +421,30 @@ describe("pending Ollama model cleanup", () => {
     }
   });
 
+  it("stops warning after a legacy receipt is manually retired following recovery", () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "nemoclaw-pending-ollama-cleanup-"));
+    const owner = cleanupOwner();
+    const legacyPath = join(stateRoot, "ollama-pending-model-cleanup", `${owner.name}.json`);
+    mkdirSync(join(stateRoot, "ollama-pending-model-cleanup"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({ schemaVersion: 1, sandboxName: owner.name, models: ["llama3"] }),
+      { mode: 0o600 },
+    );
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      // The operator removes this receipt only after the documented cross-gateway
+      // ownership checks and manual Ollama release have succeeded.
+      rmSync(legacyPath);
+
+      expect(loadPendingOllamaModelCleanup(owner, stateRoot)).toEqual([]);
+      expect(warning).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+      rmSync(stateRoot, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when cleanup receipt lifecycle identity is incomplete", () => {
     const stateRoot = mkdtempSync(join(tmpdir(), "nemoclaw-pending-ollama-cleanup-"));
     const owner = cleanupOwner();
