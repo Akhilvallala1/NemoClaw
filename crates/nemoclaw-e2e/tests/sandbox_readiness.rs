@@ -172,7 +172,7 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| row["address"] == "data.nemoclaw_sandbox_readiness.assistant")
+            .find(|row| row["address"] == "data.fabric_sandbox_readiness.assistant")
             .unwrap();
         assert_eq!(observation["values"]["ready"], native_ready);
         assert_eq!(fixture.state.lock().unwrap().effects, effects);
