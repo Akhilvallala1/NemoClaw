@@ -9,6 +9,7 @@ import { getPath, isObjectRecord, stringOrUndefined } from "../advisors/json.mts
 import {
   type AdvisorBlockerGateResult,
   evaluateAdvisorBlockers,
+  readTrustedRiskPlan,
 } from "../pr-review-advisor/blocker-gate.mts";
 import {
   type AdvisorFindingLedger,
@@ -206,6 +207,7 @@ async function main(): Promise<void> {
     attempt,
     expectedHeadSha: headSha,
     expectedBaseSha: baseSha,
+    trustedRiskPlan: readTrustedRiskPlan(requiredEnv("PR_REVIEW_ADVISOR_TRUSTED_PLAN_PATH")),
   });
   const context = readPreparedGitHubContext(contextPath, { repo, prNumber });
   if (!context || context.fetchError) {

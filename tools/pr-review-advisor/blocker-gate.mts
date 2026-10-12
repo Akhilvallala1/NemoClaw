@@ -43,6 +43,7 @@ export function evaluateAdvisorBlockers(options: {
   attempt: string;
   expectedHeadSha?: string;
   expectedBaseSha?: string;
+  trustedRiskPlan: RiskPlan;
 }): AdvisorBlockerGateResult {
   const attempt = positiveDecimal(options.attempt, "attempt");
   const root = path.resolve(options.artifactsRoot);
@@ -66,6 +67,12 @@ export function evaluateAdvisorBlockers(options: {
   }
   requireExpectedSha(options.expectedHeadSha, context.headSha, "head");
   requireExpectedSha(options.expectedBaseSha, context.baseSha, "base");
+  if (
+    !hasValidRiskPlanDigest(options.trustedRiskPlan) ||
+    !isDeepStrictEqual(context.deterministic, options.trustedRiskPlan)
+  ) {
+    throw new Error("Advisor deterministic risk plan does not match the trusted plan");
+  }
 
   const receipts = artifacts.map(({ receipt }) => receipt);
   const e2e = collectE2eRecommendations(receipts, {
@@ -167,6 +174,14 @@ function readBoundedJson(file: string): unknown {
   }
 }
 
+export function readTrustedRiskPlan(file: string): RiskPlan {
+  const plan = readBoundedJson(file) as RiskPlan;
+  if (!hasValidRiskPlanDigest(plan)) {
+    throw new Error("Advisor trusted risk plan has an invalid digest");
+  }
+  return plan;
+}
+
 function requireDirectory(directory: string): void {
   const stat = fs.lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -237,6 +252,7 @@ async function main(): Promise<void> {
     attempt,
     expectedHeadSha: process.env.EXPECTED_HEAD_SHA,
     expectedBaseSha: process.env.EXPECTED_BASE_SHA,
+    trustedRiskPlan: readTrustedRiskPlan(process.env.PR_REVIEW_ADVISOR_TRUSTED_PLAN_PATH ?? ""),
   });
   const summary = gateSummary(result);
   console.log(summary);

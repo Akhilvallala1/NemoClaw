@@ -3,13 +3,14 @@
 
 import { execFileSync } from "node:child_process";
 
-export function getChangedFiles(base: string, head: string): string[] {
+export function getChangedFiles(base: string, head: string, cwd?: string): string[] {
   const stdout = gitOutput(
     [
       ["diff", "--name-only", `${base}...${head}`],
       ["diff", "--name-only", `${base}..${head}`],
     ],
     10 * 1024 * 1024,
+    cwd,
   );
   if (stdout === undefined) {
     throw new Error(`failed to diff ${base}..${head}; ensure both refs are fetched`);

@@ -11,7 +11,10 @@ import { expect, it, onTestFinished } from "vitest";
 
 import type { TrustedE2eRecommendationInventory } from "../../../tools/advisors/e2e-recommendations.mts";
 import { buildRiskPlan } from "../../../tools/advisors/risk-plan.mts";
-import { evaluateAdvisorBlockers } from "../../../tools/pr-review-advisor/blocker-gate.mts";
+import {
+  evaluateAdvisorBlockers,
+  readTrustedRiskPlan,
+} from "../../../tools/pr-review-advisor/blocker-gate.mts";
 import {
   buildReviewQueueContext,
   buildSpecialistE2eReceipt,
@@ -40,15 +43,18 @@ function artifactTree(
     changedFiles?: string[];
     invalidJobId?: "markdown" | "numeric";
     omitRequiredJob?: boolean;
+    forgePlanWithoutRequiredJob?: boolean;
   } = {},
 ): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "advisor-blocker-gate-"));
   onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
-  const selectedRiskPlan = structuredClone(
-    options.changedFiles
-      ? buildRiskPlan({ headSha: HEAD_SHA, changedFiles: options.changedFiles })
-      : riskPlan,
-  );
+  const trustedRiskPlan = options.changedFiles
+    ? buildRiskPlan({ headSha: HEAD_SHA, changedFiles: options.changedFiles })
+    : riskPlan;
+  const selectedRiskPlan = structuredClone(trustedRiskPlan);
+  selectedRiskPlan.requiredJobs = options.forgePlanWithoutRequiredJob
+    ? selectedRiskPlan.requiredJobs.slice(1)
+    : selectedRiskPlan.requiredJobs;
   selectedRiskPlan.requiredJobs = selectedRiskPlan.requiredJobs.map((job, index) => ({
     ...job,
     id:
@@ -60,9 +66,10 @@ function artifactTree(
   }));
   const { planHash: originalPlanHash, ...withoutHash } = selectedRiskPlan;
   selectedRiskPlan.planHash =
-    options.invalidJobId === "numeric"
+    options.invalidJobId === "numeric" || options.forgePlanWithoutRequiredJob
       ? createHash("sha256").update(JSON.stringify(withoutHash)).digest("hex")
       : originalPlanHash;
+  fs.writeFileSync(path.join(root, "trusted-risk-plan.json"), JSON.stringify(trustedRiskPlan));
   const selectedInventory = {
     ...inventory,
     allowedJobIds: selectedRiskPlan.requiredJobs.map((job) => job.id),
@@ -151,6 +158,7 @@ function evaluate(root: string) {
     attempt: ATTEMPT,
     expectedHeadSha: HEAD_SHA,
     expectedBaseSha: BASE_SHA,
+    trustedRiskPlan: readTrustedRiskPlan(path.join(root, "trusted-risk-plan.json")),
   });
 }
 
@@ -191,6 +199,7 @@ it("reports the Brev E2E selection even when the Advisor gate blocks", () => {
         EXPECTED_BASE_SHA: BASE_SHA,
         EXPECTED_HEAD_SHA: HEAD_SHA,
         PR_REVIEW_ADVISOR_ARTIFACTS: root,
+        PR_REVIEW_ADVISOR_TRUSTED_PLAN_PATH: path.join(root, "trusted-risk-plan.json"),
         GITHUB_STEP_SUMMARY: summary,
       },
     },
@@ -215,7 +224,7 @@ it("rejects a non-string selector ID even with a matching risk-plan digest", () 
     changedFiles: ["src/lib/actions/sandbox/connect.ts"],
     invalidJobId: "numeric",
   });
-  expect(() => evaluate(root)).toThrow("invalid selector");
+  expect(() => evaluate(root)).toThrow("does not match the trusted plan");
 });
 
 it("rejects a missing required selector when the risk-plan digest is unchanged", () => {
@@ -224,6 +233,14 @@ it("rejects a missing required selector when the risk-plan digest is unchanged",
     omitRequiredJob: true,
   });
   expect(() => evaluate(root)).toThrow("invalid deterministic risk plan");
+});
+
+it("rejects a missing required selector even when the forged plan and receipts agree", () => {
+  const root = artifactTree({
+    changedFiles: ["src/lib/actions/sandbox/connect.ts"],
+    forgePlanWithoutRequiredJob: true,
+  });
+  expect(() => evaluate(root)).toThrow("does not match the trusted plan");
 });
 
 it("blocks a P0/P1 finding from any specialist", () => {
@@ -250,6 +267,7 @@ it.each([
 ] as const)(
   "returns CLI exit status for %s evidence",
   (_result, findingInterest, expectedStatus) => {
+    const root = artifactTree({ findingInterest });
     const child = spawnSync(
       process.execPath,
       [
@@ -264,7 +282,8 @@ it.each([
           ...process.env,
           EXPECTED_BASE_SHA: BASE_SHA,
           EXPECTED_HEAD_SHA: HEAD_SHA,
-          PR_REVIEW_ADVISOR_ARTIFACTS: artifactTree({ findingInterest }),
+          PR_REVIEW_ADVISOR_ARTIFACTS: root,
+          PR_REVIEW_ADVISOR_TRUSTED_PLAN_PATH: path.join(root, "trusted-risk-plan.json"),
         },
       },
     );
@@ -314,6 +333,7 @@ it("rejects evidence for a different checked commit", () => {
       attempt: ATTEMPT,
       expectedHeadSha: "c".repeat(40),
       expectedBaseSha: BASE_SHA,
+      trustedRiskPlan: riskPlan,
     }),
   ).toThrow("head SHA does not match");
 });
@@ -327,6 +347,7 @@ it.each([
       artifactsRoot: artifactTree(),
       attempt: ATTEMPT,
       ...expected,
+      trustedRiskPlan: riskPlan,
     }),
   ).toThrow(`requires expected ${label} SHA`);
 });
