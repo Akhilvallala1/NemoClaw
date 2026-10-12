@@ -25,6 +25,11 @@ on:
         required: true
         default: false
         type: boolean
+      windows_cpu_probe:
+        description: Inspect Windows 11 ARM WSL and virtualization prerequisites without publishing
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -34,8 +39,52 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  windows-cpu-probe:
+    name: Inspect CPU Windows 11 WSL prerequisites
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_cpu_probe == true && inputs.publish == false
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Record Windows, virtualization, and WSL capabilities
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version, BuildNumber, OSArchitecture | Format-List
+          Get-CimInstance Win32_ComputerSystem |
+            Select-Object HypervisorPresent | Format-List
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, Architecture, VirtualizationFirmwareEnabled,
+              SecondLevelAddressTranslationExtensions, VMMonitorModeExtensions | Format-List
+          foreach ($feature in @('VirtualMachinePlatform', 'Microsoft-Windows-Subsystem-Linux')) {
+            Get-WindowsOptionalFeature -Online -FeatureName $feature |
+              Select-Object FeatureName, State | Format-List
+          }
+          foreach ($argument in @('--version', '--status', '--list --verbose')) {
+            $output = Join-Path $env:RUNNER_TEMP 'wsl-probe-output.txt'
+            $errors = Join-Path $env:RUNNER_TEMP 'wsl-probe-error.txt'
+            $process = Start-Process wsl.exe -ArgumentList $argument -NoNewWindow -PassThru `
+              -RedirectStandardOutput $output -RedirectStandardError $errors
+            if (-not $process.WaitForExit(30000)) {
+              $process.Kill()
+              throw "WSL prerequisite probe timed out for $argument"
+            }
+            Write-Host "wsl $argument exited with $($process.ExitCode)"
+            foreach ($file in @($output, $errors)) {
+              if (Test-Path -LiteralPath $file) {
+                Write-Host ((Get-Content -LiteralPath $file -Raw) -replace "`0", '')
+              }
+            }
+          }
+          $desktop = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+          Write-Host "Docker Desktop installed: $(Test-Path -LiteralPath $desktop)"
+          'This run records runner prerequisites. It does not qualify the WSL bridge.' |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
   config:
     name: Compile declarative image configuration
+    if: github.event_name != 'workflow_dispatch' || inputs.windows_cpu_probe != true
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
