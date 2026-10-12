@@ -95,6 +95,12 @@ pub fn arguments(
     ]
     .map(String::from)
     .into();
+    if service.authentication.is_some() {
+        args.extend([
+            "--middleware".into(),
+            "nemoclaw_vllm_routes.OpenAIRoutes".into(),
+        ]);
+    }
     for (flag, value) in [
         ("--port", v.port.to_string()),
         (

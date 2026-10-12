@@ -61,6 +61,8 @@ impl RuntimeArtifact {
             "supervisor.json",
             "LICENSE",
             "build.json",
+            "nemoclaw_vllm_routes.py",
+            "test_vllm_auth.py",
         ];
         let mut names = std::collections::BTreeSet::new();
         if !["linux_arm64", "linux_amd64"].contains(&value.platform.as_str())

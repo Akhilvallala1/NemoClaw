@@ -236,7 +236,8 @@ Live image builds, GPU inference, tools and agent replies with this adapter have
 
 Set `authentication: bearer` under `spec.services.<name>` to generate a private key for a managed vLLM service.
 Omission preserves the existing unauthenticated serving behavior.
-Build the [runtime image](build.md#build-a-runtime-image) from this revision and use its immutable digest; a container created from an incompatible image will not satisfy application readiness.
+Build the [runtime image](build.md#build-a-runtime-image) from this revision and use its immutable digest.
+Authenticated services require both `org.nemoclaw.inference.authentication=bearer-v1` and `org.nemoclaw.inference.routes=openai-v2`; image validation rejects other images before creating the runtime, including `openai-v1` images from earlier revisions, whose middleware passed every `/v1` path.
 Do not supply `inferenceProviders[].credential` for a managed service.
 
 The supervisor creates a mode-0600 key in `/credentials/inference-key` on a separate credential volume under its own writer lock and reuses it after restart.
@@ -246,7 +247,19 @@ The OpenShell provider reads the key through the verified runtime container iden
 Agent requests use their OpenShell placeholder credential.
 YAML, plans, container launch settings, and OpenTofu state contain no generated key.
 The runtime's root user and Docker administrators can read the key and child environment.
-The private published HTTP endpoint provides bearer authentication without TLS.
+The key authenticates the `/v1` requests below and does not provide TLS.
+In bearer mode, the NemoClaw image middleware passes only these requests to vLLM:
+
+- `GET /v1/models` and `POST` to `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/messages`, or `/v1/messages/count_tokens`, each of which requires the key.
+- `GET /health`, which is public.
+
+Every other request returns HTTP 404 before reaching vLLM, with or without the key.
+This includes `POST /invocations`, `OPTIONS` requests, `HEAD /health`, and management routes that recipe `VLLM_*` variables can enable, such as `/v1/load_lora_adapter`.
+WebSockets are disabled.
+This restriction closes an upstream gap: the [native vLLM authentication middleware](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/utils/server_utils.py) leaves `/invocations` unguarded, and an operator's test of an earlier image returned a chat completion through that route without a key.
+Omitting `authentication: bearer` leaves the upstream route behavior unchanged.
+Keep the whole listener on a trusted private network, including when `authentication: bearer` is enabled.
+For Docker, restrict access through the host's network controls.
 
 Destroy removes the runtime and provider registration and retains the separate model and credential volumes.
 Recreation using the retained credential volume reuses the key.
