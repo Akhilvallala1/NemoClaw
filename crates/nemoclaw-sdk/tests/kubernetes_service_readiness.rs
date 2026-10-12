@@ -77,10 +77,18 @@ async fn terminal_runtime_status_reports_the_stop_detail_before_attempting_exec(
     );
     let message = error.to_string();
     assert!(
+        message.starts_with(&format!(
+            "Kubernetes model Pod agents/{} stopped:",
+            spec.name
+        )),
+        "{message}"
+    );
+    assert!(
         message.contains(&format!("Pod {:?}:", spec.name)),
         "{message}"
     );
-    assert_eq!(message.matches(&spec.name).count(), 1, "{message}");
+    // The error names the owned Pod once, and the runtime detail names it again.
+    assert_eq!(message.matches(&spec.name).count(), 2, "{message}");
     for secret in [
         "secret-sentinel",
         "nc-unverified-0123456789abcdef0123456789abcdef",
@@ -274,7 +282,13 @@ async fn readiness_fails_fast_on_permanent_waiting_reasons_without_echoing_kubel
             .await
             .unwrap_err();
         assert!(error.to_string().contains(reason));
-        assert!(error.to_string().contains("cannot start"));
+        assert!(
+            error.to_string().starts_with(&format!(
+                "Kubernetes model Pod agents/{} cannot start:",
+                spec.name
+            )),
+            "{error}"
+        );
         assert!(!error.to_string().contains("private-kubelet-message"));
         assert!(!error.to_string().contains("logs"));
     }

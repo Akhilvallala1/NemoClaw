@@ -226,7 +226,7 @@ When the rejection persists for 15 minutes, apply stops and reports the bounded,
 The pending Pod, PVCs, and receipt remain available for inspection.
 After adding capacity, apply again with the same state directory to resume waiting; after correcting the constraints, apply replaces the Pod without `Recreate` because it never ran.
 The Pod does not automatically restart a stopped inference process.
-On failed model startup or protective shutdown, preserve the state and PVCs, correct the resource or runtime condition, and use [explicit recovery](usage.md#recover-an-interrupted-operation).
+On failed model startup or protective shutdown, [diagnose the stopped Pod](#diagnose-a-stopped-model-pod), preserve the state and PVCs, correct the resource or runtime condition, then reapply with the retained state; see [recovery](usage.md#recover-an-interrupted-operation).
 An unfinished cluster runtime apply permits corrections limited to model workloads, including restoring the preceding model digest.
 Gateway prerequisites, retained service storage, and the compiled OpenShell deployment must remain unchanged; this does not authorize renaming a sandbox or changing its policy.
 Recovery can recreate compute only after verifying retained storage and ownership.
@@ -272,6 +272,38 @@ Keep the quota headroom through apply; afterward, the operator must check actual
 If apply fails after stopping the old Pod, preserve state, correct the reported cause, and resume with the same YAML and state directory.
 If the operator cannot provide headroom, defer the update; NemoClaw has no option to skip this admission check.
 Whole-deployment [destroy](#destroy-a-deployment) is a separate decision that deletes every sandbox's files and history, not a data-preserving quota workaround.
+
+### Diagnose a Stopped Model Pod
+
+When apply reports `Kubernetes model Pod NAMESPACE/NAME stopped` or `cannot start`, inspect that Pod with the deployment's kubeconfig and context.
+These commands read cluster state and write local diagnostic files; replace the placeholders with the context from the YAML and the namespace and Pod name from the error:
+
+```sh
+model_context=REPLACE_WITH_CONTEXT
+model_namespace=REPLACE_WITH_NAMESPACE
+model_pod=REPLACE_WITH_POD_NAME
+kubectl --kubeconfig "$NEMOCLAW_CLUSTER_KUBECONFIG" --context "$model_context" -n "$model_namespace" get pod "$model_pod" -o jsonpath='{.metadata.labels.nemoclaw\.nvidia\.com/uid}{"\n"}'
+```
+
+Confirm that the printed label matches the YAML's `metadata.uid` before collecting diagnostics.
+Without the error, list the deployment's Pods in that namespace with `get pods -l nemoclaw.nvidia.com/uid=UID`; model Pod names contain `-model-`.
+
+```sh
+diagnostic_dir=$(mktemp -d)
+kubectl --kubeconfig "$NEMOCLAW_CLUSTER_KUBECONFIG" --context "$model_context" -n "$model_namespace" describe pod "$model_pod" > "$diagnostic_dir/pod.txt"
+kubectl --kubeconfig "$NEMOCLAW_CLUSTER_KUBECONFIG" --context "$model_context" -n "$model_namespace" logs "$model_pod" -c runtime --tail 100 > "$diagnostic_dir/runtime.log" 2>&1
+printf 'Diagnostics: %s\n' "$diagnostic_dir"
+```
+
+The `describe` output shows the Pod's phase, the runtime container's termination reason, exit code, and message, and scheduling and image events.
+A Pod that cannot start has no runtime logs; check the image events.
+The model Pod's restart policy is `Never`, so a stopped runtime is not restarted and cannot be reached with `kubectl exec`.
+Its container logs and termination message remain readable while the Pod exists; `/data/status.json` stays on the retained `-data` PVC, and NemoClaw provides no command to read it from a stopped Pod.
+Logs and messages can contain credentials or agent content; inspect them privately and redact them before sharing.
+Use the [stop details](models.md#diagnose-and-recover-a-stopped-runtime) to choose a correction.
+
+After correcting the cause, reapply with the same YAML, bundle, and state directory.
+Apply recreates a stopped (`Failed` or `Succeeded`) Pod, and replaces a Pod that never started when its configuration changed; neither requires `Recreate`.
 
 ## Deploy to OpenShift
 

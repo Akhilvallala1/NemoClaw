@@ -96,7 +96,7 @@ If OpenShell resources were already created, their refresh and deletion still re
 
 Use [inference verification](inference.md#verify-the-result) to distinguish configuration readiness from a successful reply.
 For stopped Ollama, use [the managed Ollama procedure](inference.md#run-managed-ollama); a failed inventory must not be treated as an absent model.
-For a managed model or watchdog stop, inspect [retained status and logs](models.md#diagnose-and-recover-a-stopped-runtime).
+For a managed model or watchdog stop, inspect its status and logs with the [Docker](models.md#diagnose-and-recover-a-stopped-runtime) or [cluster](kubernetes.md#diagnose-a-stopped-model-pod) procedure.
 For an external Ollama digest mismatch, use [the proxy guide](inference.md#use-external-ollama-through-a-managed-proxy).
 
 | Observation | What it establishes | Next check |
@@ -105,7 +105,7 @@ For an external Ollama digest mismatch, use [the proxy guide](inference.md#use-e
 | Apply succeeds | Declared resources and agent configuration pass readiness checks | Verify inference and a native agent turn through the intended interface |
 | Agent configuration drift | Native settings differ from retained intent | Restore expected settings; checks do not overwrite them |
 | Dashboard cannot connect | Native service, forwarding, authentication, or browser pairing may be incomplete | Follow [interface diagnosis](interfaces.md#diagnose-failures); keep local forwarding ports consistent |
-| Managed runtime stopped after a protection trip | The independent supervisor stopped inference | Inspect [retained status and logs](models.md#diagnose-and-recover-a-stopped-runtime) and correct capacity/startup conditions before explicit recovery |
+| Managed runtime stopped after a protection trip | The independent supervisor stopped inference | Inspect status and logs with the [Docker](models.md#diagnose-and-recover-a-stopped-runtime) or [cluster](kubernetes.md#diagnose-a-stopped-model-pod) procedure and correct capacity or startup conditions before reapplying |
 
 Terminal sandbox apply errors name the sandbox and report the OpenShell phase, a recognized failure reason, and the main process exit code, or `unknown` when unavailable.
 Recognized reasons are `ControlSupervisorExited`, `ContainerExited`, `IdentityResolutionFailed`, and `ControlSupervisorStartFailed`; other backend reasons appear as `unknown`.
@@ -125,14 +125,14 @@ An unresolved creation without a saved identity still requires its original pend
 
 The current CLI has no `doctor`, `status`, or diagnostic-bundle command.
 
-For a managed cluster model, readiness reports recognized Pod or container stop reasons and the exit code when available.
+For a managed cluster model, readiness names the Pod and its namespace and reports recognized Pod or container stop reasons and the exit code when available.
 Pod reasons such as eviction take precedence over a container's generic `Error`; permanent `ErrImageNeverPull` and `InvalidImageName` failures report that the runtime cannot start, since there may be no process logs.
 Transient status-read failures retry for up to 30 seconds; a temporary `CreateContainerConfigError` does not by itself trigger an immediate stop.
 Runtime-status freshness compares the Pod's start and update timestamps, without comparing them with the CLI host clock.
 The model Pod uses `FallbackToLogsOnError`, which can copy a raw log tail into Kubernetes Pod status.
 NemoClaw displays only the final runtime `stopped:` detail, bounded to 1024 printable-ASCII characters with credential and token-like content redacted.
 Raw Pod status and logs remain separate diagnostic sources; restrict their access and redact them before sharing.
-See [cluster model recovery](kubernetes.md#run-a-managed-model-service) and [timeout budgets](inference.md#understand-timeout-budgets) before changing the configuration.
+Collect them with the [stopped model Pod procedure](kubernetes.md#diagnose-a-stopped-model-pod), and see [cluster model recovery](kubernetes.md#run-a-managed-model-service) and [timeout budgets](inference.md#understand-timeout-budgets) before changing the configuration.
 
 ## Inspect an OpenShell Sandbox Failure
 

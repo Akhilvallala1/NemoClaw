@@ -161,7 +161,11 @@ pub(super) fn may_serve(pod: &DynamicObject) -> bool {
 }
 
 /// Prefer authoritative Pod failures over the container's generic exit reason.
-pub(super) fn terminal(pod: &DynamicObject, owned_name: &str) -> Option<ObservationError> {
+pub(super) fn terminal(
+    pod: &DynamicObject,
+    namespace: &str,
+    owned_name: &str,
+) -> Option<ObservationError> {
     use serde_json::Value;
     let phase = pod.data.pointer("/status/phase").and_then(Value::as_str);
     let container = pod
@@ -183,6 +187,8 @@ pub(super) fn terminal(pod: &DynamicObject, owned_name: &str) -> Option<Observat
     };
     if let Some(reason) = waiting {
         return Some(ObservationError::ModelRuntimeStopped {
+            namespace: namespace.into(),
+            name: owned_name.into(),
             reason,
             exit_code: None,
             detail: "".into(),
@@ -229,6 +235,8 @@ pub(super) fn terminal(pod: &DynamicObject, owned_name: &str) -> Option<Observat
         })
         .unwrap_or("");
     Some(ObservationError::ModelRuntimeStopped {
+        namespace: namespace.into(),
+        name: owned_name.into(),
         reason,
         exit_code,
         detail: ObservationError::sanitized_resource_detail(detail, owned_name),
@@ -369,8 +377,10 @@ mod tests {
                     "containerStatuses": [{"name":"runtime", "state": {"terminated": {"reason": container_reason, "exitCode": 1}}}]}
             })).unwrap();
             assert_eq!(
-                terminal(&pod, "model"),
+                terminal(&pod, "agents", "model"),
                 Some(ObservationError::ModelRuntimeStopped {
+                    namespace: "agents".into(),
+                    name: "model".into(),
                     reason: expected,
                     exit_code: Some(1),
                     detail: "".into()
@@ -381,7 +391,7 @@ mod tests {
             "apiVersion": "v1", "kind": "Pod", "metadata": {},
             "status": {"phase": "Pending", "containerStatuses": [{"name":"runtime", "state": {"waiting": {"reason": "CreateContainerConfigError", "message": "failed to sync configmap cache"}}}]}
         })).unwrap();
-        assert_eq!(terminal(&pod, "model"), None);
+        assert_eq!(terminal(&pod, "agents", "model"), None);
     }
 
     #[test]

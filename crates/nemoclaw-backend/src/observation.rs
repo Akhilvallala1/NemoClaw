@@ -76,7 +76,10 @@ pub enum ObservationError {
         code: &'static str,
         detail: Box<str>,
     },
+    /// The owned model Pod's runtime stopped or cannot start.
     ModelRuntimeStopped {
+        namespace: String,
+        name: String,
         reason: &'static str,
         exit_code: Option<i32>,
         detail: Box<str>,
@@ -156,25 +159,30 @@ impl fmt::Display for ObservationError {
                 name.escape_default()
             ),
             Self::ModelRuntimeStopped {
+                namespace,
+                name,
                 reason,
                 exit_code,
                 detail,
             } => {
+                write!(
+                    f,
+                    "Kubernetes model Pod {}/{} ",
+                    namespace.escape_default(),
+                    name.escape_default()
+                )?;
                 if matches!(*reason, "ErrImageNeverPull" | "InvalidImageName") {
-                    write!(
-                        f,
-                        "model runtime cannot start: reason {reason}; storage retained"
-                    )
+                    write!(f, "cannot start: reason {reason}; storage retained")
                 } else {
                     write!(
                         f,
-                        "model runtime stopped: reason {reason}, exit code {}",
+                        "stopped: reason {reason}, exit code {}",
                         exit_code.map_or_else(|| "unknown".into(), |code| code.to_string())
                     )?;
                     if !detail.is_empty() {
                         write!(f, "; {detail}")?;
                     }
-                    f.write_str("; inspect the model Pod logs; storage retained")
+                    f.write_str("; inspect its runtime container logs; storage retained")
                 }
             }
             Self::SandboxConfigurationRejected { reason } => write!(

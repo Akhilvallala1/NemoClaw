@@ -1134,7 +1134,7 @@ impl Operations {
                 .ok_or(ObservationError::Incomplete)?;
             let object = self.verify(&receipt.storage, pod).await?;
             Self::verify_pod(&receipt, &object)?;
-            if let Some(error) = super::status::terminal(&object, &pod.name) {
+            if let Some(error) = super::status::terminal(&object, &pod.namespace, &pod.name) {
                 return Err(error);
             }
             if let Some(error) = super::status::scheduling(&object, &pod.name) {
