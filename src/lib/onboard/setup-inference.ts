@@ -1519,24 +1519,36 @@ export function createSetupInference(
       } catch {
         /* An unreadable registry skips GPU release; it must not fail onboarding. */
       }
-      const result = await mutateGatewayRoute();
-      releaseSupersededOllamaModel(
-        previousSandbox,
-        provider,
-        model,
-        endpointUrl,
-        result,
-        deps,
-        revalidateSandboxIdentity,
-      );
-      if (shouldLogSuccessfulRoute && "ok" in result) {
-        deps.log(
-          isNativeNvidiaProvider(provider)
-            ? `  ✓ Native NVIDIA provider ready: ${provider} / ${model}`
-            : `  ✓ Inference route set: ${provider} / ${model}`,
+      // Compatible endpoints can own the same host Ollama daemon as direct Ollama routes.
+      // Serialize publication with release decisions across gateways to prevent a newly
+      // published peer route from being missed by concurrent cleanup (#12677).
+      const participatesInOllamaOwnership =
+        (previousSandbox !== null && isLocalOllamaRouteOwner(previousSandbox)) ||
+        isLocalOllamaRouteOwner({ provider, endpointUrl });
+      const runRouteAndRelease = async (): Promise<SetupInferenceResult> => {
+        const result = await mutateGatewayRoute();
+        releaseSupersededOllamaModel(
+          previousSandbox,
+          provider,
+          model,
+          endpointUrl,
+          result,
+          deps,
+          revalidateSandboxIdentity,
         );
-      }
-      return result;
+        if (shouldLogSuccessfulRoute && "ok" in result) {
+          deps.log(
+            isNativeNvidiaProvider(provider)
+              ? `  ✓ Native NVIDIA provider ready: ${provider} / ${model}`
+              : `  ✓ Inference route set: ${provider} / ${model}`,
+          );
+        }
+        return result;
+      };
+      if (!participatesInOllamaOwnership) return runRouteAndRelease();
+      const withOwnershipTransaction =
+        deps.withOllamaModelOwnershipTransaction ?? withOllamaModelOwnershipTransaction;
+      return withOwnershipTransaction(runRouteAndRelease);
     };
     return sandboxName
       ? deps.withSandboxMutationLock(sandboxName, mutateGatewayRouteAndReleaseSupersededModel)

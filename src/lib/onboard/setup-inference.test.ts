@@ -598,7 +598,22 @@ describe("native NVIDIA onboarding", () => {
       createProvider,
     } as unknown as OpenShellProviderAdapter;
     const runOpenshell = vi.fn((_args: string[]) => ({ status: 0, stdout: "", stderr: "" }));
-    const updateSandbox = vi.fn(() => true);
+    const events: string[] = [];
+    const updateSandbox = vi.fn(() => {
+      events.push("route-published");
+      return true;
+    });
+    const unloadOllamaModels = vi.fn(() => {
+      events.push("unload");
+      return {
+        ok: true as const,
+        outcome: "released" as const,
+        endpoint: "http://127.0.0.1:11434",
+        selectedModels: ["qwen2.5:1.5b"],
+        discoveries: [],
+        requests: [],
+      };
+    });
     const setNativeNvidiaProviderAuthority = vi.fn(() => true);
     const verifyInferenceRoute = vi.fn();
     const verifyOnboardInferenceSmoke = vi.fn(async () => undefined);
@@ -613,7 +628,28 @@ describe("native NVIDIA onboarding", () => {
       runOpenshell,
       updateSandbox,
       setNativeNvidiaProviderAuthority,
-      getSandbox: () => null,
+      getSandbox: () => previousLocalOllamaRoute,
+      localInference: {
+        loadPersistedOllamaHost: () => "127.0.0.1",
+        loadPendingOllamaModelCleanup: () => [],
+        persistPendingOllamaModelCleanup: vi.fn(),
+        clearPendingOllamaModelCleanup: vi.fn(),
+        clearPersistedOllamaHostIfUnused: vi.fn(),
+      },
+      listOllamaModelOwnershipPeers: () => [],
+      discoverActiveOllamaSandboxNames: () => ({
+        ok: true as const,
+        activeSandboxNames: new Set<string>(),
+        gatewayChecks: [],
+      }),
+      unloadOllamaModels,
+      withOllamaModelOwnershipLock: (operation: () => void) => operation(),
+      withOllamaModelOwnershipTransaction: async <T>(operation: () => Promise<T> | T) => {
+        events.push("ownership-transaction-start");
+        const result = await operation();
+        events.push("ownership-transaction-end");
+        return result;
+      },
       upsertProvider: vi.fn(async () => ({ ok: true })),
       verifyInferenceRoute,
       verifyOnboardInferenceSmoke,
@@ -678,6 +714,10 @@ describe("native NVIDIA onboarding", () => {
         },
       }),
     );
+    expect(events.indexOf("route-published")).toBeLessThan(events.indexOf("unload"));
+    expect(events[0]).toBe("ownership-transaction-start");
+    expect(events.at(-1)).toBe("ownership-transaction-end");
+    expect(unloadOllamaModels).toHaveBeenCalledExactlyOnceWith(["qwen2.5:1.5b"]);
     expect(setNativeNvidiaProviderAuthority).toHaveBeenCalledWith("onboarding-gateway", {
       schemaVersion: 1,
       profileId: "nemoclaw-nvidia-inference-v1",
