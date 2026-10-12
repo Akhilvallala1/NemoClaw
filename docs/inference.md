@@ -439,7 +439,7 @@ In one operator test, Hermes answered a request through cluster vLLM serving `Qw
 Plan and apply warn when a Hermes route uses a managed vLLM or Ollama service whose `serving.contextTokens` is below `64000`, on Docker as well as Kubernetes; the warning does not reject the configuration.
 Below the minimum, Hermes refuses to start when it can read the server's window.
 In operator tests it could not read the window through the sandbox proxy and started anyway: bearer vLLM answered its `GET /v1/models` with 401, and the proxy does not pass Ollama's `/api/show`.
-Longer conversations can then exceed the server limit.
+Hermes then assumes its built-in window, 131,072 tokens for Qwen models, so longer conversations can exceed the server limit before Hermes compacts them, even at `65536`.
 
 ## Authenticate Hermes through the Provider
 
