@@ -158,6 +158,7 @@ function readMessageValue(line: string): string | null {
   return text.slice(markerIndex + "message:".length).trim();
 }
 
+/** Require a complete structured NotFound message with the literal text "sandbox not found". */
 function isExactUnqualifiedSandboxNotFoundMessage(line: string): boolean {
   const text = stripDiagnosticPrefixes(line);
   const codeMatch =

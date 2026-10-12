@@ -75,6 +75,10 @@ export interface PreUpgradeBackupSelectInput {
   note: (message: string) => void;
 }
 
+/**
+ * Select the latest backup only after installer restore intent and recreate source proof are confirmed.
+ * Without restore intent, warn only for an existing sandbox registry entry.
+ */
 export function selectPreUpgradeBackupForCreate(input: PreUpgradeBackupSelectInput): string | null {
   // Installer contract: the installer MUST set
   // NEMOCLAW_RESTORE_LATEST_BACKUP_ON_RECREATE=1 after a successful pre-upgrade

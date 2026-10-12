@@ -12,10 +12,12 @@ import {
   SANDBOX_PROVIDER_SUFFIXES,
 } from "../../src/lib/onboard/sandbox-provider-cleanup";
 
+/** Build a captured CLI result for adapter diagnostic cases. */
 function captured(status: number | null, stdout = "", stderr = "") {
   return { status, stdout, stderr };
 }
 
+/** Build a synchronous process result for provider cleanup warning cases. */
 function runResult(status: number, stderr: string): SpawnSyncReturns<string> {
   return {
     pid: 1,

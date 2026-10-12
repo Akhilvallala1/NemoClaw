@@ -908,6 +908,7 @@ if (${JSON.stringify(
           false,
         );
       };
+      /** Verify fresh creation skips absent provider cleanup and completes process and registry updates. */
       const assertSuccessfulCreation = () => {
         assert.equal(payload.creationError, null, result.stderr);
         assert.equal(payload.sandboxName, "my-assistant");

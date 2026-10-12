@@ -1653,6 +1653,7 @@ function assertCreateLifecycleJournal(input: {
   }
 }
 
+/** Inspect provider attachments only for a live sandbox outside portable or verified resume flows. */
 export function shouldInspectExistingSandbox(input: {
   readonly liveExists: boolean;
   readonly portableLifecycle: boolean;

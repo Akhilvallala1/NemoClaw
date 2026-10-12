@@ -459,6 +459,7 @@ function parseProviderAttachmentNames(output: string): string[] | null {
   return names;
 }
 
+/** Create a provider adapter that scopes CLI commands to the requested gateway and classifies their results. */
 export function createCliOpenShellProviderAdapter(
   deps: CliOpenShellProviderAdapterDeps = {},
 ): CliOpenShellProviderAdapter {
@@ -801,6 +802,7 @@ export function createCliOpenShellProviderAdapter(
       : mutationSuccess();
   };
 
+  /** Detach a provider, distinguishing confirmed non-attachment and sandbox absence from other failures. */
   const detachProvider: OpenShellProviderAdapter["detachProvider"] = async (
     request: DetachOpenShellProviderRequest,
   ) => {
