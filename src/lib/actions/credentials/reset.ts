@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { resetNativeHostedProvider, type NativeHostedResetDeps } from "./reset-native-hosted";
+import { hostedNativeProvider } from "../../inference/native-provider/hosted";
+import { isNativeHostedProviderName } from "../../inference/native-provider/hosted-attachment";
 import { retireNativeCustomProviders } from "../../inference/native-custom/cleanup";
 import { listNativeCustomProviderAuthorities } from "../../state/registry/native-custom-provider-authority";
 import { listSandboxes } from "../../state/registry";
@@ -45,15 +48,17 @@ export type CredentialsResetResult = {
   failureLines: readonly string[];
 };
 
-export type CredentialsResetDeps = Readonly<{
-  providerAdapter?: OpenShellProviderAdapter;
-  listNativeCustomProviderAuthorities?: typeof listNativeCustomProviderAuthorities;
-  listSandboxes?: typeof listSandboxes;
-  retireNativeCustomProviders?: typeof retireNativeCustomProviders;
-  clearNativeNvidiaProviderAuthority?: typeof clearNativeNvidiaProviderAuthority;
-  listNativeNvidiaProviderAttachmentSandboxNames?: typeof listNativeNvidiaProviderAttachmentSandboxNames;
-  withGatewayRouteMutationLock?: typeof withGatewayRouteMutationLock;
-}>;
+export type CredentialsResetDeps = Readonly<
+  NativeHostedResetDeps & {
+    providerAdapter?: OpenShellProviderAdapter;
+    listNativeCustomProviderAuthorities?: typeof listNativeCustomProviderAuthorities;
+    listSandboxes?: typeof listSandboxes;
+    retireNativeCustomProviders?: typeof retireNativeCustomProviders;
+    clearNativeNvidiaProviderAuthority?: typeof clearNativeNvidiaProviderAuthority;
+    listNativeNvidiaProviderAttachmentSandboxNames?: typeof listNativeNvidiaProviderAttachmentSandboxNames;
+    withGatewayRouteMutationLock?: typeof withGatewayRouteMutationLock;
+  }
+>;
 
 export type CredentialsProviderDeleteWithRecoveryResult = Readonly<{
   ok: boolean;
@@ -176,6 +181,12 @@ export async function runCredentialsResetAction(
   if (!target) return fail(recoveryFailureLines);
 
   const providerAdapter = deps.providerAdapter ?? createCliOpenShellProviderAdapter();
+  if (hostedNativeProvider(key) || isNativeHostedProviderName(key)) {
+    return (deps.withGatewayRouteMutationLock ?? withGatewayRouteMutationLock)(
+      target.gatewayName,
+      async () => (await resetNativeHostedProvider(key, target, providerAdapter, deps))!,
+    );
+  }
   const resetProvider = async (): Promise<CredentialsResetResult> => {
     if (nativeCustomKey) {
       try {

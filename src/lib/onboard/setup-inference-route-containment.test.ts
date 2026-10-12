@@ -6,6 +6,7 @@ import { checkGatewayRouteCompatibility } from "../inference/gateway-route-compa
 import type { SandboxEntry } from "../state/registry";
 import { createSetupInference, type SetupInferenceDeps } from "./setup-inference";
 import { createNativeCustomSetupDependencies } from "../../../test/support/setup-inference-test-harness";
+import { computeHttpsPinRouteId } from "../inference/https-pin-runtime";
 
 const revalidateSandboxIdentity = () => undefined;
 const successfulInferenceRouteMutator = (
@@ -42,6 +43,100 @@ vi.mock("./sandbox-lifecycle", async (importOriginal) => ({
 
 describe("onboard shared gateway route containment", () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    {
+      failure: "creation",
+      createFails: true,
+      smokeFails: false,
+      cleanupConfirmed: true,
+      registryFails: false,
+    },
+    {
+      failure: "smoke",
+      createFails: false,
+      smokeFails: true,
+      cleanupConfirmed: true,
+      registryFails: false,
+    },
+    {
+      failure: "unconfirmed cleanup",
+      createFails: true,
+      smokeFails: false,
+      cleanupConfirmed: false,
+      registryFails: false,
+    },
+    {
+      failure: "registry publication",
+      createFails: false,
+      smokeFails: false,
+      cleanupConfirmed: true,
+      registryFails: true,
+    },
+  ])(
+    "preserves HTTPS rollback ownership after onboarding $failure fails (#12636)",
+    async ({ createFails, smokeFails, cleanupConfirmed, registryFails }) => {
+      const native = createNativeCustomSetupDependencies();
+      const endpointUrl = "https://api.example.com/v1";
+      const routeId = computeHttpsPinRouteId(
+        "nemoclaw",
+        "compatible-endpoint",
+        endpointUrl,
+        "alpha",
+      );
+      const smoke = vi.fn(() =>
+        smokeFails ? Promise.reject(new Error("setup operation failed")) : Promise.resolve(),
+      );
+      vi.mocked(native.providerAdapter.createProvider).mockImplementationOnce(
+        createFails
+          ? async () => {
+              throw new Error("setup operation failed");
+            }
+          : vi.mocked(native.providerAdapter.createProvider).getMockImplementation()!,
+      );
+      native.revokeHttpsPinRuntimeAdapterRoute.mockResolvedValueOnce(cleanupConfirmed);
+      const updateSandbox = vi.fn(
+        registryFails
+          ? () => {
+              throw new Error("setup operation failed");
+            }
+          : () => true,
+      );
+      const setup = createSetupInference({
+        ...native,
+        localInference: { loadPendingOllamaModelCleanup: () => [] },
+        withOllamaModelOwnershipLock: <T>(operation: () => T) => operation(),
+        updateSandbox,
+        hydrateCredentialEnv: () => "host-credential",
+        resolveEndpointHost: async () => [{ address: "8.8.8.8", family: 4 }],
+        checkGatewayRouteCompatibility: vi.fn(() => ({ ok: true })),
+        withSandboxMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
+          operation(),
+        withGatewayRouteMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
+          operation(),
+        step: vi.fn(),
+        getGatewayName: () => "nemoclaw",
+        inferenceRouteMutator: successfulInferenceRouteMutator(),
+        inferenceRouteObserver: successfulInferenceRouteObserver(),
+        hermesProviderAuth: { HERMES_PROVIDER_NAME: "hermes-provider" },
+        verifyOnboardInferenceSmoke: smoke,
+        verifyInferenceRoute: vi.fn(),
+        log: vi.fn(),
+      } as unknown as SetupInferenceDeps);
+      await expect(
+        setup("alpha", "model-a", "compatible-endpoint", endpointUrl, "COMPATIBLE_API_KEY"),
+      ).rejects.toThrow(
+        !cleanupConfirmed
+          ? new RegExp(`route '${routeId}' cleanup could not be confirmed`)
+          : "setup operation failed",
+      );
+      expect(native.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledOnce();
+      expect(native.revokeHttpsPinRuntimeAdapterRoute.mock.calls).toEqual(
+        registryFails ? [] : [[routeId]],
+      );
+      expect(updateSandbox.mock.calls.length).toBe(registryFails ? 1 : 0);
+    },
+  );
 
   it.each(["retained", "deleted", "malformed-current"] as const)(
     "reconciles %s native adapter authority without rotating credentials (#12636)",

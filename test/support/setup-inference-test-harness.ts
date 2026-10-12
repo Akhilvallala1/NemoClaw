@@ -53,6 +53,7 @@ export function createNativeCustomSetupDependencies() {
   return {
     providerAdapter: adapter,
     getSandbox: () => null,
+    revokeHttpsPinRuntimeAdapterRoute: vi.fn(async (_routeId: string) => true),
     getNativeCustomProviderAuthority: (_gateway: string, name: string) => authorities.get(name),
     setNativeCustomProviderAuthority: (
       _gateway: string,

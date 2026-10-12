@@ -11,10 +11,13 @@ import type {
 import {
   prepareNativeCustomProfile,
   customAttachmentFromPrepared,
+  type NativeCustomProfile,
   type NativeCustomProviderAttachment,
 } from "../inference/native-custom";
 import { runInferenceSet } from "./inference-set";
+import { buildNativeCustomProfile } from "../inference/native-custom/profile";
 import { hostedNativeProvider } from "../inference/native-provider/hosted";
+import { buildHttpsPinRouteBaseUrl, computeHttpsPinRouteId } from "../inference/https-pin-runtime";
 import { createDeps, HERMES_TARGET } from "../../../test/helpers/inference-set";
 
 const hostLocalSelection = {
@@ -25,13 +28,15 @@ const hostLocalSelection = {
   inferenceApi: "openai-completions",
 };
 
-async function fixture(agent = "openclaw") {
-  const prepared = await prepareNativeCustomProfile({
-    sandboxName: "alpha",
-    provider: "compatible-endpoint",
-    endpointUrl: "http://8.8.8.8/v1",
-    api: "openai-completions",
-  });
+async function fixture(agent = "openclaw", preparedProfile?: NativeCustomProfile) {
+  const prepared =
+    preparedProfile ??
+    (await prepareNativeCustomProfile({
+      sandboxName: "alpha",
+      provider: "compatible-endpoint",
+      endpointUrl: "http://8.8.8.8/v1",
+      api: "openai-completions",
+    }));
   const receipt = customAttachmentFromPrepared(prepared, {
     schemaVersion: 1,
     profileId: prepared.profile.id,
@@ -241,6 +246,124 @@ it("restores the previous attachment when a native selected-model probe fails (#
   expect([...f.attachments]).toEqual([f.receipt.providerName]);
   expect(f.entry.model).toBe("old-model");
   expect(f.deps.calls.setOpenClawConfigValues).not.toHaveBeenCalled();
+});
+
+it.each([
+  { failure: "creation", operation: "createProvider", cleanupConfirmed: true },
+  { failure: "attachment", operation: "attachProvider", cleanupConfirmed: true },
+  { failure: "unconfirmed cleanup", operation: "createProvider", cleanupConfirmed: false },
+] as const)(
+  "preserves HTTPS rollback ownership after provider $failure fails (#12636)",
+  async ({ operation, cleanupConfirmed }) => {
+    const f = await fixture();
+    const endpointUrl = "https://api.example.com/v1";
+    const routeId = computeHttpsPinRouteId("nemoclaw", "compatible-endpoint", endpointUrl, "alpha");
+    const routes = new Set<string>();
+    f.deps.nativeCustomEndpointLookup = async () => [{ address: "8.8.8.8", family: 4 }];
+    f.deps.nativeCustomTransportDeps = {
+      discoverAllowedSourceCidrs: () => ["172.18.0.0/16"],
+      ensureHttpsAdapter: vi.fn(async () => {
+        routes.add(routeId);
+        return {
+          baseUrl: buildHttpsPinRouteBaseUrl(routeId),
+          localBaseUrl: `http://127.0.0.1:11438/route/${routeId}`,
+          logPath: "/owned/adapter.log",
+          credentialEnv: "NEMOCLAW_HTTPS_PIN_RUNTIME_ADAPTER_TOKEN",
+          token: "adapter-token",
+          routeId,
+          pinnedAddresses: ["8.8.8.8"],
+        };
+      }),
+    };
+    f.deps.revokeHttpsPinRuntimeAdapterRoute = vi.fn(
+      async (id) => cleanupConfirmed && routes.delete(id),
+    );
+    vi.mocked(f.adapter[operation]).mockRejectedValueOnce(new Error("provider operation failed"));
+    await expect(
+      runInferenceSet(
+        {
+          provider: "compatible-endpoint",
+          model: "new-model",
+          endpointUrl,
+          credentialEnv: "COMPATIBLE_API_KEY",
+          inferenceApi: "openai-completions",
+        },
+        f.deps,
+      ),
+    ).rejects.toThrow(
+      !cleanupConfirmed
+        ? new RegExp(`route '${routeId}' cleanup could not be confirmed`)
+        : "provider operation failed",
+    );
+    expect(f.deps.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledOnce();
+    expect(f.deps.revokeHttpsPinRuntimeAdapterRoute).toHaveBeenCalledWith(routeId);
+    expect(routes.size).toBe(cleanupConfirmed ? 0 : 1);
+    expect([...f.attachments]).toEqual([f.receipt.providerName]);
+    expect(f.entry.nativeCustomProviderAttachment).toEqual(f.receipt);
+  },
+);
+
+it("retains the previous HTTPS adapter route after a same-endpoint model probe fails (#12636)", async () => {
+  const sourceEndpointUrl = "https://api.example.com/v1";
+  const routeId = computeHttpsPinRouteId(
+    "nemoclaw",
+    "compatible-endpoint",
+    sourceEndpointUrl,
+    "alpha",
+  );
+  const prepared = {
+    ...buildNativeCustomProfile({
+      sandboxName: "alpha",
+      provider: "compatible-endpoint",
+      api: "openai-completions",
+      endpointUrl: `${buildHttpsPinRouteBaseUrl(routeId)}/v1`,
+      addresses: [],
+      transport: {
+        kind: "https-pin",
+        gatewayName: "nemoclaw",
+        sourceEndpointUrl,
+        sourceAddresses: ["8.8.8.8"],
+        trustedPrivateEndpoint: false,
+      },
+    }),
+    trustedPrivateEndpoint: false,
+  };
+  const f = await fixture("openclaw", prepared);
+  f.deps.nativeCustomEndpointLookup = async () => [{ address: "8.8.8.8", family: 4 }];
+  f.deps.nativeCustomTransportDeps = {
+    discoverAllowedSourceCidrs: () => ["172.18.0.0/16"],
+    ensureHttpsAdapter: vi.fn(async () => ({
+      baseUrl: buildHttpsPinRouteBaseUrl(routeId),
+      localBaseUrl: `http://127.0.0.1:11438/route/${routeId}`,
+      logPath: "/owned/adapter.log",
+      credentialEnv: "NEMOCLAW_HTTPS_PIN_RUNTIME_ADAPTER_TOKEN",
+      token: "adapter-token",
+      routeId,
+      pinnedAddresses: ["8.8.8.8"],
+    })),
+  };
+  f.deps.calls.probeSandboxRoute.mockResolvedValue({
+    ok: false,
+    httpStatus: 401,
+    detail: "private diagnostic",
+    endpoint: "selected",
+  });
+  await expect(
+    runInferenceSet(
+      {
+        provider: "compatible-endpoint",
+        model: "new-model",
+        endpointUrl: sourceEndpointUrl,
+        credentialEnv: "COMPATIBLE_API_KEY",
+        inferenceApi: "openai-completions",
+      },
+      f.deps,
+    ),
+  ).rejects.toThrow(/did not succeed/);
+  expect(f.deps.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledOnce();
+  expect(f.deps.revokeHttpsPinRuntimeAdapterRoute).not.toHaveBeenCalled();
+  expect([...f.attachments]).toEqual([f.receipt.providerName]);
+  expect(f.entry.nativeCustomProviderAttachment).toEqual(f.receipt);
 });
 
 it("writes matching issued Hermes references rather than the shared-route sentinel (#12636)", async () => {

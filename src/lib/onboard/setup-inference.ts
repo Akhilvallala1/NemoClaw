@@ -10,9 +10,11 @@ type NativeProviderAttachment = Awaited<ReturnType<typeof prepareHostedNativePro
 import type { OpenShellGatewayLifecycle } from "../adapters/openshell/gateway-lifecycle";
 import { canonicalEndpoint } from "../core/url-utils";
 import { getMatchingNativeCustomProviderAuthority } from "../state/registry/native-custom-provider-authority";
+import type { revokeHttpsPinRuntimeAdapterRoute } from "../inference/https-pin-runtime-adapter";
 import { getSandboxInferenceConfig } from "../inference/config";
 import {
   prepareNativeCustomInference,
+  rollbackNativeCustomAdapterRoute,
   restoreNativeCustomInference,
   type NativeCustomTransportDeps,
 } from "../inference/native-custom/transport";
@@ -40,6 +42,7 @@ import {
   withNativeCustomLifecycle,
   normalizeNativeCustomProviderAttachment,
   type NativeCustomProviderAttachment,
+  type NativeCustomProfile,
 } from "../inference/native-custom";
 import {
   ensureNativeNvidiaProvider,
@@ -228,6 +231,7 @@ type ProviderBranchDeps = Pick<
 
 export type SetupInferenceDeps = ProviderBranchDeps & {
   nativeCustomTransportDeps?: Omit<NativeCustomTransportDeps, "admitProfile">;
+  revokeHttpsPinRuntimeAdapterRoute?: typeof revokeHttpsPinRuntimeAdapterRoute;
   /** Injectable resolver for resumed custom-endpoint SSRF preflight tests. */
   resolveEndpointHost?: EndpointDnsLookupFn;
   /** Exact private endpoint hosts trusted by the operator (tests may inject this). */
@@ -827,6 +831,8 @@ export function createSetupInference(
         let nativeHostedProviderAttachment: NativeProviderAttachment | undefined;
         let retainedNativeHostedCredential = false;
         let nativeCustomProviderAttachment: NativeCustomProviderAttachment | undefined;
+        let admittedNativeCustomAdapter: NativeCustomProfile | undefined;
+        let retainedNativeCustomAdapter: NativeCustomProviderAttachment | undefined;
         let nativeCustomHostSmoke: Awaited<
           ReturnType<typeof prepareNativeCustomInference>
         >["hostSmoke"];
@@ -1184,6 +1190,12 @@ export function createSetupInference(
                           throw new Error("Recorded native custom adapter provider is missing.");
                       });
                       revalidateSandboxIdentity?.("prepare the admitted native custom adapter");
+                      admittedNativeCustomAdapter = candidate;
+                      retainedNativeCustomAdapter =
+                        deps.getNativeCustomProviderAuthority!(
+                          gatewayName,
+                          candidate.providerName,
+                        ) ?? recordedAttachment;
                     },
                   });
             const prepared = selection.prepared;
@@ -1494,6 +1506,9 @@ export function createSetupInference(
             });
           }
           if (sandboxName && !hostLocalRoute) {
+            // A registry write can publish before throwing. From entry onward,
+            // retain the adapter and its persisted provider authority for recovery.
+            admittedNativeCustomAdapter = undefined;
             commonDeps.registry.updateSandbox(sandboxName);
           }
           if (hostLocalRoute) {
@@ -1560,6 +1575,11 @@ export function createSetupInference(
           shouldLogSuccessfulRoute = true;
           return { ok: true as const };
         } catch (error) {
+          await rollbackNativeCustomAdapterRoute(
+            admittedNativeCustomAdapter,
+            retainedNativeCustomAdapter,
+            deps.revokeHttpsPinRuntimeAdapterRoute,
+          );
           if (!hostLocalRoute || !hostLocalSelection) throw error;
           emitHostLocalInferenceFailure(
             hostLocalSelection.runtimeProviderId,

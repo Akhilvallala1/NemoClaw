@@ -36,8 +36,10 @@ import {
 } from "./native";
 import {
   prepareNativeCustomInference,
+  rollbackNativeCustomAdapterRoute,
   restoreNativeCustomInference,
 } from "../../inference/native-custom/transport";
+import { parseHttpsPinRouteId } from "../../inference/https-pin-runtime";
 import { resolveNativeCustomCredentialReference } from "../../inference/native-custom/credential-reference";
 import { parseTrustedPrivateInferenceHostsFromEnv } from "../../inference/endpoint-ssrf-preflight";
 import {
@@ -226,60 +228,69 @@ export async function runNativeCustomInferenceSwitch(
     endpointUrl: metadata.endpointUrl,
     api,
   };
-  const selection = modelOnly
-    ? { prepared: restoreNativeCustomInference(selectionInput, previous), credentialValue: null }
-    : await prepareNativeCustomInference(
-        {
-          ...selectionInput,
-          credentialValue:
-            deps.resolveCredentialValue(
-              metadata.credentialEnv ||
-                (provider === "compatible-endpoint"
-                  ? "COMPATIBLE_API_KEY"
-                  : "COMPATIBLE_ANTHROPIC_API_KEY"),
-            ) || null,
-          lookup: deps.nativeCustomEndpointLookup,
-          trustedPrivateHosts: parseTrustedPrivateInferenceHostsFromEnv(process.env),
-        },
-        {
-          ...deps.nativeCustomTransportDeps,
-          discoverAllowedSourceCidrs:
-            deps.nativeCustomTransportDeps?.discoverAllowedSourceCidrs ??
-            (() =>
-              input.runtimeProvider.gateway
-                .observeHostRuntime({ environment: process.env, platform: process.platform })
-                .network.sandboxSourceCidrs()),
-          admitProfile: (candidate) =>
-            withNativeCustomLifecycle(candidate, async (lifecycle) => {
-              await lifecycle.requireProviderProfileBoundary(deps.providerAdapter, gatewayTarget);
-              const observed = await lifecycle.inspectNativeProvider(
-                deps.providerAdapter,
-                gatewayTarget,
-              );
-              const owned =
-                deps.getNativeCustomProviderAuthority!(
-                  expectedGatewayName,
-                  candidate.providerName,
-                ) ?? (previous?.providerName === candidate.providerName ? previous : undefined);
-              if (
-                observed &&
-                (!owned ||
-                  lifecycle.attachmentFromMetadata(observed).providerId !== owned.providerId)
-              )
-                throw new InferenceSetError(
-                  "Native custom provider ownership could not be verified before adapter mutation.",
-                );
-              if (!observed && owned)
-                throw new InferenceSetError("The recorded native custom provider is missing.");
-            }),
-        },
-      );
+  let admittedAdapterProfile: NativeCustomProfile | undefined;
+  let retainedAdapterAuthority = previous;
   let attachment: NativeCustomProviderAttachment | undefined;
   let previousDetachAttempted = false;
   let fixedNativeDetached = false;
   let committed = false;
   let rollbackPolicy: (() => Promise<void>) | undefined;
   try {
+    const selection = modelOnly
+      ? { prepared: restoreNativeCustomInference(selectionInput, previous), credentialValue: null }
+      : await prepareNativeCustomInference(
+          {
+            ...selectionInput,
+            credentialValue:
+              deps.resolveCredentialValue(
+                metadata.credentialEnv ||
+                  (provider === "compatible-endpoint"
+                    ? "COMPATIBLE_API_KEY"
+                    : "COMPATIBLE_ANTHROPIC_API_KEY"),
+              ) || null,
+            lookup: deps.nativeCustomEndpointLookup,
+            trustedPrivateHosts: parseTrustedPrivateInferenceHostsFromEnv(process.env),
+          },
+          {
+            ...deps.nativeCustomTransportDeps,
+            discoverAllowedSourceCidrs:
+              deps.nativeCustomTransportDeps?.discoverAllowedSourceCidrs ??
+              (() =>
+                input.runtimeProvider.gateway
+                  .observeHostRuntime({ environment: process.env, platform: process.platform })
+                  .network.sandboxSourceCidrs()),
+            admitProfile: async (candidate) => {
+              await withNativeCustomLifecycle(candidate, async (lifecycle) => {
+                await lifecycle.requireProviderProfileBoundary(deps.providerAdapter, gatewayTarget);
+                const observed = await lifecycle.inspectNativeProvider(
+                  deps.providerAdapter,
+                  gatewayTarget,
+                );
+                const owned =
+                  deps.getNativeCustomProviderAuthority!(
+                    expectedGatewayName,
+                    candidate.providerName,
+                  ) ?? (previous?.providerName === candidate.providerName ? previous : undefined);
+                if (
+                  observed &&
+                  (!owned ||
+                    lifecycle.attachmentFromMetadata(observed).providerId !== owned.providerId)
+                )
+                  throw new InferenceSetError(
+                    "Native custom provider ownership could not be verified before adapter mutation.",
+                  );
+                if (!observed && owned)
+                  throw new InferenceSetError("The recorded native custom provider is missing.");
+              });
+              admittedAdapterProfile = candidate;
+              retainedAdapterAuthority =
+                deps.getNativeCustomProviderAuthority!(
+                  expectedGatewayName,
+                  candidate.providerName,
+                ) ?? previous;
+            },
+          },
+        );
     const selected = await prepareNativeCustomSelection({
       prepared: selection.prepared,
       gatewayName: expectedGatewayName,
@@ -524,10 +535,19 @@ export async function runNativeCustomInferenceSwitch(
         deps,
       });
     } catch {
+      const routeId = parseHttpsPinRouteId(admittedAdapterProfile?.endpointUrl);
       throw new InferenceSetError(
-        "Native custom switch failed and previous attachment recovery could not be verified. Reconcile the selected sandbox before retrying; ownership authority is retained.",
+        "Native custom switch failed and previous attachment recovery could not be verified. Reconcile the selected sandbox before retrying; ownership authority is retained." +
+          (routeId
+            ? ` HTTPS adapter route '${routeId}' is retained until attachment recovery is verified.`
+            : ""),
       );
     }
+    await rollbackNativeCustomAdapterRoute(
+      admittedAdapterProfile,
+      retainedAdapterAuthority,
+      deps.revokeHttpsPinRuntimeAdapterRoute,
+    );
     throw error;
   }
 }

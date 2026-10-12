@@ -7,7 +7,11 @@ import {
   prepareNativeCustomProfile,
   customAttachmentFromPrepared,
 } from "../inference/native-custom";
-import type { OpenShellProviderAdapter } from "../adapters/openshell/provider-adapter";
+import { HOSTED_NATIVE_PROVIDERS } from "../inference/native-provider/hosted";
+import type {
+  OpenShellProviderAdapter,
+  OpenShellProviderMetadata,
+} from "../adapters/openshell/provider-adapter";
 import { setGlobalCliActionRuntimeHooksForTest } from "./global";
 import { runCredentialsResetAction } from "./credentials/reset";
 
@@ -194,6 +198,102 @@ describe("native custom credential reset ownership", () => {
       expect(vi.mocked(providerAdapter.deleteProvider).mock.calls).toEqual(
         recorded ? [] : [[expect.objectContaining({ providerName: "compatible-endpoint" })]],
       );
+    },
+  );
+});
+
+describe("fixed hosted credential reset ownership", () => {
+  beforeEach(() =>
+    setGlobalCliActionRuntimeHooksForTest({
+      recoverNamedGatewayRuntime: async () => ({ recovered: true }),
+      forgetExtraProvider: () => true,
+    }),
+  );
+  afterEach(() => setGlobalCliActionRuntimeHooksForTest({}));
+
+  it.each(
+    HOSTED_NATIVE_PROVIDERS.flatMap((definition) => [
+      { definition, nativeName: false, legacy: true, removed: false },
+      { definition, nativeName: false, legacy: false, removed: true },
+      { definition, nativeName: true, legacy: true, removed: true },
+    ]),
+  )(
+    "preserves owned reset for $definition.logicalProvider (native=$nativeName legacy=$legacy)",
+    async ({ definition, nativeName, legacy, removed }) => {
+      const receipt = {
+        schemaVersion: 1 as const,
+        profileId: definition.profileId,
+        providerName: definition.providerName,
+        providerId: "owned-provider-id",
+      };
+      const nativeMetadata: OpenShellProviderMetadata = {
+        name: definition.providerName,
+        type: definition.profileId,
+        credentialKeys: [definition.credentialEnv],
+        configKeys: [],
+        revision: { id: receipt.providerId, resourceVersion: 1 },
+      };
+      const legacyMetadata: OpenShellProviderMetadata = {
+        ...nativeMetadata,
+        name: definition.logicalProvider,
+        revision: { id: "user-owned-legacy-id", resourceVersion: 1 },
+      };
+      const providers = new Map<string, OpenShellProviderMetadata>([
+        [definition.providerName, nativeMetadata],
+        ...(legacy ? [[definition.logicalProvider, legacyMetadata] as const] : []),
+      ]);
+      const missing = {
+        ok: false as const,
+        error: { kind: "command" as const, reason: "not_found" as const, message: "missing" },
+      };
+      const events: string[] = [];
+      const deleteProvider = vi.fn<OpenShellProviderAdapter["deleteProvider"]>(
+        async ({ providerName }) => {
+          events.push(`delete:${providerName}`);
+          providers.delete(providerName);
+          return { ok: true };
+        },
+      );
+      const providerAdapter = {
+        deleteProvider,
+        getProvider: vi.fn<OpenShellProviderAdapter["getProvider"]>(async ({ providerName }) => {
+          const value = providers.get(providerName);
+          return value ? { ok: true, value } : missing;
+        }),
+        listProviderAttachments: vi.fn(async () => ({ ok: true, value: { names: [] } })),
+      } as unknown as OpenShellProviderAdapter;
+      const clearNativeHostedProviderAuthority = vi.fn(() => events.push("clear-authority"));
+      const deps = {
+        providerAdapter,
+        clearNativeHostedProviderAuthority,
+        getNativeHostedProviderAuthority: vi.fn(() => receipt),
+        getNativeHostedProviderAuthorityByName: vi.fn(() => receipt),
+        listNativeHostedProviderAttachmentSandboxNames: vi.fn(() => []),
+        withGatewayRouteMutationLock: async <T>(
+          _gateway: string,
+          operation: () => T | Promise<T>,
+        ) => {
+          events.push("lock");
+          return operation();
+        },
+      };
+      const result = await runCredentialsResetAction(
+        {
+          provider: nativeName ? definition.providerName : definition.logicalProvider,
+          confirmed: true,
+        },
+        deps,
+      );
+      expect(result.exitCode).toBe(removed ? 0 : 1);
+      expect(events).toEqual(
+        removed ? ["lock", `delete:${definition.providerName}`, "clear-authority"] : ["lock"],
+      );
+      expect(providers.has(definition.logicalProvider)).toBe(legacy);
+      expect(providers.has(definition.providerName)).toBe(!removed);
+      expect(clearNativeHostedProviderAuthority.mock.calls).toEqual(
+        removed ? [["nemoclaw", receipt]] : [],
+      );
+      expect(vi.mocked(providerAdapter.listProviderAttachments)).not.toHaveBeenCalled();
     },
   );
 });

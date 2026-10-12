@@ -16,7 +16,10 @@ import {
   hasBedrockRuntimeAwsAuthEnv,
   resolveBedrockRuntimeRegion,
 } from "../bedrock-runtime";
-import { ensureHttpsPinRuntimeAdapter } from "../https-pin-runtime-adapter";
+import {
+  ensureHttpsPinRuntimeAdapter,
+  revokeHttpsPinRuntimeAdapterRoute,
+} from "../https-pin-runtime-adapter";
 import {
   buildHttpsPinRouteBaseUrl,
   computeHttpsPinRouteId,
@@ -238,4 +241,41 @@ export async function prepareNativeCustomInference(
     sourceAddresses,
     sourceTrustedPrivateCapability,
   };
+}
+
+/** Undo an admitted, uncommitted HTTPS registration without revoking the retained route. */
+export async function rollbackNativeCustomAdapterRoute(
+  prepared: NativeCustomProfile | undefined,
+  retained: NativeCustomProviderAttachment | undefined,
+  revokeRoute: typeof revokeHttpsPinRuntimeAdapterRoute = revokeHttpsPinRuntimeAdapterRoute,
+): Promise<void> {
+  if (prepared?.transport?.kind !== "https-pin") return;
+  const routeId = computeHttpsPinRouteId(
+    prepared.transport.gatewayName,
+    prepared.credentialEnv === "COMPATIBLE_API_KEY"
+      ? "compatible-endpoint"
+      : "compatible-anthropic-endpoint",
+    prepared.transport.sourceEndpointUrl,
+    prepared.sandboxName,
+  );
+  if (
+    retained?.transport?.kind === "https-pin" &&
+    routeId ===
+      computeHttpsPinRouteId(
+        retained.transport.gatewayName,
+        retained.credentialEnv === "COMPATIBLE_API_KEY"
+          ? "compatible-endpoint"
+          : "compatible-anthropic-endpoint",
+        retained.transport.sourceEndpointUrl,
+        retained.sandboxName,
+      )
+  )
+    return;
+  try {
+    if (!(await revokeRoute(routeId))) throw new Error("Unconfirmed adapter revocation.");
+  } catch {
+    throw new Error(
+      `Native custom HTTPS adapter route '${routeId}' cleanup could not be confirmed; its adapter cleanup record is retained. Retry setup for the same endpoint to recover adapter authentication, then reset the owned provider.`,
+    );
+  }
 }
