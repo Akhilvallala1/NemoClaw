@@ -24,6 +24,12 @@ import {
   summarizeGatewayHello,
 } from "./gateway-control-browser-diagnostics.mts";
 import {
+  gatewayDecisionAsset,
+  gatewayDecisionLogpoints,
+  observeGatewayDecisions,
+  type DecisionPage,
+} from "./gateway-control-route-decisions.mts";
+import {
   gatewayControlModelProviders,
   isGatewayControlDiscoveryRequest,
 } from "./gateway-control-model-fixture.mts";
@@ -215,7 +221,7 @@ type BrowserLocator = {
   click(options?: { timeout: number }): Promise<void>;
   textContent(): Promise<string | null>;
 };
-type BrowserPage = {
+type BrowserPage = DecisionPage & {
   addInitScript(script: () => void): Promise<void>;
   evaluate<T>(script: () => T): Promise<T>;
   url(): string;
@@ -278,6 +284,7 @@ async function browserControl(
   });
   let failed = false;
   let page: BrowserPage | undefined;
+  let decisionObserver: Awaited<ReturnType<typeof observeGatewayDecisions>> | undefined;
   const diagnostics = {
     schemaVersion: 1,
     browserMajorVersion: null as number | null,
@@ -298,6 +305,9 @@ async function browserControl(
     verificationRequests: 0,
     verificationResponses: 0,
     navigation: null as ReturnType<typeof summarizeGatewayBrowserRouteTrace> | null,
+    decisions: null as Awaited<
+      ReturnType<Awaited<ReturnType<typeof observeGatewayDecisions>>["finish"]>
+    > | null,
   };
   const captureNavigation = async () => {
     try {
@@ -312,6 +322,21 @@ async function browserControl(
     diagnostics.browserMajorVersion = gatewayBrowserMajorVersion(browser.version());
     page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.addInitScript(installGatewayBrowserRouteTrace);
+    if (firstRun) {
+      decisionObserver = await observeGatewayDecisions(
+        page,
+        gatewayDecisionLogpoints(
+          fs.readFileSync(
+            path.join(
+              appRoot,
+              "node_modules/openclaw/dist/control-ui/assets",
+              gatewayDecisionAsset,
+            ),
+            "utf8",
+          ),
+        ),
+      );
+    }
     page.on("pageerror", () => diagnostics.pageErrors++);
     page.on("console", (message) => {
       if (message.type() !== "error") return;
@@ -485,6 +510,7 @@ async function browserControl(
   } finally {
     try {
       diagnostics.navigation ??= await captureNavigation();
+      diagnostics.decisions = (await decisionObserver?.finish()) ?? null;
       try {
         fs.writeFileSync(
           path.join(directory, "browser-control.json"),

@@ -671,9 +671,20 @@ it.each(proofCases)("checks downloaded candidate migration proof: $name", (scena
   }
 });
 
-it.skipIf(process.platform !== "win32")(
+it.skipIf(skipEvidenceProcesses)(
   "accepts only a complete successful MSI Python test result",
   () => {
+    const discovered = spawnSync(
+      process.platform === "win32" ? "python" : "python3",
+      [
+        "-c",
+        "import unittest; print(unittest.defaultTestLoader.discover('packaging/windows/installer', pattern='test_*.py').countTestCases())",
+      ],
+      { cwd: repoRoot, encoding: "utf8", timeout: 30000, windowsHide: true },
+    );
+    expect(discovered.status, discovered.stdout + discovered.stderr).toBe(0);
+    expect(discovered.stdout.trim()).toMatch(/^[1-9][0-9]*$/);
+    const completeCount = discovered.stdout.trim();
     const root = mkdtempSync(join(tmpdir(), "windows-msi-result-"));
     const script = join(root, "result-controls.ps1");
     const run = step(
@@ -694,11 +705,12 @@ function python {
   Write-Output $case.Text
 }
 foreach ($case in @(
-  @{ ExitCode = 0; Text = "Ran 130 tests in 1.2s\nOK"; Reject = $false },
-  @{ ExitCode = 1; Text = "Ran 130 tests in 1.2s\nOK"; Reject = $true },
+  @{ ExitCode = 0; Text = "Ran ${completeCount} tests in 1.2s\nOK"; Reject = $false },
+  @{ ExitCode = 1; Text = "Ran ${completeCount} tests in 1.2s\nOK"; Reject = $true },
+  @{ ExitCode = 0; Text = "Ran 130 tests in 1.2s\nOK"; Reject = $true },
   @{ ExitCode = 0; Text = "Ran 89 tests in 1.2s\nOK"; Reject = $true },
-  @{ ExitCode = 0; Text = "Ran 130 tests in 1.2s\nOK (skipped=1)"; Reject = $true },
-  @{ ExitCode = 0; Text = "Ran 130 tests in 1.2s\nFAILED"; Reject = $true },
+  @{ ExitCode = 0; Text = "Ran ${completeCount} tests in 1.2s\nOK (skipped=1)"; Reject = $true },
+  @{ ExitCode = 0; Text = "Ran ${completeCount} tests in 1.2s\nFAILED"; Reject = $true },
   @{ ExitCode = 0; Text = "Ran 1300 tests in 1.2s\nOK"; Reject = $true },
   @{ ExitCode = 0; Text = ''; Reject = $true }
 )) {
@@ -706,17 +718,21 @@ foreach ($case in @(
   try { & $gate | Out-Null } catch { $rejected = $true }
   if ($rejected -ne $case.Reject) { throw 'MSI test result was misclassified.' }
 }
-Write-Output '7 result controls passed'
+Write-Output '8 result controls passed'
 `,
       );
-      const result = spawnSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-File", script], {
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 30000,
-        env: { ...process.env, RUNNER_TEMP: root, GITHUB_WORKSPACE: repoRoot },
-      });
+      const result = spawnSync(
+        evidencePowerShell,
+        ["-NoProfile", "-NonInteractive", "-File", script],
+        {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 30000,
+          env: { ...process.env, RUNNER_TEMP: root, GITHUB_WORKSPACE: repoRoot },
+        },
+      );
       expect(result.status, result.stdout + result.stderr).toBe(0);
-      expect(result.stdout).toContain("7 result controls passed");
+      expect(result.stdout).toContain("8 result controls passed");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
