@@ -51,33 +51,42 @@ pub(super) fn spec(
     let settings = document.spec.gateway.as_managed().ok_or(Error::Conflict(
         "cluster service requires a managed gateway",
     ))?;
-    let (runtime, image, image_pull_policy, container, architecture, generation_kind) =
-        match definition {
-            ServiceDefinition::Vllm(service) => (
-                nemoclaw_runtime::RuntimeSpec::Vllm(Box::new(service.runtime_settings())),
-                service.image.clone(),
-                service.image_pull_policy,
-                &service.container,
-                service.architecture()?.to_owned(),
-                super::installers::vllm::SERVICE_KIND,
-            ),
-            ServiceDefinition::Ollama(service) => (
-                nemoclaw_runtime::RuntimeSpec::Ollama(Box::new(service.runtime_settings())),
-                service.image.clone(),
-                service.image_pull_policy,
-                &service.container,
-                service
-                    .hardware
-                    .as_ref()
-                    .ok_or(ConfigError::new("Ollama hardware is required"))?
-                    .architecture()?
-                    .to_owned(),
-                super::installers::ollama::SERVICE_KIND,
-            ),
-            ServiceDefinition::OllamaProxy(_) => {
-                return Err(Error::Conflict("Ollama proxy does not run on Kubernetes"));
-            }
-        };
+    let (
+        runtime,
+        image,
+        image_pull_policy,
+        container,
+        update_policy,
+        architecture,
+        generation_kind,
+    ) = match definition {
+        ServiceDefinition::Vllm(service) => (
+            nemoclaw_runtime::RuntimeSpec::Vllm(Box::new(service.runtime_settings())),
+            service.image.clone(),
+            service.image_pull_policy,
+            &service.container,
+            service.update_policy,
+            service.architecture()?.to_owned(),
+            super::installers::vllm::SERVICE_KIND,
+        ),
+        ServiceDefinition::Ollama(service) => (
+            nemoclaw_runtime::RuntimeSpec::Ollama(Box::new(service.runtime_settings())),
+            service.image.clone(),
+            service.image_pull_policy,
+            &service.container,
+            service.update_policy,
+            service
+                .hardware
+                .as_ref()
+                .ok_or(ConfigError::new("Ollama hardware is required"))?
+                .architecture()?
+                .to_owned(),
+            super::installers::ollama::SERVICE_KIND,
+        ),
+        ServiceDefinition::OllamaProxy(_) => {
+            return Err(Error::Conflict("Ollama proxy does not run on Kubernetes"));
+        }
+    };
     let generation = |kind: &str| {
         generations
             .get(kind)
@@ -104,7 +113,7 @@ pub(super) fn spec(
         settings: definition
             .kubernetes()
             .ok_or(Error::Conflict("cluster service configuration is missing"))?
-            .clone(),
+            .resolve(container.as_ref(), update_policy)?,
         shared_memory_gib: container
             .as_ref()
             .map_or(8, |container| container.shared_memory_gi_b),

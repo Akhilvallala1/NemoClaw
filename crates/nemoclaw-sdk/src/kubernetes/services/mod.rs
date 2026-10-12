@@ -7,7 +7,8 @@ mod readiness;
 mod resources;
 mod scheduling;
 mod status;
-use crate::{Error, config::ImagePullPolicy, services::KubernetesService};
+pub use crate::services::cluster_config::KubernetesSettings;
+use crate::{Error, config::ImagePullPolicy};
 use nemoclaw_runtime::RuntimeSpec;
 pub use operations::{Operations, Response};
 pub use resources::{compute_objects, storage_objects};
@@ -36,7 +37,7 @@ pub struct Spec {
     pub image: String,
     pub image_pull_policy: Option<ImagePullPolicy>,
     pub runtime: RuntimeSpec,
-    pub settings: KubernetesService,
+    pub settings: KubernetesSettings,
     pub shared_memory_gib: u64,
     pub architecture: String,
 }

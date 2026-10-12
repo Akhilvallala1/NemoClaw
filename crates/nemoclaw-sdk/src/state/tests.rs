@@ -3,6 +3,132 @@
 
 use super::*;
 
+#[test]
+fn legacy_cluster_intent_limits_migrate_only_after_verifying_the_saved_digest() {
+    use sha2::{Digest, Sha256};
+    let digest = |value: &str| {
+        Sha256::digest(value.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    for source in [
+        include_str!("../../../../examples/kubernetes/local-vllm.yaml"),
+        include_str!("../../../../examples/kubernetes/local-ollama.yaml"),
+    ] {
+        for had_container in [false, true] {
+            for update_policy in [
+                crate::services::ServiceUpdatePolicy::Preserve,
+                crate::services::ServiceUpdatePolicy::Recreate,
+            ] {
+                let mut document = Document::parse(source.as_bytes()).unwrap();
+                match document.spec.services.get_mut("qwen").unwrap() {
+                    crate::services::ServiceDefinition::Vllm(service) => {
+                        service.update_policy = update_policy
+                    }
+                    crate::services::ServiceDefinition::Ollama(service) => {
+                        service.update_policy = update_policy
+                    }
+                    _ => unreachable!(),
+                }
+                let mut record = Record::new(document).unwrap();
+                record.begin_runtime_apply(&record.document.clone());
+                let targets =
+                    crate::compile::runtime_targets(&record.document, &record.generations).unwrap();
+                let target = targets
+                    .iter()
+                    .find(|target| target.kind == crate::kubernetes::services::SERVICE_KIND)
+                    .unwrap();
+                let operational =
+                    crate::kubernetes::services::Spec::decode(&target.values["spec"]).unwrap();
+                let service = record.document.spec.services.get("qwen").unwrap();
+                let portable_service = serde_json::to_string(service).unwrap();
+                let value = serde_json::to_value(service).unwrap();
+                let current_settings = match service {
+                    crate::services::ServiceDefinition::Vllm(service) => {
+                        serde_json::to_string(service.kubernetes.as_ref().unwrap()).unwrap()
+                    }
+                    crate::services::ServiceDefinition::Ollama(service) => {
+                        serde_json::to_string(service.kubernetes.as_ref().unwrap()).unwrap()
+                    }
+                    _ => unreachable!(),
+                };
+                // Reconstruct the previous writer's exact service field order, independently
+                // of the migration reader. All arrays in these fixtures have one member.
+                let mut legacy_service = portable_service
+                    .replacen("\"updatePolicy\":\"Recreate\",", "", 1)
+                    .replacen(
+                        &current_settings,
+                        &serde_json::to_string(&operational.settings).unwrap(),
+                        1,
+                    );
+                let current_container = match service {
+                    crate::services::ServiceDefinition::Vllm(service) => {
+                        serde_json::to_string(service.container.as_ref().unwrap()).unwrap()
+                    }
+                    crate::services::ServiceDefinition::Ollama(service) => {
+                        serde_json::to_string(service.container.as_ref().unwrap()).unwrap()
+                    }
+                    _ => unreachable!(),
+                };
+                let legacy_container = if had_container {
+                    format!(
+                        "\"container\":{{\"ipc\":\"private\",\"sharedMemoryGiB\":{}}},",
+                        value["container"]["sharedMemoryGiB"]
+                    )
+                } else {
+                    String::new()
+                };
+                legacy_service = legacy_service.replacen(
+                    &format!("\"container\":{current_container},"),
+                    &legacy_container,
+                    1,
+                );
+                let current_document = serde_json::to_string(&record.document).unwrap();
+                assert_eq!(digest(&current_document), record.digest);
+                let legacy_document =
+                    current_document.replacen(&portable_service, &legacy_service, 1);
+                assert_ne!(legacy_document, current_document);
+                let mut saved = serde_json::to_value(&record).unwrap();
+                saved["document"] = serde_json::from_str(&legacy_document).unwrap();
+                saved["digest"] = serde_json::json!(digest(&legacy_document));
+                let directory = tempfile::tempdir().unwrap();
+                let store = Store::open(directory.path()).unwrap();
+                let path = directory.path().join("intent.json");
+                let bytes = serde_json::to_vec_pretty(&saved).unwrap();
+                std::fs::write(&path, &bytes).unwrap();
+                let loaded = store
+                    .load()
+                    .expect("the previous cluster schema must remain recoverable")
+                    .unwrap();
+                assert_eq!(
+                    loaded, record,
+                    "migration must preserve identity and pending recovery state"
+                );
+                assert_eq!(
+                    std::fs::read(&path).unwrap(),
+                    bytes,
+                    "read-only load must not rewrite intent"
+                );
+                store.save(&loaded).unwrap();
+                assert_eq!(
+                    store.load().unwrap().unwrap(),
+                    record,
+                    "canonical migrated intent must reload"
+                );
+                saved["digest"] = serde_json::json!("0".repeat(64));
+                let corrupt = serde_json::to_vec(&saved).unwrap();
+                std::fs::write(&path, &corrupt).unwrap();
+                assert!(
+                    store.load().is_err(),
+                    "migration must not bless a mismatched old digest"
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn dropping_store_releases_lock_while_a_duplicate_descriptor_remains_open() {

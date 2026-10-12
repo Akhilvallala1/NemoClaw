@@ -47,12 +47,13 @@ spec:
       memory:
         gpuMemoryGiB: 20
         kvCacheGiB: 6
+      container:
+        cpuLimitMillis: 4000
+        memoryLimitGiB: 64
       kubernetes:
         imageMetadata: {env: NEMOCLAW_MODEL_IMAGE_METADATA}
         cpuRequestMillis: 1000
-        cpuLimitMillis: 4000
         memoryRequestGiB: 32
-        memoryLimitGiB: 64
         storageGiB: 100
         # Uses the default StorageClass; set storageClass to select another.
         # Set runtimeClassName if the GPU runtime requires it.

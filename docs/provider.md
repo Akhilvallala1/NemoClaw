@@ -456,11 +456,15 @@ Generated graphs declare:
 - `entrypoint = ["/usr/local/bin/nemoclaw-runtime"]` and `env = ["NEMOCLAW_RUNTIME_SPEC=${data.nemoclaw_vllm_runtime.NAME.spec}"]`.
 - The model cache volume at `/data` and, with bearer authentication, the `nemoclaw_inference_storage` credential volume at `/credentials`.
 - The serving port, published on the service's bind address.
-- `gpus = "all"`, `memory` and `memory_swap` of 106496 MiB, and `shm_size` of 8192 MiB unless the service sets another size.
+- `gpus = "all"`; `memory` and `memory_swap` follow `container.memoryLimitGiB`, defaulting to 106496 MiB (104 GiB); `shm_size` defaults to 8192 MiB unless the service sets another size.
+- No CPU cap unless `container.cpuLimitMillis` is supplied; that value sets Docker's CPU limit.
 - Private IPC unless the service selects host IPC, an unlimited `memlock` ulimit, and a `stack` ulimit of 67108864.
 - All capabilities dropped, `no-new-privileges`, restart policy `no`, and JSON-file logs rotated at 32 MB across three files.
 
 OpenTofu shows a changed setting as a replacement of the whole `NEMOCLAW_RUNTIME_SPEC` environment entry.
+Container limits and service-level `updatePolicy` belong to the SDK deployment contract and do not enter that runtime specification.
+For managed vLLM and Ollama, the SDK's default `Preserve` policy refuses replacement of a running Docker container; `Recreate` permits the replacement and its possible downtime.
+See [container limits and update policy](inference.md#set-container-limits-and-update-policy) for common fields, platform constraints, and legacy cluster YAML migration.
 
 ## Ollama Runtime Contracts
 

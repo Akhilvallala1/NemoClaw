@@ -30,6 +30,170 @@ fn runtime_compilation_does_not_require_openshell_resource_generations() {
 }
 
 #[test]
+fn docker_model_limits_reach_opentofu_and_native_container_configuration() {
+    let gib = 1_i64 << 30;
+    for input in [
+        include_str!("fixtures/config/spark.yaml"),
+        include_str!("fixtures/config/managed-ollama.yaml"),
+    ] {
+        let baseline = Document::parse(input.as_bytes()).unwrap();
+        let generations = ["managed_gateway", "inference_service", "ollama_service"]
+            .map(|kind| (kind.into(), "b".repeat(32)))
+            .into();
+        for (cpu, memory_gib) in [(1250, 64), (2000, 128), (1, 32)] {
+            let mut value = serde_json::to_value(&baseline).unwrap();
+            for service in value["spec"]["services"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                service["container"] = json!({"cpuLimitMillis":cpu, "memoryLimitGiB":memory_gib});
+            }
+            let document = Document::parse(value.to_string().as_bytes()).unwrap();
+            let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
+            for target in runtime_targets(&document, &generations)
+                .unwrap()
+                .iter()
+                .filter(|target| {
+                    matches!(target.kind.as_str(), "inference_service" | "ollama_service")
+                })
+            {
+                let (_, name) = target.address.split_once('.').unwrap();
+                let container = &graph["resource"]["docker_container"][name];
+                assert_eq!(container["cpu_period"], 1_000_000, "{}", target.kind);
+                assert_eq!(container["cpu_quota"], cpu * 1000);
+                assert!(container.get("cpus").is_none());
+                let cpu_label = cpu.to_string();
+                assert!(
+                    container["labels"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(
+                            |label| label["label"] == "nemoclaw.nvidia.com/cpu-limit-millis"
+                                && label["value"] == cpu_label
+                        )
+                );
+                assert_eq!(container["memory"], memory_gib * 1024);
+                assert_eq!(container["memory_swap"], memory_gib * 1024);
+                let spec: nemoclaw_sdk::managed::Spec =
+                    serde_json::from_str(&target.values["spec"]).unwrap();
+                let host = spec.container("/data").unwrap().host_config.unwrap();
+                assert_eq!(host.cpu_period, Some(1_000_000));
+                assert_eq!(host.cpu_quota, Some(i64::from(cpu) * 1000));
+                assert!(host.nano_cpus.is_none());
+                assert_eq!(host.memory, Some(memory_gib * gib));
+                assert_eq!(host.memory_swap, host.memory);
+            }
+        }
+    }
+}
+
+#[test]
+fn omitted_docker_model_limits_keep_independent_legacy_defaults() {
+    for input in [
+        include_str!("fixtures/config/spark.yaml"),
+        include_str!("fixtures/config/managed-ollama.yaml"),
+    ] {
+        let baseline = Document::parse(input.as_bytes()).unwrap();
+        let generations = ["managed_gateway", "inference_service", "ollama_service"]
+            .map(|kind| (kind.into(), "b".repeat(32)))
+            .into();
+        for (limits, cpu, memory_gib) in [
+            (None, None, 104),
+            (Some(json!({"sharedMemoryGiB":4})), None, 104),
+            (Some(json!({"cpuLimitMillis":250})), Some(250), 104),
+            (Some(json!({"memoryLimitGiB":48})), None, 48),
+        ] {
+            let mut value = serde_json::to_value(&baseline).unwrap();
+            for service in value["spec"]["services"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                let object = service.as_object_mut().unwrap();
+                object.remove("container");
+                if let Some(limits) = &limits {
+                    object.insert("container".into(), limits.clone());
+                }
+            }
+            let document = Document::parse(value.to_string().as_bytes()).unwrap();
+            let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
+            let targets = runtime_targets(&document, &generations).unwrap();
+            let services: Vec<_> = targets
+                .iter()
+                .filter(|target| {
+                    matches!(target.kind.as_str(), "inference_service" | "ollama_service")
+                })
+                .collect();
+            assert_eq!(services.len(), 1);
+            let target = services[0];
+            let (_, name) = target.address.split_once('.').unwrap();
+            let container = &graph["resource"]["docker_container"][name];
+            assert_eq!(container["memory"], memory_gib * 1024);
+            assert_eq!(container["memory_swap"], container["memory"]);
+            let spec: nemoclaw_sdk::managed::Spec =
+                serde_json::from_str(&target.values["spec"]).unwrap();
+            let process = spec.process.as_ref().unwrap();
+            assert_eq!(process.cpu_limit_millis, cpu);
+            let host = spec.container("/data").unwrap().host_config.unwrap();
+            assert_eq!(host.memory, Some(memory_gib * (1_i64 << 30)));
+            assert_eq!(host.memory_swap, host.memory);
+            if cpu.is_none() {
+                assert!(container.get("cpu_period").is_none());
+                assert!(container.get("cpu_quota").is_none());
+                assert!(container.get("cpus").is_none());
+                assert!(host.cpu_period.is_none());
+                assert!(host.cpu_quota.is_none());
+                assert!(host.nano_cpus.is_none());
+                assert!(
+                    !container["labels"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|label| label["label"] == "nemoclaw.nvidia.com/cpu-limit-millis")
+                );
+                assert!(
+                    serde_json::to_value(process)
+                        .unwrap()
+                        .get("cpu_limit_millis")
+                        .is_none()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn docker_model_update_policy_does_not_change_runtime_resources() {
+    for input in [
+        include_str!("fixtures/config/spark.yaml"),
+        include_str!("fixtures/config/managed-ollama.yaml"),
+    ] {
+        let document = Document::parse(input.as_bytes()).unwrap();
+        let generations = ["managed_gateway", "inference_service", "ollama_service"]
+            .map(|kind| (kind.into(), "b".repeat(32)))
+            .into();
+        let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
+        let targets = runtime_targets(&document, &generations).unwrap();
+        let mut updated = serde_json::to_value(document).unwrap();
+        for service in updated["spec"]["services"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            service["updatePolicy"] = json!("Recreate");
+        }
+        let updated = Document::parse(updated.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            compile_runtime(&updated, &generations, "0.1.0").unwrap(),
+            graph
+        );
+        assert_eq!(runtime_targets(&updated, &generations).unwrap(), targets);
+    }
+}
+
+#[test]
 fn multiple_services_share_image_acquisition_without_custom_capacity_gates() {
     let document =
         Document::parse(include_bytes!("../../../examples/spark/two-models.yaml").as_slice())

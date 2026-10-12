@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod observations;
+mod service_schema;
 #[cfg(test)]
 mod tests;
 pub(crate) use observations::parse_resources;
@@ -494,9 +495,7 @@ impl Store {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err(Error::State("cannot read deployment intent")),
         };
-        let record: Record = serde_json::from_slice(&bytes).map_err(|_| {
-            Error::State("deployment intent record is corrupt; retain it for recovery")
-        })?;
+        let record = service_schema::decode(&bytes)?;
         record.validate()?;
         Ok(Some(record))
     }

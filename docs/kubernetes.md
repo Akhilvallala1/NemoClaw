@@ -127,16 +127,21 @@ There is no cluster-specific model allowlist.
 Both examples set `serving.contextTokens` and the route's `settings.model_metadata.contextWindow` to `32768` to leave room for OpenClaw's initial prompt and a reply.
 Follow [OpenClaw context budgeting](inference.md#tune-openclaws-primary-route) to keep those limits aligned, size memory, and interpret the advisory emitted by plan and apply.
 
-The cluster settings below reserve CPU and memory and limit their use for one service:
+The settings below reserve CPU and memory and limit their use for one service.
+The `container` limits and service-level `updatePolicy` are common to managed vLLM and Ollama on Docker, Kubernetes, and OpenShift; see [container limits and updates](inference.md#set-container-limits-and-update-policy).
+The `kubernetes` mapping applies only to managed Kubernetes and OpenShift gateways.
+Docker and Podman configurations reject it rather than silently ignoring cluster settings.
 
 ```yaml
 # Under spec.services.<name>:
+container:
+  cpuLimitMillis: 4000
+  memoryLimitGiB: 64
+updatePolicy: Preserve
 kubernetes:
   imageMetadata: {env: NEMOCLAW_MODEL_IMAGE_METADATA}
   cpuRequestMillis: 1000
-  cpuLimitMillis: 4000
   memoryRequestGiB: 32
-  memoryLimitGiB: 64
   storageGiB: 100
   nodeSelector:
     inference.example.com/pool: gpu
@@ -148,11 +153,12 @@ kubernetes:
 
 Replace or omit the example's pool selector to match labels the platform operator assigned.
 The Pod always selects Linux and the service hardware's CPU architecture; authored selectors must agree.
-CPU and memory requests must not exceed their limits.
+Cluster services require explicit `container.cpuLimitMillis` and `container.memoryLimitGiB`; CPU and memory requests must not exceed those limits.
+For earlier YAML using limits or update policy under `kubernetes`, follow [legacy field migration](inference.md#migrate-earlier-cluster-settings).
 The required `storageGiB` field sizes the model PVC; optional `storageClass`, `runtimeClassName`, `nodeSelector`, and `tolerations` select the cluster resources.
 The [generated field reference](reference/configuration.md) defines accepted values.
 Pod memory limits include memory-backed shared memory; size them for the model's loading and serving needs as well as `container.sharedMemoryGiB`.
-Validation rejects a shared-memory size or recipe preparation-memory requirement larger than `memoryLimitGiB`.
+Validation rejects a shared-memory size or recipe preparation-memory requirement larger than `container.memoryLimitGiB`.
 These are minimum checks; fitting each declared allocation does not establish that their combined peak fits the limit.
 The runtime's hardware and resident host/GPU memory checks still apply.
 Its resident monitor observes host memory through `/proc`; it does not measure cgroup memory pressure.
@@ -192,9 +198,9 @@ Use the same plan and apply commands as [the managed gateway procedure](#deploy-
 Plan validates intent and observes bound resources without starting a model or changing cluster resources.
 Preflight checks the selected classes and API permissions and uses [server-side dry runs](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run) to check admission before creating new resources.
 The first plan cannot dry-run namespace-scoped workloads when the managed namespace does not exist yet; apply repeats those checks before workload creation.
-The default `kubernetes.updatePolicy: Preserve` refuses changes that would replace an existing nonterminal Pod, including a running, pending, or incompletely observed Pod.
+The default service-level `updatePolicy: Preserve` refuses changes that would replace an existing nonterminal Pod, including a running, pending, or incompletely observed Pod.
 The current Pod, configuration, and saved receipt remain unchanged; static checks cannot guarantee that its replacement will obtain the occupied GPU, storage placement, or scheduler approval.
-To permit sequential replacement, set `updatePolicy: Recreate` in the service's existing `kubernetes` mapping and review the plan.
+To permit sequential replacement, set `spec.services.<name>.updatePolicy: Recreate` and review the plan.
 This is an ongoing opt-in to downtime for future updates until you remove it or set `Preserve`; changing only the policy does not restart the Pod.
 Initial creation, unchanged apply, and recovery of missing or terminal (`Failed` or `Succeeded`) Pods do not require `Recreate`.
 For a changed existing workload, preflight checks the replacement Pod and ConfigMap under temporary names without persisting them, before stopping the current Pod.

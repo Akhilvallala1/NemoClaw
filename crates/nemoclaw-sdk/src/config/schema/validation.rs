@@ -343,7 +343,7 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
     ]);
     defs["AgentExecution"]["minProperties"] = json!(1);
     crate::services::constrain_schema(defs, normalized);
-    crate::services::cluster_config::constrain(defs);
+    crate::services::cluster_config::constrain(defs, normalized);
 
     root["allOf"] = json!([{
         "if": {"not": at("spec/gateway/runtime/provider", json!({"const":"podman"}), true)},

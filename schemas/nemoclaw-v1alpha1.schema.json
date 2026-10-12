@@ -1067,30 +1067,31 @@
       "description": "One GPU model service in the managed gateway's namespace. Storage survives destroy.",
       "properties": {
         "cpuLimitMillis": {
-          "description": "CPU limit in millicores; must be at least the request.",
-          "format": "uint32",
+          "deprecated": true,
+          "description": "Legacy alias for container.cpuLimitMillis. Do not supply both fields.",
+          "maximum": 4294967295,
           "minimum": 1,
           "type": "integer"
         },
         "cpuRequestMillis": {
-          "description": "Requested CPU capacity in millicores.",
+          "description": "Requested CPU capacity in millicores. Must not exceed container.cpuLimitMillis.",
           "format": "uint32",
           "minimum": 1,
           "type": "integer"
         },
         "imageMetadata": {
           "$ref": "#/$defs/Credential",
-          "description": "Environment reference to an absolute local OCI metadata bundle for this service image. Plan and apply verify its digest, Linux architecture, and runtime labels before changing cluster resources. Destroy does not read it."
+          "description": "Environment reference to an absolute local OCI metadata bundle for the service image."
         },
         "memoryLimitGiB": {
-          "description": "Container memory limit in GiB; must cover the request, shared-memory size, and recipe preparation-memory requirement individually. Combined loading and serving demand needs additional headroom.",
-          "format": "uint64",
+          "deprecated": true,
+          "description": "Legacy alias for container.memoryLimitGiB. Do not supply both fields.",
           "maximum": 8589934591,
           "minimum": 1,
           "type": "integer"
         },
         "memoryRequestGiB": {
-          "description": "Requested container memory in GiB, independent of the model's GPU budget.",
+          "description": "Requested container memory in GiB. Must not exceed container.memoryLimitGiB.",
           "format": "uint64",
           "maximum": 8589934591,
           "minimum": 1,
@@ -1120,7 +1121,7 @@
           "type": "string"
         },
         "storageGiB": {
-          "description": "Retained model-volume capacity in GiB. Must cover prepared data plus a 16 GiB working reserve; model downloads and earlier snapshots need additional space.",
+          "description": "Retained model-volume capacity in GiB. Must cover prepared data plus a 16 GiB working reserve; allow additional space for model downloads and retained snapshots.",
           "format": "uint64",
           "maximum": 8589934591,
           "minimum": 16,
@@ -1135,16 +1136,14 @@
         },
         "updatePolicy": {
           "$ref": "#/$defs/ServiceUpdatePolicy",
-          "default": "Preserve",
-          "description": "Defaults to Preserve, which refuses replacement of an existing nonterminal Pod. Recreate permits sequential replacement and possible downtime on every update until this policy is removed or changed. Initial creation and recovery of missing or terminal Pods remain allowed; changing only this policy does not restart a Pod."
+          "deprecated": true,
+          "description": "Legacy alias for the service-level updatePolicy. Do not supply both fields."
         }
       },
       "required": [
         "imageMetadata",
         "cpuRequestMillis",
-        "cpuLimitMillis",
         "memoryRequestGiB",
-        "memoryLimitGiB",
         "storageGiB"
       ],
       "type": "object"
@@ -2401,11 +2400,25 @@
     },
     "ServiceContainer": {
       "additionalProperties": false,
-      "description": "Managed inference IPC and shared-memory settings.",
+      "description": "Managed inference CPU and memory limits, IPC, and shared-memory settings.",
       "properties": {
+        "cpuLimitMillis": {
+          "description": "CPU usage limit in millicores. Omission leaves Docker CPU usage unrestricted; Kubernetes and OpenShift services require an explicit limit.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
         "ipc": {
           "$ref": "#/$defs/ServiceIpc",
           "description": "IPC namespace. Omission uses private; host shares the execution host's IPC namespace."
+        },
+        "memoryLimitGiB": {
+          "description": "Container memory limit in GiB, independent of the model's GPU budget. Omission retains Docker's 104 GiB limit; Kubernetes and OpenShift services require an explicit limit.",
+          "format": "uint64",
+          "maximum": 8589934591,
+          "minimum": 1,
+          "type": "integer"
         },
         "sharedMemoryGiB": {
           "description": "Shared-memory size in GiB, from 1 through 64. Omission uses 8; host IPC uses the host's existing shared-memory mount instead.",
@@ -2484,6 +2497,114 @@
                   }
                 ]
               }
+            },
+            {
+              "if": {
+                "required": [
+                  "kubernetes"
+                ]
+              },
+              "then": {
+                "allOf": [
+                  {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "container": {
+                            "properties": {
+                              "cpuLimitMillis": {}
+                            },
+                            "required": [
+                              "cpuLimitMillis"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "container"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "kubernetes": {
+                            "properties": {
+                              "cpuLimitMillis": {}
+                            },
+                            "required": [
+                              "cpuLimitMillis"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kubernetes"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "container": {
+                            "properties": {
+                              "memoryLimitGiB": {}
+                            },
+                            "required": [
+                              "memoryLimitGiB"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "container"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "kubernetes": {
+                            "properties": {
+                              "memoryLimitGiB": {}
+                            },
+                            "required": [
+                              "memoryLimitGiB"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kubernetes"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "updatePolicy": {}
+                    },
+                    "required": [
+                      "updatePolicy"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "kubernetes": {
+                        "properties": {
+                          "updatePolicy": {}
+                        },
+                        "required": [
+                          "updatePolicy"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kubernetes"
+                    ]
+                  }
+                ]
+              }
             }
           ],
           "dependentRequired": {
@@ -2498,7 +2619,7 @@
           "properties": {
             "container": {
               "$ref": "#/$defs/ServiceContainer",
-              "description": "Optional IPC and shared-memory settings for the runtime container."
+              "description": "Container CPU and memory limits, IPC, and shared memory for Docker, Kubernetes, and OpenShift. Native managed Podman inference is unsupported. Omission uses private IPC and 8 GiB of shared memory."
             },
             "hardware": {
               "$ref": "#/$defs/ServiceHardware",
@@ -2525,7 +2646,7 @@
             },
             "kubernetes": {
               "$ref": "#/$defs/KubernetesService",
-              "description": "Cluster capacity and scheduling. Requires the managed Kubernetes or OpenShift gateway.",
+              "description": "Image metadata, scheduling requests, and retained-volume settings for managed Kubernetes or OpenShift only. Rejected for Docker and Podman.",
               "x-nemoclaw-required": "With a managed Kubernetes or OpenShift gateway"
             },
             "memory": {
@@ -2547,6 +2668,11 @@
             "serving": {
               "$ref": "#/$defs/OllamaServing",
               "description": "Ollama serving limits."
+            },
+            "updatePolicy": {
+              "$ref": "#/$defs/ServiceUpdatePolicy",
+              "default": "Preserve",
+              "description": "Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed."
             }
           },
           "required": [
@@ -2772,6 +2898,114 @@
                   }
                 ]
               }
+            },
+            {
+              "if": {
+                "required": [
+                  "kubernetes"
+                ]
+              },
+              "then": {
+                "allOf": [
+                  {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "container": {
+                            "properties": {
+                              "cpuLimitMillis": {}
+                            },
+                            "required": [
+                              "cpuLimitMillis"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "container"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "kubernetes": {
+                            "properties": {
+                              "cpuLimitMillis": {}
+                            },
+                            "required": [
+                              "cpuLimitMillis"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kubernetes"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "container": {
+                            "properties": {
+                              "memoryLimitGiB": {}
+                            },
+                            "required": [
+                              "memoryLimitGiB"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "container"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "kubernetes": {
+                            "properties": {
+                              "memoryLimitGiB": {}
+                            },
+                            "required": [
+                              "memoryLimitGiB"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kubernetes"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "updatePolicy": {}
+                    },
+                    "required": [
+                      "updatePolicy"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "kubernetes": {
+                        "properties": {
+                          "updatePolicy": {}
+                        },
+                        "required": [
+                          "updatePolicy"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kubernetes"
+                    ]
+                  }
+                ]
+              }
             }
           ],
           "dependentRequired": {
@@ -2806,7 +3040,7 @@
             },
             "container": {
               "$ref": "#/$defs/ServiceContainer",
-              "description": "Optional managed container IPC and shared-memory settings. Omission uses private IPC and 8 GiB of shared memory."
+              "description": "Container CPU and memory limits, IPC, and shared memory for Docker, Kubernetes, and OpenShift. Native managed Podman inference is unsupported. Omission uses private IPC and 8 GiB of shared memory."
             },
             "hardware": {
               "$ref": "#/$defs/ServiceHardware",
@@ -2834,7 +3068,7 @@
             },
             "kubernetes": {
               "$ref": "#/$defs/KubernetesService",
-              "description": "Cluster capacity and scheduling. Requires the managed Kubernetes or OpenShift gateway.",
+              "description": "Image metadata, scheduling requests, and retained-volume settings for managed Kubernetes or OpenShift only. Rejected for Docker and Podman.",
               "x-nemoclaw-required": "With a managed Kubernetes or OpenShift gateway"
             },
             "memory": {
@@ -2863,6 +3097,11 @@
             "serving": {
               "$ref": "#/$defs/Serving",
               "description": "Service limits. Omission selects the SDK defaults; recipe serving settings select recipe-specific parsers and execution options."
+            },
+            "updatePolicy": {
+              "$ref": "#/$defs/ServiceUpdatePolicy",
+              "default": "Preserve",
+              "description": "Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed."
             }
           },
           "required": [
@@ -3120,11 +3359,11 @@
       "type": "object"
     },
     "ServiceUpdatePolicy": {
-      "description": "Whether updates may stop an existing cluster model Pod before its replacement is ready.",
+      "description": "Whether updates may stop an existing model service before its replacement is ready.",
       "oneOf": [
         {
           "const": "Preserve",
-          "description": "Keep existing nonterminal Pods and reject changes that require their replacement.",
+          "description": "Keep existing services and reject changes that require their replacement.",
           "type": "string"
         },
         {

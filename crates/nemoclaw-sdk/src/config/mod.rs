@@ -90,8 +90,9 @@ impl Document {
     /// # Errors
     /// Returns an error for unreadable, oversized, malformed, or invalid input.
     pub fn parse(input: impl Read) -> Result<Self, ConfigError> {
-        let (text, tree) = read_yaml(input)?;
+        let (text, mut tree) = read_yaml(input)?;
         schema::validate_input(&tree, Some(&text))?;
+        crate::services::cluster_config::normalize(&mut tree)?;
         let mut document: Self = serde_json::from_value(tree).map_err(|_| {
             ConfigError::new("configuration contains an unknown field or invalid field type")
         })?;
@@ -109,6 +110,9 @@ impl Document {
             .map_err(|_| ConfigError::new("cannot serialize configuration"))
     }
     pub fn digest(&self) -> String {
+        digest_serialized(&self.canonical_for_digest())
+    }
+    pub(crate) fn canonical_for_digest(&self) -> Self {
         // Named declaration order is not deployment intent; retain authored order on export.
         let mut canonical = self.clone();
         canonical.spec.sandboxes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -131,14 +135,7 @@ impl Document {
                 inference.routes.sort_by(|a, b| a.name.cmp(&b.name));
             }
         }
-        let json = serde_json::to_string(&canonical)
-            .expect("configuration contains only serializable values")
-            .replace('&', "\\u0026")
-            .replace('<', "\\u003c")
-            .replace('>', "\\u003e")
-            .replace('\u{2028}', "\\u2028")
-            .replace('\u{2029}', "\\u2029");
-        hex(&Sha256::digest(json.as_bytes()))
+        canonical
     }
     pub fn workspace(&self) -> String {
         format!(
@@ -229,6 +226,17 @@ impl Document {
             }
         }
     }
+}
+
+pub(crate) fn digest_serialized(value: &impl serde::Serialize) -> String {
+    let json = serde_json::to_string(value)
+        .expect("configuration contains only serializable values")
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    hex(&Sha256::digest(json.as_bytes()))
 }
 fn default_string(value: &mut String, default: &str) {
     if value.is_empty() {

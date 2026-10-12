@@ -121,6 +121,10 @@ impl Scenario {
             json!({"engine":"ssh://operator@gpu-box","networkCidr":"172.30.119.0/24"});
         value["spec"]["services"]["qwen"]["publication"] =
             json!({"endpoint":"http://10.0.0.8:18888/v1","bindAddress":"10.0.0.8"});
+        value["spec"]["services"]["qwen"]["container"] = json!({
+            "cpuLimitMillis": if kind == "ollama" { 10 } else { 1250 },
+            "memoryLimitGiB": 64
+        });
         if authenticated {
             value["spec"]["services"]["qwen"]["authentication"] = "bearer".into();
             value["spec"]["sandboxes"][0]["agent"]["auth"] = json!({"method":"api-key"});
@@ -184,7 +188,21 @@ impl Scenario {
     /// later unchanged applies must reproduce.
     async fn apply(&self) -> Value {
         self.run("apply", "config.yaml", true).await;
-        read(&self.root, "engine.json")
+        let state = read(&self.root, "engine.json");
+        let config = read(&self.root, "config.yaml");
+        let limits = &config["spec"]["services"]["qwen"]["container"];
+        let host = &state["container"]["HostConfig"];
+        assert_eq!(host["CpuPeriod"], 1_000_000);
+        assert_eq!(
+            host["CpuQuota"],
+            limits["cpuLimitMillis"].as_u64().unwrap() * 1000
+        );
+        assert_eq!(
+            host["Memory"],
+            limits["memoryLimitGiB"].as_u64().unwrap() * (1_u64 << 30)
+        );
+        assert_eq!(host["MemorySwap"], host["Memory"]);
+        state
     }
 
     fn runtime_state(&self) -> Vec<u8> {
@@ -197,9 +215,9 @@ impl Scenario {
 // scenario therefore creates one runtime and runs every check that needs it.
 //
 // vLLM recovery runs in the bearer scenario below. The runtime-independent
-// checks of an applied deployment (the readiness gate, compute replacement
-// plans, and pull policy reapply) run once, against vLLM; the provider's
-// readiness and storage tests cover each runtime's own observations.
+// checks of an applied deployment (the readiness gate and pull policy reapply)
+// run once, against vLLM. Replacement protection runs for both model kinds;
+// the provider's readiness and storage tests cover their own observations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires NEMOCLAW_TEST_BUNDLE; isolated SSH/Docker and OpenShell fixtures"]
 async fn remote_model_reapply_and_drift_keep_bindings_and_stop_on_observation_failure() {
@@ -225,6 +243,7 @@ async fn remote_ollama_recovers_reapplies_and_stops_on_observation_failure_keepi
     let stable = recover_lost_process_and_cache(&s, &volume).await;
     export_and_reapply_are_unchanged(&s, &stable).await;
     let state = s.runtime_state();
+    image_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
     plans_stop_on_observation_failure(&s, &stable, &state, json!({"transport_failure":true})).await;
     assert_no_probes(&s);
     incompatible_image_blocks_changes_but_not_teardown(&s, &stable["volume"]).await;
@@ -618,6 +637,18 @@ async fn image_change_plans_compute_replacement_without_effects(
     changed["spec"]["services"]["qwen"]["image"] =
         json!(format!("runtime@sha256:{}", "f".repeat(64)));
     save(root, "config.yaml", &changed);
+    let intent = fs::read(root.join("deployment/intent.json")).unwrap();
+    for operation in ["plan", "apply"] {
+        s.run(operation, "config.yaml", false).await;
+        assert_eq!(&read(root, "engine.json"), stable);
+        assert_eq!(s.runtime_state(), state);
+        assert_eq!(
+            fs::read(root.join("deployment/intent.json")).unwrap(),
+            intent
+        );
+    }
+    changed["spec"]["services"]["qwen"]["updatePolicy"] = json!("Recreate");
+    save(root, "config.yaml", &changed);
     let output = s.run("plan", "config.yaml", true).await;
     let plan: Value = serde_json::from_slice(&output).unwrap();
     assert!(
@@ -719,6 +750,7 @@ async fn bearer_survives_compute_replacement(s: &Scenario, volume: &Value) {
     let mut changed = read(root, "config.yaml");
     let replacement = format!("runtime@sha256:{}", "e".repeat(64));
     changed["spec"]["services"]["qwen"]["image"] = json!(replacement);
+    changed["spec"]["services"]["qwen"]["updatePolicy"] = json!("Recreate");
     save(root, "config.yaml", &changed);
     let mut fixture = read(root, "fixture.json");
     fixture["image"]["Id"] = json!("sha256:replacement-runtime");

@@ -217,31 +217,49 @@ impl ServiceDefinition {
     }
 
     fn validate_installation(&self, document: &Document) -> Result<(), ConfigError> {
+        let (container, preparation_memory) = match self {
+            Self::Vllm(service) => (
+                service.container.as_ref(),
+                service
+                    .recipe
+                    .as_ref()
+                    .map_or(0, |recipe| recipe.resources.preparation_memory_gi_b),
+            ),
+            Self::Ollama(service) => (service.container.as_ref(), 0),
+            Self::OllamaProxy(_) => (None, 0),
+        };
+        if let Some(container) = container {
+            container.validate_memory(preparation_memory)?;
+        }
         let gateway = &document.spec.gateway;
         if let Some(settings) = self.kubernetes() {
             crate::config::validation::require(
                 gateway.as_kubernetes().is_some(),
-                "cluster model services require a managed Kubernetes gateway",
+                "service kubernetes settings require a managed Kubernetes or OpenShift gateway and are not supported with Docker or Podman",
             )?;
-            let (placement, container, runtime) = match self {
+            let (placement, container, update_policy, runtime) = match self {
                 Self::Vllm(service) => (
                     service.published_placement()?,
                     &service.container,
+                    service.update_policy,
                     nemoclaw_runtime::RuntimeSpec::Vllm(Box::new(service.runtime.clone())),
                 ),
                 Self::Ollama(service) => (
                     service.published_placement()?,
                     &service.container,
+                    service.update_policy,
                     nemoclaw_runtime::RuntimeSpec::Ollama(Box::new(service.runtime.clone())),
                 ),
                 Self::OllamaProxy(_) => unreachable!(),
             };
-            settings.validate_runtime(
-                &runtime,
-                container
-                    .as_ref()
-                    .map_or(8, |container| container.shared_memory_gi_b),
-            )?;
+            settings
+                .resolve(container.as_ref(), update_policy)?
+                .validate_runtime(
+                    &runtime,
+                    container
+                        .as_ref()
+                        .map_or(8, |container| container.shared_memory_gi_b),
+                )?;
             return crate::config::validation::require(
                 placement.is_none()
                     && container.as_ref().is_none_or(|container| {

@@ -10,12 +10,19 @@ use serde::{Deserialize, Serialize};
 #[serde(default, deny_unknown_fields)]
 /// Managed vLLM service. Explicit placement and publication must appear together.
 pub struct Service {
-    /// Cluster capacity and scheduling. Requires the managed Kubernetes or OpenShift gateway.
+    /// Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed.
+    #[serde(
+        rename = "updatePolicy",
+        default,
+        skip_serializing_if = "crate::services::ServiceUpdatePolicy::is_preserve"
+    )]
+    pub update_policy: crate::services::ServiceUpdatePolicy,
+    /// Image metadata, scheduling requests, and retained-volume settings for managed Kubernetes or OpenShift only. Rejected for Docker and Podman.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "crate::services::KubernetesService")]
     #[schemars(extend("x-nemoclaw-required" = "With a managed Kubernetes or OpenShift gateway"))]
     pub kubernetes: Option<crate::services::KubernetesService>,
-    /// Optional managed container IPC and shared-memory settings. Omission uses private IPC and 8 GiB of shared memory.
+    /// Container CPU and memory limits, IPC, and shared memory for Docker, Kubernetes, and OpenShift. Native managed Podman inference is unsupported. Omission uses private IPC and 8 GiB of shared memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ServiceContainer")]
     pub container: Option<ServiceContainer>,

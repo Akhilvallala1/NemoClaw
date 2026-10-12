@@ -7,6 +7,103 @@ use crate::{deployment::tests::kubernetes_context, managed::GATEWAY_STORAGE_KIND
 const GATEWAY: &str = "nemoclaw_managed_gateway.runtime";
 
 #[test]
+fn docker_model_updates_preserve_running_containers_unless_recreation_is_explicit() {
+    for (source, name, kind) in [
+        (
+            include_str!("../../../../../examples/station/vllm.yaml"),
+            "qwen",
+            "inference_service",
+        ),
+        (
+            include_str!("../../../../../examples/managed-ollama.yaml"),
+            "ollama-server",
+            "ollama_service",
+        ),
+    ] {
+        let document = Document::parse(source.as_bytes()).unwrap();
+        let record = Record::new(document.clone()).unwrap();
+        let targets = compile::runtime_targets(&document, &record.generations).unwrap();
+        let address = targets
+            .iter()
+            .find(|target| target.kind == kind)
+            .unwrap()
+            .address
+            .clone();
+        for actions in [
+            json!(["delete", "create"]),
+            json!(["create", "delete"]),
+            json!(["delete"]),
+        ] {
+            for before in [
+                json!({"id": "existing-model", "must_run": true}),
+                json!({"id": "existing-model"}),
+            ] {
+                let plan: Plan = serde_json::from_value(json!({"resource_changes": [{
+                    "address": address, "change": {"actions": actions, "before": before}
+                }]}))
+                .unwrap();
+                let message = runtime_observations(&document, &targets, &BTreeMap::new(), &plan)
+                    .err()
+                    .expect("Preserve must refuse replacing a running or unconfirmed model")
+                    .to_string();
+                for expected in [
+                    name,
+                    "updatePolicy: Preserve",
+                    "updatePolicy: Recreate",
+                    "downtime",
+                ] {
+                    assert!(message.contains(expected), "missing {expected}: {message}");
+                }
+
+                let mut recreate = serde_json::to_value(&document).unwrap();
+                recreate["spec"]["services"][name]["updatePolicy"] = json!("Recreate");
+                let recreate = Document::parse(recreate.to_string().as_bytes()).unwrap();
+                runtime_observations(&recreate, &targets, &BTreeMap::new(), &plan).unwrap();
+            }
+        }
+        // Provider refresh reports a stopped container as must_run=false and a
+        // missing container with no prior value. Neither requires downtime.
+        for (actions, before) in [
+            (
+                json!(["delete", "create"]),
+                json!({"id": "stopped-model", "must_run": false}),
+            ),
+            (json!(["create"]), Value::Null),
+            (
+                json!(["no-op"]),
+                json!({"id": "running-model", "must_run": true}),
+            ),
+            (
+                json!(["update"]),
+                json!({"id": "running-model", "must_run": true}),
+            ),
+        ] {
+            let plan = serde_json::from_value(json!({"resource_changes": [{
+                "address": address, "change": {"actions": actions, "before": before}
+            }]}))
+            .unwrap();
+            runtime_observations(&document, &targets, &BTreeMap::new(), &plan).unwrap();
+        }
+        // Replacement cleanup is for a previous instance, not the current model.
+        let plan = serde_json::from_value(json!({"resource_changes": [{
+            "address": address, "deposed": "old-instance", "change": {
+                "actions": ["delete"], "before": {"id": "old-model", "must_run": true}
+            }
+        }, {
+            "address": "docker_container.managed_gateway_runtime", "change": {
+                "actions": ["delete", "create"], "before": {"id": "gateway", "must_run": true}
+            }
+        }, {
+            "address": "docker_container.ollama_proxy_proxy", "change": {
+                "actions": ["delete", "create"], "before": {"id": "proxy", "must_run": true}
+            }
+        }]}))
+        .unwrap();
+        runtime_observations(&document, &targets, &BTreeMap::new(), &plan).unwrap();
+    }
+}
+
+#[test]
 fn bound_cluster_port_change_explains_required_teardown_before_runtime_reconciliation() {
     for source in [
         include_str!("../../../../../examples/kubernetes/local-vllm.yaml"),
@@ -246,7 +343,7 @@ fn cluster_service_changes_keep_bound_storage_and_require_all_recorded_prerequis
             assert!(runtime_bindings(&targets, &missing).is_err());
         }
         let mut input = serde_json::to_value(&document).unwrap();
-        input["spec"]["services"]["qwen"]["kubernetes"]["cpuLimitMillis"] = json!(8000);
+        input["spec"]["services"]["qwen"]["container"]["cpuLimitMillis"] = json!(8000);
         let changed = Document::parse(input.to_string().as_bytes()).unwrap();
         let updated = compile::runtime_targets(&changed, &record.generations).unwrap();
         let expected = runtime_bindings(&updated, &bindings).unwrap();

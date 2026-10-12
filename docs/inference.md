@@ -96,6 +96,48 @@ Examples use the SDK default image or an explicit image digest, plus deployment 
 Build/select your own matching images and replace those values before use.
 An accepted example is a configuration contract, not evidence that the combination completes live inference.
 
+## Set Container Limits and Update Policy
+
+Managed `kind: vllm` and `kind: ollama` services use `container` for CPU and system-memory limits on Docker, Kubernetes, and OpenShift.
+Set these fields under the service, alongside its model and serving settings:
+
+```yaml
+# Under spec.services.<name>:
+container:
+  cpuLimitMillis: 4000
+  memoryLimitGiB: 64
+updatePolicy: Preserve
+```
+
+`cpuLimitMillis: 4000` caps CPU use at four cores; `memoryLimitGiB` limits the container's system memory.
+These fields do not set the GPU budget: `memory.gpuMemoryGiB`, `memory.gpuMemoryUtilization`, and backend-specific cache settings retain their runtime meanings.
+Docker defaults to a 104 GiB memory limit and no CPU cap when these limits are omitted.
+Kubernetes and OpenShift require both limits explicitly and keep scheduling requests under `kubernetes.cpuRequestMillis` and `kubernetes.memoryRequestGiB`.
+Requests must not exceed their corresponding container limits.
+
+The `kubernetes` mapping applies only to managed Kubernetes and OpenShift gateways; it contains image metadata, scheduling, and retained-volume settings.
+Docker and Podman configurations reject that mapping rather than silently ignoring its fields.
+Native managed inference on Podman remains unsupported; a Podman gateway can consume a service on an explicitly selected remote Docker engine through [SSH placement](remote-service.md).
+These shared fields do not change [platform qualification limits](limits.md#platforms-models-and-placement).
+
+The service-level `updatePolicy` defaults to `Preserve`.
+For Docker, this refuses an update that would replace a running managed model container; changes the Docker provider can make in place do not require replacement.
+For Kubernetes and OpenShift, it refuses an update that would replace an existing nonterminal model Pod, including a pending Pod.
+Set `updatePolicy: Recreate` only when accepting sequential replacement and possible downtime if the replacement cannot start.
+The opt-in persists for later updates until removed or changed to `Preserve`; changing only this policy does not restart the workload.
+Initial creation, unchanged apply, and recovery of missing or stopped Docker containers or missing or terminal cluster Pods remain allowed after ownership checks.
+Retained model data and credentials remain bound to the deployment.
+This policy applies to managed vLLM and Ollama, not the Ollama proxy or gateway; see [cluster replacement checks](kubernetes.md#run-a-managed-model-service) and [change constraints](usage.md#choose-the-change-path).
+
+### Migrate Earlier Cluster Settings
+
+Earlier cluster YAML placed `cpuLimitMillis`, `memoryLimitGiB`, and `updatePolicy` inside `kubernetes`.
+For managed Kubernetes and OpenShift, parsing still accepts those legacy fields and normalizes limits into `container` and policy into the service; export writes the new locations.
+Supply each moved field in only one location: declaring both the legacy and new location is rejected even when their values match.
+The legacy CPU and memory fields satisfy the cluster's explicit-limit requirement when normalized.
+This compatibility does not make `kubernetes` settings valid for Docker or Podman.
+Moving these YAML fields does not change their values or authorize replacement; retain the existing state directory and review the plan.
+
 ## Choose the Request API
 
 Set `api` on the selected provider, whether inline or referenced, to the request API your endpoint accepts.

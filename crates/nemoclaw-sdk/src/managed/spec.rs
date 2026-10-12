@@ -60,6 +60,8 @@ pub struct Process {
     pub port: u16,
     pub shared_memory_bytes: u64,
     pub host_ipc: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_limit_millis: Option<u32>,
     pub memory_bytes: u64,
     pub gpu: bool,
 }
@@ -371,6 +373,7 @@ impl Spec {
                 && process.port != 0
                 && !process.architecture.is_empty()
                 && process.memory_bytes > 0
+                && process.cpu_limit_millis != Some(0)
             {
                 return Ok(());
             }
@@ -546,6 +549,10 @@ impl Spec {
             }
             host["Memory"] = json!(process.memory_bytes);
             host["MemorySwap"] = json!(process.memory_bytes);
+            if let Some(limit) = process.cpu_limit_millis {
+                host["CpuPeriod"] = json!(1_000_000);
+                host["CpuQuota"] = json!(u64::from(limit) * 1000);
+            }
             if process.gpu {
                 host["DeviceRequests"] = json!([{"Driver":"","Count":-1,"Capabilities":[["gpu"]]}]);
             }

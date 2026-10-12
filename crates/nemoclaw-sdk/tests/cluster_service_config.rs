@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 use nemoclaw_sdk::config::{Document, schema};
-use nemoclaw_sdk::services::KubernetesService;
+use nemoclaw_sdk::kubernetes::services::KubernetesSettings as KubernetesService;
 use serde_json::{Value, json};
 
 fn cluster_document(kind: &str) -> Value {
@@ -31,6 +31,125 @@ fn cluster_document(kind: &str) -> Value {
     document
 }
 
+fn portable_cluster_document(kind: &str) -> Value {
+    let mut document = cluster_document(kind);
+    let service = &mut document["spec"]["services"]["qwen"];
+    for field in ["cpuLimitMillis", "memoryLimitGiB"] {
+        let value = service["kubernetes"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field)
+            .unwrap();
+        if service.get("container").is_none() {
+            service["container"] = json!({});
+        }
+        service["container"][field] = value;
+    }
+    document
+}
+
+#[test]
+fn portable_cluster_limits_and_update_policy_reject_invalid_or_ambiguous_declarations() {
+    let validator = jsonschema::validator_for(&schema::input_schema()).unwrap();
+    for kind in ["vllm", "ollama"] {
+        for (field, invalid) in [
+            ("cpuLimitMillis", json!(0)),
+            ("cpuLimitMillis", json!(u64::from(u32::MAX) + 1)),
+            ("cpuLimitMillis", Value::Null),
+            ("cpuLimitMillis", json!(1.5)),
+            ("memoryLimitGiB", json!(0)),
+            ("memoryLimitGiB", json!((i64::MAX as u64 >> 30) + 1)),
+            ("memoryLimitGiB", Value::Null),
+            ("memoryLimitGiB", json!("64")),
+        ] {
+            let mut input = portable_cluster_document(kind);
+            input["spec"]["services"]["qwen"]["container"][field] = invalid;
+            assert!(
+                !validator.is_valid(&input),
+                "invalid canonical {field}: {}",
+                input["spec"]["services"]["qwen"]["container"][field]
+            );
+            assert!(Document::parse(input.to_string().as_bytes()).is_err());
+        }
+        for field in ["cpuLimitMillis", "memoryLimitGiB", "updatePolicy"] {
+            let mut input = portable_cluster_document(kind);
+            let service = &mut input["spec"]["services"]["qwen"];
+            if field == "updatePolicy" {
+                service["updatePolicy"] = json!("Recreate");
+                service["kubernetes"][field] = json!("Recreate");
+            } else {
+                service["kubernetes"][field] = service["container"][field].clone();
+            }
+            assert!(
+                !validator.is_valid(&input),
+                "duplicate legacy/current {field}"
+            );
+            assert!(Document::parse(input.to_string().as_bytes()).is_err());
+        }
+        for invalid in [Value::Null, json!(true), json!("RollingUpdate")] {
+            let mut input = portable_cluster_document(kind);
+            input["spec"]["services"]["qwen"]["updatePolicy"] = invalid;
+            assert!(!validator.is_valid(&input));
+            assert!(Document::parse(input.to_string().as_bytes()).is_err());
+        }
+        for field in ["cpuLimitMillis", "memoryLimitGiB"] {
+            let mut input = portable_cluster_document(kind);
+            input["spec"]["services"]["qwen"]["container"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(!validator.is_valid(&input), "missing canonical {field}");
+            assert!(Document::parse(input.to_string().as_bytes()).is_err());
+        }
+    }
+}
+
+#[test]
+fn portable_cluster_requests_must_fit_the_common_container_limits() {
+    for kind in ["vllm", "ollama"] {
+        for (request, limit) in [
+            ("cpuRequestMillis", "cpuLimitMillis"),
+            ("memoryRequestGiB", "memoryLimitGiB"),
+        ] {
+            let mut input = portable_cluster_document(kind);
+            input["spec"]["services"]["qwen"]["kubernetes"][request] = json!(65);
+            input["spec"]["services"]["qwen"]["container"][limit] = json!(64);
+            assert!(
+                Document::parse(input.to_string().as_bytes()).is_err(),
+                "{kind}: {request} exceeds common {limit}"
+            );
+        }
+    }
+}
+
+#[test]
+fn portable_container_memory_limits_cover_shared_memory_and_recipe_preparation_on_docker() {
+    for source in [
+        include_str!("../../../examples/spark/vllm.yaml"),
+        include_str!("../../../examples/managed-ollama-gpu.yaml"),
+        include_str!("../../../examples/spark/spark-inline.yaml"),
+    ] {
+        let mut input: Value = serde_saphyr::from_str(source).unwrap();
+        input["spec"]["services"]["qwen"]["container"] =
+            json!({"memoryLimitGiB": 7, "sharedMemoryGiB":8});
+        assert!(
+            Document::parse(input.to_string().as_bytes()).is_err(),
+            "the explicit memory limit must cover private shared memory"
+        );
+        input["spec"]["services"]["qwen"]["container"]["memoryLimitGiB"] = json!(64);
+        Document::parse(input.to_string().as_bytes()).unwrap();
+        if input["spec"]["services"]["qwen"].get("recipe").is_some() {
+            input["spec"]["services"]["qwen"]["container"]["memoryLimitGiB"] = json!(19);
+            assert!(
+                Document::parse(input.to_string().as_bytes()).is_err(),
+                "the recipe's 20 GiB preparation requirement must fit the explicit container limit"
+            );
+            input["spec"]["services"]["qwen"]["container"]["memoryLimitGiB"] = json!(20);
+            Document::parse(input.to_string().as_bytes()).unwrap();
+        }
+    }
+}
+
 #[test]
 fn cluster_model_services_accept_explicit_capacity_storage_and_scheduling() {
     let validator = jsonschema::validator_for(&schema::input_schema()).unwrap();
@@ -40,10 +159,16 @@ fn cluster_model_services_accept_explicit_capacity_storage_and_scheduling() {
             input["spec"]["gateway"]["runtime"]["provider"] = json!(driver);
             assert!(validator.is_valid(&input), "{kind} on {driver}");
             let document = Document::parse(input.to_string().as_bytes()).unwrap();
-            assert_eq!(
-                serde_json::to_value(&document).unwrap()["spec"]["services"]["qwen"]["kubernetes"],
-                input["spec"]["services"]["qwen"]["kubernetes"]
-            );
+            let exported = serde_json::to_value(&document).unwrap();
+            let mut expected = input["spec"]["services"]["qwen"]["kubernetes"].clone();
+            for field in ["cpuLimitMillis", "memoryLimitGiB"] {
+                let limit = expected.as_object_mut().unwrap().remove(field).unwrap();
+                assert_eq!(
+                    exported["spec"]["services"]["qwen"]["container"][field],
+                    limit
+                );
+            }
+            assert_eq!(exported["spec"]["services"]["qwen"]["kubernetes"], expected);
             assert_eq!(
                 Document::parse(document.yaml().unwrap().as_bytes()).unwrap(),
                 document
@@ -275,7 +400,9 @@ fn cluster_services_reject_missing_capacity_and_incompatible_execution_settings(
             assert!(!validator.is_valid(&input), "missing {field}");
             assert!(Document::parse(input.to_string().as_bytes()).is_err());
         }
-        for variation in ["implicit", "docker", "external", "host-ipc", "ssh"] {
+        for variation in [
+            "implicit", "docker", "podman", "external", "host-ipc", "ssh",
+        ] {
             let mut input = cluster_document(kind);
             match variation {
                 "implicit" => {
@@ -284,9 +411,13 @@ fn cluster_services_reject_missing_capacity_and_incompatible_execution_settings(
                         .unwrap()
                         .remove("kubernetes");
                 }
-                "docker" => {
+                "docker" | "podman" => {
                     input["spec"]["gateway"] =
-                        json!({"management":"managed", "runtime":{"provider":"docker"}});
+                        json!({"management":"managed", "runtime":{"provider":variation}});
+                    if variation == "podman" {
+                        input["spec"]["gateway"]["engine"] =
+                            json!("unix:///run/user/1000/podman/podman.sock");
+                    }
                     for sandbox in input["spec"]["sandboxes"].as_array_mut().unwrap() {
                         sandbox["image"].as_object_mut().unwrap().remove("metadata");
                     }

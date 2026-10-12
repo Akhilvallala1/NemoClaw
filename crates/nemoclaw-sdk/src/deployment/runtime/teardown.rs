@@ -409,7 +409,7 @@ mod tests {
             })
             .collect();
         let mut input = serde_json::to_value(&record.document).unwrap();
-        input["spec"]["services"]["qwen"]["kubernetes"]["cpuLimitMillis"] = json!(8000);
+        input["spec"]["services"]["qwen"]["container"]["cpuLimitMillis"] = json!(8000);
         record.document = Document::parse(input.to_string().as_bytes()).unwrap();
         let expected = teardown_expected(&record, &bindings, true).unwrap();
         assert_eq!(

@@ -152,7 +152,7 @@ impl fmt::Display for ObservationError {
             ),
             Self::ModelUpdateRefused { name } => write!(
                 f,
-                "Kubernetes model Pod {} is preserved by kubernetes.updatePolicy: Preserve; replacing it requires explicit updatePolicy: Recreate, which permits downtime if the replacement cannot start; Pod, configuration, and saved receipt retained",
+                "Kubernetes model Pod {} is preserved by service updatePolicy: Preserve; replacing it requires explicit updatePolicy: Recreate, which permits downtime if the replacement cannot start; Pod, configuration, and saved receipt retained",
                 name.escape_default()
             ),
             Self::ModelRuntimeStopped {

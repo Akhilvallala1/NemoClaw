@@ -521,17 +521,17 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `cpuLimitMillis` | integer | Yes | — | CPU limit in millicores; must be at least the request. Constraints: minimum 1. |
-| `cpuRequestMillis` | integer | Yes | — | Requested CPU capacity in millicores. Constraints: minimum 1. |
-| `imageMetadata` | [Credential](#credential) | Yes | — | Environment reference to an absolute local OCI metadata bundle for this service image. Plan and apply verify its digest, Linux architecture, and runtime labels before changing cluster resources. Destroy does not read it. |
-| `memoryLimitGiB` | integer | Yes | — | Container memory limit in GiB; must cover the request, shared-memory size, and recipe preparation-memory requirement individually. Combined loading and serving demand needs additional headroom. Constraints: minimum 1; maximum 8589934591. |
-| `memoryRequestGiB` | integer | Yes | — | Requested container memory in GiB, independent of the model's GPU budget. Constraints: minimum 1; maximum 8589934591. |
+| `cpuLimitMillis` | integer | No | — | Legacy alias for container.cpuLimitMillis. Do not supply both fields. Constraints: minimum 1; maximum 4294967295. |
+| `cpuRequestMillis` | integer | Yes | — | Requested CPU capacity in millicores. Must not exceed container.cpuLimitMillis. Constraints: minimum 1. |
+| `imageMetadata` | [Credential](#credential) | Yes | — | Environment reference to an absolute local OCI metadata bundle for the service image. |
+| `memoryLimitGiB` | integer | No | — | Legacy alias for container.memoryLimitGiB. Do not supply both fields. Constraints: minimum 1; maximum 8589934591. |
+| `memoryRequestGiB` | integer | Yes | — | Requested container memory in GiB. Must not exceed container.memoryLimitGiB. Constraints: minimum 1; maximum 8589934591. |
 | `nodeSelector` | map of string | No | — | Required node labels in addition to the model's declared CPU architecture. Constraints: keys: pattern `^(?:(?=[^/]{1,253}/)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*/)?[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$(?![\s\S])`; values: pattern `^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?)?$(?![\s\S])`. |
 | `runtimeClassName` | string | No | — | Existing RuntimeClass to use for the model Pod. Constraints: pattern `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$(?![\s\S])`; maximum characters 253. |
 | `storageClass` | string | No | — | StorageClass for retained volumes. Omission selects the cluster default. Constraints: pattern `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$(?![\s\S])`; maximum characters 253. |
-| `storageGiB` | integer | Yes | — | Retained model-volume capacity in GiB. Must cover prepared data plus a 16 GiB working reserve; model downloads and earlier snapshots need additional space. Constraints: minimum 16; maximum 8589934591. |
+| `storageGiB` | integer | Yes | — | Retained model-volume capacity in GiB. Must cover prepared data plus a 16 GiB working reserve; allow additional space for model downloads and retained snapshots. Constraints: minimum 16; maximum 8589934591. |
 | `tolerations` | array of [ServiceToleration](#servicetoleration) | No | — | Node taints the model Pod may tolerate. |
-| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Defaults to Preserve, which refuses replacement of an existing nonterminal Pod. Recreate permits sequential replacement and possible downtime on every update until this policy is removed or changed. Initial creation and recovery of missing or terminal Pods remain allowed; changing only this policy does not restart a Pod. |
+| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | — | Legacy alias for the service-level updatePolicy. Do not supply both fields. |
 
 ## ManagedKubernetes
 
@@ -1024,7 +1024,7 @@ Constraints: `"bearer"`.
 
 ## ServiceContainer
 
-Managed inference IPC and shared-memory settings.
+Managed inference CPU and memory limits, IPC, and shared-memory settings.
 
 Guide: [Managed models](../models.md).
 
@@ -1034,7 +1034,9 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
+| `cpuLimitMillis` | integer | No | — | CPU usage limit in millicores. Omission leaves Docker CPU usage unrestricted; Kubernetes and OpenShift services require an explicit limit. Constraints: minimum 1; maximum 4294967295. |
 | `ipc` | [ServiceIpc](#serviceipc) | No | — | IPC namespace. Omission uses private; host shares the execution host's IPC namespace. |
+| `memoryLimitGiB` | integer | No | — | Container memory limit in GiB, independent of the model's GPU budget. Omission retains Docker's 104 GiB limit; Kubernetes and OpenShift services require an explicit limit. Constraints: minimum 1; maximum 8589934591. |
 | `sharedMemoryGiB` | integer | No | — | Shared-memory size in GiB, from 1 through 64. Omission uses 8; host IPC uses the host's existing shared-memory mount instead. Constraints: minimum 1; maximum 64. |
 
 ## ServiceDefinition
@@ -1056,17 +1058,18 @@ Managed Ollama daemon and selected model.
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `container` | [ServiceContainer](#servicecontainer) | No | — | Optional IPC and shared-memory settings for the runtime container. |
+| `container` | [ServiceContainer](#servicecontainer) | No | — | Container CPU and memory limits, IPC, and shared memory for Docker, Kubernetes, and OpenShift. Native managed Podman inference is unsupported. Omission uses private IPC and 8 GiB of shared memory. |
 | `hardware` | [ServiceHardware](#servicehardware) | Yes | — | Explicit supported GPU or system profile. |
 | `image` | string | Yes | — | Immutable runtime image containing Ollama and the NemoClaw supervisor. Constraints: pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. |
 | `imagePullPolicy` | [ImagePullPolicy](#imagepullpolicy) | No | — | Image acquisition before container creation. Omission means IfNotPresent. Constraints: `"IfNotPresent"` or `"Never"`. |
 | `kind` | string | Yes | — | Supported installer selected by this service definition. Constraints: `"ollama"`. |
-| `kubernetes` | [KubernetesService](#kubernetesservice) | With a managed Kubernetes or OpenShift gateway | — | Cluster capacity and scheduling. Requires the managed Kubernetes or OpenShift gateway. |
+| `kubernetes` | [KubernetesService](#kubernetesservice) | With a managed Kubernetes or OpenShift gateway | — | Image metadata, scheduling requests, and retained-volume settings for managed Kubernetes or OpenShift only. Rejected for Docker and Podman. |
 | `memory` | [OllamaMemory](#ollamamemory) | No | — | GPU budget and resident memory-protection thresholds. |
 | `model` | [OllamaModel](#ollamamodel) | Yes | — | Selected immutable Ollama registry model. |
 | `placement` | [ServicePlacement](#serviceplacement) | No | — | Optional remote Docker placement. Requires publication. |
 | `publication` | [ServicePublication](#servicepublication) | No | — | Private inference address for an explicitly placed service. |
 | `serving` | [OllamaServing](#ollamaserving) | No | — | Ollama serving limits. |
+| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed. |
 
 ### Alternative 2
 
@@ -1090,18 +1093,19 @@ Managed vLLM runtime and immutable model snapshot.
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
 | `authentication` | [ServiceAuthentication](#serviceauthentication) | No | — | Optional native bearer authentication. The runtime generates and retains the key; omission preserves unauthenticated serving. |
-| `container` | [ServiceContainer](#servicecontainer) | No | — | Optional managed container IPC and shared-memory settings. Omission uses private IPC and 8 GiB of shared memory. |
+| `container` | [ServiceContainer](#servicecontainer) | No | — | Container CPU and memory limits, IPC, and shared memory for Docker, Kubernetes, and OpenShift. Native managed Podman inference is unsupported. Omission uses private IPC and 8 GiB of shared memory. |
 | `hardware` | [ServiceHardware](#servicehardware) | Without recipe | — | Explicit hardware contract: a named GPU or system profile, or dedicated GPU requirements for Linux AMD64. Required without an inline recipe; excludes recipe. |
 | `image` | string | Yes | — | Immutable runtime image containing vLLM, the NemoClaw supervisor, and any declared recipe tools. Constraints: pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. |
 | `imagePullPolicy` | [ImagePullPolicy](#imagepullpolicy) | No | — | Image acquisition before container creation. Omission means IfNotPresent. Constraints: `"IfNotPresent"` or `"Never"`. |
 | `kind` | string | Yes | — | Supported installer selected by this service definition. Constraints: `"vllm"`. |
-| `kubernetes` | [KubernetesService](#kubernetesservice) | With a managed Kubernetes or OpenShift gateway | — | Cluster capacity and scheduling. Requires the managed Kubernetes or OpenShift gateway. |
+| `kubernetes` | [KubernetesService](#kubernetesservice) | With a managed Kubernetes or OpenShift gateway | — | Image metadata, scheduling requests, and retained-volume settings for managed Kubernetes or OpenShift only. Rejected for Docker and Podman. |
 | `memory` | [Memory](#memory) | No | — | GPU budget and resident watchdog thresholds. Omission selects the SDK defaults. |
 | `model` | [Model](#model) | Yes | — | Public Hugging Face repository and immutable commit. |
 | `placement` | [ServicePlacement](#serviceplacement) | With external gateway or Podman; paired with publication | — | SSH Docker placement. Required with an external gateway or Podman sandbox; requires publication. |
 | `publication` | [ServicePublication](#servicepublication) | With placement | — | Private inference address reachable by OpenShell. Required with placement. |
 | `recipe` | [InlineRecipe](#inlinerecipe) | Without hardware | — | Inline preparation and serving contract supplied by the pinned runtime image. Required without hardware; excludes hardware. |
 | `serving` | [Serving](#serving) | No | — | Service limits. Omission selects the SDK defaults; recipe serving settings select recipe-specific parsers and execution options. |
+| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed. |
 
 ## ServiceHardware
 
@@ -1190,13 +1194,14 @@ Paths:
 
 ## ServiceUpdatePolicy
 
-Whether updates may stop an existing cluster model Pod before its replacement is ready.
+Whether updates may stop an existing model service before its replacement is ready.
 
 Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
 
 Paths:
 
 - `spec.services.{key}.kubernetes.updatePolicy`
+- `spec.services.{key}.updatePolicy`
 
 Accepted input: string.
 

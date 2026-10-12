@@ -48,6 +48,71 @@ fn generations() -> compile::Generations {
 }
 
 #[test]
+fn portable_service_settings_preserve_cluster_resource_specs_across_legacy_migration() {
+    for kind in ["vllm", "ollama"] {
+        for backend in ["kubernetes", "openshift"] {
+            let mut legacy = serde_json::to_value(document(kind)).unwrap();
+            legacy["spec"]["gateway"]["runtime"]["provider"] = json!(backend);
+            let service = &mut legacy["spec"]["services"]["qwen"];
+            if let Some(container) = service.get_mut("container").and_then(Value::as_object_mut) {
+                container.remove("cpuLimitMillis");
+                container.remove("memoryLimitGiB");
+            }
+            service.as_object_mut().unwrap().remove("updatePolicy");
+            service["kubernetes"]["cpuLimitMillis"] = json!(4000);
+            service["kubernetes"]["memoryLimitGiB"] = json!(64);
+            service["kubernetes"]["updatePolicy"] = json!("Recreate");
+            let mut portable = legacy.clone();
+            let service = &mut portable["spec"]["services"]["qwen"];
+            for field in ["cpuLimitMillis", "memoryLimitGiB"] {
+                let value = service["kubernetes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field)
+                    .unwrap();
+                if service.get("container").is_none() {
+                    service["container"] = json!({});
+                }
+                service["container"][field] = value;
+            }
+            service["updatePolicy"] = service["kubernetes"]
+                .as_object_mut()
+                .unwrap()
+                .remove("updatePolicy")
+                .unwrap();
+            let old = Document::parse(legacy.to_string().as_bytes()).unwrap();
+            let new = Document::parse(portable.to_string().as_bytes())
+                .expect("portable limits and update policy must configure cluster services");
+            let old_graph = compile::compile_runtime(&old, &generations(), "0.1.0").unwrap();
+            let new_graph = compile::compile_runtime(&new, &generations(), "0.1.0").unwrap();
+            assert_eq!(
+                old_graph, new_graph,
+                "{kind} on {backend}: migration must not replace resources"
+            );
+            let encoded = new_graph["resource"]["nemoclaw_kubernetes_service"]["qwen"]["spec"]
+                .as_str()
+                .unwrap();
+            let operational: Value = serde_json::from_str(encoded).unwrap();
+            assert_eq!(operational["settings"]["cpuLimitMillis"], 4000);
+            assert_eq!(operational["settings"]["memoryLimitGiB"], 64);
+            assert_eq!(operational["settings"]["updatePolicy"], "Recreate");
+            assert_eq!(
+                old, new,
+                "legacy input must normalize to canonical settings"
+            );
+            let exported = serde_json::to_value(&old).unwrap();
+            let service = &exported["spec"]["services"]["qwen"];
+            assert_eq!(service["updatePolicy"], "Recreate");
+            assert_eq!(service["container"]["cpuLimitMillis"], 4000);
+            assert_eq!(service["container"]["memoryLimitGiB"], 64);
+            for field in ["cpuLimitMillis", "memoryLimitGiB", "updatePolicy"] {
+                assert!(service["kubernetes"].get(field).is_none());
+            }
+        }
+    }
+}
+
+#[test]
 fn cluster_services_provision_before_agents_and_publish_their_cluster_endpoint() {
     for kind in ["vllm", "ollama"] {
         let document = document(kind);
@@ -141,7 +206,7 @@ fn runtime_updates_preserve_model_storage_and_teardown_keeps_only_established_cl
         let mut changed = serde_json::to_value(&document).unwrap();
         changed["spec"]["services"]["qwen"]["image"] =
             json!(format!("fixture-runtime@sha256:{}", "b".repeat(64)));
-        changed["spec"]["services"]["qwen"]["kubernetes"]["cpuLimitMillis"] = json!(8000);
+        changed["spec"]["services"]["qwen"]["container"]["cpuLimitMillis"] = json!(8000);
         let changed = Document::parse(changed.to_string().as_bytes()).unwrap();
         let updated = compile::compile_runtime(&changed, &generations(), "0.1.0").unwrap();
         assert_eq!(

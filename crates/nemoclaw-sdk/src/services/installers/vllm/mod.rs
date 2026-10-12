@@ -123,7 +123,16 @@ fn targets(
             .container
             .as_ref()
             .is_some_and(|container| container.ipc == ServiceIpc::Host),
-        memory_bytes: 104 * nemoclaw_runtime::hardware::GIB,
+        cpu_limit_millis: service
+            .container
+            .as_ref()
+            .and_then(|container| container.cpu_limit_millis),
+        memory_bytes: service
+            .container
+            .as_ref()
+            .and_then(|container| container.memory_limit_gib)
+            .unwrap_or(104)
+            * nemoclaw_runtime::hardware::GIB,
         gpu: true,
     };
     let spec = Spec {

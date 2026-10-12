@@ -212,6 +212,7 @@ fn runtime_observations(
         expected: runtime_bindings(targets, bindings)?,
         gateway_running: document.spec.gateway.as_managed().is_none(),
     };
+    preserve_docker_models(document, plan)?;
     if let Some(gateway) = targets
         .iter()
         .find(|target| target.kind == crate::kubernetes::GATEWAY_KIND)
@@ -243,6 +244,43 @@ fn runtime_observations(
         });
     }
     Ok(result)
+}
+
+fn preserve_docker_models(document: &Document, plan: &Plan) -> Result<(), Error> {
+    use crate::services::{ServiceDefinition, ServiceUpdatePolicy};
+
+    for (name, service) in &document.spec.services {
+        let (logical, policy) = match service {
+            ServiceDefinition::Vllm(service) if service.kubernetes.is_none() => (
+                format!("nemoclaw_inference_service.inference_{name}"),
+                service.update_policy,
+            ),
+            ServiceDefinition::Ollama(service) if service.kubernetes.is_none() => (
+                format!("nemoclaw_ollama_service.{name}"),
+                service.update_policy,
+            ),
+            _ => continue,
+        };
+        if policy == ServiceUpdatePolicy::Recreate {
+            continue;
+        }
+        let address = crate::docker_compute::address(&logical);
+        if plan.resource_changes.iter().any(|change| {
+            change.address == address
+                && change.deposed.is_none()
+                && change.change.actions.iter().any(|action| action == "delete")
+                && !change.change.before.is_null()
+                // The pinned Docker provider refreshes must_run to false for
+                // a stopped container. Unknown observations cannot authorize
+                // destroying a model under the default preservation policy.
+                && change.change.before["must_run"] != false
+        }) {
+            return Err(Error::DockerModelUpdateRefused {
+                service: name.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 impl Deployment {
