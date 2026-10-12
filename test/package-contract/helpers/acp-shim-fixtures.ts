@@ -226,8 +226,11 @@ export function createCleanManagedSourceAcpWorkTree(home: string, destination: s
   fs.copyFileSync(packageFile, path.join(destination, "package.json"));
 }
 
-export function linkSourceCheckoutWorktree(sourceRoot: string, prefix: string): void {
-  const worktreeRoot = `${sourceRoot}-worktree`;
+export function linkSourceCheckoutWorktree(
+  sourceRoot: string,
+  prefix: string,
+  worktreeRoot = `${sourceRoot}-worktree`,
+): void {
   runFixtureGit([
     "-c",
     "core.hooksPath=/dev/null",
@@ -296,14 +299,23 @@ require("node:fs").appendFileSync(${JSON.stringify(sentinel)}, "executed\\n");
     path.join(sourceRoot, "dist", "build-identity.json"),
     JSON.stringify({ nemoclawVersion: "0.0.131", sourceRevision }),
   );
-  const probe = spawnSync("git", ["-C", sourceRoot, "diff", "--quiet", "--", "package.json"], {
-    encoding: "utf8",
-    env: { ...fixtureGitEnv(), HOME: home },
-    timeout: 3000,
-  });
+  const packageFile = path.join(sourceRoot, "package.json");
+  // hash-object forces conversion; diff can skip it when the index stat cache matches.
+  const probe = spawnSync(
+    "git",
+    ["-C", sourceRoot, "hash-object", "--path=package.json", "--stdin"],
+    {
+      encoding: "utf8",
+      env: { ...fixtureGitEnv(), HOME: home },
+      input: fs.readFileSync(packageFile),
+      timeout: 3000,
+    },
+  );
   if (!fs.existsSync(sentinel))
     throw new Error(`${filterType} filter did not execute through Git: ${probe.stderr}`);
   fs.rmSync(sentinel);
+  // Make preflight compare bytes rather than accept the cached stat for package.json.
+  fs.utimesSync(packageFile, new Date(1000), new Date(1000));
 }
 
 export function configureSourceCheckoutGitHooks(sourceRoot: string, sentinel: string): void {

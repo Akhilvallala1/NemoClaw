@@ -129,9 +129,9 @@ ensure_cli_shim "nemoclaw-acp"`,
     },
   );
 
-  it.skipIf(process.platform === "win32")(
-    "refreshes an npm-linked source worktree ACP wrapper",
-    () => {
+  it.skipIf(process.platform === "win32").each(["managed", "npm-linked"])(
+    "refreshes ACP wrappers linked to $0 source worktrees",
+    (sourceKind) => {
       const scenario = createScenario("source-worktree-link");
       const sourceRoot = path.join(scenario.tmp, "source-checkout");
       const oldCli = createManagedSourceNemoClawAcp(
@@ -140,7 +140,11 @@ ensure_cli_shim "nemoclaw-acp"`,
         undefined,
         sourceRoot,
       );
-      linkSourceCheckoutWorktree(sourceRoot, scenario.oldPrefix);
+      const worktreeRoot =
+        sourceKind === "managed"
+          ? path.join(scenario.tmp, ".nemoclaw", "source")
+          : `${sourceRoot}-worktree`;
+      linkSourceCheckoutWorktree(sourceRoot, scenario.oldPrefix, worktreeRoot);
       writeInstallerGeneratedAcpShim(scenario.shimPath, scenario.fakeBin, oldCli);
       const oldContents = fs.readFileSync(scenario.shimPath);
 

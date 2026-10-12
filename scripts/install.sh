@@ -2576,7 +2576,7 @@ try {
   if (!/^[0-9a-f]{40,64}$/.test(identity.sourceRevision ?? "")) process.exit(1);
   let gitDir = path.join(packageRoot, ".git");
   let gitStat = fs.lstatSync(gitDir);
-  if (!managedSource && ownedRegularFile(gitDir)) {
+  if (ownedRegularFile(gitDir)) {
     const gitFile = fs.readFileSync(gitDir, "utf8");
     const gitDirMatch = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(gitFile);
     if (!gitDirMatch) process.exit(1);
