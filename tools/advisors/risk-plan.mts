@@ -784,6 +784,11 @@ function planDigest(value: Omit<RiskPlan, "planHash">): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+export function hasValidRiskPlanDigest(plan: RiskPlan): boolean {
+  const { planHash, ...withoutHash } = plan;
+  return planHash === planDigest(withoutHash);
+}
+
 export function buildRiskPlan(options: {
   headSha: string;
   changedFiles: readonly string[];

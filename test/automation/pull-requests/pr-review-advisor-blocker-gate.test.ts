@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,7 +38,8 @@ function artifactTree(
     findingInterest?: string;
     unresolvedInterest?: string;
     changedFiles?: string[];
-    invalidJobId?: boolean;
+    invalidJobId?: "markdown" | "numeric";
+    omitRequiredJob?: boolean;
   } = {},
 ): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "advisor-blocker-gate-"));
@@ -49,8 +51,18 @@ function artifactTree(
   );
   selectedRiskPlan.requiredJobs = selectedRiskPlan.requiredJobs.map((job, index) => ({
     ...job,
-    id: options.invalidJobId && index === 0 ? "staging-brev-launchable\n# forged summary" : job.id,
+    id:
+      index === 0 && options.invalidJobId === "markdown"
+        ? "staging-brev-launchable\n# forged summary"
+        : index === 0 && options.invalidJobId === "numeric"
+          ? (123 as unknown as string)
+          : job.id,
   }));
+  const { planHash: originalPlanHash, ...withoutHash } = selectedRiskPlan;
+  selectedRiskPlan.planHash =
+    options.invalidJobId === "numeric"
+      ? createHash("sha256").update(JSON.stringify(withoutHash)).digest("hex")
+      : originalPlanHash;
   const selectedInventory = {
     ...inventory,
     allowedJobIds: selectedRiskPlan.requiredJobs.map((job) => job.id),
@@ -65,6 +77,15 @@ function artifactTree(
     },
     {},
   );
+  const writtenContext = options.omitRequiredJob
+    ? {
+        ...context,
+        deterministic: {
+          ...context.deterministic,
+          requiredJobs: context.deterministic.requiredJobs.slice(1),
+        },
+      }
+    : context;
   for (const interest of expectedSpecialists) {
     const directory = path.join(root, `pr-review-specialist-${interest}-${ATTEMPT}`);
     fs.mkdirSync(directory);
@@ -108,7 +129,10 @@ function artifactTree(
             : [],
       },
     });
-    fs.writeFileSync(path.join(directory, "review-queue-context.json"), JSON.stringify(context));
+    fs.writeFileSync(
+      path.join(directory, "review-queue-context.json"),
+      JSON.stringify(writtenContext),
+    );
     fs.writeFileSync(
       path.join(directory, `pr-review-${interest}-findings.json`),
       JSON.stringify(ledger),
@@ -178,12 +202,28 @@ it("reports the Brev E2E selection even when the Advisor gate blocks", () => {
   expect(summaryText).toContain("selection only; no execution evidence");
 });
 
-it("rejects a selector that could inject Markdown into the public summary", () => {
+it("rejects a mutated selector in the deterministic risk plan", () => {
   const root = artifactTree({
     changedFiles: ["src/lib/actions/sandbox/connect.ts"],
-    invalidJobId: true,
+    invalidJobId: "markdown",
+  });
+  expect(() => evaluate(root)).toThrow("invalid deterministic risk plan");
+});
+
+it("rejects a non-string selector ID even with a matching risk-plan digest", () => {
+  const root = artifactTree({
+    changedFiles: ["src/lib/actions/sandbox/connect.ts"],
+    invalidJobId: "numeric",
   });
   expect(() => evaluate(root)).toThrow("invalid selector");
+});
+
+it("rejects a missing required selector when the risk-plan digest is unchanged", () => {
+  const root = artifactTree({
+    changedFiles: ["src/lib/actions/sandbox/connect.ts"],
+    omitRequiredJob: true,
+  });
+  expect(() => evaluate(root)).toThrow("invalid deterministic risk plan");
 });
 
 it("blocks a P0/P1 finding from any specialist", () => {

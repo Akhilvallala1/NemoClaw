@@ -7,7 +7,11 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 import type { TrustedE2eRecommendationInventory } from "../advisors/e2e-recommendations.mts";
-import { RISK_PLAN_VERSION, type RiskPlan } from "../advisors/risk-plan.mts";
+import {
+  hasValidRiskPlanDigest,
+  RISK_PLAN_VERSION,
+  type RiskPlan,
+} from "../advisors/risk-plan.mts";
 import { parseArgs } from "../advisors/io.mts";
 import { collectE2eRecommendations, type RecommendationSelector } from "./e2e-receipt.mts";
 import { parseAdvisorFindingLedger } from "./finding-ledger.mts";
@@ -73,6 +77,7 @@ export function evaluateAdvisorBlockers(options: {
   if (
     e2e.recommendations.some(
       (item) =>
+        typeof item.id !== "string" ||
         !/^[a-z0-9][a-z0-9-]{0,127}$/u.test(item.id) ||
         !["all", "job", "target"].includes(item.selectorType) ||
         typeof item.required !== "boolean",
@@ -128,7 +133,8 @@ function parseGateContext(value: unknown, expectedSpecialists: string[]): GateCo
     deterministic.headSha !== headSha ||
     !/^[0-9a-f]{64}$/u.test(String(deterministic.planHash)) ||
     !Array.isArray(deterministic.requiredJobs) ||
-    !Array.isArray(deterministic.requiredTargets)
+    !Array.isArray(deterministic.requiredTargets) ||
+    !hasValidRiskPlanDigest(deterministic as RiskPlan)
   ) {
     throw new Error("Advisor review queue context has an invalid deterministic risk plan");
   }
