@@ -15,12 +15,15 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const PR_PATTERN = /^[1-9][0-9]*$/u;
 
-export function deriveTrustedRiskPlan(input: {
-  repo: string;
-  prNumber?: string;
-  baseSha: string;
-  headSha: string;
-}): RiskPlan {
+export function deriveTrustedRiskPlan(
+  input: {
+    repo: string;
+    prNumber?: string;
+    baseSha: string;
+    headSha: string;
+  },
+  options: { originUrl?: string } = {},
+): RiskPlan {
   if (!REPO_PATTERN.test(input.repo)) throw new Error("Trusted risk plan requires a valid repo");
   if (input.prNumber && !PR_PATTERN.test(input.prNumber)) {
     throw new Error("Trusted risk plan requires a valid PR number");
@@ -39,7 +42,7 @@ export function deriveTrustedRiskPlan(input: {
     git("init", "--quiet");
     git("config", "core.hooksPath", "/dev/null");
     git("config", "submodule.recurse", "false");
-    git("remote", "add", "origin", `https://github.com/${input.repo}.git`);
+    git("remote", "add", "origin", options.originUrl ?? `https://github.com/${input.repo}.git`);
     git(
       "fetch",
       "--no-tags",
@@ -79,14 +82,22 @@ export function deriveTrustedRiskPlan(input: {
   }
 }
 
+export function writeTrustedRiskPlan(
+  output: string,
+  input: Parameters<typeof deriveTrustedRiskPlan>[0],
+  options: { originUrl?: string } = {},
+): void {
+  const plan = deriveTrustedRiskPlan(input, options);
+  fs.writeFileSync(output, JSON.stringify(plan), { flag: "wx", mode: 0o600 });
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const output = process.env.PR_REVIEW_ADVISOR_TRUSTED_PLAN_PATH;
   if (!output) throw new Error("Trusted risk plan requires an output path");
-  const plan = deriveTrustedRiskPlan({
+  writeTrustedRiskPlan(output, {
     repo: process.env.TARGET_REPO ?? "",
     prNumber: process.env.PR_NUMBER || undefined,
     baseSha: process.env.EXPECTED_BASE_SHA ?? "",
     headSha: process.env.EXPECTED_HEAD_SHA ?? "",
   });
-  fs.writeFileSync(output, JSON.stringify(plan), { flag: "wx", mode: 0o600 });
 }
