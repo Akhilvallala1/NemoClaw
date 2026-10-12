@@ -17,6 +17,9 @@ import { Worker } from "node:worker_threads";
 import {
   gatewayBrowserMajorVersion,
   gatewayBrowserRoute,
+  installGatewayBrowserRouteTrace,
+  readGatewayBrowserRouteTrace,
+  summarizeGatewayBrowserRouteTrace,
   summarizeGatewayHello,
 } from "./gateway-control-browser-diagnostics.mts";
 import {
@@ -212,6 +215,8 @@ type BrowserLocator = {
   textContent(): Promise<string | null>;
 };
 type BrowserPage = {
+  addInitScript(script: () => void): Promise<void>;
+  evaluate<T>(script: () => T): Promise<T>;
   url(): string;
   on(event: "pageerror", listener: () => void): void;
   goto(url: string, options: { waitUntil: "domcontentloaded"; timeout: number }): Promise<unknown>;
@@ -283,10 +288,21 @@ async function browserControl(
     detectionResponses: 0,
     verificationRequests: 0,
     verificationResponses: 0,
+    navigation: null as ReturnType<typeof summarizeGatewayBrowserRouteTrace> | null,
+  };
+  const captureNavigation = async () => {
+    try {
+      return page
+        ? summarizeGatewayBrowserRouteTrace(await page.evaluate(readGatewayBrowserRouteTrace))
+        : null;
+    } catch {
+      return null;
+    }
   };
   try {
     diagnostics.browserMajorVersion = gatewayBrowserMajorVersion(browser.version());
     page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await page.addInitScript(installGatewayBrowserRouteTrace);
     page.on("pageerror", () => diagnostics.pageErrors++);
     let detectionId: string | undefined;
     let detection:
@@ -350,6 +366,7 @@ async function browserControl(
         0,
       );
       await page.screenshot({ path: path.join(directory, "compiled-model-setup.png") });
+      diagnostics.navigation = await captureNavigation();
       if (pluginConsent) {
         // All mutations belong to this disposable, credential-free Brave fixture.
         // Cancellation must leave it disabled before a separate explicit acceptance.
@@ -450,6 +467,7 @@ async function browserControl(
     throw error;
   } finally {
     try {
+      diagnostics.navigation ??= await captureNavigation();
       try {
         fs.writeFileSync(
           path.join(directory, "browser-control.json"),

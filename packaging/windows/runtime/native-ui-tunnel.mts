@@ -8,6 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RelayMeasurements } from "./native-broker-relay-protocol.mts";
 
 const FRAME_CLAIM_TIMEOUT_MS = 250;
+// Match the native file owner's concurrent stream bound.
+const MAX_ACTIVE_STREAMS = 128;
+const MAX_DISCOVERY_ENTRIES_PER_POLL = 128;
 
 function readRelayFileUnmeasured(file: string, maxBytes: number): Buffer | null {
   let descriptor: number;
@@ -195,6 +198,35 @@ export async function startNativeUiTunnel({
     return new Promise<void>((resolvePromise, reject) => {
       let finished = false;
       let poll: ReturnType<typeof setInterval> | undefined;
+      let discovery: fs.Dir | undefined;
+      const discoverStreams = () => {
+        const started = measurements?.start();
+        let succeeded = false;
+        const names: string[] = [];
+        try {
+          discovery ??= fs.opendirSync(relayRoot);
+          for (let count = 0; count < MAX_DISCOVERY_ENTRIES_PER_POLL; count++) {
+            const entry = discovery.readSync();
+            if (!entry) {
+              discovery.closeSync();
+              discovery = undefined;
+              break;
+            }
+            names.push(entry.name);
+          }
+          succeeded = true;
+          return names;
+        } finally {
+          if (started !== undefined)
+            measurements!.finish(
+              "list",
+              started,
+              succeeded ? "success" : "failure",
+              0,
+              names.length,
+            );
+        }
+      };
       const finish = (error?: unknown) => {
         if (finished) return;
         finished = true;
@@ -202,6 +234,12 @@ export async function startNativeUiTunnel({
         signal?.removeEventListener("abort", onAbort);
         for (const stream of streams.values()) stream.socket.destroy();
         streams.clear();
+        try {
+          discovery?.closeSync();
+        } catch (closeError) {
+          error ??= closeError;
+        }
+        discovery = undefined;
         if (error !== undefined) reject(error);
         else resolvePromise();
       };
@@ -215,7 +253,9 @@ export async function startNativeUiTunnel({
           finish();
           return;
         }
-        for (const entry of readDirectory(relayRoot).filter((name) =>
+        // Retain the directory cursor so closed stream history cannot make one
+        // poll unbounded or prevent later entries from being discovered.
+        for (const entry of discoverStreams().filter((name) =>
           /^stream-[a-f0-9]{16}$/u.test(name),
         )) {
           measurements?.scan(streams.has(entry));
@@ -224,6 +264,8 @@ export async function startNativeUiTunnel({
           const open = join(streamRoot, "open");
           if (fs.existsSync(join(streamRoot, "sandbox-close"))) continue;
           if (readNativeUiTunnelMarker(open, measurements) !== relayToken) continue;
+          if (streams.size >= MAX_ACTIVE_STREAMS)
+            throw new Error("The native UI relay active-stream limit was exceeded.");
           const socket = net.createConnection({ host: "127.0.0.1", port: uiPort });
           const state = {
             root: streamRoot,
