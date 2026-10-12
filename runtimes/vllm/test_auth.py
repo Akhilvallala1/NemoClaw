@@ -8,6 +8,10 @@ import secrets
 import unittest
 from unittest import mock
 
+# Image builds run without GPU access, and these route tests start no engine, so select
+# vLLM's CPU platform before vLLM resolves its platform during argument parsing.
+os.environ["VLLM_TARGET_DEVICE"] = "cpu"
+
 from vllm import envs
 from vllm.entrypoints.serve.utils.server_utils import AuthenticationMiddleware
 from nemoclaw_vllm_routes import OpenAIRoutes
