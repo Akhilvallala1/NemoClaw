@@ -3579,6 +3579,7 @@ $$nemoclaw inference get --json
 ```
 
 A valid NVIDIA or fixed hosted native attachment adds the selected endpoint to the recorded provider-and-model output.
+A verified native custom attachment also adds its recorded endpoint when it passes the credential-free display rules.
 Other managed providers keep the provider-and-model output.
 Compatible providers add the endpoint only when published same-gateway metadata matches the live route and is safe to display; otherwise the command keeps the live provider and model and returns credential-free recovery information.
 Refer to [View the Selected Inference Path](../inference/manage-inference/view-active-inference-route) for the exact text and JSON fields, omission states, safety rules, and recovery procedures.

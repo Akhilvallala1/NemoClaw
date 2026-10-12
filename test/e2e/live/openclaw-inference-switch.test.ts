@@ -1280,7 +1280,7 @@ test(
       nativeCustomEndpoint: baselineProvider
         ? undefined
         : isHttpsPinRuntimeEligible(baseline.endpointUrl)
-          ? `${buildHttpsPinRouteBaseUrl(computeHttpsPinRouteId("nemoclaw", "compatible-endpoint", baseline.endpointUrl, SANDBOX_NAME))}/v1`
+          ? `${buildHttpsPinRouteBaseUrl(computeHttpsPinRouteId(process.env.OPENSHELL_GATEWAY ?? "nemoclaw", "compatible-endpoint", baseline.endpointUrl, SANDBOX_NAME))}/v1`
           : baseline.endpointUrl,
       progress,
       redactionValues,
