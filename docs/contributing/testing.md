@@ -22,7 +22,7 @@ Put each test in the cheapest layer that can check its behavior, and assert only
 |---|---|---|---|
 | Unit | One crate's rules, with in-process fakes | Each crate's library tests and `integration` binary, and every other test not marked `#[ignore]` | `test` |
 | Contract | Each provider type through pinned OpenTofu | The ignored tests in `nemoclaw-provider::contract`, `openshell-provider::contract`, and `fabric-provider::contract` | `lifecycle` |
-| System | SDK and CLI orchestration over a bundle | The ignored `nemoclaw-e2e::integration` modules and `nemoclaw-sdk` Helm recovery tests that the `lifecycle` profile selects | `lifecycle` |
+| System | SDK and CLI orchestration over a bundle | The ignored `nemoclaw-e2e::integration` modules and the one ignored `nemoclaw-sdk` library test that the `lifecycle` profile selects | `lifecycle` |
 | Live | Real Docker engines, kind clusters, and owned remote hosts | Ignored tests that the `live-docker` and `live-kind` profiles select, and the opt-in tests in [live tests](live-tests.md) | `live-docker`, `live-kind`, or none |
 
 ### Unit
@@ -49,9 +49,10 @@ A coverage test in each binary requires a contract test for every type the provi
 ### System
 
 A system test runs the SDK or the bundled CLI through a whole lifecycle over a bundle: export, unchanged reapply, interrupted creation, failed readiness, and destroy with retained storage.
-System tests live in `nemoclaw-e2e`'s `integration` binary; its `deployment`, `export_observations`, `fabric_deployment`, `multiple_providers`, `remote_service`, `inference_discovery`, and `sandbox_readiness` modules run in this layer.
-The `lifecycle` profile in [`.config/nextest.toml`](../../.config/nextest.toml) also selects the ignored Helm recovery tests in the `nemoclaw-sdk` library, which run the bundle's OpenTofu against an in-memory Kubernetes API.
-It also selects one ignored test each in `nemoclaw-test-fixtures` and `nemoclaw-fixture-provider`, so that `cargo ci archive` packages their fixture executables with the tests.
+System tests live in `nemoclaw-e2e`'s `integration` binary; its `deployment`, `export_observations`, `fabric_deployment`, `helm_recovery`, `multiple_providers`, `remote_service`, `inference_discovery`, and `sandbox_readiness` modules run in this layer.
+The `lifecycle` profile in [`.config/nextest.toml`](../../.config/nextest.toml) also selects one ignored `nemoclaw-sdk` library test, `plan_and_apply_refuse_cluster_port_changes_with_separate_state_files`, which checks that plan and apply refuse a bound cluster model port change before mutation.
+It builds its saved OpenTofu states from SDK internals, so it remains in the SDK library.
+The profile also selects one ignored test each in `nemoclaw-test-fixtures` and `nemoclaw-fixture-provider`, so that `cargo ci archive` packages their fixture executables with the tests.
 [Run integration tests](integration-tests.md#system-tests) describes the scenarios.
 
 ### Live

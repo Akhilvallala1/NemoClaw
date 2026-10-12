@@ -105,7 +105,7 @@ On Unix, `fabric_capabilities` reads a fake Docker engine's image metadata: a co
 
 ## System Tests
 
-The system tests are ignored tests in `nemoclaw-e2e`'s `integration` binary, which the `lifecycle` profile selects by module, and the ignored Helm recovery tests in the `nemoclaw-sdk` library.
+The system tests are ignored tests in `nemoclaw-e2e`'s `integration` binary, which the `lifecycle` profile selects by module, and one ignored test in the `nemoclaw-sdk` library.
 They use the local gRPC OpenShell fixture and simulated SSH and Docker hosts:
 
 ```sh
@@ -132,8 +132,8 @@ In `deployment`, `cli_terminal_outputs_preserve_lifecycle_and_json_contract` che
 `rejected_policy_fails_promptly_with_context_and_allows_recovery_or_destroy` checks a simulated gateway admission rejection with sandbox context in text and JSON output, retained bindings, recovery, and destroy.
 `separate_agent_sandboxes_cli_export_reapply_and_policy_drift` and `tool_disclosure_cli_export_reapply_and_drift` check OpenClaw tool policies, with observation failures that change nothing.
 
-The `lifecycle` profile also selects the `nemoclaw-sdk` library's `deployment::runtime::helm_recovery::tests`, which run the bundle's OpenTofu against an in-memory Kubernetes API.
-Run them with `NEMOCLAW_TEST_BUNDLE=/absolute/path/to/bundle cargo test -p nemoclaw-sdk --lib -- --ignored helm_recovery`.
+The `lifecycle` profile also selects the `nemoclaw-sdk` library's `plan_and_apply_refuse_cluster_port_changes_with_separate_state_files`, which reads saved OpenTofu states built from SDK internals through the bundle's OpenTofu.
+Run it with `NEMOCLAW_TEST_BUNDLE=/absolute/path/to/bundle cargo test -p nemoclaw-sdk --lib -- --ignored plan_and_apply_refuse_cluster_port_changes`.
 
 ### Standalone Sandbox Completion
 
