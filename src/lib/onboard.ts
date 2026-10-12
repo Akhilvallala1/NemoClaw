@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Interactive onboarding wizard — 8 steps from zero to running sandbox.
 const {
   envInt,
   LOCAL_INFERENCE_TIMEOUT_SECS,
