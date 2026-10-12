@@ -4,7 +4,11 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { parseAndValidateSandboxPolicy } from "../../policy/sandbox-policy-validation";
 import { buildNativeCustomSandboxPolicy } from "./network-policy";
-import { prepareNativeCustomInference, restoreNativeCustomInference } from "./transport";
+import {
+  prepareNativeCustomInference,
+  restoreNativeCustomInference,
+  rollbackNativeCustomAdapterRoute,
+} from "./transport";
 import { customAttachmentFromPrepared, normalizeNativeCustomProviderAttachment } from "./index";
 import { buildHttpsPinRouteBaseUrl, computeHttpsPinRouteId } from "../https-pin-runtime";
 import { BEDROCK_RUNTIME_ADAPTER_OPENAI_BASE_URL } from "../bedrock-runtime";
@@ -49,6 +53,26 @@ function attachment(
     providerId: "owned-provider",
   });
 }
+
+it("preserves the failed revocation cause without adding its private diagnostic to the cleanup message (#12636)", async () => {
+  const selected = await prepareNativeCustomInference(input, {
+    ensureHttpsAdapter: httpsAdapter(),
+    admitProfile: async () => {},
+    discoverAllowedSourceCidrs: () => ["172.18.0.0/16"],
+  });
+  const original = new Error("private control-plane diagnostic");
+  const revoke = vi.fn(async () => {
+    throw original;
+  });
+  const error = await rollbackNativeCustomAdapterRoute(selected.prepared, undefined, revoke).catch(
+    (value) => value,
+  );
+  expect(error).toBeInstanceOf(Error);
+  expect(error.cause).toBe(original);
+  expect(error.message).toContain("cleanup could not be confirmed");
+  expect(error.message).not.toContain(original.message);
+  expect(revoke).toHaveBeenCalledOnce();
+});
 
 it("rejects missing upstream credentials before profile admission or adapter activation (#12636)", async () => {
   const admit = vi.fn(async () => {});

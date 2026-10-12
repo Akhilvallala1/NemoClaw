@@ -249,12 +249,33 @@ it("restores the previous attachment when a native selected-model probe fails (#
 });
 
 it.each([
-  { failure: "creation", operation: "createProvider", cleanupConfirmed: true },
-  { failure: "attachment", operation: "attachProvider", cleanupConfirmed: true },
-  { failure: "unconfirmed cleanup", operation: "createProvider", cleanupConfirmed: false },
+  {
+    failure: "creation",
+    operation: "createProvider",
+    cleanupConfirmed: true,
+    recoveryConfirmed: true,
+  },
+  {
+    failure: "attachment",
+    operation: "attachProvider",
+    cleanupConfirmed: true,
+    recoveryConfirmed: true,
+  },
+  {
+    failure: "unconfirmed cleanup",
+    operation: "createProvider",
+    cleanupConfirmed: false,
+    recoveryConfirmed: true,
+  },
+  {
+    failure: "unconfirmed attachment recovery",
+    operation: "attachProvider",
+    cleanupConfirmed: true,
+    recoveryConfirmed: false,
+  },
 ] as const)(
   "preserves HTTPS rollback ownership after provider $failure fails (#12636)",
-  async ({ operation, cleanupConfirmed }) => {
+  async ({ operation, cleanupConfirmed, recoveryConfirmed }) => {
     const f = await fixture();
     const endpointUrl = "https://api.example.com/v1";
     const routeId = computeHttpsPinRouteId("nemoclaw", "compatible-endpoint", endpointUrl, "alpha");
@@ -279,6 +300,15 @@ it.each([
       async (id) => cleanupConfirmed && routes.delete(id),
     );
     vi.mocked(f.adapter[operation]).mockRejectedValueOnce(new Error("provider operation failed"));
+    const detach = vi.mocked(f.adapter.detachProvider);
+    const originalDetach = detach.getMockImplementation()!;
+    detach.mockImplementationOnce(originalDetach).mockImplementationOnce(
+      recoveryConfirmed
+        ? originalDetach
+        : async () => {
+            throw new Error("private attachment recovery diagnostic");
+          },
+    );
     await expect(
       runInferenceSet(
         {
@@ -291,14 +321,18 @@ it.each([
         f.deps,
       ),
     ).rejects.toThrow(
-      !cleanupConfirmed
-        ? new RegExp(`route '${routeId}' cleanup could not be confirmed`)
-        : "provider operation failed",
+      !recoveryConfirmed
+        ? new RegExp(`HTTPS adapter route '${routeId}' is retained`)
+        : !cleanupConfirmed
+          ? new RegExp(`route '${routeId}' cleanup could not be confirmed`)
+          : "provider operation failed",
     );
     expect(f.deps.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledOnce();
-    expect(f.deps.revokeHttpsPinRuntimeAdapterRoute).toHaveBeenCalledWith(routeId);
-    expect(routes.size).toBe(cleanupConfirmed ? 0 : 1);
-    expect([...f.attachments]).toEqual([f.receipt.providerName]);
+    expect(vi.mocked(f.deps.revokeHttpsPinRuntimeAdapterRoute).mock.calls).toEqual(
+      recoveryConfirmed ? [[routeId]] : [],
+    );
+    expect(routes.size).toBe(cleanupConfirmed && recoveryConfirmed ? 0 : 1);
+    expect([...f.attachments]).toEqual(recoveryConfirmed ? [f.receipt.providerName] : []);
     expect(f.entry.nativeCustomProviderAttachment).toEqual(f.receipt);
   },
 );

@@ -273,9 +273,10 @@ export async function rollbackNativeCustomAdapterRoute(
     return;
   try {
     if (!(await revokeRoute(routeId))) throw new Error("Unconfirmed adapter revocation.");
-  } catch {
+  } catch (revocationError) {
     throw new Error(
       `Native custom HTTPS adapter route '${routeId}' cleanup could not be confirmed; its adapter cleanup record is retained. Retry setup for the same endpoint to recover adapter authentication, then reset the owned provider.`,
+      { cause: revocationError },
     );
   }
 }

@@ -535,7 +535,9 @@ export async function runNativeCustomInferenceSwitch(
         deps,
       });
     } catch {
-      const routeId = parseHttpsPinRouteId(admittedAdapterProfile?.endpointUrl);
+      const routeId = parseHttpsPinRouteId(
+        admittedAdapterProfile?.endpointUrl.replace(/\/v1$/u, ""),
+      );
       throw new InferenceSetError(
         "Native custom switch failed and previous attachment recovery could not be verified. Reconcile the selected sandbox before retrying; ownership authority is retained." +
           (routeId
