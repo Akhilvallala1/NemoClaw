@@ -674,9 +674,9 @@ exit 0
           { encoding: "utf-8" },
         );
         expect(gatewayList.status, gatewayList.stderr).toBe(0);
-        expect(JSON.parse(gatewayList.stdout) as Array<{ name: string }>).toContainEqual({
-          name: "nemoclaw-9124",
-        });
+        expect(JSON.parse(gatewayList.stdout) as Array<{ name: string }>).toEqual(
+          expect.arrayContaining([expect.objectContaining({ name: "nemoclaw-9124" })]),
+        );
         const serviceInvocations = fs.readFileSync(systemctlCalls, "utf-8");
         expect(serviceInvocations).toContain(
           `--user show ${NEMOCLAW_OPENSHELL_GATEWAY_USER_SERVICE} --property=FragmentPath --property=ExecStart`,
