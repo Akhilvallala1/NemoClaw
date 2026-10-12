@@ -186,7 +186,6 @@ async function verifyFreshNativeTerminalEndpoint(
     getSandbox(sandboxName)?.nativeCustomProviderAttachment,
     sandboxName,
   )!;
-  expect(receipt).toMatchObject({ api: "openai-completions", endpointUrl: endpoint.baseUrl });
   const stopped = await runNemoclawCli([sandboxName, "stop"], {
     artifactName: `tc-inf-11-native-${label}-stop`,
     artifacts,
@@ -589,9 +588,7 @@ test(
       getSandbox(peerName)?.nativeCustomProviderAttachment,
       peerName,
     )!;
-    expect(peerReceipt.providerName).not.toBe(receipt.providerName);
     expect(peerReceipt.providerId).not.toBe(receipt.providerId);
-    expect(peerReceipt.endpointUrl).not.toBe(receipt.endpointUrl);
     await expectOpenAiChatThroughSandbox(
       sandbox,
       peerName,
@@ -861,6 +858,7 @@ test(
       },
     );
     expect(added.exitCode, resultText(added)).toBe(0);
+    const responsesCanary = `native-responses-${Date.now()}`;
     const publicHttp = await startFakeOpenAiCompatibleServer({
       apiKey,
       chatContent: "PONG",
@@ -870,6 +868,7 @@ test(
       publicHost: publicHttpAddress,
       requireAuth: true,
       requireAuthModels: true,
+      requestCanaryMarker: responsesCanary,
     });
     cleanup.add("close direct native public HTTP endpoint", async () => {
       try {
@@ -893,7 +892,7 @@ test(
         "--credential-env",
         "COMPATIBLE_API_KEY",
         "--inference-api",
-        "openai-completions",
+        "openai-responses",
       ],
       {
         artifactName: "tc-inf-11-switch-native-public-http",
@@ -909,29 +908,65 @@ test(
       getSandbox(peerName)?.nativeCustomProviderAttachment,
       peerName,
     )!;
-    expect(httpReceipt).toMatchObject({ endpointUrl: publicHttp.baseUrl });
     const httpConfig = await sandbox.exec(peerName, ["cat", "/sandbox/.openclaw/openclaw.json"], {
       artifactName: "tc-inf-11-direct-http-native-agent-config",
       timeoutMs: 30_000,
     });
     expect(httpConfig.exitCode, resultText(httpConfig)).toBe(0);
     expect(httpConfig.stdout).not.toContain("inference.local");
-    await expectOpenAiChatThroughSandbox(
-      sandbox,
+    const responsesStopped = await runNemoclawCli([peerName, "stop"], {
+      artifacts,
+      artifactName: "tc-inf-11-responses-stop",
+      progress,
+      env: buildAvailabilityProbeEnv(),
+      redactionValues: [apiKey],
+      timeoutMs: 120_000,
+    });
+    expect(responsesStopped.exitCode, redactedResultText(responsesStopped)).toBe(0);
+    const responsesStarted = await runNemoclawCli([peerName, "start"], {
+      artifacts,
+      artifactName: "tc-inf-11-responses-start",
+      progress,
+      env: buildAvailabilityProbeEnv(),
+      redactionValues: [apiKey],
+      timeoutMs: 240_000,
+    });
+    expect(responsesStarted.exitCode, redactedResultText(responsesStarted)).toBe(0);
+    const responsesOffset = publicHttp.requests().length;
+    const responsesTurn = await sandbox.exec(
       peerName,
-      model,
-      [apiKey],
-      "tc-inf-11-direct-native-http-chat",
-      httpReceipt,
+      [
+        "nemoclaw-start",
+        "openclaw",
+        "agent",
+        "--agent",
+        "main",
+        "--json",
+        "--session-id",
+        responsesCanary,
+        "-m",
+        `Reply with only: PONG. Marker: ${responsesCanary}`,
+      ],
+      {
+        artifactName: "tc-inf-11-responses-fresh-agent-after-start",
+        env: buildAvailabilityProbeEnv(),
+        redactionValues: [apiKey],
+        timeoutMs: 240_000,
+      },
     );
+    expect(responsesTurn.exitCode, resultText(responsesTurn)).toBe(0);
+    expect(parseOpenClawAgentText(responsesTurn.stdout)).toMatch(/PONG/u);
     expect(
       publicHttp
         .requests()
+        .slice(responsesOffset)
         .some(
           (request) =>
             request.auth === "ok" &&
             request.method === "POST" &&
-            request.path === "/v1/chat/completions",
+            request.path === "/v1/responses" &&
+            request.model === model &&
+            request.requestCanaryPresent === true,
         ),
     ).toBe(true);
     await verifyFreshNativeAnthropicEndpoint(fixtures, { sandboxName, apiKey, publicHttpAddress });

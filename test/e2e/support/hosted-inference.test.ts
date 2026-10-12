@@ -723,8 +723,20 @@ printf '{"data":[]}'
       });
       expect(responses.status).toBe(200);
       const responsesText = await responses.text();
-      expect(responsesText).toContain("event: response.output_text.delta");
-      expect(responsesText).toContain('data: {"delta":"RESP_OK"}');
+      expect(
+        JSON.parse(responsesText.match(/event: response.output_text.delta\ndata: ([^\n]+)/u)![1]!),
+      ).toMatchObject({ type: "response.output_text.delta", delta: "RESP_OK" });
+      expect(
+        JSON.parse(responsesText.match(/event: response.completed\ndata: ([^\n]+)/u)![1]!),
+      ).toMatchObject({
+        type: "response.completed",
+        response: {
+          object: "response",
+          status: "completed",
+          model: "nvidia/nvidia/fake-model",
+          output: [{ type: "message", content: [{ type: "output_text", text: "RESP_OK" }] }],
+        },
+      });
 
       const requests = fake.requests();
       expect(requests).toEqual(

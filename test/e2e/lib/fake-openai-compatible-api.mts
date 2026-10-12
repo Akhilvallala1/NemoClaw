@@ -100,15 +100,54 @@ function sendChatSse(res: ServerResponse, content: string): void {
   res.end(body);
 }
 
+function responsePayload(text: string) {
+  return {
+    id: "resp-fake-openai-compatible",
+    object: "response",
+    created_at: 0,
+    status: "completed",
+    model,
+    output: [
+      {
+        id: "msg-fake-openai-compatible",
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text, annotations: [] }],
+      },
+    ],
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  };
+}
+
 function sendResponseSse(res: ServerResponse, text: string): void {
-  const body = [
-    "event: response.output_text.delta",
-    `data: ${JSON.stringify({ delta: text })}`,
-    "",
-    "event: response.completed",
-    "data: {}",
-    "",
-  ].join("\n");
+  const response = responsePayload(text);
+  const item = response.output[0]!;
+  // The installed Responses client requires typed events, an output identity,
+  // and a terminal response object; a text delta alone is not a completed turn.
+  const events = [
+    { type: "response.created", response: { ...response, status: "in_progress", output: [] } },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { ...item, status: "in_progress", content: [] },
+    },
+    {
+      type: "response.output_text.delta",
+      output_index: 0,
+      item_id: item.id,
+      content_index: 0,
+      delta: text,
+    },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response },
+  ];
+  const body = events
+    .map(
+      (event, sequence_number) =>
+        `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`,
+    )
+    .join("");
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Content-Length": Buffer.byteLength(body),
@@ -340,17 +379,7 @@ const server = createServer(async (req, res) => {
       sendResponseSse(res, content);
       return;
     }
-    sendJson(res, 200, {
-      id: "resp-fake-openai-compatible",
-      object: "response",
-      output: [
-        {
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: content }],
-        },
-      ],
-    });
+    sendJson(res, 200, responsePayload(content));
     return;
   }
 

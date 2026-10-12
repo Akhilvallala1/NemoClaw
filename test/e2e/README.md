@@ -1806,7 +1806,9 @@ The `inference-routing-custom-hosted` target's TC-INF-11 onboards its public HTT
 with a sandbox-specific native provider. It verifies a fresh OpenClaw turn after stop/start,
 selected `inference get` and status, DNS pinning, redirect rejection, executable denial,
 detach/reattach, and provider/route deletion. A second native sandbox proves that selected
-detach/delete preserves peer access. After direct public HTTP verification, a fresh native
+detach/delete preserves peer access. The public HTTP peer selects OpenAI Responses, restarts,
+and proves an authenticated `/v1/responses` request from a fresh installed OpenClaw turn.
+After direct public HTTP verification, a fresh native
 Anthropic sandbox proves an authenticated Messages request from a fresh OpenClaw turn after stop/start.
 An ordinary native Hermes sandbox uses the same authenticated public HTTP fixture and proves
 a fresh OpenAI request after stop/start, with native endpoint and scoped credential configuration.
