@@ -330,6 +330,7 @@ describe("repository-owned PR review coordination", () => {
         unresolvedRecommendationCount: 0,
         findingInterests: ["architecture-standard-work"],
         unresolvedInterests: [],
+        recommendations: [],
       },
       ledgers: [
         {
@@ -401,6 +402,7 @@ describe("repository-owned PR review coordination", () => {
         unresolvedRecommendationCount: 0,
         findingInterests: [],
         unresolvedInterests: [],
+        recommendations: [],
       },
       ledgers: [],
       prNumber: 123,
@@ -450,6 +452,7 @@ describe("repository-owned PR review coordination", () => {
         unresolvedRecommendationCount: 0,
         findingInterests: ["product"],
         unresolvedInterests: [],
+        recommendations: [],
       },
       ledgers: [
         {
@@ -651,6 +654,7 @@ function workflowShadowInput(
       unresolvedRecommendationCount: 0,
       findingInterests: ["architecture-standard-work"],
       unresolvedInterests: [],
+      recommendations: [],
     },
     ledgers: [
       {
