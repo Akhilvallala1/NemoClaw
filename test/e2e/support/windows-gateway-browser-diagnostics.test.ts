@@ -363,6 +363,76 @@ describe("compiled gateway navigation diagnostics", () => {
     });
   });
 
+  it.each([
+    { label: "null", ignored: null },
+    { label: "string", ignored: "worker-secret-never-publish" },
+    { label: "unknown type", ignored: { type: "worker-secret-never-publish" } },
+    { label: "non-string type", ignored: { type: { toString: () => "sw-updated" } } },
+  ])("observes worker activation without responding or retaining $label data", ({ ignored }) => {
+    const secret = "worker-secret-never-publish";
+    const events = new Map<string, (event: { data?: unknown }) => void>();
+    const location = { pathname: "/chat", search: "", hash: "" };
+    const scope = {
+      location,
+      history: { pushState: () => {}, replaceState: () => {} },
+      addEventListener: () => {},
+      document: { querySelector: () => null },
+      navigator: {
+        serviceWorker: {
+          addEventListener: (name: string, listener: (event: { data?: unknown }) => void) =>
+            events.set(name, listener),
+        },
+      },
+    };
+    runInNewContext(`(${installGatewayBrowserRouteTrace.toString()})()`, scope);
+    events.get("controllerchange")?.({});
+    const probe = {
+      data: { type: "sw-version-probe", version: secret, url: secret },
+      get ports() {
+        throw new Error("The observer must not access message ports.");
+      },
+    };
+    events.get("message")?.(probe);
+    location.hash = `#token=${secret}`;
+    events.get("message")?.({ data: { type: "sw-updated", version: secret } });
+    events.get("message")?.({ data: ignored });
+    const summary = summarizeGatewayBrowserRouteTrace(
+      runInNewContext(`(${readGatewayBrowserRouteTrace.toString()})()`, scope),
+    );
+    expect(summary.fragmentEvents.map((event) => event.event)).toEqual([
+      "initial",
+      "sw-controllerchange",
+      "sw-version-probe",
+      "sw-updated",
+    ]);
+    expect(summary.fragmentEvents.at(-1)).toMatchObject({ present: true, changed: true });
+    expect(summary.observerFailed).toBe(false);
+    expect(probe.data).toEqual({ type: "sw-version-probe", version: secret, url: secret });
+    expect(location.hash).toBe(`#token=${secret}`);
+    expect(JSON.stringify(summary)).not.toContain(secret);
+  });
+
+  it("contains worker observer registration failures without blocking route capture", () => {
+    const scope = {
+      location: { pathname: "/chat" },
+      history: { pushState: () => {}, replaceState: () => {} },
+      addEventListener: () => {},
+      document: { querySelector: () => null },
+      navigator: {
+        get serviceWorker() {
+          throw new Error("private-worker-error");
+        },
+      },
+    };
+    runInNewContext(`(${installGatewayBrowserRouteTrace.toString()})()`, scope);
+    const summary = summarizeGatewayBrowserRouteTrace(
+      runInNewContext(`(${readGatewayBrowserRouteTrace.toString()})()`, scope),
+    );
+    expect(summary.observerFailed).toBe(true);
+    expect(summary.routes).toEqual(["chat-root"]);
+    expect(JSON.stringify(summary)).not.toContain("private-worker-error");
+  });
+
   it("bounds retained navigation history", () => {
     const scope = {
       location: { pathname: "/chat" },

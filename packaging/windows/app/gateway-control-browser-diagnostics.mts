@@ -81,6 +81,11 @@ export function installGatewayBrowserRouteTrace() {
     >;
     addEventListener: (type: string, listener: () => void) => void;
     customElements?: { whenDefined: (name: string) => Promise<unknown> };
+    navigator?: {
+      serviceWorker?: {
+        addEventListener: (type: string, listener: (event: { data?: unknown }) => void) => void;
+      };
+    };
     document?: { querySelector: (selector: string) => { context?: GatewayContext } | null };
     __nemoclawRouteTrace?: unknown;
   };
@@ -155,6 +160,24 @@ export function installGatewayBrowserRouteTrace() {
   }
   observe();
   captureFragment("initial");
+  // Observe activation beside URL changes without replying to probes, starting the
+  // message queue, or retaining worker versions, URLs, message ports or credentials.
+  try {
+    const worker = scope.navigator?.serviceWorker;
+    worker?.addEventListener("controllerchange", () => captureFragment("sw-controllerchange"));
+    worker?.addEventListener("message", (event) => {
+      try {
+        const data = event.data;
+        if (!data || typeof data !== "object" || !("type" in data)) return;
+        if (data.type === "sw-version-probe" || data.type === "sw-updated")
+          captureFragment(data.type);
+      } catch {
+        trace.observerFailed = true;
+      }
+    });
+  } catch {
+    trace.observerFailed = true;
+  }
   // Subscribe when the dashboard element is defined, before waiting for navigation.
   // A final connected snapshot cannot explain an earlier one-time routing decision.
   void scope.customElements
@@ -249,6 +272,9 @@ export function summarizeGatewayBrowserRouteTrace(value: unknown) {
     "load",
     "gateway-snapshot",
     "openclaw-control-ui-rendered",
+    "sw-controllerchange",
+    "sw-version-probe",
+    "sw-updated",
   ]);
   return {
     routes: Array.isArray(trace.routes)

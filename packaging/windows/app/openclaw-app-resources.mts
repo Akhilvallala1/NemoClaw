@@ -550,6 +550,54 @@ const sidecarRoots = [
   "ws",
 ];
 export const CONTROL_UI_STARTUP_ENTRY = "dist/control-ui/assets/index-1fvEwqai.js";
+export const CONTROL_UI_SERVICE_WORKER = "dist/control-ui/sw.js";
+export function protectControlUiWorkerRecovery(original: Buffer) {
+  const source = original.toString("utf8");
+  const signature = "async function navigateSuspendedClient(client) {";
+  const start = source.indexOf(signature);
+  const end = source.indexOf("\n}\n", start) + 3;
+  if (
+    start < 0 ||
+    source.indexOf(signature, start + signature.length) !== -1 ||
+    end <= start ||
+    sha256(Buffer.from(source.slice(start, end))) !==
+      "afa90cafacc3b3dd0b6a190a98af31ce0a7b968d979fd72649b93e4d89a30f58"
+  )
+    throw new Error("The reviewed Control UI worker recovery changed.");
+  // Temporary Windows packaging bridge: WindowClient.url can retain the original
+  // sign-in fragment after upstream removes it. A missed probe is not permission
+  // to interrupt a visible page or replay credentials. Remove after upstream fixes
+  // that recovery path; the installer maintainer owns this packaged adaptation.
+  const guard = `
+  const canRecover = current => {
+    if (!current || current.visibilityState !== "hidden") return false;
+    const target = new URL(current.url);
+    const fragment = new URLSearchParams(target.hash.slice(1));
+    return !["token", "bootstrapToken", "password", "gatewayUrl"].some(
+      key => target.searchParams.has(key) || fragment.has(key)
+    );
+  };
+  const current = await self.clients.get(client.id);
+  if (!canRecover(current)) return;
+  client = current;`;
+  const recheck = `  try {
+    const latest = await self.clients.get(client.id);
+    if (!canRecover(latest)) {
+      await reloadClaim.cache.delete(reloadClaim.guardRequest);
+      return;
+    }
+    client = latest;
+  } catch (error) {
+    await reloadClaim.cache.delete(reloadClaim.guardRequest).catch(() => undefined);
+    throw error;
+  }
+`;
+  const recovery = source
+    .slice(start, end)
+    .replace(signature, signature + guard)
+    .replace("  // Navigation can stay pending", recheck + "  // Navigation can stay pending");
+  return Buffer.from(source.slice(0, start) + recovery + source.slice(end));
+}
 export function deferControlUiStartup(original: Buffer) {
   if (sha256(original) !== "76a9b487a03b82bb4355d7a9696c2a8c82c38739f29ebe54a71e50371ec5de3a")
     throw new Error("The reviewed Control UI startup entry changed.");
@@ -572,6 +620,13 @@ export function stagePublishedResources(source: string, app: string, platform = 
   regular(entrySource);
   const entryBytes = fs.readFileSync(entrySource);
   const startup = deferControlUiStartup(entryBytes);
+  const workerSource = path.join(source, CONTROL_UI_SERVICE_WORKER);
+  regular(workerSource);
+  const workerBytes = fs.readFileSync(workerSource);
+  const worker = protectControlUiWorkerRecovery(workerBytes);
+  for (const suffix of [".br", ".gz"])
+    if (fs.existsSync(workerSource + suffix))
+      throw new Error("A compressed Control UI worker would bypass the reviewed adaptation.");
   const startupPath = `dist/control-ui/assets/nemoclaw-start-${sha256(startup)}.js`;
   const indexSource = path.join(source, "dist/control-ui/index.html");
   regular(indexSource);
@@ -587,7 +642,7 @@ export function stagePublishedResources(source: string, app: string, platform = 
   for (const name of ["package.json", "LICENSE", "THIRD_PARTY_NOTICES.md"])
     copyExact(path.join(source, name), path.join(core, name));
   copyExact(path.join(source, "package.json"), path.join(app, "package.json"));
-  // Keep upstream chunks, compressed siblings and asset manifest byte-identical.
+  // Keep upstream chunks, their compressed siblings and asset manifest byte-identical.
   // A distinct entry URL prevents old immutable caches from bypassing the startup repair.
   // No frontend code is compiled on the customer machine.
   // Workspace creation reads the published templates from the canonical package root.
@@ -597,7 +652,11 @@ export function stagePublishedResources(source: string, app: string, platform = 
       copyExact(
         file,
         path.join(core, relative),
-        portablePath(relative) === "dist/control-ui/index.html" ? () => index : undefined,
+        portablePath(relative) === "dist/control-ui/index.html"
+          ? () => index
+          : portablePath(relative) === CONTROL_UI_SERVICE_WORKER
+            ? () => worker
+            : undefined,
       );
     }
   }
@@ -726,6 +785,12 @@ export function stagePublishedResources(source: string, app: string, platform = 
   }
   return {
     packages: packages.sort((a, b) => a.path.localeCompare(b.path)),
+    controlUiServiceWorker: {
+      path: CONTROL_UI_SERVICE_WORKER,
+      sourceSha256: sha256(workerBytes),
+      stagedSha256: sha256(worker),
+      adaptation: "Do not force recovery navigation of visible pages or credential-bearing URLs.",
+    },
     controlUiStartup: {
       originalEntry: CONTROL_UI_STARTUP_ENTRY,
       sourceSha256: sha256(entryBytes),

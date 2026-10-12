@@ -304,11 +304,11 @@ try {
   const bridge = publishDynamicImportBridges(app);
   const code = Buffer.from(codeText);
   publishPluginFacades(app, pluginPlan.entries);
-  const { packages: admittedPackages, controlUiStartup } = stagePublishedResources(
-    source,
-    app,
-    portable ? process.platform : "win32",
-  );
+  const {
+    packages: admittedPackages,
+    controlUiStartup,
+    controlUiServiceWorker,
+  } = stagePublishedResources(source, app, portable ? process.platform : "win32");
   const privateDirectoryLibrary = buildPrivateDirectoryLibrary(source, app);
   fs.writeFileSync(
     path.join(diagnostics, "plugin-registry.json"),
@@ -351,6 +351,7 @@ try {
         externalPackages: external,
         privateDirectoryLibrary,
         controlUiStartup,
+        controlUiServiceWorker,
         optionalUninstalledPeer: "@opentelemetry/api",
         resourceContract:
           "Original module-relative resource URLs are preserved under the sealed asset root; one shared compiled registry backs canonical plugin facades. Remaining tool/browser execution qualification stays separate.",
