@@ -948,6 +948,7 @@ export function createCliOpenShellProviderAdapter(
         const provider = await getProvider({
           target: request.target,
           providerName: request.providerName,
+          timeoutMs: Math.min(timeoutFor(request), OPENSHELL_OPERATION_TIMEOUT_MS),
         });
         if (!provider.ok) {
           warnIncompleteVerification();
