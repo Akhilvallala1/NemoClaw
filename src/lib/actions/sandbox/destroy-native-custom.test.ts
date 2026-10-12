@@ -107,11 +107,13 @@ it.each([true, false])(
     );
     await harness.destroySandbox("alpha", { yes: true, cleanupGateway: false });
     expect(session.loadSession()?.sandboxName).toBeNull();
-    expect(retire).toHaveBeenCalledWith({
-      gatewayName: "nemoclaw-19080",
-      sandboxName: "alpha",
-      attachment: attached ? receipt : undefined,
-    });
+    expect(retire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gatewayName: "nemoclaw-19080",
+        sandboxName: "alpha",
+        attachment: attached ? receipt : undefined,
+      }),
+    );
     expect(harness.events.indexOf("delete")).toBeLessThan(harness.events.indexOf("native-cleanup"));
     expect(retire.mock.invocationCallOrder[0]).toBeLessThan(
       harness.removeSandboxSpy.mock.invocationCallOrder[0]!,
@@ -166,6 +168,74 @@ it("verifies provider absence from the sandbox receipt when gateway authority is
   expect(getProvider.mock.invocationCallOrder[0]).toBeLessThan(
     harness.removeSandboxSpy.mock.invocationCallOrder[0]!,
   );
+});
+
+async function owningRegistryFixture(unreachable: boolean) {
+  const { harness, retire, receipt } = await fixture(false, unreachable);
+  const callerFile = nativeCustomDestroyRegistryFile();
+  const callerBefore = fs.readFileSync(callerFile, "utf8");
+  const ownerRoot = path.join(temporaryHome, ".nemoclaw", "gateways", "19081");
+  fs.mkdirSync(ownerRoot, { recursive: true });
+  const ownerFile = path.join(ownerRoot, "sandboxes.json");
+  fs.writeFileSync(
+    ownerFile,
+    JSON.stringify({
+      sandboxes: {
+        alpha: {
+          ...harness.registry.getSandbox("alpha"),
+          gatewayName: "nemoclaw-19081",
+          gatewayPort: 19081,
+        },
+      },
+      nativeCustomProviderAuthorities: { "nemoclaw-19081": { [receipt.providerName]: receipt } },
+    }),
+  );
+  const ownerBefore = fs.readFileSync(ownerFile, "utf8");
+  const getProvider = vi.fn(async () => ({
+    ok: false,
+    error: { kind: "command", reason: "not_found", message: "missing" },
+  }));
+  retire.mockImplementation((input) =>
+    retireNativeCustomProviders({
+      ...input,
+      adapter: { getProvider } as unknown as OpenShellProviderAdapter,
+    }),
+  );
+  return {
+    harness,
+    retire,
+    receipt,
+    callerFile,
+    callerBefore,
+    ownerFile,
+    ownerBefore,
+    getProvider,
+  };
+}
+
+it("retires native ownership from its owning registry without changing the caller registry (#12636)", async () => {
+  const { harness, receipt, callerFile, callerBefore, ownerFile, getProvider } =
+    await owningRegistryFixture(false);
+  await harness.destroySandbox("alpha", { yes: true, cleanupGateway: false });
+  expect(getProvider).toHaveBeenCalledWith({
+    target: { kind: "named", gatewayName: "nemoclaw-19081" },
+    providerName: receipt.providerName,
+  });
+  const ownerAfter = JSON.parse(fs.readFileSync(ownerFile, "utf8"));
+  expect(ownerAfter.nativeCustomProviderAuthorities).toBeUndefined();
+  expect(ownerAfter.sandboxes.alpha).toBeUndefined();
+  expect(fs.readFileSync(callerFile, "utf8")).toBe(callerBefore);
+});
+
+it("retains owning-registry receipts during forced cleanup with an unreachable gateway (#12636)", async () => {
+  const { harness, retire, callerFile, callerBefore, ownerFile, ownerBefore } =
+    await owningRegistryFixture(true);
+  await expect(harness.destroySandbox("alpha", { yes: true, force: true })).rejects.toThrow(
+    "process.exit(1)",
+  );
+  expect(retire).not.toHaveBeenCalled();
+  expect(fs.readFileSync(ownerFile, "utf8")).toBe(ownerBefore);
+  expect(fs.readFileSync(callerFile, "utf8")).toBe(callerBefore);
 });
 
 it("reports a redacted native cleanup cause and preserves authority after confirmed deletion (#12636)", async () => {

@@ -232,6 +232,30 @@ describe("OpenShell sandbox identity reading", () => {
       "selector-execution-timeout",
     ],
     [
+      "SIGKILL termination",
+      Object.assign(new Error("signal canary"), SELECTOR_ERROR_CANARIES, {
+        code: "ESIGNAL",
+        signal: "SIGKILL",
+      }),
+      "selector-execution-sigkill",
+    ],
+    [
+      "SIGTERM termination",
+      Object.assign(new Error("signal canary"), SELECTOR_ERROR_CANARIES, {
+        code: "ESIGNAL",
+        signal: "SIGTERM",
+      }),
+      "selector-execution-signal",
+    ],
+    [
+      "unrecognized signal value",
+      Object.assign(new Error("signal canary"), SELECTOR_ERROR_CANARIES, {
+        code: "ESIGNAL",
+        signal: "private-signal-canary",
+      }),
+      "selector-execution-signal",
+    ],
+    [
       "missing executable",
       Object.assign(new Error("missing canary"), SELECTOR_ERROR_CANARIES, { code: "ENOENT" }),
       "selector-execution-not-found",

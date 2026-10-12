@@ -86,6 +86,39 @@ it("retains replacement provider authority when cleanup presents an older immuta
   );
 });
 
+async function scopedAuthorityFixture(providerId: string) {
+  const authority = await import("./registry/native-custom-provider-authority");
+  const old = await receipt("alpha", "old-provider");
+  const root = path.join(home, ".nemoclaw", "gateways", "19081");
+  await fs.mkdir(root, { recursive: true });
+  const file = path.join(root, "sandboxes.json");
+  const before = JSON.stringify({
+    sandboxes: {},
+    nativeCustomProviderAuthorities: {
+      "nemoclaw-19081": { [old.providerName]: { ...old, providerId } },
+    },
+  });
+  await fs.writeFile(file, before);
+  return { authority, old, file, before };
+}
+
+it("preserves scoped authority when cleanup names a replaced provider identity (#12636)", async () => {
+  const { authority, old, file, before } = await scopedAuthorityFixture("replacement-provider");
+  authority.clearNativeCustomProviderAuthority("nemoclaw-19081", old, file);
+  expect(authority.listNativeCustomProviderAuthorities("nemoclaw-19081", "alpha", file)).toEqual([
+    { ...old, providerId: "replacement-provider" },
+  ]);
+  expect(await fs.readFile(file, "utf8")).toBe(before);
+});
+
+it("preserves malformed scoped authority when cleanup cannot validate it (#12636)", async () => {
+  const { authority, old, file, before } = await scopedAuthorityFixture("");
+  expect(() => authority.clearNativeCustomProviderAuthority("nemoclaw-19081", old, file)).toThrow(
+    /native custom.*authority/i,
+  );
+  expect(await fs.readFile(file, "utf8")).toBe(before);
+});
+
 it("rejects copied native authority before changing the selected sandbox registry (#12636)", async () => {
   const registry = await import("./registry");
   const alpha = await receipt("alpha");

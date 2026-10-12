@@ -284,6 +284,7 @@ type SandboxDestroyExecutionInput = {
   force: boolean;
   getSandbox?: (sandboxName: string) => SandboxEntry | null;
   listSandboxes?: () => { sandboxes: SandboxEntry[] };
+  listNativeCustomProviderAuthorities?: typeof listNativeCustomProviderAuthorities;
   deleteGatewayName: string;
   runOpenshell: DestroyRunOpenshell;
   mcpRuntimeSelection?: McpDestroyPreparation["runtimeSelection"];
@@ -452,6 +453,7 @@ async function finalizeMcpDestroy(
 }
 
 export async function executeSandboxDestroy({
+  listNativeCustomProviderAuthorities: listCustomAuthorities = listNativeCustomProviderAuthorities,
   force,
   getSandbox,
   listSandboxes,
@@ -968,7 +970,7 @@ export async function executeSandboxDestroy({
     const deleteFailed = deleteResult.kind === "failed" && !alreadyGone;
     const hasNativeCustomOwnership =
       sandbox?.nativeCustomProviderAttachment !== undefined ||
-      listNativeCustomProviderAuthorities(effectiveDeleteGatewayName, sandboxName).length > 0;
+      listCustomAuthorities(effectiveDeleteGatewayName, sandboxName).length > 0;
     // Exact MCP, native custom, host-local inference, and Portable lifecycle ownership must
     // survive an unconfirmed remote deletion. Force may discard only a local
     // record that retains none of those cleanup authorities.

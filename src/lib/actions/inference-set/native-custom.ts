@@ -235,6 +235,7 @@ export async function runNativeCustomInferenceSwitch(
   let fixedNativeDetached = false;
   let committed = false;
   let rollbackPolicy: (() => Promise<void>) | undefined;
+  let replacedReference: string | undefined;
   try {
     const selection = modelOnly
       ? { prepared: restoreNativeCustomInference(selectionInput, previous), credentialValue: null }
@@ -317,6 +318,14 @@ export async function runNativeCustomInferenceSwitch(
           next: receipt,
         });
         if (previous && previous.providerName !== selection.prepared.providerName) {
+          if (previous.credentialEnv === receipt.credentialEnv)
+            replacedReference = await (
+              deps.resolveNativeCustomCredentialReference ?? resolveNativeCustomCredentialReference
+            )({
+              sandboxName,
+              gatewayName: expectedGatewayName,
+              credentialEnv: previous.credentialEnv,
+            });
           previousDetachAttempted = true;
           await detachNativeCustomProvider({
             adapter: deps.providerAdapter,
@@ -342,7 +351,12 @@ export async function runNativeCustomInferenceSwitch(
     attachment = selected.attachment;
     const reference = await (
       deps.resolveNativeCustomCredentialReference ?? resolveNativeCustomCredentialReference
-    )({ sandboxName, gatewayName: expectedGatewayName, credentialEnv: attachment.credentialEnv });
+    )({
+      sandboxName,
+      gatewayName: expectedGatewayName,
+      credentialEnv: attachment.credentialEnv,
+      ...(replacedReference ? { replacedReference } : {}),
+    });
     const probe = await deps.probeSandboxRoute({
       sandboxName,
       gatewayName: expectedGatewayName,

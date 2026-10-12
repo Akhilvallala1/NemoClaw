@@ -17,6 +17,18 @@ import {
   type NativeCustomProviderAttachment,
 } from "./index";
 
+/** Bind native cleanup reads and retirement to the registry selected by destroy preflight. */
+export function nativeCustomCleanupAuthority(registryFile?: string) {
+  return {
+    listNativeCustomProviderAuthorities: (gateway: string, sandboxName?: string) =>
+      listNativeCustomProviderAuthorities(gateway, sandboxName, registryFile),
+    clearNativeCustomProviderAuthority: (
+      gateway: string,
+      receipt: NativeCustomProviderAttachment,
+    ) => clearNativeCustomProviderAuthority(gateway, receipt, registryFile),
+  };
+}
+
 /** Delete only proven-owned, detached registrations; retain receipts until all cleanup is observed. */
 export async function retireNativeCustomProviders(input: {
   gatewayName: string;

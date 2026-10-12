@@ -356,7 +356,12 @@ function runCapture(cmd: readonly string[], opts: CaptureOptions = {}): string {
     }
     if (result.status !== 0) {
       if (ignoreError) return includeStderr === true ? output : "";
-      throw new Error(`Command failed with status ${result.status}`);
+      throw result.signal
+        ? Object.assign(new Error(`Command terminated by signal ${result.signal}`), {
+            code: "ESIGNAL",
+            signal: result.signal,
+          })
+        : new Error(`Command failed with status ${result.status}`);
     }
 
     return output;

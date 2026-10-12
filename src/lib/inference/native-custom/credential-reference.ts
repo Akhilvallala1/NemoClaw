@@ -14,7 +14,7 @@ export function isNativeCustomCredentialReference(value: string, key: string): b
 }
 
 export async function resolveNativeCustomCredentialReference(
-  input: { sandboxName: string; gatewayName: string; credentialEnv: string },
+  input: Parameters<typeof resolveNativeProviderCredentialReference>[0],
   capture?: Parameters<typeof resolveNativeProviderCredentialReference>[1],
 ): Promise<string> {
   if (!["COMPATIBLE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY"].includes(input.credentialEnv))

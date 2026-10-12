@@ -10,6 +10,10 @@ import { spawnSync } from "node:child_process";
 import { getChatCompletionsProbePayload } from "../../inference/openai-probe-models";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../inference/native-nvidia/contract";
 import {
+  HOSTED_NATIVE_PROVIDERS,
+  hostedNativeProvider,
+} from "../../inference/native-provider/hosted";
+import {
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -65,7 +69,7 @@ function runProbeCommandWithBody(
   parentDirectory: string = tmpdir(),
   probeInput: SandboxInferenceInvocationInput = input,
   probeEnvironment: NodeJS.ProcessEnv = {},
-): { stdout: string; argv: string[] } {
+): { status: number | null; stdout: string; argv: string[] } {
   const dir = mkdtempSync(path.join(parentDirectory, "nemoclaw-probe-parity-"));
   try {
     const bin = path.join(dir, "bin");
@@ -88,6 +92,7 @@ function runProbeCommandWithBody(
       env: { ...process.env, PATH: `${bin}:${process.env.PATH || ""}`, ...probeEnvironment },
     });
     return {
+      status: run.status,
       stdout: run.stdout || "",
       argv: readFileSync(path.join(dir, "argv.txt"), "utf8").trimEnd().split("\n"),
     };
@@ -756,6 +761,45 @@ it("gives native Ultra readiness the same reasoning budget as host onboarding", 
   const payload = getChatCompletionsProbePayload(model, { useNvidiaEndpointProbePayload: true });
   expect(payload.max_tokens).toBe(256);
   expect(command).toContain('"max_tokens":256');
+});
+
+it.each(
+  HOSTED_NATIVE_PROVIDERS.map((provider) => ({
+    provider: provider.logicalProvider,
+    api: provider.api,
+  })),
+)("executes the $provider native restart probe using $api", ({ provider, api }) => {
+  const definition = hostedNativeProvider(
+    provider,
+    provider === "hermes-provider" ? "https://hosted.hermes.example/v1" : undefined,
+  )!;
+  const placeholder = `openshell:resolve:env:v123_${definition.credentialEnv}`;
+  const result = runProbeCommandWithBody(
+    "200",
+    "{}",
+    tmpdir(),
+    {
+      ...input,
+      provider,
+      preferredInferenceApi: api,
+      nativeProvider: true,
+      nativeEndpointUrl: definition.endpointUrl,
+    },
+    { [definition.credentialEnv]: placeholder },
+  );
+  const endpoint =
+    api === "anthropic-messages"
+      ? `${definition.endpoint}/v1/messages`
+      : `${definition.endpoint.replace(/\/+$/, "")}/chat/completions`;
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe("200\n{}");
+  expect(result.argv.at(-1)).toBe(endpoint);
+  expect(result.argv).toContain(
+    api === "anthropic-messages"
+      ? `x-api-key: ${placeholder}`
+      : `Authorization: Bearer ${placeholder}`,
+  );
+  expect(result.argv.join(" ")).not.toContain("inference.local");
 });
 
 describe("native custom invocation credentials (#12636)", () => {

@@ -268,6 +268,12 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
   const modelRouterProcess = requireSource("../../onboard/model-router-process.js");
   const httpsPinRuntimeAdapter = requireSource("../../inference/https-pin-runtime-adapter.js");
   const tunnelServices = requireSource("../../tunnel/services.js");
+  const googlechatTunnel = requireSource(
+    "../../messaging/channels/googlechat/tunnel/lifecycle.js",
+  ) as typeof import("../../src/lib/messaging/channels/googlechat/tunnel/lifecycle");
+  vi.spyOn(googlechatTunnel, "stopGooglechatWebhookTunnel").mockImplementation(
+    (name) => `${process.env.HOME}/googlechat-${name}`,
+  );
   const onboardSession = requireSource("../../state/onboard-session.js");
   const gatewayRegistry = requireSource("../../state/gateway-registry.js");
   const mcpLifecycleLock = requireSource(

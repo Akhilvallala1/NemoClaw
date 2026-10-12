@@ -71,7 +71,10 @@ Run `$$nemoclaw <name> doctor --fix`, then retry the agent turn.
 <AgentOnly variant="hermes">
 
 For Hermes, NemoClaw updates the native `/sandbox/.hermes/config.yaml`, including the model, base URL, API-family mode, and OpenShell proxy API-key placeholder.
-The gateway, CLI, TUI, and Web Dashboard all read that shared configuration; a normal runtime route change does not rebuild or restart Hermes.
+The gateway, CLI, TUI, and Web Dashboard all read that shared configuration.
+A shared-route change does not rebuild or restart Hermes.
+Changing a native custom attachment restarts the managed Hermes gateway to activate the new configuration.
+The sandbox remains running, but agent requests are briefly interrupted.
 
 </AgentOnly>
 

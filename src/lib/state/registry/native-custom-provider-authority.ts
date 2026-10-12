@@ -8,14 +8,19 @@ import {
 import { isValidName, isValidProviderName } from "../../name-validation";
 import { withLock } from "./lock";
 import { load, save } from "./persistence";
+import { readNativeCustomAuthoritiesAt, clearNativeCustomAuthorityAt } from "./cross-port";
 
 export function listNativeCustomProviderAuthorities(
   gatewayName: string,
   sandboxName?: string,
+  registryFile?: string,
 ): NativeCustomProviderAttachment[] {
   if (!isValidName(gatewayName) || (sandboxName !== undefined && !isValidName(sandboxName)))
     throw new Error("Invalid native custom provider authority scope");
-  return Object.values(load().nativeCustomProviderAuthorities?.[gatewayName] ?? {})
+  const authorities = registryFile
+    ? readNativeCustomAuthoritiesAt(registryFile)
+    : load().nativeCustomProviderAuthorities;
+  return Object.values(authorities?.[gatewayName] ?? {})
     .map((value) => normalizeNativeCustomProviderAttachment(value, sandboxName))
     .filter((value): value is NativeCustomProviderAttachment => value !== undefined);
 }
@@ -53,7 +58,12 @@ export function setNativeCustomProviderAuthority(
 export function clearNativeCustomProviderAuthority(
   gatewayName: string,
   expected: NativeCustomProviderAttachment,
+  registryFile?: string,
 ): void {
+  if (registryFile) {
+    clearNativeCustomAuthorityAt(registryFile, gatewayName, expected);
+    return;
+  }
   withLock(() => {
     const data = load();
     const current = data.nativeCustomProviderAuthorities?.[gatewayName]?.[expected.providerName];

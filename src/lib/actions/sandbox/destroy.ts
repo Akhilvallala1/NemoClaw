@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { retireNativeCustomProviders } from "../../inference/native-custom/cleanup";
+import {
+  retireNativeCustomProviders,
+  nativeCustomCleanupAuthority,
+} from "../../inference/native-custom/cleanup";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -732,6 +735,7 @@ async function destroySandboxUnlocked(
 ): Promise<void> {
   const normalized = normalizeDestroySandboxOptions(options);
   const registryAuthority = resolveSandboxDestroyRegistryAuthority(sandboxName);
+  const nativeAuthority = nativeCustomCleanupAuthority(registryAuthority.registryFile);
   const getRegisteredSandbox = registryAuthority.getSandbox;
   const listRegisteredSandboxes = registryAuthority.listSandboxes;
   const registeredSandbox = registryAuthority.entry;
@@ -1004,6 +1008,7 @@ async function destroySandboxUnlocked(
       force: normalized.force === true,
       getSandbox: getRegisteredSandbox,
       listSandboxes: listRegisteredSandboxes,
+      listNativeCustomProviderAuthorities: nativeAuthority.listNativeCustomProviderAuthorities,
       deleteGatewayName: cleanupGatewayName,
       runOpenshell,
       ...(mcpRuntimeSelection ? { mcpRuntimeSelection } : {}),
@@ -1161,6 +1166,11 @@ async function destroySandboxUnlocked(
         gatewayName: cleanupGatewayName,
         sandboxName,
         attachment: sandbox?.nativeCustomProviderAttachment,
+        receipts: nativeAuthority.listNativeCustomProviderAuthorities(
+          cleanupGatewayName,
+          sandboxName,
+        ),
+        clearAuthority: nativeAuthority.clearNativeCustomProviderAuthority,
       });
     } catch (error) {
       preparedManagedLlamaCppCleanup?.abort();

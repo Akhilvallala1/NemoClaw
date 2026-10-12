@@ -160,6 +160,11 @@ describe("runCapture with argv array", () => {
     expect(() => runner.runCapture(["false"])).toThrow();
   });
 
+  it("preserves a captured child termination signal without classifying it as a timeout", () => {
+    const capture = () => runner.runCapture(["/bin/sh", "-c", "kill -KILL $$"]);
+    expect(capture).toThrow(expect.objectContaining({ code: "ESIGNAL", signal: "SIGKILL" }));
+  });
+
   it("rejects shell: true to prevent security bypass", () => {
     expect(() => runner.runCapture(["echo", "hi"], { shell: true })).toThrow(
       /shell option is forbidden/,

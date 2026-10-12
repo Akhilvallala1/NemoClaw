@@ -62,35 +62,47 @@ it.each([
   },
 );
 
-it("rejects an invalid credential scope before sandbox execution (#12636)", async () => {
+it.each([
+  { ...scope, credentialEnv: "KEY; echo secret" },
+  { ...scope, replacedReference: "raw-secret" },
+  { ...scope, replacedReference: "openshell:resolve:env:v11_NVIDIA_INFERENCE_API_KEY" },
+])("rejects an invalid credential scope before sandbox execution (%j) (#12636)", async (input) => {
   const capture = vi.fn();
-  await expect(
-    resolveNativeCustomCredentialReference(
-      { ...scope, credentialEnv: "KEY; echo secret" },
-      capture,
-    ),
-  ).rejects.toThrow("Invalid native custom credential scope");
+  await expect(resolveNativeCustomCredentialReference(input, capture)).rejects.toThrow(
+    /Invalid native custom/u,
+  );
   expect(capture).not.toHaveBeenCalled();
 });
 
-it("waits for the selected custom credential projection before config synchronization (#12636)", async () => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
-  try {
-    const reference = "openshell:resolve:env:v12_COMPATIBLE_API_KEY";
-    const capture = vi
-      .fn(async () => ({ status: 0, stdout: reference, stderr: "", output: reference }))
-      .mockImplementationOnce(async () => ({ status: 0, stdout: "", stderr: "", output: "" }));
-    const result = expect(resolveNativeCustomCredentialReference(scope, capture)).resolves.toBe(
-      reference,
-    );
-    void result.catch(() => {});
-    await vi.advanceTimersByTimeAsync(1_000);
-    await result;
-    expect(capture).toHaveBeenCalledTimes(2);
-  } finally {
-    vi.useRealTimers();
-  }
-});
+it.each(["", "openshell:resolve:env:v11_COMPATIBLE_API_KEY"])(
+  "waits for the selected custom credential projection to replace %s (#12636)",
+  async (previous) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const reference = "openshell:resolve:env:v12_COMPATIBLE_API_KEY";
+      const capture = vi
+        .fn(async () => ({ status: 0, stdout: reference, stderr: "", output: reference }))
+        .mockImplementationOnce(async () => ({
+          status: 0,
+          stdout: previous,
+          stderr: "",
+          output: previous,
+        }));
+      const result = expect(
+        resolveNativeCustomCredentialReference(
+          { ...scope, ...(previous ? { replacedReference: previous } : {}) },
+          capture,
+        ),
+      ).resolves.toBe(reference);
+      void result.catch(() => {});
+      await vi.advanceTimersByTimeAsync(1_000);
+      await result;
+      expect(capture).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
 
 it.each(["COMPATIBLE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY"])(
   "redacts transport capture failures for custom credential scope %s (#12636)",
@@ -103,3 +115,25 @@ it.each(["COMPATIBLE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY"])(
     ).rejects.toThrow("Native custom credential reference could not be read.");
   },
 );
+
+it("rejects a replaced reference that never converges within the projection deadline (#12636)", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  try {
+    const replacedReference = "openshell:resolve:env:v11_COMPATIBLE_API_KEY";
+    const capture = vi.fn(async () => ({
+      status: 0,
+      stdout: replacedReference,
+      stderr: "",
+      output: replacedReference,
+    }));
+    const result = expect(
+      resolveNativeCustomCredentialReference({ ...scope, replacedReference }, capture),
+    ).rejects.toThrow("no matching supervisor-issued credential reference");
+    void result.catch(() => {});
+    await vi.advanceTimersByTimeAsync(30_000);
+    await result;
+    expect(capture).toHaveBeenCalledTimes(30);
+  } finally {
+    vi.useRealTimers();
+  }
+});

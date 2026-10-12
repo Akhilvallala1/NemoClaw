@@ -16,6 +16,8 @@ import { writeConfigFile } from "../config-io";
 import { removeSandboxFromRegistry } from "../registry-reversible-removal";
 import { isRouteOnlySandboxReservation } from "./route-reservation";
 import type { SandboxEntry } from "./types";
+import { normalizeNativeCustomProviderAuthorities } from "./native-custom-provider-authority-state";
+import type { NativeCustomProviderAttachment } from "../../inference/native-custom";
 
 export interface CrossPortSandboxHit {
   entry: SandboxEntry;
@@ -236,4 +238,33 @@ export function listPublishedSandboxNamesAcrossGatewayRoots(
 /** Pending route-reservation names across every registry root. */
 export function listPendingSandboxNamesAcrossGatewayRoots(home: string = resolveHome()): string[] {
   return listNamesAcrossGatewayRoots(false, home);
+}
+
+/** Read native provider ownership from the same validated registry used by cross-port lifecycle. */
+export function readNativeCustomAuthoritiesAt(registryFile: string) {
+  return normalizeNativeCustomProviderAuthorities(
+    readGatewayRegistryFile(resolveHome(), registryFile)?.nativeCustomProviderAuthorities,
+  );
+}
+
+/** Retire only the matching provider identity while preserving the owning registry document. */
+export function clearNativeCustomAuthorityAt(
+  registryFile: string,
+  gatewayName: string,
+  expected: NativeCustomProviderAttachment,
+): void {
+  withRegistryLockAt(registryFile, () => {
+    const data = readGatewayRegistryFile(resolveHome(), registryFile);
+    if (!data) return;
+    const authorities = normalizeNativeCustomProviderAuthorities(
+      data.nativeCustomProviderAuthorities,
+    );
+    const current = authorities?.[gatewayName]?.[expected.providerName];
+    if (!current || current.providerId !== expected.providerId) return;
+    delete authorities![gatewayName][expected.providerName];
+    if (!Object.keys(authorities![gatewayName]).length) delete authorities![gatewayName];
+    if (Object.keys(authorities!).length) data.nativeCustomProviderAuthorities = authorities;
+    else delete data.nativeCustomProviderAuthorities;
+    writeConfigFile(registryFile, data);
+  });
 }

@@ -198,30 +198,42 @@ it("switches a native custom model without rotating credentials or consulting sh
   expect(f.config.unrelated).toEqual({ preserve: true });
 });
 
-it("detaches the prior native credential binding before attaching a different endpoint (#12636)", async () => {
-  const f = await fixture();
-  await runInferenceSet(
-    {
-      provider: "compatible-endpoint",
-      model: "new-model",
-      endpointUrl: "http://12.12.12.12/v1",
+it.each(["openclaw", "hermes"] as const)(
+  "detaches the prior %s native credential binding before attaching a different endpoint (#12636)",
+  async (agent) => {
+    const f = await fixture(agent);
+    vi.mocked(f.deps.resolveNativeCustomCredentialReference!)
+      .mockResolvedValueOnce("openshell:resolve:env:v12_COMPATIBLE_API_KEY")
+      .mockResolvedValueOnce("openshell:resolve:env:v13_COMPATIBLE_API_KEY");
+    await runInferenceSet(
+      {
+        provider: "compatible-endpoint",
+        model: "new-model",
+        endpointUrl: "http://12.12.12.12/v1",
+        credentialEnv: "COMPATIBLE_API_KEY",
+        inferenceApi: "openai-completions",
+      },
+      f.deps,
+    );
+    const next = f.entry.nativeCustomProviderAttachment;
+    expect(f.events.indexOf(`detach:${f.receipt.providerName}`)).toBeLessThan(
+      f.events.indexOf(`attach:${next.providerName}`),
+    );
+    expect([...f.attachments]).toEqual([next.providerName]);
+    expect(f.entry.endpointUrl).toBe("http://12.12.12.12/v1");
+    expect(f.policy.network_policies.native_custom_inference.endpoints).toEqual(
+      expect.arrayContaining([expect.objectContaining({ host: "12.12.12.12" })]),
+    );
+    expect(JSON.stringify(f.policy)).not.toContain("8.8.8.8");
+    expect(JSON.stringify(f.entry)).not.toContain("host-secret");
+    expect(f.deps.resolveNativeCustomCredentialReference).toHaveBeenLastCalledWith({
+      sandboxName: "alpha",
+      gatewayName: "nemoclaw",
       credentialEnv: "COMPATIBLE_API_KEY",
-      inferenceApi: "openai-completions",
-    },
-    f.deps,
-  );
-  const next = f.entry.nativeCustomProviderAttachment;
-  expect(f.events.indexOf(`detach:${f.receipt.providerName}`)).toBeLessThan(
-    f.events.indexOf(`attach:${next.providerName}`),
-  );
-  expect([...f.attachments]).toEqual([next.providerName]);
-  expect(f.entry.endpointUrl).toBe("http://12.12.12.12/v1");
-  expect(f.policy.network_policies.native_custom_inference.endpoints).toEqual(
-    expect.arrayContaining([expect.objectContaining({ host: "12.12.12.12" })]),
-  );
-  expect(JSON.stringify(f.policy)).not.toContain("8.8.8.8");
-  expect(JSON.stringify(f.entry)).not.toContain("host-secret");
-});
+      replacedReference: "openshell:resolve:env:v12_COMPATIBLE_API_KEY",
+    });
+  },
+);
 
 it("restores the previous attachment when a native selected-model probe fails (#12636)", async () => {
   const f = await fixture();
@@ -551,27 +563,55 @@ it("selects the native OpenAI frontend for a new Hermes custom Anthropic switch 
   expect(f.deps.inferenceRouteMutator.setInferenceRoute).not.toHaveBeenCalled();
 });
 
-it("rejects an unverified custom policy update before attachment or publication (#12636)", async () => {
-  const f = await fixture();
-  f.deps.reconcileNativeCustomSandboxPolicy = vi.fn(async () => {
-    throw new Error("policy update unconfirmed");
-  });
-  await expect(
-    runInferenceSet(
-      {
-        provider: "compatible-endpoint",
-        model: "new-model",
-        endpointUrl: "http://12.12.12.12/v1",
-        credentialEnv: "COMPATIBLE_API_KEY",
-        inferenceApi: "openai-completions",
-      },
-      f.deps,
-    ),
-  ).rejects.toThrow(/policy update unconfirmed/);
-  expect([...f.attachments]).toEqual([f.receipt.providerName]);
-  expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();
-  expect(f.deps.calls.probeSandboxRoute).not.toHaveBeenCalled();
-});
+it.each([
+  [
+    "policy",
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      vi.mocked(f.deps.reconcileNativeCustomSandboxPolicy!).mockRejectedValueOnce(
+        new Error("handoff unconfirmed"),
+      );
+    },
+  ],
+  [
+    "previous reference",
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      vi.mocked(f.deps.resolveNativeCustomCredentialReference!).mockRejectedValueOnce(
+        new Error("handoff unconfirmed"),
+      );
+    },
+  ],
+  [
+    "replacement reference",
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      vi.mocked(f.deps.resolveNativeCustomCredentialReference!)
+        .mockResolvedValueOnce("openshell:resolve:env:v12_COMPATIBLE_API_KEY")
+        .mockRejectedValueOnce(new Error("handoff unconfirmed"));
+    },
+  ],
+] as const)(
+  "restores native custom access after an unverified %s handoff (#12636)",
+  async (_phase, fail) => {
+    const f = await fixture();
+    const previousPolicy = f.policy;
+    fail(f);
+    await expect(
+      runInferenceSet(
+        {
+          provider: "compatible-endpoint",
+          model: "new-model",
+          endpointUrl: "http://12.12.12.12/v1",
+          credentialEnv: "COMPATIBLE_API_KEY",
+          inferenceApi: "openai-completions",
+        },
+        f.deps,
+      ),
+    ).rejects.toThrow(/handoff unconfirmed/);
+    expect([...f.attachments]).toEqual([f.receipt.providerName]);
+    expect(f.policy).toEqual(previousPolicy);
+    expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();
+    expect(f.deps.calls.probeSandboxRoute).not.toHaveBeenCalled();
+  },
+);
 
 it("keeps the previous custom policy when departure publication is rejected (#12636)", async () => {
   const f = await fixture();

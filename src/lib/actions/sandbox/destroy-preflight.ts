@@ -107,6 +107,7 @@ export type SandboxDestroyRegistryAuthority = {
   getSandbox: typeof registry.getSandbox;
   listSandboxes: typeof registry.listSandboxes;
   removeSandbox: typeof registry.removeSandbox;
+  registryFile?: string;
 };
 
 /** Pin destroy reads and mutation to the registry file that owns the named sandbox. */
@@ -133,6 +134,7 @@ export function resolveSandboxDestroyRegistryAuthority(
     }),
     removeSandbox: (name) =>
       name === hit.entry.name ? removeSandboxFromOwningGatewayRegistry(hit) : false,
+    registryFile: hit.registryFile,
   };
 }
 

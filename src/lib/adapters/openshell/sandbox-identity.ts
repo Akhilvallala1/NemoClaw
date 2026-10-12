@@ -139,6 +139,8 @@ type CreatedOpenShellSandboxIdentityObservation =
         | "selector-execution-nonzero"
         | "selector-execution-buffer-limit"
         | "selector-execution-resource-unavailable"
+        | "selector-execution-sigkill"
+        | "selector-execution-signal"
         | "selector-execution-other-code"
         | "selector-execution-uncoded-error"
         | "selector-execution-non-error"
@@ -195,11 +197,21 @@ function classifySelectorExecutionError(
   | "selector-execution-nonzero"
   | "selector-execution-buffer-limit"
   | "selector-execution-resource-unavailable"
+  | "selector-execution-sigkill"
+  | "selector-execution-signal"
   | "selector-execution-other-code"
   | "selector-execution-uncoded-error"
   | "selector-execution-non-error" {
   if (!error || typeof error !== "object") return "selector-execution-non-error";
-  const candidate = error as { readonly code?: unknown; readonly message?: unknown };
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly message?: unknown;
+    readonly signal?: unknown;
+  };
+  if (candidate.code === "ESIGNAL")
+    return candidate.signal === "SIGKILL"
+      ? "selector-execution-sigkill"
+      : "selector-execution-signal";
   if (candidate.code === "ETIMEDOUT") return "selector-execution-timeout";
   if (candidate.code === "ENOENT") return "selector-execution-not-found";
   if (candidate.code === "EACCES" || candidate.code === "EPERM") {

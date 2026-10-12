@@ -18,6 +18,7 @@ export async function resolveNativeProviderCredentialReference(
     sandboxName: string;
     gatewayName: string;
     credentialEnv: string;
+    replacedReference?: string;
   },
   capture?: typeof captureResolvedOpenshellAsync,
 ): Promise<string> {
@@ -35,10 +36,15 @@ export async function resolveNativeProviderCredentialReference(
   const captureCredential =
     capture ?? (await import("../../adapters/openshell/runtime")).captureResolvedOpenshellAsync;
   const label = input.credentialEnv === "NVIDIA_INFERENCE_API_KEY" ? "NVIDIA" : "custom";
+  if (
+    input.replacedReference !== undefined &&
+    !isNativeProviderCredentialReference(input.replacedReference, input.credentialEnv)
+  )
+    throw new Error(`Invalid native ${label} replacement credential reference.`);
   const script = `printf '%s' "\${${input.credentialEnv}}"`;
   // OpenShell projects attached provider credentials on its background poll.
-  // Read fresh child environments for at most 30 seconds; only absence can
-  // converge. A failed command or nonempty unissued value remains an error.
+  // Read fresh child environments for at most 30 seconds. Absence or the
+  // recorded replaced reference can converge; unissued values remain errors.
   const deadline = performance.now() + 30_000;
   while (performance.now() < deadline) {
     const pending = captureCredential(
@@ -65,8 +71,9 @@ export async function resolveNativeProviderCredentialReference(
     });
     const value = (result.stdout ?? "").trim();
     if (result.status !== 0) break;
-    if (isNativeProviderCredentialReference(value, input.credentialEnv)) return value;
-    if (value) break;
+    if (isNativeProviderCredentialReference(value, input.credentialEnv)) {
+      if (value !== input.replacedReference) return value;
+    } else if (value) break;
     const remaining = deadline - performance.now();
     if (remaining <= 0) break;
     await new Promise<void>((resolve) => setTimeout(resolve, Math.min(1_000, remaining)));
