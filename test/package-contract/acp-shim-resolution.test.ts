@@ -7,6 +7,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 import {
+  configureSourceCheckoutGitFilters,
   configureSourceCheckoutGitHooks,
   createCleanManagedSourceAcpWorkTree,
   createManagedSourceNemoClawAcp,
@@ -225,6 +226,50 @@ ensure_cli_shim "nemoclaw-acp"`,
         scenario,
         originalContents,
       );
+    },
+  );
+
+  it.skipIf(process.platform === "win32").each([
+    { filterType: "clean", sourceKind: "managed", configScope: "local" },
+    { filterType: "process", sourceKind: "managed", configScope: "local" },
+    { filterType: "clean", sourceKind: "npm-linked", configScope: "local" },
+    { filterType: "process", sourceKind: "npm-linked", configScope: "local" },
+    { filterType: "clean", sourceKind: "managed", configScope: "global" },
+    { filterType: "process", sourceKind: "managed", configScope: "global" },
+    { filterType: "clean", sourceKind: "npm-linked", configScope: "global" },
+    { filterType: "process", sourceKind: "npm-linked", configScope: "global" },
+  ] as const)(
+    "does not run a $configScope $filterType filter when checking a clean or dirty $sourceKind ACP target",
+    ({ filterType, sourceKind, configScope }) => {
+      const scenario = createScenario(`${sourceKind}-${filterType}-filter`);
+      const sourceRoot =
+        sourceKind === "managed"
+          ? path.join(scenario.tmp, ".nemoclaw", "source")
+          : path.join(scenario.tmp, "source-checkout");
+      const sentinel = path.join(scenario.tmp, `${filterType}-filter-executed`);
+      const oldCli = createManagedSourceNemoClawAcp(
+        scenario.tmp,
+        scenario.oldPrefix,
+        undefined,
+        sourceRoot,
+      );
+      configureSourceCheckoutGitFilters(sourceRoot, sentinel, filterType, configScope);
+      writeInstallerGeneratedAcpShim(scenario.shimPath, scenario.fakeBin, oldCli);
+      const originalContents = fs.readFileSync(scenario.shimPath);
+
+      const result = runInstallerFunction(scenario, {}, "preflight_nemoclaw_acp_shim");
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      expect(fs.readFileSync(scenario.shimPath)).toEqual(originalContents);
+      expect(fs.existsSync(sentinel)).toBe(false);
+
+      fs.appendFileSync(path.join(sourceRoot, ".gitattributes"), "\n# dirty tracked file\n");
+      expectRejectedUnchanged(
+        runInstallerFunction(scenario, {}, "preflight_nemoclaw_acp_shim"),
+        scenario,
+        originalContents,
+      );
+      expect(fs.existsSync(sentinel)).toBe(false);
     },
   );
 

@@ -2594,22 +2594,26 @@ try {
     maxBuffer: 64 * 1024,
     timeout: 3000,
   };
+  // Disabling textconv and external diff does not disable clean/process filters.
+  const filterConfigKeys = execFileSync(
+    "git",
+    ["-C", packageRoot, "config", "--null", "--name-only", "--list"],
+    gitOptions,
+  ).split("\0").filter(key => /^filter\..*\.(clean|process)$/i.test(key));
+  const disableFilterArgs = filterConfigKeys.flatMap(key => ["-c", `${key}=`]);
+  const gitDiffArgs = [
+    ...disableFilterArgs,
+    "-c", "core.fsmonitor=false", "-C", packageRoot,
+    "diff", "--no-ext-diff", "--no-textconv", "--quiet", "--ignore-submodules",
+  ];
   const revision = execFileSync(
     "git",
     ["-c", "core.fsmonitor=false", "-C", packageRoot, "rev-parse", "--verify", "HEAD^{commit}"],
     gitOptions,
   ).trim();
   if (revision !== identity.sourceRevision) process.exit(1);
-  execFileSync(
-    "git",
-    ["-c", "core.fsmonitor=false", "-C", packageRoot, "diff", "--no-ext-diff", "--no-textconv", "--quiet", "--ignore-submodules", "--"],
-    gitOptions,
-  );
-  execFileSync(
-    "git",
-    ["-c", "core.fsmonitor=false", "-C", packageRoot, "diff", "--no-ext-diff", "--no-textconv", "--cached", "--quiet", "--ignore-submodules", "--"],
-    gitOptions,
-  );
+  execFileSync("git", [...gitDiffArgs, "--"], gitOptions);
+  execFileSync("git", [...gitDiffArgs, "--cached", "--"], gitOptions);
   const candidateAfter = fs.lstatSync(candidate);
   const resolvedAfter = fs.realpathSync(candidate);
   const executableAfter = fs.statSync(resolved);

@@ -246,6 +246,66 @@ export function linkSourceCheckoutWorktree(sourceRoot: string, prefix: string): 
   fs.symlinkSync(worktreeRoot, packageLink);
 }
 
+export function configureSourceCheckoutGitFilters(
+  sourceRoot: string,
+  sentinel: string,
+  filterType: "clean" | "process",
+  configScope: "local" | "global",
+): void {
+  const filterName = `marker-${filterType}`;
+  const filter = path.join(path.dirname(sourceRoot), `${filterName}.js`);
+  fs.writeFileSync(
+    filter,
+    filterType === "clean"
+      ? `#!/usr/bin/env node\nrequire("node:fs").appendFileSync(${JSON.stringify(sentinel)}, "executed\\n");\nprocess.stdin.pipe(process.stdout);\n`
+      : `#!/usr/bin/env node
+require("node:fs").appendFileSync(${JSON.stringify(sentinel)}, "executed\\n");
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(path.join(sourceRoot, ".gitattributes"), `package.json filter=${filterName}\n`);
+  runFixtureGit(["-C", sourceRoot, "add", ".gitattributes"]);
+  runFixtureGit([
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "user.name=Installer test",
+    "-c",
+    "user.email=installer-test@example.invalid",
+    "-C",
+    sourceRoot,
+    "-c",
+    "core.hooksPath=/dev/null",
+    "commit",
+    "--quiet",
+    "-m",
+    "fixture marker filter",
+  ]);
+  const home = path.dirname(sentinel);
+  const configArgs = configScope === "global" ? ["--file", path.join(home, ".gitconfig")] : [];
+  runFixtureGit([
+    "-C",
+    sourceRoot,
+    "config",
+    ...configArgs,
+    `filter.${filterName}.${filterType}`,
+    filter,
+  ]);
+  const sourceRevision = runFixtureGit(["-C", sourceRoot, "rev-parse", "HEAD"]).trim();
+  fs.writeFileSync(
+    path.join(sourceRoot, "dist", "build-identity.json"),
+    JSON.stringify({ nemoclawVersion: "0.0.131", sourceRevision }),
+  );
+  const probe = spawnSync("git", ["-C", sourceRoot, "diff", "--quiet", "--", "package.json"], {
+    encoding: "utf8",
+    env: { ...fixtureGitEnv(), HOME: home },
+    timeout: 3000,
+  });
+  if (!fs.existsSync(sentinel))
+    throw new Error(`${filterType} filter did not execute through Git: ${probe.stderr}`);
+  fs.rmSync(sentinel);
+}
+
 export function configureSourceCheckoutGitHooks(sourceRoot: string, sentinel: string): void {
   const hook = path.join(path.dirname(sourceRoot), "verification-hook");
   writeExecutable(hook, `#!/usr/bin/env bash\nprintf executed > ${JSON.stringify(sentinel)}\n`);
