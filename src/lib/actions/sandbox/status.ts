@@ -138,16 +138,16 @@ export async function getSandboxStatusReport(
   sandboxName: string,
   deps: Parameters<typeof getLegacySandboxStatusReport>[1] = {},
 ): Promise<SandboxStatusReport> {
-  const read = async () => {
+  const read = async (): Promise<SandboxStatusReport> => {
     const hermesPortable = inspectHermesPortableStatus(sandboxName);
-    if (hermesPortable) {
-      return await hermesPortableStatusReport(
-        sandboxName,
-        hermesPortable,
-        deps.getGatewayPresets ?? getGatewayPresets,
-      );
-    }
-    return getLegacySandboxStatusReport(sandboxName, { getGatewayPresets, ...deps });
+    const report = hermesPortable
+      ? await hermesPortableStatusReport(
+          sandboxName,
+          hermesPortable,
+          deps.getGatewayPresets ?? getGatewayPresets,
+        )
+      : await getLegacySandboxStatusReport(sandboxName, { getGatewayPresets, ...deps });
+    return isUnlockedSandboxStatusRead() ? { ...report, inferenceProbeSuppressed: true } : report;
   };
   return await withStatusLifecycleLock(sandboxName, read);
 }
@@ -243,8 +243,11 @@ async function showLegacySandboxStatus(sandboxName: string): Promise<void> {
     });
     deferSandboxLifecycleExit(1);
   }
+  const unlockedStatusRead = isUnlockedSandboxStatusRead();
   const textContext: SandboxStatusTextContext = {
     sandboxName,
+    unlockedStatusRead,
+    inferenceProbeSuppressed: unlockedStatusRead,
     sb,
     lookup,
     currentModel,

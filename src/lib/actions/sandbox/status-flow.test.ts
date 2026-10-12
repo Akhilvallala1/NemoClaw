@@ -84,15 +84,44 @@ describe("showSandboxStatus flow", () => {
     const harness = createStatusFlowHarness({
       mockHermesToolGatewayBroker: true,
       portableDisposition: { kind: "openclaw" },
-      sandboxEntry: { agent: "hermes", hermesToolGateways: [{}] } as never,
+      sandboxEntry: { agent: "hermes", agentVersion: null, hermesToolGateways: [{}] } as never,
       withMcpLifecycleLock,
     });
 
     await harness.withUnlockedSandboxStatusRead(() => harness.showSandboxStatus("alpha"));
 
     expect(harness.withMcpLifecycleLockSpy).not.toHaveBeenCalled();
+    expect(harness.checkAgentVersionSpy).toHaveBeenCalledWith("alpha", {
+      forceProbe: false,
+      skipProbe: true,
+    });
     expect(harness.ensureHermesToolGatewayBrokerSpy).not.toBeNull();
     expect(harness.ensureHermesToolGatewayBrokerSpy).not.toHaveBeenCalled();
+    const output = harness.logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("Inference: not probed (another lifecycle operation is in progress)");
+    expect(output).not.toContain("Inference: healthy");
+    expect(output).not.toContain("ollama backend");
+  });
+
+  it("skips lifecycle locking for unlocked JSON status reports (#11903)", async () => {
+    const withMcpLifecycleLock = vi.fn(async () => {
+      throw new Error("unlocked JSON status unexpectedly requested the lifecycle lock");
+    });
+    const harness = createStatusFlowHarness({
+      portableDisposition: { kind: "openclaw" },
+      withMcpLifecycleLock,
+    });
+
+    const report = await harness.withUnlockedSandboxStatusRead(() =>
+      harness.getSandboxStatusReport("alpha"),
+    );
+
+    expect(report).toMatchObject({
+      schemaVersion: 1,
+      name: "alpha",
+      inferenceProbeSuppressed: true,
+    });
+    expect(harness.withMcpLifecycleLockSpy).not.toHaveBeenCalled();
   });
 
   it("rejects malformed portable receipt authority before status probes (#9203)", async () => {

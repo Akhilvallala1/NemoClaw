@@ -624,18 +624,14 @@ describe("collectSandboxStatusSnapshot inference invocation route (#9302)", () =
   ];
 
   it.each(unlockedNativeStatusEntries)(
-    "skips native provider profile verification for unlocked $label status (#11903)",
+    "suppresses inference probes for unlocked native $label status (#11903)",
     async ({ sandbox }) => {
       const verifyNvidia = vi.fn(async () => undefined);
       const verifyHosted = vi.fn(async () => undefined);
-      const healthy = {
-        ok: true,
-        endpoint: "https://inference.local/v1/models",
-        httpStatus: 200,
-        detail: "reachable",
-      };
-
-      await withUnlockedSandboxStatusRead(() =>
+      const providerProbe = vi.fn(() => ({ ok: true, probed: true }));
+      const gatewayProbe = vi.fn(async () => ({ ok: true, probed: true }));
+      const invocationProbe = vi.fn(async () => ({ ok: true }) as const);
+      const snapshot = await withUnlockedSandboxStatusRead(() =>
         collectSandboxStatusSnapshot("alpha", {
           sandboxEntry: sandbox,
           preflight: {
@@ -657,9 +653,9 @@ describe("collectSandboxStatusSnapshot inference invocation route (#9302)", () =
                 throw new Error("native status should not observe the shared route");
               },
             },
-            probeProviderHealthImpl: () => null,
-            probeSandboxInferenceGatewayHealthImpl: async () => healthy,
-            probeSandboxInferenceInvocationImpl: async () => ({ ok: true }) as const,
+            probeProviderHealthImpl: providerProbe as never,
+            probeSandboxInferenceGatewayHealthImpl: gatewayProbe as never,
+            probeSandboxInferenceInvocationImpl: invocationProbe,
             verifyNativeNvidiaProviderAttachmentImpl: verifyNvidia,
             verifyNativeHostedProviderAttachmentImpl: verifyHosted,
           },
@@ -668,8 +664,66 @@ describe("collectSandboxStatusSnapshot inference invocation route (#9302)", () =
 
       expect(verifyNvidia).not.toHaveBeenCalled();
       expect(verifyHosted).not.toHaveBeenCalled();
+      expect(providerProbe).not.toHaveBeenCalled();
+      expect(gatewayProbe).not.toHaveBeenCalled();
+      expect(invocationProbe).not.toHaveBeenCalled();
+      expect(snapshot.inferenceHealth).toBeNull();
     },
   );
+
+  it("suppresses shared-route health and invocation probes for unlocked status (#11903)", async () => {
+    const sandbox = {
+      name: "alpha",
+      agent: "openclaw",
+      gatewayName: "nemoclaw",
+      provider: "openai-api",
+      model: "selected-model",
+    } as SandboxEntry;
+    const providerProbe = vi.fn();
+    const gatewayProbe = vi.fn();
+    const invocationProbe = vi.fn();
+    const observeInferenceRoute = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          value: {
+            state: "configured",
+            route: { provider: "openai-api", model: "selected-model" },
+          },
+        }) as never,
+    );
+
+    const snapshot = await withUnlockedSandboxStatusRead(() =>
+      collectSandboxStatusSnapshot("alpha", {
+        sandboxEntry: sandbox,
+        preflight: {
+          failure: null,
+          failureLayer: null,
+          suppressInferenceProbe: false,
+          exitCode: 0,
+        },
+        deps: {
+          getSandbox: () => sandbox,
+          listPublishedSandboxesAcrossGatewayRoots: () => [sandbox],
+          reconcile: async () => ({
+            state: "present" as const,
+            phase: "Ready",
+            output: "Phase: Ready",
+          }),
+          inferenceRouteObserver: { observeInferenceRoute },
+          probeProviderHealthImpl: providerProbe,
+          probeSandboxInferenceGatewayHealthImpl: gatewayProbe,
+          probeSandboxInferenceInvocationImpl: invocationProbe,
+        },
+      }),
+    );
+
+    expect(observeInferenceRoute).toHaveBeenCalledOnce();
+    expect(providerProbe).not.toHaveBeenCalled();
+    expect(gatewayProbe).not.toHaveBeenCalled();
+    expect(invocationProbe).not.toHaveBeenCalled();
+    expect(snapshot.inferenceHealth).toBeNull();
+  });
 
   it.each(["malformed", "mismatched", "live identity changed"])(
     "refuses %s native hosted authority without falling back",

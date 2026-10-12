@@ -199,7 +199,7 @@ export abstract class NemoClawCommand extends Command {
     const portablePolicy =
       typeof commandId === "string" ? classifyHermesPortableCommand(commandId, this.argv) : null;
     if (portablePolicy?.hostFence === "read" && !portablePolicy.helpRequested) {
-      return await withCurrentPortableHostFenceTry(() => super._run<T>());
+      return await withCurrentPortableHostFence(() => super._run<T>());
     }
     if (
       typeof commandId === "string" &&
@@ -252,7 +252,16 @@ export abstract class NemoClawCommand extends Command {
             { cause: error },
           );
         }
-        return await withUnlockedSandboxStatusRead(runLocked);
+        return await withUnlockedSandboxStatusRead(async () => {
+          const result = await runLocked();
+          if (!canUseUnlockedSandboxStatusRead(sandboxName)) {
+            throw new Error(
+              "Another NemoClaw lifecycle operation is in progress on this host. Wait for it to finish, then retry status.",
+              { cause: error },
+            );
+          }
+          return result;
+        });
       }
     }
     return await withSandboxLifecycleLock(sandboxName, runLocked);

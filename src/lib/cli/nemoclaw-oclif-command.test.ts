@@ -282,6 +282,24 @@ describe("NemoClawCommand", () => {
     }
   });
 
+  it("rejects an unlocked status read if portable authority appears before it completes (#11903)", async () => {
+    const fence = acquireProcessBoundLockAt(portableHostAuthority.portableHostFencePath(stateDir));
+    const authorityDirectory = path.join(stateDir, "hermes-portable-lifecycle");
+    const operation = vi.fn(async () => {
+      fs.mkdirSync(authorityDirectory, { mode: 0o700 });
+      fs.writeFileSync(path.join(authorityDirectory, "receipt.json"), "authority\n");
+    });
+    ParsedSupportedSandboxCommand.operation = operation;
+    try {
+      await expect(ParsedSupportedSandboxCommand.run(["alpha"], process.cwd())).rejects.toThrow(
+        "Another NemoClaw lifecycle operation is in progress on this host.",
+      );
+      expect(operation).toHaveBeenCalledOnce();
+    } finally {
+      releaseProcessBoundLock(fence);
+    }
+  });
+
   it("fails fast rather than bypassing portable authority during status contention (#11903)", async () => {
     const authorityDirectory = path.join(stateDir, "hermes-portable-lifecycle");
     fs.mkdirSync(authorityDirectory, { mode: 0o700 });
@@ -322,17 +340,29 @@ describe("NemoClawCommand", () => {
     expect(operation).not.toHaveBeenCalled();
   });
 
-  it("fails fast for global status when the portable host fence is busy", async () => {
-    const fence = acquireProcessBoundLockAt(portableHostAuthority.portableHostFencePath(stateDir));
+  it("waits for the host fence before running global status", async () => {
+    let releaseFence!: () => void;
+    const fenceReady = new Promise<void>((resolve) => {
+      releaseFence = resolve;
+    });
+    const withFence = vi
+      .spyOn(portableHostAuthority, "withCurrentPortableHostFence")
+      .mockImplementation(async (operation) => {
+        await fenceReady;
+        return await operation();
+      });
     const operation = vi.fn(async () => undefined);
     GlobalStatusReadCommand.operation = operation;
+
+    const status = GlobalStatusReadCommand.run([], process.cwd());
     try {
-      await expect(GlobalStatusReadCommand.run([], process.cwd())).rejects.toThrow(
-        portableHostAuthority.PORTABLE_HOST_FENCE_BUSY_MESSAGE,
-      );
+      await vi.waitFor(() => expect(withFence).toHaveBeenCalledOnce());
       expect(operation).not.toHaveBeenCalled();
+      releaseFence();
+      await expect(status).resolves.toBeUndefined();
+      expect(operation).toHaveBeenCalledOnce();
     } finally {
-      releaseProcessBoundLock(fence);
+      releaseFence();
     }
   });
 

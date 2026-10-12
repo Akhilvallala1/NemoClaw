@@ -21,7 +21,6 @@ const mocks = vi.hoisted(() => ({
     async (homeOrOperation: string | (() => unknown), operation?: () => unknown) =>
       (typeof homeOrOperation === "function" ? homeOrOperation : operation)?.(),
   ),
-  withPortableHostFenceTry: vi.fn(async (operation: () => unknown) => operation()),
   showStatusCommand: vi.fn(),
   onboardRuntimeDeps: { googlechatTunnelRuntime: {} },
 }));
@@ -52,7 +51,6 @@ vi.mock("../lib/state/portable-uninstall-retirement", async (importOriginal) => 
   ...(await importOriginal()),
   assertNoHermesPortableHostAuthority: mocks.assertNoHermesPortableHostAuthority,
   withCurrentPortableHostFence: mocks.withPortableHostFence,
-  withCurrentPortableHostFenceTry: mocks.withPortableHostFenceTry,
   withPortableHostFence: mocks.withPortableHostFence,
 }));
 
@@ -188,8 +186,7 @@ describe("global oclif command adapters", () => {
   it("runs status through status helpers", async () => {
     await StatusCommand.run([], rootDir);
 
-    expect(mocks.withPortableHostFenceTry).toHaveBeenCalledOnce();
-    expect(mocks.withPortableHostFence).not.toHaveBeenCalled();
+    expect(mocks.withPortableHostFence).toHaveBeenCalledOnce();
     expect(mocks.assertNoHermesPortableHostAuthority).not.toHaveBeenCalled();
     expect(mocks.buildStatusCommandDeps).toHaveBeenCalledWith(rootDir);
     expect(mocks.showStatusCommand).toHaveBeenCalledWith({ statusDeps: true });

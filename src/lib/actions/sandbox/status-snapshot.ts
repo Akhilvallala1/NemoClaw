@@ -207,6 +207,8 @@ export interface SandboxStatusReport {
   portableLifecyclePhase?: "pending" | "configuring" | "active";
   gatewayState: string;
   inferenceHealth: ProviderHealthStatus | null;
+  /** True when host-fence contention suppresses inference-health and invocation probes. */
+  inferenceProbeSuppressed?: boolean;
   rpcIssue: { kind: "image_drift" | "host_process_drift" | "protobuf_mismatch" } | null;
   hostGpuDetected: boolean;
   sandboxGpuEnabled: boolean;
@@ -577,8 +579,9 @@ export async function collectSandboxStatusSnapshot(
         )
       : undefined;
   const suppressInferenceProbe =
-    (postRecoveryPreflight ?? initialPreflight)?.suppressInferenceProbe ??
-    opts.suppressInferenceProbe === true;
+    isUnlockedSandboxStatusRead() ||
+    ((postRecoveryPreflight ?? initialPreflight)?.suppressInferenceProbe ??
+      opts.suppressInferenceProbe === true);
   const nativeSelection = readNativeStatusSelection(sb);
   const { attachment: nativeAttachment, label: nativeLabel } = nativeSelection;
   let nativeAttachmentFailure = nativeSelection.failure;
