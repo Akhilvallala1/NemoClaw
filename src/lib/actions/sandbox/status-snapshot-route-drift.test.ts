@@ -18,7 +18,11 @@ import {
 } from "../../inference/llama-cpp/managed-state";
 import { HOSTED_NATIVE_PROVIDERS } from "../../inference/native-provider/hosted";
 import type { SandboxEntry } from "../../state/registry";
-import { collectSandboxStatusSnapshot, getSandboxStatusReport } from "./status-snapshot";
+import {
+  collectSandboxStatusSnapshot,
+  getSandboxStatusReport,
+  withUnlockedSandboxStatusRead,
+} from "./status-snapshot";
 
 const capture = vi.mocked(captureOpenshellForStatus);
 
@@ -577,6 +581,93 @@ describe("collectSandboxStatusSnapshot inference invocation route (#9302)", () =
       );
       expect(snapshot.inferenceHealth).toMatchObject({ ok: true, probed: true });
       expect(snapshot.routeDrift).toBeNull();
+    },
+  );
+
+  const hostedNative = HOSTED_NATIVE_PROVIDERS.find(
+    (definition) => definition.logicalProvider === "openai-api",
+  )!;
+  const unlockedNativeStatusEntries: { label: string; sandbox: SandboxEntry }[] = [
+    {
+      label: "native NVIDIA",
+      sandbox: {
+        name: "alpha",
+        agent: "openclaw",
+        gatewayName: "nemoclaw",
+        provider: "nvidia-prod",
+        model: "nvidia/nemotron-3-super-120b-a12b",
+        preferredInferenceApi: "openai-completions",
+        nativeNvidiaProviderAttachment: {
+          schemaVersion: 1,
+          profileId: "nemoclaw-nvidia-inference-v1",
+          providerName: "nemoclaw-nvidia-prod-v1",
+          providerId: "provider-123",
+        },
+      } as SandboxEntry,
+    },
+    {
+      label: "native hosted",
+      sandbox: {
+        name: "alpha",
+        agent: "openclaw",
+        gatewayName: "nemoclaw",
+        provider: hostedNative.logicalProvider,
+        model: "selected-model",
+        nativeHostedProviderAttachment: {
+          schemaVersion: 1,
+          profileId: hostedNative.profileId,
+          providerName: hostedNative.providerName,
+          providerId: "native-provider-id",
+        },
+      } as SandboxEntry,
+    },
+  ];
+
+  it.each(unlockedNativeStatusEntries)(
+    "skips native provider profile verification for unlocked $label status (#11903)",
+    async ({ sandbox }) => {
+      const verifyNvidia = vi.fn(async () => undefined);
+      const verifyHosted = vi.fn(async () => undefined);
+      const healthy = {
+        ok: true,
+        endpoint: "https://inference.local/v1/models",
+        httpStatus: 200,
+        detail: "reachable",
+      };
+
+      await withUnlockedSandboxStatusRead(() =>
+        collectSandboxStatusSnapshot("alpha", {
+          sandboxEntry: sandbox,
+          preflight: {
+            failure: null,
+            failureLayer: null,
+            suppressInferenceProbe: false,
+            exitCode: 0,
+          },
+          deps: {
+            getSandbox: () => sandbox,
+            listPublishedSandboxesAcrossGatewayRoots: () => [sandbox],
+            reconcile: async () => ({
+              state: "present" as const,
+              phase: "Ready",
+              output: "Phase: Ready",
+            }),
+            inferenceRouteObserver: {
+              observeInferenceRoute: async () => {
+                throw new Error("native status should not observe the shared route");
+              },
+            },
+            probeProviderHealthImpl: () => null,
+            probeSandboxInferenceGatewayHealthImpl: async () => healthy,
+            probeSandboxInferenceInvocationImpl: async () => ({ ok: true }) as const,
+            verifyNativeNvidiaProviderAttachmentImpl: verifyNvidia,
+            verifyNativeHostedProviderAttachmentImpl: verifyHosted,
+          },
+        }),
+      );
+
+      expect(verifyNvidia).not.toHaveBeenCalled();
+      expect(verifyHosted).not.toHaveBeenCalled();
     },
   );
 

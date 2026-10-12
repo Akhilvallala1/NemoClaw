@@ -634,7 +634,13 @@ export async function collectSandboxStatusSnapshot(
   // as drift instead of being mislabeled as this sandbox's configuration.
   const currentModel = sb ? sb.model || "unknown" : (live && live.model) || "unknown";
   const currentProvider = sb ? sb.provider || "unknown" : (live && live.provider) || "unknown";
-  if (!suppressInferenceProbe && lookup.state === "present" && nativeProvider && sb) {
+  if (
+    !isUnlockedSandboxStatusRead() &&
+    !suppressInferenceProbe &&
+    lookup.state === "present" &&
+    nativeProvider &&
+    sb
+  ) {
     const expected = nativeAttachment;
     if (!gatewayName || !expected) {
       nativeAttachmentFailure =
