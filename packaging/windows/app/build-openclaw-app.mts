@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { buildPrivateDirectoryLibrary } from "./sqlite-private-directory-build.mts";
 
 import {
   compiledPluginPlan,
@@ -308,6 +309,7 @@ try {
     app,
     portable ? process.platform : "win32",
   );
+  const privateDirectoryLibrary = buildPrivateDirectoryLibrary(source, app);
   fs.writeFileSync(
     path.join(diagnostics, "plugin-registry.json"),
     JSON.stringify(pluginPlan.entries, null, 2) + "\n",
@@ -347,6 +349,7 @@ try {
           keepExternalToSea: true,
         },
         externalPackages: external,
+        privateDirectoryLibrary,
         optionalUninstalledPeer: "@opentelemetry/api",
         resourceContract:
           "Original module-relative resource URLs are preserved under the sealed asset root; one shared compiled registry backs canonical plugin facades. Remaining tool/browser execution qualification stays separate.",

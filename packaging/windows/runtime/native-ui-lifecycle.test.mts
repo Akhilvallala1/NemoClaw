@@ -12,6 +12,8 @@ import {
   waitForNativeMxcCompletion,
   watchNativeUiSandbox,
   confirmNativeUiRegistryEmpty,
+  requestNativeUiSandboxDeletion,
+  attemptNativeUiCleanup,
 } from "./native-ui-lifecycle.mts";
 
 const sandboxName = "owned-native-session";
@@ -200,7 +202,13 @@ test("canonical main exit rejects missing, contradictory and malformed evidence"
 // run unchanged in the parent; no gateway, sandbox or installed state is used.
 function cliFixture(
   statuses: unknown[],
-  options: { args?: string[]; stdout?: string; exitCode?: number; delayMs?: number } = {},
+  options: {
+    args?: string[];
+    commands?: string[][];
+    stdout?: string;
+    exitCode?: number;
+    delayMs?: number;
+  } = {},
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mxc-lifecycle-"));
   const script = path.join(root, "cli.mjs");
@@ -212,9 +220,10 @@ function cliFixture(
     import path from "node:path";
     const calls = ${JSON.stringify(calls)};
     const args = [path.basename(process.argv[1]), ...process.argv.slice(2)];
-    if (JSON.stringify(args) !== ${JSON.stringify(JSON.stringify(options.args ?? ["sandbox", "get", sandboxName, "-o", "json"]))}) process.exit(81);
     const count = fs.existsSync(calls) ? fs.readFileSync(calls, "utf8").trim().split("\\n").length : 0;
     fs.appendFileSync(calls, JSON.stringify(args) + "\\n");
+    const commands = ${JSON.stringify(options.commands ?? [options.args ?? ["sandbox", "get", sandboxName, "-o", "json"]])};
+    if (JSON.stringify(args) !== JSON.stringify(commands[Math.min(count, commands.length - 1)])) process.exit(81);
     const statuses = ${JSON.stringify(statuses)};
     await new Promise(resolve => setTimeout(resolve, ${options.delayMs ?? 0}));
     fs.writeSync(1, ${JSON.stringify(options.stdout)} ?? JSON.stringify(statuses[Math.min(count, statuses.length - 1)]));
@@ -304,6 +313,126 @@ test("the UI watcher rejects a completed main process while the gateway remains 
 
 const listArgs = ["sandbox", "list", "-o", "json"];
 const deleting = { name: sandboxName, phase: "Deleting" };
+
+test("UI shutdown requests deletion before confirming registry absence", async () => {
+  const deleteArgs = ["sandbox", "delete", sandboxName];
+  // This fixture accepts deletion while running. A premature completion probe fails.
+  const fixture = cliFixture([{}, [deleting], []], {
+    commands: [deleteArgs, listArgs, listArgs],
+  });
+  const gateway = { exitCode: null as number | null, signalCode: null };
+  let held = true;
+  const ownership = {
+    sandboxName,
+    gateway,
+    stateSession: {
+      assertHeld() {
+        assert(held, "Keep the session lease until removal is confirmed.");
+      },
+    },
+  };
+  try {
+    await requestNativeUiSandboxDeletion(process.execPath, fixture.environment, ownership);
+    assert.deepEqual(fixture.calls(), [deleteArgs]);
+    await confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, ownership);
+    assert.deepEqual(fixture.calls(), [deleteArgs, listArgs, listArgs]);
+    gateway.exitCode = 0;
+    held = false;
+  } finally {
+    fixture.close();
+  }
+});
+
+test("UI deletion checks ownership before and after its only mutation", async () => {
+  for (const revoked of ["lease", "gateway"] as const) {
+    for (const atCheck of [1, 2]) {
+      const fixture = cliFixture([{}], { args: ["sandbox", "delete", sandboxName] });
+      const gateway = { exitCode: null as number | null, signalCode: null };
+      let checks = 0;
+      try {
+        await assert.rejects(
+          requestNativeUiSandboxDeletion(process.execPath, fixture.environment, {
+            sandboxName,
+            gateway,
+            stateSession: {
+              assertHeld() {
+                if (++checks === atCheck) {
+                  if (revoked === "lease") throw new Error("lease revoked");
+                  gateway.exitCode = 1;
+                }
+              },
+            },
+          }),
+          revoked === "lease" ? /lease revoked/u : /gateway stopped/u,
+        );
+        if (atCheck === 1) assert.throws(() => fixture.calls(), { code: "ENOENT" });
+        else assert.deepEqual(fixture.calls(), [["sandbox", "delete", sandboxName]]);
+      } finally {
+        fixture.close();
+      }
+    }
+  }
+});
+
+test("a rejected UI create confirms absence without requesting deletion", async () => {
+  for (const registry of [[], [deleting], [{ name: "foreign-session", phase: "Ready" }]]) {
+    const fixture = cliFixture([registry], { args: listArgs });
+    try {
+      const operation = requestNativeUiSandboxDeletion(process.execPath, fixture.environment, {
+        sandboxName,
+        gateway: { exitCode: null, signalCode: null },
+        stateSession: null,
+        creationRejected: true,
+      });
+      if (registry.length === 0) await operation;
+      else await assert.rejects(operation, /not confirmed empty/u);
+      assert.deepEqual(fixture.calls(), [listArgs]);
+    } finally {
+      fixture.close();
+    }
+  }
+});
+
+test("failed UI deletion remains a cleanup failure without retry or command output disclosure", async () => {
+  const fixture = cliFixture([{}], {
+    args: ["sandbox", "delete", sandboxName],
+    stdout: "private-delete-canary",
+    exitCode: 1,
+  });
+  let subsequentCleanup = false;
+  try {
+    const failures = await attemptNativeUiCleanup([
+      [
+        "sandbox deletion",
+        async () => {
+          try {
+            await requestNativeUiSandboxDeletion(process.execPath, fixture.environment, {
+              sandboxName,
+              gateway: { exitCode: null, signalCode: null },
+              stateSession: null,
+            });
+          } catch (error) {
+            assert(error instanceof Error);
+            assert.match(error.message, /deletion request could not be confirmed/u);
+            assert(!error.message.includes("private-delete-canary"));
+            throw error;
+          }
+        },
+      ],
+      [
+        "remaining cleanup",
+        () => {
+          subsequentCleanup = true;
+        },
+      ],
+    ]);
+    assert.deepEqual(failures, ["sandbox deletion"]);
+    assert(subsequentCleanup);
+    assert.deepEqual(fixture.calls(), [["sandbox", "delete", sandboxName]]);
+  } finally {
+    fixture.close();
+  }
+});
 
 test("registry confirmation accepts the complete upstream envelope and waits for deletion", async () => {
   const fixture = cliFixture(

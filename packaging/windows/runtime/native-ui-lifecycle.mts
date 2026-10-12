@@ -48,6 +48,47 @@ export function observeNativeSandboxCreation(child: ChildProcess) {
   return { failure, wasRejected: () => rejected };
 }
 
+// Long-running UI sessions terminate through deletion, not natural process exit.
+// The caller must still stop its request watcher and confirm registry absence.
+export async function requestNativeUiSandboxDeletion(
+  openshell: string,
+  environment: NodeJS.ProcessEnv,
+  ownership: {
+    sandboxName: string;
+    gateway: GatewayState | null | undefined;
+    stateSession: StateLease | null;
+    creationRejected?: boolean;
+  },
+) {
+  const assertOwnership = () => {
+    ownership.stateSession?.assertHeld();
+    if (
+      !ownership.gateway ||
+      ownership.gateway.exitCode !== null ||
+      ownership.gateway.signalCode !== null
+    )
+      throw new Error("The native gateway stopped before sandbox deletion was confirmed.");
+  };
+  assertOwnership();
+  if (ownership.creationRejected) {
+    await confirmNativeUiRegistryEmpty(openshell, environment);
+  } else {
+    try {
+      await execFileAsync(openshell, ["sandbox", "delete", ownership.sandboxName], {
+        env: environment,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch {
+      // A failed response can follow an accepted mutation. Do not repeat it.
+      throw new Error("The native sandbox deletion request could not be confirmed.");
+    }
+  }
+  assertOwnership();
+}
+
 export async function confirmNativeUiRegistryEmpty(
   openshell: string,
   environment: NodeJS.ProcessEnv,

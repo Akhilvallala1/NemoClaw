@@ -1132,6 +1132,11 @@ jobs:
         run: |
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
           & "$env:RUNNER_TEMP\compiled-windows-app\node\node.exe" `
+            --experimental-strip-types packaging/windows/app/test-windows-private-directory-library.mts `
+            --source-root "$env:RUNNER_TEMP\compiled-windows-app\inputs\node_modules\openclaw" `
+            --app-root "$env:RUNNER_TEMP\compiled-windows-app\build\app"
+          if ($LASTEXITCODE -ne 0) { throw 'The compiled private-directory permission controls failed.' }
+          & "$env:RUNNER_TEMP\compiled-windows-app\node\node.exe" `
             --experimental-strip-types packaging/windows/app/test-compiled-openclaw.mts `
             --app-root "$env:RUNNER_TEMP\compiled-windows-app\build\app" `
             --output "$env:RUNNER_TEMP\compiled-windows-app\controls\compiled-openclaw"

@@ -6,9 +6,231 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import {
+  verifyInstalledHistory,
+  type HistoryFixture,
+} from "./verify-installed-openclaw-history.mts";
 
 const WINDOWS_POWERSHELL_ENVIRONMENT =
   /^(APPDATA|COMSPEC|HOMEDRIVE|HOMEPATH|LOCALAPPDATA|OS|PATH|PATHEXT|PROCESSOR_ARCHITECTURE|PROCESSOR_ARCHITEW6432|SystemRoot|TEMP|TMP|USERPROFILE|WINDIR)$/iu;
+
+test("migration history controls require original archives and complete SQLite events", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "installed-history-controls-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const fixturePath = path.join(root, "fixture.json");
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+. $env:HISTORY_OWNER
+$fixture=New-MigrationHistoryFixture $env:HISTORY_HOME ('a' * 32) $env:HISTORY_FIXTURE
+Assert-MigrationHistoryPreserved $fixture
+$failed=$false
+try { New-MigrationHistoryFixture $env:HISTORY_HOME ('a' * 32) $env:HISTORY_FIXTURE } catch { $failed=$true }
+if (-not $failed) { throw 'A second seed replaced existing history.' }
+$original=[IO.File]::ReadAllBytes($fixture.store)
+[IO.File]::WriteAllBytes($fixture.store,([byte[]](239,187,191)+$original))
+$failed=$false
+try { Assert-MigrationHistoryPreserved $fixture } catch { $failed=$true }
+if (-not $failed) { throw 'A byte-changing history mutation was accepted.' }
+[IO.File]::WriteAllBytes($fixture.store,$original)
+Assert-MigrationHistoryPreserved $fixture
+foreach ($size in @(0,8192,1100000)) {
+  $stream=[IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('x' * $size))
+  $reader=[IO.StreamReader]::new($stream)
+  try {
+    $capture=New-MigrationOutputCapture 'fixture' $reader
+    for ($poll=0; $poll -lt 100 -and -not $capture.done; $poll++) { Update-MigrationOutputCapture $capture }
+    if (-not $capture.done -or $capture.failed -or $capture.text.Length -gt 1048576 -or
+        $capture.overflow -ne ($size -gt 1048576)) { throw 'Migration output bounds failed.' }
+    if ($size -le 1048576 -and $capture.text.Length -ne $size) { throw 'Bounded migration output lost data.' }
+  } finally { $reader.Dispose(); $stream.Dispose() }
+}
+Write-Output 'pass'
+`;
+  const result = spawnSync(
+    process.platform === "win32" ? "pwsh.exe" : "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    {
+      env: powershellEnvironment({
+        HISTORY_OWNER: fileURLToPath(new URL("./preview-history-controls.ps1", import.meta.url)),
+        HISTORY_HOME: path.join(root, "home"),
+        HISTORY_FIXTURE: fixturePath,
+      }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30000,
+    },
+  );
+  if (process.platform !== "win32" && result.error?.code === "ENOENT") {
+    context.skip("PowerShell is unavailable on this non-Windows host.");
+    return;
+  }
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.trim(), "pass");
+  const fixture: HistoryFixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+  assert.throws(() => verifyInstalledHistory(fixture), "Unmigrated JSON must not qualify.");
+  const archive = path.join(
+    path.dirname(path.dirname(fixture.store)),
+    "session-sqlite-import-archive",
+  );
+  fs.mkdirSync(archive);
+  const storeArchive = path.join(archive, "legacy-store.sessions.json.imported-1");
+  const transcriptArchive = path.join(archive, "transcript.imported-1.jsonl");
+  fs.renameSync(fixture.store, storeArchive);
+  fs.renameSync(fixture.transcript, transcriptArchive);
+  assert.throws(() => verifyInstalledHistory(fixture), "Archives alone must not qualify.");
+  const database = path.join(fixture.home, ".openclaw", "history.sqlite");
+  const db = new DatabaseSync(database);
+  try {
+    db.exec(
+      "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT)",
+    );
+    db.prepare("INSERT INTO session_nodes VALUES (?, ?)").run(
+      fixture.sessionKey,
+      fixture.sessionId,
+    );
+    const events = fixture.transcriptText.trimEnd().split("\n");
+    const insert = db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?)");
+    events.forEach((event, index) => insert.run(fixture.sessionId, index, event));
+    const observed = verifyInstalledHistory(fixture);
+    assert.equal(observed.importedEvents, 3);
+    assert.equal(observed.archives.length, 2);
+    assert.deepEqual(verifyInstalledHistory(fixture), observed);
+    fs.appendFileSync(storeArchive, " ");
+    assert.throws(() => verifyInstalledHistory(fixture));
+    fs.writeFileSync(storeArchive, fixture.storeText);
+    fs.appendFileSync(transcriptArchive, " ");
+    assert.throws(() => verifyInstalledHistory(fixture));
+    fs.writeFileSync(transcriptArchive, fixture.transcriptText);
+    fs.copyFileSync(storeArchive, path.join(archive, "legacy-store.sessions.json.imported-2"));
+    assert.throws(() => verifyInstalledHistory(fixture));
+    fs.unlinkSync(path.join(archive, "legacy-store.sessions.json.imported-2"));
+    db.prepare("DELETE FROM transcript_events WHERE seq = 2").run();
+    assert.throws(() => verifyInstalledHistory(fixture));
+    insert.run(fixture.sessionId, 2, events[2]);
+    db.prepare("UPDATE session_nodes SET current_session_id = 'another-session'").run();
+    assert.throws(() => verifyInstalledHistory(fixture));
+    db.prepare("UPDATE session_nodes SET current_session_id = ?").run(fixture.sessionId);
+    assert.deepEqual(verifyInstalledHistory(fixture), observed);
+  } finally {
+    db.close();
+  }
+});
+
+test("migration launch controller requires owned observations, normal exit and cleanup receipt", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "migration-launch-controls-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const child = path.join(root, "child.cjs");
+  // These child processes test controller ordering and result propagation only.
+  // The actual installed UI observer and MXC cleanup remain Windows E2E contracts.
+  fs.writeFileSync(
+    child,
+    String.raw`
+const fs=require('node:fs'), path=require('node:path');
+setTimeout(()=>process.exit(9),10000).unref();
+const args=process.argv.slice(2);
+const value=name=>args[args.indexOf(name)+1];
+const stopped=()=>fs.readdirSync(process.env.HISTORY_EVIDENCE).some(name=>/^observer-stop-[a-f0-9]{64}\.sentinel$/.test(name));
+if(args.includes('--configured')) {
+  const session=value('--artifact-directory');
+  fs.mkdirSync(session);
+  const timer=setInterval(()=>{
+    if(!stopped()) return;
+    clearInterval(timer);
+    if(process.env.HISTORY_SCENARIO!=='missing-receipt') {
+      fs.writeFileSync(path.join(session,'native-windows-web-ui-abc.json'),JSON.stringify({
+        verdict:'pass',runtimeIdentity:{runtimeId:process.env.HISTORY_RUNTIME,sourceRevision:process.env.GITHUB_SHA},
+        backend:'process_container',sandboxDeleted:true,sandboxRegistryAbsent:true,gatewayStopped:true,qualificationRootsRemoved:true
+      }));
+    }
+    process.exit(process.env.HISTORY_SCENARIO==='failed-guardian'?1:0);
+  },20);
+} else {
+  const pid=Number(value('-RootProcessId'));
+  console.log(JSON.stringify({kind:'observation',rootPid:process.env.HISTORY_SCENARIO==='wrong-owner'?pid+1:pid,
+    hostPath:process.env.HISTORY_HOST,windowFound:true,openEnabled:true}));
+  const timer=setInterval(()=>{
+    if(!stopped()) return;
+    clearInterval(timer);
+    console.log(JSON.stringify({kind:'stop-invoked'}));
+    console.log(JSON.stringify({kind:'closed',exitCode:0}));
+  },20);
+}
+`,
+    { flag: "wx" },
+  );
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+. $env:HISTORY_OWNER
+function New-PreviewProcess([string]$Executable, [string[]]$Arguments) {
+  $info=[Diagnostics.ProcessStartInfo]::new()
+  $info.FileName=$env:HISTORY_NODE; $info.UseShellExecute=$false
+  $info.ArgumentList.Add($env:HISTORY_CHILD)
+  foreach($argument in $Arguments) { $info.ArgumentList.Add($argument) }
+  return $info
+}
+$env:HISTORY_HOST=Join-Path $env:HISTORY_INSTALL ('runtimes\'+$env:HISTORY_RUNTIME+'\app\NemoClaw.Runtime.exe')
+$env:GITHUB_SHA='c'*40
+if(-not $env:SystemRoot) { $env:SystemRoot=$env:HISTORY_INSTALL }
+foreach($scenario in @('success','wrong-owner','missing-receipt','failed-guardian')) {
+  $env:HISTORY_SCENARIO=$scenario
+  $env:HISTORY_EVIDENCE=Join-Path $env:HISTORY_ROOT $scenario
+  $script:MigrationSessionOpen=$false
+  $failed=$false
+  try { Invoke-MigrationHistorySession $env:HISTORY_INSTALL $env:HISTORY_RUNTIME $env:HISTORY_EVIDENCE }
+  catch { $failed=$true }
+  $receipt=Get-Content -LiteralPath (Join-Path $env:HISTORY_EVIDENCE 'history-session.json') -Raw | ConvertFrom-Json
+  if($scenario -ceq 'success') {
+    if($failed -or $script:MigrationSessionOpen -or -not $receipt.passed -or -not $receipt.stopInvoked) { throw 'Normal migration lifecycle was not accepted.' }
+  } else {
+    if(-not $failed -or -not $script:MigrationSessionOpen -or $receipt.passed) { throw 'Unconfirmed migration cleanup became success.' }
+    if($receipt.ready -ne ($scenario -cne 'wrong-owner') -or
+       $receipt.closed -ne ($scenario -cne 'wrong-owner')) { throw 'The fixture failed before its intended lifecycle boundary.' }
+  }
+}
+Write-Output 'pass'
+`;
+  const result = spawnSync(
+    process.platform === "win32" ? "pwsh.exe" : "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    {
+      env: powershellEnvironment({
+        HISTORY_OWNER: fileURLToPath(new URL("./preview-history-controls.ps1", import.meta.url)),
+        HISTORY_ROOT: root,
+        HISTORY_INSTALL: path.join(root, "installation"),
+        HISTORY_NODE: process.execPath,
+        HISTORY_CHILD: child,
+        HISTORY_RUNTIME: "a".repeat(64),
+        RUNNER_TEMP: root,
+      }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30000,
+    },
+  );
+  if (process.platform !== "win32" && result.error?.code === "ENOENT") {
+    context.skip("PowerShell is unavailable on this non-Windows host.");
+    return;
+  }
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.trim(), "pass");
+});
 
 function powershellEnvironment(extra: NodeJS.ProcessEnv = {}) {
   return {

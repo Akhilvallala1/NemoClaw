@@ -28,6 +28,7 @@ import { startFileTcpRelay } from "./native-ui-relay.mts";
 import { openNativeWebSession } from "./native-web-session.mts";
 import {
   confirmNativeUiRegistryEmpty,
+  requestNativeUiSandboxDeletion,
   waitForNativeMxcCompletion,
 } from "./native-ui-lifecycle.mts";
 import {
@@ -1348,18 +1349,12 @@ async function runNativeConsoleAgentInternal(
         await cleanup("browser relay stop signal", async () => {
           if (browserRelay) await browserRelay.close();
         });
-        await cleanup("MXC execution cleanup", () =>
-          waitForNativeMxcCompletion(openshell, cliEnvironment, sandboxName, gateway, stateSession),
-        );
         await cleanup("native sandbox deletion", () =>
-          run(
-            openshell,
-            ["sandbox", "delete", sandboxName],
-            cliEnvironment,
-            "Failure cleanup native sandbox",
-            30_000,
-            diagnostics,
-          ),
+          requestNativeUiSandboxDeletion(openshell, cliEnvironment, {
+            sandboxName,
+            gateway,
+            stateSession,
+          }),
         );
         await cleanup("native sandbox registry", () =>
           confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {

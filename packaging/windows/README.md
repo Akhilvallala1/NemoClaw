@@ -260,8 +260,10 @@ The local deterministic provider proves runtime/transport wiring without a PR
 credential; it does not qualify a commercial provider or live messaging account.
 
 Native on-device Express is a separate host-owned llama.cpp/CUDA implementation
-for detected RTX Spark N1X Windows ARM64 machines. Its fixed Qwen 3.6 35B-A3B GGUF
-recipe is shared across agents and checks driver compatibility, available memory
+for detected RTX Spark N1X Windows ARM64 machines. With bundled inference available,
+setup defaults to Qwen 3.8 27B and offers Qwen 3.6 35B-A3B as an explicit alternative.
+The separate legacy Express recipe retains its pinned Qwen 3.6 35B-A3B model.
+Both paths are shared across OpenClaw and Hermes and check driver compatibility, available memory
 and storage, pinned downloads, full GPU offload, authentication, and an actual
 model response before reporting Ready. It does not invoke the existing WSL or
 Linux recipes. Model and runtime downloads occur only when selected. Generic

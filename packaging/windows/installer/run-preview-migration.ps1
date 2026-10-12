@@ -12,6 +12,7 @@ if ($ProductVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
 }
 $NewAgent=$NewAgent.ToLowerInvariant()
 . (Join-Path $PSScriptRoot 'preview-ui-controls.ps1')
+. (Join-Path $PSScriptRoot 'preview-history-controls.ps1')
 $work = [IO.Path]::GetFullPath($WorkDirectory)
 $output = Join-Path $work 'migration'
 if (Test-Path -LiteralPath $output) { throw 'Migration evidence must be fresh.' }
@@ -41,6 +42,7 @@ $report = [ordered]@{schemaVersion=1;classification='actual-published-preview-na
     oldSource='7935e0ccee812d365fd58d32e7291fd3286a98bf';oldVersion='0.1.4';oldAgent='openclaw';newAgent=$NewAgent;oldSha256=$oldHash;newSha256=$newHash;status='failed';
     freshInstallTimingContaminated=$false;realModelRequests=0;cases=@();cleanupErrors=@()}
 $primary = $null; $retainedHelper = $null; $retainedHelperHash = $null; $binding = $null; $configHash = $null; $ownedCanary = $false; $script:MigrationInstallerOpen = $false
+$script:MigrationSessionOpen = $false
 
 function Get-MigrationRegistrations {
     $rows = @()
@@ -172,9 +174,12 @@ try {
         if ($stateReceipt.stateRoot -cne $state -or $stateReceipt.agent -cne 'openclaw' -or $stateReceipt.leaseHeld -ne $true) { throw 'The migration state receipt names another root.' }
         $ownedCanary=$true; $marker=Join-Path $state ('migration-'+$nonce+'.txt')
         [IO.File]::WriteAllText($marker,'Disposable native migration state '+$nonce,[Text.UTF8Encoding]::new($false))
+        $historyFixturePath=Join-Path $caseRoot 'legacy-history-fixture.json'
+        $historyFixture=New-MigrationHistoryFixture $state $nonce $historyFixturePath
+        Assert-MigrationHistoryPreserved $historyFixture
         $markerHash=(Get-FileHash -LiteralPath $marker -Algorithm SHA256).Hash.ToLowerInvariant(); $configHash=(Get-FileHash -LiteralPath $configuration -Algorithm SHA256).Hash.ToLowerInvariant()
         Assert-MigrationCanary $marker $markerHash $configHash $canary
-        $afterRemoval = { Assert-MigrationRegistrations ''; Assert-MigrationCanary $marker $markerHash $configHash $canary; $case.preservedBeforeNewOnboarding=$true }
+        $afterRemoval = { Assert-MigrationRegistrations ''; Assert-MigrationCanary $marker $markerHash $configHash $canary; Assert-MigrationHistoryPreserved $historyFixture; $case.preservedBeforeNewOnboarding=$true }
         $newLog=Join-Path $caseRoot 'new-install.log'
         if ($kind -ceq 'conventional-reinstall') {
             $case.oldUninstall=Invoke-MigrationQuietUninstall $oldSetup ($kind+'-old-uninstall')
@@ -185,12 +190,36 @@ try {
         }
         Assert-MigrationRegistrations $ProductVersion
         Assert-MigrationCanary $marker $markerHash $configHash $canary
+        Assert-MigrationHistoryPreserved $historyFixture
         if (-not $case.preservedBeforeNewOnboarding -or $case.newInstall.installClicks -ne 1 -or $case.newInstall.configureClicks -ne 1) { throw 'The native migration did not preserve data before its single onboarding flow.' }
         $case.preparation=Assert-MigrationPreparationNoop $newLog
         $identity=Invoke-MigrationHelper (Join-Path $installation 'bin\NemoClaw.exe') @('--runtime-session',$NewAgent) "release`n"
         $leaseIdentity=$identity.stdout | ConvertFrom-Json
         $expected=Get-Content -LiteralPath (Join-Path $work 'assembled\runtime-identity.json') -Raw | ConvertFrom-Json
         if ($identity.exitCode -ne 0 -or $leaseIdentity.agent -cne $NewAgent -or $leaseIdentity.leaseHeld -ne $true -or $leaseIdentity.runtimeId -cne $expected.runtimeId -or $leaseIdentity.sourceRevision -cne $env:GITHUB_SHA) { throw 'The migrated installed runtime differs from the same-run selected-agent artifact.' }
+        if ($NewAgent -ceq 'openclaw') {
+            # The installed app, not the test, invokes the production importer.
+            # Copy only the independently pinned Node executable for read-only SQLite inspection.
+            $node=Join-Path $installation 'bin\node.exe'
+            $nodeHash='97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878'
+            if ((Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nodeHash) { throw 'The history inspection Node input differs from its pin.' }
+            $controllerDirectory=Join-Path $caseRoot 'history-controller-node'
+            [void][IO.Directory]::CreateDirectory($controllerDirectory)
+            $controllerNode=Join-Path $controllerDirectory 'node.exe'; [IO.File]::Copy($node,$controllerNode,$false)
+            if ((Get-FileHash -LiteralPath $controllerNode -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nodeHash) { throw 'The history inspection Node copy changed.' }
+            $previousHistory=$null
+            foreach ($launch in @('first','repeat')) {
+                Invoke-MigrationHistorySession $installation $expected.runtimeId (Join-Path $caseRoot ('history-'+$launch))
+                Assert-MigrationCanary $marker $markerHash $configHash $canary
+                $observationPath=Join-Path $caseRoot ('history-'+$launch+'.json')
+                $verification=Invoke-MigrationHelper $controllerNode @('--experimental-strip-types','--no-warnings',(Join-Path $PSScriptRoot 'verify-installed-openclaw-history.mts'),$historyFixturePath,$observationPath)
+                if ($verification.exitCode -ne 0) { throw 'The installed history conversion failed verification.' }
+                $historyText=Get-Content -LiteralPath $observationPath -Raw
+                if ($null -ne $previousHistory -and $historyText -cne $previousHistory) { throw 'Repeated configured launch changed the imported history or archives.' }
+                $previousHistory=$historyText
+            }
+            $case['historyMigration']=@{configuredLaunches=2;importedHistoryVerified=$true;archivesUnchangedOnRepeat=$true;controllerNodeSha256=$nodeHash}
+        }
         if ($NewAgent -cne 'openclaw') {
             $newConfigText=Get-Content -LiteralPath $newConfiguration -Raw
             $newConfig=$newConfigText | ConvertFrom-Json
@@ -213,6 +242,8 @@ try {
             $newRead=Invoke-MigrationHelper $retainedHelper @('--credential-read','compatible','--binding',$newBinding)
             if ((Test-Path -LiteralPath $newConfiguration) -or (Test-Path -LiteralPath $newState) -or $newRead.exitCode -eq 0 -or $newRead.stdout.Length -ne 0) { throw 'Selective agent reset retained its owned data or credential.' }
             Assert-MigrationCanary $marker $markerHash $configHash $canary
+            Assert-MigrationHistoryPreserved $historyFixture
+            $case['openclawHistoryPreservedWithoutLaunch']=$true
             $case.preservedAfterSelectiveReset=$true
             Remove-MigrationOldCanary
         }
@@ -230,9 +261,10 @@ finally {
     foreach ($uiRecord in Get-ChildItem -LiteralPath $output -Recurse -Filter '*.ui.json' -File) {
         try { if ((Get-Content -LiteralPath $uiRecord.FullName -Raw | ConvertFrom-Json).cleanupClosed -ne $true) { $script:MigrationInstallerOpen=$true } } catch { $script:MigrationInstallerOpen=$true }
     }
+    if ($script:MigrationSessionOpen) { $report.cleanupErrors+=@('Configured migration session cleanup is unconfirmed; no concurrent data removal or uninstall was attempted.') }
     if ($script:MigrationInstallerOpen) { $report.cleanupErrors+=@('A live Windows installer transaction remains; no concurrent cleanup was attempted.') }
     $installedHelper=Join-Path $installation 'bin\NemoClaw.exe'
-    if (-not $script:MigrationInstallerOpen -and (Test-Path -LiteralPath $installedHelper -PathType Leaf)) {
+    if (-not $script:MigrationInstallerOpen -and -not $script:MigrationSessionOpen -and (Test-Path -LiteralPath $installedHelper -PathType Leaf)) {
         if ($ownedCanary -and ($NewAgent -ceq 'openclaw' -or $case.preservedBeforeNewOnboarding)) {
             try {
                 $cleanupResult=Invoke-MigrationHelper $installedHelper @('--remove-native-data','--agent',$NewAgent)
@@ -242,7 +274,7 @@ finally {
         try { $null=Invoke-MigrationQuietUninstall $newSetup 'cleanup-uninstall' }
         catch { $report.cleanupErrors+=@($_.Exception.Message) }
     }
-    if (-not $script:MigrationInstallerOpen -and $ownedCanary -and $null -ne $retainedHelper -and (Test-Path -LiteralPath $retainedHelper)) {
+    if (-not $script:MigrationInstallerOpen -and -not $script:MigrationSessionOpen -and $ownedCanary -and $null -ne $retainedHelper -and (Test-Path -LiteralPath $retainedHelper)) {
         # These two commands execute directly in the native launcher and do not
         # require the removed installed runtime. Never use --remove-native-data
         # through a retained copy: it dispatches into the installed application.

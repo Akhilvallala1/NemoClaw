@@ -10,7 +10,7 @@ import { Readable } from "node:stream";
 import {
   watchNativeUiSandbox,
   attemptNativeUiCleanup,
-  waitForNativeMxcCompletion,
+  requestNativeUiSandboxDeletion,
   observeNativeSandboxCreation,
   confirmNativeUiRegistryEmpty,
 } from "./native-ui-lifecycle.mts";
@@ -1072,7 +1072,6 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       gatewayErrorPath = "";
     let cleanupPromise;
     let creation: ReturnType<typeof observeNativeSandboxCreation> | undefined;
-    let creationAbsent = false;
     let monitor: Promise<void> | undefined;
     const monitoring = new AbortController();
     const evidenceRoot = selectedEvidenceRoot;
@@ -1109,37 +1108,15 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           },
         ],
         [
-          "MXC execution cleanup",
+          "sandbox deletion",
           async () => {
-            if (create && gateway) {
-              if (creation?.wasRejected()) {
-                await confirmNativeUiRegistryEmpty(openshell, cliEnvironment);
-                creationAbsent = true;
-                return;
-              }
-              const completion = await waitForNativeMxcCompletion(
-                openshell,
-                cliEnvironment,
+            if (create)
+              await requestNativeUiSandboxDeletion(openshell, cliEnvironment, {
                 sandboxName,
                 gateway,
                 stateSession,
-              );
-              if (completion === "ExecFailed" || completion === "MainProcessFailed")
-                throw new Error("The native OpenClaw executor failed during shutdown.");
-            }
-          },
-        ],
-        [
-          "sandbox deletion",
-          async () => {
-            if (create && !creationAbsent)
-              await run(
-                openshell,
-                ["sandbox", "delete", sandboxName],
-                cliEnvironment,
-                "Deleting the native Control UI sandbox",
-                30_000,
-              );
+                creationRejected: creation?.wasRejected(),
+              });
           },
         ],
         [

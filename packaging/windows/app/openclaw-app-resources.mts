@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import type { Plugin, TransformOptions, TransformResult } from "esbuild";
 import type ts from "typescript";
+import { compilePrivateDirectoryRuntime } from "./sqlite-private-directory-build.mts";
 
 type Syntax = typeof ts;
 type Transformer = {
@@ -432,7 +433,10 @@ export function compiledModuleLocationPlugin(source: string, compiler: Transform
             adaptationPath,
             compileEagerOllamaRuntime(
               adaptationPath,
-              compileAsyncProcessEntry(adaptationPath, original),
+              compileAsyncProcessEntry(
+                adaptationPath,
+                compilePrivateDirectoryRuntime(adaptationPath, original),
+              ),
             ),
           ),
         );
