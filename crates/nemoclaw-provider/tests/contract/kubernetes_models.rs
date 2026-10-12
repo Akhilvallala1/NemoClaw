@@ -359,6 +359,63 @@ async fn lifecycle(backend: &str) {
     );
 }
 
+/// Cluster objects changed behind OpenTofu between applies stop plan at the
+/// drifted binding without changing state; restoring them clears the drift.
+async fn out_of_band_changes(backend: &str) {
+    let model = Model::start(backend).await;
+    model.apply(true);
+    let deployed = model.snapshot();
+    let state_path = model.workspace.path().join("terraform.tfstate");
+    let state = fs::read(&state_path).unwrap();
+    let plan = |success| {
+        model.tofu(
+            &["plan", "-input=false", "-no-color", "-detailed-exitcode"],
+            success,
+        )
+    };
+    let refused = |kind: &str, field: &str| {
+        let words = plan(false).split_whitespace().collect::<Vec<_>>().join(" ");
+        let expected = format!(
+            "Kubernetes {kind} {NAMESPACE}/{NAME} does not match its saved binding at {field}; resources retained"
+        );
+        assert!(words.contains(&expected), "{words}");
+        assert_eq!(fs::read(&state_path).unwrap(), state, "{kind} drift");
+    };
+
+    // A Pod with the recorded name but another UID is not the bound Pod.
+    let pod = model.object("Pod");
+    let mut foreign = pod.clone();
+    foreign["metadata"]["uid"] = json!("foreign-pod-uid");
+    model.objects.insert(foreign);
+    refused("Pod", "metadata.uid");
+    model.objects.insert(pod);
+
+    // A missing Service fails its binding instead of being recreated.
+    let service = model.object("Service");
+    let key = format!(
+        "{}/{NAME}",
+        crate::kube_api::collection("v1", "Service", NAMESPACE)
+    );
+    assert!(model.objects.0.lock().unwrap().remove(&key).is_some());
+    refused("Service", "object presence");
+    model.objects.insert(service);
+
+    assert_eq!(model.snapshot(), deployed);
+    assert!(plan(true).contains("No changes"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; in-memory Kubernetes API and Pod exec"]
+async fn vllm_plan_refuses_a_substituted_pod_or_deleted_service_without_changing_state() {
+    out_of_band_changes("vllm").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; in-memory Kubernetes API and Pod exec"]
+async fn ollama_plan_refuses_a_substituted_pod_or_deleted_service_without_changing_state() {
+    out_of_band_changes("ollama").await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires NEMOCLAW_TEST_BUNDLE; in-memory Kubernetes API and Pod exec"]
 async fn vllm_resources_apply_refresh_update_and_destroy_keeping_model_and_credential_claims() {
