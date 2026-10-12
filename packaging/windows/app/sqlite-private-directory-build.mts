@@ -24,7 +24,7 @@ export function compilePrivateDirectoryRuntime(relative: string, text: string) {
   if (relative !== SQLITE_PRIVATE_DIRECTORY_SOURCE) return text;
   const native = privateDirectoryNativeSource(text);
   // Keep the upstream script's owner, protected DACL, atomic creation and errors.
-  // Only native-code compilation moves from each runtime call to the CI build.
+  // Compile native code in CI and load its PowerShell cmdlets from the OS module.
   const replacements = [
     [native.declaration, ""],
     [
@@ -37,7 +37,7 @@ export function compilePrivateDirectoryRuntime(relative: string, text: string) {
     ],
     [
       '"Add-Type -TypeDefinition $nativeSource -Language CSharp"',
-      '"Add-Type -LiteralPath $nativeLibrary"',
+      `"Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop",\n\t\t"Add-Type -LiteralPath $nativeLibrary"`,
     ],
   ];
   for (const [before, after] of replacements) {

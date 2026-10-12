@@ -160,8 +160,11 @@ does not establish runtime qualification or change the Personal network policy.
 
 The self-contained ARM64 WPF setup presents one custom-framed window for agent
 selection, inference, optional services, installation progress, and completion.
-Setup and onboarding do not use HTML, WebView, Edge, or a browser. An explicit
+This installer flow does not use HTML, WebView, Edge, or a browser. An explicit
 API-key help action can open the service's official page in the user's browser.
+The installed launcher's unconfigured web-launch path instead opens browser
+onboarding through a local HTTP server. That path saves the agent configuration
+before launching the selected agent.
 Progress names the current phase and refreshes elapsed time regularly; download
 and installer percentages come from actual work, while unknown-duration phases
 remain indeterminate.

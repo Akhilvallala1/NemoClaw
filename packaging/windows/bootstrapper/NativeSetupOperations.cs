@@ -25,7 +25,7 @@ internal static class NativeSetupOperations
     internal static async Task SaveWithHelperAsync(NativeSetupConfiguration configuration, SecureString password, NativeServiceCredentials? serviceCredentials, Action<NativeExpressProgress>? progress, CancellationToken cancellation, string launcher, NativeSetupHelperRunner runSetupHelper)
     {
         cancellation.ThrowIfCancellationRequested();
-        var configurationBytes = Encoding.UTF8.GetBytes(configuration.Serialize());
+        var configurationBytes = Encoding.UTF8.GetBytes(configuration.SerializeRequest());
         var requiredServices = configuration.Options.RequiredServices();
         var suppliedServices = serviceCredentials?.Keys.ToArray() ?? Array.Empty<string>();
         if (!requiredServices.Order(StringComparer.Ordinal).SequenceEqual(suppliedServices.Order(StringComparer.Ordinal)))

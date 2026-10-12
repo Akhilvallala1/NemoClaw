@@ -46,7 +46,7 @@ Pass("OpenClaw refuses deferred Discord before serialization", () =>
     Rejected(() => options.Validate("openclaw"));
     var configuration = new NativeSetupConfiguration("openclaw", "local", null, NativeExpressSetup.Model, false)
         { LocalModel = NativeExpressSetup.Id, Options = options };
-    Rejected(() => configuration.Serialize());
+    Rejected(() => configuration.SerializeRequest());
     Require(options.Messaging["discord"].SequenceEqual(new[] { "1234" }));
 });
 Pass("Hermes retains Discord and OpenClaw retains Telegram and Slack", () =>
@@ -92,13 +92,13 @@ Pass("unexpected service binding is refused", () =>
 Pass("local configuration serializes a logical choice with no endpoint", () =>
 {
     var configuration = new NativeSetupConfiguration("openclaw", "local", null, NativeExpressSetup.Model, false) { LocalModel = NativeExpressSetup.Id };
-    using var value = JsonDocument.Parse(configuration.Serialize());
+    using var value = JsonDocument.Parse(configuration.SerializeRequest());
     Require(!value.RootElement.TryGetProperty("endpoint", out _) && value.RootElement.GetProperty("localModel").GetString() == NativeExpressSetup.Id);
 });
 Pass("local configuration refuses a placeholder endpoint", () =>
 {
     var configuration = new NativeSetupConfiguration("openclaw", "local", "http://127.0.0.1:8000/v1", NativeExpressSetup.Model, false) { LocalModel = NativeExpressSetup.Id };
-    Rejected(() => configuration.Serialize());
+    Rejected(() => configuration.SerializeRequest());
 });
 foreach (var model in NativeDownloadedModelSetup.Models)
 {
@@ -125,16 +125,39 @@ foreach (var model in NativeDownloadedModelSetup.Models)
     Pass("downloaded configuration only launches valid local OpenClaw automatically: " + id, () =>
     {
         var configuration = new NativeSetupConfiguration("openclaw", "local", null, id, false) { LocalModel = id };
-        using var value = JsonDocument.Parse(configuration.Serialize());
+        using var value = JsonDocument.Parse(configuration.SerializeRequest());
         Require(configuration.LaunchAfterSetup && !value.RootElement.TryGetProperty("endpoint", out _));
         Require(!(configuration with { Agent = "hermes" }).LaunchAfterSetup);
         Require(!(configuration with { Model = "foreign" }).LaunchAfterSetup);
-        Rejected(() => (configuration with { Model = "foreign" }).Serialize());
-        Rejected(() => (configuration with { CredentialStored = true }).Serialize());
-        Rejected(() => (configuration with { Endpoint = "http://127.0.0.1:1" }).Serialize());
+        Rejected(() => (configuration with { Model = "foreign" }).SerializeRequest());
+        Rejected(() => (configuration with { CredentialStored = true }).SerializeRequest());
+        Rejected(() => (configuration with { Endpoint = "http://127.0.0.1:1" }).SerializeRequest());
     });
 }
-Console.WriteLine(JsonSerializer.Serialize(new { schemaVersion = 1, passed = controls.Count, failed = 0, controls, installedModelAuthorityTested = false, windowsExecutionRequired = OperatingSystem.IsWindows() }));
+var requests = new List<JsonElement>();
+foreach (var agent in new[] { "openclaw", "hermes" })
+{
+    var choices = new List<NativeSetupConfiguration>
+    {
+        new(agent, "nvidia", "https://integrate.api.nvidia.com/v1", "fixture-model", true),
+        new(agent, "local", null, NativeExpressSetup.Model, false) { LocalModel = NativeExpressSetup.Id },
+    };
+    choices.AddRange(NativeDownloadedModelSetup.Models.Select(model =>
+    {
+        var id = model.GetProperty("id").GetString()!;
+        return new NativeSetupConfiguration(agent, "local", null, id, false) { LocalModel = id };
+    }));
+    foreach (var choice in choices)
+    {
+        using var request = JsonDocument.Parse(choice.SerializeRequest());
+        var value = request.RootElement;
+        Require(value.GetProperty("kind").GetString() == "native-setup-request");
+        foreach (var field in new[] { "schemaVersion", "classification", "profile", "credential" })
+            Require(!value.TryGetProperty(field, out _));
+        requests.Add(value.Clone());
+    }
+}
+Console.WriteLine(JsonSerializer.Serialize(new { schemaVersion = 1, passed = controls.Count, failed = 0, controls, requests, installedModelAuthorityTested = false, windowsExecutionRequired = OperatingSystem.IsWindows() }));
 
 namespace Nvidia.NemoClaw.Bootstrapper
 {

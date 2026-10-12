@@ -211,14 +211,20 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
 
         if (this.command?.Display == Display.Full)
         {
-            try { this.relatedOnly = !this.installed && NativeMaintenance.HasRelatedInstallation(); }
-            catch (Exception) {
-                this.Ui(() => this.window?.ShowFailure("Windows could not inspect the previous NemoClaw installation.", this.BundleLogPath()));
+            var inspection = NativeMaintenance.InspectInstallation(this.installed);
+            if (inspection is null)
+            {
+                this.result = 1;
+                this.Engine.Log(LogLevel.Error, "The installed NemoClaw maintenance contract could not be verified. No changes were started.");
+                this.Ui(() => {
+                    this.window?.SetDataRemovalAvailable(false);
+                    this.window?.ShowFailure("Windows could not inspect the current or previous NemoClaw installation. No changes were started.", this.BundleLogPath());
+                });
                 return;
             }
-            var removalAvailable = NativeMaintenance.SupportsDataRemoval();
+            this.relatedOnly = inspection.Value.RelatedOnly;
             this.Ui(() => {
-                this.window?.SetDataRemovalAvailable(removalAvailable);
+                this.window?.SetDataRemovalAvailable(inspection.Value.RemovalAvailable);
                 this.window?.SetMaintenanceContext(this.relatedOnly);
                 this.window?.ShowReady(this.installed || this.relatedOnly);
             });

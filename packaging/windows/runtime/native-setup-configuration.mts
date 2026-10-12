@@ -171,22 +171,32 @@ export function normalizeOnboardingConfiguration(
   };
 }
 
-export function nativeAgentConfigurationRecord(configuration: NativeOnboardingConfiguration) {
+function nativeConfigurationChoices(configuration: NativeOnboardingConfiguration) {
   return {
-    schemaVersion: 1,
-    classification: "nemoclaw-native-windows-agent-configuration",
     agent: configuration.agent,
     inference: configuration.inference,
     endpoint: configuration.endpoint,
     model: configuration.model,
     credentialStored: Boolean(configuration.credential),
-    profile: "personal",
     ...(configuration.localModel ? { localModel: configuration.localModel } : {}),
     options: Object.fromEntries(
       Object.entries(configuration.options).filter(
         ([name]) => !["credential", "endpoint", "launch", "model"].includes(name),
       ),
     ),
+  };
+}
+
+export function nativeSetupRequest(configuration: NativeOnboardingConfiguration) {
+  return { kind: "native-setup-request", ...nativeConfigurationChoices(configuration) };
+}
+
+export function nativeAgentConfigurationRecord(configuration: NativeOnboardingConfiguration) {
+  return {
+    schemaVersion: 1,
+    classification: "nemoclaw-native-windows-agent-configuration",
+    ...nativeConfigurationChoices(configuration),
+    profile: "personal",
   };
 }
 
@@ -310,6 +320,14 @@ export async function configureNativeFromStdin(
   }
   const submitted = transaction ? payload?.configuration : payload;
   const credentials = transaction ? payload?.credentials : undefined;
+  // Migration and qualification can submit an existing saved record. New UI
+  // requests carry choices only; this runtime owns the persisted schema.
+  const request = submitted?.kind === "native-setup-request";
+  const validEnvelope = request
+    ? !["schemaVersion", "classification", "profile"].some((key) => Object.hasOwn(submitted, key))
+    : submitted?.kind === undefined &&
+      submitted?.schemaVersion === 1 &&
+      submitted?.classification === "nemoclaw-native-windows-agent-configuration";
   if (
     transaction &&
     (args.some((arg) => arg.startsWith("--prepare")) ||
@@ -323,8 +341,7 @@ export async function configureNativeFromStdin(
   )
     fail("native setup credential transaction is invalid");
   if (
-    submitted?.schemaVersion !== 1 ||
-    submitted?.classification !== "nemoclaw-native-windows-agent-configuration" ||
+    !validEnvelope ||
     typeof submitted?.credentialStored !== "boolean" ||
     (submitted?.localModel === undefined
       ? typeof submitted?.endpoint !== "string"

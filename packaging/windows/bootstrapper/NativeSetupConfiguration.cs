@@ -17,14 +17,12 @@ internal sealed record NativeSetupConfiguration(string Agent, string Inference, 
         && this.Endpoint is null && !this.CredentialStored && this.Model == this.LocalModel
         && NativeDownloadedModelSetup.IsModel(this.LocalModel);
 
-    internal string Serialize()
+    internal string SerializeRequest()
     {
         this.Options.Validate(this.Agent);
         var value = new Dictionary<string, object>
         {
-            ["schemaVersion"] = 1,
-            ["classification"] = "nemoclaw-native-windows-agent-configuration",
-            ["profile"] = "personal",
+            ["kind"] = "native-setup-request",
             ["agent"] = this.Agent,
             ["inference"] = this.Inference,
             ["model"] = this.Model,

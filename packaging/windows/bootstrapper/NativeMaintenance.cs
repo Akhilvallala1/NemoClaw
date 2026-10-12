@@ -26,6 +26,22 @@ internal static class NativeMaintenance
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
     private static extern int MsiQueryProductStateW(string productCode);
 
+    internal static (bool RelatedOnly, bool RemovalAvailable)? InspectInstallation(bool installed,
+        Func<bool>? inspectRelated = null, Func<bool>? inspectRemoval = null)
+    {
+        try
+        {
+            var relatedOnly = !installed && (inspectRelated ?? HasRelatedInstallation)();
+            var removalAvailable = (inspectRemoval ?? SupportsDataRemoval)();
+            return (relatedOnly, removalAvailable);
+        }
+        catch (Exception)
+        {
+            // An unreadable command contract must not expose maintenance actions.
+            return null;
+        }
+    }
+
     internal static bool HasRelatedInstallation()
     {
         for (uint index = 0; index < 32; index++)

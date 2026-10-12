@@ -58,6 +58,7 @@ internal static class Program
         }
         await AssertBoundedWaitAsync(cancel: true);
         await AssertBoundedWaitAsync(cancel: false);
+        AssertInspectionControls();
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
         foreach (var operation in new Func<Task>[] {
@@ -74,8 +75,34 @@ internal static class Program
             }
             catch (OperationCanceledException error) when (error.CancellationToken == cancelled.Token) { }
         }
-        Console.WriteLine("6 maintenance controls passed; pre-cancelled operations do not start and unconfirmed Windows Installer completion forbids immediate retry.");
+        Console.WriteLine("11 maintenance controls passed; failed inspection exposes no maintenance actions, pre-cancelled operations do not start, and unconfirmed Windows Installer completion forbids immediate retry.");
         return 0;
+    }
+
+    private static void AssertInspectionControls()
+    {
+        var calls = new List<string>();
+        bool Related() { calls.Add("related"); return true; }
+        bool Removal() { calls.Add("removal"); return true; }
+        bool Failed() { calls.Add("failed"); throw new InvalidDataException("Unreadable installed command contract."); }
+
+        if (NativeMaintenance.InspectInstallation(true, Related, Removal) != (false, true) ||
+            !calls.SequenceEqual(new[] { "removal" }))
+            throw new InvalidOperationException("An installed product must not query related installations.");
+        calls.Clear();
+        if (NativeMaintenance.InspectInstallation(false, Related, Removal) != (true, true) ||
+            !calls.SequenceEqual(new[] { "related", "removal" }))
+            throw new InvalidOperationException("Related-product inspection lost the data-removal capability.");
+        if (NativeMaintenance.InspectInstallation(false, () => false, () => false) != (false, false))
+            throw new InvalidOperationException("A fresh installation was not admitted without data removal.");
+        calls.Clear();
+        if (NativeMaintenance.InspectInstallation(false, Failed, Removal) is not null ||
+            !calls.SequenceEqual(new[] { "failed" }))
+            throw new InvalidOperationException("Failed related-product inspection continued into maintenance.");
+        calls.Clear();
+        if (NativeMaintenance.InspectInstallation(false, Related, Failed) is not null ||
+            !calls.SequenceEqual(new[] { "related", "failed" }))
+            throw new InvalidOperationException("Failed data-removal inspection exposed a partial maintenance result.");
     }
 }
 

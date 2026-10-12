@@ -95,6 +95,7 @@ const unchangedPolicy = (script: string) =>
       (part) =>
         !part.startsWith("$nativeSource =") &&
         !part.startsWith("$nativeLibrary =") &&
+        !part.startsWith("Import-Module ") &&
         !part.startsWith("Add-Type "),
     )
     .join("; ");
@@ -106,6 +107,15 @@ for (const directory of ["plain", "spaces and 'quotes'", "[brackets]-é-雪"]) {
   assert.deepEqual(before.args.slice(0, -1), after.args.slice(0, -1));
   assert.equal(unchangedPolicy(command(after)), unchangedPolicy(command(before)));
   assert(privateDirectoryDiagnosticCommand(command(after)));
+  assert.deepEqual(
+    command(after)
+      .split("; ")
+      .filter((part) => part.startsWith("Import-Module ")),
+    [
+      "Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop",
+    ],
+  );
+  assert(command(after).indexOf("Import-Module ") < command(after).indexOf("Add-Type "));
   assert.equal(
     command(after)
       .split("; ")
@@ -143,7 +153,23 @@ if (portable) {
   const library = path.join(app, SQLITE_PRIVATE_DIRECTORY_LIBRARY);
   assert(fs.statSync(library).isFile());
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sqlite-library-controls-"));
+  const priorModulePath = process.env.PSModulePath;
   try {
+    // An ambient module with the same name must not supply the native helper's cmdlets.
+    const modules = path.join(root, "ambient-modules");
+    const shadow = path.join(modules, "Microsoft.PowerShell.Utility");
+    fs.mkdirSync(shadow, { recursive: true });
+    fs.writeFileSync(
+      path.join(shadow, "Microsoft.PowerShell.Utility.psd1"),
+      "@{ RootModule='Microsoft.PowerShell.Utility.psm1'; ModuleVersion='99.0.0'; FunctionsToExport=@('Add-Type','New-Object'); CmdletsToExport=@() }",
+      { flag: "wx" },
+    );
+    fs.writeFileSync(
+      path.join(shadow, "Microsoft.PowerShell.Utility.psm1"),
+      "throw 'Ambient PowerShell utility module must not load.'",
+      { flag: "wx" },
+    );
+    process.env.PSModulePath = modules;
     for (const variant of ["async", "sync"] as const) {
       const directory = path.join(root, variant + "-'[é]'");
       if (variant === "async") await candidate.createPrivateSqliteDirectory(directory);
@@ -207,6 +233,8 @@ if (portable) {
     );
     assert.equal(fs.existsSync(absent), false);
   } finally {
+    if (priorModulePath === undefined) delete process.env.PSModulePath;
+    else process.env.PSModulePath = priorModulePath;
     fs.rmSync(root, { recursive: true, force: true });
   }
   assert.equal(fs.existsSync(root), false);
@@ -215,6 +243,7 @@ if (portable) {
       passed: true,
       protectedDacl: true,
       existingTargetRefused: true,
+      ambientModuleIgnored: true,
       asyncAndSync: true,
       cleanup: true,
       installedAcceptance: false,

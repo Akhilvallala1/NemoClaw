@@ -24,7 +24,7 @@ import { readNativeServiceEnvironment } from "./native-options.mts";
 
 import {
   configureNativeFromStdin,
-  nativeAgentConfigurationRecord,
+  nativeSetupRequest,
   readNativeAgentConfiguration,
   normalizeOnboardingConfiguration,
   type NativeOnboardingConfiguration,
@@ -111,10 +111,10 @@ export async function saveNativeOnboardingConfiguration(
     configure?: typeof configureNativeFromStdin;
   } = {},
 ) {
-  const record = nativeAgentConfigurationRecord(configuration);
+  const request = nativeSetupRequest(configuration);
   const input = Buffer.from(
     JSON.stringify({
-      configuration: record,
+      configuration: request,
       credentials: { inference: configuration.credential, services: null },
     }),
     "utf8",

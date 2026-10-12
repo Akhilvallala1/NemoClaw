@@ -1102,6 +1102,19 @@ jobs:
             $result = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           if ($result -ne 0) { throw 'The compiled MXC probe admission controls failed.' }
+      - name: Verify bootstrapper choices through the runtime configuration writer
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:RUNNER_TEMP 'bootstrapper-configuration-controls'
+          & dotnet build packaging/windows/tests/prebuilt-configuration/PrebuiltConfiguration.csproj --configuration Release --output $build
+          if ($LASTEXITCODE -ne 0) { throw 'The bootstrapper configuration controls did not build.' }
+          $requests = Join-Path $env:RUNNER_TEMP 'windows-runtime-preflight\bootstrapper-requests.log'
+          & dotnet (Join-Path $build 'PrebuiltConfiguration.dll') | Set-Content -LiteralPath $requests -Encoding UTF8
+          if ($LASTEXITCODE -ne 0) { throw 'The bootstrapper configuration controls failed.' }
+          & node --experimental-strip-types --no-warnings packaging/windows/tests/prebuilt-configuration/verify-runtime-requests.mts $requests
+          if ($LASTEXITCODE -ne 0) { throw 'Bootstrapper choices did not match the runtime configuration contract.' }
       - name: Retain preflight results for each Node version
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
