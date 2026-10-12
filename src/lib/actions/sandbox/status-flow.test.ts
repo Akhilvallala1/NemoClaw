@@ -77,6 +77,24 @@ describe("showSandboxStatus flow", () => {
     },
   );
 
+  it("skips lifecycle locking and Hermes broker setup for unlocked status (#11903)", async () => {
+    const withMcpLifecycleLock = vi.fn(async () => {
+      throw new Error("unlocked status unexpectedly requested the lifecycle lock");
+    });
+    const harness = createStatusFlowHarness({
+      mockHermesToolGatewayBroker: true,
+      portableDisposition: { kind: "openclaw" },
+      sandboxEntry: { agent: "hermes", hermesToolGateways: [{}] } as never,
+      withMcpLifecycleLock,
+    });
+
+    await harness.withUnlockedSandboxStatusRead(() => harness.showSandboxStatus("alpha"));
+
+    expect(harness.withMcpLifecycleLockSpy).not.toHaveBeenCalled();
+    expect(harness.ensureHermesToolGatewayBrokerSpy).not.toBeNull();
+    expect(harness.ensureHermesToolGatewayBrokerSpy).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed portable receipt authority before status probes (#9203)", async () => {
     const harness = createStatusFlowHarness({
       portableDisposition: new Error("invalid portable lifecycle receipt"),

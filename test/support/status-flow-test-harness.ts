@@ -24,6 +24,8 @@ type PortableAgentReceiptDisposition = ReturnType<
 >;
 type WithMcpLifecycleLock =
   (typeof import("../../src/lib/state/mcp-lifecycle-lock-acquisition"))["withMcpLifecycleLock"];
+type WithUnlockedSandboxStatusRead =
+  (typeof import("../../src/lib/actions/sandbox/status-snapshot"))["withUnlockedSandboxStatusRead"];
 
 const requireDist = createRequire(import.meta.url);
 const statusModulePath = "../../src/lib/actions/sandbox/status.js";
@@ -45,6 +47,8 @@ export type StatusFlowHarness = {
   removeSandboxSpy: MockInstance;
   showSandboxStatus: ShowSandboxStatus;
   withMcpLifecycleLockSpy: MockInstance;
+  withUnlockedSandboxStatusRead: WithUnlockedSandboxStatusRead;
+  ensureHermesToolGatewayBrokerSpy: MockInstance | null;
 };
 
 const baseSandboxEntry = {
@@ -85,6 +89,7 @@ export type StatusFlowHarnessOptions = {
   registryEntry?: "present" | "missing";
   publishedAcrossGatewayRoots?: boolean;
   withMcpLifecycleLock?: WithMcpLifecycleLock;
+  mockHermesToolGatewayBroker?: boolean;
   lookup?: SandboxGatewayState;
   lookupState?: "present" | "missing";
   gatewayRunning?: boolean;
@@ -305,6 +310,14 @@ export function createStatusFlowHarness(options: StatusFlowHarnessOptions = {}):
   logSpy.mockClear();
 
   const statusModule = requireDist(statusModulePath);
+  const ensureHermesToolGatewayBrokerSpy = options.mockHermesToolGatewayBroker
+    ? vi
+        .spyOn(
+          requireDist("../../src/lib/hermes-tool-gateway-broker.js"),
+          "ensureHermesToolGatewayBrokerForSandboxEntry",
+        )
+        .mockImplementation(() => undefined)
+    : null;
 
   return {
     checkAgentVersionSpy,
@@ -318,5 +331,7 @@ export function createStatusFlowHarness(options: StatusFlowHarnessOptions = {}):
     removeSandboxSpy,
     showSandboxStatus: statusModule.showSandboxStatus,
     withMcpLifecycleLockSpy,
+    withUnlockedSandboxStatusRead: statusSnapshot.withUnlockedSandboxStatusRead,
+    ensureHermesToolGatewayBrokerSpy,
   } satisfies StatusFlowHarness;
 }

@@ -11,6 +11,7 @@ import { launchSandbox } from "../actions/sandbox/launch";
 import * as portableAgentLifecycle from "../onboard/experimental/portable-agent-lifecycle";
 import * as receiptAuthority from "../onboard/experimental/hermes-portable-receipt";
 import * as portableHostAuthority from "../state/portable-uninstall-retirement";
+import * as registryCrossPort from "../state/registry/cross-port";
 import { isUnlockedSandboxStatusRead } from "../actions/sandbox/status-snapshot";
 import { acquireProcessBoundLockAt, releaseProcessBoundLock } from "../state/registry/lock";
 import {
@@ -296,6 +297,29 @@ describe("NemoClawCommand", () => {
     );
     expect(operation).not.toHaveBeenCalled();
     expect(portableHostAuthority.withCurrentPortableHostFenceTry).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when registry-only portable authority is present (#11903)", async () => {
+    vi.spyOn(portableHostAuthority, "withCurrentPortableHostFenceTry").mockRejectedValue(
+      new Error(portableHostAuthority.PORTABLE_HOST_FENCE_BUSY_MESSAGE),
+    );
+    vi.spyOn(registryCrossPort, "findSandboxAcrossGatewayRoots").mockReturnValue({
+      entry: {
+        name: "alpha",
+        agent: "hermes",
+        openshellDriver: "docker",
+        lifecycleGeneration: "generation-1",
+      } as never,
+      gatewayPort: 8091,
+      registryFile: "/test/sandboxes.json",
+    });
+    const operation = vi.fn(async () => undefined);
+    ParsedSupportedSandboxCommand.operation = operation;
+
+    await expect(ParsedSupportedSandboxCommand.run(["alpha"], process.cwd())).rejects.toThrow(
+      "Another NemoClaw lifecycle operation is in progress on this host.",
+    );
+    expect(operation).not.toHaveBeenCalled();
   });
 
   it("fails fast for global status when the portable host fence is busy", async () => {
