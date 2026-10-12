@@ -75,11 +75,16 @@ pub(super) async fn build_runtime(pins: &Pins, manifest: &Path) -> Result<()> {
 
 fn stage_workload_files(repository: &Path, context: &Path) -> Result<()> {
     // Shared image-owned Python runs only in the vLLM workloads. Keep one copy
-    // for the generic ARM64/AMD64 and recipe images, including their build check.
+    // for the generic ARM64/AMD64 and recipe images, including their build check,
+    // and stage each file only into contexts whose Dockerfile names it.
+    let dockerfile = fs::read_to_string(context.join("Dockerfile"))?;
     for (source, target) in [
         ("nemoclaw_vllm_routes.py", "nemoclaw_vllm_routes.py"),
         ("test_auth.py", "test_vllm_auth.py"),
     ] {
+        if !dockerfile.contains(target) {
+            continue;
+        }
         let source = repository.join("runtimes/vllm").join(source);
         if !fs::symlink_metadata(&source)?.is_file() {
             return Err("runtime workload input is not a regular file".into());
@@ -169,33 +174,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_context_stages_shared_vllm_routes_and_the_image_build_check() {
+    fn only_vllm_runtime_contexts_receive_the_shared_routes_and_their_image_build_check() {
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let context = tempfile::tempdir().unwrap();
-        stage_workload_files(&repository, context.path()).unwrap();
-        for (source, target) in [
-            ("nemoclaw_vllm_routes.py", "nemoclaw_vllm_routes.py"),
-            ("test_auth.py", "test_vllm_auth.py"),
-        ] {
-            assert_eq!(
-                fs::read(repository.join("runtimes/vllm").join(source)).unwrap(),
-                fs::read(context.path().join(target)).unwrap(),
-            );
-        }
-        for recipe in ["vllm", "vllm-amd64", "qwen38"] {
-            let dockerfile =
-                fs::read_to_string(repository.join("runtimes").join(recipe).join("Dockerfile"))
-                    .unwrap();
-            assert!(
-                dockerfile.contains(
-                    "COPY nemoclaw_vllm_routes.py test_vllm_auth.py /opt/nemoclaw/source/"
-                ),
-                "{recipe}"
-            );
-            assert!(
-                dockerfile.contains("RUN python3 -I /opt/nemoclaw/source/test_vllm_auth.py"),
-                "{recipe}"
-            );
+        let mut recipes = fs::read_dir(repository.join("runtimes"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        recipes.sort();
+        assert_eq!(
+            recipes,
+            ["ollama", "ollama-amd64", "qwen38", "vllm", "vllm-amd64"]
+        );
+        for recipe in recipes {
+            let vllm = ["vllm", "vllm-amd64", "qwen38"].contains(&recipe.as_str());
+            let dockerfile = repository.join("runtimes").join(&recipe).join("Dockerfile");
+            let context = tempfile::tempdir().unwrap();
+            fs::copy(&dockerfile, context.path().join("Dockerfile")).unwrap();
+            stage_workload_files(&repository, context.path()).unwrap();
+            for (source, target) in [
+                ("nemoclaw_vllm_routes.py", "nemoclaw_vllm_routes.py"),
+                ("test_auth.py", "test_vllm_auth.py"),
+            ] {
+                let staged = context.path().join(target);
+                assert_eq!(staged.exists(), vllm, "{recipe} {target}");
+                if vllm {
+                    assert_eq!(
+                        fs::read(repository.join("runtimes/vllm").join(source)).unwrap(),
+                        fs::read(staged).unwrap(),
+                    );
+                }
+            }
+            let dockerfile = fs::read_to_string(dockerfile).unwrap();
+            for line in [
+                "COPY nemoclaw_vllm_routes.py test_vllm_auth.py /opt/nemoclaw/source/",
+                "RUN python3 -I /opt/nemoclaw/source/test_vllm_auth.py",
+            ] {
+                assert_eq!(dockerfile.contains(line), vllm, "{recipe}: {line}");
+            }
         }
     }
 
