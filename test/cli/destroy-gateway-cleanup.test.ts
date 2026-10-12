@@ -1,11 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { fingerprintOpenShellSandboxId } from "../../src/lib/adapters/openshell/sandbox-identity";
+import { createDockerRuntimeProviderBundle } from "../../src/lib/onboard/runtime-provider/docker";
+import { createRuntimeProviderBundleRegistry } from "../../src/lib/onboard/runtime-provider/registry";
+import { startSandbox } from "../../src/lib/actions/sandbox/start";
 import { runWithEnv, testTimeoutOptions } from "./helpers";
 
 const LIVE_DOCKER_IDENTITY = `#!/bin/sh
@@ -687,7 +692,7 @@ describe("CLI dispatch", () => {
     ],
   ] as const)(
     "preserves active gateway during destroy %s (cleanup: %s, delete failure: %s, missing marker: %s, concurrent selection: %s, restore failure: %s, registry state: %s) (#11897)",
-    (
+    async (
       cleanupFlag,
       cleanupGateway,
       failDelete,
@@ -713,6 +718,8 @@ describe("CLI dispatch", () => {
       const targetSelectedMarker = path.join(home, "target-selected");
       const failRestorationMarker = path.join(home, "fail-restoration");
       const postOperationStateMarker = path.join(home, "post-operation-state");
+      const survivorStarted = path.join(home, "survivor-started");
+      const survivorForwarded = path.join(home, "survivor-forwarded");
       fs.writeFileSync(failDeleteMarker, failDelete ? "fail" : "");
       fs.writeFileSync(missingActiveMarker, missingActive ? "missing" : "");
       fs.writeFileSync(concurrentSelectionMarker, "");
@@ -721,7 +728,7 @@ describe("CLI dispatch", () => {
       fs.writeFileSync(postOperationStateMarker, "");
       fs.mkdirSync(localBin, { recursive: true });
       fs.mkdirSync(registryDir, { recursive: true });
-      fs.writeFileSync(activeGateway, "survivor-gateway\n");
+      fs.writeFileSync(activeGateway, "nemoclaw-9090\n");
       fs.writeFileSync(
         path.join(registryDir, "sandboxes.json"),
         JSON.stringify({
@@ -735,6 +742,20 @@ describe("CLI dispatch", () => {
               gatewayName: "nemoclaw-8081",
               gatewayPort: 8081,
             },
+            ...(!cleanupGateway
+              ? {
+                  beta: {
+                    name: "beta",
+                    model: "",
+                    provider: "",
+                    gpuEnabled: false,
+                    agent: "langchain-deepagents-code",
+                    gatewayName: "nemoclaw-9090",
+                    gatewayPort: 9090,
+                    lifecycleLiveIdentityFingerprint: fingerprintOpenShellSandboxId("sandbox-beta"),
+                  },
+                }
+              : {}),
           },
           defaultSandbox: "alpha",
         }),
@@ -756,33 +777,35 @@ describe("CLI dispatch", () => {
           `fail_restoration=${JSON.stringify(failRestorationMarker)}`,
           `post_operation_state=${JSON.stringify(postOperationStateMarker)}`,
           `post_operation_state_value=${JSON.stringify(postOperationState)}`,
+          `survivor_started=${JSON.stringify(survivorStarted)}`,
+          `survivor_forwarded=${JSON.stringify(survivorForwarded)}`,
           'printf \'%s\\n\' "$*" >> "$log_file"',
           'if [ "$1" = "gateway" ] && [ "$2" = "list" ]; then',
-          '  if [ -s "$missing_active" ]; then printf \'[{"name":"nemoclaw-8081"},{"name":"survivor-gateway"}]\\n\'; exit 0; fi',
+          '  if [ -s "$missing_active" ]; then printf \'[{"name":"nemoclaw-8081"},{"name":"nemoclaw-9090"}]\\n\'; exit 0; fi',
           '  active="$(cat "$active_gateway")"',
-          '  if [ -s "$concurrent_selection" ]; then printf \'[{"name":"nemoclaw-8081","active":false},{"name":"survivor-gateway","active":false},{"name":"new-gateway","active":true}]\\n\'; exit 0; fi',
+          '  if [ -s "$concurrent_selection" ]; then printf \'[{"name":"nemoclaw-8081","active":false},{"name":"nemoclaw-9090","active":false},{"name":"new-gateway","active":true}]\\n\'; exit 0; fi',
           '  if [ -s "$post_operation_state" ]; then',
           '    case "$post_operation_state_value" in',
 
           '      list-failure) echo "registry unavailable" >&2; exit 44 ;;',
           '      prior-missing) printf \'[{"name":"nemoclaw-8081","active":true}]\\n\' ;;',
-          '      marker-omitted) printf \'[{"name":"nemoclaw-8081"},{"name":"survivor-gateway"}]\\n\' ;;',
-          '      already-restored) printf \'[{"name":"nemoclaw-8081","active":false},{"name":"survivor-gateway","active":true}]\\n\' ;;',
-          '      no-active-target-present) printf \'[{"name":"nemoclaw-8081","active":false},{"name":"survivor-gateway","active":false}]\\n\' ;;',
+          '      marker-omitted) printf \'[{"name":"nemoclaw-8081"},{"name":"nemoclaw-9090"}]\\n\' ;;',
+          '      already-restored) printf \'[{"name":"nemoclaw-8081","active":false},{"name":"nemoclaw-9090","active":true}]\\n\' ;;',
+          '      no-active-target-present) printf \'[{"name":"nemoclaw-8081","active":false},{"name":"nemoclaw-9090","active":false}]\\n\' ;;',
           "    esac",
           "    exit 0",
           "  fi",
-          '  if [ -e "$target_selected" ] && [ ! -e "$removed_gateway" ]; then printf \'[{"name":"nemoclaw-8081","active":true},{"name":"survivor-gateway","active":false}]\\n\'; exit 0; fi',
+          '  if [ -e "$target_selected" ] && [ ! -e "$removed_gateway" ]; then printf \'[{"name":"nemoclaw-8081","active":true},{"name":"nemoclaw-9090","active":false}]\\n\'; exit 0; fi',
           '  if [ -n "$OPENSHELL_GATEWAY" ]; then active="$OPENSHELL_GATEWAY"; fi',
           '  if [ -e "$removed_gateway" ]; then',
-          '    printf \'[{"name":"survivor-gateway","active":%s}]\\n\' "$( [ "$active" = "survivor-gateway" ] && printf true || printf false )"',
+          '    printf \'[{"name":"nemoclaw-9090","active":%s}]\\n\' "$( [ "$active" = "nemoclaw-9090" ] && printf true || printf false )"',
           "  else",
-          '    printf \'[{"name":"nemoclaw-8081","active":%s},{"name":"survivor-gateway","active":%s}]\\n\' "$( [ "$active" = "nemoclaw-8081" ] && printf true || printf false )" "$( [ "$active" = "survivor-gateway" ] && printf true || printf false )"',
+          '    printf \'[{"name":"nemoclaw-8081","active":%s},{"name":"nemoclaw-9090","active":%s}]\\n\' "$( [ "$active" = "nemoclaw-8081" ] && printf true || printf false )" "$( [ "$active" = "nemoclaw-9090" ] && printf true || printf false )"',
           "  fi",
           "  exit 0",
           "fi",
           'if [ "$1" = "gateway" ] && [ "$2" = "select" ]; then',
-          '  if [ "$3" = "survivor-gateway" ] && [ -s "$fail_restoration" ]; then echo "restore failed" >&2; exit 43; fi',
+          '  if [ "$3" = "nemoclaw-9090" ] && [ -s "$fail_restoration" ]; then echo "restore failed" >&2; exit 43; fi',
           '  printf "%s\\n" "$3" > "$active_gateway"',
           '  if [ "$3" = "nemoclaw-8081" ]; then : > "$target_selected"; fi',
           "  exit 0",
@@ -792,12 +815,24 @@ describe("CLI dispatch", () => {
           '  : > "$active_gateway"',
           "  exit 0",
           "fi",
+          'if [ "$1" = "sandbox" ] && [ "$2" = "start" ] && [ "$3" = "beta" ]; then',
+          '  active="$(cat "$active_gateway")"',
+          '  if [ "$5" != "$active" ]; then echo "wrong active gateway: $active" >&2; exit 45; fi',
+          '  : > "$survivor_started"',
+          "  exit 0",
+          "fi",
+          'if [ "$1" = "forward" ] && [ "$2" = "service" ] && [ "$3" = "beta" ]; then',
+          '  active="$(cat "$active_gateway")"',
+          '  if [ "$5" != "$active" ] || [ ! -e "$survivor_started" ]; then echo "survivor forward refused" >&2; exit 46; fi',
+          '  : > "$survivor_forwarded"',
+          "  exit 0",
+          "fi",
           'if [ "$1" = "sandbox" ] && [ "$2" = "delete" ]; then',
           '  if [ -s "$fail_delete" ]; then echo "delete failed" >&2; exit 42; fi',
           '  if [ -s "$enable_concurrent_selection" ]; then printf "selected\\n" > "$concurrent_selection"; printf "new-gateway\\n" > "$active_gateway"; fi',
           '  if [ -n "$post_operation_state_value" ]; then',
           '    printf "%s\\n" "$post_operation_state_value" > "$post_operation_state"',
-          '    if [ "$post_operation_state_value" = "already-restored" ]; then printf "survivor-gateway\\n" > "$active_gateway"; fi',
+          '    if [ "$post_operation_state_value" = "already-restored" ]; then printf "nemoclaw-9090\\n" > "$active_gateway"; fi',
           '    if [ "$post_operation_state_value" = "no-active-target-present" ]; then : > "$active_gateway"; fi',
           "  fi",
           '  : > "$deleted_sandbox"',
@@ -856,22 +891,22 @@ describe("CLI dispatch", () => {
             : failRestoration ||
                 (postOperationState !== "" && postOperationState !== "already-restored")
               ? "nemoclaw-8081"
-              : "survivor-gateway",
+              : "nemoclaw-9090",
       );
-      expect(r.out.includes("openshell gateway select survivor-gateway")).toBe(
+      expect(r.out.includes("openshell gateway select nemoclaw-9090")).toBe(
         failRestoration ||
           postOperationState === "marker-omitted" ||
           postOperationState === "no-active-target-present",
       );
       expect(r.out.includes("delete failed")).toBe(failDelete);
       expect(fs.existsSync(removedGateway)).toBe(cleanupGateway && !failDelete && !missingActive);
-      const restoreIndex = lines.lastIndexOf("gateway select survivor-gateway");
+      const restoreIndex = lines.lastIndexOf("gateway select nemoclaw-9090");
       const mutationIndex = Math.max(
         lines.indexOf("sandbox delete -g nemoclaw-8081 alpha"),
         lines.indexOf("gateway remove nemoclaw-8081"),
       );
       expect(restoreIndex > mutationIndex).toBe(restorationExpected);
-      expect(lines.includes("gateway select survivor-gateway")).toBe(
+      expect(lines.includes("gateway select nemoclaw-9090")).toBe(
         !concurrentSelection && !missingActive && postOperationState === "",
       );
       expect(r.out.includes("gateway registry could not be re-read:")).toBe(
@@ -889,6 +924,76 @@ describe("CLI dispatch", () => {
       expect(
         r.out.includes("there is no active gateway while the temporary target remains registered"),
       ).toBe(postOperationState === "no-active-target-present");
+
+      await (!cleanupGateway
+        ? (async () => {
+            const state = JSON.parse(
+              fs.readFileSync(path.join(registryDir, "sandboxes.json"), "utf8"),
+            );
+            const survivor = state.sandboxes.beta;
+            expect(survivor.gatewayName).toBe("nemoclaw-9090");
+            const runtimeProviders = createRuntimeProviderBundleRegistry([
+              ["docker", createDockerRuntimeProviderBundle()],
+            ]);
+            const startResult = await startSandbox("beta", {
+              environment: { HOME: home },
+              getSandbox: () => survivor,
+              updateSandbox: () => true,
+              runtimeProviders,
+              withLifecycleLock: async (_name, operation) => operation(),
+              openShellLifecycle: {
+                startSandbox: async (request) => {
+                  expect(request.target.gatewayName).toBe(survivor.gatewayName);
+                  const result = spawnSync(
+                    path.join(localBin, "openshell"),
+                    [
+                      "sandbox",
+                      "start",
+                      request.sandboxName,
+                      "--gateway",
+                      request.target.gatewayName,
+                    ],
+                    { encoding: "utf8", env: { ...process.env, HOME: home } },
+                  );
+                  return result.status === 0
+                    ? { kind: "accepted" as const }
+                    : {
+                        kind: "failed" as const,
+                        error: {
+                          kind: "command" as const,
+                          reason: "failed" as const,
+                          message: result.stderr,
+                        },
+                      };
+                },
+                stopSandbox: async () => ({ kind: "accepted" }),
+              },
+              observer: {
+                listSandboxes: async () => ({
+                  ok: true,
+                  value: { sandboxes: [{ name: "beta", phase: "Ready", readiness: "ready" }] },
+                }),
+              },
+              // This DI seam records a simulated forward after start succeeds; it
+              // does not exercise connectSandbox's production forward construction.
+              verifyGateway: async () => {
+                const result = spawnSync(
+                  path.join(localBin, "openshell"),
+                  ["forward", "service", "beta", "--gateway", survivor.gatewayName],
+                  { encoding: "utf8", env: { ...process.env, HOME: home } },
+                );
+                expect(result.status, result.stderr).toBe(0);
+              },
+              log: () => undefined,
+            });
+
+            const expectedStartSuccess =
+              fs.readFileSync(activeGateway, "utf8").trim() === survivor.gatewayName;
+            expect(startResult.exitCode, startResult.message).toBe(expectedStartSuccess ? 0 : 1);
+            expect(fs.existsSync(survivorStarted)).toBe(expectedStartSuccess);
+            expect(fs.existsSync(survivorForwarded)).toBe(expectedStartSuccess);
+          })()
+        : Promise.resolve());
     },
   );
 
