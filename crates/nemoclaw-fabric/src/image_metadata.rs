@@ -29,13 +29,25 @@ pub fn verify_runtime_labels(
     architecture: &str,
     required: &BTreeMap<String, String>,
 ) -> Result<(), ObservationError> {
-    let verified = read_bundle(secrets, name).and_then(|bytes| verify_config(&bytes, image, Some(architecture)))
+    let verified = read_bundle(secrets, name).and_then(|bytes| verify_config(&bytes, image, true))
         .map_err(|_| ObservationError::Backend("runtime image metadata is missing, invalid, or does not match the immutable image; export its metadata bundle and set the imageMetadata environment reference"))?;
+    if verified.architecture != architecture {
+        return Err(ObservationError::Backend(match architecture {
+            "amd64" => {
+                "runtime image platform is not linux/amd64, the service hardware architecture; build the runtime image for linux/amd64 and update its digest and metadata bundle"
+            }
+            "arm64" => {
+                "runtime image platform is not linux/arm64, the service hardware architecture; build the runtime image for linux/arm64 and update its digest and metadata bundle"
+            }
+            _ => {
+                "runtime image platform does not match the service hardware architecture; rebuild the runtime image and update its digest and metadata bundle"
+            }
+        }));
+    }
     let labels = &verified.config["config"]["Labels"];
-    if verified.architecture != architecture
-        || required
-            .iter()
-            .any(|(key, value)| labels[key].as_str() != Some(value.as_str()))
+    if required
+        .iter()
+        .any(|(key, value)| labels[key].as_str() != Some(value.as_str()))
     {
         return Err(ObservationError::Backend(
             "runtime image platform or required runtime, backend, recipe, authentication, or route-restriction (org.nemoclaw.inference.routes) labels are incompatible; rebuild the runtime image (docs/build.md) and update its digest and metadata bundle",
@@ -109,12 +121,13 @@ struct VerifiedConfig {
 }
 
 /// Validate the reference-to-config digest chain before interpreting image labels.
-/// Without an explicit architecture, the index must contain exactly one Linux platform.
+/// Unless the caller pins an architecture, the index must contain exactly one
+/// Linux platform; a caller that pins one compares it with the result.
 /// No layer, URL, path, or remote reference is read.
 fn verify_config(
     bytes: &[u8],
     image: &str,
-    required_architecture: Option<&str>,
+    pinned_architecture: bool,
 ) -> Result<VerifiedConfig, ObservationError> {
     if bytes.len() > MAX_BUNDLE_BYTES {
         return Err(invalid());
@@ -147,7 +160,7 @@ fn verify_config(
         let candidates = root["manifests"].as_array().ok_or_else(invalid)?;
         // Fabric sandboxes do not pin a scheduler architecture. Cluster model
         // services do, so their index may contain other Linux architectures.
-        if required_architecture.is_none()
+        if !pinned_architecture
             && candidates
                 .iter()
                 .filter(|entry| entry["platform"]["os"] == "linux")
@@ -197,7 +210,6 @@ fn verify_config(
     let architecture = config["architecture"].as_str().ok_or_else(invalid)?;
     if config["os"] != "linux"
         || !matches!(architecture, "amd64" | "arm64")
-        || required_architecture.is_some_and(|required| required != architecture)
         || selected_platform.as_ref().is_some_and(|platform| {
             platform["architecture"] != architecture || platform["os"] != config["os"]
         })
@@ -216,7 +228,7 @@ fn verify_config(
 
 /// Validate the reference-to-config digest chain and the image's Fabric catalog.
 pub fn verify(bytes: &[u8], image: &str) -> Result<FabricObservation, ObservationError> {
-    let verified = verify_config(bytes, image, None)?;
+    let verified = verify_config(bytes, image, false)?;
     let catalog = FabricCatalog::from_json(
         verified.config["config"]["Labels"][IMAGE_CATALOG_LABEL]
             .as_str()

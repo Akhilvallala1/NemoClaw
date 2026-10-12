@@ -333,3 +333,33 @@ fn deployment_preflight_requires_metadata_for_every_declared_cluster_service() {
         assert!(verify_cluster_runtime_images(&document, &secrets).is_err());
     }
 }
+
+#[test]
+fn a_runtime_image_for_another_architecture_is_reported_as_a_platform_mismatch() {
+    for kind in ["vllm", "ollama"] {
+        let labels = json!({"org.nemoclaw.runtime.spec":"v1", "org.nemoclaw.backend":kind});
+        let (image, bundle, runtime) = runtime_fixture(kind, "arm64", labels);
+        // An index may list the required platform, but the bundle's selected
+        // manifest decides which image the cluster runs.
+        let manifest = bundle["manifest_digest"].as_str().unwrap();
+        let mut blobs: BTreeMap<String, String> =
+            serde_json::from_value(bundle["blobs"].clone()).unwrap();
+        let index = json!({"schemaVersion":2,"mediaType":OCI_INDEX,"manifests":[
+            {"mediaType":OCI_MANIFEST,"digest":manifest,"size":blobs[manifest].len(),"platform":{"os":"linux","architecture":"arm64"}},
+            {"mediaType":OCI_MANIFEST,"digest":format!("sha256:{}", "a".repeat(64)),"size":100,"platform":{"os":"linux","architecture":"amd64"}}
+        ]});
+        let root = add(&mut blobs, &index);
+        let indexed = json!({"schema_version":1,"manifest_digest":manifest,"blobs":blobs});
+        for (image, bundle) in [
+            (image, bundle),
+            (format!("registry.example.com/runtime@{root}"), indexed),
+        ] {
+            let error = check_runtime(&image, &bundle, &runtime, "amd64")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("linux/amd64"), "{kind}: {error}");
+            assert!(!error.contains("metadata is missing"), "{kind}: {error}");
+            assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_ok());
+        }
+    }
+}
