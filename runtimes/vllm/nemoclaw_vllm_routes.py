@@ -1,6 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Limit bearer vLLM to its native-authenticated OpenAI API and health probe."""
+"""Limit bearer vLLM to the inference endpoints NemoClaw routes to and its health probe."""
+
+# Model listing and the request endpoints of the Chat Completions, Completions,
+# Responses, and Anthropic Messages APIs; native vLLM authentication requires
+# the key for each. GET /health stays public for readiness checks. Every other
+# request returns 404 here, including OPTIONS, and management routes that
+# owner-set VLLM_* variables register under /v1, such as LoRA adapter loading.
+ROUTES = frozenset({
+    ("GET", "/health"),
+    ("GET", "/v1/models"),
+    ("POST", "/v1/chat/completions"),
+    ("POST", "/v1/completions"),
+    ("POST", "/v1/responses"),
+    ("POST", "/v1/messages"),
+    ("POST", "/v1/messages/count_tokens"),
+})
 
 
 class OpenAIRoutes:
@@ -14,9 +29,7 @@ class OpenAIRoutes:
             return await self.app(scope, receive, send)
         # Match native authentication's path handling when a root path is set.
         path = scope.get("path", "").removeprefix(scope.get("root_path", ""))
-        if path == "/v1" or path.startswith("/v1/") or (
-            path == "/health" and scope.get("method") in ("GET", "HEAD")
-        ):
+        if (scope.get("method"), path) in ROUTES:
             return await self.app(scope, receive, send)
         await send({
             "type": "http.response.start",

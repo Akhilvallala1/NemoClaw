@@ -17,6 +17,36 @@ from fastapi.testclient import TestClient
 import model_hosting_container_standards.sagemaker as sagemaker
 
 NOT_FOUND = (404, {"error": "Not found"})
+# Requests the filter passes to vLLM: model listing and the request endpoints of
+# the inference APIs NemoClaw routes to, all behind the key, plus public GET /health.
+INFERENCE = [
+    ("GET", "/v1/models"),
+    ("POST", "/v1/chat/completions"),
+    ("POST", "/v1/completions"),
+    ("POST", "/v1/responses"),
+    ("POST", "/v1/messages"),
+    ("POST", "/v1/messages/count_tokens"),
+]
+HEALTH = ("GET", "/health")
+# Requests vLLM may answer that no NemoClaw route uses, beyond its registered routes.
+UNROUTED = [
+    ("OPTIONS", "/v1/models"),
+    ("OPTIONS", "/v1/does-not-exist"),
+    ("OPTIONS", "/invocations"),
+    ("HEAD", "/health"),
+    ("POST", "/health"),
+    ("GET", "/health/"),
+    ("GET", "/v1"),
+    ("GET", "/v1/"),
+    ("GET", "/v1/models/"),
+    ("POST", "/v1/models"),
+    ("GET", "/v1/chat/completions"),
+    ("GET", "/v1/props"),
+    ("POST", "/v1/embeddings"),
+    ("POST", "/v1other"),
+    ("POST", "/v2/chat"),
+]
+PREFLIGHT = {"Origin": "https://example.invalid", "Access-Control-Request-Method": "POST"}
 
 
 def build_vllm_app():
@@ -46,7 +76,13 @@ class RealApplicationTest(unittest.TestCase):
 
     def setUp(self):
         self.key = secrets.token_hex(32)
-        environment = mock.patch.dict(os.environ, {"VLLM_API_KEY": self.key})
+        # Owner-set recipe variables can register management routes, including
+        # LoRA adapter loading under /v1; the filter must hide them from key holders.
+        environment = mock.patch.dict(os.environ, {
+            "VLLM_API_KEY": self.key,
+            "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "1",
+            "VLLM_SERVER_DEV_MODE": "1",
+        })
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -63,29 +99,38 @@ class RealApplicationTest(unittest.TestCase):
         app = build_vllm_app()
         self.assertIs(app.user_middleware[0].cls, OpenAIRoutes)
 
-    def test_routes_outside_v1_return_not_found_before_vllm(self):
+    def test_requests_outside_the_inference_endpoints_return_not_found_with_any_key(self):
         app = build_vllm_app()
         client = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
-        requests = [request for request in registered_requests(app)
-                    if not request[1].startswith("/v1/") and request != ("GET", "/health")]
-        for path in ["/invocations", "/tokenize", "/metrics", "/ping", "/version", "/load",
-                     "/inference/v1/generate", "/openapi.json", "/docs"]:
-            self.assertIn(path, {path for _, path in requests})
-        for method, path in requests:
+        registered = set(registered_requests(app))
+        for request in [("POST", "/invocations"), ("POST", "/tokenize"), ("GET", "/metrics"),
+                        ("GET", "/ping"), ("GET", "/version"), ("GET", "/load"),
+                        ("POST", "/inference/v1/generate"), ("GET", "/openapi.json"),
+                        ("POST", "/v1/load_lora_adapter"), ("POST", "/v1/unload_lora_adapter"),
+                        ("POST", "/v1/responses/fixture/cancel"), ("POST", "/sleep")]:
+            self.assertIn(request, registered)
+        for method, path in sorted(registered - set(INFERENCE) - {HEALTH}) + UNROUTED:
             for token in [None, "wrong", self.key]:
-                with self.subTest(method=method, path=path, token=token is not None):
-                    status, body = self.request(client, method, path, token)
-                    self.assertEqual(status, 404)
-                    if method != "HEAD":
-                        self.assertEqual((status, body), NOT_FOUND)
+                for headers in [None, PREFLIGHT] if method == "OPTIONS" else [None]:
+                    with self.subTest(method=method, path=path, token=token is not None,
+                                      preflight=headers is not None):
+                        status, body = self.request(client, method, path, token, headers)
+                        self.assertEqual(status, 404)
+                        if method != "HEAD":
+                            self.assertEqual((status, body), NOT_FOUND)
 
-    def test_v1_routes_require_the_key(self):
+    def test_inference_endpoints_require_the_key_and_health_stays_public(self):
         client = TestClient(build_vllm_app(), raise_server_exceptions=False)
-        for method, path in [("GET", "/v1/models"), ("POST", "/v1/chat/completions"),
-                             ("POST", "/v1/completions")]:
+        for method, path in INFERENCE:
             for token in [None, "wrong"]:
                 with self.subTest(method=method, path=path, token=token):
                     self.assertEqual(self.request(client, method, path, token)[0], 401)
+            with self.subTest(method=method, path=path, token="key"):
+                result = self.request(client, method, path, self.key)
+                self.assertNotEqual(result, NOT_FOUND)
+                self.assertNotEqual(result[0], 401)
+        # Without an engine the handler fails, but the request reaches vLLM without a key.
+        self.assertNotIn(self.request(client, *HEALTH)[0], [401, 404])
 
 
 class NativeAuthenticationTest(unittest.TestCase):
@@ -118,9 +163,8 @@ class NativeAuthenticationTest(unittest.TestCase):
                 self.assertEqual(client.post("/v1/chat/completions", headers=headers, json={}).status_code, expected)
             self.assertEqual(invoked, ["/v1/chat/completions"])
             self.assertEqual(client.get("/health").status_code, 200)
-            self.assertEqual(client.options("/v1/chat/completions", headers={
-                "Origin": "https://example.invalid", "Access-Control-Request-Method": "POST",
-            }).status_code, 200)
+            # NemoClaw has no browser clients, so CORS preflight stops at the filter.
+            self.assertEqual(client.options("/v1/chat/completions", headers=PREFLIGHT).status_code, 404)
             self.assertEqual(invoked, ["/v1/chat/completions"])
 
     def test_unsupported_websockets_are_closed_before_the_application(self):
@@ -171,22 +215,22 @@ class NativeAuthenticationTest(unittest.TestCase):
                 return statuses
 
             for root_path in ["", "/inference"]:
-                for path in ["/v1", "/v1/", "/v1/models", "/v1/chat/completions", "/v1/completions"]:
-                    for method in ["GET", "POST"]:
-                        with self.subTest(path=path, method=method, root_path=root_path):
-                            self.assertEqual(asyncio.run(request(path, None, method, root_path)), [401])
-                            self.assertEqual(asyncio.run(request(path, "wrong", method, root_path)), [401])
-                            self.assertEqual(asyncio.run(request(path, key, method, root_path)), [200])
-                    # Native middleware keeps CORS preflight unauthenticated.
-                    self.assertEqual(asyncio.run(request(path, None, "OPTIONS", root_path)), [200])
-                for path in ["/invocations", "/v1other", "/v2/chat", "/inference", "/tokenize", "/metrics", "/health/"]:
+                for method, path in INFERENCE:
+                    with self.subTest(path=path, method=method, root_path=root_path):
+                        self.assertEqual(asyncio.run(request(path, None, method, root_path)), [401])
+                        self.assertEqual(asyncio.run(request(path, "wrong", method, root_path)), [401])
+                        self.assertEqual(asyncio.run(request(path, key, method, root_path)), [200])
+                self.assertEqual(asyncio.run(request("/health", None, "GET", root_path)), [200])
+                for method, path in UNROUTED + [
+                    ("POST", "/invocations"), ("POST", "/inference"), ("POST", "/tokenize"),
+                    ("GET", "/metrics"), ("PUT", "/health"), ("DELETE", "/health"),
+                    ("POST", "/v1/load_lora_adapter"), ("POST", "/v1/unload_lora_adapter"),
+                    ("GET", "/v1/responses/fixture"), ("POST", "/v1/responses/fixture/cancel"),
+                    ("POST", "/v1/chat/completions/render"), ("POST", "/v1/completions/derender"),
+                ]:
                     for token in [None, "wrong", key]:
-                        with self.subTest(path=path, root_path=root_path):
-                            self.assertEqual(asyncio.run(request(path, token, root_path=root_path)), [404])
-                for method in ["GET", "HEAD"]:
-                    self.assertEqual(asyncio.run(request("/health", None, method, root_path)), [200])
-                for method in ["POST", "PUT", "DELETE", "OPTIONS"]:
-                    self.assertEqual(asyncio.run(request("/health", None, method, root_path)), [404])
+                        with self.subTest(path=path, method=method, root_path=root_path):
+                            self.assertEqual(asyncio.run(request(path, token, method, root_path)), [404])
             # Without the bearer-only middleware the upstream route set is unchanged.
             self.assertEqual(asyncio.run(request("/invocations", None, app=application)), [200])
         finally:

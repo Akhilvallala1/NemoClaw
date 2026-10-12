@@ -300,9 +300,15 @@ The OpenShell provider reads the key through the verified runtime container iden
 Agent requests use their OpenShell placeholder credential.
 YAML, plans, container launch settings, and OpenTofu state contain no generated key.
 The runtime's root user and Docker administrators can read the key and child environment.
-The key authenticates the OpenAI `/v1` routes and does not provide TLS.
-In bearer mode, the NemoClaw image middleware permits `/v1/**` and public `GET`/`HEAD /health` only; other routes, including `POST /invocations`, return HTTP 404 before reaching inference.
-Inference requests require the key; upstream CORS preflight `OPTIONS` handling under `/v1/**` remains public, and WebSockets are disabled.
+The key authenticates the `/v1` requests below and does not provide TLS.
+In bearer mode, the NemoClaw image middleware passes only these requests to vLLM:
+
+- `GET /v1/models` and `POST` to `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/messages`, or `/v1/messages/count_tokens`, each of which requires the key.
+- `GET /health`, which is public.
+
+Every other request returns HTTP 404 before reaching vLLM, with or without the key.
+This includes `POST /invocations`, `OPTIONS` requests, `HEAD /health`, and management routes that recipe `VLLM_*` variables can enable, such as `/v1/load_lora_adapter`.
+WebSockets are disabled.
 This restriction closes an upstream gap: the [native vLLM authentication middleware](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/utils/server_utils.py) leaves `/invocations` unguarded, and an operator's test of an earlier image returned a chat completion through that route without a key.
 Omitting `authentication: bearer` leaves the upstream route behavior unchanged.
 Keep the whole listener on a trusted private network, including when `authentication: bearer` is enabled.
