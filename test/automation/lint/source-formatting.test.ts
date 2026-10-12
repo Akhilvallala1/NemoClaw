@@ -80,3 +80,61 @@ it("formats existing source through the commit hook without a comparison ref", (
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+it("runs the pinned Hadolint hook on a staged Dockerfile and propagates lint failure", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-hadolint-hook-"));
+  try {
+    const file = "Dockerfile";
+    const fakeBin = path.join(root, "bin");
+    const argsLog = path.join(root, "hadolint-args.log");
+    const version =
+      fs.readFileSync(".github/hadolint.env", "utf8").match(/^HADOLINT_VERSION=(.+)$/m)?.[1] ??
+      "missing";
+    fs.mkdirSync(fakeBin);
+    fs.mkdirSync(path.join(root, "scripts", "checks"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".github"));
+    fs.copyFileSync(".pre-commit-config.yaml", path.join(root, ".pre-commit-config.yaml"));
+    fs.copyFileSync(".github/hadolint.env", path.join(root, ".github", "hadolint.env"));
+    fs.copyFileSync(
+      "scripts/checks/hadolint.sh",
+      path.join(root, "scripts", "checks", "hadolint.sh"),
+    );
+    fs.writeFileSync(path.join(root, file), "FROM scratch\n");
+    fs.writeFileSync(
+      path.join(fakeBin, "hadolint"),
+      `#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then
+  printf 'Haskell Dockerfile Linter ${version}\\n'
+  exit 0
+fi
+printf '%s\\n' "$@" >> "$HADOLINT_ARGS_LOG"
+exit "$HADOLINT_EXIT"
+`,
+      { mode: 0o755 },
+    );
+    const init = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+    expect(init.status, init.stderr).toBe(0);
+    const add = spawnSync("git", ["add", "--", file], { cwd: root, encoding: "utf8" });
+    expect(add.status, add.stderr).toBe(0);
+    const runHook = (exitCode: string) =>
+      spawnSync(path.resolve("node_modules/.bin/prek"), ["run", "hadolint", "--files", file], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          HADOLINT_ARGS_LOG: argsLog,
+          HADOLINT_EXIT: exitCode,
+          PREK_NO_FAST_PATH: "1",
+        },
+      });
+    const pass = runHook("0");
+    expect(pass.status, pass.stdout + pass.stderr).toBe(0);
+    expect(fs.readFileSync(argsLog, "utf8")).toBe(`${file}\n`);
+    const fail = runHook("7");
+    expect(fail.status, fail.stdout + fail.stderr).toBe(1);
+    expect(fs.readFileSync(argsLog, "utf8")).toBe(`${file}\n${file}\n`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

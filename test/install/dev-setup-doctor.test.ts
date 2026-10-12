@@ -98,6 +98,11 @@ function createFixture(): Fixture {
   const hadolintScript = path.join("scripts", "checks", "hadolint.sh");
   fs.mkdirSync(path.join(repo, "scripts", "checks"), { recursive: true });
   fs.copyFileSync(path.join(repoRoot, hadolintScript), path.join(repo, hadolintScript));
+  fs.mkdirSync(path.join(repo, ".github"), { recursive: true });
+  fs.copyFileSync(
+    path.join(repoRoot, ".github", "hadolint.env"),
+    path.join(repo, ".github", "hadolint.env"),
+  );
 
   for (const file of [
     "node_modules/.bin/tsc",
@@ -167,7 +172,11 @@ else
 fi`,
   );
   writeTool(fakeBin, "python3", 'echo "Python 3.12.1"');
-  writeTool(fakeBin, "hadolint", 'echo "Haskell Dockerfile Linter 2.14.0"');
+  const hadolintVersion =
+    fs
+      .readFileSync(path.join(repo, ".github", "hadolint.env"), "utf8")
+      .match(/^HADOLINT_VERSION=(.+)$/m)?.[1] ?? "missing";
+  writeTool(fakeBin, "hadolint", `echo "Haskell Dockerfile Linter ${hadolintVersion}"`);
   writeTool(
     fakeBin,
     "git",
@@ -571,15 +580,22 @@ describe("contributor environment doctor", () => {
     expect(result.output).toContain("Git contributor identity is incomplete");
   });
 
-  it("rejects a Hadolint version that differs from CI", () => {
+  it("uses the shared Hadolint version requirement", () => {
     const fixture = createFixture();
-    writeTool(fixture.fakeBin, "hadolint", 'echo "Haskell Dockerfile Linter 2.15.1"');
+    const versionFile = path.join(fixture.repo, ".github", "hadolint.env");
+    const original = fs.readFileSync(versionFile, "utf8");
+    const originalVersion = original.match(/^HADOLINT_VERSION=(.+)$/m)?.[1] ?? "missing";
+    const requiredVersion = originalVersion === "9.99.9" ? "9.99.8" : "9.99.9";
+    fs.writeFileSync(
+      versionFile,
+      original.replace(/^HADOLINT_VERSION=.+$/m, `HADOLINT_VERSION=${requiredVersion}`),
+    );
 
     const result = runDoctor(fixture);
 
     expect(result.status).toBe(1);
-    expect(result.output).toContain("hadolint v2.14.0 is required");
-    expect(result.output).toContain("Haskell Dockerfile Linter 2.15.1");
+    expect(result.output).toContain(`hadolint v${requiredVersion} is required`);
+    expect(result.output).toContain(`Haskell Dockerfile Linter ${originalVersion}`);
   });
 
   it("does not ask npm to download TypeScript when plugin dependencies are missing", () => {
