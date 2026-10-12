@@ -84,6 +84,83 @@ impl Experiment {
 }
 
 #[test]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; offline input validation"]
+fn production_provider_validates_protected_input_ownership_without_resolving_credentials() {
+    use nemoclaw_sdk::{compile, config::Document};
+    let document = Document::parse(
+        include_bytes!(
+            "../../../nemoclaw-sdk/tests/fixtures/config/container-agent-connection.yaml"
+        )
+        .as_slice(),
+    )
+    .unwrap();
+    let generations = [
+        "workspace",
+        "provider",
+        "sandbox",
+        "ollama_service",
+        "managed_gateway",
+        "container_service",
+    ]
+    .map(|kind| (kind.into(), "a".repeat(32)))
+    .into();
+    let target = compile::targets(&document, &generations)
+        .unwrap()
+        .into_iter()
+        .find(|target| target.kind == "container_inputs")
+        .unwrap();
+    let spec: Value = serde_json::from_str(&target.values["spec"]).unwrap();
+    let workspace = TofuWorkspace::with_providers(
+        nemoclaw_test_fixtures::Bundle::from_env().tofu(),
+        &[("nemoclaw", &crate::provider())],
+    );
+    for fault in [None, Some("owner"), Some("generation"), Some("malformed")] {
+        let mut changed = spec.clone();
+        let encoded = if fault == Some("malformed") {
+            "PRIVATE_SENTINEL".into()
+        } else {
+            if let Some(attribute) = fault {
+                changed["storage"][attribute] = json!("");
+            }
+            changed.to_string()
+        };
+        fs::write(workspace.path().join("main.tf.json"), json!({
+            "terraform":{"required_version":"= 1.12.6", "required_providers":{"nemoclaw":{"source":"registry.opentofu.org/nvidia/nemoclaw"}}},
+            "provider":{"nemoclaw":{}},
+            "resource":{"nemoclaw_container_inputs":{"application":{"spec":encoded.replace("${", "$${").replace("%{", "%%{"),"sandbox_id":"11111111-2222-3333-4444-555555555555"}}}
+        }).to_string()).unwrap();
+        let output = workspace
+            .command()
+            .args(["validate", "-json"])
+            .output()
+            .unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            output.status.success(),
+            fault.is_none(),
+            "{fault:?}: {report}"
+        );
+        if fault.is_some() {
+            let diagnostic = report["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|diagnostic| diagnostic["summary"] == "Invalid resource specification")
+                .unwrap_or_else(|| panic!("{report}"));
+            // OpenTofu adds the authored source snippet; provider diagnostics
+            // must not copy malformed specification contents into their detail.
+            assert!(
+                !diagnostic["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("PRIVATE_SENTINEL")
+            );
+        }
+        assert!(!workspace.path().join("terraform.tfstate").exists());
+    }
+}
+
+#[test]
 #[ignore = "requires NEMOCLAW_TEST_BUNDLE; no live services"]
 fn real_tofu_checks_hardware_during_validation_planning_and_saved_plan_apply() {
     let e = Experiment::new(nemoclaw_test_fixtures::fixture_executable(
