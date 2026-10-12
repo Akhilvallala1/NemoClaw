@@ -188,11 +188,40 @@ mod durable_source_tests {
     }
 
     #[test]
+    fn cluster_source_rejects_a_malformed_model_name_with_the_expected_prefix() {
+        let (mut source, row) = cluster_source();
+        let Source::ClusterService { storage, endpoint } = &mut source else {
+            panic!("compiled cluster credential source")
+        };
+        // Keep the owner-derived prefix and matching Service host, so only the
+        // storage name format rejects this source.
+        storage.name.push_str("-x");
+        let mut url = url::Url::parse(endpoint).unwrap();
+        url.set_host(Some(&crate::kubernetes::services::service_host(
+            &storage.name,
+            storage.namespace(),
+        )))
+        .unwrap();
+        *endpoint = url.to_string();
+        let endpoint = endpoint.clone();
+        assert_eq!(
+            Source::parse(
+                &serde_json::to_string(&source).unwrap(),
+                &row["owner"],
+                &endpoint
+            ),
+            Err(ObservationError::BindingMismatch)
+        );
+    }
+
+    #[test]
     fn cluster_source_rejects_each_invalid_endpoint_component() {
         let (source, row) = cluster_source();
         for case in [
             "scheme",
             "host",
+            "namespace",
+            "short host",
             "missing port",
             "zero port",
             "path",
@@ -206,7 +235,15 @@ mod durable_source_tests {
                 panic!("compiled cluster credential source")
             };
             let mut url = url::Url::parse(endpoint).unwrap();
+            let host = url.host_str().unwrap().to_owned();
+            let (name, _) = host.split_once('.').unwrap();
             match case {
+                "namespace" => url
+                    .set_host(Some(&format!("{name}.foreign.svc.cluster.local")))
+                    .unwrap(),
+                "short host" => url
+                    .set_host(Some(host.strip_suffix(".cluster.local").unwrap()))
+                    .unwrap(),
                 "scheme" => url.set_scheme("https").unwrap(),
                 "host" => url
                     .set_host(Some("foreign.default.svc.cluster.local"))
@@ -245,6 +282,11 @@ mod durable_source_tests {
             ("kind", "/storage/kind", json!("kubernetes_service")),
             ("generation", "/storage/generation", json!("invalid")),
             ("capacity", "/storage/storageGib", json!(0)),
+            (
+                "gateway owner",
+                "/storage/gateway/owner",
+                json!("11111111-1111-4111-8111-111111111111"),
+            ),
             ("gateway kind", "/storage/gateway/kind", json!("foreign")),
             (
                 "missing cluster target",
