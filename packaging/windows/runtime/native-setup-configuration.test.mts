@@ -850,7 +850,7 @@ test("custom provider bindings retain the broker endpoint security boundary", as
       inference: "compatible",
       endpoint: "https://user:password@example.invalid/v1",
     }),
-    /endpoint violates/u,
+    /endpoint must not contain credentials/u,
   );
   const local = {
     ...configuration,
@@ -868,6 +868,57 @@ test("custom provider bindings retain the broker endpoint security boundary", as
 
 test("metadata input is bounded before parsing or credential access", async () => {
   await assert.rejects(prepare({ ...configuration, model: "x".repeat(17 * 1024) }), /size limit/u);
+});
+
+test("private and DNS-rebound endpoint admission cannot acquire state or change credentials", async () => {
+  for (const endpoint of [
+    "https://169.254.169.254/v1",
+    "https://10.1.2.3/v1",
+    "https://[::1]/v1",
+    "https://public.example/v1",
+  ]) {
+    let protectedCalls = 0;
+    const input = Buffer.from(
+      JSON.stringify({
+        configuration: { ...configuration, inference: "compatible", endpoint, options: {} },
+        credentials: { inference: "synthetic-provider-key", services: {} },
+      }),
+    );
+    await assert.rejects(
+      configureNativeFromStdin(
+        "unused",
+        ["--transaction"],
+        Readable.from([input]),
+        process.stdout,
+        {
+          lookupEndpoint: async () => [
+            { address: "8.8.8.8", family: 4 },
+            { address: "169.254.169.254", family: 4 },
+          ],
+          acquireState: async () => {
+            protectedCalls++;
+            throw new Error("state must not be reached");
+          },
+          credentialStore: {
+            read: async () => {
+              protectedCalls++;
+              return "";
+            },
+            write: async () => {
+              protectedCalls++;
+            },
+          },
+          writeConfiguration: () => {
+            protectedCalls++;
+            return "must not write";
+          },
+        },
+      ),
+      /private or reserved|exclusively to public addresses/u,
+    );
+    assert.equal(protectedCalls, 0);
+    assert(input.every((byte) => byte === 0));
+  }
 });
 
 test("configuration waits for combined configuration and agent ownership before any mutation", async () => {
@@ -925,6 +976,7 @@ test("configuration waits for combined configuration and agent ownership before 
             },
           };
         },
+        lookupEndpoint: async () => [{ address: "8.8.8.8", family: 4 }],
         readCredential: async () => {
           events.push("credential");
           return "";
@@ -1067,6 +1119,7 @@ test("configuration requires the shared-owner protocol, not an ordinary session 
         ]),
         process.stdout,
         {
+          lookupEndpoint: async () => [{ address: "8.8.8.8", family: 4 }],
           readCredential: async () => "",
           readServices: async () => ({ options: {}, environment: {} }),
           deleteCredential: async () => {},

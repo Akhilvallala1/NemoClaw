@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createServer, type IncomingMessage } from "node:http";
+import { compose } from "node:stream";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import { createNativeServiceBootstrap, type NativeOptions } from "./native-options.mts";
 import { brokerOperationForRequest, resolveBrokerUpstreamUrl } from "./native-security.mts";
-import { responseChunks } from "./native-inference-download.mts";
+import { requestNativeInference } from "./native-inference-endpoint.mts";
 function fail(message: string): never {
   throw new Error(`NemoClaw native inference broker failed: ${message}`);
 }
@@ -18,6 +20,26 @@ async function readBrokerRequest(request: IncomingMessage) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+
+function providerResponseBody(response: IncomingMessage) {
+  const encoding = response.headers["content-encoding"]?.toLowerCase().trim();
+  if (!encoding || encoding === "identity") return response;
+  const decoder =
+    encoding === "gzip" || encoding === "x-gzip"
+      ? createGunzip()
+      : encoding === "deflate"
+        ? createInflate()
+        : encoding === "br"
+          ? createBrotliDecompress()
+          : null;
+  if (!decoder) {
+    response.destroy();
+    fail("the provider response encoding is unsupported");
+  }
+  // Retain fetch's decoded response semantics and apply the limit after decoding.
+  // Composition propagates decompression errors and cancellation to the socket.
+  return compose(response, decoder);
 }
 
 export async function startNativeInferenceBroker(
@@ -59,31 +81,26 @@ export async function startNativeInferenceBroker(
         headers["http-referer"] = "https://www.nvidia.com/nemoclaw/";
         headers["x-openrouter-title"] = "NVIDIA NemoClaw";
       }
-      // lgtm[js/file-access-to-http] The per-user onboarding configuration is schema checked;
-      // the endpoint is protocol/origin checked and the request path is rebuilt from an exact allowlist.
-      const upstream = await fetch(upstreamUrl, {
-        method: request.method,
+      const upstream = await requestNativeInference(new URL(upstreamUrl), configuration.inference, {
+        method: request.method!,
         headers,
         body,
-        redirect: "error",
         signal: AbortSignal.any([cancelled.signal, AbortSignal.timeout(180_000)]),
       });
       const chunks: Uint8Array[] = [];
       let responseSize = 0;
-      if (upstream.body) {
-        for await (const chunk of responseChunks(upstream.body)) {
-          responseSize += chunk.byteLength;
-          if (responseSize > 32 * 1024 * 1024) {
-            cancelled.abort();
-            fail("the provider response exceeded the broker limit");
-          }
-          chunks.push(chunk);
+      for await (const chunk of providerResponseBody(upstream)) {
+        responseSize += chunk.byteLength;
+        if (responseSize > 32 * 1024 * 1024) {
+          cancelled.abort();
+          fail("the provider response exceeded the broker limit");
         }
+        chunks.push(chunk);
       }
       const responseBody = Buffer.concat(chunks, responseSize);
-      response.writeHead(upstream.status, {
+      response.writeHead(upstream.statusCode!, {
         "cache-control": "no-store",
-        "content-type": upstream.headers.get("content-type") ?? "application/json",
+        "content-type": upstream.headers["content-type"] ?? "application/json",
       });
       response.end(responseBody);
     } catch (error) {

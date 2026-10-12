@@ -95,6 +95,7 @@ test("web onboarding uses the canonical lease and never persists its secret or l
       Readable.from([Buffer.from(serialized)]),
       process.stdout,
       {
+        lookupEndpoint: async () => [{ address: "8.8.8.8", family: 4 }],
         acquireState: async (_launcher, agent) => {
           assert.equal(agent, "hermes");
           events.push("acquire");
@@ -244,6 +245,7 @@ for (const failure of ["none", "credential", "services", "active-pointer"]) {
         Readable.from([input]),
         process.stdout,
         {
+          lookupEndpoint: async () => [{ address: "8.8.8.8", family: 4 }],
           acquireState: async () => {
             acquiring();
             await admitted;

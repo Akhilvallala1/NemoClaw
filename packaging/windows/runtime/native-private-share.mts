@@ -21,6 +21,9 @@ export async function createPrivateShareRoot(
   );
   const script = String.raw`$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Bind required cmdlets to Windows modules without implicit module discovery.
+Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules', 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Security.psd1')) -ErrorAction Stop
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;

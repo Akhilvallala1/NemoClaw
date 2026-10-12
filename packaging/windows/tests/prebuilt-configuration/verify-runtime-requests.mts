@@ -52,6 +52,7 @@ try {
       Readable.from([input]),
       process.stdout,
       {
+        lookupEndpoint: async () => [{ address: "8.8.8.8", family: 4 }],
         inspectModel: async (_root, _launcher, id) => {
           assert.equal(id, request.localModel);
           const model = NATIVE_LOCAL_MODELS.models.find((item) => item.id === id);

@@ -270,11 +270,26 @@ test(
     skip: process.platform !== "win32" || process.arch !== "arm64",
     timeout: 150_000,
   },
-  async () => {
+  async (t) => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-private-share-control-"));
     const share = path.join(fixture, "share");
     const creators: childProcess.ChildProcess[] = [];
     let claims = 0;
+    const spawn = childProcess.spawn;
+    let explicitModuleCalls = 0;
+    t.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawn>) => {
+      const arguments_ = [...args[1]!];
+      const encodedIndex = arguments_.indexOf("-EncodedCommand") + 1;
+      assert(encodedIndex > 0, "The private creator must receive its encoded script.");
+      const script = Buffer.from(arguments_[encodedIndex]!, "base64").toString("utf16le");
+      arguments_[encodedIndex] = Buffer.from(
+        "$PSModuleAutoLoadingPreference = 'None'\n" + script,
+        "utf16le",
+      ).toString("base64");
+      explicitModuleCalls++;
+      return spawn(args[0], arguments_, args[2]);
+    });
+    syncBuiltinESMExports();
     try {
       const acl = await createPrivateShareRoot(
         share,
@@ -302,9 +317,16 @@ test(
         ),
         /Private share root already exists/u,
       );
+      assert.equal(
+        explicitModuleCalls,
+        2,
+        "Both creation and refusal must work without autoloading.",
+      );
       assert.equal(claims, 1, "An existing directory must not transfer ownership.");
       assert.equal(fs.readFileSync(retainedFile, "utf8"), "existing-content");
     } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
       const stopped = await Promise.all(creators.map(stopChild));
       assert(
         stopped.every(Boolean),

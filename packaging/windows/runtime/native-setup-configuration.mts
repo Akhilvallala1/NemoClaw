@@ -5,6 +5,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import {
+  assertNativeInferenceEndpoint,
+  resolveNativeInferenceAddresses,
+  type NativeEndpointLookup,
+} from "./native-inference-endpoint.mts";
 import { inspectPrebuiltNativeModel } from "./native-prebuilt-inference.mts";
 import { inspectBundledNativeModel } from "./native-bundled-inference.mts";
 import { isDownloadedLocalModel, localModelIdentityMatches } from "./native-local-models.mts";
@@ -155,6 +160,7 @@ export function normalizeOnboardingConfiguration(
     !["127.0.0.1", "localhost", "[::1]"].includes(endpointUrl.hostname)
   )
     throw new Error("Local inference must use a loopback endpoint.");
+  assertNativeInferenceEndpoint(endpointUrl, submitted.inference);
   const model = typeof options.model === "string" ? options.model.trim() : "";
   if (!model || model.length > 256 || /[\u0000-\u001f\u007f]/u.test(model))
     throw new Error("Enter a valid model ID.");
@@ -279,6 +285,7 @@ export async function configureNativeFromStdin(
   input: AsyncIterable<Buffer> = process.stdin,
   output: Pick<NodeJS.WriteStream, "write"> = process.stdout,
   dependencies: {
+    lookupEndpoint?: NativeEndpointLookup;
     inspectModel?: (
       root: string,
       launcher: string,
@@ -448,6 +455,14 @@ export async function configureNativeFromStdin(
     output.write(binding);
     return;
   }
+  // DNS admission precedes state or credential mutation. Credential binding
+  // itself stays independent of DNS so removal can clean up historical entries.
+  if (normalized.endpoint)
+    await resolveNativeInferenceAddresses(
+      new URL(normalized.endpoint),
+      normalized.inference,
+      dependencies.lookupEndpoint,
+    );
   const state = await (dependencies.acquireState ?? acquireNativeStateConfiguration)(
     launcher,
     normalized.agent,

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import ts from "typescript";
+import { verifyNativeEndpointPolicy } from "./native-endpoint-policy.mts";
 
 const DIAGNOSTIC_ENTRIES = [
   "native-inference-cli.mts",
@@ -67,6 +68,7 @@ export function prepareRuntimeSource(source: string) {
       JSON.stringify(DIAGNOSTIC_ENTRIES.map((file) => "packaging/windows/runtime/" + file))
     )
       throw new Error("The explicit diagnostic entry inventory changed.");
+    verifyNativeEndpointPolicy(runtime, source);
     return {
       runtime,
       receipt: {
