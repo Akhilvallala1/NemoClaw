@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { parseCliOpenShellSandboxInventory } from "../../../src/lib/adapters/openshell/sandbox-observer-cli.ts";
 import { shellQuote } from "../../../src/lib/core/shell-quote.ts";
 import { waitUntilAsync } from "../../../src/lib/core/wait.ts";
 import type { ArtifactSink } from "../fixtures/artifacts.ts";
@@ -43,7 +44,7 @@ export async function proveStoppedDockerAgentRecovery(
   const gateway = process.env.OPENSHELL_GATEWAY ?? "nemoclaw";
   const env = buildAvailabilityProbeEnv();
   let observation = 0;
-  const readSource = async (): Promise<{ id: string; phase: string }> => {
+  const readSource = async (): Promise<{ id: string; phase: string; readiness: string }> => {
     const result = await sandbox.openshell(["sandbox", "list", "-g", gateway, "-o", "json"], {
       artifactName: `${artifactPrefix}-observation-${observation++}`,
       env,
@@ -53,11 +54,15 @@ export async function proveStoppedDockerAgentRecovery(
     const rows = JSON.parse(result.stdout) as Array<{ id: string; name: string; phase: string }>;
     const selected = rows.filter((row) => row.name === sandboxName);
     assert.equal(selected.length, 1);
-    return selected[0]!;
+    const row = selected[0]!;
+    const readiness = parseCliOpenShellSandboxInventory(
+      `NAME CREATED PHASE\n${row.name} 0s ${row.phase}`,
+    ).sandboxes[0]?.readiness;
+    return { ...row, readiness: readiness ?? "unknown" };
   };
   const source = await readSource();
   assert(typeof source.id === "string" && /^[A-Za-z0-9._-]{1,512}$/u.test(source.id));
-  assert.equal(source.phase, "Ready");
+  assert.deepEqual([source.phase, source.readiness], ["Ready", "ready"]);
   const container = await runtime.resolveSandboxResourceHandle(sandboxName, {
     artifactName: `${artifactPrefix}-container`,
   });
@@ -129,6 +134,7 @@ export async function proveStoppedDockerAgentRecovery(
   );
   const expectedPhase = sourceTransition === "openshell-stop-not-ready" ? "Stopped" : "Error";
   let stoppedObservation = 0;
+  let stoppedReadiness: string | undefined;
   const expectedStateObserved = await waitUntilAsync(
     async () => {
       const current = await readSource();
@@ -139,6 +145,7 @@ export async function proveStoppedDockerAgentRecovery(
       );
       if (current.phase !== expectedPhase) return false;
       if (sourceTransition !== "openshell-stop-not-ready") return true;
+      if (current.readiness !== "not_ready") return false;
       const state = await runtime.command(
         ["inspect", "--type", "container", "--format", "{{.State.Running}}", container],
         {
@@ -146,14 +153,16 @@ export async function proveStoppedDockerAgentRecovery(
           timeoutMs: 10_000,
         },
       );
-      return state.exitCode === 0 && state.stdout.trim() === "false";
+      if (state.exitCode !== 0 || state.stdout.trim() !== "false") return false;
+      stoppedReadiness = current.readiness;
+      return true;
     },
     { deadlineMs: Date.now() + 60_000, initialIntervalMs: 1_000, maxAttempts: 30 },
   );
   assert(
     expectedStateObserved,
     sourceTransition === "openshell-stop-not-ready"
-      ? "OpenShell did not report the same source Stopped with its Docker container stopped"
+      ? "OpenShell did not report the same source Stopped/not_ready with its Docker container stopped"
       : "OpenShell did not report the killed source as Error",
   );
   await rebuildAndProveState();
@@ -185,6 +194,9 @@ export async function proveStoppedDockerAgentRecovery(
     sourceContainerId: container,
     replacementContainerId: replacement,
     sourcePhase: expectedPhase,
+    ...(sourceTransition === "openshell-stop-not-ready"
+      ? { sourceReadiness: stoppedReadiness }
+      : {}),
     ...(agentName === "openclaw" ? { workspacePreserved: true } : { agentStatePreserved: true }),
     unknownNativeRootStatePreserved: true,
     restorationProof,
