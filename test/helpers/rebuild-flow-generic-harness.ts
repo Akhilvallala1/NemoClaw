@@ -1015,6 +1015,10 @@ export function createRebuildFlowHarness(overrides: RebuildFlowOverrides = {}): 
   );
   vi.spyOn(processRecovery, "finishOpenClawPostRestoreDoctor").mockResolvedValue({ ok: true });
   vi.spyOn(processRecovery, "abortOpenClawPostRestoreDoctor").mockResolvedValue({ ok: true });
+  vi.spyOn(openClawLifecycle, "finishOpenClawBackupQuiesce").mockResolvedValue({ ok: true });
+  vi.spyOn(openClawLifecycle, "restartOpenClawSourceAfterMaintenanceAbort").mockResolvedValue({
+    ok: true,
+  });
   const finishOpenClawMaintenanceWindowSpy = vi
     .spyOn(openClawLifecycle, "finishUnregisteredOpenClawPostRestoreDoctor")
     .mockResolvedValue({ ok: true });
