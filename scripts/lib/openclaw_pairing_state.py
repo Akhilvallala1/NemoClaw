@@ -23,6 +23,10 @@ class OpenClawPairingStateRetryableError(OSError):
     """The canonical snapshot changed or is not ready for a bounded read."""
 
 
+class OpenClawPairingStateBusyError(OpenClawPairingStateRetryableError):
+    """SQLite reported a transient lock; the database identity is unchanged."""
+
+
 def _directory_flags():
     return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 
@@ -562,7 +566,7 @@ def _read_openclaw_state(
         return records, database_metadata
     except sqlite3.OperationalError as error:
         if "locked" in str(error).lower() or "busy" in str(error).lower():
-            raise OpenClawPairingStateRetryableError(
+            raise OpenClawPairingStateBusyError(
                 "canonical pairing-state database is busy"
             ) from error
         raise
@@ -627,6 +631,16 @@ def wait_for_openclaw_owner_lease(state_dir):
             # No database has been pinned. A disappearing pinned entry is a
             # retryable snapshot failure inside the shared reader, not absence.
             return
+        except OpenClawPairingStateBusyError as error:
+            # The retiring owner may still hold the database while it shuts down.
+            # Replacement and removal races stay immediate failures.
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise RuntimeError(
+                    "OpenClaw owner lease state stayed busy through its native expiry window"
+                ) from error
+            time.sleep(min(1, budget))
+            continue
         else:
             if row is None:
                 return

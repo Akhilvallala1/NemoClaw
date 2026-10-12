@@ -53,6 +53,7 @@ account = pwd.getpwuid(os.getuid())
 epoch = 1700000000
 clock = [0]
 sleeps = []
+attempts = [0]
 real_open = os.open
 real_connect = sqlite3.connect
 
@@ -113,6 +114,9 @@ with tempfile.TemporaryDirectory(prefix="nemoclaw-owner-lease-") as root:
             substitute.close()
             database_path.rename(original)
             replacement.rename(database_path)
+        if fixture.get("busyReads", 0) > attempts[0]:
+            attempts[0] += 1
+            raise sqlite3.OperationalError("database is locked")
         connection = real_connect(database_path.as_uri() + reference[reference.index("?"):], *args, **kwargs)
         if race == "replace-and-restore":
             database_path.rename(state / "substituted.sqlite")
@@ -194,6 +198,18 @@ describe("native OpenClaw owner lease observation", () => {
       fixture: { row: { host: "foreign", expiry: 600_000 } },
       elapsed: 300,
       error: "OpenClaw owner lease remained active through its native expiry window",
+    },
+    {
+      name: "a busy database that settles before the lease is absent",
+      fixture: { busyReads: 3 },
+      elapsed: 3,
+      error: null,
+    },
+    {
+      name: "a database that stays busy through the native deadline",
+      fixture: { busyReads: 1_000 },
+      elapsed: 300,
+      error: "OpenClaw owner lease state stayed busy through its native expiry window",
     },
     {
       name: "foreign owner with an invalid expiry",
