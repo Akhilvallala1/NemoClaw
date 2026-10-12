@@ -193,14 +193,17 @@ check_command() {
 
 check_hadolint() {
   local output
+  # shellcheck source=../.github/hadolint.env
+  source "${REPO_ROOT}/.github/hadolint.env"
+  local remediation="Install hadolint v${HADOLINT_VERSION} and put it on PATH."
   if ! command -v hadolint >/dev/null 2>&1; then
-    fail "hadolint: not found" "Install hadolint v2.14.0 and put it on PATH."
+    fail "hadolint: not found" "${remediation}"
     return
   fi
   if output="$(bash "${REPO_ROOT}/scripts/checks/hadolint.sh" --version 2>&1)"; then
     pass "hadolint ${output}"
   else
-    fail "hadolint: ${output}" "Install hadolint v2.14.0 and put it on PATH."
+    fail "hadolint: ${output}" "${remediation}"
   fi
 }
 

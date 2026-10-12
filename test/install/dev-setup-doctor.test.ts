@@ -580,7 +580,7 @@ describe("contributor environment doctor", () => {
     expect(result.output).toContain("Git contributor identity is incomplete");
   });
 
-  it("uses the shared Hadolint version requirement", () => {
+  it("uses the shared Hadolint version in all failure recovery paths", () => {
     const fixture = createFixture();
     const versionFile = path.join(fixture.repo, ".github", "hadolint.env");
     const original = fs.readFileSync(versionFile, "utf8");
@@ -590,12 +590,25 @@ describe("contributor environment doctor", () => {
       versionFile,
       original.replace(/^HADOLINT_VERSION=.+$/m, `HADOLINT_VERSION=${requiredVersion}`),
     );
+    const remediation = `Next: Install hadolint v${requiredVersion} and put it on PATH.`;
 
-    const result = runDoctor(fixture);
+    const mismatched = runDoctor(fixture);
+    expect(mismatched.status).toBe(1);
+    expect(mismatched.output).toContain(`hadolint v${requiredVersion} is required`);
+    expect(mismatched.output).toContain(`Haskell Dockerfile Linter ${originalVersion}`);
+    expect(mismatched.output).toContain(remediation);
 
-    expect(result.status).toBe(1);
-    expect(result.output).toContain(`hadolint v${requiredVersion} is required`);
-    expect(result.output).toContain(`Haskell Dockerfile Linter ${originalVersion}`);
+    fs.rmSync(path.join(fixture.fakeBin, "hadolint"));
+    const missing = runDoctor(fixture);
+    expect(missing.status).toBe(1);
+    expect(missing.output).toContain("hadolint: not found");
+    expect(missing.output).toContain(remediation);
+
+    writeTool(fixture.fakeBin, "hadolint", "exit 42");
+    const notExecutable = runDoctor(fixture);
+    expect(notExecutable.status).toBe(1);
+    expect(notExecutable.output).toContain("hadolint version check failed");
+    expect(notExecutable.output).toContain(remediation);
   });
 
   it("does not ask npm to download TypeScript when plugin dependencies are missing", () => {

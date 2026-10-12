@@ -90,9 +90,12 @@ function exerciseInstall(step: WorkflowStep, trustedAction: boolean) {
     );
 
     expect(result.status, String(result.stdout) + String(result.stderr)).toBe(0);
-    expect(readFileSync(curlArgs, "utf8")).toContain(
+    const curlInvocation = readFileSync(curlArgs, "utf8");
+    expect(curlInvocation).toContain(
       `https://github.com/hadolint/hadolint/releases/download/v${version}/hadolint-linux-x86_64`,
     );
+    expect(curlInvocation).toContain("--retry 3 --retry-all-errors --retry-delay 2");
+    expect(readFileSync(target, "utf8")).toBe("fake");
     expect(existsSync(untrustedMarker)).toBe(false);
   } finally {
     rmSync(root, { force: true, recursive: true });
@@ -103,8 +106,11 @@ describe("Hadolint CI pin", () => {
   it.each([
     ["docs-only", docsStep, false],
     ["base-trusted static action", staticStep, true],
-  ] as const)("uses the pinned release URL in %s", (_name, step, trustedAction) => {
-    expect(step).toBeDefined();
-    exerciseInstall(step!, trustedAction);
-  });
+  ] as const)(
+    "uses the pinned release URL and retry policy in %s",
+    (_name, step, trustedAction) => {
+      expect(step).toBeDefined();
+      exerciseInstall(step!, trustedAction);
+    },
+  );
 });
