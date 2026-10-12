@@ -27,6 +27,7 @@ import {
   beginOpenClawBackupQuiesce,
   finishOpenClawBackupQuiesce,
   retireOpenClawPostRestoreDoctorForDelete,
+  restartOpenClawSourceAfterMaintenanceAbort,
   type OpenClawPostRestoreDoctorWindow,
 } from "./runtime/openclaw-lifecycle";
 import type { PreparedStoppedNativeState } from "../../state/state-directory-restore";
@@ -83,17 +84,34 @@ export interface RebuildBackupPhaseResult {
 }
 
 export async function releaseRebuildSourceOpenClawWindow(window: OpenClawPostRestoreDoctorWindow) {
-  const finished = await finishOpenClawBackupQuiesce(window);
+  let finished: Awaited<ReturnType<typeof finishOpenClawBackupQuiesce>>;
+  try {
+    finished = await finishOpenClawBackupQuiesce(window);
+  } catch {
+    finished = {
+      ok: false,
+      stage: "release",
+      detail: "maintenance release raised an unexpected error",
+    };
+  }
   if (!finished.ok) {
-    const aborted = await abortOpenClawPostRestoreDoctor(window);
-    const state = aborted.ok
-      ? "The retained sandbox was stopped."
-      : `Stopping or maintenance reconciliation was not fully verified (${aborted.detail}).`;
+    const aborted = await abortOpenClawPostRestoreDoctor(window).catch(() => ({
+      ok: false as const,
+      stage: "abort" as const,
+      detail: "maintenance abort raised an unexpected error",
+    }));
+    const restored = await restartOpenClawSourceAfterMaintenanceAbort(window).catch(() => ({
+      ok: false as const,
+      detail: "source restart raised an unexpected error",
+    }));
+    const state = restored.ok
+      ? "The retained sandbox gateway was restored and verified healthy."
+      : `The retained sandbox gateway could not be verified after restart (${restored.detail}); maintenance abort status: ${aborted.ok ? "verified" : aborted.detail}.`;
     const gateway = window.runtimeSelection
       ? `gateway '${window.runtimeSelection.gatewayName}'`
       : "the recorded gateway";
     console.error(
-      `  Warning: OpenClaw source maintenance cleanup did not return retained sandbox '${window.sandboxName}' healthy (${finished.stage}: ${finished.detail}). ${state} Preserve this sandbox and its backup. Inspect its status and logs on ${gateway} before attempting recovery. Do not delete it or start another replacement.`,
+      `  Warning: OpenClaw source maintenance cleanup did not return retained sandbox '${window.sandboxName}' healthy (${finished.stage}: ${finished.detail}). ${state} Preserve this sandbox and its backup. Inspect its status and logs on ${gateway}. If its gateway is unreachable, run \`openshell sandbox start ${window.sandboxName}\` and check \`openclaw status\`. Do not delete it or start another replacement.`,
     );
   }
   return finished;
@@ -150,6 +168,16 @@ function writeRebuildPolicySource(policy: string, policySourcePath?: string): st
   return resolvedPolicySourcePath;
 }
 
+class RebuildBackupPhaseBail extends Error {
+  constructor(
+    message: string,
+    readonly exitCode?: number,
+  ) {
+    super(message);
+    this.name = "RebuildBackupPhaseBail";
+  }
+}
+
 export async function runRebuildBackupPhase(
   input: RebuildBackupPhaseInput,
   backupStateForRebuild: typeof backupSandboxStateForRebuild = backupSandboxStateForRebuild,
@@ -177,6 +205,20 @@ export async function runRebuildBackupPhase(
     input.log("Entering verified OpenClaw gateway-quiesce window before state backup");
     const begun = await beginOpenClawBackupQuiesce(input.sandboxName, input.runtimeSelection);
     if (!begun.ok) {
+      const window: OpenClawPostRestoreDoctorWindow = {
+        sandboxName: input.sandboxName,
+        kind: "backup",
+        ...(input.runtimeSelection ? { runtimeSelection: input.runtimeSelection } : {}),
+      };
+      const restored = await restartOpenClawSourceAfterMaintenanceAbort(window).catch(() => ({
+        ok: false as const,
+        detail: "source restart raised an unexpected error",
+      }));
+      if (!restored.ok) {
+        console.error(
+          `  Warning: OpenClaw backup maintenance setup failed for retained sandbox '${input.sandboxName}' (${begun.stage}: ${begun.detail}) and its gateway could not be verified after restart (${restored.detail}). Preserve this sandbox and its state. Inspect its status and logs; if its gateway is unreachable, run \`openshell sandbox start ${input.sandboxName}\` and check \`openclaw status\`. Do not delete it or start another replacement.`,
+        );
+      }
       return input.bail(
         `OpenClaw state backup could not enter its gateway-down maintenance window (${begun.stage}: ${begun.detail}).`,
       );
@@ -184,6 +226,10 @@ export async function runRebuildBackupPhase(
     sourceBackupWindow = begun.window;
   }
   let transferSourceWindow = false;
+  let deferredBail: RebuildBackupPhaseBail | undefined;
+  const bailAfterCleanup = (message: string, exitCode?: number): never => {
+    throw new RebuildBackupPhaseBail(message, exitCode);
+  };
   try {
     let backupManifest: RebuildBackupManifest | undefined =
       preparedRecoveryManifest ??
@@ -192,13 +238,13 @@ export async function runRebuildBackupPhase(
         input.sandboxEntry,
         input.staleRecovery,
         input.log,
-        input.bail,
+        bailAfterCleanup,
         input.stoppedNativeState,
       ));
     if (backupManifest === undefined) return null;
     const retainedPolicy = backupManifest ? readRebuildPolicyHandoff(backupManifest) : null;
     if (input.staleRecovery && !retainedPolicy) {
-      return input.bail(
+      return bailAfterCleanup(
         "The live OpenShell policy and its verified rebuild handoff are unavailable. Rebuild will not reconstruct policy from NemoClaw state.",
       );
     }
@@ -221,11 +267,11 @@ export async function runRebuildBackupPhase(
           backupManifest,
         });
       } catch (error) {
-        return input.bail(
+        return bailAfterCleanup(
           `Cannot bind the retained credential-bearing policy handoff to a bounded recovery transaction: ${error instanceof Error ? error.message : String(error)} Recovery remains at '${backupManifest.backupPath}'.`,
         );
       }
-      return input.bail(
+      return bailAfterCleanup(
         `The retained rebuild policy handoff for sandbox '${input.sandboxName}' contains a literal credential value and cannot restore the deleted sandbox. Recovery:\n` +
           `  1. Recover any required data from the backup before deletion. Keep the backup and policy handoff until that recovery is complete.\n` +
           `  2. Restore access to recorded gateway '${input.gatewayName}', select it with \`openshell gateway select ${input.gatewayName}\`, and confirm \`openshell status\` is healthy.\n` +
@@ -235,12 +281,13 @@ export async function runRebuildBackupPhase(
       );
     }
     if (retainedPolicy && backupManifest && retainedHandoff) {
+      const policySourcePath = fs.realpathSync(
+        path.join(backupManifest.backupPath, retainedHandoff.file),
+      );
       transferSourceWindow = true;
       return {
         backupManifest,
-        policySourcePath: fs.realpathSync(
-          path.join(backupManifest.backupPath, retainedHandoff.file),
-        ),
+        policySourcePath,
         ...(sourceBackupWindow ? { sourceOpenClawDoctorWindow: sourceBackupWindow } : {}),
       };
     }
@@ -256,27 +303,36 @@ export async function runRebuildBackupPhase(
         backupManifest = writeRebuildPolicyHandoff(backupManifest, policy);
         const handoff = backupManifest.rebuildPolicyHandoff;
         if (!handoff) throw new Error("rebuild policy handoff was not published");
+        const policySourcePath = fs.realpathSync(
+          path.join(backupManifest.backupPath, handoff.file),
+        );
         transferSourceWindow = true;
         return {
           backupManifest,
-          policySourcePath: fs.realpathSync(path.join(backupManifest.backupPath, handoff.file)),
+          policySourcePath,
           ...(sourceBackupWindow ? { sourceOpenClawDoctorWindow: sourceBackupWindow } : {}),
         };
       } catch (error) {
-        return input.bail(
+        return bailAfterCleanup(
           `The current OpenShell policy could not be retained for rebuild recovery: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
+    const policySourcePath = writeRebuildPolicySource(policy);
     transferSourceWindow = true;
     return {
       backupManifest,
-      policySourcePath: writeRebuildPolicySource(policy),
+      policySourcePath,
       ...(sourceBackupWindow ? { sourceOpenClawDoctorWindow: sourceBackupWindow } : {}),
     };
+  } catch (error) {
+    if (!(error instanceof RebuildBackupPhaseBail)) throw error;
+    deferredBail = error;
   } finally {
     if (sourceBackupWindow && !transferSourceWindow) {
       await releaseRebuildSourceOpenClawWindow(sourceBackupWindow);
     }
   }
+  if (!deferredBail) throw new Error("Rebuild backup phase ended without a result or bailout.");
+  return input.bail(deferredBail.message, deferredBail.exitCode);
 }

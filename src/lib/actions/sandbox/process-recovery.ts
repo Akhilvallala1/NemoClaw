@@ -685,6 +685,54 @@ export async function abortOpenClawPostRestoreDoctor(
   };
 }
 
+/** Restart a retained source after maintenance abort and verify its gateway is healthy. */
+export async function restartOpenClawSourceAfterMaintenanceAbort(
+  window: OpenClawPostRestoreDoctorWindow,
+  deps: OpenClawPostRestoreDoctorDeps = OPENCLAW_POST_RESTORE_DOCTOR_DEPS,
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const { sandboxName, runtimeSelection } = window;
+  captureOpenClawDoctorLifecycle(
+    deps,
+    ["sandbox", "start", sandboxName],
+    withSelectedOpenShellCommandOptions(
+      {
+        ignoreError: true,
+        includeStderr: true,
+        killProcessTreeOnTimeout: true,
+        killSignal: "SIGKILL" as const,
+        timeout: OPENCLAW_DOCTOR_RESTART_TIMEOUT_MS,
+      },
+      runtimeSelection,
+    ),
+  );
+  const deadlineMs = deps.now() + OPENCLAW_DOCTOR_RECONCILIATION_TIMEOUT_MS;
+  const healthy = await waitUntilAsync(
+    async () => {
+      const remainingMs = deadlineMs - deps.now();
+      if (!Number.isFinite(remainingMs) || remainingMs <= 0) return false;
+      const health = await executeOpenClawDoctorNetworkCommand(
+        deps,
+        sandboxName,
+        buildOpenClawPostUpgradeDoctorCompletionHealthProbe(sandboxName),
+        Math.max(1, Math.min(15_000, Math.floor(remainingMs))),
+        runtimeSelection,
+      );
+      return health?.status === 0;
+    },
+    {
+      deadlineMs,
+      initialIntervalMs: 3_000,
+      maxIntervalMs: 3_000,
+      backoffFactor: 1,
+      now: deps.now,
+      sleep: async (milliseconds) => await deps.sleep(milliseconds / 1_000),
+    },
+  );
+  return healthy
+    ? { ok: true }
+    : { ok: false, detail: "gateway health was not verified after restart" };
+}
+
 /**
  * Retire a source-only maintenance gate at the rebuild delete edge. Remove the
  * ephemeral receipt before the persistent marker so an interrupted command

@@ -7,12 +7,15 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { backupSandboxStateForRebuild } from "./rebuild-flow-helpers";
+
 const mocks = vi.hoisted(() => ({
   abortOpenClawPostRestoreDoctor: vi.fn(),
   beginOpenClawBackupQuiesce: vi.fn(),
   captureRecordedSandboxBasePolicy: vi.fn(),
   finishOpenClawBackupQuiesce: vi.fn(),
   retireOpenClawPostRestoreDoctorForDelete: vi.fn(),
+  restartOpenClawSourceAfterMaintenanceAbort: vi.fn(),
   recordRebuildRecoveryBackup: vi.fn(),
   secureTempFile: vi.fn(),
 }));
@@ -34,6 +37,7 @@ vi.mock("./runtime/openclaw-lifecycle", () => ({
   beginOpenClawBackupQuiesce: mocks.beginOpenClawBackupQuiesce,
   finishOpenClawBackupQuiesce: mocks.finishOpenClawBackupQuiesce,
   retireOpenClawPostRestoreDoctorForDelete: mocks.retireOpenClawPostRestoreDoctorForDelete,
+  restartOpenClawSourceAfterMaintenanceAbort: mocks.restartOpenClawSourceAfterMaintenanceAbort,
 }));
 
 import {
@@ -57,6 +61,7 @@ beforeEach(() => {
   mocks.recordRebuildRecoveryBackup.mockReset();
   mocks.finishOpenClawBackupQuiesce.mockReset().mockResolvedValue({ ok: true });
   mocks.retireOpenClawPostRestoreDoctorForDelete.mockReset().mockResolvedValue({ ok: true });
+  mocks.restartOpenClawSourceAfterMaintenanceAbort.mockReset().mockResolvedValue({ ok: true });
   mocks.secureTempFile.mockReset().mockImplementation(() => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-rebuild-policy-default-"));
     temporaryDirectories.push(directory);
@@ -110,28 +115,56 @@ describe("rebuild policy handoff", () => {
   });
 
   it.each([true, false])(
-    "identifies retained source and verified stop state on release failure (%s)",
-    async (stopped) => {
+    "reports retained-source recovery after release failure (abort verified: %s)",
+    async (abortVerified) => {
       const warning = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const window = { sandboxName: "retained-alpha", kind: "backup" as const };
       const failure = { ok: false, stage: "restart", detail: "gateway not healthy" };
       mocks.finishOpenClawBackupQuiesce.mockResolvedValue(failure);
       mocks.abortOpenClawPostRestoreDoctor.mockResolvedValue(
-        stopped ? { ok: true } : { ok: false, stage: "abort", detail: "stop not verified" },
+        abortVerified ? { ok: true } : { ok: false, stage: "abort", detail: "stop not verified" },
       );
 
       await expect(releaseRebuildSourceOpenClawWindow(window)).resolves.toEqual(failure);
 
       expect(mocks.abortOpenClawPostRestoreDoctor).toHaveBeenCalledExactlyOnceWith(window);
+      expect(mocks.restartOpenClawSourceAfterMaintenanceAbort).toHaveBeenCalledExactlyOnceWith(
+        window,
+      );
       expect(mocks.retireOpenClawPostRestoreDoctorForDelete).not.toHaveBeenCalled();
       const text = warning.mock.calls.flat().join(" ");
       expect(text).toContain("retained-alpha");
       expect(text).toContain("recorded gateway");
       expect(text).toContain("Preserve this sandbox and its backup");
-      expect(text).toContain(stopped ? "was stopped" : "not fully verified");
-      expect(text.includes("was stopped")).toBe(stopped);
+      expect(text).toContain("gateway was restored and verified healthy");
     },
   );
+
+  it("gives manual recovery guidance when the retained source cannot be verified healthy", async () => {
+    const warning = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.finishOpenClawBackupQuiesce.mockResolvedValue({
+      ok: false,
+      stage: "release",
+      detail: "release marker could not be published",
+    });
+    mocks.abortOpenClawPostRestoreDoctor.mockResolvedValue({
+      ok: false,
+      stage: "abort",
+      detail: "stop not verified",
+    });
+    mocks.restartOpenClawSourceAfterMaintenanceAbort.mockResolvedValue({
+      ok: false,
+      detail: "gateway health was not verified after restart",
+    });
+
+    await releaseRebuildSourceOpenClawWindow({ sandboxName: "retained-alpha", kind: "backup" });
+
+    const text = warning.mock.calls.flat().join(" ");
+    expect(text).toContain("openshell sandbox start retained-alpha");
+    expect(text).toContain("openclaw status");
+    expect(text).toContain("gateway could not be verified after restart");
+    expect(text).toContain("maintenance abort status: stop not verified");
+  });
 
   it("captures the current OpenShell base policy in a private transaction file", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-rebuild-policy-test-"));
@@ -165,6 +198,33 @@ describe("rebuild policy handoff", () => {
     });
   });
 
+  it("restarts the retained source when backup maintenance setup fails", async () => {
+    const warning = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.beginOpenClawBackupQuiesce.mockResolvedValue({
+      ok: false,
+      stage: "doctor",
+      detail: "startup did not prove backup quiescence",
+    });
+    mocks.restartOpenClawSourceAfterMaintenanceAbort.mockResolvedValue({
+      ok: false,
+      detail: "gateway health was not verified after restart",
+    });
+
+    await expect(runRebuildBackupPhase(input())).rejects.toThrow(
+      "OpenClaw state backup could not enter its gateway-down maintenance window (doctor: startup did not prove backup quiescence)",
+    );
+
+    expect(mocks.restartOpenClawSourceAfterMaintenanceAbort).toHaveBeenCalledExactlyOnceWith({
+      sandboxName: "alpha",
+      kind: "backup",
+    });
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining("Preserve this sandbox and its state"),
+    );
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("openshell sandbox start alpha"));
+    expect(mocks.recordRebuildRecoveryBackup).not.toHaveBeenCalled();
+  });
+
   it("passes a prepared stopped native-state source into the rebuild backup", async () => {
     const stoppedNativeState = {
       sandboxName: "alpha",
@@ -191,6 +251,29 @@ describe("rebuild policy handoff", () => {
     expect(mocks.beginOpenClawBackupQuiesce).not.toHaveBeenCalled();
   });
 
+  it("releases the retained source before surfacing a backup bailout", async () => {
+    const events: string[] = [];
+    const bail = vi.fn((message: string): never => {
+      events.push("bail");
+      throw new Error(message);
+    });
+    const backup = vi.fn(async (...args: Parameters<typeof backupSandboxStateForRebuild>) => {
+      events.push("backup");
+      args[4]("Failed to back up sandbox state.");
+      return undefined;
+    });
+    mocks.finishOpenClawBackupQuiesce.mockImplementation(async () => {
+      events.push("release");
+      return { ok: true };
+    });
+
+    await expect(runRebuildBackupPhase(input({ bail }), backup)).rejects.toThrow(
+      "Failed to back up sandbox state.",
+    );
+
+    expect(events).toEqual(["backup", "release", "bail"]);
+  });
+
   it("reports the retained source when backup fails before the pipeline takes ownership", async () => {
     const warning = vi.spyOn(console, "error").mockImplementation(() => undefined);
     mocks.finishOpenClawBackupQuiesce.mockResolvedValue({
@@ -208,8 +291,14 @@ describe("rebuild policy handoff", () => {
       sandboxName: "alpha",
       kind: "backup",
     });
+    expect(mocks.restartOpenClawSourceAfterMaintenanceAbort).toHaveBeenCalledExactlyOnceWith({
+      sandboxName: "alpha",
+      kind: "backup",
+    });
     expect(warning).toHaveBeenCalledWith(expect.stringContaining("retained sandbox 'alpha'"));
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining("was stopped"));
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining("gateway was restored and verified healthy"),
+    );
   });
 
   it("rejects a literal credential before creating a rebuild policy handoff", async () => {

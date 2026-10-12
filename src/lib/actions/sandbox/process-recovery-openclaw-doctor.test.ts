@@ -21,6 +21,7 @@ import {
   finishOpenClawBackupQuiesce,
   finishOpenClawPostRestoreDoctor,
   releaseOpenClawPostRestoreDoctorForDelete,
+  restartOpenClawSourceAfterMaintenanceAbort,
   retireOpenClawPostRestoreDoctorForDelete,
 } from "./process-recovery";
 
@@ -426,6 +427,61 @@ describe("OpenClaw post-upgrade recovery doctor", () => {
     expect(execute.mock.calls[4]?.[1]).not.toContain("curl");
     expect(execute.mock.calls[5]?.[1]).toContain("curl");
     expect(execute.mock.calls[6]?.[1]).not.toContain("curl");
+  });
+
+  it("starts a retained source and verifies gateway health after maintenance abort", async () => {
+    const execute = vi.fn(async (_sandboxName: string, _command: string) => ({
+      status: 0,
+      stdout: "",
+      stderr: "",
+    }));
+    const capture = vi.fn(() => ({ status: 0, output: "", error: null }));
+    const deps = {
+      captureOpenshell: capture as never,
+      executeSandboxExecCommand: execute,
+      now: () => 0,
+      sleep: vi.fn(async () => undefined),
+    };
+
+    await expect(
+      restartOpenClawSourceAfterMaintenanceAbort({ sandboxName: "alpha" }, deps),
+    ).resolves.toEqual({ ok: true });
+
+    expect(capture).toHaveBeenCalledWith(
+      ["sandbox", "start", "alpha"],
+      expect.objectContaining({ ignoreError: true }),
+    );
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[1]).toContain("curl");
+  });
+
+  it("reports failure when a restarted retained-source gateway stays unhealthy", async () => {
+    let now = 0;
+    const execute = vi.fn(async () => ({ status: 1, stdout: "", stderr: "" }));
+    const capture = vi.fn(() => ({ status: 0, output: "", error: null }));
+    const sleep = vi.fn(async (seconds: number) => {
+      now += seconds * 1_000;
+    });
+    const deps = {
+      captureOpenshell: capture as never,
+      executeSandboxExecCommand: execute,
+      now: () => now,
+      sleep,
+    };
+
+    await expect(
+      restartOpenClawSourceAfterMaintenanceAbort({ sandboxName: "alpha" }, deps),
+    ).resolves.toEqual({
+      ok: false,
+      detail: "gateway health was not verified after restart",
+    });
+
+    expect(capture).toHaveBeenCalledWith(
+      ["sandbox", "start", "alpha"],
+      expect.objectContaining({ ignoreError: true }),
+    );
+    expect(execute).toHaveBeenCalled();
+    expect(sleep).toHaveBeenCalled();
   });
 
   it("refuses to bypass doctor through the backup-only release path", async () => {
