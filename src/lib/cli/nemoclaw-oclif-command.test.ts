@@ -11,7 +11,7 @@ import { launchSandbox } from "../actions/sandbox/launch";
 import * as portableAgentLifecycle from "../onboard/experimental/portable-agent-lifecycle";
 import * as receiptAuthority from "../onboard/experimental/hermes-portable-receipt";
 import * as portableHostAuthority from "../state/portable-uninstall-retirement";
-import { isUnlockedSandboxStatusRead } from "../actions/sandbox/status-read-context";
+import { isUnlockedSandboxStatusRead } from "../actions/sandbox/status-snapshot";
 import { acquireProcessBoundLockAt, releaseProcessBoundLock } from "../state/registry/lock";
 import {
   isMcpLifecycleLockHeld,
