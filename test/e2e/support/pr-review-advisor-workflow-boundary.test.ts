@@ -383,3 +383,42 @@ it.each([
     rmSync(directory, { force: true, recursive: true });
   }
 });
+
+it.each([
+  ["advisor-blockers", "Require clear specialist evidence", "producer"],
+  ["advisor-blockers", "Require clear specialist evidence", "consumer"],
+  ["coordinator-shadow", "Evaluate read-only coordinator decision", "producer"],
+  ["coordinator-shadow", "Evaluate read-only coordinator decision", "consumer"],
+])("rejects missing trusted-plan handoff in %s (%s, %s)", (jobName, consumerName, binding) => {
+  const directory = mkdtempSync(join(tmpdir(), "nemoclaw-pr-review-advisor-"));
+  try {
+    const workflow = YAML.parse(
+      readFileSync(".github/workflows/pr-review-advisor.yaml", "utf8"),
+    ) as {
+      jobs: Record<string, { steps: Array<{ name: string; env?: Record<string, string> }> }>;
+    };
+    const steps = workflow.jobs[jobName].steps;
+    const mutations = {
+      producer: () => {
+        steps.splice(
+          steps.findIndex((step) => step.name === "Recompute trusted risk plan"),
+          1,
+        );
+      },
+      consumer: () => {
+        delete steps.find((step) => step.name === consumerName)!.env!
+          .PR_REVIEW_ADVISOR_TRUSTED_PLAN_PATH;
+      },
+    };
+    mutations[binding as keyof typeof mutations]();
+    const workflowPath = join(directory, "advisor.yaml");
+    writeFileSync(workflowPath, YAML.stringify(workflow));
+    const error =
+      jobName === "advisor-blockers"
+        ? "Unified advisor blocker gate must validate exact-attempt specialist evidence"
+        : "Unified advisor coordinator shadow must consume exact-attempt trusted evidence";
+    expect(validatePrReviewAdvisorWorkflow(workflowPath)).toContain(error);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});

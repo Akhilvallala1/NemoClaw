@@ -15,6 +15,9 @@ const EXPECTED_GATE_CONDITION =
 const EXPECTED_ENTRY_CONDITION = "${{ github.repository == 'NVIDIA/NemoClaw' }}";
 const EXPECTED_FAILURE_RECEIPT_COMMAND =
   'node --no-warnings "$ADVISOR_DIR/tools/pr-review-advisor/failure-artifacts.mts"';
+const TRUSTED_PLAN_PATH = "${{ runner.temp }}/trusted-risk-plan.json";
+const TRUSTED_PLAN_COMMAND =
+  'node --no-warnings "$ADVISOR_DIR/tools/pr-review-advisor/trusted-risk-plan.mts"';
 const EXPECTED_FAILURE_RECEIPT_ENV = {
   ADVISOR_PREPARATION_CLASSIFICATION: "${{ steps.prepare-analysis.outputs.classification }}",
   ADVISOR_DISPATCH_CHECKOUT_OUTCOME: "${{ steps.dispatch-checkout.outcome }}",
@@ -75,6 +78,18 @@ function sameMembers(left: readonly string[], right: readonly string[]): boolean
 
 function permissionMap(permissions: WorkflowPermissions | undefined): Record<string, unknown> {
   return permissions !== null && typeof permissions === "object" ? permissions : {};
+}
+
+function hasTrustedPlanHandoff(steps: WorkflowStep[], consumer: WorkflowStep | undefined): boolean {
+  const producer = steps.find((step) => step.name === "Recompute trusted risk plan");
+  return (
+    producer !== undefined &&
+    consumer !== undefined &&
+    producer.run === TRUSTED_PLAN_COMMAND &&
+    producer.env?.PR_REVIEW_ADVISOR_TRUSTED_PLAN_PATH === TRUSTED_PLAN_PATH &&
+    consumer.env?.PR_REVIEW_ADVISOR_TRUSTED_PLAN_PATH === TRUSTED_PLAN_PATH &&
+    steps.indexOf(producer) < steps.indexOf(consumer)
+  );
 }
 
 export function validatePrReviewAdvisorWorkflow(workflowPath = DEFAULT_WORKFLOW_PATH): string[] {
@@ -295,6 +310,7 @@ export function validatePrReviewAdvisorWorkflow(workflowPath = DEFAULT_WORKFLOW_
   }
   if (
     blockerDownload?.with?.pattern !== "pr-review-specialist-*-${{ github.run_attempt }}" ||
+    !hasTrustedPlanHandoff(blockerGateSteps, blockerEvaluation) ||
     blockerEvaluation?.env?.PR_REVIEW_ADVISOR_ARTIFACTS !==
       "${{ runner.temp }}/pr-review-specialists" ||
     blockerEvaluation.run !==
@@ -339,6 +355,7 @@ export function validatePrReviewAdvisorWorkflow(workflowPath = DEFAULT_WORKFLOW_
   if (
     coordinatorContext?.with?.name !== contextArtifactName ||
     coordinatorArtifacts?.with?.pattern !== "pr-review-specialist-*-${{ github.run_attempt }}" ||
+    !hasTrustedPlanHandoff(coordinatorSteps, coordinatorEvaluation) ||
     coordinatorEvaluation?.env?.PR_REVIEW_ADVISOR_ARTIFACTS !==
       "${{ runner.temp }}/pr-review-specialists" ||
     coordinatorEvaluation.env?.PR_REVIEW_ADVISOR_GITHUB_CONTEXT_PATH !==
