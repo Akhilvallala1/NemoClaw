@@ -14,6 +14,7 @@ import type {
 import type { LlamaCppRouteDetails } from "../../src/lib/inference/config";
 import type { ProviderHealthStatus } from "../../src/lib/inference/health";
 import type { SandboxHostMount } from "../../src/lib/state/registry";
+import type { McpLifecycleLockOptions } from "../../src/lib/state/mcp-lifecycle-lock-acquisition";
 
 type ShowSandboxStatus =
   (typeof import("../../src/lib/actions/sandbox/status"))["showSandboxStatus"];
@@ -41,6 +42,7 @@ export type StatusFlowHarness = {
   getActiveSandboxSessionsSpy: MockInstance;
   getSandboxDockerRuntimeSpy: MockInstance;
   getSandboxStatusReport: GetSandboxStatusReport;
+  inspectManagedLlamaCppStatusSpy: MockInstance;
   qualifyPortableAgentLifecycleAuthoritySpy: MockInstance;
   isSandboxGatewayRunningForStatusSpy: MockInstance;
   logSpy: MockInstance;
@@ -121,6 +123,15 @@ export function resetStatusFlowModuleCache(): void {
   delete require.cache[requireDist.resolve(statusModulePath)];
 }
 
+export function createRealMcpLifecycleLock(
+  options: McpLifecycleLockOptions = {},
+): WithMcpLifecycleLock {
+  const lockModule = requireDist("../../src/lib/state/mcp-lifecycle-lock-acquisition.js");
+  const acquire = lockModule.withMcpLifecycleLock as WithMcpLifecycleLock;
+  return (sandboxName, operation, overrides = {}) =>
+    acquire(sandboxName, operation, { ...options, ...overrides });
+}
+
 export function createStatusFlowHarness(options: StatusFlowHarnessOptions = {}): StatusFlowHarness {
   resetStatusFlowModuleCache();
 
@@ -137,6 +148,7 @@ export function createStatusFlowHarness(options: StatusFlowHarnessOptions = {}):
     "../../src/lib/onboard/experimental/portable-agent-lifecycle.js",
   );
   const lifecycleLock = requireDist("../../src/lib/state/mcp-lifecycle-lock-acquisition.js");
+  const managedLlamaCppStatus = requireDist("../../src/lib/inference/llama-cpp/managed-status.js");
   const resolve = requireDist("../../src/lib/adapters/openshell/resolve.js");
   const agentRuntime = requireDist("../../src/lib/agent/runtime.js");
   const nim = requireDist("../../src/lib/inference/nim.js");
@@ -309,6 +321,9 @@ export function createStatusFlowHarness(options: StatusFlowHarnessOptions = {}):
 
   logSpy.mockClear();
 
+  const inspectManagedLlamaCppStatusSpy = vi
+    .spyOn(managedLlamaCppStatus, "inspectManagedLlamaCppStatus")
+    .mockReturnValue(null);
   const statusModule = requireDist(statusModulePath);
   const ensureHermesToolGatewayBrokerSpy = options.mockHermesToolGatewayBroker
     ? vi
@@ -325,6 +340,7 @@ export function createStatusFlowHarness(options: StatusFlowHarnessOptions = {}):
     getActiveSandboxSessionsSpy,
     getSandboxDockerRuntimeSpy,
     getSandboxStatusReport: statusModule.getSandboxStatusReport,
+    inspectManagedLlamaCppStatusSpy,
     qualifyPortableAgentLifecycleAuthoritySpy,
     isSandboxGatewayRunningForStatusSpy,
     logSpy,

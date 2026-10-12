@@ -170,6 +170,19 @@ function maybeEnsureHermesToolGatewayBroker(sb: registry.SandboxEntry | null): v
   }
 }
 
+function getManagedLlamaCppStatusForDisplay(
+  sandboxName: string,
+  sandboxEntry: registry.SandboxEntry | null,
+  unlockedStatusRead: boolean,
+) {
+  if (unlockedStatusRead) return null;
+  return inspectManagedLlamaCppStatus(sandboxName, {
+    ...(typeof sandboxEntry?.gatewayPort === "number"
+      ? { gatewayPort: sandboxEntry.gatewayPort }
+      : {}),
+  });
+}
+
 export async function showSandboxStatus(sandboxName: string): Promise<void> {
   let deferredExitCode: number | null = null;
   try {
@@ -283,9 +296,7 @@ async function showLegacySandboxStatus(sandboxName: string): Promise<void> {
 
   printDockerHealth(dockerRuntime);
   printNimStatus(sandboxName, sb);
-  const managedLlamaCpp = inspectManagedLlamaCppStatus(sandboxName, {
-    ...(typeof sb?.gatewayPort === "number" ? { gatewayPort: sb.gatewayPort } : {}),
-  });
+  const managedLlamaCpp = getManagedLlamaCppStatusForDisplay(sandboxName, sb, unlockedStatusRead);
   if (managedLlamaCpp) {
     console.log(`    Managed llama.cpp: ${managedLlamaCpp.state}`);
     console.log(`      Recipe: ${managedLlamaCpp.recipeId}`);

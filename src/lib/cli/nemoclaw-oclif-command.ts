@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Command, Flags, type Interfaces } from "@oclif/core";
+import os from "node:os";
 import path from "node:path";
 import {
   assertHermesPortableCommandSupported,
@@ -10,23 +11,24 @@ import {
   HERMES_PORTABLE_UNSUPPORTED_COMMAND_MESSAGE,
   HERMES_PORTABLE_UNSUPPORTED_DOCTOR_FIX_MESSAGE,
 } from "../onboard/experimental/portable-agent-lifecycle";
+import { HERMES_PORTABLE_RECEIPT_DIRECTORY } from "../onboard/experimental/hermes-portable-receipt";
 import {
-  HERMES_PORTABLE_RECEIPT_DIRECTORY,
-  inspectPortableAgentReceiptAuthorityForClassification,
-} from "../onboard/experimental/hermes-portable-receipt";
-import { defaultPortableDemoStateDir } from "../onboard/experimental/portable-runtime-receipt-readiness";
+  defaultPortableDemoStateDir,
+  portableDemoReceiptDirectory,
+} from "../onboard/experimental/portable-runtime-receipt-readiness";
 import { redactForLog } from "../security/redact";
 import {
   assertNoHermesPortableHostAuthority,
   PORTABLE_HOST_FENCE_BUSY_MESSAGE,
   readPortableAuthorityDirectory,
   samePortableAuthorityDirectory,
+  type PortableAuthorityDirectorySnapshot,
   withCurrentPortableHostFence,
   withCurrentPortableHostFenceTry,
 } from "../state/portable-uninstall-retirement";
 import { withSandboxLifecycleLock } from "../actions/sandbox/lifecycle/lock";
 import { withUnlockedSandboxStatusRead } from "../actions/sandbox/status-snapshot";
-import { findSandboxAcrossGatewayRoots } from "../state/registry/cross-port";
+import { listInferenceRouteOwnersAcrossGatewayRoots } from "../state/registry/cross-port";
 import {
   enforceRemovedImmutabilityMigrationBoundary,
   reportRemovedImmutabilityUpgrade,
@@ -90,37 +92,59 @@ const REMOVED_IMMUTABILITY_REMEDIATION_COMMANDS = new Set([
   "sandbox:stop",
 ]);
 
-function hasPortableRegistryAuthority(sandboxName: string): boolean {
-  const entry = findSandboxAcrossGatewayRoots(sandboxName)?.entry;
+function hasPortableRegistryAuthorityOnHost(sandboxName: string): boolean {
+  return listInferenceRouteOwnersAcrossGatewayRoots(process.env.HOME || os.homedir()).some(
+    (entry) =>
+      entry.portableLifecycleProfile !== undefined ||
+      (entry.name === sandboxName &&
+        entry.agent === "hermes" &&
+        entry.openshellDriver === "docker" &&
+        typeof entry.lifecycleGeneration === "string"),
+  );
+}
+
+type PortableAuthorityDirectories = {
+  readonly hermes: PortableAuthorityDirectorySnapshot;
+  readonly openclaw: PortableAuthorityDirectorySnapshot;
+};
+
+function readPortableAuthorityDirectories(stateDir: string): PortableAuthorityDirectories {
+  return {
+    hermes: readPortableAuthorityDirectory(
+      path.join(stateDir, HERMES_PORTABLE_RECEIPT_DIRECTORY),
+      false,
+    ),
+    openclaw: readPortableAuthorityDirectory(portableDemoReceiptDirectory(stateDir), false),
+  };
+}
+
+function hasPortableReceiptAuthority(directories: PortableAuthorityDirectories): boolean {
+  return directories.hermes.entries.length > 0 || directories.openclaw.entries.length > 0;
+}
+
+function samePortableAuthorityDirectories(
+  left: PortableAuthorityDirectories,
+  right: PortableAuthorityDirectories,
+): boolean {
   return (
-    entry?.portableLifecycleProfile !== undefined ||
-    (entry?.agent === "hermes" &&
-      entry.openshellDriver === "docker" &&
-      typeof entry.lifecycleGeneration === "string")
+    samePortableAuthorityDirectory(left.hermes, right.hermes) &&
+    samePortableAuthorityDirectory(left.openclaw, right.openclaw)
   );
 }
 
 function canUseUnlockedSandboxStatusRead(sandboxName: string): boolean {
   const stateDir = defaultPortableDemoStateDir(process.env);
-  const authorityDirectory = path.join(stateDir, HERMES_PORTABLE_RECEIPT_DIRECTORY);
   try {
-    const before = readPortableAuthorityDirectory(authorityDirectory, false);
-    const hasPortableReceiptAuthority = () =>
-      inspectPortableAgentReceiptAuthorityForClassification(sandboxName, stateDir).kind !== "none";
-    if (
-      before.entries.length > 0 ||
-      hasPortableRegistryAuthority(sandboxName) ||
-      hasPortableReceiptAuthority()
-    ) {
+    const before = readPortableAuthorityDirectories(stateDir);
+    if (hasPortableReceiptAuthority(before) || hasPortableRegistryAuthorityOnHost(sandboxName)) {
       return false;
     }
 
-    const after = readPortableAuthorityDirectory(authorityDirectory, false);
+    const after = readPortableAuthorityDirectories(stateDir);
     return (
-      after.entries.length === 0 &&
-      samePortableAuthorityDirectory(before, after) &&
-      !hasPortableRegistryAuthority(sandboxName) &&
-      !hasPortableReceiptAuthority()
+      !hasPortableReceiptAuthority(after) &&
+      samePortableAuthorityDirectories(before, after) &&
+      !hasPortableRegistryAuthorityOnHost(sandboxName)
     );
   } catch {
     return false;

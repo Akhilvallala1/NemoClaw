@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { launchSandbox } from "../actions/sandbox/launch";
 import * as portableAgentLifecycle from "../onboard/experimental/portable-agent-lifecycle";
 import * as receiptAuthority from "../onboard/experimental/hermes-portable-receipt";
+import { portableDemoReceiptPath } from "../onboard/experimental/portable-runtime-receipt-readiness";
 import * as portableHostAuthority from "../state/portable-uninstall-retirement";
 import * as registryCrossPort from "../state/registry/cross-port";
 import { isUnlockedSandboxStatusRead } from "../actions/sandbox/status-snapshot";
@@ -230,6 +231,35 @@ function useHermesPortableAuthority(): void {
   });
 }
 
+function writeOpenClawPortableReceipt(stateDir: string, sandboxName: string): void {
+  const uid = process.getuid?.() ?? 1001;
+  const homeDir = process.env.HOME || os.homedir();
+  const receiptPath = portableDemoReceiptPath(sandboxName, stateDir);
+  fs.mkdirSync(path.dirname(receiptPath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    receiptPath,
+    `${JSON.stringify({
+      schemaVersion: 4,
+      sandboxName,
+      sandboxId: `sandbox-${sandboxName}`,
+      containerId: "a".repeat(64),
+      dashboardPort: 18789,
+      registryGeneration: `generation-${sandboxName}`,
+      runtimeAuthority: {
+        schemaVersion: 1,
+        kind: "podman",
+        ownership: "current-user",
+        uid,
+        homeDir,
+        configHome: path.join(homeDir, ".config"),
+        runtimeDir: `/run/user/${String(uid)}`,
+        socketPath: `/run/user/${String(uid)}/podman/podman.sock`,
+      },
+    })}\n`,
+    { mode: 0o600 },
+  );
+}
+
 function makeCommand(): TestCommand {
   return Object.create(TestCommand.prototype) as TestCommand;
 }
@@ -300,6 +330,25 @@ describe("NemoClawCommand", () => {
     }
   });
 
+  it("rejects a read if OpenClaw Portable authority for another sandbox appears during it (#11903)", async () => {
+    const fence = acquireProcessBoundLockAt(portableHostAuthority.portableHostFencePath(stateDir));
+    const operation = vi.fn(async () => {
+      writeOpenClawPortableReceipt(
+        portableHostAuthority.defaultPortableStateDir(process.env),
+        "beta",
+      );
+    });
+    ParsedSupportedSandboxCommand.operation = operation;
+    try {
+      await expect(ParsedSupportedSandboxCommand.run(["alpha"], process.cwd())).rejects.toThrow(
+        "Another NemoClaw lifecycle operation is in progress on this host.",
+      );
+      expect(operation).toHaveBeenCalledOnce();
+    } finally {
+      releaseProcessBoundLock(fence);
+    }
+  });
+
   it("fails fast rather than bypassing portable authority during status contention (#11903)", async () => {
     const authorityDirectory = path.join(stateDir, "hermes-portable-lifecycle");
     fs.mkdirSync(authorityDirectory, { mode: 0o700 });
@@ -317,20 +366,51 @@ describe("NemoClawCommand", () => {
     expect(portableHostAuthority.withCurrentPortableHostFenceTry).toHaveBeenCalledOnce();
   });
 
-  it("fails closed when registry-only portable authority is present (#11903)", async () => {
+  it("fails closed on registry-only Portable authority for the requested sandbox (#11903)", async () => {
     vi.spyOn(portableHostAuthority, "withCurrentPortableHostFenceTry").mockRejectedValue(
       new Error(portableHostAuthority.PORTABLE_HOST_FENCE_BUSY_MESSAGE),
     );
-    vi.spyOn(registryCrossPort, "findSandboxAcrossGatewayRoots").mockReturnValue({
-      entry: {
+    vi.spyOn(registryCrossPort, "listInferenceRouteOwnersAcrossGatewayRoots").mockReturnValue([
+      {
         name: "alpha",
         agent: "hermes",
         openshellDriver: "docker",
         lifecycleGeneration: "generation-1",
       } as never,
-      gatewayPort: 8091,
-      registryFile: "/test/sandboxes.json",
-    });
+    ]);
+    const operation = vi.fn(async () => undefined);
+    ParsedSupportedSandboxCommand.operation = operation;
+
+    await expect(ParsedSupportedSandboxCommand.run(["alpha"], process.cwd())).rejects.toThrow(
+      "Another NemoClaw lifecycle operation is in progress on this host.",
+    );
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on Portable registry authority for another sandbox (#11903)", async () => {
+    vi.spyOn(portableHostAuthority, "withCurrentPortableHostFenceTry").mockRejectedValue(
+      new Error(portableHostAuthority.PORTABLE_HOST_FENCE_BUSY_MESSAGE),
+    );
+    vi.spyOn(registryCrossPort, "listInferenceRouteOwnersAcrossGatewayRoots").mockReturnValue([
+      { name: "beta", portableLifecycleProfile: "openclaw" } as never,
+    ]);
+    const operation = vi.fn(async () => undefined);
+    ParsedSupportedSandboxCommand.operation = operation;
+
+    await expect(ParsedSupportedSandboxCommand.run(["alpha"], process.cwd())).rejects.toThrow(
+      "Another NemoClaw lifecycle operation is in progress on this host.",
+    );
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on an OpenClaw Portable receipt for another sandbox (#11903)", async () => {
+    writeOpenClawPortableReceipt(
+      portableHostAuthority.defaultPortableStateDir(process.env),
+      "beta",
+    );
+    vi.spyOn(portableHostAuthority, "withCurrentPortableHostFenceTry").mockRejectedValue(
+      new Error(portableHostAuthority.PORTABLE_HOST_FENCE_BUSY_MESSAGE),
+    );
     const operation = vi.fn(async () => undefined);
     ParsedSupportedSandboxCommand.operation = operation;
 
