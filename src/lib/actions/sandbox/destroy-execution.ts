@@ -1149,9 +1149,19 @@ export async function recordDestroyCompletion(
 export async function retireDestroyedSandboxNativeLocalProvider(
   sandbox: SandboxEntry,
   gatewayName: string,
+  runOpenshell: DestroyRunOpenshell,
+  runtimeSelection?: OpenShellRuntimeSelection,
 ): Promise<void> {
+  const selectedRunOpenshell: DestroyRunOpenshell | undefined = runtimeSelection
+    ? (args, options = {}) =>
+        runOpenshell(args, {
+          ...options,
+          env: buildSelectedOpenShellSubprocessEnv(runtimeSelection),
+          replaceEnv: true,
+        })
+    : undefined;
   await retireUnselectedNativeLocalProviders({
-    adapter: createManagedProviderAdapter(),
+    adapter: createManagedProviderAdapter(selectedRunOpenshell),
     destroyedAttachment: sandbox.nativeLocalProviderAttachment,
     sandboxName: sandbox.name,
     gatewayName,

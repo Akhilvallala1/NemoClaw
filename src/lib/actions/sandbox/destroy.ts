@@ -1149,7 +1149,12 @@ async function destroySandboxUnlocked(
     preparedManagedLlamaCppCleanup?.abort();
   }
   if (deleteSucceededOrAlreadyGone && sandbox) {
-    await retireDestroyedSandboxNativeLocalProvider(sandbox, cleanupGatewayName).catch((error) => {
+    await retireDestroyedSandboxNativeLocalProvider(
+      sandbox,
+      cleanupGatewayName,
+      runOpenshell,
+      destroyRuntimeSelection,
+    ).catch((error) => {
       preparedManagedLlamaCppCleanup?.abort();
       throw error;
     });
