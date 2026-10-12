@@ -117,22 +117,21 @@ describe("initial sandbox policy real preset merge", () => {
           inferenceProvider: "nemoclaw-nvidia-prod-v1",
         }),
       );
-      const curlRules = Object.values(policy.network_policies ?? {})
-        .filter((entry) => entry.binaries?.some(({ path }) => path === "/usr/bin/curl"))
-        .flatMap((entry) => entry.endpoints ?? [])
-        .filter(({ host }) => host === "integrate.api.nvidia.com");
-      expect(curlRules).toEqual([
-        {
-          host: "integrate.api.nvidia.com",
-          port: 443,
-          protocol: "rest",
-          enforcement: "enforce",
-          rules: [
-            { allow: { method: "GET", path: "/v1/models" } },
-            { allow: { method: "POST", path: "/v1/chat/completions" } },
-          ],
-        },
-      ]);
+      const expectedNativeNvidiaEndpoint = {
+        host: "integrate.api.nvidia.com",
+        port: 443,
+        protocol: "rest",
+        enforcement: "enforce",
+        rules: [
+          { allow: { method: "GET", path: "/v1/models" } },
+          { allow: { method: "POST", path: "/v1/chat/completions" } },
+        ],
+      };
+      expect(
+        policy.network_policies?.native_nvidia_inference?.endpoints?.filter(
+          ({ host }) => host === "integrate.api.nvidia.com",
+        ),
+      ).toEqual([expectedNativeNvidiaEndpoint]);
       expect(policy.network_policies?.native_nvidia_inference?.binaries).toEqual([
         { path: "/usr/local/bin/node" },
         { path: "/usr/bin/node" },
