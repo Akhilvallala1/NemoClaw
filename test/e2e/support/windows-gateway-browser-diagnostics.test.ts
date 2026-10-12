@@ -246,7 +246,13 @@ describe("compiled gateway navigation diagnostics", () => {
     const scope = {
       location,
       history: { pushState: historyCall, replaceState: historyCall },
-      addEventListener: (name: string, listener: () => void) => events.set(name, listener),
+      addEventListener: (name: string, listener: () => void) => {
+        const previous = events.get(name);
+        events.set(name, () => {
+          previous?.();
+          listener();
+        });
+      },
       document: { querySelector: () => null },
     };
     runInNewContext(`(${installGatewayBrowserRouteTrace.toString()})()`, scope);
@@ -264,6 +270,97 @@ describe("compiled gateway navigation diagnostics", () => {
     expect(summary.truncated).toBe(false);
     expect(summary.selectedIsDefault).toBeNull();
     expect(JSON.stringify(summary)).not.toContain(secret);
+  });
+
+  it("distinguishes history cleanup from a restored fragment without retaining credentials", () => {
+    const secret = "fragment-secret-never-publish";
+    const location = { pathname: "/chat", hash: `#token=${secret}`, search: "" };
+    const events = new Map<string, () => void>();
+    const scope = {
+      location,
+      history: {
+        pushState: () => {},
+        replaceState: (value: number) => {
+          location.hash = "";
+          return value;
+        },
+      },
+      addEventListener: (name: string, listener: () => void) => events.set(name, listener),
+      document: { querySelector: () => null },
+    };
+    runInNewContext(`(${installGatewayBrowserRouteTrace.toString()})()`, scope);
+    expect(scope.history.replaceState(42)).toBe(42);
+    events.get("DOMContentLoaded")?.();
+    location.hash = `#token=${secret}`;
+    location.search = `?openclaw_mount_recovery=123&private=${secret}`;
+    events.get("hashchange")?.();
+    events.get("load")?.();
+    events.get("openclaw-control-ui-rendered")?.();
+    const summary = summarizeGatewayBrowserRouteTrace(
+      runInNewContext(`(${readGatewayBrowserRouteTrace.toString()})()`, scope),
+    );
+    expect(summary.fragmentEvents).toEqual([
+      {
+        event: "initial",
+        present: true,
+        equalsInitial: true,
+        changed: false,
+        mountRecovery: false,
+      },
+      {
+        event: "replaceState",
+        present: false,
+        equalsInitial: false,
+        changed: true,
+        mountRecovery: false,
+      },
+      {
+        event: "DOMContentLoaded",
+        present: false,
+        equalsInitial: false,
+        changed: false,
+        mountRecovery: false,
+      },
+      {
+        event: "hashchange",
+        present: true,
+        equalsInitial: true,
+        changed: true,
+        mountRecovery: true,
+      },
+      { event: "load", present: true, equalsInitial: true, changed: false, mountRecovery: true },
+      {
+        event: "openclaw-control-ui-rendered",
+        present: true,
+        equalsInitial: true,
+        changed: false,
+        mountRecovery: true,
+      },
+    ]);
+    expect(summary.routes).toEqual(["chat-root"]);
+    expect(summary.fragmentsTruncated).toBe(false);
+    expect(JSON.stringify(summary)).not.toContain(secret);
+    expect(location.hash).toBe(`#token=${secret}`);
+    // Seed prior observations, then exercise the last admitted and first rejected event.
+    runInNewContext(
+      'globalThis.__nemoclawRouteTrace.fragmentEvents.push(...Array(57).fill({ event: "load" }))',
+      scope,
+    );
+    events.get("hashchange")?.();
+    location.hash = "";
+    events.get("hashchange")?.();
+    const bounded = summarizeGatewayBrowserRouteTrace(
+      runInNewContext(`(${readGatewayBrowserRouteTrace.toString()})()`, scope),
+    );
+    expect(bounded.fragmentEvents).toHaveLength(64);
+    expect(bounded.fragmentsTruncated).toBe(true);
+    expect(bounded.fragmentEvents.at(-1)).toEqual({
+      event: "hashchange",
+      present: true,
+      equalsInitial: true,
+      changed: false,
+      mountRecovery: true,
+    });
   });
 
   it("bounds retained navigation history", () => {
@@ -353,6 +450,11 @@ describe("compiled gateway navigation diagnostics", () => {
         gatewayObserved: "secret",
         observerFailed: "secret",
         snapshotsTruncated: "secret",
+        fragmentEvents: [
+          { event: "secret", present: "secret", equalsInitial: "secret", hash: "secret" },
+          ...Array(70).fill({ event: "load", present: true }),
+        ],
+        fragmentsTruncated: "secret",
       },
       connected: "secret",
       hasClient: {},
@@ -369,6 +471,15 @@ describe("compiled gateway navigation diagnostics", () => {
     expect(summary.snapshotsTruncated).toBe(true);
     expect(summary.gatewayObserved).toBe(false);
     expect(summary.observerFailed).toBe(false);
+    expect(summary.fragmentEvents).toHaveLength(64);
+    expect(summary.fragmentsTruncated).toBe(true);
+    expect(summary.fragmentEvents[0]).toEqual({
+      event: "other",
+      present: false,
+      equalsInitial: false,
+      changed: false,
+      mountRecovery: false,
+    });
     expect(summary).toMatchObject({
       connected: false,
       hasClient: false,

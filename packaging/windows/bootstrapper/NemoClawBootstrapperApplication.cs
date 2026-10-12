@@ -505,19 +505,19 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
 
     private async Task ConfigureInstalledAgentAsync()
     {
+        if (this.window is null || !this.window.TryBeginConfiguration()) return;
         using var cancellation = new CancellationTokenSource();
         this.modelSetupCancellation = cancellation;
         try
         {
             var configuration = this.window?.Configuration ?? throw new InvalidOperationException("Agent configuration is missing.");
-            this.window!.ShowConfiguring();
             using var password = this.window.CopyCredential();
             using var serviceCredentials = this.window.CopyServiceCredentials();
-            await NativeSetupOperations.SaveAsync(configuration, password, serviceCredentials, this.window.ShowModelProgress, cancellation.Token);
+            await NativeSetupOperations.SaveAsync(configuration, password, serviceCredentials, this.window.ShowModelProgress, cancellation.Token, this.window.ShowConfigurationUnconfirmed);
             this.result = 0;
             this.cancellation.ResetForRetry();
             this.window.ShowConfiguredSuccess();
-            if (configuration.LaunchAfterSetup) this.LaunchNemoClaw();
+            if (configuration.LaunchAfterSetup && !this.window.ConfigurationWindowClosed) this.LaunchNemoClaw();
         }
         catch (OperationCanceledException)
         {
@@ -530,7 +530,7 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
             this.Engine.Log(LogLevel.Error, "Native agent configuration could not be saved. The installed application remains available.");
             this.window?.ShowConfigurationFailure(NativeExpressSetup.FailureDetail(error));
         }
-        finally { this.modelSetupCancellation = null; }
+        finally { this.modelSetupCancellation = null; this.window?.CompleteConfigurationObservation(); }
     }
 
     private void LaunchNemoClaw()

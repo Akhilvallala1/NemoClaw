@@ -331,10 +331,15 @@ internal static class Program
         return exitCode;
     }
 
-    private static async Task AssertTransactionOutlivesObserverAsync(int exitCode, int outputSize, bool observerThrows = false)
+    private static async Task AssertTransactionOutlivesObserverAsync(int exitCode, int outputSize, bool observerThrows = false,
+        bool recoveryHandoff = false, bool recoveryObserverThrows = false)
     {
         var root = Directory.CreateTempSubdirectory("nemoclaw-setup-owner-").FullName;
         var notified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var unconfirmed = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observation = new NativeSetupObservation();
+        if (!observation.TryBegin() || observation.TryBegin() || observation.TryCloseWindow())
+            throw new InvalidOperationException("Setup did not admit one save or allowed closing before recovery handoff.");
         var launcher = Environment.ProcessPath ?? throw new InvalidOperationException("The fixture executable is unavailable.");
         var arguments = new List<string>();
         if (Path.GetFileNameWithoutExtension(launcher).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
@@ -345,13 +350,31 @@ internal static class Program
             notified.SetResult();
             if (observerThrows) throw new InvalidOperationException("fixture observer failed");
         }
+        void Unconfirmed(int processId)
+        {
+            observation.MarkUnconfirmed(processId);
+            unconfirmed.SetResult(processId);
+            if (recoveryObserverThrows) throw new InvalidOperationException("fixture recovery observer failed");
+        }
         var operation = NativeSetupOperations.RunSetupHelperAsync(launcher, arguments.ToArray(), Array.Empty<byte>(),
-            waitingForTransaction: Pending, observationDeadline: TimeSpan.FromMilliseconds(50));
+            waitingForTransaction: Pending, observationDeadline: TimeSpan.FromMilliseconds(50),
+            completionUnconfirmed: Unconfirmed,
+            recoveryDeadline: recoveryHandoff ? TimeSpan.FromMilliseconds(50) : null);
         try
         {
             await notified.Task.WaitAsync(TimeSpan.FromSeconds(10));
             using var readyLimit = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             while (!File.Exists(Path.Combine(root, "ready"))) await Task.Delay(20, readyLimit.Token);
+            if (recoveryHandoff)
+            {
+                var processId = await unconfirmed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                if (processId != int.Parse(await File.ReadAllTextAsync(Path.Combine(root, "ready"))) ||
+                    observation.HelperProcessId != processId || !observation.TryCloseWindow() ||
+                    !observation.CloseRequested || !observation.Running || observation.TryBegin())
+                    throw new InvalidOperationException("Recovery handoff lost its helper or admitted another save.");
+                using var ownedHelper = System.Diagnostics.Process.GetProcessById(processId);
+                if (ownedHelper.HasExited) throw new InvalidOperationException("Closing the recovery window ended its helper.");
+            }
             if (operation.IsCompleted || File.Exists(Path.Combine(root, "result")))
                 throw new InvalidOperationException("Setup returned before the transaction owner finished.");
             try
@@ -364,11 +387,20 @@ internal static class Program
             Exception? failure = null;
             try { await operation.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (InvalidOperationException error) { failure = error; }
-            if ((failure is not null) != (exitCode != 0 || outputSize != 0 || observerThrows))
+            if ((failure is not null) != (exitCode != 0 || outputSize != 0 || observerThrows || recoveryObserverThrows))
                 throw new InvalidOperationException("Setup misclassified the completed helper result.");
+            if (!recoveryHandoff && unconfirmed.Task.IsCompleted)
+                throw new InvalidOperationException("A completed helper received an unnecessary recovery handoff.");
             if (await File.ReadAllTextAsync(Path.Combine(root, "result")) != (exitCode == 0 ? "committed" : "recovered"))
                 throw new InvalidOperationException("The transaction did not finish its commit or recovery fixture.");
             using var releasedLease = new FileStream(Path.Combine(root, "lease"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            observation.ConfirmTransactionExit();
+            if (observation.CompletionUnconfirmed || observation.TryCloseWindow() || !observation.Running || observation.TryBegin())
+                throw new InvalidOperationException("Confirmed transaction exit released setup ownership before later model work finished.");
+            observation.Complete();
+            if (observation.Running || observation.TryCloseWindow() ||
+                observation.CloseRequested != recoveryHandoff)
+                throw new InvalidOperationException("The completed recovery owner lost the window-close decision.");
         }
         finally
         {
@@ -430,8 +462,13 @@ internal static class Program
         await AssertTransactionOutlivesObserverAsync(0, 1);
         await AssertTransactionOutlivesObserverAsync(0, 65536);
         await AssertTransactionOutlivesObserverAsync(0, 0, observerThrows: true);
+        await AssertTransactionOutlivesObserverAsync(0, 0, recoveryHandoff: true);
+        await AssertTransactionOutlivesObserverAsync(7, 0, recoveryHandoff: true);
+        await AssertTransactionOutlivesObserverAsync(0, 65536, recoveryHandoff: true);
+        await AssertTransactionOutlivesObserverAsync(0, 0, observerThrows: true, recoveryHandoff: true);
+        await AssertTransactionOutlivesObserverAsync(0, 0, recoveryHandoff: true, recoveryObserverThrows: true);
         await AssertPreparationTimeoutStopsHelperAsync();
-        Console.WriteLine("18 native setup controls passed; observer deadlines preserve transaction ownership through exit.");
+        Console.WriteLine("23 native setup controls passed; recovery handoff preserves transaction ownership through exit.");
         return 0;
     }
 }

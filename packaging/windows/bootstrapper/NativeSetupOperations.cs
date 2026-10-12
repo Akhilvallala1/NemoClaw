@@ -12,16 +12,58 @@ namespace Nvidia.NemoClaw.Bootstrapper;
 
 internal delegate Task<string> NativeSetupHelperRunner(string launcher, string[] arguments, byte[] input, bool captureOutput);
 
+// Closing an unconfirmed window must not release the transaction or permit another save.
+internal sealed class NativeSetupObservation
+{
+    internal bool Running { get; private set; }
+    internal int? HelperProcessId { get; private set; }
+    internal bool CompletionUnconfirmed { get; private set; }
+    internal bool CloseRequested { get; private set; }
+
+    internal bool TryBegin()
+    {
+        if (Running) return false;
+        Running = true;
+        HelperProcessId = null;
+        CompletionUnconfirmed = false;
+        CloseRequested = false;
+        return true;
+    }
+
+    internal void MarkUnconfirmed(int processId)
+    {
+        if (!Running || processId <= 0) throw new InvalidOperationException("No configuration helper is owned by Setup.");
+        HelperProcessId = processId;
+        CompletionUnconfirmed = true;
+    }
+
+    internal bool TryCloseWindow()
+    {
+        if (!Running || !CompletionUnconfirmed) return false;
+        CloseRequested = true;
+        return true;
+    }
+
+    internal void ConfirmTransactionExit() => CompletionUnconfirmed = false;
+
+    internal void Complete()
+    {
+        ConfirmTransactionExit();
+        Running = false;
+    }
+}
+
 internal static class NativeSetupOperations
 {
-    internal static async Task SaveAsync(NativeSetupConfiguration configuration, SecureString password, NativeServiceCredentials? serviceCredentials = null, Action<NativeExpressProgress>? progress = null, CancellationToken cancellation = default)
+    internal static async Task SaveAsync(NativeSetupConfiguration configuration, SecureString password, NativeServiceCredentials? serviceCredentials = null, Action<NativeExpressProgress>? progress = null, CancellationToken cancellation = default, Action<int>? completionUnconfirmed = null)
     {
         var launcher = InstalledLauncher();
         if (!NativeMaintenance.SupportsDataRemoval())
             throw new InvalidOperationException("Install this preview before configuring its native agent settings.");
         await SaveWithHelperAsync(configuration, password, serviceCredentials, progress, cancellation, launcher,
             (path, arguments, input, capture) => RunSetupHelperAsync(path, arguments, input, capture,
-                () => progress?.Invoke(new("configuration", "Saving or recovering your settings is taking longer than expected. Keep Setup open until Windows confirms completion.", null, null))));
+                () => progress?.Invoke(new("configuration", "Saving or recovering your settings is taking longer than expected. Setup is waiting for the configuration helper.", null, null)),
+                completionUnconfirmed: completionUnconfirmed));
     }
 
     internal static async Task SaveWithHelperAsync(NativeSetupConfiguration configuration, SecureString password, NativeServiceCredentials? serviceCredentials, Action<NativeExpressProgress>? progress, CancellationToken cancellation, string launcher, NativeSetupHelperRunner runSetupHelper)
@@ -112,7 +154,8 @@ internal static class NativeSetupOperations
     }
 
     internal static async Task<string> RunSetupHelperAsync(string launcher, string[] arguments, byte[] input, bool captureOutput = false,
-        Action? waitingForTransaction = null, TimeSpan? observationDeadline = null)
+        Action? waitingForTransaction = null, TimeSpan? observationDeadline = null,
+        Action<int>? completionUnconfirmed = null, TimeSpan? recoveryDeadline = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -137,14 +180,24 @@ internal static class NativeSetupOperations
             var stdout = ReadBoundedOutputAsync(process.StandardOutput, timeout.Token, captureOutput, transaction);
             var stderr = ReadBoundedOutputAsync(process.StandardError, timeout.Token, drainOnOverflow: transaction);
             var completion = Task.WhenAll(WriteHelperInputAsync(process.StandardInput, input, timeout.Token), process.WaitForExitAsync(timeout.Token), stdout, stderr);
+            Exception? observationError = null;
             try
             {
-                // The deadline changes the displayed status, not ownership of a mutating helper.
-                // Keep its pipes open and Setup busy until commit or recovery actually finishes.
+                // Hand off the visible wait without disposing the helper, pipes or input buffer.
+                // A hidden recovery window retains its dispatcher until this operation finishes.
                 if (transaction && await Task.WhenAny(completion, Task.Delay(deadline, timeout.Token)) != completion)
-                    waitingForTransaction?.Invoke();
+                {
+                    try { waitingForTransaction?.Invoke(); }
+                    catch (Exception error) { observationError = error; }
+                    if (await Task.WhenAny(completion, Task.Delay(recoveryDeadline ?? TimeSpan.FromSeconds(60), timeout.Token)) != completion)
+                    {
+                        try { completionUnconfirmed?.Invoke(process.Id); }
+                        catch (Exception error) { observationError ??= error; }
+                    }
+                }
             }
             finally { await completion; }
+            if (observationError is not null) throw observationError;
             if (process.ExitCode != 0 || (!captureOutput && stdout.Result.Count != 0))
             {
                 throw new InvalidOperationException("The native setup helper rejected the configuration.");

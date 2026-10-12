@@ -302,6 +302,11 @@ jobs:
             files = $files
           } | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
       - name: Exercise installed preview, real inference and owned cleanup
+        # The main-resident controller strips inherited keys from product children.
+        # Full acceptance then deliberately supplies a test key through installed
+        # configuration and Windows Credential Manager. Protected approval must
+        # authorize that candidate credential access; this is not secret isolation
+        # from the candidate. PR-triggered startup controls remain credential-free.
         shell: pwsh
         env:
           NVIDIA_API_KEY: ${{ secrets.WINDOWS_NATIVE_INSTALLER_NVIDIA_API_KEY }}

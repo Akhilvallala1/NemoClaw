@@ -13,6 +13,8 @@ internal static class NativeOnboarding
     private static extern IntPtr FindWindow(string? className, string windowName);
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr window, int command);
 
     internal static int Run(string? initialAgent)
     {
@@ -20,7 +22,7 @@ internal static class NativeOnboarding
         var existing = FindWindow(null, "NemoClaw Setup");
         if (!ownsInstance || existing != IntPtr.Zero)
         {
-            if (existing != IntPtr.Zero) SetForegroundWindow(existing);
+            if (existing != IntPtr.Zero) { ShowWindow(existing, 9); SetForegroundWindow(existing); }
             if (ownsInstance) instance.ReleaseMutex();
             return 0;
         }
@@ -35,18 +37,18 @@ internal static class NativeOnboarding
                 window.ModelSetupCancelRequested += (_, _) => modelCancellation?.Cancel();
                 window.ConfigureRequested += async (_, _) =>
                 {
+                    if (!window.TryBeginConfiguration()) return;
                     using var cancellation = new CancellationTokenSource();
                     modelCancellation = cancellation;
                     try
                     {
                         var configuration = window.Configuration ?? throw new InvalidOperationException("Agent configuration is missing.");
-                        window.ShowConfiguring();
                         using var password = window.CopyCredential();
                         using var serviceCredentials = window.CopyServiceCredentials();
-                        await NativeSetupOperations.SaveAsync(configuration, password, serviceCredentials, window.ShowModelProgress, cancellation.Token);
+                        await NativeSetupOperations.SaveAsync(configuration, password, serviceCredentials, window.ShowModelProgress, cancellation.Token, window.ShowConfigurationUnconfirmed);
                         result = 0;
                         window.ShowConfiguredSuccess();
-                        if (configuration.LaunchAfterSetup)
+                        if (configuration.LaunchAfterSetup && !window.ConfigurationWindowClosed)
                         {
                             try { NativeSetupOperations.Launch(configuration.Agent); window.MarkLaunched(); }
                             catch (Exception) { window.ShowRecoverableError("Your settings are saved, but the agent could not open. Try Launch again."); }
@@ -62,7 +64,7 @@ internal static class NativeOnboarding
                         result = 1;
                         window.ShowConfigurationFailure(NativeExpressSetup.FailureDetail(error));
                     }
-                    finally { modelCancellation = null; }
+                    finally { modelCancellation = null; window.CompleteConfigurationObservation(); }
                 };
                 window.LaunchRequested += (_, _) =>
                 {

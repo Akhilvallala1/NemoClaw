@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private double? displayedPercentage;
     private readonly DispatcherTimer elapsedTimer;
     private readonly NativeCancellationState cancellation = new();
+    private readonly NativeSetupObservation configurationObservation = new();
     private bool busy;
     private bool canCancel;
     private bool completed;
@@ -226,6 +227,36 @@ public partial class MainWindow : Window
         this.CancelButton.IsEnabled = false;
     }
 
+    internal bool TryBeginConfiguration()
+    {
+        if (!this.configurationObservation.TryBegin()) return false;
+        this.ShowConfiguring();
+        return true;
+    }
+
+    internal bool ConfigurationWindowClosed => this.configurationObservation.CloseRequested;
+
+    internal void ShowConfigurationUnconfirmed(int processId)
+    {
+        this.configurationObservation.MarkUnconfirmed(processId);
+        this.preparingModel = false;
+        this.canCancel = false;
+        this.StopElapsed();
+        this.ClearCredential();
+        this.HidePanels();
+        this.FailurePanel.Visibility = Visibility.Visible;
+        this.FailureDetail.Text = $"Settings completion is not confirmed. Setup still owns the operation from helper {processId}. You can close this window; Setup will keep waiting in the background. Another save is blocked until completion is confirmed. Do not end Setup or its helper in Task Manager.";
+    }
+
+    internal void CompleteConfigurationObservation()
+    {
+        this.configurationObservation.Complete();
+        if (!this.ConfigurationWindowClosed) return;
+        this.busy = false;
+        this.completed = true;
+        this.Close();
+    }
+
     internal void ShowModelProgress(NativeExpressProgress progress)
     {
         if (progress.Phase == "configuration")
@@ -235,6 +266,8 @@ public partial class MainWindow : Window
             this.ProgressDetail.Text = progress.Message;
             return;
         }
+        // Model work starts outside the completed credential transaction.
+        this.configurationObservation.ConfirmTransactionExit();
         this.preparingModel = true;
         this.ShowProgress("Preparing your on-device model", progress.Message, "model-" + progress.Phase);
         this.ProgressLabel.Text = "N1X EXPRESS MODEL SETUP";
@@ -577,6 +610,14 @@ public partial class MainWindow : Window
 
     private void WindowClosing(object? sender, CancelEventArgs args)
     {
+        if (this.configurationObservation.TryCloseWindow())
+        {
+            // Keep the dispatcher and helper pipes alive; only the window is dismissed.
+            args.Cancel = true;
+            this.ModelSetupCancelRequested?.Invoke(this, EventArgs.Empty);
+            this.Hide();
+            return;
+        }
         if (this.busy)
         {
             args.Cancel = true;

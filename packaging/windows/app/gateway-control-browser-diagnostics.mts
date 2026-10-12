@@ -74,12 +74,12 @@ export function gatewayBrowserConsoleFailure(value: string) {
 // Playwright serializes this function. Keep it independent of module scope.
 export function installGatewayBrowserRouteTrace() {
   const scope = globalThis as unknown as {
-    location: { pathname: string };
+    location: { pathname: string; hash?: string; search?: string };
     history: Record<
       "pushState" | "replaceState",
       (data: unknown, unused: string, url?: string | URL | null) => unknown
     >;
-    addEventListener: (type: "popstate" | "pagehide", listener: () => void) => void;
+    addEventListener: (type: string, listener: () => void) => void;
     customElements?: { whenDefined: (name: string) => Promise<unknown> };
     document?: { querySelector: (selector: string) => { context?: GatewayContext } | null };
     __nemoclawRouteTrace?: unknown;
@@ -91,8 +91,33 @@ export function installGatewayBrowserRouteTrace() {
     snapshotsTruncated: false,
     gatewayObserved: false,
     observerFailed: false,
+    fragmentEvents: [] as unknown[],
+    fragmentsTruncated: false,
   };
   scope.__nemoclawRouteTrace = trace;
+  const initialHash = scope.location.hash ?? "";
+  let previousHash = initialHash;
+  const captureFragment = (event: string) => {
+    try {
+      if (trace.fragmentEvents.length >= 64) {
+        trace.fragmentsTruncated = true;
+        return;
+      }
+      const hash = scope.location.hash ?? "";
+      trace.fragmentEvents.push({
+        event,
+        present: hash !== "",
+        equalsInitial: hash === initialHash,
+        changed: hash !== previousHash,
+        mountRecovery: /(?:^\?|&)openclaw_mount_recovery(?:=|&|$)/u.test(
+          scope.location.search ?? "",
+        ),
+      });
+      previousHash = hash;
+    } catch {
+      trace.observerFailed = true;
+    }
+  };
   const observe = () => {
     const pathname = scope.location.pathname;
     const route =
@@ -114,11 +139,22 @@ export function installGatewayBrowserRouteTrace() {
     scope.history[method] = (...args) => {
       const result = original(...args);
       observe();
+      captureFragment(method);
       return result;
     };
   }
   scope.addEventListener("popstate", observe);
+  for (const event of [
+    "popstate",
+    "hashchange",
+    "DOMContentLoaded",
+    "load",
+    "openclaw-control-ui-rendered",
+  ]) {
+    scope.addEventListener(event, () => captureFragment(event));
+  }
   observe();
+  captureFragment("initial");
   // Subscribe when the dashboard element is defined, before waiting for navigation.
   // A final connected snapshot cannot explain an earlier one-time routing decision.
   void scope.customElements
@@ -129,6 +165,7 @@ export function installGatewayBrowserRouteTrace() {
       if (!gateway?.subscribe) return;
       const capture = (snapshot: GatewaySnapshot) => {
         try {
+          captureFragment("gateway-snapshot");
           if (trace.snapshots.length >= 64) {
             trace.snapshotsTruncated = true;
             return;
@@ -202,6 +239,17 @@ export function summarizeGatewayBrowserRouteTrace(value: unknown) {
   const state = record(value);
   const trace = record(state.trace);
   const allowed = new Set(["model-setup", "plugins", "chat-root", "chat-session", "other"]);
+  const fragmentEvents = new Set([
+    "initial",
+    "pushState",
+    "replaceState",
+    "popstate",
+    "hashchange",
+    "DOMContentLoaded",
+    "load",
+    "gateway-snapshot",
+    "openclaw-control-ui-rendered",
+  ]);
   return {
     routes: Array.isArray(trace.routes)
       ? trace.routes
@@ -217,6 +265,24 @@ export function summarizeGatewayBrowserRouteTrace(value: unknown) {
       typeof state.selectedIsDefault === "boolean" ? state.selectedIsDefault : null,
     gatewayObserved: trace.gatewayObserved === true,
     observerFailed: trace.observerFailed === true,
+    fragmentsTruncated:
+      trace.fragmentsTruncated === true ||
+      (Array.isArray(trace.fragmentEvents) && trace.fragmentEvents.length > 64),
+    fragmentEvents: Array.isArray(trace.fragmentEvents)
+      ? trace.fragmentEvents.slice(0, 64).map((value) => {
+          const fragment = record(value);
+          return {
+            event:
+              typeof fragment.event === "string" && fragmentEvents.has(fragment.event)
+                ? fragment.event
+                : "other",
+            present: fragment.present === true,
+            equalsInitial: fragment.equalsInitial === true,
+            changed: fragment.changed === true,
+            mountRecovery: fragment.mountRecovery === true,
+          };
+        })
+      : [],
     snapshotsTruncated:
       trace.snapshotsTruncated === true ||
       (Array.isArray(trace.snapshots) && trace.snapshots.length > 64),
