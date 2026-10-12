@@ -11,11 +11,118 @@ import os from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import {
   verifyInstalledHistory,
+  readHistoryFixtureFile,
   type HistoryFixture,
 } from "./verify-installed-openclaw-history.mts";
+import { privateDirectoryLibraryIdentity } from "../app/sqlite-private-directory-build.mts";
+import { createHash } from "node:crypto";
 
 const WINDOWS_POWERSHELL_ENVIRONMENT =
   /^(APPDATA|COMSPEC|HOMEDRIVE|HOMEPATH|LOCALAPPDATA|OS|PATH|PATHEXT|PROCESSOR_ARCHITECTURE|PROCESSOR_ARCHITEW6432|SystemRoot|TEMP|TMP|USERPROFILE|WINDIR)$/iu;
+
+for (const [name, read] of [
+  ["history", readHistoryFixtureFile],
+  ["private-directory library", privateDirectoryLibraryIdentity],
+] as const) {
+  test(`${name} reads the checked handle and rejects changed paths and hard links`, (context) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "opened-fixture-controls-"));
+    context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const file = path.join(root, "input.bin");
+    const content = Buffer.from([0, 255, 128, 13, 10]);
+    fs.writeFileSync(file, content);
+    const expected =
+      name === "history"
+        ? content
+        : {
+            sha256: createHash("sha256").update(content).digest("hex"),
+            bytes: content.length,
+          };
+    assert.deepEqual(read(file), expected);
+    const alias = path.join(root, "alias.bin");
+    fs.linkSync(file, alias);
+    assert.throws(() => read(file));
+    fs.unlinkSync(alias);
+    const originalOpen = fs.openSync;
+    const originalStat = fs.lstatSync;
+    let descriptor: number | undefined;
+    const open = context.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+      descriptor = originalOpen(...args);
+      return descriptor;
+    });
+    for (const kind of ["replaced", "symlink"] as const) {
+      const stat = context.mock.method(
+        fs,
+        "lstatSync",
+        (...args: Parameters<typeof fs.lstatSync>) => {
+          const actual = originalStat(...args);
+          return new Proxy(actual, {
+            get(target, property) {
+              if (property === "ino" && kind === "replaced") return Number(target.ino) + 1;
+              if (property === "isSymbolicLink" && kind === "symlink") return () => true;
+              return Reflect.get(target, property);
+            },
+          });
+        },
+      );
+      try {
+        assert.throws(() => read(file));
+      } finally {
+        stat.mock.restore();
+      }
+      assert.notEqual(descriptor, undefined);
+      assert.throws(() => fs.fstatSync(descriptor!), { code: "EBADF" });
+    }
+    const failedRead = context.mock.method(
+      fs,
+      name === "history" ? "readSync" : "readFileSync",
+      () => {
+        throw new Error("fixture read failure");
+      },
+    );
+    try {
+      assert.throws(() => read(file), /fixture read failure/);
+    } finally {
+      failedRead.mock.restore();
+    }
+    assert.throws(() => fs.fstatSync(descriptor!), { code: "EBADF" });
+    open.mock.restore();
+    assert.deepEqual(read(file), expected);
+    fs.writeFileSync(file, "");
+    if (name === "private-directory library") assert.throws(() => read(file));
+    else assert.deepEqual(read(file), Buffer.alloc(0));
+  });
+}
+
+test("history reads enforce their bound even when the opened file grows", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "growing-history-controls-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "input.json");
+  const oversized = fs.openSync(file, "wx");
+  fs.ftruncateSync(oversized, 16 * 1024 * 1024 + 1);
+  fs.closeSync(oversized);
+  assert.throws(() => readHistoryFixtureFile(file), /exceeds its bound/);
+  fs.writeFileSync(file, "{}");
+  const originalStat = fs.fstatSync;
+  let descriptor: number | undefined;
+  context.mock.method(fs, "fstatSync", (...args: Parameters<typeof fs.fstatSync>) => {
+    descriptor = args[0];
+    return originalStat(...args);
+  });
+  let readBytes = 0;
+  context.mock.method(
+    fs,
+    "readSync",
+    (_fd: number, buffer: Buffer, offset: number, length: number) => {
+      buffer.fill(120, offset, offset + length);
+      readBytes += length;
+      return length;
+    },
+  );
+  assert.throws(() => readHistoryFixtureFile(file), /exceeds its bound/);
+  assert.equal(readBytes, 16 * 1024 * 1024 + 1);
+  assert.notEqual(descriptor, undefined);
+  assert.throws(() => originalStat(descriptor!), { code: "EBADF" });
+});
 
 test("migration history controls require original archives and complete SQLite events", (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "installed-history-controls-"));

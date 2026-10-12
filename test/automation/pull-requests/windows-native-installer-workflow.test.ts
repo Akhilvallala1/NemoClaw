@@ -32,6 +32,7 @@ const mutations: Mutation[] = [
     "windows-compiled-application",
     "windows-finished-installer",
     "windows-finished-installed-startup",
+    "windows-finished-candidate-migration",
     "windows-runtime-controls",
     "windows-runtime-preflight",
   ].flatMap((name) => [
@@ -52,6 +53,127 @@ const mutations: Mutation[] = [
     name: "write access in candidate jobs",
     mutate: (value) => {
       value.workflow.permissions.contents = "write";
+    },
+  },
+  {
+    name: "missing candidate migration qualification",
+    mutate: (value) => {
+      delete value.workflow.jobs["windows-finished-candidate-migration"];
+    },
+  },
+  {
+    name: "migration controllers checked out from main instead of the candidate",
+    mutate: (value) => {
+      step(
+        value.workflow.jobs["windows-finished-candidate-migration"],
+        "Check out the exact candidate migration controllers",
+      ).with!.ref = "main";
+    },
+  },
+  ...[
+    "Exercise candidate Burn fixture and diagnostics",
+    "Exercise candidate preview migration and selective reset",
+    "Bind candidate migration proof to controller and installer",
+  ].map((name) => ({
+    name: "skipped " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      step(value.workflow.jobs["windows-finished-candidate-migration"], name).if = "${{ false }}";
+    },
+  })),
+  ...["build-burn-diagnostics-fixture.ps1", "test-burn-diagnostics.ps1"].map((file) => ({
+    name: "missing candidate " + file,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const control = step(
+        value.workflow.jobs["windows-finished-candidate-migration"],
+        "Exercise candidate Burn fixture and diagnostics",
+      );
+      control.run = control.run!.replaceAll(file, "unrelated.ps1");
+    },
+  })),
+  {
+    name: "candidate migration executing trusted-main scripts",
+    mutate: (value) => {
+      const control = step(
+        value.workflow.jobs["windows-finished-candidate-migration"],
+        "Exercise candidate preview migration and selective reset",
+      );
+      control.run = control.run!.replaceAll("\\candidate\\", "\\controller\\");
+    },
+  },
+  {
+    name: "trusted qualification without candidate migration dependency",
+    mutate: (value) => {
+      value.workflow.jobs["windows-finished-trusted-qualification"].needs = [
+        "windows-finished-request",
+        "windows-finished-installer",
+        "windows-compiled-application",
+      ];
+    },
+  },
+  {
+    name: "trusted qualification without successful candidate migration",
+    mutate: (value) => {
+      const call = value.workflow.jobs["windows-finished-trusted-qualification"];
+      call.if = call.if!.replace(
+        "needs.windows-finished-candidate-migration.result == 'success'",
+        "true",
+      );
+    },
+  },
+  ...["candidate_migration_evidence_id", "candidate_migration_proof_sha256"].map((input) => ({
+    name: "unbound " + input,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      value.workflow.jobs["windows-finished-trusted-qualification"].with![input] = "unbound";
+    },
+  })),
+  ...[
+    "controllerSourceRevision",
+    "artifactSourceRevision",
+    "installerManifestSha256",
+    "workflowRunId",
+    "workflowRunAttempt",
+    "hashlib.sha256(data).hexdigest() == digest",
+    "case['resetVerified'] is True",
+  ].map((fragment) => ({
+    name: "missing candidate migration proof check " + fragment,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const verify = step(
+        value.trusted.jobs["candidate-migration-proof"],
+        "Verify candidate controller and artifact identities",
+      );
+      verify.run = verify.run!.replaceAll(fragment, "omitted");
+    },
+  })),
+  {
+    name: "candidate migration proof from another run",
+    mutate: (value) => {
+      step(
+        value.trusted.jobs["candidate-migration-proof"],
+        "Download candidate migration evidence from this run",
+      ).with!["run-id"] = "older-run";
+    },
+  },
+  {
+    name: "publication without successful candidate migration proof",
+    mutate: (value) => {
+      const publish = value.trusted.jobs["publish-qualified-installer"];
+      publish.if = publish.if!.replace(
+        "needs.candidate-migration-proof.result == 'success'",
+        "true",
+      );
+    },
+  },
+  {
+    name: "trusted migration labeled as candidate controller code",
+    mutate: (value) => {
+      const identity = step(
+        value.trusted.jobs.migration,
+        "Record trusted migration controller identity separately",
+      );
+      identity.run = identity.run!.replace(
+        "controllerSourceRevision=$env:CONTROLLER_SHA",
+        "controllerSourceRevision=$env:CANDIDATE_SHA",
+      );
     },
   },
   {
@@ -376,6 +498,143 @@ describe("Windows installer workflow boundary validation", () => {
     mutate(value);
     expect(() => assertWindowsInstallerWorkflow(value)).toThrow();
   });
+});
+
+const proofCases: {
+  name: string;
+  expectedStatus?: number;
+  fixture?: Record<string, unknown>;
+  burn?: Record<string, unknown>;
+  migration?: Record<string, unknown>;
+  proof?: Record<string, unknown>;
+  editFiles?: (files: { file: string; sha256: string }[]) => void;
+  encode?: (text: string) => string;
+}[] = [
+  { name: "valid", expectedStatus: 0 },
+  { name: "wrong controller", proof: { controllerSourceRevision: "c".repeat(40) } },
+  { name: "wrong artifact", proof: { artifactSourceRevision: "c".repeat(40) } },
+  { name: "wrong installer", proof: { installerManifestSha256: "c".repeat(64) } },
+  { name: "wrong run", proof: { workflowRunId: "124" } },
+  { name: "wrong attempt", proof: { workflowRunAttempt: "2" } },
+  { name: "wrong agent", proof: { agent: "hermes" } },
+  { name: "unpassed proof", proof: { passed: false } },
+  { name: "failed Burn", burn: { status: "failed" } },
+  { name: "failed migration", migration: { status: "failed" } },
+  { name: "incomplete cleanup", migration: { cleanupErrors: ["retained state"] } },
+  {
+    name: "missing case",
+    migration: { cases: [{ kind: "conventional-reinstall", resetVerified: true }] },
+  },
+  {
+    name: "failed reset",
+    migration: {
+      cases: [
+        { kind: "conventional-reinstall", resetVerified: false },
+        { kind: "native-replace-preview", resetVerified: true },
+      ],
+    },
+  },
+  {
+    name: "changed report",
+    editFiles: (files) => {
+      files[1].sha256 = "0".repeat(64);
+    },
+  },
+  {
+    name: "path traversal",
+    editFiles: (files) => {
+      files[1].file = "../outside.json";
+    },
+  },
+  { name: "duplicate property", encode: (text) => '{"passed":false,' + text.slice(1) },
+  { name: "distribution fixture", fixture: { intendedForDistribution: true } },
+  { name: "oversized proof", encode: (text) => text + " ".repeat(1048576) },
+];
+it.each(proofCases)("checks downloaded candidate migration proof: $name", (scenario) => {
+  const root = mkdtempSync(join(tmpdir(), "candidate-migration-proof-"));
+  const revision = "a".repeat(40);
+  const manifest = "b".repeat(64);
+  const fixture = {
+    sourceRevision: revision,
+    classification: "actual-burn-host-preparation-failure-fixture",
+    intendedForDistribution: false,
+    ...scenario.fixture,
+  };
+  const burn = {
+    sourceRevision: revision,
+    classification: "actual-burn-prerequisite-failure-qualification",
+    agent: "openclaw",
+    status: "pass",
+    cleanupErrors: [] as string[],
+    packageNotInstalled: true,
+    ...scenario.burn,
+  };
+  const migration = {
+    sourceRevision: revision,
+    classification: "actual-published-preview-native-migration",
+    newAgent: "openclaw",
+    status: "pass",
+    cleanupErrors: [] as string[],
+    installationRootRemoved: true,
+    cases: [
+      { kind: "conventional-reinstall", resetVerified: true },
+      { kind: "native-replace-preview", resetVerified: true },
+    ],
+    ...scenario.migration,
+  };
+  try {
+    const reports = [
+      ["diagnostics-fixture/fixture.json", fixture],
+      ["burn-diagnostics/burn-diagnostics.json", burn],
+      ["migration/preview-migration.json", migration],
+    ] as const;
+    const files = reports.map(([file, report]) => {
+      const content = JSON.stringify(report);
+      const target = join(root, file);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, content);
+      return { file: String(file), sha256: createHash("sha256").update(content).digest("hex") };
+    });
+    scenario.editFiles?.(files);
+    const proof = {
+      schemaVersion: 1,
+      classification: "same-run-candidate-migration-controllers",
+      passed: true,
+      controllerSourceRevision: revision,
+      artifactSourceRevision: revision,
+      installerManifestSha256: manifest,
+      agent: "openclaw",
+      workflowRunId: "123",
+      workflowRunAttempt: "1",
+      files,
+      ...scenario.proof,
+    };
+    const text = (scenario.encode ?? ((value: string) => value))(JSON.stringify(proof));
+    writeFileSync(join(root, "candidate-migration-controller.json"), text);
+    const program = step(
+      sources().trusted.jobs["candidate-migration-proof"],
+      "Verify candidate controller and artifact identities",
+    ).run!;
+    const result = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", program], {
+      encoding: "utf8",
+      timeout: 30000,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        PROOF_ROOT: root,
+        PROOF_SHA256: createHash("sha256").update(text).digest("hex"),
+        CANDIDATE_SHA: revision,
+        INSTALLER_MANIFEST: manifest,
+        SELECTED_AGENT: "openclaw",
+        GITHUB_RUN_ID: "123",
+        GITHUB_RUN_ATTEMPT: "1",
+      },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(scenario.expectedStatus ?? 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it.skipIf(process.platform !== "win32")(

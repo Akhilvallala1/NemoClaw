@@ -12,6 +12,27 @@ const failure = () =>
     "Chat history could not be upgraded safely. Keep any remaining original files and migration archives. Close OpenClaw and contact support before retrying.",
   );
 
+function pendingMigration(home: string) {
+  return path.join(home, ".openclaw", ".nemoclaw-history-migration-pending");
+}
+
+function beginImport(home: string) {
+  // The caller inspected this private tree while holding its exclusive state lease.
+  // Persist intent before the importer can move the legacy index. A failed or
+  // interrupted import must not look like a completed migration on the next launch.
+  try {
+    const descriptor = fs.openSync(pendingMigration(home), "wx", 0o600);
+    try {
+      fs.writeFileSync(descriptor, "History migration verification is incomplete.\n");
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  } catch {
+    throw failure();
+  }
+}
+
 function inspectPath(file: string) {
   const stat = fs.lstatSync(file);
   if (
@@ -113,6 +134,16 @@ export function inspectLegacyOpenClawSessions(home: string): string | null {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
+    if (file === state) {
+      try {
+        // Any object at this name, including a dangling link, blocks automatic
+        // continuation. Never follow, overwrite, or discard an incomplete import.
+        fs.lstatSync(pendingMigration(home));
+        throw failure();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw failure();
+      }
+    }
   }
   // A sandbox-authored dotenv file must not configure this host maintenance process.
   for (const file of [
@@ -187,6 +218,7 @@ export async function migrateNativeOpenClawSessions(options: {
     options.signal?.throwIfAborted();
     if (inspectLegacyOpenClawSessions(options.home) !== store) throw failure();
     if (storeDigest(store) !== originalDigest) throw failure();
+    if (mode === "import") beginImport(options.home);
     const result = await new Promise<string>((resolve, reject) => {
       const child = spawn(
         options.node,
@@ -273,5 +305,12 @@ export async function migrateNativeOpenClawSessions(options: {
   }
   options.assertHeld();
   options.signal?.throwIfAborted();
+  // Clear intent only after every import check and the final lease/abort checks.
+  // Do not clear it in a failure handler: the old index may already be archived.
+  try {
+    fs.unlinkSync(pendingMigration(options.home));
+  } catch {
+    throw failure();
+  }
   return true;
 }

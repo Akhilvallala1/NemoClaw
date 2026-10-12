@@ -836,13 +836,131 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  windows-finished-candidate-migration:
+    name: Credential-free candidate migration controllers (ARM64)
+    needs: [windows-finished-request, windows-finished-installer]
+    if: ${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-installer.result == 'success' }}
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 35
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      evidence_id: ${{ steps.migration_upload.outputs.artifact-id }}
+      proof_sha256: ${{ steps.migration_proof.outputs.sha256 }}
+    env:
+      CANDIDATE_SHA: ${{ needs.windows-finished-request.outputs.candidate_sha }}
+      SELECTED_AGENT: ${{ needs.windows-finished-request.outputs.agent }}
+      PRODUCT_VERSION: ${{ needs.windows-finished-request.outputs.product_version }}
+      INSTALLER_MANIFEST: ${{ needs.windows-finished-installer.outputs.installer_manifest_sha256 }}
+    steps:
+      - name: Check out the exact candidate migration controllers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.windows-finished-request.outputs.candidate_repository }}
+          ref: ${{ needs.windows-finished-request.outputs.candidate_sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Restore exact same-run installer cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/finished-windows-product-transfer
+          key: ${{ needs.windows-finished-installer.outputs.installer_cache_key }}
+          fail-on-cache-miss: true
+      - name: Verify and materialize candidate migration inputs
+        shell: pwsh
+        run: |
+          $head = (& git -C "$env:GITHUB_WORKSPACE\candidate" rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:CANDIDATE_SHA) { throw 'The candidate migration checkout differs.' }
+          $product = "$env:RUNNER_TEMP\finished-windows-product-transfer"
+          $verified = @(& "$env:GITHUB_WORKSPACE\candidate\scripts\checks\windows-native-transfer.ps1" -Mode Verify -Root $product `
+            -Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent $env:SELECTED_AGENT `
+            -RunId $env:GITHUB_RUN_ID -RunAttempt $env:GITHUB_RUN_ATTEMPT -ExpectedManifestSha256 $env:INSTALLER_MANIFEST)
+          if ($verified.Count -ne 1 -or [string]$verified[0] -cne $env:INSTALLER_MANIFEST) { throw 'The candidate migration input differs from its producer.' }
+          $work = "$env:RUNNER_TEMP\finished-windows"
+          if (Test-Path -LiteralPath $work) { throw 'Candidate migration requires a fresh work directory.' }
+          [void][IO.Directory]::CreateDirectory($work)
+          Copy-Item -LiteralPath "$product\package" -Destination "$work\package" -Recurse
+          Copy-Item -LiteralPath "$product\assembled" -Destination "$work\assembled" -Recurse
+      - name: Prepare pinned candidate fixture compiler
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.95.0
+          target: aarch64-pc-windows-msvc
+          cache: false
+      - name: Exercise candidate Burn fixture and diagnostics
+        shell: pwsh
+        run: |
+          $env:GITHUB_SHA = $env:CANDIDATE_SHA
+          $tools = "$env:RUNNER_TEMP\setup-regression-tools"
+          dotnet tool install --tool-path $tools wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned WiX installation failed.' }
+          $owner = "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer"
+          $work = "$env:RUNNER_TEMP\finished-windows"
+          & "$owner\build-burn-diagnostics-fixture.ps1" -SourceRoot "$env:GITHUB_WORKSPACE\candidate" -PackageDirectory "$work\package" -OutputDirectory "$work\diagnostics-fixture" -ProductVersion $env:PRODUCT_VERSION -WixPath "$tools\wix.exe"
+          & "$owner\test-burn-diagnostics.ps1" -FixtureDirectory "$work\diagnostics-fixture" -OutputDirectory "$work\burn-diagnostics" -Agent $env:SELECTED_AGENT
+      - name: Exercise candidate preview migration and selective reset
+        shell: pwsh
+        run: |
+          $env:GITHUB_SHA = $env:CANDIDATE_SHA
+          & "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\run-preview-migration.ps1" -WorkDirectory "$env:RUNNER_TEMP\finished-windows" -ProductVersion $env:PRODUCT_VERSION -NewAgent $env:SELECTED_AGENT
+      - name: Bind candidate migration proof to controller and installer
+        id: migration_proof
+        shell: pwsh
+        run: |
+          $work = "$env:RUNNER_TEMP\finished-windows"
+          & git -C "$env:GITHUB_WORKSPACE\candidate" diff --exit-code $env:CANDIDATE_SHA -- packaging/windows
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate migration source changed during qualification.' }
+          $reports = @('diagnostics-fixture/fixture.json', 'burn-diagnostics/burn-diagnostics.json', 'migration/preview-migration.json')
+          $files = @($reports | ForEach-Object {
+            $file = Get-Item -LiteralPath (Join-Path $work $_) -Force
+            if ($file.PSIsContainer -or $file.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or $file.Length -gt 1048576) { throw 'Candidate migration evidence is invalid.' }
+            @{file=$_;sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+          })
+          $burn = Get-Content -LiteralPath "$work\burn-diagnostics\burn-diagnostics.json" -Raw | ConvertFrom-Json
+          $migration = Get-Content -LiteralPath "$work\migration\preview-migration.json" -Raw | ConvertFrom-Json
+          if ($burn.sourceRevision -cne $env:CANDIDATE_SHA -or $burn.status -cne 'pass' -or $burn.packageNotInstalled -ne $true -or @($burn.cleanupErrors).Count -ne 0 -or
+              $migration.sourceRevision -cne $env:CANDIDATE_SHA -or $migration.status -cne 'pass' -or $migration.installationRootRemoved -ne $true -or @($migration.cleanupErrors).Count -ne 0 -or @($migration.cases).Count -ne 2 -or
+              @($migration.cases | Where-Object resetVerified -NE $true).Count -ne 0) { throw 'Candidate migration did not complete cleanly.' }
+          $proof = "$work\candidate-migration-controller.json"
+          [IO.File]::WriteAllText($proof, (@{
+            schemaVersion=1;classification='same-run-candidate-migration-controllers';passed=$true
+            controllerSourceRevision=$env:CANDIDATE_SHA;artifactSourceRevision=$env:CANDIDATE_SHA
+            installerManifestSha256=$env:INSTALLER_MANIFEST;agent=$env:SELECTED_AGENT
+            workflowRunId=$env:GITHUB_RUN_ID;workflowRunAttempt=$env:GITHUB_RUN_ATTEMPT;files=$files
+          } | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+          "sha256=$((Get-FileHash -LiteralPath $proof -Algorithm SHA256).Hash.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+      - name: Stage only non-runnable candidate migration evidence
+        id: migration_evidence
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $work = "$env:RUNNER_TEMP\finished-windows"
+          $inputs = @("$work\candidate-migration-controller.json", "$work\diagnostics-fixture\fixture.json")
+          $allowed = @('.csv', '.etl', '.jpeg', '.jpg', '.json', '.log', '.md', '.png', '.txt', '.xml')
+          foreach ($directory in @("$work\burn-diagnostics", "$work\migration")) {
+            $inputs += @(Get-ChildItem -LiteralPath $directory -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -in $allowed } | ForEach-Object FullName)
+          }
+          & "$env:GITHUB_WORKSPACE\candidate\scripts\checks\stage-windows-native-evidence.ps1" `
+            -SourceBase $work -InputPath $inputs -OutputRoot "$env:RUNNER_TEMP\candidate-windows-migration-evidence"
+      - name: Preserve candidate migration controller evidence
+        id: migration_upload
+        if: ${{ always() && steps.migration_evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-windows-migration-${{ needs.windows-finished-request.outputs.candidate_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-windows-migration-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
   # The same-commit reusable controller is callable only after both workflow
   # files land on main. It repeats every identity check and owns both protected
   # environments; this feature-branch workflow is not itself a trust boundary.
   windows-finished-trusted-qualification:
     name: Trusted full acceptance, migration and qualified publication
-    needs: [windows-finished-request, windows-finished-installer, windows-compiled-application]
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.trusted_main == 'true' && needs.windows-finished-request.outputs.exact_workflow == 'true' && needs.windows-finished-request.outputs.exact_pr == 'true' && needs.windows-finished-request.outputs.credential_authorized == 'true' && needs.windows-finished-request.outputs.validation_scope == 'full-acceptance' && needs.windows-finished-installer.result == 'success' && needs.windows-compiled-application.result == 'success' }}
+    needs: [windows-finished-request, windows-finished-installer, windows-compiled-application, windows-finished-candidate-migration]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.trusted_main == 'true' && needs.windows-finished-request.outputs.exact_workflow == 'true' && needs.windows-finished-request.outputs.exact_pr == 'true' && needs.windows-finished-request.outputs.credential_authorized == 'true' && needs.windows-finished-request.outputs.validation_scope == 'full-acceptance' && needs.windows-finished-installer.result == 'success' && needs.windows-compiled-application.result == 'success' && needs.windows-finished-candidate-migration.result == 'success' }}
     permissions:
       actions: read
       contents: read
@@ -859,6 +977,8 @@ jobs:
       installer_cache_key: ${{ needs.windows-finished-installer.outputs.installer_cache_key }}
       installer_manifest_sha256: ${{ needs.windows-finished-installer.outputs.installer_manifest_sha256 }}
       application_manifest_sha256: ${{ needs.windows-compiled-application.outputs.application_manifest_sha256 }}
+      candidate_migration_evidence_id: ${{ needs.windows-finished-candidate-migration.outputs.evidence_id }}
+      candidate_migration_proof_sha256: ${{ needs.windows-finished-candidate-migration.outputs.proof_sha256 }}
 
   windows-runtime-preflight:
     name: Windows observer and cleanup preflight (Node ${{ matrix.node }})

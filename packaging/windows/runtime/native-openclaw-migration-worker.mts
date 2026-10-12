@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createRequire } from "node:module";
+import {
+  captureMigrationHistory,
+  verifyMigrationHistory,
+} from "./native-openclaw-migration-verification.mts";
 
 const [entry, mode, store] = process.argv.slice(2);
 if (!entry || !store || !["dry-run", "import"].includes(mode))
@@ -17,7 +21,26 @@ process.argv = [
   "--json",
 ];
 Promise.resolve()
-  .then(() => createRequire(entry)(entry).runOpenClaw(process.argv))
+  .then(async () => {
+    const history = mode === "import" ? captureMigrationHistory(store) : undefined;
+    try {
+      await createRequire(entry)(entry).runOpenClaw(process.argv);
+    } catch (error) {
+      // Successful one-shot upstream commands can throw instead of returning.
+      if (
+        !(
+          error &&
+          typeof error === "object" &&
+          "name" in error &&
+          error.name === "ExitError" &&
+          "code" in error &&
+          error.code === 0
+        )
+      )
+        throw error;
+    }
+    if (history) verifyMigrationHistory(history);
+  })
   .catch((error) => {
     // The upstream CLI reports successful one-shot completion with ExitError(0).
     process.exitCode =

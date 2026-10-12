@@ -22,6 +22,7 @@ export type WorkflowJob = {
   environment?: unknown;
   outputs?: Record<string, string>;
   permissions?: Record<string, string>;
+  with?: Record<string, unknown>;
   strategy?: { "fail-fast"?: boolean; matrix?: { node?: string[] } };
   "runs-on"?: string;
 };
@@ -108,6 +109,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     "windows-compiled-application",
     "windows-finished-installer",
     "windows-finished-installed-startup",
+    "windows-finished-candidate-migration",
     "windows-runtime-controls",
     "windows-runtime-preflight",
   ]) {
@@ -367,11 +369,11 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       const transferWorkflows = `${workflowSource}\n${trustedSource}`;
       assert.strictEqual(
         transferWorkflows.match(/^.*windows-native-transfer\.ps1.*$/gmu)?.length,
-        11,
+        12,
       );
       assert.strictEqual(
         transferWorkflows.match(/^.*= @\(& .*windows-native-transfer\.ps1.*$/gmu)?.length,
-        11,
+        12,
       );
       assert.doesNotMatch(transferWorkflows, /\$LASTEXITCODE[^\n]*transfer/iu);
       const evidenceRun =
@@ -552,16 +554,18 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
         )
         .map((step) => ({ jobName, step })),
     );
-    assert.deepStrictEqual(jobNeeds(full), ["authorize"]);
+    assert.deepStrictEqual(jobNeeds(full), ["authorize", "candidate-migration-proof"]);
     assert.deepStrictEqual(jobNeeds(migration), ["authorize", "full-installed-acceptance"]);
     assert.ok(migration.if?.includes("needs.full-installed-acceptance.result == 'success'"));
     assert.deepStrictEqual(jobNeeds(publication), [
       "authorize",
+      "candidate-migration-proof",
       "full-installed-acceptance",
       "migration",
     ]);
     assert.ok(publication.if?.includes("needs.full-installed-acceptance.result == 'success'"));
     assert.ok(publication.if?.includes("needs.migration.result == 'success'"));
+    assert.ok(publication.if?.includes("needs.candidate-migration-proof.result == 'success'"));
     assert.strictEqual(runnableUploads?.length, 1);
     assert.strictEqual(runnableUploads[0].jobName, "publish-qualified-installer");
     assert.strictEqual(runnableUploads[0].step.name, "Publish fully qualified runnable installer");
@@ -612,6 +616,11 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       jobName: "full-installed-acceptance",
     },
     { caseName: "migration", sourceWorkflow: trusted, jobName: "migration" },
+    {
+      caseName: "candidate migration",
+      sourceWorkflow: workflow,
+      jobName: "windows-finished-candidate-migration",
+    },
   ]) {
     (({ sourceWorkflow, jobName }) => {
       const job = requiredJob(sourceWorkflow, jobName);
@@ -628,6 +637,159 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       assert.match(String(uploads[0].with?.path), /-evidence\/$/u);
     })(scenario);
   }
+  (() => {
+    const candidate = requiredJob(workflow, "windows-finished-candidate-migration");
+    const call = requiredJob(workflow, "windows-finished-trusted-qualification");
+    const proof = requiredJob(trusted, "candidate-migration-proof");
+    assert.deepStrictEqual(jobNeeds(candidate), [
+      "windows-finished-request",
+      "windows-finished-installer",
+    ]);
+    assert.strictEqual(
+      candidate.if,
+      "${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-installer.result == 'success' }}",
+    );
+    assert.deepStrictEqual(candidate.permissions, { actions: "read", contents: "read" });
+    assert.strictEqual(candidate["runs-on"], "windows-11-vs2026-arm");
+    assert.deepStrictEqual(candidate.outputs, {
+      evidence_id: "${{ steps.migration_upload.outputs.artifact-id }}",
+      proof_sha256: "${{ steps.migration_proof.outputs.sha256 }}",
+    });
+    assert.deepStrictEqual(
+      requiredStep(candidate, "Check out the exact candidate migration controllers").with,
+      {
+        repository: "${{ needs.windows-finished-request.outputs.candidate_repository }}",
+        ref: "${{ needs.windows-finished-request.outputs.candidate_sha }}",
+        path: "candidate",
+        "persist-credentials": false,
+      },
+    );
+    const restore = requiredStep(candidate, "Restore exact same-run installer cache");
+    assert.strictEqual(
+      restore.with?.key,
+      "${{ needs.windows-finished-installer.outputs.installer_cache_key }}",
+    );
+    assert.strictEqual(restore.with?.["fail-on-cache-miss"], true);
+    assert.ok(!Object.hasOwn(restore.with ?? {}, "restore-keys"));
+    const inputs = requiredStep(candidate, "Verify and materialize candidate migration inputs");
+    assert.ok(inputs.run?.includes("-ExpectedManifestSha256 $env:INSTALLER_MANIFEST"));
+    const burn = requiredStep(candidate, "Exercise candidate Burn fixture and diagnostics");
+    for (const fragment of [
+      "build-burn-diagnostics-fixture.ps1",
+      "test-burn-diagnostics.ps1",
+      "$env:GITHUB_WORKSPACE\\candidate",
+      "$env:GITHUB_SHA = $env:CANDIDATE_SHA",
+    ])
+      assert.ok(burn.run?.includes(fragment));
+    const migration = requiredStep(
+      candidate,
+      "Exercise candidate preview migration and selective reset",
+    );
+    assert.ok(
+      migration.run?.includes(
+        '"$env:GITHUB_WORKSPACE\\candidate\\packaging\\windows\\installer\\run-preview-migration.ps1"',
+      ),
+    );
+    const binding = requiredStep(
+      candidate,
+      "Bind candidate migration proof to controller and installer",
+    );
+    for (const fragment of [
+      "controllerSourceRevision=$env:CANDIDATE_SHA",
+      "artifactSourceRevision=$env:CANDIDATE_SHA",
+      "installerManifestSha256=$env:INSTALLER_MANIFEST",
+      "workflowRunId=$env:GITHUB_RUN_ID",
+      "workflowRunAttempt=$env:GITHUB_RUN_ATTEMPT",
+      "diff --exit-code $env:CANDIDATE_SHA",
+      "$migration.status -cne 'pass'",
+      "$burn.status -cne 'pass'",
+    ])
+      assert.ok(binding.run?.includes(fragment));
+    const staging = requiredStep(candidate, "Stage only non-runnable candidate migration evidence");
+    assert.ok(staging.run?.includes("candidate-migration-controller.json"));
+    const upload = requiredStep(candidate, "Preserve candidate migration controller evidence");
+    assert.strictEqual(upload.with?.["if-no-files-found"], "error");
+    const execution = [inputs, burn, migration, binding];
+    for (const step of execution) assert.strictEqual(step.if, undefined);
+    const indices = [...execution, staging, upload].map((step) => candidate.steps!.indexOf(step));
+    assert.deepStrictEqual(
+      indices,
+      [...indices].sort((a, b) => a - b),
+    );
+    assert.ok(!JSON.stringify(candidate).includes('"continue-on-error":true'));
+    assert.ok(jobNeeds(call).includes("windows-finished-candidate-migration"));
+    assert.ok(call.if?.includes("needs.windows-finished-candidate-migration.result == 'success'"));
+    for (const [input, output] of [
+      ["candidate_migration_evidence_id", "evidence_id"],
+      ["candidate_migration_proof_sha256", "proof_sha256"],
+    ]) {
+      assert.strictEqual(
+        call.with?.[input],
+        `\${{ needs.windows-finished-candidate-migration.outputs.${output} }}`,
+      );
+      assert.deepStrictEqual(trusted.on.workflow_call.inputs[input], {
+        required: true,
+        type: "string",
+      });
+    }
+    assert.deepStrictEqual(jobNeeds(proof), ["authorize"]);
+    assert.ok(!JSON.stringify(proof).includes("secrets."));
+    assert.strictEqual(proof.environment, undefined);
+    assert.deepStrictEqual(
+      requiredStep(proof, "Download candidate migration evidence from this run").with,
+      {
+        "artifact-ids": "${{ inputs.candidate_migration_evidence_id }}",
+        path: "${{ runner.temp }}/candidate-migration-proof",
+        "merge-multiple": true,
+      },
+    );
+    const verify = requiredStep(proof, "Verify candidate controller and artifact identities");
+    for (const fragment of [
+      "hashlib.sha256(data).hexdigest() == digest",
+      "object_pairs_hook=unique_object",
+      "proof['controllerSourceRevision'] == os.environ['CANDIDATE_SHA']",
+      "proof['artifactSourceRevision'] == os.environ['CANDIDATE_SHA']",
+      "proof['installerManifestSha256'] == os.environ['INSTALLER_MANIFEST']",
+      "proof['workflowRunId'] == os.environ['GITHUB_RUN_ID']",
+      "proof['workflowRunAttempt'] == os.environ['GITHUB_RUN_ATTEMPT']",
+      "proof['agent'] == os.environ['SELECTED_AGENT']",
+      "[item['file'] for item in proof['files']] == expected",
+      "burn['status'] == 'pass'",
+      "migration['status'] == 'pass'",
+      "migration['installationRootRemoved'] is True",
+      "case['resetVerified'] is True",
+    ])
+      assert.ok(verify.run?.includes(fragment));
+    assert.ok(
+      requiredJob(trusted, "full-installed-acceptance").if?.includes(
+        "needs.candidate-migration-proof.result == 'success'",
+      ),
+    );
+    const trustedMigration = requiredJob(trusted, "migration");
+    assert.ok(
+      requiredStep(
+        trustedMigration,
+        "Exercise previous EXE migration and native selective reset",
+      ).run?.includes(
+        '"$env:GITHUB_WORKSPACE\\controller\\packaging\\windows\\installer\\run-preview-migration.ps1"',
+      ),
+    );
+    const identity = requiredStep(
+      trustedMigration,
+      "Record trusted migration controller identity separately",
+    );
+    assert.ok(
+      identity.run?.includes(
+        "controllerSourceRevision=$env:CONTROLLER_SHA;artifactSourceRevision=$env:CANDIDATE_SHA",
+      ),
+    );
+    assert.ok(
+      requiredStep(
+        trustedMigration,
+        "Stage only non-runnable setup and migration evidence",
+      ).run?.includes("trusted-migration-controller.json"),
+    );
+  })();
   (() => {
     assert.ok(evidenceSource?.includes("The evidence staging root must be fresh."));
     assert.ok(evidenceSource?.includes("Evidence input contains PE or MSI/OLE runnable content"));

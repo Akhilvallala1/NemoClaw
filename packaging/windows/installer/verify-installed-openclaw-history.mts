@@ -18,11 +18,35 @@ export type HistoryFixture = {
   transcriptText: string;
 };
 
-function ordinaryFile(file: string) {
-  const info = fs.lstatSync(file);
-  assert(info.isFile() && !info.isSymbolicLink() && info.nlink === 1);
-  assert(info.size <= 16 * 1024 * 1024, "The history fixture exceeds its bound.");
-  return fs.readFileSync(file);
+export function readHistoryFixtureFile(file: string) {
+  const descriptor = fs.openSync(file, "r");
+  try {
+    const opened = fs.fstatSync(descriptor);
+    const named = fs.lstatSync(file);
+    assert(opened.isFile() && opened.nlink === 1);
+    assert(
+      named.isFile() &&
+        !named.isSymbolicLink() &&
+        named.dev === opened.dev &&
+        named.ino === opened.ino,
+      "The history fixture path changed identity.",
+    );
+    const limit = 16 * 1024 * 1024;
+    assert(opened.size <= limit, "The history fixture exceeds its bound.");
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for (;;) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, limit - bytes + 1));
+      const count = fs.readSync(descriptor, chunk, 0, chunk.length, null);
+      if (count === 0) break;
+      bytes += count;
+      assert(bytes <= limit, "The history fixture exceeds its bound.");
+      chunks.push(chunk.subarray(0, count));
+    }
+    return Buffer.concat(chunks, bytes);
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
 function filesBelow(directory: string): string[] {
@@ -61,10 +85,11 @@ export function verifyInstalledHistory(fixture: HistoryFixture) {
     /^legacy-store\.sessions\.json\.imported-[0-9]+(?:\.[0-9]+)?$/u.test(path.basename(file)),
   );
   assert.equal(storeArchives.length, 1);
-  assert.equal(ordinaryFile(storeArchives[0]).toString("utf8"), fixture.storeText);
+  assert.equal(readHistoryFixtureFile(storeArchives[0]).toString("utf8"), fixture.storeText);
   assert.equal(
-    archives.filter((file) => ordinaryFile(file).toString("utf8") === fixture.transcriptText)
-      .length,
+    archives.filter(
+      (file) => readHistoryFixtureFile(file).toString("utf8") === fixture.transcriptText,
+    ).length,
     1,
   );
   const databases = filesBelow(path.join(fixture.home, ".openclaw")).filter((file) => {
@@ -114,7 +139,7 @@ export function verifyInstalledHistory(fixture: HistoryFixture) {
     archives: archives
       .map((file) => ({
         file: path.relative(archiveRoot, file),
-        sha256: createHash("sha256").update(ordinaryFile(file)).digest("hex"),
+        sha256: createHash("sha256").update(readHistoryFixtureFile(file)).digest("hex"),
       }))
       .sort((left, right) => left.file.localeCompare(right.file)),
   };
@@ -122,7 +147,7 @@ export function verifyInstalledHistory(fixture: HistoryFixture) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   assert.equal(process.argv.length, 4);
-  const fixture = JSON.parse(ordinaryFile(process.argv[2]).toString("utf8"));
+  const fixture = JSON.parse(readHistoryFixtureFile(process.argv[2]).toString("utf8"));
   fs.writeFileSync(process.argv[3], JSON.stringify(verifyInstalledHistory(fixture)) + "\n", {
     flag: "wx",
   });

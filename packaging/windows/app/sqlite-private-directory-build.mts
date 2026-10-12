@@ -96,17 +96,37 @@ export function buildPrivateDirectoryLibrary(source: string, app: string) {
     ],
     { timeout: 60_000, maxBuffer: 65_536, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
   );
-  const stat = fs.lstatSync(output);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size === 0)
-    throw new Error("The compiled private-directory library is not an ordinary nonempty file.");
   return {
     built: true,
     path: SQLITE_PRIVATE_DIRECTORY_LIBRARY,
     sourceSha256,
     nativeSourceSha256: digest(native.source),
-    sha256: digest(fs.readFileSync(output)),
-    bytes: stat.size,
+    ...privateDirectoryLibraryIdentity(output),
     runtimeCompilation: false,
     windowsQualified: false,
   };
+}
+
+export function privateDirectoryLibraryIdentity(output: string) {
+  const descriptor = fs.openSync(output, "r");
+  try {
+    const opened = fs.fstatSync(descriptor);
+    const named = fs.lstatSync(output);
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1 ||
+      opened.size === 0 ||
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.dev !== opened.dev ||
+      named.ino !== opened.ino
+    )
+      throw new Error("The compiled private-directory library is not an ordinary nonempty file.");
+    const bytes = fs.readFileSync(descriptor);
+    if (bytes.length !== opened.size)
+      throw new Error("The compiled private-directory library changed size while reading.");
+    return { sha256: digest(bytes), bytes: bytes.length };
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }

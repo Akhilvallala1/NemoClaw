@@ -8,6 +8,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  captureMigrationHistory,
+  verifyMigrationHistory,
+} from "./native-openclaw-migration-verification.mts";
+import {
   inspectLegacyOpenClawSessions,
   migrateNativeOpenClawSessions,
 } from "./native-openclaw-migration.mts";
@@ -23,10 +27,23 @@ function migrationApp(
     const mode = argv[4]; const store = argv[6];
     const archiveDir = path.join(path.dirname(path.dirname(store)), 'session-sqlite-import-archive');
     const archive = path.join(archiveDir, 'legacy-store.sessions.json.imported-123456');
+    const sqlite = path.join(path.dirname(path.dirname(store)), 'agent', 'openclaw-agent.sqlite');
+    const transcript = path.join(path.dirname(store), 'session-1.jsonl');
+    const transcriptArchive = path.join(archiveDir, 'main.session-1.jsonl.imported-123456');
     ${beforeImport}
     if (mode === 'import') {
       fs.mkdirSync(archiveDir, {recursive:true});
       ${importAction}
+      const {DatabaseSync} = require('node:sqlite');
+      fs.mkdirSync(path.dirname(sqlite), {recursive:true});
+      const db = new DatabaseSync(sqlite);
+      try {
+        db.exec('CREATE TABLE session_nodes(session_key TEXT, current_session_id TEXT, entry_valid INTEGER); CREATE TABLE transcript_events(session_id TEXT, event_json TEXT);');
+        db.prepare('INSERT INTO session_nodes VALUES (?,?,1)').run('main','session-1');
+        for (const line of fs.readFileSync(transcript,'utf8').trim().split('\\n'))
+          if (line && JSON.parse(line)) db.prepare('INSERT INTO transcript_events VALUES (?,?)').run('session-1',line);
+      } finally { db.close(); }
+      fs.renameSync(transcript, transcriptArchive);
     }
     const report = {mode, targets:[{agentId:'main', storePath:store,
       archivedLegacyStoreFiles:mode === 'import' ? [archive] : []}],
@@ -35,6 +52,37 @@ function migrationApp(
     console.log(JSON.stringify(report));
     throw Object.assign(new Error('done'),{name:'ExitError',code:0});
   };`;
+}
+
+for (const [name, corrupt] of [
+  ["missing transcript archive", "fs.unlinkSync(transcriptArchive);"],
+  ["changed transcript archive", "fs.writeFileSync(transcriptArchive, 'changed');"],
+  [
+    "hard-linked transcript archive",
+    "fs.linkSync(transcriptArchive, transcriptArchive + '.link');",
+  ],
+  [
+    "redirected transcript archive",
+    "fs.renameSync(transcriptArchive, transcriptArchive + '.target'); fs.symlinkSync(transcriptArchive + '.target', transcriptArchive);",
+  ],
+  ["missing database", "fs.unlinkSync(sqlite);"],
+  ["corrupt database", "fs.writeFileSync(sqlite, 'invalid database');"],
+  ["missing session", "db.exec('DELETE FROM session_nodes');"],
+  ["wrong session identity", "db.exec(\"UPDATE session_nodes SET current_session_id='other'\");"],
+  ["invalid session entry", "db.exec('UPDATE session_nodes SET entry_valid=0');"],
+  ["missing transcript events", "db.exec('DELETE FROM transcript_events');"],
+]) {
+  test(`migration rejects reported success with ${name} and keeps retry blocked`, async (t) => {
+    const mutation = corrupt.startsWith("db.")
+      ? `const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync(sqlite); try { ${corrupt} } finally { db.close(); }`
+      : corrupt;
+    const f = await fixture(t, migrationApp("", "fs.renameSync(store, archive);", mutation));
+    const original = fs.readFileSync(f.store);
+    await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+    assert.deepEqual(fs.readFileSync(f.archive), original);
+    assert.equal(fs.existsSync(f.pending), true);
+    await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+  });
 }
 
 async function fixture(t: test.TestContext, source?: string, compileWorker = false) {
@@ -74,6 +122,7 @@ async function fixture(t: test.TestContext, source?: string, compileWorker = fal
     sessions,
     transcript,
     store,
+    pending: path.join(home, ".openclaw", ".nemoclaw-history-migration-pending"),
     archive: path.join(
       path.dirname(sessions),
       "session-sqlite-import-archive",
@@ -91,7 +140,56 @@ test("migration runs dry-run and import, preserves originals, and skips migrated
   const original = fs.readFileSync(f.store);
   assert.equal(await migrateNativeOpenClawSessions(f), true);
   assert.deepEqual(fs.readFileSync(f.archive), original);
+  assert.equal(fs.existsSync(f.pending), false);
   assert.equal(await migrateNativeOpenClawSessions(f), false);
+});
+
+test("migration verification permits an empty archived index without creating SQLite", async (t) => {
+  const f = await fixture(t);
+  fs.writeFileSync(f.store, "{}");
+  fs.unlinkSync(f.transcript);
+  const history = captureMigrationHistory(f.store);
+  fs.mkdirSync(path.dirname(f.archive));
+  fs.renameSync(f.store, f.archive);
+  verifyMigrationHistory(history);
+  assert.equal(fs.existsSync(path.join(path.dirname(f.sessions), "agent")), false);
+});
+
+test("migration accepts retained database events in addition to the imported transcript", async (t) => {
+  const f = await fixture(
+    t,
+    migrationApp(
+      "",
+      "fs.renameSync(store, archive);",
+      `
+    const {DatabaseSync} = require('node:sqlite'); const db = new DatabaseSync(sqlite);
+    try { db.prepare('INSERT INTO transcript_events VALUES (?,?)').run('session-1', '{"retained":true}'); }
+    finally { db.close(); }
+  `,
+    ),
+  );
+  assert.equal(await migrateNativeOpenClawSessions(f), true);
+  assert.equal(fs.existsSync(f.pending), false);
+});
+
+test("migration capture counts shared transcripts once and ignores unrelated trajectory pointers", async (t) => {
+  const f = await fixture(t);
+  fs.writeFileSync(
+    f.store,
+    JSON.stringify({
+      main: { sessionId: "session-1" },
+      alias: { sessionId: "session-1", sessionFile: f.transcript },
+    }),
+  );
+  const text = `${JSON.stringify({ message: "日本語".repeat(30_000) })}\nfalse\n\n${JSON.stringify({ message: "tail" })}`;
+  fs.writeFileSync(f.transcript, text);
+  fs.writeFileSync(path.join(f.sessions, "unrelated.trajectory-path.json"), "orphan pointer");
+  const history = captureMigrationHistory(f.store);
+  assert.equal(history.originals.size, 1);
+  assert.deepEqual(history.sessions, [
+    { key: "main", id: "session-1", events: 2 },
+    { key: "alias", id: "session-1", events: 2 },
+  ]);
 });
 
 for (const [name, action, reportChange] of [
@@ -135,8 +233,82 @@ for (const [name, action, reportChange] of [
   test(`migration rejects ${name} instead of reporting successful preservation`, async (t) => {
     const f = await fixture(t, migrationApp("", action, reportChange));
     await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+    // An absent legacy index after a failed import must not make the next launch
+    // treat unverified history as an already-completed migration.
+    await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
   });
 }
+
+test("failed import retains original history and blocks a silent retry after index archival", async (t) => {
+  const f = await fixture(
+    t,
+    migrationApp(
+      "",
+      `fs.renameSync(store, archive);
+      throw Object.assign(new Error('interrupted'), {name:'ExitError',code:2});`,
+    ),
+  );
+  const original = fs.readFileSync(f.store);
+  const transcript = fs.readFileSync(f.transcript);
+  await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+  assert.equal(fs.existsSync(f.store), false);
+  await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+  assert.deepEqual(fs.readFileSync(f.archive), original);
+  assert.deepEqual(fs.readFileSync(f.transcript), transcript);
+});
+
+for (const kind of ["file", "directory", "dangling link", "hard link"] as const) {
+  test(`migration refuses an existing pending ${kind} even without a legacy index`, async (t) => {
+    const f = await fixture(t);
+    const other = path.join(f.root, "pending-target");
+    if (kind === "file") fs.writeFileSync(f.pending, "incomplete");
+    if (kind === "directory") fs.mkdirSync(f.pending);
+    if (kind === "dangling link") fs.symlinkSync(other, f.pending);
+    if (kind === "hard link") {
+      fs.writeFileSync(other, "do not modify");
+      fs.linkSync(other, f.pending);
+    }
+    fs.unlinkSync(f.store);
+    const original = fs.lstatSync(f.pending);
+    await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+    assert.equal(fs.lstatSync(f.pending).ino, original.ino);
+    if (kind === "hard link") assert.equal(fs.readFileSync(other, "utf8"), "do not modify");
+    if (kind === "dangling link") assert.equal(fs.existsSync(other), false);
+  });
+}
+
+test("migration keeps incomplete state when the lease is lost after import", async (t) => {
+  const f = await fixture(t, undefined, true);
+  await assert.rejects(
+    migrateNativeOpenClawSessions({
+      ...f,
+      assertHeld() {
+        if (fs.existsSync(f.archive)) throw new Error("lease revoked after import");
+      },
+    }),
+    /lease revoked after import/u,
+  );
+  assert.equal(fs.existsSync(f.pending), true);
+  await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+});
+
+test("migration persists incomplete state before the importer starts", async (t) => {
+  const f = await fixture(
+    t,
+    migrationApp(`if (mode === 'import') {
+      const assert = require('node:assert/strict');
+      const pending = path.join(process.env.OPENCLAW_STATE_DIR, '.nemoclaw-history-migration-pending');
+      assert.equal(fs.readFileSync(pending, 'utf8'), 'History migration verification is incomplete.\\n');
+      throw Object.assign(new Error('import failed'), {name:'ExitError',code:2});
+    }`),
+  );
+  const original = fs.readFileSync(f.store);
+  await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+  assert.equal(fs.existsSync(f.pending), true);
+  assert.deepEqual(fs.readFileSync(f.store), original);
+  assert.equal(fs.existsSync(f.archive), false);
+  await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+});
 
 test("migration rejects transcript paths outside the main session directory", async (t) => {
   const f = await fixture(t);
@@ -184,6 +356,7 @@ test("migration stops on a failed dry-run without importing history", async (t) 
   );
   await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
   assert(fs.existsSync(f.store));
+  assert.equal(fs.existsSync(f.pending), false);
 });
 
 test("migration rejects incomplete reports without importing history", async (t) => {

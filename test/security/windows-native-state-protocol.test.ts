@@ -3,7 +3,7 @@
 
 import { EventEmitter } from "node:events";
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
@@ -16,10 +16,11 @@ import {
 
 function fixture(exitCode = 0) {
   const child = Object.assign(new EventEmitter(), {
-    stdin: Object.assign(new EventEmitter(), { end: vi.fn() }),
-    stdout: new EventEmitter(),
-    stderr: new EventEmitter(),
+    stdin: Object.assign(new EventEmitter(), { end: vi.fn(), destroy: vi.fn() }),
+    stdout: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
+    stderr: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
     kill: vi.fn(),
+    unref: vi.fn(),
   });
   child.stdin.end.mockImplementation(() => queueMicrotask(() => child.emit("close", exitCode)));
   mocks.spawn.mockReturnValue(child);
@@ -34,8 +35,106 @@ const receipt = {
   leaseHeld: true,
 };
 beforeEach(() => mocks.spawn.mockReset());
+afterEach(() => vi.useRealTimers());
 
 describe("native Windows state protocol", () => {
+  describe.each([
+    ["session", acquireNativeStateSession],
+    ["configuration", acquireNativeStateConfiguration],
+    ["remove", acquireNativeStateRemoval],
+  ] as const)("%s owner termination", (mode, acquire) => {
+    it(`${mode} acquisition reports retained ownership when termination never closes`, async () => {
+      vi.useFakeTimers();
+      const child = fixture();
+      child.stdin.end.mockImplementation(() => {});
+      child.kill.mockReturnValue(false);
+      const pending = acquire("launcher.exe", "hermes");
+      const rejected = expect(pending).rejects.toThrow(/receipt is invalid.*exit is unconfirmed/);
+      child.stdout.emit("data", Buffer.from("{}\n"));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(child.kill).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(5000);
+      await rejected;
+      expect(child.stdin.end).toHaveBeenCalledOnce();
+      expect(child.unref).toHaveBeenCalledOnce();
+      expect(child.stdin.destroy).toHaveBeenCalledOnce();
+      expect(child.stdout.destroy).toHaveBeenCalledOnce();
+      expect(child.stderr.destroy).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each([
+      { outcome: "returns false", kill: () => false },
+      { outcome: "returns true", kill: () => true },
+      {
+        outcome: "throws",
+        kill: () => {
+          throw new Error("termination failed");
+        },
+      },
+    ])("release remains failed when kill $outcome without confirmed exit", async ({ kill }) => {
+      vi.useFakeTimers();
+      const child = fixture();
+      child.stdin.end.mockImplementation(() => {});
+      child.kill.mockImplementation(kill);
+      const pending = acquire("launcher.exe", "hermes");
+      child.stdout.emit(
+        "data",
+        Buffer.from(
+          JSON.stringify({
+            ...receipt,
+            kind: `native-state-${mode}`,
+            removed: false,
+          }) + "\n",
+        ),
+      );
+      const owner = await pending;
+      const released = owner.release();
+      expect(owner.release()).toBe(released);
+      const rejected = expect(released).rejects.toThrow(
+        /exit is unconfirmed.*ownership may be retained/,
+      );
+      await vi.advanceTimersByTimeAsync(14999);
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(child.unref).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(child.kill).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(5000);
+      await rejected;
+      expect(() => owner.assertHeld()).toThrow("exit is unconfirmed");
+      await expect(owner.release()).rejects.toThrow("exit is unconfirmed");
+      // A late close cannot retroactively turn failed cleanup into confirmed ACL restoration.
+      child.emit("close", 0);
+      await expect(owner.release()).rejects.toThrow("exit is unconfirmed");
+      expect(child.stdin.end).toHaveBeenCalledOnce();
+      expect(child.kill).toHaveBeenCalledOnce();
+      expect(child.unref).toHaveBeenCalledOnce();
+      expect(child.stdin.destroy).toHaveBeenCalledOnce();
+      expect(child.stdout.destroy).toHaveBeenCalledOnce();
+      expect(child.stderr.destroy).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it("waits for close after requesting termination and preserves a failed exit", async () => {
+    vi.useFakeTimers();
+    const child = fixture();
+    child.stdin.end.mockImplementation(() => {});
+    child.kill.mockReturnValue(true);
+    const pending = acquireNativeStateSession("launcher.exe", "hermes");
+    child.stdout.emit("data", Buffer.from(JSON.stringify(receipt) + "\n"));
+    const owner = await pending;
+    const released = owner.release();
+    const rejected = expect(released).rejects.toThrow("restore private access");
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(child.kill).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    child.emit("close", 2);
+    await rejected;
+    expect(child.unref).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each(["pi", "nemocua", "langchain-deepagents-code"])(
     "rejects new %s sessions and configuration before starting the owner",
     async (agent) => {

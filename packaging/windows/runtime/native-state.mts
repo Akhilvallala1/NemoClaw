@@ -56,6 +56,43 @@ async function acquireStateOwner(
       resolve(code ?? 1);
     });
   });
+  const waitForExit = async (milliseconds: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        completion,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), milliseconds);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const stopOwner = async (graceMilliseconds: number) => {
+    child.stdin.end();
+    const graceful = await waitForExit(graceMilliseconds);
+    if (graceful !== null) return graceful;
+    let terminationError: unknown;
+    try {
+      child.kill();
+    } catch (error) {
+      terminationError = error;
+    }
+    const terminated = await waitForExit(5000);
+    if (terminated !== null) return terminated;
+    failure = new Error(
+      "The private Windows state owner exit is unconfirmed; ownership may be retained. Confirm the owner has exited before recovering private state.",
+      { cause: terminationError },
+    );
+    // A retained owner must not keep the failing caller alive through its process or pipes.
+    // This does not release the owner's Windows mutex or authorize deleting its private state.
+    child.unref();
+    child.stdin.destroy();
+    child.stdout.destroy();
+    child.stderr.destroy();
+    throw failure;
+  };
   let text = "";
   let bytes = 0;
   let ready;
@@ -114,10 +151,14 @@ async function acquireStateOwner(
     );
   } catch (error) {
     releasing = true;
-    child.stdin.end();
-    const timeout = setTimeout(() => child.kill(), 5000);
-    await completion;
-    clearTimeout(timeout);
+    try {
+      await stopOwner(5000);
+    } catch (cleanupError) {
+      throw new Error(
+        `${error instanceof Error ? error.message : "Opening private Windows state failed."} ${cleanupError instanceof Error ? cleanupError.message : "State-owner cleanup failed."}`,
+        { cause: new AggregateError([error, cleanupError]) },
+      );
+    }
     const detail = ownerDiagnostics.finish().trim();
     if (detail)
       throw new Error(
@@ -126,26 +167,29 @@ async function acquireStateOwner(
       );
     throw error;
   }
+  let releaseResult: Promise<void> | undefined;
   return {
     ...ready,
     assertHeld() {
       if (failure || ended || releasing)
         throw failure ?? new Error("The private Windows state lease is closed.");
     },
-    async release() {
-      if (releasing) return;
+    release() {
+      if (releaseResult) return releaseResult;
       releasing = true;
-      child.stdin.end();
-      const timeout = setTimeout(() => child.kill(), 15_000);
-      const code = await completion;
-      clearTimeout(timeout);
-      if (failure || code !== 0) {
-        const detail = ownerDiagnostics.finish().trim();
-        const message =
-          failure?.message ??
-          "Windows did not restore private access to the agent's retained state.";
-        throw new Error(`${message}${detail ? ` ${detail}` : ""}`, { cause: failure ?? undefined });
-      }
+      releaseResult = (async () => {
+        const code = await stopOwner(15_000);
+        if (failure || code !== 0) {
+          const detail = ownerDiagnostics.finish().trim();
+          const message =
+            failure?.message ??
+            "Windows did not restore private access to the agent's retained state.";
+          throw new Error(`${message}${detail ? ` ${detail}` : ""}`, {
+            cause: failure ?? undefined,
+          });
+        }
+      })();
+      return releaseResult;
     },
   };
 }

@@ -151,6 +151,8 @@ if (portable) {
       const encoded = Buffer.from(directory, "utf8").toString("base64");
       const inspect = [
         "$ErrorActionPreference = 'Stop'",
+        // Node inherits pwsh's module paths; this child needs Windows PowerShell's modules.
+        "$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')",
         `$path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
         "$acl = Get-Acl -LiteralPath $path",
         "$sid = [System.Security.Principal.SecurityIdentifier]",

@@ -39,6 +39,12 @@ on:
       application_manifest_sha256:
         required: true
         type: string
+      candidate_migration_evidence_id:
+        required: true
+        type: string
+      candidate_migration_proof_sha256:
+        required: true
+        type: string
     outputs:
       preview_id:
         description: Artifact ID of the fully qualified runnable installer
@@ -78,6 +84,8 @@ jobs:
           INSTALLER_CACHE_KEY: ${{ inputs.installer_cache_key }}
           INSTALLER_MANIFEST: ${{ inputs.installer_manifest_sha256 }}
           APPLICATION_MANIFEST: ${{ inputs.application_manifest_sha256 }}
+          CANDIDATE_MIGRATION_EVIDENCE_ID: ${{ inputs.candidate_migration_evidence_id }}
+          CANDIDATE_MIGRATION_PROOF_SHA256: ${{ inputs.candidate_migration_proof_sha256 }}
           ACTOR: ${{ github.actor }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
@@ -86,6 +94,7 @@ jobs:
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ && "$CANDIDATE_REPOSITORY" == 'NVIDIA/NemoClaw' ]]
           [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ && "$BASE_SHA" =~ ^[a-f0-9]{40}$ && "$WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$INSTALLER_MANIFEST" =~ ^[a-f0-9]{64}$ && "$APPLICATION_MANIFEST" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$CANDIDATE_MIGRATION_EVIDENCE_ID" =~ ^[1-9][0-9]*$ && "$CANDIDATE_MIGRATION_PROOF_SHA256" =~ ^[a-f0-9]{64}$ ]]
           [[ "$SELECTED_AGENT" =~ ^(openclaw|hermes)$ && "$PRODUCT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$INSTALLER_CACHE_KEY" == "windows-finished-installer-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CANDIDATE_SHA-$SELECTED_AGENT" ]]
           [[ "$BASE_SHA" == "$WORKFLOW_SHA" ]]
@@ -114,10 +123,75 @@ jobs:
             echo 'credential_authorized=true'
           } >> "$GITHUB_OUTPUT"
 
+  candidate-migration-proof:
+    name: Verify same-run candidate migration controller evidence
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download candidate migration evidence from this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.candidate_migration_evidence_id }}
+          path: ${{ runner.temp }}/candidate-migration-proof
+          merge-multiple: true
+      - name: Verify candidate controller and artifact identities
+        shell: python
+        env:
+          PROOF_ROOT: ${{ runner.temp }}/candidate-migration-proof
+          PROOF_SHA256: ${{ inputs.candidate_migration_proof_sha256 }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          INSTALLER_MANIFEST: ${{ inputs.installer_manifest_sha256 }}
+          SELECTED_AGENT: ${{ inputs.agent }}
+        run: |
+          import hashlib, json, os, pathlib, re, stat
+          root = pathlib.Path(os.environ['PROOF_ROOT']).resolve(strict=True)
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError('Duplicate migration evidence property')
+                  result[key] = value
+              return result
+          def read_json(relative, digest):
+              file = root / relative
+              assert file.resolve(strict=True) == file and not file.is_symlink()
+              with file.open('rb') as stream:
+                  opened = os.fstat(stream.fileno())
+                  assert stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1
+                  data = stream.read(1048577)
+              assert len(data) <= 1048576 and re.fullmatch('[a-f0-9]{64}', digest)
+              assert hashlib.sha256(data).hexdigest() == digest
+              return json.loads(data, object_pairs_hook=unique_object)
+          proof = read_json('candidate-migration-controller.json', os.environ['PROOF_SHA256'])
+          assert proof['schemaVersion'] == 1 and proof['passed'] is True
+          assert proof['classification'] == 'same-run-candidate-migration-controllers'
+          assert proof['controllerSourceRevision'] == os.environ['CANDIDATE_SHA']
+          assert proof['artifactSourceRevision'] == os.environ['CANDIDATE_SHA']
+          assert proof['installerManifestSha256'] == os.environ['INSTALLER_MANIFEST']
+          assert proof['agent'] == os.environ['SELECTED_AGENT']
+          assert proof['workflowRunId'] == os.environ['GITHUB_RUN_ID']
+          assert proof['workflowRunAttempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+          expected = ['diagnostics-fixture/fixture.json', 'burn-diagnostics/burn-diagnostics.json', 'migration/preview-migration.json']
+          assert [item['file'] for item in proof['files']] == expected
+          fixture, burn, migration = [read_json(item['file'], item['sha256']) for item in proof['files']]
+          assert all(report['sourceRevision'] == os.environ['CANDIDATE_SHA'] for report in [fixture, burn, migration])
+          assert fixture['classification'] == 'actual-burn-host-preparation-failure-fixture'
+          assert fixture['intendedForDistribution'] is False
+          assert burn['classification'] == 'actual-burn-prerequisite-failure-qualification'
+          assert burn['agent'] == os.environ['SELECTED_AGENT'] and burn['status'] == 'pass'
+          assert burn['cleanupErrors'] == [] and burn['packageNotInstalled'] is True
+          assert migration['classification'] == 'actual-published-preview-native-migration'
+          assert migration['newAgent'] == os.environ['SELECTED_AGENT'] and migration['status'] == 'pass'
+          assert migration['cleanupErrors'] == [] and migration['installationRootRemoved'] is True
+          assert [case['kind'] for case in migration['cases']] == ['conventional-reinstall', 'native-replace-preview']
+          assert all(case['resetVerified'] is True for case in migration['cases'])
+          print('Candidate migration controller evidence matches this run and installer.')
+
   full-installed-acceptance:
     name: Protected full installed acceptance (ARM64)
-    needs: authorize
-    if: ${{ needs.authorize.outputs.trusted_main == 'true' && needs.authorize.outputs.exact_workflow == 'true' && needs.authorize.outputs.exact_pr == 'true' && needs.authorize.outputs.credential_authorized == 'true' }}
+    needs: [authorize, candidate-migration-proof]
+    if: ${{ needs.authorize.outputs.trusted_main == 'true' && needs.authorize.outputs.exact_workflow == 'true' && needs.authorize.outputs.exact_pr == 'true' && needs.authorize.outputs.credential_authorized == 'true' && needs.candidate-migration-proof.result == 'success' }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 60
     # External security boundary required before first use: administrators must
@@ -327,13 +401,25 @@ jobs:
         run: |
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
           & "$env:GITHUB_WORKSPACE\controller\packaging\windows\installer\run-preview-migration.ps1" -WorkDirectory "$env:RUNNER_TEMP\finished-windows" -ProductVersion $env:PRODUCT_VERSION -NewAgent $env:SELECTED_AGENT
+      - name: Record trusted migration controller identity separately
+        shell: pwsh
+        run: |
+          $head = (& git -C "$env:GITHUB_WORKSPACE\controller" rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:CONTROLLER_SHA) { throw 'The trusted migration controller differs.' }
+          # GITHUB_SHA in the child scripts identifies the product under test.
+          # It does not identify the trusted scripts that produced these reports.
+          [IO.File]::WriteAllText("$env:RUNNER_TEMP\finished-windows\trusted-migration-controller.json", (@{
+            schemaVersion=1;classification='same-run-trusted-migration-controller';passed=$true
+            controllerSourceRevision=$env:CONTROLLER_SHA;artifactSourceRevision=$env:CANDIDATE_SHA
+            workflowRunId=$env:GITHUB_RUN_ID;workflowRunAttempt=$env:GITHUB_RUN_ATTEMPT
+          } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
       - name: Stage only non-runnable setup and migration evidence
         id: migration_evidence
         if: ${{ always() }}
         shell: pwsh
         run: |
           $work = "$env:RUNNER_TEMP\finished-windows"
-          $inputs = @("$work\diagnostics-fixture\fixture.json")
+          $inputs = @("$work\diagnostics-fixture\fixture.json", "$work\trusted-migration-controller.json")
           $allowed = @('.csv', '.etl', '.jpeg', '.jpg', '.json', '.log', '.md', '.png', '.txt', '.xml')
           foreach ($directory in @("$work\burn-diagnostics", "$work\migration")) {
             $inputs += @(Get-ChildItem -LiteralPath $directory -Recurse -File -ErrorAction SilentlyContinue |
@@ -352,8 +438,8 @@ jobs:
 
   publish-qualified-installer:
     name: Publish only fully qualified runnable installer
-    needs: [authorize, full-installed-acceptance, migration]
-    if: ${{ needs.authorize.outputs.credential_authorized == 'true' && needs.full-installed-acceptance.result == 'success' && needs.migration.result == 'success' }}
+    needs: [authorize, candidate-migration-proof, full-installed-acceptance, migration]
+    if: ${{ needs.authorize.outputs.credential_authorized == 'true' && needs.candidate-migration-proof.result == 'success' && needs.full-installed-acceptance.result == 'success' && needs.migration.result == 'success' }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 15
     # External security boundary required before first use: create a separate
