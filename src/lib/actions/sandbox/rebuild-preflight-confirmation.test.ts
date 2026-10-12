@@ -94,9 +94,15 @@ describe("rebuild confirmation", () => {
     expect(output).toContain("Cancelled.");
   });
 
-  it("does not prompt when confirmation is skipped", async () => {
+  it("prints the active-session warning but does not prompt when confirmation is skipped", async () => {
     const prompt = vi.fn(async () => "n");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
     await expect(confirmSandboxRebuildIfNeeded(true, 3, prompt)).resolves.toBe(true);
+
+    const output = log.mock.calls.flat().join("\n");
+    expect(output).toContain("Active sessions detected (3 connections)");
+    expect(output).toContain("terminate all active sessions; running commands will be interrupted");
     expect(prompt).not.toHaveBeenCalled();
   });
 

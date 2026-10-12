@@ -76,7 +76,8 @@ function isInteractiveSshCommand(command: string): boolean {
  * `--sandbox-id <id>` on its proxy command instead, which left interactive
  * sessions invisible to every session-reporting surface (#9316). When the
  * caller knows the durable sandbox ID, that form is matched too. Native exec
- * sessions require an exact `--name`, `--tty`, and interactive `/bin/bash -i`.
+ * sessions require an exact `--name`, `--tty`, and interactive `/bin/bash -i`;
+ * when the target gateway is known, the command's `-g` target must also match.
  *
  * Input format: one line per process — `<PID> <full command line>` from
  * `ps -axo pid,command`.
@@ -85,6 +86,7 @@ export function parseSshProcesses(
   processOutput: string | null | undefined,
   sandboxName: string,
   sandboxId?: string | null,
+  gatewayName?: string | null,
 ): SandboxSession[] {
   if (!processOutput || typeof processOutput !== "string") return [];
   if (!sandboxName) return [];
@@ -125,6 +127,7 @@ export function parseSshProcesses(
     if (
       /^(?:\S*\/)?openshell\s+sandbox\s+exec\b/.test(command) &&
       execNamePattern.test(command) &&
+      matchesNativeExecGateway(command, gatewayName) &&
       /(?:^|\s)--tty(?:\s|$)/.test(command) &&
       /(?:^|\s)--\s+\/bin\/bash\s+-i(?:\s|$)/.test(command)
     ) {
@@ -133,6 +136,17 @@ export function parseSshProcesses(
   }
 
   return sessions;
+}
+
+/** Match the gateway option before OpenShell's `--` remote-command separator. */
+function matchesNativeExecGateway(command: string, gatewayName?: string | null): boolean {
+  const expectedGateway = gatewayName?.trim();
+  if (!expectedGateway) return true;
+  const cliArguments = command.split(/\s--\s/, 1)[0] ?? command;
+  const gatewayPattern = new RegExp(
+    `(?:^|\\s)(?:-g|--gateway)(?:=|\\s+)${escapeRegExp(expectedGateway)}(?:\\s|$)`,
+  );
+  return gatewayPattern.test(cliArguments);
 }
 
 /** Escape special regex characters in a string for safe use in RegExp. */
@@ -166,6 +180,7 @@ export interface SessionDetectionDeps {
 export function getActiveSandboxSessions(
   sandboxName: string,
   deps: SessionDetectionDeps,
+  gatewayName?: string | null,
 ): ActiveSessionsResult {
   if (!sandboxName) {
     return { detected: false, sessions: [] };
@@ -182,7 +197,7 @@ export function getActiveSandboxSessions(
   const sandboxId = processOutput.includes("--sandbox-id")
     ? (deps.resolveSandboxId?.(sandboxName) ?? null)
     : null;
-  const sessions = parseSshProcesses(processOutput, sandboxName, sandboxId);
+  const sessions = parseSshProcesses(processOutput, sandboxName, sandboxId, gatewayName);
 
   return {
     detected: true,

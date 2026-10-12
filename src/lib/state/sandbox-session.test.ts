@@ -86,6 +86,28 @@ describe("parseSshProcesses", () => {
     ).toEqual([]);
   });
 
+  it("scopes native exec sessions to the requested gateway (#12665)", () => {
+    const output =
+      "45679 openshell sandbox exec --name my-sandbox -g nemoclaw --tty -- /bin/bash -i\n" +
+      "45680 openshell sandbox exec --name my-sandbox -g nemoclaw-9090 --tty -- /bin/bash -i";
+
+    expect(parseSshProcesses(output, "my-sandbox", null, "nemoclaw")).toEqual([
+      { sandboxName: "my-sandbox", pid: 45679, transport: "openshell-exec" },
+    ]);
+    expect(parseSshProcesses(output, "my-sandbox", null, "nemoclaw-9090")).toEqual([
+      { sandboxName: "my-sandbox", pid: 45680, transport: "openshell-exec" },
+    ]);
+    expect(parseSshProcesses(output, "my-sandbox")).toHaveLength(2);
+    expect(
+      parseSshProcesses(
+        "45681 openshell sandbox exec --name my-sandbox --tty -- /bin/bash -i -g nemoclaw",
+        "my-sandbox",
+        null,
+        "nemoclaw",
+      ),
+    ).toEqual([]);
+  });
+
   it("does not count noninteractive exec or dashboard forwards (#12665)", () => {
     const noninteractiveExec = "45678 openshell sandbox exec --name my-sandbox -- id -un";
     const ttyNoninteractiveExec = "45680 openshell sandbox exec --name my-sandbox --tty -- id -un";
@@ -194,8 +216,9 @@ describe("getActiveSandboxSessions", () => {
     const spawn = vi.fn().mockReturnValue({
       status: 0,
       stdout:
-        " 45678 /usr/local/bin/openshell sandbox exec --name my-sandbox --tty -- /bin/bash -i\n" +
-        " 45679 openshell sandbox exec --name my-sandbox -- id -un\n" +
+        " 45678 /usr/local/bin/openshell sandbox exec --name my-sandbox -g nemoclaw --tty -- /bin/bash -i\n" +
+        " 45679 /usr/local/bin/openshell sandbox exec --name my-sandbox -g nemoclaw-9090 --tty -- /bin/bash -i\n" +
+        " 45680 openshell sandbox exec --name my-sandbox -- id -un\n" +
         " 45680 /usr/local/bin/openshell --gateway nemoclaw-9090 --gateway-endpoint https://127.0.0.1:32665 --workspace default forward service my-sandbox --target-port 32760 --target-host 127.0.0.1 --local 127.0.0.1:32760\n",
       stderr: "",
     });
@@ -203,6 +226,7 @@ describe("getActiveSandboxSessions", () => {
     const result = getActiveSandboxSessions(
       "my-sandbox",
       createSystemDeps(undefined, { spawnSync: spawn as never }),
+      "nemoclaw",
     );
 
     expect(result).toEqual({

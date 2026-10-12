@@ -301,8 +301,12 @@ export function buildStatusCommandDeps(rootDir: string): ShowStatusCommandDeps {
           try {
             const sshOutput = getCachedSshOutput();
             if (sshOutput === null) return null;
-            return parseSshProcesses(sshOutput, name, resolveSandboxIdForSessions(sshOutput, name))
-              .length;
+            return parseSshProcesses(
+              sshOutput,
+              name,
+              resolveSandboxIdForSessions(sshOutput, name) ?? null,
+              registry.getSandbox(name)?.gatewayName ?? resolveGatewayName(GATEWAY_PORT),
+            ).length;
           } catch {
             return null;
           }

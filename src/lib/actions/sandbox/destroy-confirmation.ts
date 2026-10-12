@@ -23,6 +23,7 @@ function findActiveSandboxSessions(
     const result = getActiveSandboxSessions(
       sandboxName,
       createSessionDeps(opsBin, runtimeSelection ? { runtimeSelection } : {}),
+      runtimeSelection?.gatewayName,
     );
     return result.detected ? result.sessions : [];
   } catch {

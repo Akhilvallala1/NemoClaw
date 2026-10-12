@@ -414,7 +414,11 @@ describe("showSandboxStatus flow", () => {
     expect(output).toContain("Docker health:");
     expect(output).toContain("unhealthy");
     expect(output).toContain("NIM:      running (alpha-nim)");
-    expect(harness.getActiveSandboxSessionsSpy).toHaveBeenCalledWith("alpha", expect.any(Object));
+    expect(harness.getActiveSandboxSessionsSpy).toHaveBeenCalledWith(
+      "alpha",
+      expect.any(Object),
+      "nemoclaw",
+    );
     expect(harness.getSandboxDockerRuntimeSpy).toHaveBeenCalledWith("alpha", expect.any(Object));
     expect(exitSpy).not.toHaveBeenCalled();
   });

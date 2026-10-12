@@ -78,7 +78,10 @@ export function createRebuildCommandContext(
   };
 }
 
-export function countActiveSandboxSessionsForRebuild(sandboxName: string): number {
+export function countActiveSandboxSessionsForRebuild(
+  sandboxName: string,
+  gatewayName?: string | null,
+): number {
   const opsBinRebuild = resolveOpenshell();
   // Source boundary: active-session detection depends on host process listing
   // and the OpenShell binary being installed. A failed/unavailable detector is
@@ -88,7 +91,11 @@ export function countActiveSandboxSessionsForRebuild(sandboxName: string): numbe
   // OpenShell API that can distinguish "zero sessions" from "unavailable".
   if (!opsBinRebuild) return 0;
   try {
-    const result = getActiveSandboxSessions(sandboxName, createSessionDeps(opsBinRebuild));
+    const result = getActiveSandboxSessions(
+      sandboxName,
+      createSessionDeps(opsBinRebuild),
+      gatewayName,
+    );
     return result.detected ? result.sessions.length : 0;
   } catch {
     return 0;
@@ -112,7 +119,6 @@ export async function confirmSandboxRebuildIfNeeded(
     );
     console.log("");
   }
-  if (skipConfirm) return true;
   if (activeSessionCount > 0) {
     const plural = activeSessionCount > 1 ? "sessions" : "session";
     console.log(
@@ -123,6 +129,7 @@ export async function confirmSandboxRebuildIfNeeded(
     );
     console.log("");
   }
+  if (skipConfirm) return true;
   console.log("  This will:");
   console.log("    1. Back up workspace state");
   console.log("    2. Destroy and recreate the sandbox with the current image");
@@ -163,6 +170,7 @@ async function ensureRebuildUsageNoticeOrBail(bail: RebuildBail): Promise<void> 
 export async function confirmDelegatedRebuildIntent(
   sandboxName: string,
   requestedDcodeAutoApprovalMode?: DcodeAutoApprovalMode,
+  gatewayName?: string | null,
 ): Promise<boolean> {
   if (
     process.stdin?.isTTY !== true ||
@@ -175,7 +183,7 @@ export async function confirmDelegatedRebuildIntent(
     );
     return false;
   }
-  const activeSessionCount = countActiveSandboxSessionsForRebuild(sandboxName);
+  const activeSessionCount = countActiveSandboxSessionsForRebuild(sandboxName, gatewayName);
   console.log("");
   console.log(`  ${B}Rebuild sandbox '${sandboxName}'${R}`);
   console.log("");

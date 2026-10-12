@@ -105,8 +105,12 @@ export function buildListCommandDeps(): ListSandboxesCommandDeps {
           try {
             const sshOutput = getCachedSshOutput();
             if (sshOutput === null) return null;
-            return parseSshProcesses(sshOutput, name, resolveSandboxIdForSessions(sshOutput, name))
-              .length;
+            return parseSshProcesses(
+              sshOutput,
+              name,
+              resolveSandboxIdForSessions(sshOutput, name),
+              registry.getSandbox(name)?.gatewayName ?? getSelectedGatewayName(),
+            ).length;
           } catch {
             return null;
           }

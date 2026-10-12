@@ -2381,7 +2381,11 @@ export async function printInteractiveSessionHints(sandboxName: string): Promise
 
   // Active session hint — inform if already connected in another terminal
   try {
-    const sessionResult = getActiveSandboxSessions(sandboxName, createSessionDeps());
+    const sessionResult = getActiveSandboxSessions(
+      sandboxName,
+      createSessionDeps(),
+      getSandboxTargetGatewayName(sandboxName),
+    );
     if (sessionResult.detected && sessionResult.sessions.length > 0) {
       const count = sessionResult.sessions.length;
       console.log(

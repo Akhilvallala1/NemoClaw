@@ -214,11 +214,15 @@ function printAgentHarness(context: SandboxStatusTextContext): number | null {
   return printTerminalHarness(context);
 }
 
-function printActiveSessions(sandboxName: string): void {
+function printActiveSessions(sandboxName: string, gatewayName?: string | null): void {
   try {
     const openshell = resolveOpenshell();
     if (!openshell) return;
-    const sessionResult = getActiveSandboxSessions(sandboxName, createSessionDeps(openshell));
+    const sessionResult = getActiveSandboxSessions(
+      sandboxName,
+      createSessionDeps(openshell),
+      gatewayName,
+    );
     if (!sessionResult.detected) return;
     const count = sessionResult.sessions.length;
     const sessions = count > 0 ? `${G}${count}${R}` : "none";
@@ -354,7 +358,7 @@ export async function printSandboxDetails(
     `    Policies: ${livePolicies === null ? "unavailable" : livePolicies.join(", ") || "none"}`,
   );
   const agentExitCode = printAgentHarness(context);
-  printActiveSessions(sandboxName);
+  printActiveSessions(sandboxName, sb.gatewayName);
   await printAgentVersion(context, sb);
   return { exitCode: inferenceExitCode ?? agentExitCode };
 }
