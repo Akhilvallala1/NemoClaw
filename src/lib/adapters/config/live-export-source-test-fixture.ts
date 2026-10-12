@@ -308,9 +308,9 @@ function nativeNvidiaEndpoint(): Record<string, unknown> {
     port: 443,
     ports: [],
     protocol: "rest",
-    tls: "",
-    enforcement: "enforce",
-    access: "",
+    tls: 0,
+    enforcement: 1,
+    access: 0,
     rules: [
       { allow: { ...emptyNativeAllow, method: "GET", path: "/v1/models" } },
       {

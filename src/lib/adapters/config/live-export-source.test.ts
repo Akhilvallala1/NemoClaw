@@ -236,7 +236,7 @@ function mockNativeHostedSource(definition: (typeof HOSTED_NATIVE_PROVIDERS)[num
         {
           ...base.endpoints[0],
           host: endpoint.host,
-          access: "",
+          access: 0,
           rules: endpoint.rules.map((rule) => ({
             allow: {
               ...rule.allow,
