@@ -107,7 +107,7 @@ Before applying, the platform operator must provide:
 - A network plugin that enforces NetworkPolicies, working cluster DNS, and permitted outbound access for the selected public model registry.
   The current cluster path requires the `cluster.local` DNS domain.
   Every managed model service depends on this policy, including vLLM with `authentication: bearer`.
-  Hosted bearer-vLLM images require the `org.nemoclaw.inference.routes=openai-v1` image label and pass only the [listed inference requests](inference.md#authenticate-a-managed-vllm-service), which require the key, and public `GET /health`.
+  Hosted bearer-vLLM images require the `org.nemoclaw.inference.routes=openai-v2` image label and pass only the [listed inference requests](inference.md#authenticate-a-managed-vllm-service), which require the key, and public `GET /health`.
   They return 404 for `/invocations`, `OPTIONS`, and every other request before inference, and disable WebSockets; vLLM without bearer authentication retains its upstream route behavior.
   Managed Ollama has no native bearer authentication.
   Without policy enforcement, other Pods can reach model endpoints, including Ollama's model-management API; the Kubernetes API cannot prove that the network plugin enforces the policy.

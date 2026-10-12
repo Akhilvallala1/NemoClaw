@@ -129,9 +129,13 @@ fn authenticated_runtime_requires_native_bearer_and_restricted_routes() {
     let legacy = check_runtime(&image, &bundle, &runtime, "arm64")
         .unwrap_err()
         .to_string();
-    authenticated["org.nemoclaw.inference.routes"] = json!("openai-v1");
+    authenticated["org.nemoclaw.inference.routes"] = json!("openai-v2");
     let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated.clone());
     assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_ok());
+    // openai-v1 images from earlier revisions pass every /v1 path, including management routes.
+    authenticated["org.nemoclaw.inference.routes"] = json!("openai-v1");
+    let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated.clone());
+    assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_err());
     authenticated["org.nemoclaw.inference.routes"] = json!("unrestricted");
     let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated);
     let wrong = check_runtime(&image, &bundle, &runtime, "arm64")
@@ -314,7 +318,7 @@ fn deployment_preflight_requires_metadata_for_every_declared_cluster_service() {
             json!({
                 "org.nemoclaw.runtime.spec":"v1", "org.nemoclaw.backend":kind,
                 "org.nemoclaw.inference.authentication":"bearer-v1",
-                "org.nemoclaw.inference.routes":"openai-v1"
+                "org.nemoclaw.inference.routes":"openai-v2"
             }),
         );
         let directory = tempfile::tempdir().unwrap();

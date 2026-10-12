@@ -40,7 +40,7 @@ fn image_metadata(backend: &str) -> (String, Value) {
         json!({"os":"linux", "architecture":"amd64", "config":{"Labels":{
             "org.nemoclaw.runtime.spec":"v1", "org.nemoclaw.backend":backend,
             "org.nemoclaw.inference.authentication":"bearer-v1",
-            "org.nemoclaw.inference.routes":"openai-v1"
+            "org.nemoclaw.inference.routes":"openai-v2"
         }}}),
     );
     let (manifest, _) = add(

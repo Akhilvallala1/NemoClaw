@@ -195,7 +195,7 @@ fn bearer_docker_install_requires_an_image_that_restricts_routes() {
         labels
             .get("org.nemoclaw.inference.routes")
             .map(String::as_str),
-        Some("openai-v1")
+        Some("openai-v2")
     );
     service.authentication = None;
     let (_, spec) = super::targets(&document, "qwen", &service, &generations).unwrap();
