@@ -148,6 +148,11 @@ describe("connectSandbox flow", () => {
 
     expect(process.env.OPENSHELL_GATEWAY).toBe("ambient-sibling");
     expect(harness.runAutoPairSpy).toHaveBeenCalledWith("alpha", "nemoclaw-8091");
+    expect(harness.startSandboxSessionSpy).toHaveBeenCalledWith({
+      kind: "connect",
+      sandboxName: "alpha",
+      target: { kind: "named", gatewayName: "nemoclaw-8091" },
+    });
   });
 
   it("uses strict settlement and skips ordinary approval for a completed Portable sandbox (#9207)", async () => {
