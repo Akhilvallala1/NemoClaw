@@ -171,7 +171,7 @@ async fn configured_gateway_routes_cluster_keys_to_registration_and_refreshes_on
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; local gateway fixture only"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; local gateway fixture only"]
 async fn bundled_fabric_configuration_refresh_uses_managed_cluster_callbacks() {
     let bundle = nemoclaw_test_fixtures::Bundle::from_env();
     let version = nemoclaw_sdk::bundle::Bundle::open(bundle.root())
@@ -316,7 +316,7 @@ async fn bundled_fabric_configuration_refresh_uses_managed_cluster_callbacks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; local gateway fixture only"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; local gateway fixture only"]
 async fn bundled_openshell_provider_refreshes_saved_cluster_credentials_without_resolving_them() {
     use openshell_core::proto;
 

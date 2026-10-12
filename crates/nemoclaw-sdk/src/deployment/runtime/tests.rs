@@ -173,7 +173,7 @@ fn bound_cluster_port_change_explains_required_teardown_before_runtime_reconcili
 }
 
 #[tokio::test]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; separate local OpenTofu states"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; separate local OpenTofu states"]
 async fn plan_and_apply_refuse_cluster_port_changes_with_separate_state_files() {
     fn state_block(fields: &nemoclaw_tofu::shape::Fields, value: &Value) -> Value {
         use nemoclaw_tofu::shape::Shape;
