@@ -909,7 +909,9 @@ describe("contributor repository setup", () => {
     const commands = readCommandLog(fixture);
     expect(commands).toContain("NODE_OPTIONS=--max-old-space-size=6144");
     expect(commands).toContain("npm-plugin-build NODE_OPTIONS=--max-old-space-size=6144");
-    expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max-old-space-size=6144");
+    expect(
+      commands.split("\n").filter((command) => command.startsWith("tsc-plugin ")),
+    ).toHaveLength(1);
   });
 
   it("preserves caller Node.js options while adding a default heap limit", () => {
@@ -923,9 +925,38 @@ describe("contributor repository setup", () => {
     expect(commands).toContain(
       "npm-plugin-build NODE_OPTIONS=--trace-warnings --max-old-space-size=6144",
     );
-    expect(commands).toContain(
-      "tsc-plugin NODE_OPTIONS=--trace-warnings --max-old-space-size=6144",
+    expect(
+      commands.split("\n").filter((command) => command.startsWith("tsc-plugin ")),
+    ).toHaveLength(1);
+  });
+
+  it("preserves the underscore heap alias during setup checks", () => {
+    const fixture = createFixture();
+
+    const result = runSetup(fixture, [], { NODE_OPTIONS: "--max_old_space_size=4096" });
+
+    expect(result.status).toBe(0);
+    const commands = readCommandLog(fixture);
+    expect(commands).toContain("NODE_OPTIONS=--max_old_space_size=4096");
+    expect(commands).toContain("npm-plugin-build NODE_OPTIONS=--max_old_space_size=4096");
+    expect(
+      commands.split("\n").filter((command) => command.startsWith("tsc-plugin ")),
+    ).toHaveLength(1);
+    expect(commands).not.toContain(
+      "NODE_OPTIONS=--max_old_space_size=4096 --max-old-space-size=6144",
     );
+  });
+
+  it("accepts the underscore heap alias in NODE_OPTIONS", () => {
+    const result = spawnSync(
+      process.execPath,
+      ["-e", "console.log(require('node:v8').getHeapStatistics().heap_size_limit)"],
+      { env: { ...process.env, NODE_OPTIONS: "--max_old_space_size=4096" }, encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(0);
+    expect(Number(result.stdout.trim())).toBeGreaterThanOrEqual(4 * 1024 ** 3);
+    expect(Number(result.stdout.trim())).toBeLessThan(5 * 1024 ** 3);
   });
 
   it("uses the default heap for both doctor type checks", () => {
@@ -937,6 +968,18 @@ describe("contributor repository setup", () => {
     const commands = readCommandLog(fixture);
     expect(commands).toContain("tsc-cli NODE_OPTIONS=--max-old-space-size=6144");
     expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max-old-space-size=6144");
+  });
+
+  it("preserves the underscore heap alias during doctor type checks", () => {
+    const fixture = createFixture();
+
+    const result = runDoctor(fixture, { NODE_OPTIONS: "--max_old_space_size=4096" });
+
+    expect(result.status).toBe(0);
+    const commands = readCommandLog(fixture);
+    expect(commands).toContain("tsc-cli NODE_OPTIONS=--max_old_space_size=4096");
+    expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max_old_space_size=4096");
+    expect(commands).not.toContain("--max_old_space_size=4096 --max-old-space-size=6144");
   });
 
   it("preserves a caller-specified Node.js heap limit during doctor type checks", () => {
@@ -993,28 +1036,7 @@ describe("contributor repository setup", () => {
     );
     expect(result.output).toContain("Setup stopped while attempting: Type-check the CLI");
     expect(result.output).not.toContain("Native stack trace");
-    expect(result.output).not.toContain("Type-check the plugin without emitting files");
     expect(readCommandLog(fixture)).toContain("npm run typecheck:cli");
-  });
-
-  it("stops plugin type-check setup failures with a heap-limit remedy instead of the V8 stack", () => {
-    const fixture = createFixture();
-    writeNodeHeapOomTool(path.join(fixture.repo, "nemoclaw", "node_modules", ".bin", "tsc"));
-
-    const result = runSetup(fixture);
-
-    expect(result.status).toBe(1);
-    expect(result.output).toContain("Node.js exhausted its V8 heap while running this type check.");
-    expect(result.output).toContain(
-      "Next: The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
-    );
-    expect(result.output).toContain(
-      "Setup stopped while attempting: Type-check the plugin without emitting files",
-    );
-    expect(result.output).not.toContain("Native stack trace");
-    const commands = readCommandLog(fixture);
-    expect(commands).toContain("npm --prefix nemoclaw run build");
-    expect(commands).not.toContain("prek install");
   });
 
   it("names the setup step when the heap-check output capture cannot be created", () => {

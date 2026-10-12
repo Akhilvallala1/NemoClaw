@@ -264,7 +264,7 @@ run_with_default_node_heap() {
   local node_options="${NODE_OPTIONS:-}"
 
   case " ${node_options} " in
-    *" --max-old-space-size="* | *" --max-old-space-size "*) ;;
+    *" --max-old-space-size="* | *" --max_old_space_size="*) ;;
     *) node_options="${node_options:+${node_options} }--max-old-space-size=6144" ;;
   esac
   NODE_OPTIONS="${node_options}" "$@"
@@ -446,13 +446,9 @@ repair_repository() {
   run_setup_step "Build the CLI" npm run build:cli || return 1
   run_setup_step_with_heap_hint "Build and type-check the plugin" "${NODE_HEAP_REMEDIATION}" \
     npm --prefix nemoclaw run build || return 1
-  # Keep the explicit checks aligned with the broader pre-push and CI contracts.
+  # Keep the explicit CLI check aligned with the broader pre-push and CI contracts.
   run_setup_step_with_heap_hint "Type-check the CLI" "${NODE_HEAP_REMEDIATION}" \
     npm run typecheck:cli || return 1
-  run_setup_step_with_heap_hint "Type-check the plugin without emitting files" \
-    "${NODE_HEAP_REMEDIATION}" \
-    "${REPO_ROOT}/nemoclaw/node_modules/.bin/tsc" --noEmit \
-    -p "${REPO_ROOT}/nemoclaw/tsconfig.json" || return 1
   run_setup_step "Install repository Git hooks" "${REPO_ROOT}/node_modules/.bin/prek" install || return 1
   if [ "${EXPOSE_CLI}" = "true" ]; then
     printf '\nCLI exposure was explicitly requested.\n'
