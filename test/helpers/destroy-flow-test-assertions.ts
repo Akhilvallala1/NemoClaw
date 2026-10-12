@@ -46,12 +46,12 @@ export function expectStrictSandboxPresenceClassification(): void {
 }
 
 export function expectSuccessfulLiveDestroy(harness: DestroyHarness, exitSpy: MockInstance): void {
-  expect(harness.selectGatewaySpy).toHaveBeenCalledWith(
-    "alpha",
-    "nemoclaw-19080",
-    expect.objectContaining({ selectGateway: expect.any(Function) }),
-    undefined,
-  );
+  expect(harness.selectGatewaySpy).toHaveBeenCalledTimes(1);
+  const [sandboxName, gatewayName, lifecycle, options] = harness.selectGatewaySpy.mock.calls[0]!;
+  expect([sandboxName, gatewayName]).toEqual(["alpha", "nemoclaw-19080"]);
+  expect(lifecycle).toHaveProperty("selectGateway");
+  expect(typeof lifecycle.selectGateway).toBe("function");
+  expect(options).toBeUndefined();
   expect(harness.gatewayPinsAtSandboxList).toEqual(["nemoclaw-19080"]);
   expect(harness.runOpenshellSpy).toHaveBeenCalledWith(
     ["sandbox", "list", "-o", "json"],

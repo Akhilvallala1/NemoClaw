@@ -194,6 +194,8 @@ export function traceDestroyBoundaryCalls(
   harness.runOpenshellSpy.mockImplementation((args: unknown) => {
     const argv = Array.isArray(args) ? args : [];
     switch (`${String(argv[0])}:${String(argv[1])}`) {
+      case "gateway:list":
+        return { status: 0, stdout: "[]", stderr: "" };
       case "sandbox:delete":
         trace.push("delete");
         sandboxPresent = false;

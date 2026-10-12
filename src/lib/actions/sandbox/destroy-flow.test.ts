@@ -181,6 +181,8 @@ describe("destroySandbox flow", () => {
       harness.runOpenshellSpy.mockImplementation((args: unknown) => {
         const argv = Array.isArray(args) ? args : [];
         switch (`${String(argv[0])}:${String(argv[1])}`) {
+          case "gateway:list":
+            return { status: 0, stdout: "[]", stderr: "" };
           case "sandbox:delete":
             trace.push("delete");
             harness.setSandboxPresent(false);
@@ -241,6 +243,8 @@ describe("destroySandbox flow", () => {
         harness.runOpenshellSpy.mockImplementation((args: unknown) => {
           const argv = Array.isArray(args) ? args : [];
           switch (`${String(argv[0])}:${String(argv[1])}`) {
+            case "gateway:list":
+              return { status: 0, stdout: "[]", stderr: "" };
             case "sandbox:delete":
               crossedDeleteBoundary = true;
               harness.setSandboxPresent(false);
@@ -612,7 +616,9 @@ describe("destroySandbox flow", () => {
     expect(String(refusal)).not.toContain("opaque-portable-secret");
     expect(exitSpy).not.toHaveBeenCalled();
     expect(harness.dockerRunSpy).not.toHaveBeenCalled();
-    expect(harness.runOpenshellSpy).not.toHaveBeenCalled();
+    expect(harness.runOpenshellSpy.mock.calls.map(([args]) => args)).toEqual([
+      ["gateway", "list", "-o", "json"],
+    ]);
     expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
     expect(harness.retirePortableLifecycleReceiptSpy).not.toHaveBeenCalled();
 
@@ -882,7 +888,9 @@ describe("destroySandbox flow", () => {
     expect(harness.errorSpy.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
       "Docker container identity could not be inspected",
     );
-    expect(harness.runOpenshellSpy).not.toHaveBeenCalled();
+    expect(harness.runOpenshellSpy.mock.calls.map(([args]) => args)).toEqual([
+      ["gateway", "list", "-o", "json"],
+    ]);
     expect(harness.events).toEqual([]);
     expect(harness.selectGatewaySpy).not.toHaveBeenCalled();
     expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
@@ -912,7 +920,9 @@ describe("destroySandbox flow", () => {
     expect(errorOutput).toContain("Managed sandbox container: aaaa00000000");
     expect(errorOutput).toContain("Conflicting container: ffff00000000");
     expect(errorOutput).toContain("sb-real");
-    expect(harness.runOpenshellSpy).not.toHaveBeenCalled();
+    expect(harness.runOpenshellSpy.mock.calls.map(([args]) => args)).toEqual([
+      ["gateway", "list", "-o", "json"],
+    ]);
     expect(harness.events).toEqual([]);
     expect(harness.events).not.toContain("wipe");
     expect(harness.events).not.toContain("detach");
