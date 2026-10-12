@@ -191,6 +191,19 @@ check_command() {
   fi
 }
 
+check_hadolint() {
+  local output
+  if ! command -v hadolint >/dev/null 2>&1; then
+    fail "hadolint: not found" "Install hadolint v2.14.0 and put it on PATH."
+    return
+  fi
+  if output="$(bash "${REPO_ROOT}/scripts/checks/hadolint.sh" --version 2>&1)"; then
+    pass "hadolint ${output}"
+  else
+    fail "hadolint: ${output}" "Install hadolint v2.14.0 and put it on PATH."
+  fi
+}
+
 check_build_artifact() {
   local label="$1"
   local file_path="$2"
@@ -633,7 +646,7 @@ run_doctor() {
   fi
   check_command "Git" git "Install Git."
   check_command "GitHub CLI" gh "Install GitHub CLI."
-  check_command "hadolint" hadolint "Install hadolint (macOS: brew install hadolint)."
+  check_hadolint
 
   if node "${REPO_ROOT}/scripts/lib/openshell-sdk-install.mts" check >/dev/null 2>&1; then
     pass "OpenShell SDK"

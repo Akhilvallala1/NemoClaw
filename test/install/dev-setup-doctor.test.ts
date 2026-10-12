@@ -95,6 +95,9 @@ function createFixture(): Fixture {
   fs.mkdirSync(path.dirname(fixtureScript), { recursive: true });
   fs.copyFileSync(scriptUnderTest, fixtureScript);
   fs.chmodSync(fixtureScript, 0o755);
+  const hadolintScript = path.join("scripts", "checks", "hadolint.sh");
+  fs.mkdirSync(path.join(repo, "scripts", "checks"), { recursive: true });
+  fs.copyFileSync(path.join(repoRoot, hadolintScript), path.join(repo, hadolintScript));
 
   for (const file of [
     "node_modules/.bin/tsc",
@@ -566,6 +569,17 @@ describe("contributor environment doctor", () => {
     expect(result.output).toContain("Root TypeScript dependencies: missing or not executable");
     expect(result.output).toContain("Plugin build artifacts: missing");
     expect(result.output).toContain("Git contributor identity is incomplete");
+  });
+
+  it("rejects a Hadolint version that differs from CI", () => {
+    const fixture = createFixture();
+    writeTool(fixture.fakeBin, "hadolint", 'echo "Haskell Dockerfile Linter 2.15.1"');
+
+    const result = runDoctor(fixture);
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("hadolint v2.14.0 is required");
+    expect(result.output).toContain("Haskell Dockerfile Linter 2.15.1");
   });
 
   it("does not ask npm to download TypeScript when plugin dependencies are missing", () => {
