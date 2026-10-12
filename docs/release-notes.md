@@ -16,6 +16,10 @@ See [the overview](overview.md) for implemented boundaries and [the CLI referenc
 
 Earlier CLI commands, schemas, and state formats have no compatibility guarantees.
 See [migration](migration.md) for where each earlier task lives now, and [state](state.md) for data preservation.
+Recent development changes that affect existing deployments:
+
+- Docker-managed vLLM and Ollama services default to [`updatePolicy: Preserve`](inference.md#set-container-limits-and-update-policy), which refuses an image, model, serving, or container-limit change that would replace a running container; set `spec.services.<name>.updatePolicy: Recreate` to permit the replacement and its downtime.
+- Cluster `cpuLimitMillis`, `memoryLimitGiB`, and `updatePolicy` moved out of `kubernetes`; the first plan or apply rewrites saved intent in the new layout, which earlier bundles cannot read, so [copy the state directory first](inference.md#migrate-earlier-cluster-settings).
 
 ## Qualification and Known Issues
 

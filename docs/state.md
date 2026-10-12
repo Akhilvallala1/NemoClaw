@@ -26,6 +26,7 @@ The [state store](../crates/nemoclaw-sdk/src/state/mod.rs), [deployment lifecycl
 Keep the whole directory after failure; deleting state does not establish that its runtime resources are absent.
 The local lock does not exclude other clients of the same gateway.
 State records carry a format version; the SDK rejects a different version without rewriting the directory or adopting its resources.
+Plan and apply do rewrite an intent record that places cluster service limits or `updatePolicy` under `kubernetes`, and earlier bundles then report it as corrupt; copy the directory first as described in [legacy cluster settings](inference.md#migrate-earlier-cluster-settings).
 
 ## Agent Files
 

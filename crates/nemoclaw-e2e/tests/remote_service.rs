@@ -677,6 +677,13 @@ async fn change_plans_compute_replacement_without_effects(
                 .contains("updatePolicy: Recreate"),
             "{refusal}"
         );
+        assert!(
+            refusal["help"]
+                .as_str()
+                .unwrap()
+                .contains("spec.services.qwen.updatePolicy: Recreate"),
+            "{refusal}"
+        );
         assert_eq!(&read(root, "engine.json"), stable);
         assert_eq!(s.runtime_state(), state);
         assert_eq!(

@@ -124,6 +124,7 @@ These shared fields do not change [platform qualification limits](limits.md#plat
 The service-level `updatePolicy` defaults to `Preserve`.
 For Docker, this refuses an update that would replace a running managed model container.
 Changing the image, model, serving settings, `cpuLimitMillis`, or `memoryLimitGiB` replaces the container; declaring the omitted 104 GiB default as `memoryLimitGiB: 104` does not.
+Earlier bundles replaced a running Docker model container for image, model, and serving changes without a policy; to keep that behavior, for example when automation updates images, set `spec.services.<name>.updatePolicy: Recreate`.
 For Kubernetes and OpenShift, it refuses an update that would replace an existing nonterminal model Pod, including a pending Pod.
 Set `updatePolicy: Recreate` only when accepting sequential replacement and possible downtime if the replacement cannot start.
 The opt-in persists for later updates until removed or changed to `Preserve`; changing only this policy does not restart the workload.
@@ -139,7 +140,11 @@ Supply each moved field in only one location: declaring both the legacy and new 
 The legacy CPU and memory fields satisfy the cluster's explicit-limit requirement when normalized.
 Plan and apply warn for each legacy field and name its current location.
 This compatibility does not make `kubernetes` settings valid for Docker or Podman.
-Moving these YAML fields does not change their values or authorize replacement; retain the existing state directory and review the plan.
+Moving these YAML fields does not change their values or authorize replacement; review the plan.
+
+Reading a state directory written by an earlier bundle does not change it, but the first plan or apply with a bundle from this revision saves its intent record in the new layout.
+Bundles that expect the legacy layout then report that record as corrupt, and NemoClaw provides no downgrade path.
+Before that first plan or apply, copy the entire state directory if you may need the earlier bundle for observation or teardown.
 
 ## Choose the Request API
 
