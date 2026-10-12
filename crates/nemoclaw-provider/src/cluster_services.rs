@@ -574,4 +574,73 @@ mod tests {
             assert!(message.contains("sandbox files and conversation history"));
         }
     }
+
+    #[tokio::test]
+    async fn only_the_cluster_adapter_reaches_the_kubernetes_credential_of_a_cluster_source() {
+        use openshell_provider::{DockerServices, Services};
+        use serde_json::json;
+
+        let missing_kubeconfig = format!(
+            "NEMOCLAW_TEST_ABSENT_KUBECONFIG_{}",
+            nemoclaw_backend::generate_generation()
+                .unwrap()
+                .to_ascii_uppercase()
+        );
+        assert!(std::env::var_os(&missing_kubeconfig).is_none());
+        let document = nemoclaw_sdk::config::Document::parse(
+            include_bytes!("../../../examples/kubernetes/local-vllm.yaml").as_slice(),
+        )
+        .unwrap();
+        let mut input = serde_json::to_value(document).unwrap();
+        input["spec"]["gateway"]["kubernetes"]["kubeconfig"]["env"] = json!(missing_kubeconfig);
+        input["spec"]["services"]["qwen"]["authentication"] = json!("bearer");
+        let document = nemoclaw_sdk::config::Document::parse(input.to_string().as_bytes()).unwrap();
+        let generations = [
+            "workspace",
+            "provider",
+            "sandbox",
+            "kubernetes_storage",
+            "kubernetes_gateway",
+            "inference_service",
+        ]
+        .map(|kind| (kind.into(), "a".repeat(32)))
+        .into();
+        let registration = nemoclaw_sdk::compile::targets(&document, &generations)
+            .unwrap()
+            .into_iter()
+            .find(|target| target.kind == "provider")
+            .unwrap()
+            .values;
+        let (source, owner, endpoint) = (
+            &registration["credential_source"],
+            &registration["owner"],
+            &registration["endpoint"],
+        );
+        // The same source gives different results, so an Authentication error
+        // comes from the injected adapter's kubeconfig lookup, not a default.
+        let adapters: [(&dyn Services, _, _); 2] = [
+            (
+                &OpenShellServices,
+                Ok(()),
+                Err(ObservationError::Authentication),
+            ),
+            (
+                &DockerServices,
+                Err(ObservationError::Incomplete),
+                Err(ObservationError::Incomplete),
+            ),
+        ];
+        for (adapter, validated, resolved) in adapters {
+            assert_eq!(
+                adapter.validate_credential_source(source, owner, endpoint),
+                validated
+            );
+            assert_eq!(
+                adapter
+                    .resolve_credential_source(source, owner, endpoint)
+                    .await,
+                resolved
+            );
+        }
+    }
 }
