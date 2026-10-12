@@ -18,6 +18,8 @@ import { resolveDefaultSandboxName } from "../tunnel/service-command";
 
 export interface SandboxEntry {
   name: string;
+  gatewayName?: string | null;
+  gatewayPort?: number | null;
   model?: string | null;
   provider?: string | null;
   gpuEnabled?: boolean;
@@ -87,7 +89,7 @@ export interface ListSandboxesCommandDeps {
    */
   loadLastSession: () => OnboardingSessionSummary | null;
   /** Detect active sandbox sessions. Returns the count or null if unavailable. */
-  getActiveSessionCount?: (sandboxName: string) => number | null;
+  getActiveSessionCount?: (sandbox: SandboxEntry) => number | null;
   /** Derive applied preset names from the current OpenShell policy. */
   getPolicyPresets?: (sandboxName: string) => string[] | Promise<string[]>;
   log?: (message?: string) => void;
@@ -155,7 +157,7 @@ export interface ShowStatusCommandDeps {
    * probe is not available (e.g. no openshell binary); the line is omitted in
    * that case. #2604.
    */
-  getActiveSessionCount?: (sandboxName: string) => number | null;
+  getActiveSessionCount?: (sandbox: SandboxEntry) => number | null;
   /** Derive applied preset names from the current OpenShell policy. */
   getPolicyPresets?: (sandboxName: string) => string[] | Promise<string[]>;
   /**
@@ -340,10 +342,10 @@ async function projectPublicSandboxFields(
 async function buildSandboxInventoryRow(
   sandbox: SandboxEntry,
   defaultSandbox: string | null,
-  getActiveSessionCount?: (sandboxName: string) => number | null,
+  getActiveSessionCount?: (sandbox: SandboxEntry) => number | null,
   getPolicyPresets?: (sandboxName: string) => string[] | Promise<string[]>,
 ): Promise<SandboxInventoryRow> {
-  const activeSessionCount = getActiveSessionCount ? getActiveSessionCount(sandbox.name) : null;
+  const activeSessionCount = getActiveSessionCount ? getActiveSessionCount(sandbox) : null;
   const inference = getSandboxEntryDisplayInference(sandbox);
   const publicFields = await projectPublicSandboxFields(sandbox, inference, getPolicyPresets);
 
@@ -760,7 +762,7 @@ export async function showStatusCommand(deps: ShowStatusCommandDeps): Promise<vo
         log(`      Inference (live): ${parts}`);
       }
       if (deps.getActiveSessionCount && !portablePhase) {
-        const count = deps.getActiveSessionCount(sb.name);
+        const count = deps.getActiveSessionCount(sb);
         if (count !== null) {
           log(`      Active sessions: ${count > 0 ? count : "none"}`);
         }

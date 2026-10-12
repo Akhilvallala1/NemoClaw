@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import * as onboardSession from "./state/onboard-session";
-import { getSelectedGatewayName } from "./actions/sandbox/gateway-target";
+import {
+  getPersistedSandboxTargetGatewayName,
+  getSelectedGatewayName,
+} from "./actions/sandbox/gateway-target";
 import type { ListSandboxesCommandDeps, SandboxEntry } from "./inventory";
 import { createSynchronousCliOpenShellInferenceRouteObserver } from "./adapters/openshell/inference-route-cli";
 import { getActiveSandboxSessions, createSystemDeps } from "./state/sandbox-session";
@@ -96,14 +99,18 @@ export function buildListCommandDeps(): ListSandboxesCommandDeps {
       }
     },
     getActiveSessionCount: sessionDeps
-      ? (name) => {
+      ? (sandbox) => {
           try {
             const sshOutput = getCachedSshOutput();
             if (sshOutput === null) return null;
+            const gatewayName =
+              sandbox.gatewayName != null || sandbox.gatewayPort != null
+                ? getPersistedSandboxTargetGatewayName(sandbox)
+                : getSelectedGatewayName();
             return getActiveSandboxSessions(
-              name,
+              sandbox.name,
               { ...sessionDeps, getSshProcesses: () => sshOutput },
-              registry.getSandbox(name)?.gatewayName ?? getSelectedGatewayName(),
+              gatewayName,
             ).sessions.length;
           } catch {
             return null;

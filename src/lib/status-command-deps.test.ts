@@ -8,6 +8,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as receiptAuthority from "./onboard/experimental/hermes-portable-receipt";
+import { GATEWAY_PORT } from "./core/ports";
+import { resolveGatewayName } from "./onboard/gateway-binding";
 import * as registry from "./state/registry";
 import { buildStatusCommandDeps } from "./status-command-deps";
 
@@ -137,29 +139,35 @@ exit 0
   });
 
   it.skipIf(process.platform !== "linux")(
-    "counts sessions with the gateway evidence resolver",
+    "uses each status row's gateway instead of the selected registry root",
     () => {
       writeExecutable(openshell, "#!/usr/bin/env bash\nexit 0\n");
       const sandboxName = `status-count-${process.pid}`;
-      vi.spyOn(registry, "getSandbox").mockReturnValue({
-        name: sandboxName,
-        gatewayName: "nemoclaw",
-      } as never);
+      const lookup = vi.spyOn(registry, "getSandbox").mockReturnValue(null);
       const command = `openshell sandbox exec --name ${sandboxName} --tty -- /bin/bash -i`;
+      const selectedGateway = resolveGatewayName(GATEWAY_PORT);
+      const siblingGatewayPort = GATEWAY_PORT === 9090 ? 9091 : 9090;
+      const siblingGateway = resolveGatewayName(siblingGatewayPort);
       const startSession = (gateway: string) =>
         spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
           argv0: command,
           env: { ...process.env, OPENSHELL_GATEWAY: gateway },
           stdio: "ignore",
         });
-      const selected = startSession("nemoclaw");
-      const sibling = startSession("nemoclaw-9090");
+      const selected = startSession(selectedGateway);
+      const sibling = startSession(siblingGateway);
+      const sibling2 = startSession(siblingGateway);
       try {
         const deps = buildStatusCommandDeps(tmp);
-        expect(deps.getActiveSessionCount?.(sandboxName)).toBe(1);
+        expect(
+          deps.getActiveSessionCount?.({ name: sandboxName, gatewayPort: siblingGatewayPort }),
+        ).toBe(2);
+        expect(deps.getActiveSessionCount?.({ name: sandboxName })).toBe(1);
+        expect(lookup).not.toHaveBeenCalled();
       } finally {
         selected.kill();
         sibling.kill();
+        sibling2.kill();
       }
     },
   );

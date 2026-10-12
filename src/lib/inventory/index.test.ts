@@ -101,7 +101,7 @@ describe("inventory commands", () => {
         sandboxName: "alpha",
         steps: { sandbox: { status: "complete" } },
       }),
-      getActiveSessionCount: (sandboxName) => (sandboxName === "alpha" ? 1 : 0),
+      getActiveSessionCount: (sandbox) => (sandbox.name === "alpha" ? 1 : 0),
     });
 
     expect(inventory).toEqual({
@@ -699,13 +699,43 @@ describe("inventory commands", () => {
       }),
       getLiveInference: () => null,
       loadLastSession: () => null,
-      getActiveSessionCount: (sandboxName) => (sandboxName === "alpha" ? 1 : 0),
+      getActiveSessionCount: (sandbox) => (sandbox.name === "alpha" ? 1 : 0),
       log: (message = "") => lines.push(message),
     });
 
     expect(lines).toContain("    alpha * ●");
     expect(lines).toContain("    beta");
     expect(lines).not.toContain("    beta ●");
+  });
+
+  it("passes the gateway binding from a display-only recovered row to the session probe (#12665)", async () => {
+    const getActiveSessionCount = vi.fn((sandbox: SandboxEntry) =>
+      sandbox.gatewayName === "nemoclaw-9090" ? 1 : 0,
+    );
+    const inventory = await getSandboxInventory({
+      recoverRegistryEntries: async () => ({
+        sandboxes: [
+          {
+            name: "recovered",
+            gatewayName: "nemoclaw-9090",
+            recoveredFromGateway: true,
+            livePhase: "Ready",
+          },
+        ],
+      }),
+      getLiveInference: () => null,
+      loadLastSession: () => null,
+      getActiveSessionCount,
+    });
+
+    expect(getActiveSessionCount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "recovered",
+        gatewayName: "nemoclaw-9090",
+        recoveredFromGateway: true,
+      }),
+    );
+    expect(inventory.sandboxes[0]?.activeSessionCount).toBe(1);
   });
 
   it("uses live gateway inference for the default sandbox in list output (#2369)", async () => {
@@ -1238,7 +1268,7 @@ describe("inventory commands", () => {
         defaultSandbox: "alpha",
       }),
       getLiveInference: () => null,
-      getActiveSessionCount: (name) => (name === "alpha" ? 2 : 0),
+      getActiveSessionCount: (sandbox) => (sandbox.name === "alpha" ? 2 : 0),
       showServiceStatus: vi.fn(),
       log: (message = "") => lines.push(message),
     });

@@ -22,7 +22,7 @@ import {
   runMessagingStatusHooks,
 } from "./messaging/hooks/status-runner";
 import type { MessagingAgentId } from "./messaging/manifest";
-import { resolveGatewayName } from "./onboard/gateway-binding";
+import { resolveGatewayName, resolveSandboxGatewayName } from "./onboard/gateway-binding";
 import { classifyHermesPortableRegistry } from "./onboard/experimental/hermes-portable-onboarding";
 import { inspectPortableAgentReceiptAuthorityForClassification } from "./onboard/experimental/hermes-portable-receipt";
 import { defaultPortableDemoStateDir } from "./onboard/experimental/portable-runtime-receipt-readiness";
@@ -292,14 +292,18 @@ export function buildStatusCommandDeps(rootDir: string): ShowStatusCommandDeps {
     getGatewayAuthority: () => onboardSummary?.gatewayAuthority ?? null,
     loadLastSession: () => onboardSummary,
     getActiveSessionCount: sessionDeps
-      ? (name) => {
+      ? (sandbox) => {
           try {
             const sshOutput = getCachedSshOutput();
             if (sshOutput === null) return null;
+            const gatewayName =
+              sandbox.gatewayName != null || sandbox.gatewayPort != null
+                ? resolveSandboxGatewayName(sandbox)
+                : resolveGatewayName(GATEWAY_PORT);
             return getActiveSandboxSessions(
-              name,
+              sandbox.name,
               { ...sessionDeps, getSshProcesses: () => sshOutput },
-              registry.getSandbox(name)?.gatewayName ?? resolveGatewayName(GATEWAY_PORT),
+              gatewayName,
             ).sessions.length;
           } catch {
             return null;
