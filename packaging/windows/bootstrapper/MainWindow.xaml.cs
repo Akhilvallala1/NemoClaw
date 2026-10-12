@@ -247,7 +247,7 @@ public partial class MainWindow : Window
         this.HidePanels();
         this.FailurePanel.Visibility = Visibility.Visible;
         this.ConfigurationRecoveryButton.Visibility = Visibility.Visible;
-        this.FailureDetail.Text = $"Settings completion is not confirmed. Setup still owns helper {processId}. Use Check save status, or close this window while recovery stays active. Another save is blocked until the helper finishes. Do not end Setup or its helper in Task Manager.";
+        this.FailureDetail.Text = $"Settings completion is not confirmed. Setup still owns helper {processId}. Use Check save status. Closing this window minimizes Setup; reopen it from the taskbar to check again. Another save is blocked until the helper finishes. Do not end Setup or its helper in Task Manager.";
     }
 
     private async void CheckConfigurationRecoveryClicked(object sender, RoutedEventArgs args)
@@ -261,7 +261,7 @@ public partial class MainWindow : Window
             if (this.configurationObservation.Running)
             {
                 if (!await this.configurationObservation.CheckCompletionAsync(TimeSpan.FromSeconds(5)))
-                    this.FailureDetail.Text = "The original save still owns its helper. No second save has started. You can check again or close this window while recovery remains active.";
+                    this.FailureDetail.Text = "The original save still owns its helper. No second save has started. You can check again. Closing this window minimizes Setup; reopen it from the taskbar to check again.";
                 // The owning completion path presents success/failure and retains launch intent.
                 return;
             }
@@ -646,10 +646,11 @@ public partial class MainWindow : Window
     {
         if (this.configurationObservation.TryCloseWindow())
         {
-            // Keep the dispatcher and helper pipes alive; only the window is dismissed.
+            // Keep recovery accessible without releasing the transaction or its dispatcher.
             args.Cancel = true;
             this.ModelSetupCancelRequested?.Invoke(this, EventArgs.Empty);
-            this.Hide();
+            this.ShowInTaskbar = true;
+            this.WindowState = WindowState.Minimized;
             return;
         }
         if (this.busy)

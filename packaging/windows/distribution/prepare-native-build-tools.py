@@ -27,7 +27,8 @@ def prepare(output, cache, lock_file):
         "@esbuild/win32-arm64",
         "typescript",
         "playwright-core",
-    } or len(selected) != 4:
+        "yaml",
+    } or len(selected) != 5:
         raise ValueError("Unexpected shared compiler dependency closure")
     source = Path(__file__).parents[1] / "app/materialize-openclaw-build.py"
     spec = importlib.util.spec_from_file_location("verified_package_inputs", source)

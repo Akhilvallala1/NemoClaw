@@ -33,6 +33,17 @@ function step(job: WorkflowJob, name: string): WorkflowStep {
 }
 type Mutation = { name: string; mutate: (value: WindowsInstallerWorkflowSources) => void };
 const mutations: Mutation[] = [
+  ...[
+    "tools/windows-installer/**",
+    "test/automation/pull-requests/windows-native-installer-workflow.test.ts",
+  ].map((path) => ({
+    name: "missing Windows workflow trigger for " + path,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      value.workflow.on.pull_request.paths = value.workflow.on.pull_request.paths.filter(
+        (candidate) => candidate !== path,
+      );
+    },
+  })),
   ...["NVIDIA_API_KEY", "NVIDIA_INFERENCE_API_KEY"].map((name) => ({
     name: "missing protected evidence comparison credential " + name,
     mutate: (value: WindowsInstallerWorkflowSources) => {

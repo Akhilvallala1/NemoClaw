@@ -131,8 +131,10 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
           "packaging/windows/**",
           "scripts/checks/*windows-native*",
           "scripts/install-windows-native.ps1",
+          "test/automation/pull-requests/windows-native-installer-workflow.test.ts",
           "test/security/windows-native-*.test.ts",
           "test/support/windows-native-*.ts",
+          "tools/windows-installer/**",
         ],
       });
       assert.ok(workflowSource?.includes("name: CI / Native Windows Installer Candidate v2"));

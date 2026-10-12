@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+using System.IO;
 using System.Text.Json;
 
 namespace Nvidia.NemoClaw.Bootstrapper;
@@ -556,6 +557,9 @@ internal static class Program
         await AssertBoundedObservationRetainsOwnerAsync();
         AssertRecoveryStatusRejectsUntrustedResults();
         Console.WriteLine("25 native setup controls passed; bounded recovery checks preserve transaction ownership and reject invalid status.");
+#if NATIVE_WPF_CONTROLS
+        WindowRecoveryControls.Run();
+#endif
         return 0;
     }
 }

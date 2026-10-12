@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import copy
 import hashlib
 import importlib.util
@@ -9,6 +10,7 @@ import json
 from pathlib import Path
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -115,8 +117,15 @@ class RuntimeDependencyTests(unittest.TestCase):
             materializer.dependency_plan(self.lock, self.lock_file)
 
     def test_materializes_distinct_versions_and_records_the_original_lock(self):
+        policy_parser = package("2.8.3", "yaml")
+        self.lock["compilerPackages"] = [{
+            "package": "yaml", "version": policy_parser["version"],
+            "url": policy_parser["resolved"], "integrity": policy_parser["integrity"],
+        }]
+        self.save_lock()
         archives = {}
-        for name, item in self.document["packages"].items():
+        inputs = [*self.document["packages"].items(), ("node_modules/yaml", policy_parser)]
+        for name, item in inputs:
             if not name or item["resolved"] in archives:
                 continue
             filename = self.root / f"archive-{len(archives)}.tgz"
@@ -140,6 +149,9 @@ class RuntimeDependencyTests(unittest.TestCase):
         self.assertEqual(receipt["sourceRoot"], "node_modules/openclaw")
         self.assertEqual(receipt["dependencyLock"]["sha256"], self.lock["dependencyLock"]["sha256"])
         self.assertEqual(len(receipt["dependencies"]), 4)
+        self.assertEqual(json.loads((output / "tools/node_modules/yaml/package.json").read_text()),
+                         {"name": "yaml", "version": "2.8.3"})
+        self.assertEqual([item["package"] for item in receipt["compiler"]], ["yaml"])
         self.assertFalse(receipt["lifecycleScriptsExecuted"])
         self.assertFalse(receipt["runtimeReady"])
 
@@ -152,6 +164,36 @@ class RuntimeDependencyTests(unittest.TestCase):
         self.assertIn("node_modules/openclaw/node_modules/typescript", paths)
         self.assertIn("node_modules/undici", paths)
         self.assertEqual(lock["openclaw"]["version"], "2026.9.2")
+
+    def test_shared_tools_restore_policy_parser_without_agent_payloads(self):
+        source = MODULE.parent.parent / "distribution/prepare-native-build-tools.py"
+        spec = importlib.util.spec_from_file_location("shared_tools", source)
+        shared = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(shared)
+        lock = json.loads(source.with_name("native-build-tools.lock.json").read_text())
+        cache = self.root / "shared-cache"
+        cache.mkdir()
+        for pin in lock["packages"]:
+            archive_path = cache / (hashlib.sha256(pin["url"].encode()).hexdigest() + ".tgz")
+            content = json.dumps({"name": pin["package"], "version": pin["version"]}).encode()
+            with tarfile.open(archive_path, "w:gz") as archive:
+                member = tarfile.TarInfo("package/package.json")
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+            pin["integrity"] = "sha512-" + base64.b64encode(hashlib.sha512(archive_path.read_bytes()).digest()).decode()
+        lock_file = self.root / "shared.lock.json"
+        lock_file.write_text(json.dumps(lock))
+        output = self.root / "shared-tools"
+        with patch.object(shared, "os", SimpleNamespace(name="nt", environ={"GITHUB_ACTIONS": "true"})), \
+             patch("urllib.request.urlopen", side_effect=AssertionError("Unexpected network request")):
+            shared.prepare(output, cache, lock_file)
+        parser = json.loads((output / "tools/node_modules/yaml/package.json").read_text())
+        self.assertEqual(parser["name"], "yaml")
+        receipt = json.loads((output / "materialization-receipt.json").read_text())
+        self.assertIn("yaml", [pin["package"] for pin in receipt["packages"]])
+        self.assertEqual(receipt["agentPayloads"], [])
+        self.assertFalse(receipt["lifecycleScriptsExecuted"])
+        self.assertFalse(receipt["installedAcceptance"])
 
     def test_choice_plan_retains_nested_voice_and_native_platform_packages(self):
         lock_file = MODULE.with_name("windows-app-build.lock.json")

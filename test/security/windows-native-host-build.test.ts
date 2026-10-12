@@ -99,6 +99,103 @@ export function runOpenClaw(argv) {
   },
 );
 
+it.each([
+  { agent: "openclaw", lockFile: "app/windows-app-build.lock.json", linkedTools: ["typescript"] },
+  { agent: "hermes", lockFile: "distribution/native-build-tools.lock.json", linkedTools: [] },
+])(
+  "$agent worker builds resolve policy validation from only the declared build tools",
+  ({ agent, lockFile, linkedTools }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-build-tools-"));
+    try {
+      const windows = path.join(root, "packaging/windows");
+      const source = path.resolve("packaging/windows");
+      fs.cpSync(source, windows, {
+        recursive: true,
+        filter: (file) =>
+          ["", "distribution", "runtime", "onboarding"].includes(
+            path.relative(source, file).split(path.sep)[0],
+          ),
+      });
+      fs.mkdirSync(path.join(root, "nemoclaw-blueprint"));
+      fs.copyFileSync(
+        path.resolve("nemoclaw-blueprint/private-networks.yaml"),
+        path.join(root, "nemoclaw-blueprint/private-networks.yaml"),
+      );
+      const lock = JSON.parse(fs.readFileSync(path.resolve("packaging/windows", lockFile), "utf8"));
+      const pins = (agent === "openclaw" ? lock.compilerPackages : lock.packages) as {
+        package: string;
+      }[];
+      const packages = new Set(
+        pins
+          .map((pin) => pin.package)
+          .filter((name) => !name.startsWith("@esbuild/") && name !== "playwright-core"),
+      );
+      // CI links OpenClaw's pinned TypeScript into the build tools directory.
+      const selected = [
+        ...packages,
+        ...linkedTools,
+        `@esbuild/${process.platform}-${process.arch}`,
+      ];
+      const installed = path.resolve("node_modules");
+      fs.cpSync(installed, path.join(root, "node_modules"), {
+        recursive: true,
+        dereference: true,
+        filter: (file) => {
+          const relative = path.relative(installed, file).split(path.sep).join("/");
+          return (
+            relative === "" ||
+            selected.some(
+              (name) =>
+                relative === name ||
+                relative.startsWith(name + "/") ||
+                name.startsWith(relative + "/"),
+            )
+          );
+        },
+      });
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          "--input-type=module",
+          "-e",
+          `
+import { buildNativeWorkers } from './packaging/windows/distribution/build-native-workers.mts';
+import { prepareRuntimeSource } from './packaging/windows/distribution/prepare-runtime-source.mts';
+const staged = prepareRuntimeSource('./packaging/windows/runtime');
+try {
+  await buildNativeWorkers(staged.runtime, './workers', undefined, {
+    sourceRevision: '${"a".repeat(40)}', onboardingSource: './packaging/windows/onboarding'
+  });
+} finally { staged.close(); }
+`,
+        ],
+        { cwd: root, encoding: "utf8", timeout: 30_000, env: { ...process.env, NODE_PATH: "" } },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      const description = spawnSync(
+        process.execPath,
+        [path.join(root, "workers/native-runtime.cjs"), "--describe-runtime"],
+        {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
+      expect(description.status, description.stderr).toBe(0);
+      expect(JSON.parse(description.stdout).guestModes).toEqual([
+        "openclaw-turn",
+        "openclaw-web",
+        "hermes-turn",
+        "interactive",
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 describe("current OpenShell installer build evidence", () => {
   let root: string;
   let receipt: Record<string, unknown>;

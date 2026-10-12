@@ -225,7 +225,7 @@ def main():
     platform_package = "@esbuild/darwin-arm64" if args.portable_proof else "@esbuild/win32-arm64"
     compiler = []
     for item in lock["compilerPackages"]:
-        if item["package"] not in ("esbuild", platform_package):
+        if item["package"] not in ("esbuild", platform_package, "yaml"):
             continue
         archive = fetch(item, args.cache, deadline)
         inventory = extract(archive["archive"], args.output / "tools" / "node_modules" / item["package"])

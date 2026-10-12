@@ -246,7 +246,7 @@ internal static class NativeSetupOperations
             try
             {
                 // Hand off the visible wait without disposing the helper, pipes or input buffer.
-                // A hidden recovery window retains its dispatcher until this operation finishes.
+                // The recovery window retains its dispatcher until this operation finishes.
                 if (transaction && await Task.WhenAny(completion, Task.Delay(deadline, timeout.Token)) != completion)
                 {
                     try { waitingForTransaction?.Invoke(); }
