@@ -96,6 +96,45 @@ beforeEach(() => setupGpuFlowMocks(mocks));
 afterEach(resetGpuFlowMocks);
 
 describe("fresh sandbox executable readiness", () => {
+  it("retries sandbox-list Provisioning through the create flow before probing readiness (#12740)", async () => {
+    const deps = createDeps();
+    const phases = ["alpha Provisioning", "alpha Ready"];
+    vi.mocked(deps.runCaptureOpenshell).mockImplementation((args) =>
+      args[0] === "sandbox" && args[1] === "list" ? (phases.shift() ?? "alpha Ready") : "",
+    );
+    vi.mocked(deps.runOpenshell).mockImplementation(
+      createSequencedOpenShellRunner([
+        ["sandbox get -g nemoclaw alpha", [readySandboxGetResult(), readySandboxGetResult()]],
+      ]),
+    );
+    vi.mocked(deps.commandExecutor.runBuffered).mockResolvedValueOnce({
+      outcome: { kind: "completed", exitCode: 0 },
+      stdout: "",
+      stderr: "",
+    });
+
+    await expect(runSandboxGpuCreateFlow(createInput(), deps)).resolves.toMatchObject({
+      route: "native",
+    });
+
+    expect(deps.runCaptureOpenshell).toHaveBeenCalledTimes(2);
+    expect(deps.runCaptureOpenshell).toHaveBeenNthCalledWith(
+      1,
+      ["sandbox", "list", "-g", "nemoclaw"],
+      expect.anything(),
+    );
+    expect(deps.runCaptureOpenshell).toHaveBeenNthCalledWith(
+      2,
+      ["sandbox", "list", "-g", "nemoclaw"],
+      expect.anything(),
+    );
+    expect(deps.commandExecutor.runBuffered).toHaveBeenCalledOnce();
+    expect(deps.runOpenshell).toHaveBeenCalledWith(
+      ["sandbox", "get", "-g", "nemoclaw", "alpha"],
+      expect.anything(),
+    );
+  });
+
   it("keeps a transient executable not-ready response inside the bounded wait (#9050)", async () => {
     const deps = createDeps();
     vi.mocked(deps.runOpenshell).mockImplementation(

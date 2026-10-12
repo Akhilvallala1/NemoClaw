@@ -103,18 +103,6 @@ describe("effective sandbox policy behavior", () => {
       expect(nvidia.rules).toContainEqual({ allow: { method: "POST", path: "/v1/embeddings" } });
       expect(binaries(policy, "nvidia")).toEqual(["/usr/local/bin/openclaw"]);
 
-      const nvidiaProbe = endpoint(policy, "nvidia_inference_probe", "integrate.api.nvidia.com");
-      expect(nvidiaProbe).toMatchObject({
-        port: 443,
-        protocol: "rest",
-        enforcement: "enforce",
-      });
-      expect(nvidiaProbe.rules).toEqual([
-        { allow: { method: "POST", path: "/v1/chat/completions" } },
-        { allow: { method: "GET", path: "/v1/models" } },
-      ]);
-      expect(binaries(policy, "nvidia_inference_probe")).toEqual(["/usr/bin/curl"]);
-
       const managedInference = endpoint(policy, "managed_inference", "inference.local");
       expect(managedInference).toMatchObject({
         port: 443,

@@ -97,6 +97,7 @@ describe("initial sandbox policy real preset merge", () => {
         ),
       );
       expect(policy.network_policies).not.toHaveProperty("native_nvidia_inference");
+      expect(policy.network_policies).not.toHaveProperty("nvidia_inference_probe");
     },
   );
   it.each([
@@ -141,6 +142,7 @@ describe("initial sandbox policy real preset merge", () => {
         { path: "/usr/local/bin/curl" },
         { path: "/usr/bin/curl" },
       ]);
+      expect(policy.network_policies).not.toHaveProperty("nvidia_inference_probe");
     },
   );
   const managedImagePolicyPathsByAgent = {
