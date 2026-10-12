@@ -14,6 +14,7 @@ import { focusedE2eJobsForChangedFiles } from "../e2e/workflow-boundary.mts";
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const PR_PATTERN = /^[1-9][0-9]*$/u;
+const GIT_TIMEOUT_MS = 120_000;
 
 export function deriveTrustedRiskPlan(
   input: {
@@ -37,6 +38,7 @@ export function deriveTrustedRiskPlan(
     execFileSync("git", ["-C", directory, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "inherit"],
+      timeout: GIT_TIMEOUT_MS,
     }).trim();
   try {
     git("init", "--quiet");
@@ -46,6 +48,7 @@ export function deriveTrustedRiskPlan(
     git(
       "fetch",
       "--no-tags",
+      "--filter=blob:none",
       "--no-recurse-submodules",
       "origin",
       `${input.baseSha}:refs/remotes/origin/base`,
@@ -53,6 +56,7 @@ export function deriveTrustedRiskPlan(
     git(
       "fetch",
       "--no-tags",
+      "--filter=blob:none",
       "--no-recurse-submodules",
       "origin",
       input.prNumber
