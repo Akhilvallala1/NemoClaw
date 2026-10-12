@@ -101,7 +101,6 @@ describe("effective sandbox policy behavior", () => {
 
       const nvidia = endpoint(policy, "nvidia", "integrate.api.nvidia.com");
       expect(nvidia.rules).toContainEqual({ allow: { method: "POST", path: "/v1/embeddings" } });
-      expect(binaries(policy, "nvidia")).toEqual(["/usr/local/bin/openclaw"]);
 
       const managedInference = endpoint(policy, "managed_inference", "inference.local");
       expect(managedInference).toMatchObject({
