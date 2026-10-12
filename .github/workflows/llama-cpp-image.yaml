@@ -43,7 +43,7 @@ jobs:
     name: Inspect CPU Windows 11 WSL prerequisites
     if: github.event_name == 'workflow_dispatch' && inputs.windows_cpu_probe == true && inputs.publish == false
     runs-on: windows-11-arm
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions: {}
     steps:
       - name: Record Windows, virtualization, and WSL capabilities
@@ -106,7 +106,28 @@ jobs:
               throw "WSL operation failed for $Arguments with exit $($process.ExitCode)"
             }
           }
-          Invoke-BoundedWsl '--install --no-distribution --web-download' 180
+          $installer = Join-Path $env:RUNNER_TEMP 'wsl.3.0.1.0.arm64.msi'
+          Invoke-WebRequest `
+            -Uri 'https://github.com/microsoft/WSL/releases/download/3.0.1/wsl.3.0.1.0.arm64.msi' `
+            -OutFile $installer -TimeoutSec 120
+          $expected = '857ddbb335ec7d05ffa71d0fd2203750c0e8fc29bb164f8a95db92bd7bba4263'
+          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'WSL installer checksum differs from the official release'
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw 'WSL installer does not have a valid Microsoft signature'
+          }
+          $installation = Start-Process msiexec.exe `
+            -ArgumentList @('/i', "`"$installer`"", '/quiet', '/norestart') -NoNewWindow -PassThru
+          if (-not $installation.WaitForExit(180000)) {
+            $installation.Kill($true)
+            throw 'WSL MSI installation exceeded its deadline'
+          }
+          if ($installation.ExitCode -ne 0) {
+            throw "WSL MSI installation exited with $($installation.ExitCode)"
+          }
+          Invoke-BoundedWsl '--version' 30
           Invoke-BoundedWsl '--set-default-version 2' 30
           Invoke-BoundedWsl '--install --distribution Ubuntu-24.04 --no-launch --web-download' 180
           Invoke-BoundedWsl '--distribution Ubuntu-24.04 --user root -- uname -a' 60
