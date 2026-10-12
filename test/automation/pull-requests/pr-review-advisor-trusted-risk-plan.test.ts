@@ -61,6 +61,16 @@ it("writes required selectors from the fetched PR revision", () => {
   expect(fs.statSync(output).mode & 0o777).toBe(0o600);
 });
 
+it("derives required selectors from a manually selected revision", () => {
+  const { remote, baseSha, headSha } = fixture();
+  const plan = deriveTrustedRiskPlan(
+    { repo: "NVIDIA/NemoClaw", baseSha, headSha },
+    { originUrl: remote },
+  );
+  expect(plan.changedFiles).toEqual(["src/lib/actions/sandbox/connect.ts"]);
+  expect(plan.requiredJobs.map((job) => job.id)).toContain("staging-brev-launchable");
+});
+
 it("rejects a fetched PR ref that differs from the requested commit", () => {
   const { remote, baseSha } = fixture();
   expect(() =>
