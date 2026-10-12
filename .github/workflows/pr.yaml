@@ -121,6 +121,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/actions/ci-static-checks
+            .github/hadolint.env
             .github/actions/ci-build-typecheck
             .github/actions/ci-compile-artifacts
             .github/actions/ci-cli-coverage-shard

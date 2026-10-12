@@ -31,7 +31,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        source "$GITHUB_WORKSPACE/.github/hadolint.env"
+        source "$GITHUB_ACTION_PATH/../../hadolint.env"
         HADOLINT_URL="https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64"
         curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
           -o /usr/local/bin/hadolint "$HADOLINT_URL"
