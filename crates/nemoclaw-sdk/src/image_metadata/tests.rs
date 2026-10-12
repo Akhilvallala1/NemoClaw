@@ -126,13 +126,26 @@ fn authenticated_runtime_requires_native_bearer_and_restricted_routes() {
     let mut authenticated = labels;
     authenticated["org.nemoclaw.inference.authentication"] = json!("bearer-v1");
     let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated.clone());
-    assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_err());
+    let legacy = check_runtime(&image, &bundle, &runtime, "arm64")
+        .unwrap_err()
+        .to_string();
     authenticated["org.nemoclaw.inference.routes"] = json!("openai-v1");
     let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated.clone());
     assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_ok());
     authenticated["org.nemoclaw.inference.routes"] = json!("unrestricted");
     let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated);
-    assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_err());
+    let wrong = check_runtime(&image, &bundle, &runtime, "arm64")
+        .unwrap_err()
+        .to_string();
+    // Images built before the route filter lack only this label; name it.
+    for message in [legacy, wrong] {
+        assert!(
+            message.contains("org.nemoclaw.inference.routes"),
+            "{message}"
+        );
+        assert!(message.contains("docs/build.md"), "{message}");
+        assert!(!message.contains("unrestricted"), "{message}");
+    }
 }
 
 #[test]

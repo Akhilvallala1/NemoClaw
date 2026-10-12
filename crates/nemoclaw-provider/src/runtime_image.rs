@@ -146,7 +146,7 @@ async fn observe(
             .any(|(key, value)| labels.and_then(|labels| labels.get(key)) != Some(value))
     {
         return Err(Error::Conflict(
-            "runtime image platform or required backend, recipe, or authentication labels are incompatible; rebuild the runtime image and update its digest",
+            "runtime image platform or required backend, recipe, authentication, or route-restriction (org.nemoclaw.inference.routes) labels are incompatible; rebuild the runtime image (docs/build.md) and update its digest",
         ));
     }
     observation.status = ObservationStatus::Available;
@@ -419,6 +419,13 @@ mod tests {
                         if matches!(variant, "missing" | "version") {
                             assert!(message.contains("runtime specification v1"), "{message}");
                             assert!(message.contains("rebuild"));
+                        }
+                        if variant.ends_with("bearer_routes") {
+                            assert!(
+                                message.contains("org.nemoclaw.inference.routes"),
+                                "{message}"
+                            );
+                            assert!(message.contains("docs/build.md"), "{message}");
                         }
                         if variant == "authentication" {
                             assert_eq!(message, "observation authentication failed");

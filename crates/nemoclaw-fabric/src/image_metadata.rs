@@ -38,7 +38,7 @@ pub fn verify_runtime_labels(
             .any(|(key, value)| labels[key].as_str() != Some(value.as_str()))
     {
         return Err(ObservationError::Backend(
-            "runtime image platform or required runtime, backend, recipe, or authentication labels are incompatible; rebuild the runtime image and update its digest and metadata bundle",
+            "runtime image platform or required runtime, backend, recipe, authentication, or route-restriction (org.nemoclaw.inference.routes) labels are incompatible; rebuild the runtime image (docs/build.md) and update its digest and metadata bundle",
         ));
     }
     Ok(())
