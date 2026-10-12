@@ -265,7 +265,7 @@ run_with_default_node_heap() {
 
   case " ${node_options} " in
     *" --max-old-space-size="* | *" --max-old-space-size "*) ;;
-    *) node_options="${node_options:+${node_options} }--max-old-space-size=8192" ;;
+    *) node_options="${node_options:+${node_options} }--max-old-space-size=6144" ;;
   esac
   NODE_OPTIONS="${node_options}" "$@"
 }

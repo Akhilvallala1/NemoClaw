@@ -94,10 +94,10 @@ command -v sha256sum || command -v shasum
 
 This applies to a source checkout, not to an installed release.
 
-Contributor setup gives CLI and plugin type checks an 8 GiB Node.js heap unless `NODE_OPTIONS` already sets a heap limit. If a type check reports `JavaScript heap out of memory`, free host memory. If the host has enough memory, raise the limit instead:
+Contributor setup gives CLI and plugin type checks a 6 GiB Node.js heap by default unless `NODE_OPTIONS` already sets a heap limit. This is a ceiling, not a memory reservation, but the checks can use substantial host memory. If a type check reports `JavaScript heap out of memory` on a low-memory host, free memory or configure swap before retrying; see [Prerequisites](../get-started/prerequisites#hardware). Only raise the heap limit when the host has spare memory:
 
 ```bash
-export NODE_OPTIONS=--max-old-space-size=10240
+export NODE_OPTIONS=--max-old-space-size=8192
 ./scripts/dev-setup.sh
 ```
 

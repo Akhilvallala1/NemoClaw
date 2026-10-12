@@ -907,9 +907,9 @@ describe("contributor repository setup", () => {
     expect(result.status).toBe(0);
     expect(result.output).toContain("! hadolint: not found");
     const commands = readCommandLog(fixture);
-    expect(commands).toContain("NODE_OPTIONS=--max-old-space-size=8192");
-    expect(commands).toContain("npm-plugin-build NODE_OPTIONS=--max-old-space-size=8192");
-    expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max-old-space-size=8192");
+    expect(commands).toContain("NODE_OPTIONS=--max-old-space-size=6144");
+    expect(commands).toContain("npm-plugin-build NODE_OPTIONS=--max-old-space-size=6144");
+    expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max-old-space-size=6144");
   });
 
   it("preserves caller Node.js options while adding a default heap limit", () => {
@@ -919,12 +919,12 @@ describe("contributor repository setup", () => {
 
     expect(result.status).toBe(0);
     const commands = readCommandLog(fixture);
-    expect(commands).toContain("NODE_OPTIONS=--trace-warnings --max-old-space-size=8192");
+    expect(commands).toContain("NODE_OPTIONS=--trace-warnings --max-old-space-size=6144");
     expect(commands).toContain(
-      "npm-plugin-build NODE_OPTIONS=--trace-warnings --max-old-space-size=8192",
+      "npm-plugin-build NODE_OPTIONS=--trace-warnings --max-old-space-size=6144",
     );
     expect(commands).toContain(
-      "tsc-plugin NODE_OPTIONS=--trace-warnings --max-old-space-size=8192",
+      "tsc-plugin NODE_OPTIONS=--trace-warnings --max-old-space-size=6144",
     );
   });
 
@@ -935,8 +935,8 @@ describe("contributor repository setup", () => {
 
     expect(result.status).toBe(0);
     const commands = readCommandLog(fixture);
-    expect(commands).toContain("tsc-cli NODE_OPTIONS=--max-old-space-size=8192");
-    expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max-old-space-size=8192");
+    expect(commands).toContain("tsc-cli NODE_OPTIONS=--max-old-space-size=6144");
+    expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max-old-space-size=6144");
   });
 
   it("preserves a caller-specified Node.js heap limit during doctor type checks", () => {
