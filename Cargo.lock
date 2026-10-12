@@ -1058,6 +1058,7 @@ dependencies = [
  "nemoclaw-openshell",
  "nemoclaw-test-fixtures",
  "nemoclaw-tofu",
+ "openshell-core",
  "openshell-provider",
  "regex",
  "rustls",
@@ -1068,6 +1069,7 @@ dependencies = [
  "tf-provider",
  "tokio",
  "tokio-util",
+ "tonic",
 ]
 
 [[package]]
@@ -2597,9 +2599,13 @@ name = "nemoclaw-e2e"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "bollard",
  "fabric-provider",
  "getrandom 0.4.3",
  "http",
+ "k8s-openapi",
+ "kube",
  "nemoclaw-openshell",
  "nemoclaw-provider",
  "nemoclaw-runtime",
@@ -2617,11 +2623,13 @@ dependencies = [
  "tar",
  "tempfile",
  "tf-provider",
+ "time",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-prost",
  "tower",
+ "url",
 ]
 
 [[package]]
@@ -2782,7 +2790,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
- "bollard",
  "bollard-stubs",
  "getrandom 0.4.3",
  "interprocess",
@@ -2825,6 +2832,7 @@ name = "nemoclaw-test-fixtures"
 version = "0.1.0"
 dependencies = [
  "http",
+ "nemoclaw-openshell",
  "openshell-core",
  "prost",
  "rustls",
