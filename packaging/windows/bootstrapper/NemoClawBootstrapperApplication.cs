@@ -378,17 +378,46 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
 
     private async Task PrepareHeadlessMaintenanceAsync(LaunchAction action)
     {
+        if (this.preparingMaintenance || this.plannedAction != LaunchAction.Unknown) return;
+        this.preparingMaintenance = true;
+        using var cancellation = new CancellationTokenSource();
+        this.maintenanceCancellation = cancellation;
         try
         {
-            await NativeMaintenance.StopSharedInferenceAsync();
-            await this.BeginPlanAsync(action);
+            var code = await NativeMaintenance.PrepareHeadlessActionAsync(this.installed,
+                action == LaunchAction.Uninstall, () => this.BeginPlanAsync(action), cancellation.Token);
+            // The current bundle's ApplyComplete event owns shutdown after planning.
+            if (code is null) return;
+            this.result = code.Value;
+            this.plannedAction = action;
+            if (code is 0 or 3010)
+            {
+                if (action == LaunchAction.Uninstall)
+                {
+                    try { NativeDesktopIntegration.RemoveOwned(NativeSetupOperations.InstalledLauncher()); }
+                    catch (Exception) { this.Engine.Log(LogLevel.Error, "NemoClaw was removed, but a desktop shortcut could not be removed safely."); }
+                }
+                this.Ui(() => this.window?.ShowSuccess(action));
+            }
+            else this.Engine.Log(LogLevel.Error, "The registered previous installer did not complete maintenance successfully.");
+        }
+        catch (NativeMaintenance.RelatedActionPendingException error)
+        {
+            this.result = 1;
+            this.Engine.Log(LogLevel.Error, error.Message);
+            this.Ui(() => this.window?.ShowFailure(error.Message, this.BundleLogPath()));
         }
         catch (Exception)
         {
             this.result = 1;
-            this.Engine.Log(LogLevel.Error, "The owned native inference service could not stop; Windows maintenance was not started.");
-            this.StopDispatchersForHeadless();
+            this.Engine.Log(LogLevel.Error, "Native maintenance did not complete. Check the setup log before trying again.");
         }
+        finally
+        {
+            if (ReferenceEquals(this.maintenanceCancellation, cancellation)) this.maintenanceCancellation = null;
+            this.preparingMaintenance = false;
+        }
+        this.StopDispatchersForHeadless();
     }
 
     private void OnPlanComplete(object? sender, PlanCompleteEventArgs args)

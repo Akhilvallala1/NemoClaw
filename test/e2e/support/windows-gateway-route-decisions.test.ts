@@ -10,17 +10,19 @@ import {
   type DecisionPage,
 } from "../../../packaging/windows/app/gateway-control-route-decisions.mts";
 
-const source = "// fixture\nasync function Qm(e){let t=0,s=e=>{if(a)return;};}\nfunction $m(){}";
+const source =
+  "// fixture\nasync function Qm(e){let t=0,r=()=>lt(e.history.location(),t),s=e=>{if(a)return;};}\nfunction $m(){}";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
 describe("compiled gateway first-run decision diagnostics", () => {
   it("pins the source bytes before locating logpoints", () => {
     expect(gatewayDecisionLogpoints(source)).toBeNull();
     const points = gatewayDecisionLogpoints(source, digest(source));
-    expect(points).toHaveLength(2);
-    expect(points?.map(({ lineNumber }) => lineNumber)).toEqual([1, 1]);
+    expect(points).toHaveLength(3);
+    expect(points?.map(({ lineNumber }) => lineNumber)).toEqual([1, 1, 1]);
     expect(source.split("\n")[1]?.slice(points?.[0]?.columnNumber)).toMatch(/^let t=/u);
     expect(source.split("\n")[1]?.slice(points?.[1]?.columnNumber)).toMatch(/^if\(a\)/u);
+    expect(source.split("\n")[1]?.slice(points?.[2]?.columnNumber)).toMatch(/^lt\(e\.history/u);
     expect(gatewayDecisionLogpoints(source + " ", digest(source))).toBeNull();
   });
 
@@ -28,6 +30,7 @@ describe("compiled gateway first-run decision diagnostics", () => {
     "",
     "async function Qm(e){}function $m(){}",
     "s=e=>{if(a)return;}async function Qm(e){}function $m(){}",
+    "async function Qm(e){let t=0,s=e=>{if(a)return;};}function $m(){}",
   ])("rejects a missing decision owner or callback: %s", (value) =>
     expect(gatewayDecisionLogpoints(value, digest(value))).toBeNull(),
   );
@@ -80,6 +83,26 @@ describe("compiled gateway first-run decision diagnostics", () => {
     ).toBe(false);
   });
 
+  it.each([
+    { field: "pathname", expected: { pathnameEqual: false, searchEqual: true, hashEqual: true } },
+    { field: "search", expected: { pathnameEqual: true, searchEqual: false, hashEqual: true } },
+    { field: "hash", expected: { pathnameEqual: true, searchEqual: true, hashEqual: false } },
+  ])("identifies a changed $field without retaining its value", ({ field, expected }) => {
+    const points = gatewayDecisionLogpoints(source, digest(source));
+    const original = { pathname: "/chat", search: "", hash: "" };
+    const events: unknown[] = [];
+    expect(
+      vm.runInNewContext(points?.[2]?.condition ?? "true", {
+        __nemoclawRouteDecisions: events,
+        t: original,
+        location: { ...original, [field]: "never-copy-this" },
+      }),
+    ).toBe(false);
+    expect(events).toEqual([{ kind: "location", ...expected }]);
+    expect(summarizeGatewayDecisions(events)).toEqual(events);
+    expect(JSON.stringify(events)).not.toContain("never-copy-this");
+  });
+
   it("serializes only bounded boolean and categorical evidence", () => {
     expect(summarizeGatewayDecisions(null)).toEqual([]);
     expect(
@@ -87,6 +110,12 @@ describe("compiled gateway first-run decision diagnostics", () => {
         null,
         { kind: "unrecognized", token: "never-copy-this" },
         { kind: "entry", enabled: "secret", token: "never-copy-this" },
+        {
+          kind: "location",
+          pathnameEqual: true,
+          searchEqual: "never-copy-this",
+          hash: "never-copy-this",
+        },
         {
           kind: "snapshot",
           phase: "never-copy-this",
@@ -96,6 +125,7 @@ describe("compiled gateway first-run decision diagnostics", () => {
       ]),
     ).toEqual([
       { kind: "entry", enabled: false },
+      { kind: "location", pathnameEqual: true, searchEqual: false, hashEqual: false },
       {
         kind: "snapshot",
         phase: "other",
@@ -141,7 +171,7 @@ describe("compiled gateway first-run decision diagnostics", () => {
           .fn()
           .mockResolvedValue([{ kind: "entry", enabled: true, token: "never-copy-this" }]),
       }),
-      installed: 2,
+      installed: 3,
       failed: false,
     },
     {
@@ -164,7 +194,7 @@ describe("compiled gateway first-run decision diagnostics", () => {
         detach: vi.fn().mockResolvedValue(undefined),
         evaluate: vi.fn().mockRejectedValue(Error("private diagnostic detail")),
       }),
-      installed: 2,
+      installed: 3,
       failed: true,
     },
     {
@@ -176,7 +206,7 @@ describe("compiled gateway first-run decision diagnostics", () => {
           .fn()
           .mockResolvedValue([{ kind: "entry", enabled: true, token: "never-copy-this" }]),
       }),
-      installed: 2,
+      installed: 3,
       failed: true,
     },
   ])(

@@ -58,6 +58,7 @@ internal static class Program
         }
         await AssertBoundedWaitAsync(cancel: true);
         await AssertBoundedWaitAsync(cancel: false);
+        await AssertHeadlessRoutingAsync();
         AssertInspectionControls();
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
@@ -75,8 +76,104 @@ internal static class Program
             }
             catch (OperationCanceledException error) when (error.CancellationToken == cancelled.Token) { }
         }
-        Console.WriteLine("11 maintenance controls passed; failed inspection exposes no maintenance actions, pre-cancelled operations do not start, and unconfirmed Windows Installer completion forbids immediate retry.");
+        Console.WriteLine("Maintenance controls passed; headless repair and uninstall select the registered product, and unconfirmed completion cannot start another transaction.");
         return 0;
+    }
+
+    private static async Task AssertHeadlessRoutingAsync()
+    {
+        foreach (var uninstall in new[] { false, true })
+        {
+            var calls = new List<string>();
+            Task Plan() { calls.Add("plan"); return Task.CompletedTask; }
+            bool Related() { calls.Add("inspect"); return true; }
+            Task Stop(CancellationToken _) { calls.Add("stop"); return Task.CompletedTask; }
+            Task<int> RunRelated(bool requested, CancellationToken _)
+            {
+                if (requested != uninstall) throw new InvalidOperationException("Headless maintenance changed the requested action.");
+                calls.Add("registered");
+                return Task.FromResult(3010);
+            }
+            var code = await NativeMaintenance.PrepareHeadlessActionAsync(false, uninstall, Plan,
+                inspectRelated: Related, stopInference: Stop, runRelated: RunRelated);
+            if (code != 3010 || !calls.SequenceEqual(new[] { "inspect", "stop", "registered" }))
+                throw new InvalidOperationException("Headless maintenance did not select only the registered previous installer.");
+
+            foreach (var exitCode in new[] { 0, 1603, 1223 })
+            {
+                calls.Clear();
+                code = await NativeMaintenance.PrepareHeadlessActionAsync(false, uninstall, Plan,
+                    inspectRelated: Related, stopInference: Stop,
+                    runRelated: (_, _) => { calls.Add("registered"); return Task.FromResult(exitCode); });
+                if (code != exitCode || !calls.SequenceEqual(new[] { "inspect", "stop", "registered" }))
+                    throw new InvalidOperationException("Headless maintenance lost the registered installer's exit code or started a second transaction.");
+            }
+
+            calls.Clear();
+            code = await NativeMaintenance.PrepareHeadlessActionAsync(true, uninstall, Plan,
+                inspectRelated: Related, stopInference: Stop, runRelated: RunRelated);
+            if (code is not null || !calls.SequenceEqual(new[] { "stop", "plan" }))
+                throw new InvalidOperationException("Current-product maintenance did not preserve the current bundle plan.");
+
+            calls.Clear();
+            code = await NativeMaintenance.PrepareHeadlessActionAsync(false, uninstall, Plan,
+                inspectRelated: () => false, stopInference: Stop, runRelated: RunRelated);
+            if (code is not null || !calls.SequenceEqual(new[] { "stop", "plan" }))
+                throw new InvalidOperationException("Maintenance without a related product invoked an earlier installer.");
+
+            calls.Clear();
+            using var cancellation = new CancellationTokenSource();
+            try
+            {
+                await NativeMaintenance.PrepareHeadlessActionAsync(false, uninstall, Plan, cancellation.Token,
+                    Related, _ => { calls.Add("stop"); cancellation.Cancel(); return Task.CompletedTask; }, RunRelated);
+                throw new InvalidOperationException("Cancellation started another maintenance transaction.");
+            }
+            catch (OperationCanceledException error) when (error.CancellationToken == cancellation.Token) { }
+            if (!calls.SequenceEqual(new[] { "inspect", "stop" }))
+                throw new InvalidOperationException("Cancelled headless maintenance reached a transaction.");
+
+            calls.Clear();
+            var pending = new NativeMaintenance.RelatedActionPendingException("completion unconfirmed", new OperationCanceledException());
+            try
+            {
+                await NativeMaintenance.PrepareHeadlessActionAsync(false, uninstall, Plan,
+                    inspectRelated: Related, stopInference: Stop,
+                    runRelated: (_, _) => { calls.Add("registered"); throw pending; });
+                throw new InvalidOperationException("Pending headless maintenance was accepted.");
+            }
+            catch (NativeMaintenance.RelatedActionPendingException error) when (ReferenceEquals(error, pending)) { }
+            if (!calls.SequenceEqual(new[] { "inspect", "stop", "registered" }))
+                throw new InvalidOperationException("Unconfirmed maintenance started another transaction.");
+
+            foreach (var failInspection in new[] { true, false })
+            {
+                calls.Clear();
+                var failure = new InvalidOperationException("maintenance prerequisite failed");
+                try
+                {
+                    await NativeMaintenance.PrepareHeadlessActionAsync(false, uninstall, Plan,
+                        inspectRelated: () => { calls.Add("inspect"); if (failInspection) throw failure; return true; },
+                        stopInference: _ => { calls.Add("stop"); throw failure; }, runRelated: RunRelated);
+                    throw new InvalidOperationException("A failed maintenance prerequisite was accepted.");
+                }
+                catch (InvalidOperationException error) when (ReferenceEquals(error, failure)) { }
+                var expected = failInspection ? new[] { "inspect" } : new[] { "inspect", "stop" };
+                if (!calls.SequenceEqual(expected))
+                    throw new InvalidOperationException("A failed maintenance prerequisite reached another operation.");
+            }
+
+            calls.Clear();
+            try
+            {
+                await NativeMaintenance.PrepareHeadlessActionAsync(false, uninstall, Plan, cancellation.Token,
+                    Related, Stop, RunRelated);
+                throw new InvalidOperationException("Pre-cancelled headless maintenance was accepted.");
+            }
+            catch (OperationCanceledException error) when (error.CancellationToken == cancellation.Token) { }
+            if (calls.Count != 0)
+                throw new InvalidOperationException("Pre-cancelled headless maintenance inspected or changed installed state.");
+        }
     }
 
     private static void AssertInspectionControls()

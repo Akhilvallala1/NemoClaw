@@ -130,6 +130,21 @@ internal static class NativeMaintenance
         return matches.OrderByDescending(value => value.Version).Select(value => value.Path).FirstOrDefault();
     }
 
+    internal static async Task<int?> PrepareHeadlessActionAsync(bool installed, bool uninstall,
+        Func<Task> beginPlan, CancellationToken cancellation = default,
+        Func<bool>? inspectRelated = null, Func<CancellationToken, Task>? stopInference = null,
+        Func<bool, CancellationToken, Task<int>>? runRelated = null)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        var relatedOnly = !installed && (inspectRelated ?? HasRelatedInstallation)();
+        await (stopInference ?? (token => StopSharedInferenceAsync(cancellation: token)))(cancellation);
+        cancellation.ThrowIfCancellationRequested();
+        if (relatedOnly)
+            return await (runRelated ?? RunRelatedActionAsync)(uninstall, cancellation);
+        await beginPlan();
+        return null;
+    }
+
     internal static async Task<int> RunRelatedActionAsync(bool uninstall, CancellationToken cancellation = default)
     {
         cancellation.ThrowIfCancellationRequested();

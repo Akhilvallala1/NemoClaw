@@ -12,7 +12,16 @@ export function gatewayDecisionLogpoints(source: string, expectedSha256 = decisi
   const start = source.indexOf("async function Qm(e){");
   const end = source.indexOf("function $m()", start);
   const callback = source.indexOf("s=e=>{if(a)return;", start);
-  if (start < 0 || end <= start || callback <= start || callback >= end) return null;
+  const location = source.indexOf("r=()=>lt(e.history.location(),t)", start);
+  if (
+    start < 0 ||
+    end <= start ||
+    callback <= start ||
+    callback >= end ||
+    location <= start ||
+    location >= callback
+  )
+    return null;
   const points = [
     {
       offset: start + "async function Qm(e){".length,
@@ -22,6 +31,11 @@ export function gatewayDecisionLogpoints(source: string, expectedSha256 = decisi
       offset: callback + "s=e=>{".length,
       value:
         '{kind:"snapshot",phase:e.phase,alreadyDecided:a,eligible:Yt(e,`openclaw.setup.detect`,`operator.admin`),sameLanding:r(),selectedIsDefault:!n.agentSelection.state.selectedId?.trim()||n.agentSelection.state.selectedId?.trim()===or(e)?.defaultAgentId?.trim(),configured:or(e)?.modelConfigured??null}',
+    },
+    {
+      offset: location + "r=()=>".length,
+      value:
+        '{kind:"location",pathnameEqual:location.pathname===t.pathname,searchEqual:location.search===t.search,hashEqual:location.hash===t.hash}',
     },
   ];
   return points.map(({ offset, value }) => {
@@ -54,6 +68,7 @@ function readDecisionEvents() {
 
 type DecisionEvent =
   | { kind: "entry"; enabled: boolean }
+  | { kind: "location"; pathnameEqual: boolean; searchEqual: boolean; hashEqual: boolean }
   | {
       kind: "snapshot";
       phase: string;
@@ -70,6 +85,15 @@ export function summarizeGatewayDecisions(value: unknown): DecisionEvent[] {
     if (!item || typeof item !== "object") return [];
     const event = item as Record<string, unknown>;
     if (event.kind === "entry") return [{ kind: "entry", enabled: event.enabled === true }];
+    if (event.kind === "location")
+      return [
+        {
+          kind: "location",
+          pathnameEqual: event.pathnameEqual === true,
+          searchEqual: event.searchEqual === true,
+          hashEqual: event.hashEqual === true,
+        },
+      ];
     if (event.kind !== "snapshot") return [];
     return [
       {
