@@ -3212,8 +3212,10 @@ async function prepareConnectSandboxWithinLifecycleFence(
       kind: "connect",
       sandboxName,
       target: portableAuthority
-        ? { kind: "named", gatewayName: portableAuthority.gatewayName }
-        : { kind: "selected" },
+        ? namedOpenShellGateway(portableAuthority.gatewayName)
+        : sb
+          ? namedOpenShellGateway(getPersistedSandboxTargetGatewayName(sb))
+          : { kind: "selected" },
     },
   };
 }

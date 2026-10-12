@@ -127,7 +127,7 @@ describe("connectSandbox flow", () => {
     expect(harness.startSandboxSessionSpy).toHaveBeenCalledWith({
       kind: "connect",
       sandboxName: "alpha",
-      target: { kind: "selected" },
+      target: { kind: "named", gatewayName: "nemoclaw" },
     });
     expect(harness.startSandboxSessionSpy.mock.invocationCallOrder[0]!).toBeLessThan(
       exitSpy.mock.invocationCallOrder[0]!,
