@@ -176,7 +176,7 @@ pub async fn wait_service_ready(
 
 async fn container_health(
     engine: &crate::docker::Engine,
-    spec: &Spec,
+    spec: &crate::managed::Spec,
     id: &str,
 ) -> Result<bool, Error> {
     let expected_labels = spec.labels()?;

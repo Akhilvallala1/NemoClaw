@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Complete parser fixture, not a deployable or qualified VoiceClaw recipe.
+# Complete parser fixture, not a deployable or qualified application recipe.
 # The endpoints, UUID, image digests, model, and network are test values.
 
 apiVersion: nemoclaw.nvidia.com/v1alpha1
 kind: NemoClawConfig
 metadata:
-  name: voiceclaw-manual-test
+  name: application-manual-test
   uid: c8fd820d-fbc6-48ac-b4c7-240b92313689
 spec:
   gateway:
@@ -41,7 +41,7 @@ spec:
   services:
     voice:
       kind: container
-      image: example.invalid/voiceclaw@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      image: example.invalid/application@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       imagePullPolicy: Never
       inputSetup:
         image: example.invalid/container-inputs@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -53,26 +53,26 @@ spec:
       publication:
         bindAddress: 127.0.0.1
         port: 18790
+      # APP_* settings are examples interpreted by the application image.
       environment:
-        VOICECLAW_RUNTIME_PROFILE: nemoclaw-container-v1
-        VOICECLAW_INSTALL_CONTRACT: voiceclaw.nemoclaw.container.v1
-        VOICECLAW_AGENT_CONNECTION_FILE: /var/lib/voiceclaw/config/agent-connection.json
-        VOICECLAW_SPEECH_CREDENTIAL_FILE: /var/lib/voiceclaw/credentials/speech
-        VOICECLAW_STATE_PATH: /var/lib/voiceclaw/state/state.db
+        APP_MODE: qualification
+        APP_AGENT_CONNECTION_FILE: /var/lib/application/config/agent-connection.json
+        APP_CREDENTIAL_FILE: /var/lib/application/credentials/speech
+        APP_STATE_PATH: /var/lib/application/state/state.db
       data:
-        mountPath: /var/lib/voiceclaw
+        mountPath: /var/lib/application
       secrets:
         speech:
           credential: {env: NVIDIA_API_KEY}
-          targetPath: /var/lib/voiceclaw/credentials/speech
+          targetPath: /var/lib/application/credentials/speech
         openshell:
-          credential: {env: VOICECLAW_OPENSHELL_SERVICE_TOKEN}
-          targetPath: /var/lib/voiceclaw/credentials/openshell
+          credential: {env: APP_OPENSHELL_SERVICE_TOKEN}
+          targetPath: /var/lib/application/credentials/openshell
       agentConnections:
         primary:
           sandboxRef: assistant
           agent: main
-          targetPath: /var/lib/voiceclaw/config/agent-connection.json
+          targetPath: /var/lib/application/config/agent-connection.json
           gatewayEndpoint: https://openshell.example.invalid:8443
           authentication:
             mode: oidcBearer

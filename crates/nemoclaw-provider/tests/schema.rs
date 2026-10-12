@@ -45,13 +45,25 @@ fn no_type_name_is_served_by_two_providers() {
 }
 
 #[test]
-fn every_resource_generates_an_omitted_owner_and_generation() {
+fn resources_generate_identity_or_require_an_existing_input_storage_binding() {
     let mut diagnostics = Diagnostics::default();
     let resources = NemoClawProvider::default()
         .get_resources(&mut diagnostics)
         .unwrap();
     for (kind, resource) in &resources {
         let schema = resource.schema(&mut diagnostics).unwrap();
+        if kind == "container_inputs" {
+            // Preparation uses an existing Docker volume's identity. Generating
+            // a second owner or generation would break that required binding.
+            assert_eq!(
+                schema.block.attributes["spec"].constraint,
+                AttributeConstraint::Required
+            );
+            for attribute in ["owner", "generation"] {
+                assert!(!schema.block.attributes.contains_key(attribute));
+            }
+            continue;
+        }
         for attribute in ["owner", "generation"] {
             assert!(
                 matches!(

@@ -9,6 +9,12 @@
 provider nemoclaw (version 0)
   destroy: bool, optional
 
+resource nemoclaw_container_inputs (version 0)
+  complete: string, computed
+  id: string, computed
+  sandbox_id: string, required
+  spec: string, required
+
 resource nemoclaw_gateway_storage (version 0)
   compute_driver: string, required
   data_path: string, computed
@@ -223,6 +229,7 @@ data nemoclaw_ollama_runtime (version 0)
 data nemoclaw_runtime_image (version 0)
   allow_missing: bool, optional
   architecture: string, required
+  contract: string, optional
   engine: string, required
   image: string, required
   image_id: string, optional

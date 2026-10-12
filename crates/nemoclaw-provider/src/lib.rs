@@ -107,6 +107,15 @@ mod application_input_contract_tests {
         .await;
         let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
             serde_json::from_str(&target.values["spec"]).unwrap();
+        for attribute in ["owner", "generation"] {
+            let mut invalid = serde_json::to_value(&spec).unwrap();
+            invalid["storage"][attribute] = serde_json::json!("");
+            assert!(
+                nemoclaw_sdk::services::validate_resource_spec(&target.kind, &invalid.to_string())
+                    .is_err(),
+                "input preparation requires the volume's {attribute}"
+            );
+        }
         let connections =
             docker::Connections::fixed([fixture.engine_for(&spec.storage.engine)]).unwrap();
         assert!(

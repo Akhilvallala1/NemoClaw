@@ -3,7 +3,7 @@
 
 # Manual protected-input integration check
 
-Use this check to qualify the fixed setup helper before attempting VoiceClaw.
+Use this check to qualify the fixed setup helper before installing an application container.
 It creates one randomly named owned initializer and disposable volume, delivers a
 source-defined test token, verifies completed delivery and unchanged re-apply, and
 removes those resources. It creates no agent, gateway, speech request, or application
@@ -67,7 +67,7 @@ before deleting the volume without force. If transport or ownership is uncertain
 it leaves the named resources for investigation; do not delete by prefix or run a
 global prune. A process killed externally can also leave these resources.
 
-## Connect the VoiceClaw candidate later
+## Connect an application container
 
 In the accepted `kind: container` declaration, add the nonsecret setup-image input
 alongside the existing protected references:
@@ -78,12 +78,12 @@ inputSetup:
 secrets:
   speech:
     credential: {env: NVIDIA_API_KEY}
-    targetPath: /var/lib/voiceclaw/credentials/speech
+    targetPath: /var/lib/application/credentials/speech
 ```
 
 `inputSetup` is required exactly when `secrets` or `agentConnections` are declared.
-It is a NemoClaw authoring field; it changes neither VoiceClaw's environment names
-nor the `nemoclaw.agent-connection.v1` descriptor. Do not place secret values in
+It is a NemoClaw authoring field; the application image owns its environment names
+and reads the `nemoclaw.agent-connection.v1` descriptor. Do not place secret values in
 YAML, command arguments, Docker environment variables or saved test artifacts.
 
 Build a matching native bundle using `cargo ci`, or follow [the native build
@@ -102,7 +102,7 @@ does not authorize them. Use the CLI's protected credential prompts or your
 approved credential source. Re-applying unchanged references is not token rotation.
 Changing input references replaces disposable application data. Deployment-wide
 `destroy` removes owned workloads, including the sandbox agent and application
-data; it is not selective VoiceClaw uninstall. Never delete state to retry.
+data; it is not selective application removal. Never delete state to retry.
 
 As of October 6, 2026, the pinned Fabric revision has no supported native readiness
 check. [NemoClaw #12443](https://github.com/NVIDIA/NemoClaw/issues/12443) and
@@ -111,7 +111,7 @@ capability. The declaration fixture explicitly sets sandbox `allowUnsupportedHea
 to allow installation after infrastructure and configuration checks when native
 health reports exactly unsupported. It does not report native health as passing;
 omission or false retains the strict default. Failed or unknown observations still fail.
-VoiceClaw's own readiness must check local inputs and frontend readiness independently.
+The application's own readiness must check its local inputs and startup independently.
 The application image and selected connection profile require joint qualification.
 HTTPS/OIDC connections require a container-reachable HTTPS endpoint and an external
 service identity. The development-only HTTP profile requires this deployment's

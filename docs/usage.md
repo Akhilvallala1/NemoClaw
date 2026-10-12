@@ -119,7 +119,7 @@ Any process able to reach the gateway can use its API; use a trusted private dev
 HTTPS/OIDC connections still require a protected service credential and verified system TLS trust.
 Neither an omitted authentication mode nor an authentication failure selects anonymous mode.
 
-The [complete local parser fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml) shows the declaration and protected speech inputs.
+The [complete local parser fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml) shows the declaration and protected application inputs.
 Its UID, image digests, inference endpoint, and model are test values, not a deployable recipe or live qualification.
 See the [accepted boundary](design/scope.md#local-container-connection-decision) and [credential ownership](security.md#credentials-and-authentication).
 
@@ -128,13 +128,22 @@ See the [accepted boundary](design/scope.md#local-container-connection-decision)
 Use [definitions and references](configuration-references.md) to choose shared or inline configuration.
 Use the [field reference](reference/configuration.md) for names, defaults, and validation rules.
 
-Unknown fields, duplicate keys, inline secrets, and unsupported combinations are rejected; images require immutable SHA-256 references.
+Unknown fields, duplicate keys, and unsupported combinations are rejected; images require immutable SHA-256 references.
+Container `environment` values are literal settings retained in configuration and state.
+Use protected credential references for secrets; validation cannot identify a secret pasted into a literal setting.
 Gateway and inference ownership are independent of the harness, but inference must support the harness's request API.
 See [managed models](models.md), [Ollama](inference.md#run-managed-ollama), or [external Ollama with a managed proxy](inference.md#use-external-ollama-through-a-managed-proxy) for service configuration.
 
 Use `credential: {env: INFERENCE_API_KEY}` for an inference provider or gateway.
 The caller supplies the referenced environment value.
 For gateway mTLS, `tls.ca.env`, `tls.certificate.env`, and `tls.key.env` reference environment variables whose values are local file paths.
+
+For an application container, `secrets` names credential references and their file destinations below its data root.
+The fixed setup helper publishes them before application startup, with directories restricted to mode `0700` and files to `0600`, owned by the configured application UID:GID.
+The application can read and write those files; the credentials remain in its owned volume until that volume is removed.
+Reapplying unchanged references does not rotate credential values.
+Changing protected-input references selects a replacement disposable volume and removes the old application data during reconciliation; preserve any required application data before making that change.
+See the [container input contract](../crates/nemoclaw-container-inputs/README.md) for publication and recovery rules.
 
 Credential values stay out of configuration, plans, state, and export.
 OpenShell stores installed provider credentials for routing; removing the local variable does not revoke them.
@@ -153,11 +162,12 @@ See [sandbox policy configuration](sandbox-network.md) for changes and [security
 ## Control Container Image Downloads
 
 Set `imagePullPolicy` beside `image` under `spec.gateway` or `spec.services.<name>`.
-The service setting applies to `kind: vllm`, `ollama`, and `ollamaProxy`.
-The setting controls image acquisition on that container's engine, including an SSH Docker engine selected by the service's `placement.engine`.
+The service setting applies to `kind: vllm`, `ollama`, `ollamaProxy`, and `container`.
+The setting controls image acquisition on that container's engine.
+Application containers use a local Unix Docker socket; inference services also support an SSH Docker engine selected by `placement.engine`.
 Images still require immutable SHA-256 references.
 
-| Policy | Managed inference and proxy images |
+| Policy | Managed service images |
 |---|---|
 | `IfNotPresent` (default) | The Docker provider ensures the pinned image is available and pulls it when absent |
 | `Never` | The Docker provider reads the local image; a missing image fails that observation |

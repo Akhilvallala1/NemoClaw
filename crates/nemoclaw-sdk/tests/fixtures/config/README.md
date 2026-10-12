@@ -14,7 +14,7 @@ The `container-agent-connection.yaml` fixture supplies a complete application,
 sandbox, external gateway, and inference declaration. Its test checks protected
 input ordering, credential-reference separation, and YAML round-trip parsing.
 Reserved endpoints and invented image digests make it unsuitable for live apply.
-It does not qualify a VoiceClaw image or an OpenShell service identity.
+It does not qualify an application image or an OpenShell service identity.
 Its explicit `allowUnsupportedHealth: true` accepts only unsupported native health
 for installation; it does not establish agent readiness or a successful voice turn.
 

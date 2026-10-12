@@ -21,14 +21,14 @@ fn authored() -> Value {
         "kind":"container", "image":format!("voice@sha256:{}", "a".repeat(64)),
         "architecture":"arm64", "imagePullPolicy":"Never",
         "inputSetup":{"image":format!("inputs@sha256:{}", "b".repeat(64))},
-        "data":{"mountPath":"/var/lib/voiceclaw"},
+        "data":{"mountPath":"/var/lib/application"},
         "secrets":{
-            "speech":{"credential":{"env":"SPEECH_KEY"},"targetPath":"/var/lib/voiceclaw/credentials/speech"},
-            "openshell":{"credential":{"env":"SERVICE_TOKEN"},"targetPath":"/var/lib/voiceclaw/credentials/openshell"}
+            "speech":{"credential":{"env":"SPEECH_KEY"},"targetPath":"/var/lib/application/credentials/speech"},
+            "openshell":{"credential":{"env":"SERVICE_TOKEN"},"targetPath":"/var/lib/application/credentials/openshell"}
         },
         "agentConnections":{"primary":{
             "sandboxRef":sandbox, "agent":agent,
-            "targetPath":"/var/lib/voiceclaw/config/agent-connection.json",
+            "targetPath":"/var/lib/application/config/agent-connection.json",
             "gatewayEndpoint":"https://gateway.example.test:8443",
             "authentication":{"mode":"oidcBearer","secretRef":"openshell","refreshMode":"none"},
             "tls":{"trust":"system"},
@@ -307,11 +307,7 @@ fn complete_local_container_fixture_binds_the_managed_gateway_and_protects_speec
         "http://172.29.230.2:17681"
     );
     assert!(!graph.to_string().contains("OPENSHELL_OPERATOR_TOKEN"));
-    assert!(
-        !graph
-            .to_string()
-            .contains("VOICECLAW_OPENSHELL_SERVICE_TOKEN")
-    );
+    assert!(!graph.to_string().contains("APP_OPENSHELL_SERVICE_TOKEN"));
 }
 
 #[test]
@@ -359,9 +355,9 @@ fn complete_container_connection_document_keeps_operator_identity_out_of_applica
         document.credential_names(),
         [
             "AGENT_INFERENCE_API_KEY",
+            "APP_OPENSHELL_SERVICE_TOKEN",
             "NVIDIA_API_KEY",
             "OPENSHELL_OPERATOR_TOKEN",
-            "VOICECLAW_OPENSHELL_SERVICE_TOKEN",
         ]
     );
     let graph = compile(&document, &generations(), "0.1.0").unwrap();
@@ -369,10 +365,7 @@ fn complete_container_connection_document_keeps_operator_identity_out_of_applica
     let spec: Value = serde_json::from_str(inputs["spec"].as_str().unwrap()).unwrap();
     assert!(!inputs.to_string().contains("OPENSHELL_OPERATOR_TOKEN"));
     assert!(!inputs.to_string().contains("AGENT_INFERENCE_API_KEY"));
-    assert!(
-        spec.to_string()
-            .contains("VOICECLAW_OPENSHELL_SERVICE_TOKEN")
-    );
+    assert!(spec.to_string().contains("APP_OPENSHELL_SERVICE_TOKEN"));
     assert_eq!(inputs["sandbox_id"], "${openshell_sandbox.assistant.id}");
     let app = &graph["resource"]["docker_container"]["container_service_voice"];
     assert_eq!(app["user"], "65532:65532");
@@ -388,9 +381,9 @@ fn complete_container_connection_document_keeps_operator_identity_out_of_applica
         );
     }
     let environment = app["env"].as_array().unwrap();
-    assert!(environment.contains(&json!("VOICECLAW_RUNTIME_PROFILE=nemoclaw-container-v1")));
+    assert!(environment.contains(&json!("APP_MODE=qualification")));
     assert!(environment.contains(&json!(
-        "VOICECLAW_INSTALL_CONTRACT=voiceclaw.nemoclaw.container.v1"
+        "APP_AGENT_CONNECTION_FILE=/var/lib/application/config/agent-connection.json"
     )));
     for name in document.credential_names() {
         assert!(
@@ -493,11 +486,11 @@ fn container_inputs_reject_unsafe_paths_bindings_credentials_and_transports() {
         ),
         (
             "/spec/services/voice/secrets/speech/targetPath",
-            json!("/var/lib/voiceclaw/../key"),
+            json!("/var/lib/application/../key"),
         ),
         (
             "/spec/services/voice/secrets/speech/targetPath",
-            json!("/var/lib/voiceclaw/config"),
+            json!("/var/lib/application/config"),
         ),
         (
             "/spec/services/voice/secrets/speech/credential/env",
@@ -600,7 +593,7 @@ fn application_descriptor_records_explicit_binding_without_secret_values() {
         serde_json::from_str(&target.values["spec"]).unwrap();
     let sandbox_id = "11111111-2222-3333-4444-555555555555";
     let (path, descriptor) = spec.descriptor(sandbox_id).unwrap().unwrap();
-    assert_eq!(path, "/var/lib/voiceclaw/config/agent-connection.json");
+    assert_eq!(path, "/var/lib/application/config/agent-connection.json");
     assert_eq!(descriptor["schemaVersion"], "nemoclaw.agent-connection.v1");
     assert_eq!(descriptor["target"]["workspace"], document.workspace());
     assert_eq!(descriptor["target"]["sandboxId"], sandbox_id);
@@ -614,7 +607,7 @@ fn application_descriptor_records_explicit_binding_without_secret_values() {
     );
     assert_eq!(
         descriptor["authentication"]["credentialFile"],
-        "/var/lib/voiceclaw/credentials/openshell"
+        "/var/lib/application/credentials/openshell"
     );
     assert!(descriptor.get("credentialValue").is_none());
     assert!(

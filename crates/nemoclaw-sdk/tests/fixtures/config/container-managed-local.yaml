@@ -5,7 +5,7 @@
 apiVersion: nemoclaw.nvidia.com/v1alpha1
 kind: NemoClawConfig
 metadata:
-  name: voiceclaw-local-development
+  name: application-local-development
   uid: 3cf9eb29-93bf-4bd9-a26d-c853c6da96d8
 spec:
   gateway:
@@ -36,29 +36,29 @@ spec:
   services:
     voice:
       kind: container
-      image: example.invalid/voiceclaw@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      image: example.invalid/application@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       imagePullPolicy: Never
       inputSetup:
         image: example.invalid/container-inputs@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
       architecture: arm64
       user: "65532:65532"
       publication: {bindAddress: 127.0.0.1, port: 18790}
+      # APP_* settings are examples interpreted by the application image.
       environment:
-        VOICECLAW_RUNTIME_PROFILE: nemoclaw-container-v1
-        VOICECLAW_INSTALL_CONTRACT: voiceclaw.nemoclaw.container.v1
-        VOICECLAW_AGENT_CONNECTION_FILE: /var/lib/voiceclaw/config/agent-connection.json
-        VOICECLAW_SPEECH_CREDENTIAL_FILE: /var/lib/voiceclaw/credentials/speech
-        VOICECLAW_STATE_PATH: /var/lib/voiceclaw/state/state.db
-      data: {mountPath: /var/lib/voiceclaw}
+        APP_MODE: qualification
+        APP_AGENT_CONNECTION_FILE: /var/lib/application/config/agent-connection.json
+        APP_CREDENTIAL_FILE: /var/lib/application/credentials/speech
+        APP_STATE_PATH: /var/lib/application/state/state.db
+      data: {mountPath: /var/lib/application}
       secrets:
         speech:
           credential: {env: NVIDIA_API_KEY}
-          targetPath: /var/lib/voiceclaw/credentials/speech
+          targetPath: /var/lib/application/credentials/speech
       agentConnections:
         primary:
           sandboxRef: assistant
           agent: main
-          targetPath: /var/lib/voiceclaw/config/agent-connection.json
+          targetPath: /var/lib/application/config/agent-connection.json
           authentication: {mode: none, refreshMode: none}
           tls: {trust: none}
           timeouts: {healthSeconds: 12, invokeSeconds: 120}

@@ -19,7 +19,7 @@ pub(crate) fn configure_readiness(
             .map_or(Ok(9 * 3600), |wait| wait.parse())
             .map_err(|_| Error::State("invalid service readiness timeout"))?;
         let spec = crate::managed::Spec::from_values(&target.kind, &target.values)?;
-        let literal = |value: &str| value.replace("${", "${").replace("%{", "%%{");
+        let literal = |value: &str| value.replace("${", "$${").replace("%{", "%%{");
         let contract = match target.kind.as_str() {
             "inference_service" => format!(
                 "${{data.nemoclaw_{}.{logical}.spec}}",
