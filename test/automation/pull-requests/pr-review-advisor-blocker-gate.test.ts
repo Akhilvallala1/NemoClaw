@@ -36,12 +36,33 @@ function artifactTree(
   options: {
     findingInterest?: string;
     unresolvedInterest?: string;
+    changedFiles?: string[];
+    invalidJobId?: boolean;
   } = {},
 ): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "advisor-blocker-gate-"));
   onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
+  const selectedRiskPlan = structuredClone(
+    options.changedFiles
+      ? buildRiskPlan({ headSha: HEAD_SHA, changedFiles: options.changedFiles })
+      : riskPlan,
+  );
+  selectedRiskPlan.requiredJobs = selectedRiskPlan.requiredJobs.map((job, index) => ({
+    ...job,
+    id: options.invalidJobId && index === 0 ? "staging-brev-launchable\n# forged summary" : job.id,
+  }));
+  const selectedInventory = {
+    ...inventory,
+    allowedJobIds: selectedRiskPlan.requiredJobs.map((job) => job.id),
+    liveSupportedTargetIds: selectedRiskPlan.requiredTargets.map((target) => target.id),
+  };
   const context = buildReviewQueueContext(
-    { baseSha: BASE_SHA, expectedSpecialists, riskPlan, inventory },
+    {
+      baseSha: BASE_SHA,
+      expectedSpecialists,
+      riskPlan: selectedRiskPlan,
+      inventory: selectedInventory,
+    },
     {},
   );
   for (const interest of expectedSpecialists) {
@@ -74,8 +95,8 @@ function artifactTree(
     const receipt = buildSpecialistE2eReceipt({
       baseSha: BASE_SHA,
       expectedSpecialists,
-      riskPlan,
-      inventory,
+      riskPlan: selectedRiskPlan,
+      inventory: selectedInventory,
       interest,
       advisor: {
         recommendations: [],
@@ -116,7 +137,53 @@ it("passes only complete, canonical, clear Advisor evidence", () => {
     unresolvedRecommendationCount: 0,
     findingInterests: [],
     unresolvedInterests: [],
+    recommendations: [],
   });
+});
+
+it("reports the Brev E2E selection even when the Advisor gate blocks", () => {
+  const root = artifactTree({
+    changedFiles: ["src/lib/actions/sandbox/connect.ts"],
+    unresolvedInterest: "delivery-flow",
+  });
+  const recommendations = evaluate(root).recommendations;
+  expect(recommendations).toContainEqual(
+    expect.objectContaining({ selectorType: "job", id: "staging-brev-launchable", required: true }),
+  );
+
+  const summary = path.join(root, "step-summary.md");
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--no-warnings",
+      path.resolve("tools/pr-review-advisor/blocker-gate.mts"),
+      "--attempt",
+      ATTEMPT,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        EXPECTED_BASE_SHA: BASE_SHA,
+        EXPECTED_HEAD_SHA: HEAD_SHA,
+        PR_REVIEW_ADVISOR_ARTIFACTS: root,
+        GITHUB_STEP_SUMMARY: summary,
+      },
+    },
+  );
+  expect(child.error).toBeUndefined();
+  expect(child.status).toBe(1);
+  const summaryText = fs.readFileSync(summary, "utf8");
+  expect(summaryText).toContain("Required: `job:staging-brev-launchable`");
+  expect(summaryText).toContain("selection only; no execution evidence");
+});
+
+it("rejects a selector that could inject Markdown into the public summary", () => {
+  const root = artifactTree({
+    changedFiles: ["src/lib/actions/sandbox/connect.ts"],
+    invalidJobId: true,
+  });
+  expect(() => evaluate(root)).toThrow("invalid selector");
 });
 
 it("blocks a P0/P1 finding from any specialist", () => {

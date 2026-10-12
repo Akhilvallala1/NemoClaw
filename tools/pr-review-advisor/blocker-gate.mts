@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { TrustedE2eRecommendationInventory } from "../advisors/e2e-recommendations.mts";
 import { RISK_PLAN_VERSION, type RiskPlan } from "../advisors/risk-plan.mts";
 import { parseArgs } from "../advisors/io.mts";
-import { collectE2eRecommendations } from "./e2e-receipt.mts";
+import { collectE2eRecommendations, type RecommendationSelector } from "./e2e-receipt.mts";
 import { parseAdvisorFindingLedger } from "./finding-ledger.mts";
 import { ADVISOR_INTERESTS } from "./specialist-catalog.mts";
 
@@ -31,6 +31,7 @@ export type AdvisorBlockerGateResult = Readonly<{
   unresolvedRecommendationCount: number;
   findingInterests: readonly string[];
   unresolvedInterests: readonly string[];
+  recommendations: readonly RecommendationSelector[];
 }>;
 
 export function evaluateAdvisorBlockers(options: {
@@ -63,12 +64,22 @@ export function evaluateAdvisorBlockers(options: {
   requireExpectedSha(options.expectedBaseSha, context.baseSha, "base");
 
   const receipts = artifacts.map(({ receipt }) => receipt);
-  collectE2eRecommendations(receipts, {
+  const e2e = collectE2eRecommendations(receipts, {
     baseSha: context.baseSha,
     expectedSpecialists,
     riskPlan: context.deterministic,
     inventory: context.selectorInventory,
   });
+  if (
+    e2e.recommendations.some(
+      (item) =>
+        !/^[a-z0-9][a-z0-9-]{0,127}$/u.test(item.id) ||
+        !["all", "job", "target"].includes(item.selectorType) ||
+        typeof item.required !== "boolean",
+    )
+  ) {
+    throw new Error("Advisor E2E summary contains an invalid selector");
+  }
 
   const findingInterests: string[] = [];
   const unresolvedInterests: string[] = [];
@@ -96,6 +107,7 @@ export function evaluateAdvisorBlockers(options: {
     unresolvedRecommendationCount,
     findingInterests: Object.freeze(findingInterests),
     unresolvedInterests: Object.freeze(unresolvedInterests),
+    recommendations: Object.freeze(e2e.recommendations),
   });
 }
 
@@ -223,7 +235,18 @@ async function main(): Promise<void> {
   const summary = gateSummary(result);
   console.log(summary);
   if (process.env.GITHUB_STEP_SUMMARY) {
-    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Advisor blocker gate\n\n${summary}\n`);
+    const selectors = result.recommendations.length
+      ? result.recommendations
+          .map(
+            (item) =>
+              `- ${item.required ? "Required" : "Optional"}: \`${item.selectorType}:${item.id}\``,
+          )
+          .join("\n")
+      : "No E2E selectors recommended.";
+    fs.appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      `## Advisor blocker gate\n\n${summary}\n\n### Complete E2E recommendations (selection only; no execution evidence)\n\n${selectors}\n`,
+    );
   }
   if (result.status === "blocked") {
     console.error(`::error title=PR Review Advisor has blockers::${summary}`);
