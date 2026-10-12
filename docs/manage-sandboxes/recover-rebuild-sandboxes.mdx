@@ -199,7 +199,10 @@ This check is stricter than the HTTP 200–499 reachability diagnostic used by o
 </AgentOnly>
 <AgentOnly variant="deepagents">
 Every configured route must serve a valid response to a bounded request for the recorded model before NemoClaw accepts or publishes launch readiness.
-The models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
+For shared-route providers, the models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
+Native custom hosted endpoints verify the recorded sandbox attachment and provider identity.
+They run the bounded request through the recorded endpoint or its HTTPS or Bedrock adapter, without a shared-route models probe.
+Missing or mismatched native authority rejects readiness without falling back to `inference.local`.
 A failed request rejects launch readiness and identifies the inference request as the failed check.
 </AgentOnly>
 <AgentOnly variant="openclaw">

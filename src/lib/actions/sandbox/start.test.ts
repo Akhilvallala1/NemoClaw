@@ -929,11 +929,20 @@ describe("start inference attachment authority (#12636)", () => {
       expect(await startSandbox("my-sandbox", h.deps)).toEqual({ exitCode: 0 });
       expect(probe).toHaveBeenCalledOnce();
       const request = probe.mock.calls[0]![0];
+      expect(request.provider).toBe(provider);
       expect(request.nativeProvider).toBe(attached ? true : undefined);
       expect(request.nativeEndpointUrl).toBe(attached ? definition.endpointUrl : undefined);
-      expect(buildSandboxInferenceInvocationCommand(request)).toContain(
+      const command = buildSandboxInferenceInvocationCommand(request);
+      expect(command).toContain(
         attached ? definition.endpoint.replace(/\/+$/, "") : "https://inference.local/v1",
       );
+      const header =
+        definition.api === "anthropic-messages" ? "x-api-key:" : "Authorization: Bearer";
+      expect(command.includes(`AUTH_HEADER="${header} \${${definition.credentialEnv}:-}"`)).toBe(
+        attached,
+      );
+      expect(command.includes("AUTH_HEADER=")).toBe(attached);
+      expect(command.includes(definition.credentialEnv)).toBe(attached);
     },
   );
 
