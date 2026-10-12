@@ -338,27 +338,27 @@ fn failed_kubernetes_model_rollout_accepts_only_revised_model_workloads() {
 }
 
 #[tokio::test]
-async fn plan_and_apply_warn_about_unauthenticated_cluster_network_boundaries_before_mutation() {
-    for (source, remove_authentication, needs_warning) in [
+async fn plan_and_apply_warn_about_cluster_network_boundaries_even_with_bearer_authentication() {
+    for (source, remove_authentication, warning_detail) in [
         (
             include_bytes!("../../../../../examples/kubernetes/local-ollama.yaml").as_slice(),
             false,
-            true,
+            Some("no bearer authentication"),
         ),
         (
             include_bytes!("../../../../../examples/kubernetes/local-vllm.yaml").as_slice(),
             false,
-            false,
+            Some("bearer authentication does not protect /invocations"),
         ),
         (
             include_bytes!("../../../../../examples/kubernetes/local-vllm.yaml").as_slice(),
             true,
-            true,
+            Some("no bearer authentication"),
         ),
         (
             include_bytes!("../../../../../examples/managed-ollama-gpu.yaml").as_slice(),
             false,
-            false,
+            None,
         ),
     ] {
         let mut document = Document::parse(source).unwrap();
@@ -395,9 +395,17 @@ async fn plan_and_apply_warn_about_unauthenticated_cluster_network_boundaries_be
                     _ => None,
                 })
                 .collect();
-            assert_eq!(warnings.len(), usize::from(needs_warning));
-            if needs_warning {
-                assert!(warnings[0].contains("qwen") && warnings[0].contains("NetworkPolicy"));
+            assert_eq!(warnings.len(), usize::from(warning_detail.is_some()));
+            if let Some(detail) = warning_detail {
+                for required in [
+                    "qwen",
+                    detail,
+                    "NetworkPolicy enforcement",
+                    "Kubernetes API cannot verify",
+                    "supervisor-only policy",
+                ] {
+                    assert!(warnings[0].contains(required), "{}", warnings[0]);
+                }
             }
             assert!(!events.contains(&Progress::MutationStarted));
         }

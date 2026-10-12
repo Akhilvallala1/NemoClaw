@@ -110,6 +110,70 @@ fn ready(updated: &str) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn unschedulable_pods_report_the_scheduler_reason_without_exec_or_mutation() {
+    for backend in ["vllm", "ollama"] {
+        let spec = spec(backend, backend == "vllm");
+        let objects = Objects::default();
+        let directory = tempfile::tempdir().unwrap();
+        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
+        operations
+            .ensure_storage(&spec.storage(), None)
+            .await
+            .unwrap();
+        operations.ensure(&spec, None).await.unwrap();
+        let mut pod = objects.get("v1", "Pod", "agents", &spec.name).unwrap();
+        pod["status"] = json!({"phase":"Pending", "conditions":[{
+            "type":"PodScheduled", "status":"False", "reason":"Unschedulable",
+            "message":"0/1 nodes are available: 1 Insufficient nvidia.com/gpu; token=private-scheduler-token"
+        }]});
+        objects.insert(pod);
+        let before = objects.0.lock().unwrap().clone();
+        let receipt = directory
+            .path()
+            .join("services")
+            .join(&spec.name)
+            .join("receipt.json");
+        let saved = std::fs::read(&receipt).unwrap();
+        let executor = Exec::new(Vec::new());
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            operations.wait_ready_with_exec(&spec, &executor),
+        )
+        .await
+        .expect("scheduler rejection must not consume the model loading timeout")
+        .unwrap_err();
+        let message = error.to_string();
+        for expected in [
+            spec.name.as_str(),
+            "Unschedulable",
+            "Insufficient nvidia.com/gpu",
+            "retained",
+            "apply",
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+        assert!(!message.contains("private-scheduler-token"), "{message}");
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(*objects.0.lock().unwrap(), before);
+        assert_eq!(std::fs::read(receipt).unwrap(), saved);
+
+        // A scheduler rejection is recoverable once the operator provides capacity.
+        let started = "2099-01-01T00:00:00Z";
+        running(&objects, &spec.name, started);
+        let executor = Exec::new(vec![(RuntimeFile::Status, Ok(Some(ready(started))))]);
+        assert_eq!(
+            operations
+                .wait_ready_with_exec(&spec, &executor)
+                .await
+                .unwrap()
+                .running,
+            Some(true)
+        );
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
 async fn runtime_freshness_uses_node_timestamps_even_when_the_cli_clock_differs() {
     let spec = spec("ollama", false);
     let objects = Objects::default();

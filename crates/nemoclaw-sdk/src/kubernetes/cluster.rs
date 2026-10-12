@@ -110,12 +110,16 @@ impl Cluster {
     /// Create `object` with the owner and generation labels. Fails with
     /// `BindingMismatch` if an object already exists at that address.
     pub async fn create(&self, object: Value) -> Result<Owned, ObservationError> {
-        self.create_with(object, false, false).await
+        self.create_with(object, false, false)
+            .await
+            .map(|(owned, _)| owned)
     }
 
     /// Create a credential-free model object with bounded admission diagnostics.
     pub async fn create_model(&self, object: Value) -> Result<Owned, ObservationError> {
-        self.create_with(object, false, true).await
+        self.create_with(object, false, true)
+            .await
+            .map(|(owned, _)| owned)
     }
 
     /// Ask admission to validate an object without persisting it.
@@ -123,12 +127,22 @@ impl Cluster {
         self.create_with(object, true, true).await.map(|_| ())
     }
 
+    /// Return the admitted object, including defaults and mutation, without persisting it.
+    pub(crate) async fn dry_run_object(
+        &self,
+        object: Value,
+    ) -> Result<DynamicObject, ObservationError> {
+        self.create_with(object, true, true)
+            .await
+            .map(|(_, object)| object)
+    }
+
     async fn create_with(
         &self,
         mut object: Value,
         dry_run: bool,
         admission_detail: bool,
-    ) -> Result<Owned, ObservationError> {
+    ) -> Result<(Owned, DynamicObject), ObservationError> {
         let labels = object
             .pointer_mut("/metadata")
             .and_then(Value::as_object_mut)
@@ -166,8 +180,12 @@ impl Cluster {
                 }
                 other => failure(other),
             })?;
-        let uid = created.metadata.uid.ok_or(ObservationError::Incomplete)?;
-        Ok(Owned { uid, ..address })
+        let uid = created
+            .metadata
+            .uid
+            .clone()
+            .ok_or(ObservationError::Incomplete)?;
+        Ok((Owned { uid, ..address }, created))
     }
 
     /// The object, if it is still the one recorded in `owned`.

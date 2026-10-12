@@ -5,6 +5,7 @@
 mod operations;
 mod readiness;
 mod resources;
+mod scheduling;
 mod status;
 use crate::{Error, config::ImagePullPolicy, services::KubernetesService};
 use nemoclaw_runtime::RuntimeSpec;

@@ -81,6 +81,10 @@ pub enum ObservationError {
         exit_code: Option<i32>,
         detail: Box<str>,
     },
+    ModelScheduling {
+        name: String,
+        detail: Box<str>,
+    },
     UnrecordedResource {
         kind: String,
         namespace: String,
@@ -138,6 +142,11 @@ impl fmt::Display for ObservationError {
             Self::Admission { kind, name, detail } => {
                 write!(f, "Kubernetes rejected {kind} {name}: {detail}")
             }
+            Self::ModelScheduling { name, detail } => write!(
+                f,
+                "Kubernetes model Pod {} cannot be scheduled: {detail}; resources retained; correct scheduling constraints or capacity and apply again",
+                name.escape_default()
+            ),
             Self::ModelRuntimeStopped {
                 reason,
                 exit_code,

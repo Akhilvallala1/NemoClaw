@@ -106,9 +106,11 @@ Before applying, the platform operator must provide:
   Set `storageClass` to select it, or omit the field to use the cluster's default class.
 - A network plugin that enforces NetworkPolicies, working cluster DNS, and permitted outbound access for the selected public model registry.
   The current cluster path requires the `cluster.local` DNS domain.
-  Managed Ollama has no native bearer authentication; its access boundary depends on the cluster network policy.
-  Without enforcement, other Pods can use Ollama's full native API, including model-management operations; the Kubernetes API cannot prove that the network plugin enforces the policy.
-  Plan and apply warn about this dependency for each unauthenticated cluster service; JSON results include `warnings`, including when the operation fails.
+  Every managed model service depends on this policy, including vLLM with `authentication: bearer`.
+  vLLM's key protects its OpenAI `/v1` routes; native `POST /invocations` can serve completions without the key.
+  Managed Ollama has no native bearer authentication.
+  Without enforcement, other Pods can reach these unguarded routes, including Ollama's model-management API; the Kubernetes API cannot prove that the network plugin enforces the policy.
+  Plan and apply warn about this dependency for each cluster model service; JSON results include `warnings`, including when the operation fails.
 - Runtime and agent images the selected nodes can pull by digest.
   Build the hosted runtime from this checkout using [the runtime image procedure](build.md#build-a-runtime-image); bare upstream vLLM and Ollama images lack the required supervisor.
   The hosted runtime must run as UID/GID 1000 on Kubernetes or the namespace-assigned identity on OpenShift, and the storage driver must make its mounted directories writable by that identity.
@@ -156,7 +158,7 @@ A Pod can therefore reach its Kubernetes memory limit and be OOM-killed before t
 
 Choose `storageGiB` for the pinned model download, recipe `preparedBytes` when present, a 16 GiB working reserve, and any earlier snapshots retained on the PVC.
 Validation requires at least 16 GiB and checks declared prepared data plus that reserve before mutation.
-The cluster path does not resolve the full model manifest or measure remaining PVC space before provisioning; it does not provide Docker's remaining-download disk-capacity check.
+The cluster path does not resolve the full model manifest or measure remaining PVC space before provisioning.
 Check the model registry's artifact sizes and the storage driver's usable capacity before the first apply.
 An undersized retained PVC cannot be resized through NemoClaw or replaced under the same binding.
 Preserve its state and data; provision a separately identified deployment with adequately sized storage instead of editing the receipt or deleting a bound claim.
@@ -172,13 +174,13 @@ The SDK derives the fully qualified internal host `<service>.<namespace>.svc.clu
 Multiple agents and providers may share a service.
 The provider creates a ClusterIP Service and a NetworkPolicy; no host port, NodePort, or LoadBalancer is published.
 The NetworkPolicy admits only OpenShell supervisor Pods in the gateway's namespace on the model port.
-The supervisor proxy's inference grant limits sandbox traffic to `/v1/**`; admitted peers can still reach Ollama's full native API directly.
+The supervisor proxy's inference grant limits sandbox traffic to `/v1/**`; admitted peers can still reach vLLM's unguarded `/invocations` route and Ollama's full native API directly.
 Principals allowed to create or relabel Pods in that namespace remain inside the trust boundary.
 The imported inference profile and each sandbox's matching network rule grant only the verified Service's assigned IP addresses; refresh compares both with the live Service, and a sandbox created against other addresses must be replaced.
 General authored HTTP DNS endpoints remain rejected.
 Model, image, and workload-resource changes preserve the Service and its addresses while replacing compute.
 Renaming only the local image-metadata environment reference leaves compute unchanged.
-Changing `serving.port` requires whole-deployment destroy and reapply with the retained PVCs; ordinary apply rejects a bound port change before mutation.
+Changing `serving.port` requires whole-deployment destroy and reapply with the retained PVCs; apply rejects a bound port change before mutation.
 Destroy deletes every sandbox's files and conversation history while retaining model and credential PVCs; review [destroy consequences](usage.md#destroy) before choosing that path.
 Docker `placement` and `publication`, host IPC, `ollamaProxy`, CPU-only serving, CPU offload in Ollama, and distributed or multi-GPU serving are outside this cluster path.
 
@@ -188,11 +190,20 @@ Preflight checks the selected classes and API permissions and uses [server-side 
 The first plan cannot dry-run namespace-scoped workloads when the managed namespace does not exist yet; apply repeats those checks before workload creation.
 For a changed existing workload, preflight checks the replacement Pod and ConfigMap under temporary names without persisting them, before stopping the current Pod.
 Rejection preserves the current Pod, configuration, and saved service receipt.
+When an update changes the node selector, tolerations, RuntimeClass, architecture, or CPU/memory requests, preflight also requires permission to list Nodes.
+It checks the admitted replacement Pod against node labels, required taints, and total allocatable CPU, memory, and GPU capacity before deleting the current Pod.
+An impossible constraint leaves the current workload and receipt intact.
+The check uses the admission response so RuntimeClass additions and Pod overhead participate.
+Admitted init containers and Pod-level resource declarations require accounting this check does not implement; preflight rejects those updates while preserving the current Pod.
+It does not subtract the old Pod's allocation or require a spare GPU for a sequential update.
 The check can reject a replacement at full namespace quota because the existing Pod still counts toward usage.
 Use the [quota recovery procedure](#recover-a-quota-rejection-during-a-model-update) to obtain temporary admission headroom while preserving the running workload.
 Temporary names and existing referenced objects can affect admission; a successful check does not reserve quota or capacity, and admission can change before the real create.
+Competing workloads, PVC topology, and scheduler plugins can still prevent scheduling; the preflight is not a scheduler simulation.
 After preflight passes, replacement stops the old Pod; a later create failure can leave the service down until a corrected apply completes recovery from the saved state.
 Apply creates retained storage and disposable service resources, starts the hosted runtime, and checks its bounded readiness before configuring dependent agents.
+If Kubernetes reports `PodScheduled=False` with reason `Unschedulable`, apply stops waiting and reports the bounded, redacted scheduler message and owned Pod name.
+The pending Pod, PVCs, and receipt remain available for inspection; correct the reported constraints or capacity, then apply again with the same state directory.
 The Pod does not automatically restart a stopped inference process.
 On failed model startup or protective shutdown, preserve the state and PVCs, correct the resource or runtime condition, and use [explicit recovery](usage.md#recover-an-interrupted-operation).
 An unfinished cluster runtime apply permits corrections limited to model workloads, including restoring the preceding model digest.

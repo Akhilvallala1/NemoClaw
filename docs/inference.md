@@ -249,7 +249,12 @@ The OpenShell provider reads the key through the verified runtime container iden
 Agent requests use their OpenShell placeholder credential.
 YAML, plans, container launch settings, and OpenTofu state contain no generated key.
 The runtime's root user and Docker administrators can read the key and child environment.
-The private published HTTP endpoint provides bearer authentication without TLS.
+The key authenticates the OpenAI `/v1` routes; it does not protect every route on the HTTP listener and does not provide TLS.
+The [native vLLM authentication middleware](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/utils/server_utils.py) leaves `POST /invocations` unguarded; an operator's cluster test returned a chat completion through that route without a key.
+Keep the whole listener on a trusted private network, including when `authentication: bearer` is enabled.
+For Docker, restrict access through the host's network controls.
+For Kubernetes and OpenShift, require a network plugin that enforces the generated supervisor-only NetworkPolicy; plan and apply warn about this dependency for bearer vLLM as well as services without authentication.
+The Kubernetes API cannot verify enforcement; a successful apply does not establish that other Pods are denied access.
 
 Destroy removes the runtime and provider registration and retains the separate model and credential volumes.
 Recreation using the retained credential volume reuses the key.
@@ -430,7 +435,7 @@ Choose the budget for the phase that failed; extending an agent turn does not ex
 | Fabric runtime request | `harness.execution.timeoutSeconds` maps to public Fabric `runtime.timeout_seconds`; omitted values use Fabric defaults |
 | Managed backend loading and readiness after preparation | `spec.services.<name>.serving.startupTimeoutSeconds`; omitted or zero selects 1,800 seconds; explicit values 60–3,600 |
 | Docker-managed service readiness from the SDK, including model preparation | Fixed 9-hour wait; expiration leaves the owned container and data in place |
-| Managed cluster service readiness, including scheduling, image pull, download, and preparation | Fixed 9-hour wait; expiration leaves the owned Pod and PVCs in place; an unchanged apply resumes waiting |
+| Managed cluster service readiness, including scheduling, image pull, download, and preparation | Fixed 9-hour wait; an explicit `Unschedulable` scheduler result stops early with its reason. The owned Pod and PVCs remain in place; after correcting capacity or constraints, an unchanged apply resumes waiting |
 | Each packaged recipe preparation or verification execution | Fixed 8-hour limit; staged data remains after failure |
 | Managed gateway readiness | Fixed 90-second wait |
 | Sandbox/agent readiness | Fixed 300-second wait |

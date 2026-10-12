@@ -45,19 +45,12 @@ fn no_type_name_is_served_by_two_providers() {
 }
 
 #[test]
-fn resources_with_typed_identity_generate_an_omitted_owner_and_generation() {
+fn every_resource_generates_an_omitted_owner_and_generation() {
     let mut diagnostics = Diagnostics::default();
     let resources = NemoClawProvider::default()
         .get_resources(&mut diagnostics)
         .unwrap();
     for (kind, resource) in &resources {
-        // Cluster model resources retain identity inside their required spec.
-        if matches!(
-            kind.as_str(),
-            "kubernetes_service" | "kubernetes_service_storage"
-        ) {
-            continue;
-        }
         let schema = resource.schema(&mut diagnostics).unwrap();
         for attribute in ["owner", "generation"] {
             assert!(

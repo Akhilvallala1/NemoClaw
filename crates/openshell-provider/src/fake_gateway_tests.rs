@@ -108,6 +108,43 @@ async fn sandbox_teardown_requires_owned_identity_but_not_its_previous_configura
     assert_eq!(fixture.state.lock().unwrap().delete_calls, 2);
 }
 
+#[tokio::test]
+async fn ready_sandbox_teardown_needs_owned_identity_but_not_active_policy_status() {
+    let fixture = Fixture::start().await;
+    let client = client(&fixture, Arc::new(EnvironmentSecrets));
+    let binding = create_sandbox(&client, "local").await;
+    let key = key(&binding);
+    let original = fixture.state.lock().unwrap().sandboxes[&key].clone();
+    fixture.state.lock().unwrap().fail_read = Some(("policy", tonic::Code::Unavailable));
+    assert!(client.read("sandbox", &binding, false).await.is_err());
+    let observed = client
+        .read("sandbox", &binding, true)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed, binding);
+    for field in ["id", "owner", "generation"] {
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .sandboxes
+            .insert(key.clone(), substituted(&original, field));
+        assert!(client.remove("sandbox", &binding, true).await.is_err());
+        assert_eq!(fixture.state.lock().unwrap().delete_calls, 0);
+    }
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .sandboxes
+        .insert(key.clone(), original);
+    client.remove("sandbox", &binding, true).await.unwrap();
+    let state = fixture.state.lock().unwrap();
+    assert_eq!(state.delete_calls, 1);
+    assert!(!state.sandboxes.contains_key(&key));
+}
+
 struct Keys;
 impl Secrets for Keys {
     fn resolve(&self, _: &str) -> Result<String, ObservationError> {

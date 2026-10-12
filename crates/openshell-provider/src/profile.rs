@@ -22,15 +22,15 @@ const FIELDS: [(&str, &str); 8] = [
     ("cluster_addresses", CLUSTER_ADDRESSES),
 ];
 
-fn annotations(fields: Row) -> std::collections::HashMap<String, String> {
+fn annotations(fields: Row) -> Result<std::collections::HashMap<String, String>, ObservationError> {
     fields
         .into_iter()
         .map(|(field, value)| {
             let (_, key) = FIELDS
                 .iter()
                 .find(|(name, _)| *name == field)
-                .expect("profile metadata field");
-            ((*key).into(), value)
+                .ok_or(ObservationError::Incomplete)?;
+            Ok(((*key).into(), value))
         })
         .collect()
 }
@@ -95,7 +95,7 @@ fn definition(
             ["owner", "generation", "binaries_json"]
                 .map(|key| (key.into(), want[key].clone()))
                 .into(),
-        ),
+        )?,
         ..Default::default()
     })
 }
@@ -169,7 +169,7 @@ fn native_definition(
             want["cluster_addresses"].clone(),
         );
     }
-    profile.annotations = annotations(metadata);
+    profile.annotations = annotations(metadata)?;
     Ok(profile)
 }
 
@@ -511,6 +511,18 @@ fn cluster_grant(
 mod tests {
     use super::*;
     use prost::Message;
+
+    #[test]
+    fn unsupported_profile_metadata_returns_an_error_instead_of_panicking() {
+        let result = std::panic::catch_unwind(|| {
+            annotations(Row::from([("unknown_field".into(), "value".into())]))
+        });
+        assert!(
+            result.is_ok(),
+            "unsupported metadata must return an observation error"
+        );
+        assert_eq!(result.unwrap(), Err(ObservationError::Incomplete));
+    }
 
     struct TestServices;
 

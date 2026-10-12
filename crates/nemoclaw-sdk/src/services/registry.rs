@@ -89,12 +89,12 @@ pub fn resource_schemas() -> Vec<ResourceSchema> {
     vec![
         ResourceSchema {
             kind: crate::kubernetes::services::STORAGE_KIND,
-            fields: &["spec", "running"],
+            fields: &["spec", "running", "owner", "generation"],
             mutable: &["running"],
         },
         ResourceSchema {
             kind: crate::kubernetes::services::SERVICE_KIND,
-            fields: &["spec", "running"],
+            fields: &["spec", "running", "owner", "generation"],
             mutable: &["spec", "running"],
         },
         ResourceSchema {

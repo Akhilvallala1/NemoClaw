@@ -15,7 +15,7 @@ The CLI writes operation results to stdout and failures to stderr; it has no sep
 Do not rerun apply just to collect output after an uncertain mutation.
 First resolve the reported failure using the table below.
 
-When ordinary planning is appropriate, collect a read-only runtime preview from the directory containing `deployment.yaml`:
+When planning is appropriate, collect a read-only runtime preview from the directory containing `deployment.yaml`:
 
 ```sh
 diagnostic_dir=$(mktemp -d)
@@ -44,6 +44,7 @@ Do not attach environment dumps, TLS private keys, interface tokens, or the enti
 | Ownership, generation, or durable identity mismatch | Inspect the selected gateway/engine and retained deployment identity; do not adopt or replace a different resource |
 | Plan would remove or replace a resource | Check [update constraints](usage.md#updates-and-recovery) and the relevant configuration guide before choosing a new deployment |
 | Managed cluster model update rejected at full namespace quota | Follow [quota recovery](kubernetes.md#recover-a-quota-rejection-during-a-model-update); replacement admission needs temporary headroom while the existing workload remains |
+| Managed cluster model Pod cannot be scheduled | Review the named Pod's scheduling reason and the [replacement checks and recovery limits](kubernetes.md#run-a-managed-model-service); correct constraints or capacity, then apply with the retained state |
 | Interrupted apply | Resolve the cause and reapply the original YAML with its retained state |
 | Unfinished destroy | Resume destroy with the same state; other operations refuse unfinished teardown |
 | `adapter/<id> compatibility rejected` | Read the named sandbox and canonical field; for `models.<role>.max_tokens`, remove that route's `overrides.maxTokens` or choose an adapter that accepts it, then plan again |

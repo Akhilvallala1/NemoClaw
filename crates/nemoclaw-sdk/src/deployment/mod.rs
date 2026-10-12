@@ -229,17 +229,27 @@ impl Deployment {
             return Err(Error::Cancelled);
         }
         for (name, service) in &document.spec.services {
-            let unauthenticated = match service {
-                crate::services::ServiceDefinition::Ollama(service) => service.kubernetes.is_some(),
-                crate::services::ServiceDefinition::Vllm(service) => {
-                    service.kubernetes.is_some() && service.authentication.is_none()
+            let authentication_boundary = match service {
+                crate::services::ServiceDefinition::Ollama(service)
+                    if service.kubernetes.is_some() =>
+                {
+                    Some("has no bearer authentication")
                 }
-                crate::services::ServiceDefinition::OllamaProxy(_) => false,
+                crate::services::ServiceDefinition::Vllm(service)
+                    if service.kubernetes.is_some() =>
+                {
+                    Some(if service.authentication.is_some() {
+                        "uses vLLM, whose bearer authentication does not protect /invocations; that route can run inference without the key"
+                    } else {
+                        "has no bearer authentication"
+                    })
+                }
+                _ => None,
             };
-            if unauthenticated {
+            if let Some(authentication_boundary) = authentication_boundary {
                 (self.progress)(Progress::Warning {
                     message: format!(
-                        "Cluster service {name} has no bearer authentication; access depends on NetworkPolicy enforcement, which the Kubernetes API cannot verify. Verify that the network plugin enforces the supervisor-only policy."
+                        "Cluster service {name} {authentication_boundary}. Access depends on NetworkPolicy enforcement, which the Kubernetes API cannot verify. Verify that the network plugin enforces the supervisor-only policy."
                     ),
                 });
             }

@@ -60,12 +60,16 @@ resource nemoclaw_kubernetes_gateway (version 0)
   running: string, computed
 
 resource nemoclaw_kubernetes_service (version 0)
+  generation: string, optional, computed
   id: string, computed
+  owner: string, optional, computed
   running: string, computed
   spec: string, required
 
 resource nemoclaw_kubernetes_service_storage (version 0)
+  generation: string, optional, computed
   id: string, computed
+  owner: string, optional, computed
   running: string, computed
   spec: string, required
 

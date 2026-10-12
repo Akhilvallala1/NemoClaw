@@ -391,7 +391,23 @@ impl Operations {
                 getrandom::fill(&mut suffix).map_err(|_| ObservationError::Incomplete)?;
                 let suffix: String = suffix.iter().map(|byte| format!("{byte:02x}")).collect();
                 object["metadata"]["name"] = format!("{}-check-{suffix}", address.name).into();
-                self.dry_run(&receipt.storage, object).await?;
+                if owned.kind == "Pod"
+                    && receipt
+                        .specification
+                        .as_ref()
+                        .is_some_and(|previous| super::scheduling::changed(previous, spec))
+                {
+                    let admitted = self
+                        .cluster(&receipt.storage)
+                        .dry_run_object(object)
+                        .await
+                        .map_err(|error| {
+                            Self::api_error(&address, "API dry-run conflict", error)
+                        })?;
+                    super::scheduling::preflight(self.client.clone(), spec, &admitted).await?;
+                } else {
+                    self.dry_run(&receipt.storage, object).await?;
+                }
             }
         }
         Ok(())
@@ -1088,6 +1104,9 @@ impl Operations {
             let object = self.verify(&receipt.storage, pod).await?;
             Self::verify_pod(&receipt, &object)?;
             if let Some(error) = super::status::terminal(&object, &pod.name) {
+                return Err(error);
+            }
+            if let Some(error) = super::status::scheduling(&object, &pod.name) {
                 return Err(error);
             }
             self.read_with_exec(spec, None, executor).await

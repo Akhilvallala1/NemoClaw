@@ -10,6 +10,8 @@ mod exec_boundary;
 mod idempotence;
 #[path = "kubernetes_service_readiness.rs"]
 mod readiness;
+#[path = "kubernetes_service_scheduling.rs"]
+mod scheduling;
 
 fn assert_binding_mismatch<T>(result: Result<T, nemoclaw_sdk::ObservationError>) {
     use nemoclaw_sdk::ObservationError;
@@ -832,6 +834,58 @@ async fn replacement_admission_rejection_preserves_the_running_model_and_its_rec
                 recorded,
                 "{backend} {rejected_kind}"
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_update_with_no_matching_node_preserves_the_running_pod_and_receipt() {
+    for backend in ["vllm", "ollama"] {
+        let original = spec(backend, backend == "vllm");
+        let objects = crate::kube_api::Objects::default();
+        let directory = tempfile::tempdir().unwrap();
+        let (_fixture, operations) = operations(&objects, directory.path(), &original).await;
+        operations
+            .ensure_storage(&original.storage(), None)
+            .await
+            .unwrap();
+        let bound = operations.ensure(&original, None).await.unwrap();
+        let mut pod = objects.get("v1", "Pod", "agents", &original.name).unwrap();
+        pod["spec"]["nodeName"] = json!("gpu-node");
+        pod["status"] = json!({"phase":"Running"});
+        objects.insert(pod);
+        objects.insert(json!({"apiVersion":"v1", "kind":"Node", "metadata":{
+            "name":"gpu-node", "labels":{"kubernetes.io/os":"linux", "kubernetes.io/arch":original.architecture, "gpu-pool":"inference"}},
+            "status":{"conditions":[{"type":"Ready", "status":"True"}], "allocatable":{"cpu":"8", "memory":"64Gi", "nvidia.com/gpu":"1"}}}));
+        let mut changed = original.clone();
+        changed
+            .settings
+            .node_selector
+            .insert("gpu-pool".into(), "missing-pool".into());
+        let before = objects.0.lock().unwrap().clone();
+        let receipt = directory
+            .path()
+            .join("services")
+            .join(&original.name)
+            .join("receipt.json");
+        let saved = std::fs::read(&receipt).unwrap();
+        for apply in [false, true] {
+            let error = if apply {
+                operations
+                    .ensure(&changed, bound.id.as_deref())
+                    .await
+                    .map(|_| ())
+            } else {
+                operations.preflight_workload(&changed).await
+            }
+            .expect_err(
+                "an impossible node selector must be refused before deleting the current Pod",
+            );
+            let message = error.to_string();
+            assert!(message.contains("nodeSelector"), "{message}");
+            assert!(message.contains(&original.name), "{message}");
+            assert_eq!(*objects.0.lock().unwrap(), before);
+            assert_eq!(std::fs::read(&receipt).unwrap(), saved);
         }
     }
 }

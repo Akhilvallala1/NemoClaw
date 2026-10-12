@@ -56,6 +56,35 @@ struct Status {
     detail: String,
 }
 
+pub(super) fn scheduling(pod: &DynamicObject, owned_name: &str) -> Option<ObservationError> {
+    use serde_json::Value;
+    if pod.data.pointer("/status/phase").and_then(Value::as_str) != Some("Pending") {
+        return None;
+    }
+    let condition = pod
+        .data
+        .pointer("/status/conditions")?
+        .as_array()?
+        .iter()
+        .find(|condition| {
+            condition["type"] == "PodScheduled"
+                && condition["status"] == "False"
+                && condition["reason"] == "Unschedulable"
+        })?;
+    Some(ObservationError::ModelScheduling {
+        name: owned_name.into(),
+        detail: ObservationError::sanitized_resource_detail(
+            &format!(
+                "Unschedulable: {}",
+                condition["message"]
+                    .as_str()
+                    .unwrap_or("scheduler has no eligible node")
+            ),
+            owned_name,
+        ),
+    })
+}
+
 /// Prefer authoritative Pod failures over the container's generic exit reason.
 pub(super) fn terminal(pod: &DynamicObject, owned_name: &str) -> Option<ObservationError> {
     use serde_json::Value;

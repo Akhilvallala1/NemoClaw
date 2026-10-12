@@ -45,9 +45,14 @@ The generated graphs manage these objects and observations:
 | Helm provider | The managed Kubernetes gateway's OpenShell chart release (`helm_release.gateway`) |
 
 Provider [contract tests](contributing/integration-tests.md) plan hand-written HCL through pinned OpenTofu without SDK orchestration.
-Cluster model workloads and storage have [SDK lifecycle tests](../crates/nemoclaw-sdk/tests/kubernetes_services.rs) against a fake Kubernetes API.
+The [cluster model contracts](../crates/nemoclaw-provider/tests/contract/kubernetes_models.rs) apply, refresh, update, and tear down vLLM and Ollama resources through OpenTofu against a fake Kubernetes API and Pod exec, checking that model and credential PVCs survive teardown. These tests simulate runtime readiness; they do not run inference or qualify a GPU.
 These tests do not qualify a complete standalone deployment workflow.
 Do not edit SDK-generated graphs or share a deployment state directory between independently managed workflows.
+
+Cluster model resources expose optional computed `owner` and `generation` attributes that mirror the identity in their required `spec`.
+Omitting these attributes derives them from that specification; supplied values must match it.
+Refreshing earlier state adds these attributes without changing the serialized specification, resource identity, or retained storage.
+The identity fields inside `spec` remain required.
 
 ## Provider Catalog
 

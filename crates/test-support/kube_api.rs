@@ -36,6 +36,7 @@ struct Controls {
     deleting: BTreeMap<String, u32>,
     pod_identity: Option<u32>,
     dry_runs: Vec<Value>,
+    admitted_pod_spec: Option<Value>,
 }
 
 struct RequestFailure {
@@ -152,6 +153,11 @@ impl Objects {
     }
     pub fn dry_runs(&self) -> Vec<Value> {
         self.2.lock().unwrap().dry_runs.clone()
+    }
+    /// Overlay the returned Pod spec in dry runs, as an admission controller would.
+    pub fn admit_pod_dry_run_with(&self, spec: Value) {
+        assert!(spec.is_object());
+        self.2.lock().unwrap().admitted_pod_spec = Some(spec);
     }
     /// Store `object`, giving it a UID if it has none.
     pub fn insert(&self, mut object: Value) {
@@ -279,7 +285,15 @@ impl Objects {
                     return status(409, "AlreadyExists");
                 }
                 if dry_run {
-                    self.2.lock().unwrap().dry_runs.push(object.clone());
+                    let mut controls = self.2.lock().unwrap();
+                    controls.dry_runs.push(object.clone());
+                    if object["kind"] == "Pod"
+                        && let Some(spec) = &controls.admitted_pod_spec
+                    {
+                        object["spec"]
+                            .as_object_mut()?
+                            .extend(spec.as_object()?.clone());
+                    }
                     object["metadata"]["uid"] = json!("dry-run");
                     return Some((201, object.to_string().into_bytes()));
                 }

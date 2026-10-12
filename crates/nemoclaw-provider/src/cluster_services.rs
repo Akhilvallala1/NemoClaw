@@ -28,16 +28,34 @@ pub(crate) fn definitions() -> [crate::Definition; 2] {
     let validate = nemoclaw_sdk::services::validate_resource_spec;
     [
         crate::services::schema_definition(STORAGE_KIND)
+            .derived("owner", |row| spec_identity(row, "owner"))
+            .derived("generation", |row| spec_identity(row, "generation"))
             .validate_spec(validate)
             .computed("running", rerun_when_stopped)
             .protect(Protection::Always)
             .refuse_replacement()
             .keep_running_during_destroy(),
         crate::services::schema_definition(SERVICE_KIND)
+            .derived("owner", |row| spec_identity(row, "owner"))
+            .derived("generation", |row| spec_identity(row, "generation"))
             .validate_spec(validate)
             .computed("running", rerun_when_stopped)
             .refuse_replacement(),
     ]
+}
+fn spec_identity(row: &Row, field: &str) -> Result<Option<String>, ObservationError> {
+    let Some(encoded) = row.get("spec") else {
+        return Ok(None);
+    };
+    // The serialized spec remains the binding authority, including on legacy
+    // state refresh. Never generate a second identity or rewrite its bytes.
+    let spec: serde_json::Value =
+        serde_json::from_str(encoded).map_err(|_| ObservationError::Query)?;
+    spec.get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|value| Some(value.into()))
+        .ok_or(ObservationError::Query)
 }
 fn bound(row: &Row) -> Option<&str> {
     row.get("id")
