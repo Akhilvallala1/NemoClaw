@@ -501,22 +501,3 @@ export function nativeProviderLifecycle<ProfileId extends string, ProviderName e
 ) {
   return new NativeProviderLifecycle(definition);
 }
-
-/** Preserve consumer operations while one lifecycle owns every provider mutation. */
-export function createNativeProviderLifecycle<P extends string, N extends string>(
-  definition: NativeProviderDefinition<P, N> & { profilePath: string },
-  ProviderError: new (message: string) => Error,
-) {
-  const lifecycle = new NativeProviderLifecycle(definition, ProviderError, definition.profilePath);
-  return {
-    requireProviderProfileBoundary: lifecycle.requireNativeProviderProfileBoundary.bind(lifecycle),
-    inspectNativeProvider: lifecycle.inspectNativeProvider.bind(lifecycle),
-    attachmentFromMetadata: lifecycle.nativeProviderAttachmentFromMetadata.bind(lifecycle),
-    persistProviderAuthority: lifecycle.persistNativeProviderAuthority.bind(lifecycle),
-    ensureProvider: lifecycle.ensureNativeProvider.bind(lifecycle),
-    verifyProviderAttachment: lifecycle.verifyNativeProviderAttachment.bind(lifecycle),
-    ensureProviderAttached: lifecycle.ensureNativeProviderAttached.bind(lifecycle),
-    detachProvider: lifecycle.detachNativeProvider.bind(lifecycle),
-    deleteOwnedProvider: lifecycle.removeNewNativeProvider.bind(lifecycle),
-  };
-}

@@ -13,7 +13,7 @@ import {
   isOpenShellManagedHost,
   isOperatorTrustablePrivateIp,
 } from "../../security/trusted-private-endpoint";
-import { createNativeProviderLifecycle } from "../native-provider/index";
+import { NativeProviderLifecycle } from "../native-provider/index";
 import type { NativeProviderAttachment } from "../native-provider/contract";
 import { buildNativeCustomProfile, type NativeCustomProfile } from "./profile";
 import {
@@ -49,14 +49,14 @@ export type NativeCustomProviderAttachment = NativeProviderAttachment &
 /** Keep the generated contract private and alive until profile import/verification finishes. */
 export async function withNativeCustomLifecycle<T>(
   prepared: NativeCustomProfile,
-  operation: (lifecycle: ReturnType<typeof createNativeProviderLifecycle>) => Promise<T>,
+  operation: (lifecycle: NativeProviderLifecycle<string, string>) => Promise<T>,
 ): Promise<T> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-custom-profile-"));
   try {
     const profilePath = path.join(directory, `${prepared.profile.id}.yaml`);
     fs.writeFileSync(profilePath, YAML.stringify(prepared.profile), { mode: 0o600, flag: "wx" });
     return await operation(
-      createNativeProviderLifecycle(
+      new NativeProviderLifecycle(
         {
           profileId: prepared.profile.id,
           providerName: prepared.providerName,
@@ -65,10 +65,10 @@ export async function withNativeCustomLifecycle<T>(
             prepared.credentialEnv === "COMPATIBLE_API_KEY"
               ? "compatible-endpoint"
               : "compatible-anthropic-endpoint",
-          profilePath,
           label: "custom hosted",
         },
         NativeCustomProviderError,
+        profilePath,
       ),
     );
   } finally {
@@ -242,7 +242,7 @@ export async function verifyNativeCustomProviderAttachment(input: {
       "Native custom provider authority belongs to another sandbox.",
     );
   const receipt = await withNativeCustomLifecycle(prepared, (lifecycle) =>
-    lifecycle.verifyProviderAttachment(input),
+    lifecycle.verifyNativeProviderAttachment(input),
   );
   return customAttachmentFromPrepared(prepared, receipt);
 }
@@ -263,7 +263,7 @@ export async function ensureNativeCustomProviderAttached(
       "Native custom provider authority belongs to another sandbox.",
     );
   return withNativeCustomLifecycle(prepared, async (lifecycle) => {
-    const attached = await lifecycle.ensureProviderAttached(input);
+    const attached = await lifecycle.ensureNativeProviderAttached(input);
     return { ...attached, receipt: customAttachmentFromPrepared(prepared, attached.receipt) };
   });
 }
@@ -283,5 +283,5 @@ export async function detachNativeCustomProvider(
     throw new NativeCustomProviderError(
       "Native custom provider authority belongs to another sandbox.",
     );
-  return withNativeCustomLifecycle(prepared, (lifecycle) => lifecycle.detachProvider(input));
+  return withNativeCustomLifecycle(prepared, (lifecycle) => lifecycle.detachNativeProvider(input));
 }

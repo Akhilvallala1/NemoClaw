@@ -1163,7 +1163,7 @@ export function createSetupInference(
                       revalidateSandboxIdentity?.("admit the native custom adapter profile");
                       await withNativeCustomLifecycle(candidate, async (lifecycle) => {
                         const target = { kind: "named", gatewayName } as const;
-                        await lifecycle.requireProviderProfileBoundary(adapter, target);
+                        await lifecycle.requireNativeProviderProfileBoundary(adapter, target);
                         const observed = await lifecycle.inspectNativeProvider(adapter, target);
                         const authority = deps.getNativeCustomProviderAuthority!(
                           gatewayName,
@@ -1181,7 +1181,7 @@ export function createSetupInference(
                         )
                           throw new Error("Native custom sandbox and gateway authority disagree.");
                         if (observed) {
-                          const current = lifecycle.attachmentFromMetadata(observed);
+                          const current = lifecycle.nativeProviderAttachmentFromMetadata(observed);
                           if (!expected || expected.providerId !== current.providerId)
                             throw new Error(
                               "Native custom adapter provider ownership cannot be verified.",
@@ -1226,7 +1226,7 @@ export function createSetupInference(
               async (lifecycle) => {
                 const receipt = customAttachmentFromPrepared(
                   prepared,
-                  await lifecycle.ensureProvider({
+                  await lifecycle.ensureNativeProvider({
                     adapter,
                     target: { kind: "named", gatewayName },
                     credentialValue: selection.credentialValue,
@@ -1234,7 +1234,7 @@ export function createSetupInference(
                     expected,
                   }),
                 );
-                await lifecycle.persistProviderAuthority({
+                await lifecycle.persistNativeProviderAuthority({
                   adapter,
                   target: { kind: "named", gatewayName },
                   gatewayName,

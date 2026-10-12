@@ -66,7 +66,7 @@ export async function retireNativeCustomProviders(input: {
   for (const receipt of validated.values()) {
     if (receipt.providerName === input.keepProviderName) continue;
     await withNativeCustomLifecycle(profileFromCustomAttachment(receipt), (lifecycle) =>
-      lifecycle.deleteOwnedProvider({
+      lifecycle.removeNewNativeProvider({
         adapter,
         target: { kind: "named", gatewayName: input.gatewayName },
         expected: receipt,

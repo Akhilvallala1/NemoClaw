@@ -100,14 +100,14 @@ export async function prepareNativeCustomSelection(input: {
   const receipt = await withNativeCustomLifecycle(input.prepared, async (lifecycle) => {
     const ensured = customAttachmentFromPrepared(
       input.prepared,
-      await lifecycle.ensureProvider({
+      await lifecycle.ensureNativeProvider({
         adapter: input.adapter,
         target,
         credentialValue: input.credentialValue,
         expected,
       }),
     );
-    await lifecycle.persistProviderAuthority({
+    await lifecycle.persistNativeProviderAuthority({
       adapter: input.adapter,
       target,
       gatewayName: input.gatewayName,
@@ -261,7 +261,10 @@ export async function runNativeCustomInferenceSwitch(
                   .network.sandboxSourceCidrs()),
             admitProfile: async (candidate) => {
               await withNativeCustomLifecycle(candidate, async (lifecycle) => {
-                await lifecycle.requireProviderProfileBoundary(deps.providerAdapter, gatewayTarget);
+                await lifecycle.requireNativeProviderProfileBoundary(
+                  deps.providerAdapter,
+                  gatewayTarget,
+                );
                 const observed = await lifecycle.inspectNativeProvider(
                   deps.providerAdapter,
                   gatewayTarget,
@@ -274,7 +277,8 @@ export async function runNativeCustomInferenceSwitch(
                 if (
                   observed &&
                   (!owned ||
-                    lifecycle.attachmentFromMetadata(observed).providerId !== owned.providerId)
+                    lifecycle.nativeProviderAttachmentFromMetadata(observed).providerId !==
+                      owned.providerId)
                 )
                   throw new InferenceSetError(
                     "Native custom provider ownership could not be verified before adapter mutation.",

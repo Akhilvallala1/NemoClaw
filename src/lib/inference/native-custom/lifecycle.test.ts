@@ -42,7 +42,7 @@ describe("native custom provider ownership", () => {
     } as unknown as OpenShellProviderAdapter;
     await expect(
       withNativeCustomLifecycle(prepared, (lifecycle) =>
-        lifecycle.ensureProvider({
+        lifecycle.ensureNativeProvider({
           adapter,
           target,
           credentialValue: "test-secret",
@@ -85,7 +85,7 @@ describe("native custom provider ownership", () => {
       createProvider,
     } as unknown as OpenShellProviderAdapter;
     const receipt = await withNativeCustomLifecycle(prepared, (lifecycle) =>
-      lifecycle.ensureProvider({
+      lifecycle.ensureNativeProvider({
         adapter,
         target,
         credentialValue: "test-secret",
@@ -113,7 +113,7 @@ describe("native custom provider ownership", () => {
     const adapter = { deleteProvider } as unknown as OpenShellProviderAdapter;
     await expect(
       withNativeCustomLifecycle(prepared, (lifecycle) =>
-        lifecycle.persistProviderAuthority({
+        lifecycle.persistNativeProviderAuthority({
           adapter,
           target,
           gatewayName: "gateway",
