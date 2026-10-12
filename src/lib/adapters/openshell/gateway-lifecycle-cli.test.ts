@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createCliOpenShellGatewayLifecycle,
   createCliOpenShellGatewayLifecycleFromRunner,
+  createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway,
 } from "./gateway-lifecycle-cli";
 
 const target = { kind: "named", gatewayName: "nemoclaw-8091" } as const;
@@ -244,6 +245,24 @@ describe("gateway lifecycle CLI", () => {
       activeGateway: "nemoclaw-8091",
     });
   });
+  it("strips ambient gateway selection from buffered runner calls", async () => {
+    vi.stubEnv("OPENSHELL_GATEWAY", "ambient");
+    const run = vi.fn((_args: string[], _options?: Record<string, unknown>) => ({
+      status: 0,
+      stdout: JSON.stringify([{ name: target.gatewayName, active: true }]),
+      stderr: "",
+    }));
+    const lifecycle = createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway(run);
+
+    await expect(lifecycle.listGateways({ target })).resolves.toMatchObject({
+      ok: true,
+      activeGateway: target.gatewayName,
+    });
+    const [, options] = run.mock.calls[0]!;
+    expect(options).toMatchObject({ replaceEnv: true });
+    expect(options?.env).not.toHaveProperty("OPENSHELL_GATEWAY");
+  });
+
   it("reads buffered runner streams and reports invalid capture without retry", async () => {
     const run = vi.fn().mockReturnValue({
       status: 1,
