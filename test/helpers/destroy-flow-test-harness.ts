@@ -556,7 +556,7 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
     };
     return {
       status: result.status,
-      output: [result.stdout ?? "", result.stderr ?? ""].join("\n"),
+      output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim(),
     };
   });
   const captureOpenshellSpy = vi.spyOn(runtime, "captureOpenshell").mockReturnValue({
