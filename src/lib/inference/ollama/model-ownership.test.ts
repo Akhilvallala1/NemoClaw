@@ -399,8 +399,19 @@ describe("pending Ollama model cleanup", () => {
     try {
       expect(loadPendingOllamaModelCleanup(owner, stateRoot)).toEqual([]);
       expect(warning).toHaveBeenCalledWith(
-        expect.stringContaining("has no gateway/lifecycle identity"),
+        expect.stringContaining(
+          "legacy pending Ollama cleanup for 'test-box' lists llama3 but has no gateway/lifecycle identity",
+        ),
       );
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("no active sandbox on any gateway"),
+      );
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("Recover a legacy pending Ollama cleanup"),
+      );
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("ollama stop <model>"));
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("ollama ps"));
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("NemoClaw left it untouched"));
 
       clearPendingOllamaModelCleanup(owner, undefined, stateRoot);
       expect(existsSync(legacyPath)).toBe(true);
