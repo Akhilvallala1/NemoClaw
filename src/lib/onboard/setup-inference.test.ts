@@ -302,7 +302,7 @@ describe("releaseSupersededOllamaModel", () => {
     }));
     const deps = harness.deps as SetupInferenceDeps;
     deps.captureOllamaOwnershipPhases = captureOllamaOwnershipPhases;
-    deps.resolveOllamaOwnershipGateway = () => "nemoclaw-32677";
+    deps.resolveOllamaOwnershipGateway = (sandbox) => sandbox.gatewayName ?? "default";
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     try {
@@ -314,7 +314,7 @@ describe("releaseSupersededOllamaModel", () => {
         ["qwen2.5:1.5b"],
       );
       expect(captureOllamaOwnershipPhases).toHaveBeenCalledExactlyOnceWith(
-        "nemoclaw-32677",
+        "nemoclaw-32665",
         process.env,
       );
       expect(warning).toHaveBeenCalledWith(expect.stringContaining("No model was unloaded"));
