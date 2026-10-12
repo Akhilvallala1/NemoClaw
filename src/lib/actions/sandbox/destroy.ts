@@ -717,7 +717,7 @@ export async function destroySandbox(
       );
       const hasRuntimeSelection = Boolean(resolveSandboxDestroyRuntimeSelection(sandbox));
       telemetryTarget.gatewayName = gatewayName;
-      return destroyWithActiveGatewayRestored(sandboxName, gatewayName, hasRuntimeSelection, () =>
+      await destroyWithActiveGatewayRestored(sandboxName, gatewayName, hasRuntimeSelection, () =>
         destroySandboxUnlocked(
           sandboxName,
           options,
@@ -726,6 +726,10 @@ export async function destroySandbox(
           telemetryTarget,
         ),
       );
+      if (!telemetryTarget.completionRecorded) {
+        await recordDestroyCompletion(sandboxName, "completed", undefined, gatewayName);
+        telemetryTarget.completionRecorded = true;
+      }
     });
   } catch (error) {
     if (!telemetryTarget.completionRecorded) {
@@ -1483,6 +1487,4 @@ async function destroySandboxUnlocked(
     console.warn(`  ${YW}⚠${R}${m}`),
   );
   console.log(`  ${G}✓${R} Sandbox '${sandboxName}' destroyed`);
-  await recordDestroyCompletion(sandboxName, "completed", undefined, destroyGatewayName);
-  telemetryTarget.completionRecorded = true;
 }

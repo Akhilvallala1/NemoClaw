@@ -33,6 +33,7 @@ export type DestroyHarness = {
   errorSpy: MockInstance;
   events: string[];
   executeSandboxDestroySpy: MockInstance;
+  recordDestroyCompletionSpy: MockInstance;
   enforceRemovedImmutabilityMigrationBoundarySpy: MockInstance;
   finalGatewaySleepSpy: MockInstance;
   finalizeMcpBridgesAfterSandboxDeleteSpy: MockInstance;
@@ -186,6 +187,52 @@ export function resetDestroyModuleCache(): void {
   delete require.cache[requireSource.resolve(destroyModulePath)];
 }
 
+export function configureFailedGatewayRestoration(
+  harness: Pick<DestroyHarness, "runOpenshellSpy">,
+): void {
+  let activeGateway = "beta";
+  let sandboxPresent = true;
+  harness.runOpenshellSpy.mockImplementation((args: unknown) => {
+    const argv = Array.isArray(args) ? args.map(String) : [];
+    switch (`${argv[0]}:${argv[1]}`) {
+      case "gateway:list":
+        return {
+          status: 0,
+          stdout: JSON.stringify(
+            ["nemoclaw-19080", "beta"].map((name) => ({
+              name,
+              active: activeGateway === name,
+            })),
+          ),
+          stderr: "",
+        };
+      case "gateway:select":
+        switch (argv[2]) {
+          case "beta":
+            return { status: 1, stdout: "", stderr: "restore failed" };
+          default:
+            activeGateway = String(argv[2]);
+            return { status: 0, stdout: "", stderr: "" };
+        }
+      case "sandbox:delete":
+        sandboxPresent = false;
+        return { status: 0, stdout: "", stderr: "" };
+      case "sandbox:get":
+        return sandboxPresent
+          ? { status: 0, stdout: "Name: alpha\\nPhase: Ready", stderr: "" }
+          : { status: 1, stdout: "", stderr: "Error: sandbox alpha not found" };
+      case "sandbox:list":
+        return {
+          status: 0,
+          stdout: JSON.stringify(sandboxPresent ? [{ name: "alpha", phase: "Ready" }] : []),
+          stderr: "",
+        };
+      default:
+        return { status: 0, stdout: "", stderr: "" };
+    }
+  });
+}
+
 export function traceDestroyBoundaryCalls(
   harness: Pick<DestroyHarness, "runOpenshellSpy" | "setSandboxPresent">,
   trace: string[],
@@ -291,6 +338,7 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
     return removeExactDockerContainers(...args);
   });
   const destroyExecution = requireSource("./destroy-execution.js");
+  const recordDestroyCompletionSpy = vi.spyOn(destroyExecution, "recordDestroyCompletion");
   const forwardRecovery = requireSource("./forward-recovery.js");
   vi.spyOn(forwardRecovery, "teardownSandboxDashboardForward").mockResolvedValue(true);
   const destroyCommand = requireSource("../../../commands/sandbox/destroy.js").default;
@@ -793,6 +841,7 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
     errorSpy,
     events,
     executeSandboxDestroySpy,
+    recordDestroyCompletionSpy,
     runSandboxProviderPreDeleteCleanupSpy,
     enforceRemovedImmutabilityMigrationBoundarySpy,
     finalGatewaySleepSpy,
