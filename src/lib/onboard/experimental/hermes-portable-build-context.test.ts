@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -126,6 +127,16 @@ describe("Hermes portable staged build context", testTimeoutOptions(30_000), () 
     expect(
       fs.statSync(path.join(inferredContext, "agents/hermes/check-native-credentials.ts")).isFile(),
     ).toBe(true);
+    // The copied check must resolve its Node dependencies before reaching the
+    // installed Hermes Python loader, which the managed-image build validates.
+    const absentPython = path.join(stateDir, "absent-hermes-python");
+    const credentialCheck = spawnSync(
+      process.execPath,
+      ["agents/hermes/check-native-credentials.ts", stateDir, absentPython],
+      { cwd: inferredContext, encoding: "utf8", timeout: 10_000 },
+    );
+    expect(credentialCheck.status).toBe(1);
+    expect(credentialCheck.stderr).toContain(`spawnSync ${absentPython} ENOENT`);
     expect(fs.existsSync(path.join(inferredContext, "agents/hermes/Dockerfile"))).toBe(false);
     expect(plan.authority.sourceRevision).toMatch(/^[a-f0-9]{40,64}$/u);
     expect(plan.authority.contextManifestSha256).toMatch(/^[a-f0-9]{64}$/u);

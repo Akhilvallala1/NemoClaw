@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { testTimeout } from "../../helpers/timeouts.ts";
-import { DEFAULT_CLOUD_MODEL } from "../../../src/lib/inference/config.ts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import { resultText } from "../fixtures/clients/index.ts";
 import { trustedSandboxShellScript } from "../fixtures/clients/sandbox.ts";
@@ -164,7 +163,7 @@ test(
             NEMOCLAW_PREFERRED_API: "openai-completions",
             NEMOCLAW_PROVIDER: "custom",
           }
-        : { NEMOCLAW_MODEL: DEFAULT_CLOUD_MODEL }),
+        : {}),
     };
 
     progress.phase("install baseline Hermes runtime");
@@ -185,11 +184,11 @@ test(
     expect(baselineRoute.exitCode, resultText(baselineRoute)).toBe(0);
     expect(parseInferenceRoute(resultText(baselineRoute))).toEqual({
       provider: mockBaseline ? "compatible-endpoint" : PUBLIC_NVIDIA_SWITCH_PROVIDER,
-      model: hostedInstallModel(installEnv),
+      model: hostedInstallModel(env(apiKey, installEnv)),
     });
-    const baselineState = structuredClone(registryState());
-    const baselineSession = baselineState.session;
-    const baselineEntry = baselineState.registry.sandboxes?.[SANDBOX_NAME];
+    const baselineState = registryState();
+    const baselineSession = structuredClone(baselineState.session);
+    const baselineRegistry = structuredClone(baselineState.registry.sandboxes?.[SANDBOX_NAME]);
     const switchBinding = await prepareCompatibleAnthropicSwitchBinding(host, cleanup);
     const switchEndpointUrl = switchBinding?.endpointUrl ?? null;
     switchBinding && redactionValues.push(switchBinding.credentialValue);
@@ -341,12 +340,12 @@ test(
     expect(state.session).toEqual(baselineSession);
     const publicSwitch = SWITCH_PROVIDER === PUBLIC_NVIDIA_SWITCH_PROVIDER;
     const durableEndpointUrl = publicSwitch
-      ? (baselineEntry?.endpointUrl ?? null)
+      ? baselineRegistry?.endpointUrl
       : (switchEndpointUrl ??
         process.env.NEMOCLAW_ENDPOINT_URL ??
         DEFAULT_HOSTED_INFERENCE_BASE_URL);
     const durableCredentialEnv = publicSwitch
-      ? (baselineEntry?.credentialEnv ?? null)
+      ? baselineRegistry?.credentialEnv
       : switchEndpointUrl
         ? "COMPATIBLE_ANTHROPIC_API_KEY"
         : "COMPATIBLE_API_KEY";
@@ -355,7 +354,7 @@ test(
     );
     expect(state.registry.sandboxes?.[SANDBOX_NAME]?.credentialEnv).toBe(durableCredentialEnv);
     expect(state.registry.sandboxes?.[SANDBOX_NAME]?.preferredInferenceApi).toBe(
-      publicSwitch ? (baselineEntry?.preferredInferenceApi ?? null) : RUNTIME_SWITCH_API,
+      publicSwitch ? baselineRegistry?.preferredInferenceApi : RUNTIME_SWITCH_API,
     );
     expect(state.registry.sandboxes?.[SANDBOX_NAME]?.nimContainer).toBeNull();
     progress.phase("exercise sandbox inference and Hermes API");
