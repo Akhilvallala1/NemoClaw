@@ -2466,7 +2466,9 @@ Sandboxes created with OpenShell versions older than 0.0.24 can become unreachab
 
 ### DNS-backed HTTPS endpoint is not supported
 
-NemoClaw rejects an explicit custom endpoint when it resolves a public HTTPS hostname but cannot pin the same peer address across the downstream OpenShell runtime boundary while preserving TLS SNI and host validation. This can appear during a direct blueprint run, custom-endpoint onboarding, or a Hermes host-side `config set` write.
+NemoClaw rejects a DNS-backed HTTPS endpoint when the selected path cannot pin the peer address while preserving TLS SNI and host validation.
+This can occur during a direct blueprint run, a Hermes host-side `config set` write, or Hermes Provider endpoint setup.
+Fresh hosted custom-endpoint onboarding instead uses the HTTPS Pin Runtime adapter.
 
 <AgentOnly variant="openclaw,hermes">
   It does not appear during a runtime `$$nemoclaw inference set` switch on an
@@ -2475,7 +2477,10 @@ NemoClaw rejects an explicit custom endpoint when it resolves a public HTTPS hos
   [Commands](commands) for details.
 </AgentOnly>
 
-Use an HTTPS IP-literal endpoint whose certificate is valid for that address. If your deployment permits non-TLS provider traffic, you can instead use a public HTTP endpoint that NemoClaw can rewrite to a DNS-pinned address. Do not bypass the check with a private or internal address or by editing the persisted sandbox config directly. For the full endpoint rules, refer to [Meet Custom Endpoint Security Requirements](../inference/custom-endpoints/custom-endpoint-security).
+For those rejected paths, use an HTTPS IP-literal endpoint whose certificate is valid for that address.
+If your deployment permits non-TLS provider traffic, you can instead use a public HTTP endpoint that NemoClaw can rewrite to a DNS-pinned address.
+Do not bypass the check with a private or internal address or by editing the persisted sandbox config directly.
+For adapter recovery and endpoint rules, refer to [Meet Custom Endpoint Security Requirements](../inference/custom-endpoints/custom-endpoint-security).
 
 ### Agent cannot reach external hosts through a proxy
 
