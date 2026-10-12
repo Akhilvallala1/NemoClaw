@@ -123,6 +123,26 @@ describe("showSandboxStatus flow", () => {
     expect(harness.logSpy.mock.calls.flat().join("\n")).toContain("Managed llama.cpp: running");
   });
 
+  it("reports unverified inference state for unlocked reads when gateway state is unknown (#11903)", async () => {
+    const harness = createStatusFlowHarness({
+      inferenceHealth: null,
+      lookup: {
+        state: "gateway_unreachable_after_restart",
+        output: "Gateway: nemoclaw\nclient error (Connect): Connection refused",
+      },
+    });
+
+    await expect(
+      harness.withUnlockedSandboxStatusRead(() => harness.showSandboxStatus("alpha")),
+    ).rejects.toThrow("process.exit(1)");
+
+    const output = harness.logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("Inference: not verified (gateway/sandbox state not verified)");
+    expect(output).not.toContain(
+      "Inference: not probed (another lifecycle operation is in progress)",
+    );
+  });
+
   it("does not wait on a held MCP lifecycle lock for unlocked text or JSON status (#11903)", async () => {
     const withMcpLifecycleLock = createRealMcpLifecycleLock({
       pollIntervalMs: 1,

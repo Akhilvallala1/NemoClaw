@@ -116,15 +116,15 @@ function printServingProcessHealth(
 }
 
 function printInferenceStatus(context: SandboxStatusTextContext): void {
-  if (context.inferenceProbeSuppressed) {
+  if (context.lookup.state !== "present") {
+    console.log("    Inference: not verified (gateway/sandbox state not verified)");
+  } else if (context.inferenceProbeSuppressed) {
     console.log("    Inference: not probed (another lifecycle operation is in progress)");
   } else if (context.inferenceHealth) {
     printInferenceProbeLine(context.inferenceHealth);
     for (const subprobe of context.inferenceHealth.subprobes ?? []) {
       printInferenceProbeLine(subprobe);
     }
-  } else if (context.lookup.state !== "present") {
-    console.log("    Inference: not verified (gateway/sandbox state not verified)");
   }
   printServingProcessHealth(context.statusAgent, context.servingProcessHealth);
 }
