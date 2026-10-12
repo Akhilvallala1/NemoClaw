@@ -85,6 +85,74 @@ pub(super) fn scheduling(pod: &DynamicObject, owned_name: &str) -> Option<Observ
     })
 }
 
+/// Whether replacing this Pod can interrupt inference. A terminal Pod, a Pod
+/// the scheduler never placed, and a placed Pod whose runtime container never
+/// started because its image or configuration is unavailable have not served.
+/// Unknown, terminating, and partially reported Pods may be serving.
+pub(super) fn may_serve(pod: &DynamicObject) -> bool {
+    use serde_json::Value;
+    let phase = pod.data.pointer("/status/phase").and_then(Value::as_str);
+    if matches!(phase, Some("Failed" | "Succeeded")) {
+        return false;
+    }
+    if pod.metadata.deletion_timestamp.is_some() || !matches!(phase, None | Some("Pending")) {
+        return true;
+    }
+    let unscheduled = pod
+        .data
+        .pointer("/spec/nodeName")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+        || pod
+            .data
+            .pointer("/status/conditions")
+            .and_then(Value::as_array)
+            .is_some_and(|conditions| {
+                conditions.iter().any(|condition| {
+                    condition["type"] == "PodScheduled" && condition["status"] == "False"
+                })
+            });
+    if unscheduled {
+        return false;
+    }
+    let Some(runtime) = pod
+        .data
+        .pointer("/status/containerStatuses")
+        .and_then(Value::as_array)
+        .and_then(|containers| {
+            containers
+                .iter()
+                .find(|container| container["name"] == "runtime")
+        })
+    else {
+        return true;
+    };
+    let started = [
+        "/state/running",
+        "/state/terminated",
+        "/lastState/terminated",
+    ]
+    .iter()
+    .any(|pointer| {
+        runtime
+            .pointer(pointer)
+            .is_some_and(|state| !state.is_null())
+    });
+    started
+        || !matches!(
+            runtime
+                .pointer("/state/waiting/reason")
+                .and_then(Value::as_str),
+            Some(
+                "ErrImagePull"
+                    | "ImagePullBackOff"
+                    | "ErrImageNeverPull"
+                    | "InvalidImageName"
+                    | "CreateContainerConfigError"
+            )
+        )
+}
+
 /// Prefer authoritative Pod failures over the container's generic exit reason.
 pub(super) fn terminal(pod: &DynamicObject, owned_name: &str) -> Option<ObservationError> {
     use serde_json::Value;

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! Necessary scheduling conditions checked before replacing a running model Pod.
+//! Necessary scheduling conditions checked before replacing a model Pod that may be serving.
 
 use super::Spec;
 use crate::ObservationError;
@@ -12,29 +12,55 @@ use kube::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub(super) fn changed(previous: &Spec, desired: &Spec) -> bool {
-    previous.architecture != desired.architecture
+/// Whether a replacement changes the Pod's scheduling inputs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Inputs {
+    /// Changed inputs must be shown to fit before the current Pod is replaced.
+    Changed,
+    /// The scheduler placed the current Pod with these inputs. Only Node state
+    /// that definitely blocks them, such as a cordon or a new taint, refuses
+    /// the replacement; unreadable Nodes or requests do not.
+    Unchanged,
+}
+
+pub(super) fn changed(previous: &Spec, desired: &Spec) -> Inputs {
+    if previous.architecture != desired.architecture
         || previous.settings.node_selector != desired.settings.node_selector
         || previous.settings.tolerations != desired.settings.tolerations
         || previous.settings.runtime_class_name != desired.settings.runtime_class_name
         || previous.settings.cpu_request_millis != desired.settings.cpu_request_millis
         || previous.settings.memory_request_gib != desired.settings.memory_request_gib
+    {
+        Inputs::Changed
+    } else {
+        Inputs::Unchanged
+    }
 }
 
 pub(super) async fn preflight(
     client: Client,
     spec: &Spec,
     pod: &DynamicObject,
+    inputs: Inputs,
 ) -> Result<(), ObservationError> {
-    let nodes = Api::<Node>::all(client)
-        .list(&ListParams::default())
-        .await
-        .map_err(|error| match error {
-            kube::Error::Api(status) if status.code == 401 => ObservationError::Authentication,
-            kube::Error::Api(status) if status.code == 403 => ObservationError::Permission,
-            kube::Error::Api(_) => ObservationError::Query,
-            _ => ObservationError::Transport,
-        })?;
+    let nodes = match Api::<Node>::all(client).list(&ListParams::default()).await {
+        Ok(nodes) => nodes,
+        Err(kube::Error::Api(status))
+            if matches!(status.code, 401 | 403) && inputs == Inputs::Unchanged =>
+        {
+            return Ok(());
+        }
+        Err(kube::Error::Api(status)) if status.code == 403 => {
+            return Err(ObservationError::Backend(
+                "changing a model's nodeSelector, tolerations, runtimeClassName, architecture, or CPU or memory requests requires permission to list nodes (cluster scope) to check the replacement Pod; the current Pod was not replaced",
+            ));
+        }
+        Err(kube::Error::Api(status)) if status.code == 401 => {
+            return Err(ObservationError::Authentication);
+        }
+        Err(kube::Error::Api(_)) => return Err(ObservationError::Query),
+        Err(_) => return Err(ObservationError::Transport),
+    };
     let selector = pod
         .data
         .pointer("/spec/nodeSelector")
@@ -107,8 +133,15 @@ pub(super) async fn preflight(
             "no matching Node has tolerated scheduling taints",
         ));
     }
-    let requests = requests(pod)
-        .ok_or_else(|| failure(spec, "cannot assess admitted Pod resource requests"))?;
+    let Some(requests) = requests(pod) else {
+        return match inputs {
+            Inputs::Changed => Err(failure(
+                spec,
+                "cannot assess admitted Pod resource requests",
+            )),
+            Inputs::Unchanged => Ok(()),
+        };
+    };
     let mut deficient = std::collections::BTreeSet::new();
     let mut unassessed = None;
     'nodes: for node in candidates {
@@ -140,7 +173,10 @@ pub(super) async fn preflight(
         }
     }
     if let Some(reason) = unassessed {
-        return Err(failure(spec, reason));
+        return match inputs {
+            Inputs::Changed => Err(failure(spec, reason)),
+            Inputs::Unchanged => Ok(()),
+        };
     }
     Err(failure(
         spec,
@@ -168,7 +204,7 @@ fn failure(spec: &Spec, detail: &str) -> ObservationError {
     ObservationError::ModelScheduling {
         name: spec.name.clone(),
         detail: ObservationError::sanitized_resource_detail(
-            &format!("replacement preflight: {detail}; the current Pod was not stopped"),
+            &format!("replacement preflight: {detail}; the current Pod was not replaced"),
             &spec.name,
         ),
     }

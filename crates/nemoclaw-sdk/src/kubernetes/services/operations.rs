@@ -400,16 +400,13 @@ impl Operations {
                     .find(|owned| owned.kind == address.kind && owned.name == address.name)
                     .ok_or_else(|| Self::mismatch(&address, "receipt binding"))?;
                 let observed = self.verify(&receipt.storage, owned).await?;
+                let mut serving = false;
                 if owned.kind == "Pod" {
                     Self::verify_pod(receipt, &observed)?;
-                    if spec.settings.update_policy == crate::services::ServiceUpdatePolicy::Preserve
-                        && !matches!(
-                            observed
-                                .data
-                                .pointer("/status/phase")
-                                .and_then(Value::as_str),
-                            Some("Failed" | "Succeeded")
-                        )
+                    serving = super::status::may_serve(&observed);
+                    if serving
+                        && spec.settings.update_policy
+                            == crate::services::ServiceUpdatePolicy::Preserve
                     {
                         return Err(ObservationError::ModelUpdateRefused {
                             name: owned.name.clone(),
@@ -422,12 +419,9 @@ impl Operations {
                 getrandom::fill(&mut suffix).map_err(|_| ObservationError::Incomplete)?;
                 let suffix: String = suffix.iter().map(|byte| format!("{byte:02x}")).collect();
                 object["metadata"]["name"] = format!("{}-check-{suffix}", address.name).into();
-                if owned.kind == "Pod"
-                    && receipt
-                        .specification
-                        .as_ref()
-                        .is_some_and(|previous| super::scheduling::changed(previous, spec))
-                {
+                // The Node check protects only a Pod that may be serving; it
+                // would otherwise block recovery from a Pod that never ran.
+                if serving && let Some(previous) = &receipt.specification {
                     let admitted = self
                         .cluster(&receipt.storage)
                         .dry_run_object(object)
@@ -435,7 +429,13 @@ impl Operations {
                         .map_err(|error| {
                             Self::api_error(&address, "API dry-run conflict", error)
                         })?;
-                    super::scheduling::preflight(self.client.clone(), spec, &admitted).await?;
+                    super::scheduling::preflight(
+                        self.client.clone(),
+                        spec,
+                        &admitted,
+                        super::scheduling::changed(previous, spec),
+                    )
+                    .await?;
                 } else {
                     self.dry_run(&receipt.storage, object).await?;
                 }

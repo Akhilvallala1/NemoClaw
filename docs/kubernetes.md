@@ -198,18 +198,21 @@ Use the same plan and apply commands as [the managed gateway procedure](#deploy-
 Plan validates intent and observes bound resources without starting a model or changing cluster resources.
 Preflight checks the selected classes and API permissions and uses [server-side dry runs](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run) to check admission before creating new resources.
 The first plan cannot dry-run namespace-scoped workloads when the managed namespace does not exist yet; apply repeats those checks before workload creation.
-The default service-level `updatePolicy: Preserve` refuses changes that would replace an existing nonterminal Pod, including a running, pending, or incompletely observed Pod.
+The default service-level `updatePolicy: Preserve` refuses changes that would replace a Pod that may be serving: a running Pod, a scheduled Pod whose runtime container is starting or has started, or a Pod that is terminating, `Unknown`, or incompletely reported.
 The current Pod, configuration, and saved receipt remain unchanged; static checks cannot guarantee that its replacement will obtain the occupied GPU, storage placement, or scheduler approval.
 To permit sequential replacement, set `spec.services.<name>.updatePolicy: Recreate` and review the plan.
 This is an ongoing opt-in to downtime for future updates until you remove it or set `Preserve`; changing only the policy does not restart the Pod.
-Initial creation, unchanged apply, and recovery of missing or terminal (`Failed` or `Succeeded`) Pods do not require `Recreate`.
+Initial creation, unchanged apply, and replacement of a Pod that never served do not require `Recreate`.
+A Pod never served when it is missing or terminal (`Failed` or `Succeeded`), when the scheduler never placed it on a Node, or when its runtime container never started because its image or container configuration was unavailable (`ErrImagePull`, `ImagePullBackOff`, `ErrImageNeverPull`, `InvalidImageName`, or `CreateContainerConfigError`).
 For a changed existing workload, preflight checks the replacement Pod and ConfigMap under temporary names without persisting them, before stopping the current Pod.
 Rejection preserves the current Pod, configuration, and saved service receipt.
-When an update changes the node selector, tolerations, RuntimeClass, architecture, or CPU/memory requests, preflight also requires permission to list Nodes.
-It checks the admitted replacement Pod against node labels, required taints, and total allocatable CPU, memory, and GPU capacity before deleting the current Pod.
+Before `Recreate` replaces a Pod that may be serving, preflight also checks the cluster's Nodes.
+When the update changes the node selector, tolerations, RuntimeClass, architecture, or CPU/memory requests, this check requires permission to list Nodes (cluster scope); without it, plan and apply name that permission and keep the current Pod.
+For other updates, such as a new image, the check runs when Nodes can be listed and refuses only Node state that blocks the unchanged Pod, such as cordoned matching Nodes or a new untolerated taint.
+It checks the admitted replacement Pod against node labels, required taints, and each Node's allocatable CPU, memory, and GPU capacity before deleting the current Pod.
 An impossible constraint leaves the current workload and receipt intact.
 The check uses the admission response so RuntimeClass additions and Pod overhead participate.
-Admitted init containers and Pod-level resource declarations require accounting this check does not implement; preflight rejects those updates while preserving the current Pod.
+Admitted init containers and Pod-level resource declarations require accounting this check does not implement; preflight rejects updates that change scheduling inputs for such a Pod while preserving the current Pod.
 It does not subtract the old Pod's allocation or require a spare GPU for a sequential update.
 The check can reject a replacement at full namespace quota because the existing Pod still counts toward usage.
 Use the [quota recovery procedure](#recover-a-quota-rejection-during-a-model-update) to obtain temporary admission headroom while preserving the running workload.
