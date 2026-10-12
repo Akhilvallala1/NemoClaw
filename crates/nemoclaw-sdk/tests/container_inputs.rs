@@ -67,6 +67,29 @@ fn local_development() -> Value {
 }
 
 #[test]
+fn application_launch_changes_preserve_preparation_intent() {
+    let input = |value: &Value| {
+        let document = Document::parse(value.to_string().as_bytes()).unwrap();
+        nemoclaw_sdk::compile::targets(&document, &generations())
+            .unwrap()
+            .into_iter()
+            .find(|target| target.kind == "container_inputs")
+            .unwrap()
+            .values
+    };
+    let mut value = authored();
+    let original = input(&value);
+    value["spec"]["services"]["voice"]["image"] = json!(format!("voice@sha256:{}", "c".repeat(64)));
+    value["spec"]["services"]["voice"]["environment"] = json!({"LOG_LEVEL":"debug"});
+    value["spec"]["services"]["voice"]["publication"] =
+        json!({"bindAddress":"127.0.0.1", "port":18080});
+    assert_eq!(input(&value), original);
+    value["spec"]["services"]["voice"]["secrets"]["speech"]["credential"]["env"] =
+        json!("OTHER_SPEECH_KEY");
+    assert_ne!(input(&value), original);
+}
+
+#[test]
 fn local_container_connection_derives_the_owned_gateway_without_a_service_token() {
     let value = local_development();
     assert!(
@@ -92,7 +115,14 @@ fn local_container_connection_derives_the_owned_gateway_without_a_service_token(
         panic!("expected managed gateway")
     };
     let port = url::Url::parse(&gateway.endpoint).unwrap().port().unwrap();
-    let expected = format!("http://{}:{port}", spec.process.gateway_address().unwrap());
+    let address = gateway
+        .network_cidr
+        .parse::<ipnet::Ipv4Net>()
+        .unwrap()
+        .hosts()
+        .nth(1)
+        .unwrap();
+    let expected = format!("http://{address}:{port}");
     assert_eq!(
         descriptor["gateway"],
         json!({"endpoint":expected, "tls":{"trust":"none","caFile":null}})
@@ -119,8 +149,8 @@ fn local_container_connection_derives_the_owned_gateway_without_a_service_token(
     // engine or network must not bypass the compiler's managed-gateway binding.
     for path in [
         "/connections/primary/gatewayEndpoint",
-        "/process/process/engine",
-        "/process/process/network_cidr",
+        "/storage/Engine",
+        "/local_gateway/network_cidr",
     ] {
         let mut forged = serde_json::to_value(&spec).unwrap();
         *forged.pointer_mut(path).unwrap() = match path {
@@ -130,14 +160,14 @@ fn local_container_connection_derives_the_owned_gateway_without_a_service_token(
         };
         let mut forged: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
             serde_json::from_value(forged).unwrap();
-        let process = forged.process.process.as_mut().unwrap();
-        process.input_revision =
-            nemoclaw_sdk::services::installers::container::inputs::input_revision(
-                &process.user,
-                &process.mount_target,
-                &forged.secrets,
-                &forged.connections,
-            );
+        forged.revision = nemoclaw_sdk::services::installers::container::inputs::input_revision(
+            &forged.user,
+            &forged.root,
+            &forged.secrets,
+            &forged.connections,
+        );
+        forged.storage.name =
+            nemoclaw_sdk::managed::data_volume(&forged.application_name(), &forged.revision);
         assert!(forged.validate().is_err(), "accepted {path}");
     }
 }
@@ -299,15 +329,15 @@ fn protected_input_volume_labels_match_the_bound_process_generation() {
             )
             .unwrap();
         let volume = &graph["resource"]["docker_volume"]["container_storage_voice"];
-        assert_eq!(volume["name"], spec.process.volume());
+        assert_eq!(volume["name"], spec.storage.name);
         assert_eq!(
             volume["labels"],
             json!([
-                {"label":nemoclaw_sdk::managed::OWNER_LABEL,"value":spec.process.owner},
-                {"label":nemoclaw_sdk::managed::GENERATION_LABEL,"value":spec.process.generation}
+                {"label":nemoclaw_sdk::managed::OWNER_LABEL,"value":spec.storage.owner},
+                {"label":nemoclaw_sdk::managed::GENERATION_LABEL,"value":spec.storage.generation}
             ])
         );
-        assert_eq!(spec.process.generation, "b".repeat(32));
+        assert_eq!(spec.storage.generation, "b".repeat(32));
         assert!(volume.get("lifecycle").is_none());
         let runtime =
             nemoclaw_sdk::compile::compile_runtime(&document, &generations, "0.1.0").unwrap();

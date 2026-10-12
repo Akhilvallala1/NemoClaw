@@ -47,6 +47,8 @@ pub enum ServiceDefinition {
 pub struct ResourceBehavior {
     pub retained_storage: bool,
     pub runtime_process: bool,
+    pub disposable: bool,
+    pub owns_spec: bool,
 }
 
 /// Provider schema for one installer-owned OpenTofu resource.
@@ -112,6 +114,8 @@ pub fn resource_schemas() -> Vec<ResourceSchema> {
 
 pub fn resource_behavior(kind: &str) -> ResourceBehavior {
     ResourceBehavior {
+        disposable: kind == installers::container::inputs::INPUTS_KIND,
+        owns_spec: kind == installers::container::inputs::INPUTS_KIND,
         retained_storage: matches!(
             kind,
             installers::ollama::STORAGE_KIND
@@ -180,10 +184,11 @@ impl ServiceDefinition {
 
     fn validate_installation(&self, document: &Document) -> Result<(), ConfigError> {
         if let Self::Container(service) = self {
+            let (engine, network) = service.location(document)?;
             for connection in service.agent_connections.values() {
-                connection.validate_binding(document, service)?;
+                connection.validate_binding(document, &engine, &network)?;
             }
-            return service.location(document).map(|_| ());
+            return Ok(());
         }
         let gateway = &document.spec.gateway;
         let local_docker = gateway.as_managed().is_some_and(|gateway| {
@@ -669,4 +674,24 @@ pub(crate) fn required_storage_address(
             (candidate == process || crate::docker_compute::address(&candidate) == process)
                 .then_some(storage)
         }))
+}
+
+pub(crate) fn binding_behavior(address: &str) -> ResourceBehavior {
+    address
+        .split_once('.')
+        .and_then(|(kind, _)| kind.strip_prefix("nemoclaw_"))
+        .map(resource_behavior)
+        .unwrap_or_default()
+}
+/// Resolve service-owned protected credentials before deployment state or runtime access.
+pub(crate) fn preflight(
+    document: &Document,
+    secrets: &dyn crate::Secrets,
+) -> Result<(), crate::Error> {
+    for service in document.spec.services.values() {
+        if let ServiceDefinition::Container(service) = service {
+            service.preflight(secrets)?;
+        }
+    }
+    Ok(())
 }

@@ -105,7 +105,7 @@ impl Process {
             && !self.host_ipc
             && self.memory_bytes == 1 << 30
             && self.shared_memory_bytes == 64 << 20
-            && matches(r"^[1-9][0-9]{0,8}:[1-9][0-9]{0,8}$", &self.user)
+            && matches(crate::config::constraints::APPLICATION_USER, &self.user)
             && self.environment.len() <= 128
             && self.environment.values().map(String::len).sum::<usize>() <= 128 << 10
             && self.environment.iter().all(|(key, value)| {
@@ -114,7 +114,10 @@ impl Process {
                     && value.len() <= 65536
                     && !value.contains('\0')
             })
-            && matches(r"^/var/lib/[a-z][a-z0-9-]{0,62}$", &self.mount_target)
+            && matches(
+                crate::config::constraints::APPLICATION_ROOT,
+                &self.mount_target,
+            )
             && (self.port == 0 && self.bind_address.is_empty()
                 || self.port >= 1024
                     && self
@@ -291,19 +294,12 @@ impl Spec {
         .into())
     }
     pub fn volume(&self) -> String {
-        if let Some(process) = &self.process
-            && !process.input_revision.is_empty()
-        {
-            return format!(
-                "{}-{}-data",
-                self.name,
-                process
-                    .input_revision
-                    .get(..16)
-                    .unwrap_or(&process.input_revision)
-            );
-        }
-        format!("{}-data", self.name)
+        data_volume(
+            &self.name,
+            self.process
+                .as_ref()
+                .map_or("", |p| p.input_revision.as_str()),
+        )
     }
     pub fn network(&self) -> String {
         format!(
@@ -452,5 +448,14 @@ impl Spec {
             format!("{data_path}/tls/jwt/kid"),
             self.name
         )
+    }
+}
+
+/// One volume naming rule for managed processes and their input preparation.
+pub fn data_volume(name: &str, revision: &str) -> String {
+    if revision.is_empty() {
+        format!("{name}-data")
+    } else {
+        format!("{name}-{}-data", revision.get(..16).unwrap_or(revision))
     }
 }

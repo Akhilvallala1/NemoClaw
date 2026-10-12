@@ -144,8 +144,8 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `mode` | string | Yes | — | oidcBearer requires an external service identity. Explicit none selects development-only, unauthenticated HTTP to this deployment's managed Docker gateway; no automatic fallback. Constraints: `"oidcBearer"` or `"none"`. |
-| `refreshMode` | string | Yes | — | none: the application fails closed on expiry; no installer-owned refresh. Constraints: `"none"`. |
+| `mode` | [AuthenticationMode](#authenticationmode) | Yes | — | oidcBearer requires an external service identity. Explicit none selects development-only, unauthenticated HTTP to this deployment's managed Docker gateway; no automatic fallback. |
+| `refreshMode` | [RefreshMode](#refreshmode) | Yes | — | none: the application fails closed on expiry; no installer-owned refresh. |
 | `secretRef` | string or null | No | — | Required protected credential name for oidcBearer; absent or null for none. Speech credentials remain independent. Constraints: pattern `^[a-z][a-z0-9-]{0,39}$`. |
 
 ## ApplicationTrust
@@ -160,7 +160,7 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `trust` | string | Yes | — | system uses image CA roots with HTTPS/OIDC. none explicitly selects plaintext for the bound local development gateway. Private CA delivery and skipped certificate verification are unsupported. Constraints: `"system"` or `"none"`. |
+| `trust` | [TlsTrust](#tlstrust) | Yes | — | system uses image CA roots with HTTPS/OIDC. none explicitly selects plaintext for the bound local development gateway. Private CA delivery and skipped certificate verification are unsupported. |
 
 ## AuthMethod
 
@@ -175,6 +175,20 @@ Paths:
 Accepted input: string.
 
 Constraints: `"api-key"`.
+
+## AuthenticationMode
+
+Explicit application authentication profile.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.agentConnections.{key}.authentication.mode`
+
+Accepted input: string.
+
+Constraints: `"oidcBearer"` or `"none"`.
 
 ## Compatibility
 
@@ -1032,6 +1046,20 @@ Paths:
 | `credential` | [Credential](#credential) | Yes | — | Caller environment reference; no value appears in deployment configuration or state. |
 | `targetPath` | string | Yes | — | Canonical file path below this application's data root. |
 
+## RefreshMode
+
+The installer delivers a static reference; refresh belongs to the application.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.agentConnections.{key}.authentication.refreshMode`
+
+Accepted input: string.
+
+Constraints: `"none"`.
+
 ## Resources
 
 Resource declarations checked against host observations and produced data.
@@ -1401,6 +1429,20 @@ Paths:
 | `ca` | [Credential](#credential) | Yes | — | Environment variable whose value names the local CA certificate file. |
 | `certificate` | [Credential](#credential) | Yes | — | Environment variable whose value names the local client certificate file. |
 | `key` | [Credential](#credential) | Yes | — | Environment variable whose value names the local client private-key file. |
+
+## TlsTrust
+
+Trust for the selected application transport.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.agentConnections.{key}.tls.trust`
+
+Accepted input: string.
+
+Constraints: `"system"` or `"none"`.
 
 ## Tool
 

@@ -24,7 +24,7 @@ fn saved_container_inputs_are_valid_root_bindings() {
     // An interrupted replacement can leave the old helper after the new
     // document is checkpointed. The provider checks that helper's prior spec.
     let mut value = serde_json::to_value(&document).unwrap();
-    value["spec"]["services"]["voice"]["image"] =
+    value["spec"]["services"]["voice"]["inputSetup"]["image"] =
         json!(format!("voiceclaw@sha256:{}", "e".repeat(64)));
     let next = Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
     let next_targets = compile::targets(&next, &generations).unwrap();

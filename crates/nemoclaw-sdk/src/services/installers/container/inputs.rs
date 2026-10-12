@@ -3,8 +3,8 @@
 //! Nonsecret intent for protected application input delivery.
 use crate::{
     Error,
-    config::{ConfigError, Credential, Document, validation::require},
-    managed::Spec,
+    config::{ConfigError, Credential, validation::require},
+    managed::Storage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const INPUTS_KIND: &str = "container_inputs";
-pub const MAX_DESCRIPTOR_BYTES: usize = 64 << 10;
+use super::connection::{AgentConnection, AuthenticationMode, LocalGateway, matches};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,71 +56,14 @@ pub struct ProtectedCredential {
     /// Canonical file path below this application's data root.
     pub target_path: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// One explicitly selected sandbox agent and application-reachable OpenShell endpoint.
-pub struct AgentConnection {
-    /// Declared sandbox whose ownership and physical identity bind the connection.
-    pub sandbox_ref: String,
-    /// Agent name declared by the selected sandbox.
-    pub agent: String,
-    /// Canonical descriptor file path below the application data root.
-    pub target_path: String,
-    /// HTTPS origin for oidcBearer. For development-only none, omission derives the managed Docker gateway's private origin; an explicit value must match it exactly.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub gateway_endpoint: String,
-    /// Declared application identity reference; issuance and authority remain external.
-    pub authentication: ApplicationAuthentication,
-    /// system for HTTPS/OIDC, or explicit none for the managed local development connection.
-    pub tls: ApplicationTrust,
-    /// Bounded application client deadlines.
-    pub timeouts: ConnectionTimeouts,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Static bearer delivery does not issue, refresh, or narrow an identity's authority.
-pub struct ApplicationAuthentication {
-    /// oidcBearer requires an external service identity. Explicit none selects development-only, unauthenticated HTTP to this deployment's managed Docker gateway; no automatic fallback.
-    pub mode: String,
-    /// Required protected credential name for oidcBearer; absent or null for none. Speech credentials remain independent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_ref: Option<String>,
-    /// none: the application fails closed on expiry; no installer-owned refresh.
-    pub refresh_mode: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Trust must match the explicitly selected authentication and transport profile.
-pub struct ApplicationTrust {
-    /// system uses image CA roots with HTTPS/OIDC. none explicitly selects plaintext for the bound local development gateway. Private CA delivery and skipped certificate verification are unsupported.
-    pub trust: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Bounded application-client health and invocation deadlines.
-pub struct ConnectionTimeouts {
-    /// Non-generative native agent check deadline, 1–12 seconds.
-    pub health_seconds: u64,
-    /// Explicit agent invocation deadline, 1–120 seconds.
-    pub invoke_seconds: u64,
-}
 
-fn matches(pattern: &str, value: &str) -> bool {
-    regex::Regex::new(pattern).unwrap().is_match(value) && !value.contains(['\0', '\r', '\n'])
-}
 fn safe_path(root: &str, target: &str) -> bool {
     target.len() <= 512
         && target
             .strip_prefix(&format!("{root}/"))
-            .is_some_and(|path| {
-                !path.is_empty()
-                    && path.split('/').all(|part| {
-                        matches(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$", part)
-                            && part != "."
-                            && part != ".."
-                    })
-            })
+            .is_some_and(nemoclaw_container_inputs::relative_path)
 }
+
 pub fn validate_inputs(
     root: &str,
     secrets: &BTreeMap<String, ProtectedCredential>,
@@ -161,71 +104,15 @@ pub fn validate_inputs(
                 && targets.insert(connection.target_path.as_str()),
             "container input paths must be distinct files below the data root",
         )?;
-        let bearer = connection.authentication.mode == "oidcBearer";
+        connection.validate()?;
         require(
-            connection.authentication.refresh_mode == "none"
-                && (bearer
-                    && connection
-                        .authentication
-                        .secret_ref
-                        .as_ref()
-                        .is_some_and(|name| secrets.contains_key(name))
-                    || connection.authentication.mode == "none"
-                        && connection.authentication.secret_ref.is_none()),
-            "container connection requires an explicit static bearer or credential-free local development profile",
+            connection
+                .authentication
+                .secret_ref
+                .as_ref()
+                .is_none_or(|name| secrets.contains_key(name)),
+            "container connection credential reference is undeclared",
         )?;
-        require(
-            connection.tls.trust == if bearer { "system" } else { "none" },
-            "container connection TLS trust must match its authentication profile",
-        )?;
-        require(
-            (1..=12).contains(&connection.timeouts.health_seconds)
-                && (1..=120).contains(&connection.timeouts.invoke_seconds),
-            "container connection deadlines exceed the supported bounds",
-        )?;
-        if !bearer && connection.gateway_endpoint.is_empty() {
-            continue;
-        }
-        let endpoint = url::Url::parse(&connection.gateway_endpoint)
-            .map_err(|_| ConfigError::new("invalid container gateway endpoint"))?;
-        require(
-            connection.gateway_endpoint.len() <= 2048
-                && endpoint.scheme() == if bearer { "https" } else { "http" }
-                && endpoint.username().is_empty()
-                && endpoint.password().is_none()
-                && endpoint.query().is_none()
-                && endpoint.fragment().is_none()
-                && endpoint.path() == "/"
-                && endpoint.host().is_some_and(|host| match host {
-                    url::Host::Domain(name) => {
-                        !name.eq_ignore_ascii_case("localhost") && !name.ends_with(".localhost")
-                    }
-                    url::Host::Ipv4(ip) => {
-                        !ip.is_loopback()
-                            && !ip.is_unspecified()
-                            && !ip.is_multicast()
-                            && !ip.is_broadcast()
-                            && !ip.is_link_local()
-                    }
-                    url::Host::Ipv6(ip) => {
-                        !ip.is_loopback()
-                            && !ip.is_unspecified()
-                            && !ip.is_multicast()
-                            && !ip.is_unicast_link_local()
-                    }
-                }),
-            "container gateway requires a valid origin for its explicit transport profile",
-        )?;
-        if !bearer {
-            require(
-                endpoint
-                    .host()
-                    .is_some_and(|host| matches!(host, url::Host::Ipv4(ip) if ip.is_private()))
-                    && endpoint.port().is_some()
-                    && connection.gateway_endpoint == endpoint.origin().ascii_serialization(),
-                "local development gateway requires a canonical private IPv4 origin",
-            )?;
-        }
     }
     for path in &targets {
         require(
@@ -243,164 +130,90 @@ pub fn validate_inputs(
     )?;
     Ok(())
 }
-impl AgentConnection {
-    pub fn validate_binding(
-        &self,
-        document: &Document,
-        service: &super::Service,
-    ) -> Result<(), ConfigError> {
-        let sandbox = document.sandbox(&self.sandbox_ref)?;
-        require(
-            sandbox.agent.name == self.agent,
-            "container agent does not match its selected sandbox",
-        )?;
-        if self.authentication.mode == "none" {
-            let gateway = document.spec.gateway.managed()?;
-            let expected = local_gateway_endpoint(gateway)?;
-            let (engine, network) = service.location(document)?;
-            require(
-                engine == gateway.engine && network == gateway.network_cidr,
-                "local development connection requires the managed gateway's engine and network",
-            )?;
-            require(
-                self.gateway_endpoint.is_empty() || self.gateway_endpoint == expected,
-                "local development endpoint must match this deployment's managed gateway",
-            )?;
-        }
-        Ok(())
-    }
-    pub(super) fn resolved_endpoint(&self, document: &Document) -> Result<String, ConfigError> {
-        if self.authentication.mode == "none" {
-            local_gateway_endpoint(document.spec.gateway.managed()?)
-        } else {
-            Ok(self.gateway_endpoint.clone())
-        }
-    }
-}
-
-fn local_gateway_endpoint(gateway: &crate::config::ManagedGateway) -> Result<String, ConfigError> {
-    gateway.validate_managed()?;
-    require(
-        gateway.runtime.provider == crate::config::ComputeDriver::Docker
-            && gateway.engine.starts_with("unix:///"),
-        "local development connection requires a managed local Docker gateway",
-    )?;
-    let origin = url::Url::parse(&gateway.endpoint)
-        .map_err(|_| ConfigError::new("invalid managed gateway origin"))?;
-    let port = origin
-        .port()
-        .ok_or_else(|| ConfigError::new("missing managed gateway port"))?;
-    Ok(format!(
-        "http://{}:{port}",
-        crate::config::gateway_address(&gateway.network_cidr)?
-    ))
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Provider input contains references and binding metadata, never credential values.
+/// Minimal provider intent: input references and owned storage, never launch settings or values.
 pub struct InputsSpec {
-    pub process: Spec,
+    pub storage: Storage,
+    pub architecture: String,
+    pub user: String,
+    pub root: String,
+    pub revision: String,
     pub setup: InputSetup,
     pub service: String,
     pub workspace: String,
     pub secrets: BTreeMap<String, ProtectedCredential>,
     pub connections: BTreeMap<String, AgentConnection>,
+    pub local_gateway: Option<LocalGateway>,
 }
 impl InputsSpec {
     pub fn validate(&self) -> Result<(), Error> {
-        self.process.validate()?;
+        self.storage.validate()?;
         self.setup.validate()?;
-        if self.process.kind != super::SERVICE_KIND
-            || self.workspace != self.process.name.split("-container-").next().unwrap_or("")
-            || !matches(crate::config::constraints::SLUG, &self.service)
-            || self.process.name != format!("{}-container-{}", self.workspace, self.service)
-            || self.secrets.is_empty() && self.connections.is_empty()
-        {
-            return Err(Error::State("invalid application input identity"));
-        }
-        validate_inputs(
-            &self.process.process.as_ref().unwrap().mount_target,
-            &self.secrets,
-            &self.connections,
+        require(
+            matches(r"^nc-[a-f0-9]{16}$", &self.workspace)
+                && matches(crate::config::constraints::SLUG, &self.service)
+                && matches!(self.architecture.as_str(), "arm64" | "amd64")
+                && matches(crate::config::constraints::APPLICATION_USER, &self.user)
+                && matches(crate::config::constraints::APPLICATION_ROOT, &self.root)
+                && self.storage.engine.starts_with("unix:///")
+                && (!self.secrets.is_empty() || !self.connections.is_empty()),
+            "invalid application input identity",
         )?;
-        let process = self.process.process.as_ref().unwrap();
-        for connection in self
+        validate_inputs(&self.root, &self.secrets, &self.connections)?;
+        require(
+            self.revision
+                == input_revision(&self.user, &self.root, &self.secrets, &self.connections)
+                && self.storage.name
+                    == crate::managed::data_volume(&self.application_name(), &self.revision),
+            "application input storage or revision differs from its references",
+        )?;
+        let local = self
             .connections
             .values()
-            .filter(|c| c.authentication.mode == "none")
-        {
-            let expected = local_gateway_endpoint(&self.process.gateway)?;
-            if process.create_network
-                || process.engine != self.process.gateway.engine
-                || process.network_cidr != self.process.gateway.network_cidr
-                || connection.gateway_endpoint != expected
-            {
-                return Err(Error::State(
-                    "local development connection differs from its managed gateway binding",
-                ));
+            .find(|c| c.authentication.mode == AuthenticationMode::None);
+        match (local, &self.local_gateway) {
+            (Some(connection), Some(gateway)) => {
+                gateway.validate(&self.storage.engine, &connection.gateway_endpoint)?
             }
-        }
-        if process.input_revision
-            != input_revision(
-                &process.user,
-                &process.mount_target,
-                &self.secrets,
-                &self.connections,
-            )
-        {
-            return Err(Error::State(
-                "application input revision differs from its references",
-            ));
+            (None, None) => {}
+            _ => return Err(Error::State("invalid application local gateway binding")),
         }
         Ok(())
     }
     pub fn descriptor(&self, sandbox_id: &str) -> Result<Option<(String, Value)>, Error> {
         self.validate()?;
-        let Some(connection) = self.connections.values().next() else {
-            return Ok(None);
-        };
-        if !matches(crate::config::constraints::UUID, sandbox_id) {
-            return Err(Error::State("application sandbox identity is unresolved"));
-        }
-        let credential_file = connection
-            .authentication
-            .secret_ref
-            .as_ref()
-            .map(|name| self.secrets[name].target_path.as_str());
-        let descriptor = json!({
-            "schemaVersion":"nemoclaw.agent-connection.v1",
-            "deploymentUid":self.process.owner, "service":self.service,
-            "gateway":{"endpoint":connection.gateway_endpoint,"tls":{"trust":connection.tls.trust,"caFile":null}},
-            "authentication":{"mode":connection.authentication.mode,"credentialFile":credential_file,"refreshMode":"none"},
-            "target":{"workspace":self.workspace,"sandbox":connection.sandbox_ref,"sandboxId":sandbox_id,"agent":connection.agent},
-            "bridge":{"interfaceVersion":1,"command":"fabric-agent"},
-            "timeouts":connection.timeouts
-        });
-        if descriptor.to_string().len() > MAX_DESCRIPTOR_BYTES {
-            return Err(Error::State(
-                "application connection descriptor exceeds its size limit",
-            ));
-        }
-        Ok(Some((connection.target_path.clone(), descriptor)))
+        self.connections
+            .values()
+            .next()
+            .map(|connection| {
+                connection.descriptor(
+                    &self.storage.owner,
+                    &self.workspace,
+                    &self.service,
+                    sandbox_id,
+                    connection
+                        .authentication
+                        .secret_ref
+                        .as_ref()
+                        .map(|name| self.secrets[name].target_path.as_str()),
+                )
+            })
+            .transpose()
+    }
+    pub fn application_name(&self) -> String {
+        format!("{}-container-{}", self.workspace, self.service)
     }
     pub fn helper_name(&self) -> String {
-        format!("{}-inputs", self.process.name)
+        format!("{}-inputs", self.application_name())
     }
-    pub fn image_requirements(&self) -> Spec {
-        let mut spec = self.process.clone();
-        let process = spec
-            .process
-            .as_mut()
-            .expect("validated application process");
-        process.image = self.setup.image.clone();
-        process.image_labels = [(
-            nemoclaw_container_inputs::CONTRACT_LABEL.into(),
-            nemoclaw_container_inputs::CONTRACT_VERSION.into(),
-        )]
-        .into();
-        process.environment.clear();
-        spec
+    pub fn image_requirements(&self) -> crate::managed::ImageRequirements {
+        crate::managed::ImageRequirements {
+            engine: self.storage.engine.clone(),
+            image: self.setup.image.clone(),
+            architecture: self.architecture.clone(),
+            contract: crate::managed::ImageContract::Inputs,
+        }
     }
 }
 
@@ -436,16 +249,6 @@ pub(crate) fn constrain_schema(defs: &mut serde_json::Map<String, Value>) {
     }
     property(
         &mut defs["ApplicationAuthentication"],
-        "mode",
-        json!({"enum":["oidcBearer", "none"]}),
-    );
-    property(
-        &mut defs["ApplicationAuthentication"],
-        "refreshMode",
-        json!({"const":"none"}),
-    );
-    property(
-        &mut defs["ApplicationAuthentication"],
         "secretRef",
         json!({"pattern":c::SLUG}),
     );
@@ -459,11 +262,6 @@ pub(crate) fn constrain_schema(defs: &mut serde_json::Map<String, Value>) {
         "then":{"required":["gatewayEndpoint"],"properties":{"gatewayEndpoint":{"minLength":1},"tls":{"properties":{"trust":{"const":"system"}}}}},
         "else":{"properties":{"tls":{"properties":{"trust":{"const":"none"}}}}}
     }]);
-    property(
-        &mut defs["ApplicationTrust"],
-        "trust",
-        json!({"enum":["system", "none"]}),
-    );
     property(
         &mut defs["ConnectionTimeouts"],
         "healthSeconds",

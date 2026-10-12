@@ -250,18 +250,7 @@ impl Deployment {
         let mut document = document.clone();
         document.defaults();
         document.validate()?;
-        // Resolve/validate protected tokens before state access or managed-runtime mutation.
-        // Values remain in memory and never enter configuration or fingerprints.
-        for service in document.spec.services.values() {
-            if let crate::services::ServiceDefinition::Container(service) = service {
-                for secret in service.secrets.values() {
-                    let value = self.secrets.resolve(&secret.credential.env)?;
-                    if !nemoclaw_container_inputs::credential(&value) {
-                        return Err(crate::ObservationError::Authentication.into());
-                    }
-                }
-            }
-        }
+        crate::services::preflight(&document, self.secrets.as_ref())?;
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
@@ -619,10 +608,7 @@ fn validate_root_bindings(
         (!allowed.contains_key(address)
             && !plan::disposable(address)
             && !plan::reconstructible(address))
-            // The protected-input provider stores a spec and owns refresh,
-            // replacement and cleanup identity checks, like Docker compute.
-            || (!binding.spec.is_empty()
-                && !address.starts_with("nemoclaw_container_inputs."))
+            || (!binding.spec.is_empty() && !crate::services::binding_behavior(address).owns_spec)
     }) {
         return Err(Error::Conflict(
             "undeclared resource binding in deployment state",

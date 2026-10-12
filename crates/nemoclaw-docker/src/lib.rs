@@ -15,7 +15,7 @@ mod storage;
 
 pub use endpoint::validate_engine_endpoint;
 #[cfg(feature = "client")]
-pub use engine::{Direct, Engine, Engines, archive, is_missing, optional, remote};
+pub use engine::{ArchiveEntry, Direct, Engine, Engines, archive, is_missing, optional, remote};
 #[cfg(all(feature = "client", unix))]
 pub use ssh::command as ssh_command;
 pub use storage::{GENERATION_LABEL, OWNER_LABEL, Storage};

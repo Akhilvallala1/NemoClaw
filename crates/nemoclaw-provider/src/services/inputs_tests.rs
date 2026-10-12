@@ -17,8 +17,7 @@ fn live_spec(
     spec.setup.image = image;
     spec.workspace = format!("nc-{}", &nonce[..16]);
     spec.service = "input-check".into();
-    spec.process.name = format!("{}-container-{}", spec.workspace, spec.service);
-    spec.process.owner = format!(
+    spec.storage.owner = format!(
         "{}-{}-{}-{}-{}",
         &nonce[..8],
         &nonce[8..12],
@@ -26,10 +25,11 @@ fn live_spec(
         &nonce[16..20],
         &nonce[20..]
     );
-    spec.process.generation = nonce;
-    let process = spec.process.process.as_mut().unwrap();
-    process.engine = endpoint;
-    process.architecture = architecture;
+    spec.storage.generation = nonce;
+    spec.storage.engine = endpoint;
+    spec.architecture = architecture;
+    spec.storage.name =
+        nemoclaw_sdk::managed::data_volume(&spec.application_name(), &spec.revision);
     spec
 }
 
@@ -45,13 +45,10 @@ fn manual_test_resource_identity_matches_the_container_input_contract_on_both_pl
         );
         spec.validate().unwrap();
         assert_eq!(
-            spec.process.name,
+            spec.application_name(),
             format!("{}-container-{}", spec.workspace, spec.service)
         );
-        assert_eq!(
-            spec.process.process.as_ref().unwrap().architecture,
-            architecture
-        );
+        assert_eq!(spec.architecture, architecture);
     }
 }
 
@@ -92,7 +89,7 @@ async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
         .plan("container_inputs", &desired, None)
         .await
         .unwrap();
-    let volume = spec.process.volume();
+    let volume = spec.storage.name.clone();
     assert!(engine.volume(&volume).await.unwrap().is_none());
     assert!(
         engine
@@ -112,8 +109,8 @@ async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
             driver: Some("local".into()),
             labels: Some(
                 [
-                    (OWNER_LABEL.into(), spec.process.owner.clone()),
-                    (GENERATION_LABEL.into(), spec.process.generation.clone()),
+                    (OWNER_LABEL.into(), spec.storage.owner.clone()),
+                    (GENERATION_LABEL.into(), spec.storage.generation.clone()),
                 ]
                 .into(),
             ),
@@ -235,24 +232,6 @@ fn image() -> serde_json::Value {
     json!({"Id":format!("sha256:{}","c".repeat(64)),"Os":"linux","Architecture":"arm64","Config":{"Entrypoint":[nemoclaw_container_inputs::ENTRYPOINT],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"Labels":{nemoclaw_container_inputs::CONTRACT_LABEL:nemoclaw_container_inputs::CONTRACT_VERSION}}})
 }
 
-#[test]
-fn setup_image_accepts_only_empty_environment_or_docker_default_path_on_both_platforms() {
-    let mut spec: InputsSpec = serde_json::from_str(&row()["spec"]).unwrap();
-    for architecture in ["arm64", "amd64"] {
-        spec.process.process.as_mut().unwrap().architecture = architecture.into();
-        for environment in [
-            serde_json::Value::Null,
-            json!([]),
-            json!(["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]),
-        ] {
-            let mut observed = image();
-            observed["Architecture"] = json!(architecture);
-            observed["Config"]["Env"] = environment;
-            validate_image(&serde_json::from_value(observed).unwrap(), &spec.process).unwrap();
-        }
-    }
-}
-
 #[tokio::test]
 async fn local_connection_payload_delivers_speech_and_descriptor_without_an_openshell_credential() {
     struct SpeechOnly;
@@ -322,47 +301,6 @@ async fn local_connection_payload_delivers_speech_and_descriptor_without_an_open
     assert!(!descriptor.to_string().contains(SENTINEL));
 }
 
-#[test]
-fn setup_image_contract_rejects_wrong_platform_entrypoint_label_environment_and_volumes() {
-    let spec: InputsSpec = serde_json::from_str(&row()["spec"]).unwrap();
-    let valid = image();
-    validate_image(
-        &serde_json::from_value(valid.clone()).unwrap(),
-        &spec.process,
-    )
-    .unwrap();
-    for (pointer, bad) in [
-        ("/Id", json!("")),
-        ("/Os", json!("windows")),
-        ("/Architecture", json!("amd64")),
-        ("/Config/Entrypoint", json!(["/bin/sh"])),
-        ("/Config/Labels/io.nemoclaw.container-inputs", json!("2")),
-        ("/Config/Env", json!(["TOKEN=unexpected-image-content"])),
-        ("/Config/Env", json!(["PATH=/tmp"])),
-        ("/Config/Env", json!(["LD_PRELOAD=/tmp/injected.so"])),
-        (
-            "/Config/Env",
-            json!([
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "TOKEN=unexpected-image-content"
-            ]),
-        ),
-        (
-            "/Config/Env",
-            json!([
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            ]),
-        ),
-    ] {
-        let mut changed = valid.clone();
-        *changed.pointer_mut(pointer).unwrap() = bad;
-        assert!(validate_image(&serde_json::from_value(changed).unwrap(), &spec.process).is_err());
-    }
-    let mut changed = valid;
-    changed["Config"]["Volumes"] = json!({"/outside":{}});
-    assert!(validate_image(&serde_json::from_value(changed).unwrap(), &spec.process).is_err());
-}
 #[tokio::test]
 async fn protected_input_plan_checks_credentials_and_image_without_mutation() {
     let requests = Arc::new(Mutex::new(vec![]));
@@ -398,6 +336,7 @@ struct State {
     lose_observation: bool,
     application_running: bool,
     foreign: bool,
+    omit_archive_owner: bool,
 }
 struct SetupFixture {
     endpoint: String,
@@ -413,13 +352,18 @@ impl Drop for SetupFixture {
 }
 impl SetupFixture {
     async fn new() -> Self {
+        Self::with_row(row()).await
+    }
+    async fn with_row(mut row: Row) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("engine.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let endpoint = format!("unix://{}", path.display());
-        let mut row = row();
         let mut spec: InputsSpec = serde_json::from_str(&row["spec"]).unwrap();
-        spec.process.process.as_mut().unwrap().engine = endpoint.clone();
+        spec.storage.engine = endpoint.clone();
+        if let Some(gateway) = &mut spec.local_gateway {
+            gateway.engine = endpoint.clone();
+        }
         row.insert("spec".into(), serde_json::to_string(&spec).unwrap());
         let state = Arc::new(Mutex::new(State::default()));
         let shared = state.clone();
@@ -449,7 +393,13 @@ impl SetupFixture {
             .with_secrets(Arc::new(TestSecrets(available)))
     }
 }
-fn tar_file(bytes: &[u8], directory: bool, name: &str, spec: &InputsSpec) -> Vec<u8> {
+fn tar_file(
+    bytes: &[u8],
+    directory: bool,
+    name: &str,
+    spec: &InputsSpec,
+    omit_owner: bool,
+) -> Vec<u8> {
     let (uid, gid) = owner(spec);
     let mut builder = tar::Builder::new(Vec::new());
     let mut header = tar::Header::new_gnu();
@@ -459,8 +409,10 @@ fn tar_file(bytes: &[u8], directory: bool, name: &str, spec: &InputsSpec) -> Vec
         tar::EntryType::Regular
     });
     header.set_mode(if directory { 0o700 } else { 0o600 });
-    header.set_uid(uid as u64);
-    header.set_gid(gid as u64);
+    if !omit_owner {
+        header.set_uid(uid as u64);
+        header.set_gid(gid as u64);
+    }
     header.set_size(bytes.len() as u64);
     header.set_mtime(0);
     header.set_cksum();
@@ -590,7 +542,7 @@ async fn serve_setup(
         let mut state = state.lock().unwrap();
         match (method.as_str(),route) {
             ("GET",route) if route.starts_with("/images/")=>(200,serde_json::to_vec(&image()).unwrap()),
-            ("GET",route) if route.starts_with("/volumes/")=>(200,serde_json::to_vec(&json!({"Name":spec.process.volume(),"Driver":"local","Scope":"local","Mountpoint":"/var/lib/docker/volumes/owned/_data","Options":{},"CreatedAt":"created","Labels":{OWNER_LABEL:spec.process.owner,GENERATION_LABEL:spec.process.generation}})).unwrap()),
+            ("GET",route) if route.starts_with("/volumes/")=>(200,serde_json::to_vec(&json!({"Name":spec.storage.name.clone(),"Driver":"local","Scope":"local","Mountpoint":"/var/lib/docker/volumes/owned/_data","Options":{},"CreatedAt":"created","Labels":{OWNER_LABEL:spec.storage.owner,GENERATION_LABEL:spec.storage.generation}})).unwrap()),
             ("POST","/containers/create")=>{
                 assert!(!String::from_utf8_lossy(&body).contains(SENTINEL));let config:serde_json::Value=serde_json::from_slice(&body).unwrap();
                 assert_eq!(config["Env"],json!([]));assert_eq!(config["HostConfig"]["NetworkMode"],"none");assert_eq!(config["HostConfig"]["LogConfig"]["Type"],"none");
@@ -598,21 +550,24 @@ async fn serve_setup(
                 state.creates+=1;let id=format!("helper-{}",state.creates);
                 let mut observed_config = config.clone();
                 observed_config["Env"] = image()["Config"]["Env"].clone();
-                state.helper=Some(json!({"Id":id,"Name":format!("/{}",spec.helper_name()),"Image":image()["Id"],"Config":observed_config,"HostConfig":config["HostConfig"],"Mounts":[{"Type":"volume","Name":spec.process.volume(),"Destination":ROOT,"RW":true}],"State":{"Running":false,"Status":"created","ExitCode":0}}));
+                for (key, value) in image()["Config"]["Labels"].as_object().unwrap() {
+                    observed_config["Labels"].as_object_mut().unwrap().entry(key.clone()).or_insert(value.clone());
+                }
+                state.helper=Some(json!({"Id":id,"Name":format!("/{}",spec.helper_name()),"Image":image()["Id"],"Config":observed_config,"HostConfig":config["HostConfig"],"Mounts":[{"Type":"volume","Name":spec.storage.name.clone(),"Destination":ROOT,"RW":true}],"State":{"Running":false,"Status":"created","ExitCode":0}}));
                 (201,serde_json::to_vec(&json!({"Id":id,"Warnings":[]})).unwrap())
             }
             ("POST",route) if route.ends_with("/start")=>{state.starts+=1;state.helper.as_mut().unwrap()["State"]=json!({"Running":true,"Status":"running","ExitCode":0});started.notify_waiters();(204,vec![])},
             ("GET",route) if route.ends_with("/archive")=>{
                 let query=url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes()).find(|(k,_)|k=="path").unwrap().1.into_owned();
                 let name=query.strip_prefix(ROOT).unwrap().trim_start_matches('/');
-                match state.files.get(name){Some((bytes,directory))=>(200,tar_file(bytes,*directory,if name.is_empty(){"input-data"}else{name},&spec)),None=>(404,b"{}".to_vec())}
+                match state.files.get(name){Some((bytes,directory))=>(200,tar_file(bytes,*directory,if name.is_empty(){"input-data"}else{name},&spec,state.omit_archive_owner)),None=>(404,b"{}".to_vec())}
             }
             ("GET",route) if route.ends_with("/json")=>{
                 if route.contains("helper-")||route.contains(&spec.helper_name()) {
                     if state.lose_observation&&state.helper.as_ref().is_some_and(|v|v["State"]["Status"]=="exited") {state.lose_observation=false;(503,b"{}".to_vec())}
                     else if let Some(helper)=&state.helper {let mut helper=helper.clone();if state.foreign{helper["Config"]["Labels"][OWNER_LABEL]=json!("foreign");}(200,serde_json::to_vec(&helper).unwrap())}
                     else{(404,b"{}".to_vec())}
-                }else if state.application_running{(200,serde_json::to_vec(&json!({"Config":{"Labels":{OWNER_LABEL:spec.process.owner,GENERATION_LABEL:spec.process.generation}},"State":{"Running":true}})).unwrap())}
+                }else if state.application_running{(200,serde_json::to_vec(&json!({"Config":{"Labels":{OWNER_LABEL:spec.storage.owner,GENERATION_LABEL:spec.storage.generation}},"State":{"Running":true}})).unwrap())}
                 else{(404,b"{}".to_vec())}
             }
             ("DELETE",_)=>{state.deletes+=1;state.helper=None;(204,vec![])},
@@ -627,7 +582,7 @@ async fn serve_setup(
     let _ = stream.write_all(&body).await;
 }
 #[tokio::test]
-async fn image_update_plan_checks_the_existing_helpers_prior_spec_without_mutation() {
+async fn setup_image_update_checks_the_existing_helpers_prior_spec_without_mutation() {
     let fixture = SetupFixture::new().await;
     let backend = fixture.backend(true);
     let first = backend.ensure("container_inputs", &fixture.row).await;
@@ -635,7 +590,7 @@ async fn image_update_plan_checks_the_existing_helpers_prior_spec_without_mutati
     let prior = first.state().unwrap();
     let mut desired = fixture.row.clone();
     let mut spec: InputsSpec = serde_json::from_str(&desired["spec"]).unwrap();
-    spec.process.process.as_mut().unwrap().image = format!("voiceclaw@sha256:{}", "e".repeat(64));
+    spec.setup.image = format!("voiceclaw@sha256:{}", "e".repeat(64));
     desired.insert("spec".into(), serde_json::to_string(&spec).unwrap());
     let requests = fixture.state.lock().unwrap().requests.len();
     backend
@@ -843,4 +798,126 @@ async fn failed_setup_retries_only_when_stopped_and_never_adopts_a_foreign_bindi
     assert_ne!(recovered.state().unwrap()["id"], partial["id"]);
     let state = fixture.state.lock().unwrap();
     assert_eq!((state.creates, state.starts, state.transfers), (2, 2, 2));
+}
+
+#[tokio::test]
+async fn changed_target_identity_and_helper_configuration_refuse_all_mutations() {
+    let document = nemoclaw_sdk::config::Document::parse(
+        include_bytes!("../../../nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml")
+            .as_slice(),
+    )
+    .unwrap();
+    let generations = [
+        "workspace",
+        "provider",
+        "sandbox",
+        "managed_gateway",
+        "container_service",
+    ]
+    .map(|kind| (kind.into(), "a".repeat(32)))
+    .into();
+    let mut row = nemoclaw_sdk::compile::targets(&document, &generations)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.kind == "container_inputs")
+        .unwrap()
+        .values;
+    row.insert(
+        "sandbox_id".into(),
+        "11111111-2222-3333-4444-555555555555".into(),
+    );
+    let fixture = SetupFixture::with_row(row).await;
+    let backend = fixture.backend(true);
+    let first = backend.ensure("container_inputs", &fixture.row).await;
+    assert!(first.error().is_none());
+    let original = first.state().unwrap();
+    let original_helper = fixture.state.lock().unwrap().helper.clone().unwrap();
+    for (pointer, value) in [
+        ("/HostConfig/CapAdd", json!(["SYS_ADMIN"])),
+        ("/HostConfig/NetworkMode", json!("host")),
+        ("/HostConfig/ReadonlyRootfs", json!(false)),
+        (
+            "/HostConfig/Devices",
+            json!([{"PathOnHost":"/dev/owned", "PathInContainer":"/dev/owned", "CgroupPermissions":"rwm"}]),
+        ),
+        ("/Mounts/0/RW", json!(false)),
+    ] {
+        let mut changed = original_helper.clone();
+        let (parent, field) = pointer.rsplit_once('/').unwrap();
+        changed.pointer_mut(parent).unwrap()[field] = value;
+        fixture.state.lock().unwrap().helper = Some(changed);
+        assert!(
+            backend
+                .read("container_inputs", original, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            backend
+                .ensure("container_inputs", original)
+                .await
+                .error()
+                .is_some()
+        );
+        assert!(
+            backend
+                .remove("container_inputs", original, true)
+                .await
+                .is_err()
+        );
+    }
+    fixture.state.lock().unwrap().helper = Some(original_helper);
+    let mut changed = original.clone();
+    changed.insert(
+        "sandbox_id".into(),
+        "11111111-2222-3333-4444-666666666666".into(),
+    );
+    assert!(
+        backend
+            .read("container_inputs", &changed, false)
+            .await
+            .is_err()
+    );
+    assert!(
+        backend
+            .ensure("container_inputs", &changed)
+            .await
+            .error()
+            .is_some()
+    );
+    assert!(
+        backend
+            .remove("container_inputs", &changed, true)
+            .await
+            .is_err()
+    );
+    fixture.state.lock().unwrap().omit_archive_owner = true;
+    assert!(
+        backend
+            .engine
+            .read_file(&original["id"], &format!("{ROOT}/{MARKER}"), 4096)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        backend
+            .read("container_inputs", original, false)
+            .await
+            .is_err()
+    );
+    assert!(
+        backend
+            .ensure("container_inputs", original)
+            .await
+            .error()
+            .is_some()
+    );
+    let state = fixture.state.lock().unwrap();
+    assert_eq!(
+        (state.creates, state.starts, state.transfers, state.deletes),
+        (1, 1, 1, 0)
+    );
+    assert!(state.helper.is_some());
+    assert!(state.files.contains_key("credentials/speech"));
 }

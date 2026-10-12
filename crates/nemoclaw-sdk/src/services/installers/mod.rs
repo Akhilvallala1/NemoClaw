@@ -4,5 +4,9 @@
 //! Package-specific service installers.
 
 pub mod container;
+mod docker;
 pub mod ollama;
 pub mod vllm;
+
+#[cfg(test)]
+mod tests;

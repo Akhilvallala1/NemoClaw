@@ -47,10 +47,10 @@ pub(crate) fn is_disposable(address: &str) -> bool {
         "docker_image.",
         "docker_network.",
         "docker_volume.",
-        "nemoclaw_container_inputs.",
     ]
     .iter()
     .any(|prefix| address.starts_with(prefix))
+        || crate::services::binding_behavior(address).disposable
 }
 fn digest(engine: &str, name: &str) -> String {
     Sha256::digest(format!("{engine}\0{name}").as_bytes())[..16]
@@ -485,8 +485,7 @@ fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
             .1;
         let present = format!("runtime_image_present_{name}");
         let acquired = format!("runtime_image_acquired_{name}");
-        let mut config =
-            json!({"spec":target.values["spec"],"allow_missing":image.kind == "docker_image"});
+        let mut config = json!({"spec":crate::managed::ImageRequirements::from_spec(&spec(target)?)?.json()?,"allow_missing":image.kind == "docker_image"});
         literal(&mut config);
         graph["data"]["nemoclaw_runtime_image"][&present] = config.clone();
         let present_address = format!("data.nemoclaw_runtime_image.{present}");

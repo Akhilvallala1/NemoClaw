@@ -248,17 +248,12 @@
       "description": "Static bearer delivery does not issue, refresh, or narrow an identity's authority.",
       "properties": {
         "mode": {
-          "description": "oidcBearer requires an external service identity. Explicit none selects development-only, unauthenticated HTTP to this deployment's managed Docker gateway; no automatic fallback.",
-          "enum": [
-            "oidcBearer",
-            "none"
-          ],
-          "type": "string"
+          "$ref": "#/$defs/AuthenticationMode",
+          "description": "oidcBearer requires an external service identity. Explicit none selects development-only, unauthenticated HTTP to this deployment's managed Docker gateway; no automatic fallback."
         },
         "refreshMode": {
-          "const": "none",
-          "description": "none: the application fails closed on expiry; no installer-owned refresh.",
-          "type": "string"
+          "$ref": "#/$defs/RefreshMode",
+          "description": "none: the application fails closed on expiry; no installer-owned refresh."
         },
         "secretRef": {
           "description": "Required protected credential name for oidcBearer; absent or null for none. Speech credentials remain independent.",
@@ -280,12 +275,8 @@
       "description": "Trust must match the explicitly selected authentication and transport profile.",
       "properties": {
         "trust": {
-          "description": "system uses image CA roots with HTTPS/OIDC. none explicitly selects plaintext for the bound local development gateway. Private CA delivery and skipped certificate verification are unsupported.",
-          "enum": [
-            "system",
-            "none"
-          ],
-          "type": "string"
+          "$ref": "#/$defs/TlsTrust",
+          "description": "system uses image CA roots with HTTPS/OIDC. none explicitly selects plaintext for the bound local development gateway. Private CA delivery and skipped certificate verification are unsupported."
         }
       },
       "required": [
@@ -297,6 +288,14 @@
       "description": "Authentication method supported through the OpenShell provider.",
       "enum": [
         "api-key"
+      ],
+      "type": "string"
+    },
+    "AuthenticationMode": {
+      "description": "Explicit application authentication profile.",
+      "enum": [
+        "oidcBearer",
+        "none"
       ],
       "type": "string"
     },
@@ -2364,6 +2363,13 @@
       ],
       "type": "object"
     },
+    "RefreshMode": {
+      "description": "The installer delivers a static reference; refresh belongs to the application.",
+      "enum": [
+        "none"
+      ],
+      "type": "string"
+    },
     "Resources": {
       "additionalProperties": false,
       "description": "Resource declarations checked against host observations and produced data.",
@@ -3708,6 +3714,14 @@
         "key"
       ],
       "type": "object"
+    },
+    "TlsTrust": {
+      "description": "Trust for the selected application transport.",
+      "enum": [
+        "system",
+        "none"
+      ],
+      "type": "string"
     },
     "Tool": {
       "additionalProperties": false,

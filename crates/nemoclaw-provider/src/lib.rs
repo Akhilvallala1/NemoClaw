@@ -110,7 +110,7 @@ mod application_input_contract_tests {
         let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
             serde_json::from_str(&target.values["spec"]).unwrap();
         let connections =
-            docker::Connections::fixed([fixture.engine_for(spec.process.engine())]).unwrap();
+            docker::Connections::fixed([fixture.engine_for(&spec.storage.engine)]).unwrap();
         assert!(
             services::BackendRegistry::new(&connections)
                 .resolve(&target.kind, &target.values)

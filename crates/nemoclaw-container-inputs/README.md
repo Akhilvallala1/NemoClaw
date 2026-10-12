@@ -48,6 +48,13 @@ may replace a confirmed stopped failed helper only while the application is stop
 it never replays credentials into an unconfirmed running helper. Reads and health
 checks do not publish files or start the initializer.
 
+Preparation identity contains input intent and owned storage, excluding application
+image, literal environment, and port publication. Updating those launch settings
+preserves the initializer and protected files. Changed input references select a new
+disposable data volume; changed physical sandbox identity invalidates the descriptor
+binding. The provider rejects unsupported saved input specifications before engine
+access or mutation, retaining their resources.
+
 See [manual qualification](../../image/container-inputs/README.md). macOS tests
 exercise path, ownership and mode handling with an explicitly test-only ACL stub;
 they do not qualify Linux ACL enforcement or Docker delivery.

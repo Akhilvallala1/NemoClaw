@@ -27,8 +27,8 @@ pub use registry::{
     ResourceBehavior, ResourceSchema, ServiceDefinition, resource_behavior, resource_schemas,
 };
 pub(crate) use registry::{
-    constrain_schema, credential_source_json, defaults, discovery_engines, generation_kinds,
-    has_runtime, install_plans, provider_authenticated, remove_plans, required_storage_address,
-    resolve, resource_label, supported_generation_kind, validate, validate_provider,
-    validate_route,
+    binding_behavior, constrain_schema, credential_source_json, defaults, discovery_engines,
+    generation_kinds, has_runtime, install_plans, preflight, provider_authenticated, remove_plans,
+    required_storage_address, resolve, resource_label, supported_generation_kind, validate,
+    validate_provider, validate_route,
 };

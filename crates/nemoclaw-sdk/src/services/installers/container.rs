@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Image-owned applications use the same compute compiler as typed inference services.
+use super::docker;
 use crate::{
     Error,
     compile::{Generations, Target},
     config::{ConfigError, Document, ImagePullPolicy, validation::require},
-    managed::{Process, Spec, Storage},
+    managed::Process,
     services::contract::{InstallPlan, Installer, RemovePlan},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
+pub mod connection;
 pub mod inputs;
 
 pub const SERVICE_KIND: &str = "container_service";
@@ -42,7 +44,7 @@ pub struct Service {
     pub secrets: BTreeMap<String, inputs::ProtectedCredential>,
     /// Explicit connection projection and selected-agent readiness ordering.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub agent_connections: BTreeMap<String, inputs::AgentConnection>,
+    pub agent_connections: BTreeMap<String, connection::AgentConnection>,
     /// Local Docker placement. Omission inherits the managed Docker gateway's engine and network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ContainerPlacement")]
@@ -122,7 +124,7 @@ pub(crate) fn constrain_schema(defs: &mut serde_json::Map<String, serde_json::Va
     property(
         service,
         "user",
-        json!({"pattern":"^[1-9][0-9]{0,8}:[1-9][0-9]{0,8}$", "default":"65532:65532"}),
+        json!({"pattern":c::APPLICATION_USER, "default":"65532:65532"}),
     );
     property(
         service,
@@ -137,7 +139,7 @@ pub(crate) fn constrain_schema(defs: &mut serde_json::Map<String, serde_json::Va
     property(
         &mut defs["ContainerData"],
         "mountPath",
-        json!({"pattern":"^/var/lib/[a-z][a-z0-9-]{0,62}$"}),
+        json!({"pattern":c::APPLICATION_ROOT}),
     );
     property(
         &mut defs["ContainerReadiness"],
@@ -162,6 +164,15 @@ pub(crate) fn constrain_schema(defs: &mut serde_json::Map<String, serde_json::Va
 }
 
 impl Service {
+    pub(crate) fn preflight(&self, secrets: &dyn crate::Secrets) -> Result<(), Error> {
+        for secret in self.secrets.values() {
+            let value = secrets.resolve(&secret.credential.env)?;
+            if !nemoclaw_container_inputs::credential(&value) {
+                return Err(crate::ObservationError::Authentication.into());
+            }
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), ConfigError> {
         crate::config::schema::validate_service("container", self)?;
         require(
@@ -236,10 +247,6 @@ impl Installer for Service {
         generations: &Generations,
     ) -> Result<InstallPlan, Error> {
         self.validate()?;
-        let generation = generations
-            .get(SERVICE_KIND)
-            .filter(|value| !value.is_empty())
-            .ok_or(Error::State("missing container service generation"))?;
         let (engine, network_cidr) = self.location(document)?;
         let shared_gateway = document.spec.gateway.as_managed().filter(|gateway| {
             gateway.engine == engine
@@ -248,11 +255,11 @@ impl Installer for Service {
         });
         let mut connections = self.agent_connections.clone();
         for connection in connections.values_mut() {
-            connection.validate_binding(document, self)?;
+            connection.validate_binding(document, &engine, &network_cidr)?;
             connection.gateway_endpoint = connection.resolved_endpoint(document)?;
         }
         let process = Process {
-            engine: engine.clone(),
+            engine,
             image: self.image.clone(),
             network_cidr,
             create_network: shared_gateway.is_none(),
@@ -282,34 +289,19 @@ impl Installer for Service {
             memory_bytes: 1 << 30,
             gpu: false,
         };
-        let spec = Spec {
-            layout: 0,
-            compute_driver: crate::config::ComputeDriver::Docker,
-            kind: SERVICE_KIND.into(),
-            name: format!("{}-container-{name}", document.workspace()),
-            owner: document.metadata.uid.clone(),
-            generation: generation.clone(),
-            gateway: shared_gateway
-                .map_or_else(Default::default, |gateway| gateway.runtime_settings()),
-            process: Some(process),
-        };
-        let storage = Storage {
-            name: spec.volume(),
-            owner: spec.owner.clone(),
-            generation: generation.clone(),
-            engine,
-        };
-        let mut values = crate::backend::Row::from([
-            ("spec".into(), spec.json()?),
-            (
-                "wait_timeout_seconds".into(),
-                self.readiness.startup_timeout_seconds.to_string(),
-            ),
-        ]);
-        if let Some(policy) = self.image_pull_policy {
-            values.insert("image_pull_policy".into(), policy.as_str().into());
-        }
-        let mut dependencies = vec![address(STORAGE_KIND, name)];
+        let spec = docker::specification(
+            document,
+            generations,
+            SERVICE_KIND,
+            format!("{}-container-{name}", document.workspace()),
+            shared_gateway.map_or_else(Default::default, |gateway| gateway.runtime_settings()),
+            process,
+        )?;
+        let values = crate::backend::Row::from([(
+            "wait_timeout_seconds".into(),
+            self.readiness.startup_timeout_seconds.to_string(),
+        )]);
+        let mut dependencies = Vec::new();
         for dependency in &self.depends_on {
             match &document.spec.services[dependency] {
                 super::super::ServiceDefinition::Container(_) => dependencies.push(format!(
@@ -323,21 +315,9 @@ impl Installer for Service {
                 | super::super::ServiceDefinition::Vllm(_) => {}
             }
         }
-        let mut targets = vec![
-            Target {
-                kind: STORAGE_KIND.into(),
-                address: address(STORAGE_KIND, name),
-                values: storage.row()?,
-            },
-            Target {
-                kind: SERVICE_KIND.into(),
-                address: address(SERVICE_KIND, name),
-                values,
-            },
-        ];
+        let mut targets = Vec::new();
         let mut edges = BTreeMap::new();
         for connection in self.agent_connections.values() {
-            connection.validate_binding(document, self)?;
             dependencies.push(format!(
                 "data.nemoclaw_sandbox_readiness.{}",
                 connection.sandbox_ref
@@ -346,7 +326,16 @@ impl Installer for Service {
         if !self.secrets.is_empty() || !self.agent_connections.is_empty() {
             let input_address = address(inputs::INPUTS_KIND, name);
             let inputs = inputs::InputsSpec {
-                process: spec.clone(),
+                storage: docker::storage(&spec, spec.volume()),
+                architecture: self.architecture.clone(),
+                user: self.user.clone(),
+                root: self.data.mount_path.clone(),
+                revision: spec.process.as_ref().unwrap().input_revision.clone(),
+                local_gateway: connections
+                    .values()
+                    .any(|c| c.authentication.mode == connection::AuthenticationMode::None)
+                    .then(|| connection::LocalGateway::from_document(document))
+                    .transpose()?,
                 setup: self
                     .input_setup
                     .clone()
@@ -381,10 +370,17 @@ impl Installer for Service {
             dependencies.push(input_address);
         }
         edges.insert(address(SERVICE_KIND, name), dependencies);
-        Ok(InstallPlan {
-            targets,
-            dependencies: edges,
-        })
+        docker::install(
+            spec,
+            name,
+            STORAGE_KIND,
+            self.image_pull_policy,
+            values,
+            InstallPlan {
+                targets,
+                dependencies: edges,
+            },
+        )
     }
     fn remove(&self, _: &Document, _: &str, _: &Generations) -> Result<RemovePlan, Error> {
         Ok(RemovePlan::default())

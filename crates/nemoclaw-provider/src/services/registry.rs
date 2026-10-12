@@ -27,7 +27,7 @@ impl<'a> BackendRegistry<'a> {
             spec.validate().map_err(|_| ObservationError::Incomplete)?;
             let engine = self
                 .connections
-                .resolve(spec.process.engine())
+                .resolve(&spec.storage.engine)
                 .map_err(|_| ObservationError::Backend("engine connection unavailable"))?;
             return Ok(Some(Box::new(super::inputs::InputsBackend::new(engine))));
         }

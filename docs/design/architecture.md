@@ -32,6 +32,21 @@ Pure policy compilation stays in SDK configuration; OpenShell transport and muta
 The [provider reference](../provider.md) owns resource-specific contracts and protocol details.
 Implementation starts at [Deployment](../../crates/nemoclaw-sdk/src/deployment/mod.rs), [graph compilation](../../crates/nemoclaw-sdk/src/compile.rs), and [backend contracts](../../crates/nemoclaw-backend/src/contract.rs).
 
+Ollama, vLLM, and generic application containers use one internal [Docker installer](../../crates/nemoclaw-sdk/src/services/installers/docker.rs) to assemble owned specifications, storage, process targets, and dependencies.
+Service callers supply resource identities, process settings, image acquisition policy, preparation resources, and storage retention requirements.
+Ollama and vLLM supply model and supervisor settings; vLLM also supplies credential storage and source declarations.
+Applications retain image-owned startup and health, literal settings, publication, and protected-input projection.
+The existing Docker compiler maps these plans to OpenTofu resources; providers own mutations and readiness observations.
+Each service owns its storage retention requirements.
+
+Application preparation records owned storage, numeric user, data root, architecture, setup image, and input references.
+Application image, literal environment, publication, and runtime settings do not participate in preparation identity.
+The [connection module](../../crates/nemoclaw-sdk/src/services/installers/container/connection.rs) projects the selected sandbox identity, endpoint, authentication, trust, and deadlines into a nonsecret descriptor.
+The input provider resolves credentials and uses the fixed Rust publisher for private filesystem admission and atomic publication.
+The shared Docker client owns bounded archive transport and checked metadata; the input provider owns custody policy.
+Image observations receive explicit platform and startup requirements, independently of application process identity.
+The service registry supplies credential preflight and resource behavior to deployment orchestration.
+
 ## Managed Kubernetes Ownership
 
 For a managed Kubernetes gateway, the runtime graph orders retained storage, development authentication, `helm_release.gateway`, and gateway readiness.
