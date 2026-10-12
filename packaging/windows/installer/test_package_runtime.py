@@ -72,14 +72,14 @@ class PackageComposition(unittest.TestCase):
         self.sources = Path(package.__file__).parents[1] / "runtime"
         self.output = fixture.root / "package"
 
-    def compose(self):
+    def compose(self, selection=None):
         return package.compose(
             self.host,
             self.fixture.output,
             self.launcher,
             self.capabilities,
             self.output,
-            None,
+            selection,
         )
 
     def test_composition_keeps_shared_node_and_uses_fixed_guardian_wrappers(self):
@@ -114,11 +114,11 @@ class PackageComposition(unittest.TestCase):
         )
         catalog = json.loads((self.output / "agent-support.json").read_text())
         self.assertEqual(
-            [row["id"] for row in catalog["agents"] if row["selectable"]], ["openclaw"]
+            [row["id"] for row in catalog["agents"] if row["selectable"]], []
         )
         self.assertEqual(
             catalog["agents"][0]["limitation"],
-            "Preview: full runtime checks are pending.",
+            "Unavailable: runtime qualification is pending.",
         )
         self.assertFalse((self.output / "runtime-current").exists())
 
@@ -165,6 +165,43 @@ class PackageComposition(unittest.TestCase):
         self.assertEqual(
             Path(notices[0].attrib["Source"]).read_bytes(), source_notice.read_bytes()
         )
+
+    def test_both_included_agents_can_receive_a_runtime_bound_reviewed_decision(self):
+        assembly = {**self.assembly, "agents": [{"agent": agent} for agent in package.LAYOUT]}
+        decision = {
+            "schemaVersion": 1,
+            "classification": "reviewed-native-runtime-availability",
+            "runtime": assembly["runtime"],
+            "agents": [{"agent": agent, "evidenceSha256": "d" * 64} for agent in package.LAYOUT],
+        }
+        document, references = package.availability(assembly, decision)
+        self.assertEqual(document["agents"], [
+            {"agent": agent, "status": "qualified"} for agent in package.LAYOUT
+        ])
+        self.assertEqual(references, decision["agents"])
+        for rows in (
+            [{"agent": "pi", "evidenceSha256": "d" * 64}],
+            [{"agent": "hermes", "evidenceSha256": "invalid"}],
+            [decision["agents"][1], decision["agents"][1]],
+        ):
+            with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, "unavailable, duplicate or unbound"):
+                package.availability(assembly, {**decision, "agents": rows})
+        with self.assertRaisesRegex(ValueError, "unavailable, duplicate or unbound"):
+            package.availability(self.assembly, {**decision, "agents": [decision["agents"][1]]})
+
+    def test_only_reviewed_included_profiles_are_selectable_in_the_package_catalog(self):
+        decision = self.fixture.root / "reviewed-availability.json"
+        decision.write_text(json.dumps({
+            "schemaVersion": 1,
+            "classification": "reviewed-native-runtime-availability",
+            "runtime": self.assembly["runtime"],
+            "agents": [{"agent": "openclaw", "evidenceSha256": "d" * 64}],
+        }))
+        self.compose(decision)
+        catalog = json.loads((self.output / "agent-support.json").read_text())
+        self.assertEqual([row["id"] for row in catalog["agents"] if row["selectable"]], ["openclaw"])
+        self.assertNotIn("limitation", catalog["agents"][0])
+        self.assertEqual(catalog["agents"][1]["limitation"], "Unavailable in this preview")
 
     def test_engine_presence_enables_model_selection_without_granting_qualification(self):
         assembly = {**self.assembly, "localInference": {

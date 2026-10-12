@@ -130,7 +130,6 @@ def availability(assembly, selection):
                 set(row) != {"agent", "evidenceSha256"}
                 or row["agent"] not in included
                 or row["agent"] in qualified
-                or row["agent"] == "hermes"
                 or not isinstance(row["evidenceSha256"], str)
                 or len(row["evidenceSha256"]) != 64
                 or any(ch not in "0123456789abcdef" for ch in row["evidenceSha256"])
@@ -275,11 +274,11 @@ def compose(
         if {row.get("id") for row in support.get("agents", [])} != set(LAYOUT):
             raise ValueError("The host agent catalog is incomplete.")
         for row in support["agents"]:
-            row["selectable"] = statuses[row["id"]] != "not-included"
-            if not row["selectable"]:
+            row["selectable"] = statuses[row["id"]] == "qualified"
+            if statuses[row["id"]] == "not-included":
                 row["limitation"] = "Unavailable in this preview"
             elif statuses[row["id"]] == "unqualified":
-                row["limitation"] = "Preview: full runtime checks are pending."
+                row["limitation"] = "Unavailable: runtime qualification is pending."
             else:
                 row.pop("limitation", None)
             if row["id"] == "hermes":

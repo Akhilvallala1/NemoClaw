@@ -106,12 +106,19 @@ unperformed for a Hermes installer. Tavily live lookup remains explicitly waived
 
 The required canonical shell failed in the historical MXC probe described above.
 That result does not determine whether a current candidate includes Hermes.
-The candidate installer makes an included Hermes runtime selectable, with a
-preview warning when its full runtime checks are pending. A package that omits
-Hermes keeps that choice unavailable.
+Normal Setup permits selection only when its embedded build input records reviewed
+qualification for that runtime. An included but unqualified Hermes runtime remains
+unavailable, as does an omitted runtime. Missing qualification metadata enables no
+agent choices.
 
-Selectable preview status is not qualification or release approval. The selected
-runtime must pass the required shell and complete installed acceptance checks
-before it can be called qualified. Credentialed acceptance requires the trusted
+The explicit `--qualification` runtime entry remains available for qualification
+work; it does not enable ordinary Setup selection or grant release approval. The
+build adapter accepts a reviewed decision for either retained agent only when it
+names the assembled runtime tuple. It does not authenticate that decision or
+generate passing evidence. Normal installed onboarding must still be tested with
+the qualified package; qualification-mode execution cannot replace it.
+
+The runtime must pass the required shell and complete installed acceptance checks.
+Credentialed acceptance requires the trusted
 controller on `main`; the historical probe does not satisfy that gate. No shell
 substitution, timeout increase or permission relaxation bypasses these checks.

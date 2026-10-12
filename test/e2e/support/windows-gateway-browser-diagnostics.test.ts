@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { runInNewContext } from "node:vm";
 import {
+  gatewayBrowserConsoleFailure,
   gatewayBrowserMajorVersion,
   gatewayBrowserRoute,
   installGatewayBrowserRouteTrace,
@@ -13,6 +14,15 @@ import {
 } from "../../../packaging/windows/app/gateway-control-browser-diagnostics.mts";
 
 describe("compiled gateway browser diagnostics", () => {
+  it.each([
+    ["[openclaw] application start failed: secret", "application-start"],
+    ["[openclaw] initial session location failed: secret", "initial-location"],
+    ["[openclaw] route navigation failed: secret", "route-navigation"],
+    ["[gateway] snapshot handler error: secret", "gateway-snapshot"],
+    ["private error with secret", "other"],
+  ])("classifies caught console errors without retaining details %#", (message, expected) => {
+    expect(gatewayBrowserConsoleFailure(message)).toBe(expected);
+  });
   it("retains routing predicates without copying tokens or configuration", () => {
     const secret = "fixture-secret-never-publish";
     const summary = summarizeGatewayHello({
@@ -86,6 +96,145 @@ describe("compiled gateway browser diagnostics", () => {
 });
 
 describe("compiled gateway navigation diagnostics", () => {
+  it("records early gateway state without retaining payloads or changing the gateway", async () => {
+    const secret = "early-state-secret-never-publish";
+    const events = new Map<string, () => void>();
+    let listener: (value: unknown) => void = () => {
+      throw new Error("Observer missing");
+    };
+    let unsubscribed = false;
+    const context = {
+      gateway: {
+        snapshot: { phase: "connecting", client: { secret } },
+        subscribe: (callback: typeof listener) => {
+          listener = callback;
+          return () => {
+            unsubscribed = true;
+          };
+        },
+      },
+      agentSelection: { state: { selectedId: "main" } },
+    };
+    const scope = {
+      location: { pathname: "/chat" },
+      history: { pushState: () => {}, replaceState: () => {} },
+      document: { querySelector: () => ({ context }) },
+      customElements: { whenDefined: () => Promise.resolve() },
+      addEventListener: (name: string, callback: () => void) => events.set(name, callback),
+    };
+    runInNewContext(`(${installGatewayBrowserRouteTrace.toString()})()`, scope);
+    await Promise.resolve();
+    listener({
+      phase: "connected",
+      client: { secret },
+      hello: {
+        auth: { role: "operator", scopes: ["operator.admin"], token: secret },
+        features: { methods: ["openclaw.setup.detect"] },
+        snapshot: {
+          sessionDefaults: { defaultAgentId: "main", modelConfigured: false, sessionKey: secret },
+        },
+      },
+    });
+    const summary = summarizeGatewayBrowserRouteTrace(
+      runInNewContext(`(${readGatewayBrowserRouteTrace.toString()})()`, scope),
+    );
+    expect(summary.gatewayObserved).toBe(true);
+    expect(summary.observerFailed).toBe(false);
+    expect(summary.snapshots).toEqual([
+      {
+        phase: "connecting",
+        route: "chat-root",
+        hasHello: false,
+        hasClient: true,
+        operatorRole: false,
+        setupDetectionAvailable: false,
+        adminScope: false,
+        selectedIsDefault: null,
+        modelConfigured: null,
+      },
+      {
+        phase: "connected",
+        route: "chat-root",
+        hasHello: true,
+        hasClient: true,
+        operatorRole: true,
+        setupDetectionAvailable: true,
+        adminScope: true,
+        selectedIsDefault: true,
+        modelConfigured: false,
+      },
+    ]);
+    expect(context.gateway.snapshot.phase).toBe("connecting");
+    expect(JSON.stringify(summary)).not.toContain(secret);
+    events.get("pagehide")?.();
+    expect(unsubscribed).toBe(true);
+  });
+
+  it("bounds early snapshots and reports malformed observer inputs without throwing", async () => {
+    let listener: (value: unknown) => void = () => {
+      throw new Error("Observer missing");
+    };
+    const scope = {
+      location: { pathname: "/chat" },
+      history: { pushState: () => {}, replaceState: () => {} },
+      document: {
+        querySelector: () => ({
+          context: {
+            gateway: {
+              subscribe: (callback: typeof listener) => {
+                listener = callback;
+                return () => {};
+              },
+            },
+          },
+        }),
+      },
+      customElements: { whenDefined: () => Promise.resolve() },
+      addEventListener: () => {},
+    };
+    runInNewContext(`(${installGatewayBrowserRouteTrace.toString()})()`, scope);
+    await Promise.resolve();
+    expect(() => listener(null)).not.toThrow();
+    runInNewContext(
+      'globalThis.__nemoclawRouteTrace.snapshots.push(...Array(63).fill({ phase: "other" }))',
+      scope,
+    );
+    listener({ phase: "private-state" });
+    listener({ phase: "private-state" });
+    const summary = summarizeGatewayBrowserRouteTrace(
+      runInNewContext(`(${readGatewayBrowserRouteTrace.toString()})()`, scope),
+    );
+    expect(summary.snapshots).toHaveLength(64);
+    expect(summary.snapshotsTruncated).toBe(true);
+    expect(summary.observerFailed).toBe(true);
+    expect(summary.snapshots.every((value) => value.phase === "other")).toBe(true);
+  });
+  it.each(["starting", "reconnecting", "offline"])(
+    "retains the gateway %s phase through serialization and sanitization",
+    async (phase) => {
+      const scope = {
+        location: { pathname: "/chat" },
+        history: { pushState: () => {}, replaceState: () => {} },
+        document: {
+          querySelector: () => ({
+            context: {
+              gateway: { snapshot: { phase }, subscribe: () => () => {} },
+            },
+          }),
+        },
+        customElements: { whenDefined: () => Promise.resolve() },
+        addEventListener: () => {},
+      };
+      runInNewContext(`(${installGatewayBrowserRouteTrace.toString()})()`, scope);
+      await Promise.resolve();
+      const summary = summarizeGatewayBrowserRouteTrace(
+        runInNewContext(`(${readGatewayBrowserRouteTrace.toString()})()`, scope),
+      );
+      expect(summary.snapshots).toHaveLength(1);
+      expect(summary.snapshots[0].phase).toBe(phase);
+      expect(summary.observerFailed).toBe(false);
+    },
+  );
   it("observes route changes without changing history results or copying URLs", () => {
     const secret = "navigation-secret-never-publish";
     const location = { pathname: "/chat" };
@@ -191,6 +340,19 @@ describe("compiled gateway navigation diagnostics", () => {
       trace: {
         routes: ["chat-root", "secret", { token: "secret" }, ...Array(100).fill("plugins")],
         truncated: "secret",
+        snapshots: [
+          {
+            phase: { token: "secret", toString: () => "connected" },
+            route: "secret",
+            hasHello: "secret",
+            modelConfigured: "secret",
+            selectedIsDefault: { token: "secret" },
+          },
+          ...Array(70).fill({ token: "secret" }),
+        ],
+        gatewayObserved: "secret",
+        observerFailed: "secret",
+        snapshotsTruncated: "secret",
       },
       connected: "secret",
       hasClient: {},
@@ -203,6 +365,10 @@ describe("compiled gateway navigation diagnostics", () => {
       true,
     );
     expect(summary.truncated).toBe(true);
+    expect(summary.snapshots).toHaveLength(64);
+    expect(summary.snapshotsTruncated).toBe(true);
+    expect(summary.gatewayObserved).toBe(false);
+    expect(summary.observerFailed).toBe(false);
     expect(summary).toMatchObject({
       connected: false,
       hasClient: false,

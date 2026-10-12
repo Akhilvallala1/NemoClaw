@@ -22,15 +22,15 @@ internal sealed class NativeRuntimeAvailability
 
     internal bool IsSelectedRuntimeBuild => this.statuses is not null;
     internal bool CanSelect(string agent) => Agents.Contains(agent, StringComparer.Ordinal)
-        && (this.statuses is null || this.statuses[agent] is "qualified" or "unqualified");
+        && this.statuses is not null && this.statuses[agent] == "qualified";
     internal bool IsUnqualified(string agent) => this.statuses is not null && this.statuses.TryGetValue(agent, out var status) && status == "unqualified";
-    internal string PreviewText => "Preview: full runtime checks are pending.";
+    internal string PreviewText => "Unavailable: runtime qualification is pending.";
     internal string UnavailableText => "Unavailable in this preview";
 
     internal static NativeRuntimeAvailability Load()
     {
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(Resource);
-        if (stream is null) return new(null); // Existing default build keeps its existing selection behavior.
+        if (stream is null) return new(null); // Missing evidence must not enable normal agent selection.
         if (stream.Length is < 1 or > 16384) throw new InvalidDataException("The embedded runtime availability is invalid.");
         using var buffer = new MemoryStream();
         stream.CopyTo(buffer);

@@ -12,6 +12,7 @@ export type WorkflowStep = {
   run?: string;
   uses?: string;
   if?: string;
+  env?: Record<string, string>;
   with?: Record<string, unknown>;
 };
 export type WorkflowJob = {
@@ -451,6 +452,19 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
   (() => {
     const call = requiredJob(workflow, "windows-finished-trusted-qualification");
     const full = requiredJob(trusted, "full-installed-acceptance");
+    const protectedEvidence = requiredStep(
+      full,
+      "Stage only non-runnable full acceptance evidence",
+    );
+    assert.deepStrictEqual(protectedEvidence.env, {
+      NVIDIA_API_KEY: "${{ secrets.WINDOWS_NATIVE_INSTALLER_NVIDIA_API_KEY }}",
+      NVIDIA_INFERENCE_API_KEY: "${{ secrets.WINDOWS_NATIVE_INSTALLER_NVIDIA_INFERENCE_API_KEY }}",
+    });
+    assert.ok(protectedEvidence.run?.includes("-RequireProtectedCredential"));
+    assert.strictEqual(
+      requiredStep(full, "Preserve full installed acceptance evidence").if,
+      "${{ always() && steps.full_evidence.outcome == 'success' }}",
+    );
     const publication = requiredJob(trusted, "publish-qualified-installer");
     const legacy = requiredJob(workflow, "windows-native-package-diagnostic");
     const secretJobs = Object.entries(trusted.jobs)

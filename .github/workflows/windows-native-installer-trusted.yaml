@@ -317,6 +317,9 @@ jobs:
         id: full_evidence
         if: ${{ always() }}
         shell: pwsh
+        env:
+          NVIDIA_API_KEY: ${{ secrets.WINDOWS_NATIVE_INSTALLER_NVIDIA_API_KEY }}
+          NVIDIA_INFERENCE_API_KEY: ${{ secrets.WINDOWS_NATIVE_INSTALLER_NVIDIA_INFERENCE_API_KEY }}
         run: |
           $work = "$env:RUNNER_TEMP\finished-windows"
           $inputs = @(
@@ -327,7 +330,7 @@ jobs:
             $inputs += @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | ForEach-Object FullName)
           }
           & "$env:GITHUB_WORKSPACE\controller\scripts\checks\stage-windows-native-evidence.ps1" `
-            -SourceBase $work -InputPath $inputs -OutputRoot "$env:RUNNER_TEMP\finished-windows-full-evidence"
+            -SourceBase $work -InputPath $inputs -OutputRoot "$env:RUNNER_TEMP\finished-windows-full-evidence" -RequireProtectedCredential
       - name: Preserve full installed acceptance evidence
         if: ${{ always() && steps.full_evidence.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

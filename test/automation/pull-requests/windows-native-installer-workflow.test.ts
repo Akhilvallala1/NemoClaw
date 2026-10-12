@@ -3,7 +3,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,12 @@ import {
 } from "../../../tools/windows-installer/workflow-boundary.mts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const evidencePowerShell = process.platform === "win32" ? "pwsh.exe" : "pwsh";
+const skipEvidenceProcesses =
+  process.platform !== "win32" &&
+  spawnSync(evidencePowerShell, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
+    timeout: 10_000,
+  }).status !== 0;
 function sources(): WindowsInstallerWorkflowSources {
   return readWindowsInstallerWorkflowSources(repoRoot);
 }
@@ -27,6 +33,34 @@ function step(job: WorkflowJob, name: string): WorkflowStep {
 }
 type Mutation = { name: string; mutate: (value: WindowsInstallerWorkflowSources) => void };
 const mutations: Mutation[] = [
+  ...["NVIDIA_API_KEY", "NVIDIA_INFERENCE_API_KEY"].map((name) => ({
+    name: "missing protected evidence comparison credential " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      delete step(
+        value.trusted.jobs["full-installed-acceptance"],
+        "Stage only non-runnable full acceptance evidence",
+      ).env![name];
+    },
+  })),
+  {
+    name: "credentialed evidence without mandatory credential comparison",
+    mutate: (value) => {
+      const staging = step(
+        value.trusted.jobs["full-installed-acceptance"],
+        "Stage only non-runnable full acceptance evidence",
+      );
+      staging.run = staging.run!.replace("-RequireProtectedCredential", "");
+    },
+  },
+  {
+    name: "upload after credential evidence staging fails",
+    mutate: (value) => {
+      step(
+        value.trusted.jobs["full-installed-acceptance"],
+        "Preserve full installed acceptance evidence",
+      ).if = "${{ always() }}";
+    },
+  },
   ...[
     "windows-finished-request",
     "windows-compiled-application",
@@ -776,37 +810,206 @@ it.skipIf(process.platform !== "win32")(
   },
 );
 
-it.skipIf(process.platform !== "win32")(
-  "rejects PE content disguised as allowlisted evidence",
-  () => {
-    const root = mkdtempSync(join(tmpdir(), "windows-native-evidence-"));
-    const input = join(root, "candidate-evidence.json");
+it.skipIf(skipEvidenceProcesses)("rejects PE content disguised as allowlisted evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "windows-native-evidence-"));
+  const input = join(root, "candidate-evidence.json");
+  const output = join(root, "staged");
+  const evidenceScript = join(repoRoot, "scripts/checks/stage-windows-native-evidence.ps1");
+  try {
+    writeFileSync(input, Buffer.from([0x4d, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]));
+    const result = spawnSync(
+      evidencePowerShell,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        evidenceScript,
+        "-SourceBase",
+        root,
+        "-InputPath",
+        input,
+        "-OutputRoot",
+        output,
+      ],
+      { encoding: "utf8", windowsHide: true },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain(
+      "Evidence input contains PE or MSI/OLE runnable content",
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+const evidenceKey = "nvapi-fixture-NotARealCredential-123456789";
+const secondEvidenceKey = 'fixture-inference<&/+-"key-98456321';
+const evidenceCases = [
+  { name: "UTF-8 log", bytes: Buffer.from(evidenceKey) },
+  { name: "UTF-16 log", bytes: Buffer.from(evidenceKey, "utf16le") },
+  {
+    name: "UTF-32 log",
+    bytes: Buffer.from([...evidenceKey].flatMap((value) => [value.charCodeAt(0), 0, 0, 0])),
+  },
+  {
+    name: "UTF-32 big-endian log",
+    bytes: Buffer.from([...evidenceKey].flatMap((value) => [0, 0, 0, value.charCodeAt(0)])),
+  },
+  { name: "UTF-16 big-endian log", bytes: Buffer.from(evidenceKey, "utf16le").swap16() },
+  {
+    name: "JSON escaped inference key",
+    bytes: Buffer.from(JSON.stringify({ apiKey: secondEvidenceKey })),
+    extension: ".json",
+  },
+  {
+    name: "JSON unicode escapes",
+    bytes: Buffer.from(
+      [...evidenceKey]
+        .map((value) => "\\u" + value.charCodeAt(0).toString(16).padStart(4, "0"))
+        .join(""),
+    ),
+  },
+  { name: "URL encoded inference key", bytes: Buffer.from(encodeURIComponent(secondEvidenceKey)) },
+  { name: "base64 key", bytes: Buffer.from(Buffer.from(evidenceKey).toString("base64")) },
+  {
+    name: "base64url inference key",
+    bytes: Buffer.from(Buffer.from(secondEvidenceKey).toString("base64url")),
+  },
+  {
+    name: "binary diagnostic",
+    bytes: Buffer.concat([Buffer.from([0, 1, 255]), Buffer.from(evidenceKey)]),
+    extension: ".etl",
+  },
+  { name: "key across scan chunks", bytes: Buffer.from("x".repeat(65530) + evidenceKey) },
+  {
+    name: "key in evidence filename",
+    bytes: Buffer.from("safe content"),
+    filename: evidenceKey + ".txt",
+  },
+];
+
+it.skipIf(skipEvidenceProcesses).each(evidenceCases)(
+  "blocks credential-bearing evidence: $name",
+  ({ bytes, extension, filename }) => {
+    const root = mkdtempSync(join(tmpdir(), "windows-native-evidence-secret-"));
+    const input = join(root, filename ?? "diagnostic" + (extension ?? ".log"));
     const output = join(root, "staged");
-    const evidenceScript = join(repoRoot, "scripts/checks/stage-windows-native-evidence.ps1");
     try {
-      writeFileSync(input, Buffer.from([0x4d, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]));
+      writeFileSync(input, bytes);
       const result = spawnSync(
-        "pwsh.exe",
+        evidencePowerShell,
         [
           "-NoProfile",
           "-NonInteractive",
           "-File",
-          evidenceScript,
+          join(repoRoot, "scripts/checks/stage-windows-native-evidence.ps1"),
           "-SourceBase",
           root,
           "-InputPath",
           input,
           "-OutputRoot",
           output,
+          "-RequireProtectedCredential",
         ],
-        { encoding: "utf8", windowsHide: true },
+        {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 30_000,
+          env: {
+            ...process.env,
+            NVIDIA_API_KEY: evidenceKey,
+            NVIDIA_INFERENCE_API_KEY: secondEvidenceKey,
+          },
+        },
       );
       expect(result.status).not.toBe(0);
       expect(result.stdout + result.stderr).toContain(
-        "Evidence input contains PE or MSI/OLE runnable content",
+        "Evidence contains a protected credential; upload is blocked.",
+      );
+      expect(result.stdout + result.stderr).not.toContain(evidenceKey);
+      expect(result.stdout + result.stderr).not.toContain(secondEvidenceKey);
+      expect(existsSync(join(output, "evidence-manifest.json"))).toBe(false);
+      expect(existsSync(join(output, filename ?? "diagnostic" + (extension ?? ".log")))).toBe(
+        false,
       );
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
+  },
+);
+
+function withStagedSafeEvidence(
+  credential: string,
+  inspect: (value: {
+    status: number | null;
+    diagnostics: string;
+    output: string;
+    content: string;
+  }) => void,
+) {
+  const root = mkdtempSync(join(tmpdir(), "windows-native-evidence-safe-"));
+  const input = join(root, "diagnostic.json");
+  const output = join(root, "staged");
+  const content = '{"passed":true,"credential":"[REDACTED]"}';
+  try {
+    writeFileSync(input, content);
+    const result = spawnSync(
+      evidencePowerShell,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        join(repoRoot, "scripts/checks/stage-windows-native-evidence.ps1"),
+        "-SourceBase",
+        root,
+        "-InputPath",
+        input,
+        "-OutputRoot",
+        output,
+        "-RequireProtectedCredential",
+      ],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          NVIDIA_API_KEY: credential,
+          NVIDIA_INFERENCE_API_KEY: "",
+        },
+      },
+    );
+    inspect({ status: result.status, diagnostics: result.stdout + result.stderr, output, content });
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+}
+
+it.skipIf(skipEvidenceProcesses)(
+  "rejects protected evidence when comparison credentials are absent",
+  () => {
+    withStagedSafeEvidence("", ({ status, diagnostics, output }) => {
+      expect(status).toBe(1);
+      expect(diagnostics).toContain("Protected evidence requires a credential for comparison.");
+      expect(existsSync(join(output, "evidence-manifest.json"))).toBe(false);
+    });
+  },
+);
+
+it.skipIf(skipEvidenceProcesses)(
+  "stages safe evidence byte-for-byte when comparison credentials are present",
+  () => {
+    withStagedSafeEvidence(evidenceKey, ({ status, output, content }) => {
+      expect(status).toBe(0);
+      expect(readFileSync(join(output, "diagnostic.json"), "utf8")).toBe(content);
+      const manifest = JSON.parse(readFileSync(join(output, "evidence-manifest.json"), "utf8"));
+      expect(manifest.files).toEqual([
+        {
+          path: "diagnostic.json",
+          bytes: Buffer.byteLength(content),
+          sha256: createHash("sha256").update(content).digest("hex"),
+        },
+      ]);
+    });
   },
 );

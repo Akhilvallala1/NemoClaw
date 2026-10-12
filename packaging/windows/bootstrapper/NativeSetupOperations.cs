@@ -19,7 +19,9 @@ internal static class NativeSetupOperations
         var launcher = InstalledLauncher();
         if (!NativeMaintenance.SupportsDataRemoval())
             throw new InvalidOperationException("Install this preview before configuring its native agent settings.");
-        await SaveWithHelperAsync(configuration, password, serviceCredentials, progress, cancellation, launcher, RunSetupHelperAsync);
+        await SaveWithHelperAsync(configuration, password, serviceCredentials, progress, cancellation, launcher,
+            (path, arguments, input, capture) => RunSetupHelperAsync(path, arguments, input, capture,
+                () => progress?.Invoke(new("configuration", "Saving or recovering your settings is taking longer than expected. Keep Setup open until Windows confirms completion.", null, null))));
     }
 
     internal static async Task SaveWithHelperAsync(NativeSetupConfiguration configuration, SecureString password, NativeServiceCredentials? serviceCredentials, Action<NativeExpressProgress>? progress, CancellationToken cancellation, string launcher, NativeSetupHelperRunner runSetupHelper)
@@ -109,7 +111,8 @@ internal static class NativeSetupOperations
         }) ?? throw new InvalidOperationException("The configured agent could not start.");
     }
 
-    private static async Task<string> RunSetupHelperAsync(string launcher, string[] arguments, byte[] input, bool captureOutput = false)
+    internal static async Task<string> RunSetupHelperAsync(string launcher, string[] arguments, byte[] input, bool captureOutput = false,
+        Action? waitingForTransaction = null, TimeSpan? observationDeadline = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -124,15 +127,24 @@ internal static class NativeSetupOperations
         };
         foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
         using var process = new Process { StartInfo = startInfo };
-        // A transaction includes bounded vault snapshots, writes, and possible rollback.
-        // Do not kill its owner at the old single-operation timeout while it is recovering.
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(arguments.Contains("--transaction") ? 600 : 30));
+        var transaction = arguments.Contains("--transaction");
+        var deadline = observationDeadline ?? TimeSpan.FromSeconds(transaction ? 600 : 30);
+        using var timeout = new CancellationTokenSource();
+        if (!transaction) timeout.CancelAfter(deadline);
         if (!process.Start()) throw new InvalidOperationException("The native setup helper could not start.");
         try
         {
-            var stdout = ReadBoundedOutputAsync(process.StandardOutput, timeout.Token, captureOutput);
-            var stderr = ReadBoundedOutputAsync(process.StandardError, timeout.Token);
-            await Task.WhenAll(WriteHelperInputAsync(process.StandardInput, input, timeout.Token), process.WaitForExitAsync(timeout.Token), stdout, stderr);
+            var stdout = ReadBoundedOutputAsync(process.StandardOutput, timeout.Token, captureOutput, transaction);
+            var stderr = ReadBoundedOutputAsync(process.StandardError, timeout.Token, drainOnOverflow: transaction);
+            var completion = Task.WhenAll(WriteHelperInputAsync(process.StandardInput, input, timeout.Token), process.WaitForExitAsync(timeout.Token), stdout, stderr);
+            try
+            {
+                // The deadline changes the displayed status, not ownership of a mutating helper.
+                // Keep its pipes open and Setup busy until commit or recovery actually finishes.
+                if (transaction && await Task.WhenAny(completion, Task.Delay(deadline, timeout.Token)) != completion)
+                    waitingForTransaction?.Invoke();
+            }
+            finally { await completion; }
             if (process.ExitCode != 0 || (!captureOutput && stdout.Result.Count != 0))
             {
                 throw new InvalidOperationException("The native setup helper rejected the configuration.");
@@ -141,11 +153,16 @@ internal static class NativeSetupOperations
         }
         finally
         {
+            timeout.Cancel();
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
-                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await process.WaitForExitAsync(cleanup.Token);
+                if (transaction) await process.WaitForExitAsync();
+                else
+                {
+                    process.Kill(entireProcessTree: true);
+                    using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await process.WaitForExitAsync(cleanup.Token);
+                }
             }
         }
     }
@@ -191,7 +208,7 @@ internal static class NativeSetupOperations
         finally { writer.Close(); }
     }
 
-    private static async Task<(int Count, string Value)> ReadBoundedOutputAsync(StreamReader reader, CancellationToken cancellation, bool capture = false)
+    private static async Task<(int Count, string Value)> ReadBoundedOutputAsync(StreamReader reader, CancellationToken cancellation, bool capture = false, bool drainOnOverflow = false)
     {
         var buffer = new char[512];
         var value = capture ? new StringBuilder() : null;
@@ -201,11 +218,13 @@ internal static class NativeSetupOperations
         {
             while ((count = await reader.ReadAsync(buffer.AsMemory(), cancellation)) != 0)
             {
-                total += count;
-                if (total > 4096) throw new InvalidOperationException("The native setup helper exceeded its output bound.");
-                value?.Append(buffer, 0, count);
+                total = Math.Min(4097, total + count);
+                if (total > 4096 && !drainOnOverflow) throw new InvalidOperationException("The native setup helper exceeded its output bound.");
+                // Discard excess transaction output without breaking its pipe during rollback.
+                if (total <= 4096) value?.Append(buffer, 0, count);
                 Array.Clear(buffer);
             }
+            if (total > 4096) throw new InvalidOperationException("The native setup helper exceeded its output bound.");
             return (total, value?.ToString() ?? string.Empty);
         }
         finally { Array.Clear(buffer); }

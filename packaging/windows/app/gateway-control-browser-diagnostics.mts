@@ -1,6 +1,23 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+type GatewaySnapshot = {
+  phase?: string;
+  client?: unknown;
+  hello?: {
+    auth?: { role?: string; scopes?: string[] };
+    features?: { methods?: string[] };
+    snapshot?: { sessionDefaults?: { defaultAgentId?: string; modelConfigured?: boolean } };
+  };
+};
+type GatewayContext = {
+  gateway?: {
+    snapshot?: GatewaySnapshot;
+    subscribe?: (listener: (snapshot: GatewaySnapshot) => void) => () => void;
+  };
+  agentSelection?: { state?: { selectedId?: string } };
+};
+
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -46,6 +63,14 @@ export function gatewayBrowserMajorVersion(value: string) {
   return Number.isSafeInteger(major) && major > 0 ? major : null;
 }
 
+export function gatewayBrowserConsoleFailure(value: string) {
+  if (value.startsWith("[openclaw] application start failed")) return "application-start";
+  if (value.startsWith("[openclaw] initial session location failed")) return "initial-location";
+  if (value.startsWith("[openclaw] route navigation failed")) return "route-navigation";
+  if (value.startsWith("[gateway] snapshot handler error:")) return "gateway-snapshot";
+  return "other";
+}
+
 // Playwright serializes this function. Keep it independent of module scope.
 export function installGatewayBrowserRouteTrace() {
   const scope = globalThis as unknown as {
@@ -54,10 +79,19 @@ export function installGatewayBrowserRouteTrace() {
       "pushState" | "replaceState",
       (data: unknown, unused: string, url?: string | URL | null) => unknown
     >;
-    addEventListener: (type: "popstate", listener: () => void) => void;
-    __nemoclawRouteTrace?: { routes: string[]; truncated: boolean };
+    addEventListener: (type: "popstate" | "pagehide", listener: () => void) => void;
+    customElements?: { whenDefined: (name: string) => Promise<unknown> };
+    document?: { querySelector: (selector: string) => { context?: GatewayContext } | null };
+    __nemoclawRouteTrace?: unknown;
   };
-  const trace = { routes: [] as string[], truncated: false };
+  const trace = {
+    routes: [] as string[],
+    truncated: false,
+    snapshots: [] as unknown[],
+    snapshotsTruncated: false,
+    gatewayObserved: false,
+    observerFailed: false,
+  };
   scope.__nemoclawRouteTrace = trace;
   const observe = () => {
     const pathname = scope.location.pathname;
@@ -85,6 +119,64 @@ export function installGatewayBrowserRouteTrace() {
   }
   scope.addEventListener("popstate", observe);
   observe();
+  // Subscribe when the dashboard element is defined, before waiting for navigation.
+  // A final connected snapshot cannot explain an earlier one-time routing decision.
+  void scope.customElements
+    ?.whenDefined("openclaw-app")
+    .then(() => {
+      const context = scope.document?.querySelector("openclaw-app")?.context;
+      const gateway = context?.gateway;
+      if (!gateway?.subscribe) return;
+      const capture = (snapshot: GatewaySnapshot) => {
+        try {
+          if (trace.snapshots.length >= 64) {
+            trace.snapshotsTruncated = true;
+            return;
+          }
+          const selected = context?.agentSelection?.state?.selectedId?.trim();
+          const defaults = snapshot.hello?.snapshot?.sessionDefaults;
+          const defaultAgent = defaults?.defaultAgentId?.trim();
+          trace.snapshots.push({
+            phase: [
+              "starting",
+              "connecting",
+              "connected",
+              "reconnecting",
+              "offline",
+              "reload-required",
+              "stopped",
+            ].includes(snapshot.phase ?? "")
+              ? snapshot.phase
+              : "other",
+            route: trace.routes.at(-1) ?? "other",
+            hasHello: Boolean(snapshot.hello),
+            hasClient: Boolean(snapshot.client),
+            operatorRole: snapshot.hello?.auth?.role === "operator",
+            setupDetectionAvailable:
+              snapshot.hello?.features?.methods?.includes("openclaw.setup.detect") === true,
+            adminScope: snapshot.hello?.auth?.scopes?.includes("operator.admin") === true,
+            selectedIsDefault: defaultAgent ? !selected || selected === defaultAgent : null,
+            modelConfigured:
+              typeof defaults?.modelConfigured === "boolean" ? defaults.modelConfigured : null,
+          });
+        } catch {
+          trace.observerFailed = true;
+        }
+      };
+      const unsubscribe = gateway.subscribe(capture);
+      trace.gatewayObserved = true;
+      if (gateway.snapshot) capture(gateway.snapshot);
+      scope.addEventListener("pagehide", () => {
+        try {
+          unsubscribe();
+        } catch {
+          trace.observerFailed = true;
+        }
+      });
+    })
+    .catch(() => {
+      trace.observerFailed = true;
+    });
 }
 
 // Read only categorical state from the pinned dashboard's public context getter.
@@ -93,21 +185,7 @@ export function readGatewayBrowserRouteTrace() {
     document: { querySelector: (selector: string) => unknown };
     __nemoclawRouteTrace?: unknown;
   };
-  const app = scope.document.querySelector("openclaw-app") as {
-    context?: {
-      gateway?: {
-        snapshot?: {
-          phase?: string;
-          client?: unknown;
-          hello?: {
-            auth?: { role?: string };
-            snapshot?: { sessionDefaults?: { defaultAgentId?: string } };
-          };
-        };
-      };
-      agentSelection?: { state?: { selectedId?: string } };
-    };
-  } | null;
+  const app = scope.document.querySelector("openclaw-app") as { context?: GatewayContext } | null;
   const snapshot = app?.context?.gateway?.snapshot;
   const selected = app?.context?.agentSelection?.state?.selectedId?.trim();
   const defaultAgent = snapshot?.hello?.snapshot?.sessionDefaults?.defaultAgentId?.trim();
@@ -137,5 +215,43 @@ export function summarizeGatewayBrowserRouteTrace(value: unknown) {
     operatorRole: state.operatorRole === true,
     selectedIsDefault:
       typeof state.selectedIsDefault === "boolean" ? state.selectedIsDefault : null,
+    gatewayObserved: trace.gatewayObserved === true,
+    observerFailed: trace.observerFailed === true,
+    snapshotsTruncated:
+      trace.snapshotsTruncated === true ||
+      (Array.isArray(trace.snapshots) && trace.snapshots.length > 64),
+    snapshots: Array.isArray(trace.snapshots)
+      ? trace.snapshots.slice(0, 64).map((value) => {
+          const snapshot = record(value);
+          return {
+            phase:
+              typeof snapshot.phase === "string" &&
+              [
+                "starting",
+                "connecting",
+                "connected",
+                "reconnecting",
+                "offline",
+                "reload-required",
+                "stopped",
+              ].includes(snapshot.phase)
+                ? snapshot.phase
+                : "other",
+            route:
+              typeof snapshot.route === "string" && allowed.has(snapshot.route)
+                ? snapshot.route
+                : "other",
+            hasHello: snapshot.hasHello === true,
+            hasClient: snapshot.hasClient === true,
+            operatorRole: snapshot.operatorRole === true,
+            setupDetectionAvailable: snapshot.setupDetectionAvailable === true,
+            adminScope: snapshot.adminScope === true,
+            selectedIsDefault:
+              typeof snapshot.selectedIsDefault === "boolean" ? snapshot.selectedIsDefault : null,
+            modelConfigured:
+              typeof snapshot.modelConfigured === "boolean" ? snapshot.modelConfigured : null,
+          };
+        })
+      : [],
   };
 }

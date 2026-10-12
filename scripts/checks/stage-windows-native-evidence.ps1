@@ -9,7 +9,8 @@
 param(
     [Parameter(Mandatory)][string]$SourceBase,
     [Parameter(Mandatory)][string[]]$InputPath,
-    [Parameter(Mandatory)][string]$OutputRoot
+    [Parameter(Mandatory)][string]$OutputRoot,
+    [switch]$RequireProtectedCredential
 )
 
 Set-StrictMode -Version Latest
@@ -27,9 +28,63 @@ $stagedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordi
 $manifestRows = [Collections.Generic.List[object]]::new()
 $oleHeader = [byte[]](0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1)
 
+# Match the credentials used by installed acceptance, not merely vendor prefixes.
+# Keep original evidence bytes and hashes; refuse the upload instead of editing evidence.
+$credentialPatterns = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$encodings = @([Text.Encoding]::UTF8, [Text.Encoding]::Unicode, [Text.Encoding]::BigEndianUnicode,
+    [Text.Encoding]::UTF32, [Text.Encoding]::GetEncoding(12001))
+foreach ($name in @('NVIDIA_API_KEY', 'NVIDIA_INFERENCE_API_KEY')) {
+    $credential = [Environment]::GetEnvironmentVariable($name)
+    if ([string]::IsNullOrEmpty($credential)) { continue }
+    if ($credential.Length -lt 8 -or $credential.Length -gt 8192) {
+        throw 'The protected evidence credential has an unsupported length.'
+    }
+    $jsonCredential = ConvertTo-Json -InputObject $credential -Compress
+    $unicodeCredential = -join ($credential.ToCharArray() | ForEach-Object { '\u{0:x4}' -f [int]$_ })
+    $urlCredential = -join ([Text.Encoding]::UTF8.GetBytes($credential) | ForEach-Object { '%{0:X2}' -f $_ })
+    $base64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($credential))
+    $representations = @($credential, [Uri]::EscapeDataString($credential),
+        [Security.SecurityElement]::Escape($credential), $jsonCredential.Substring(1, $jsonCredential.Length - 2),
+        $unicodeCredential, $unicodeCredential.ToUpperInvariant().Replace('\U', '\u'),
+        $urlCredential, $urlCredential.ToLowerInvariant(), $base64,
+        $base64.TrimEnd('=').Replace('+', '-').Replace('/', '_'),
+        [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($credential)))
+    foreach ($representation in $representations) {
+        foreach ($encoding in $encodings) {
+            [void]$credentialPatterns.Add([Text.Encoding]::Latin1.GetString($encoding.GetBytes($representation)))
+        }
+    }
+}
+if ($RequireProtectedCredential -and $credentialPatterns.Count -eq 0) {
+    throw 'Protected evidence requires a credential for comparison.'
+}
+$credentialOverlap = 0
+foreach ($pattern in $credentialPatterns) { $credentialOverlap = [Math]::Max($credentialOverlap, $pattern.Length - 1) }
+
+function Assert-NoProtectedCredential([string]$Value) {
+    foreach ($pattern in $credentialPatterns) {
+        if ($Value.Contains($pattern, [StringComparison]::Ordinal)) {
+            throw 'Evidence contains a protected credential; upload is blocked.'
+        }
+    }
+}
+
+function Assert-CredentialFreeStream([IO.Stream]$Source) {
+    if ($credentialPatterns.Count -eq 0) { return }
+    $buffer = [byte[]]::new(64KB)
+    $tail = ''
+    try {
+        while (($count = $Source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $window = $tail + [Text.Encoding]::Latin1.GetString($buffer, 0, $count)
+            Assert-NoProtectedCredential $window
+            $tail = $window.Substring([Math]::Max(0, $window.Length - $credentialOverlap))
+        }
+    } finally { [Array]::Clear($buffer); $Source.Position = 0 }
+}
+
 function Get-BoundedEvidenceFiles([IO.FileSystemInfo]$Item) {
     if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Evidence input contains a reparse point: $($Item.FullName)"
+        throw 'Evidence input contains a reparse point.'
     }
     if ($Item -is [IO.FileInfo]) { return @($Item) }
     $files = [Collections.Generic.List[IO.FileInfo]]::new()
@@ -38,7 +93,7 @@ function Get-BoundedEvidenceFiles([IO.FileSystemInfo]$Item) {
     while ($pending.Count -gt 0) {
         foreach ($child in $pending.Dequeue().EnumerateFileSystemInfos()) {
             if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "Evidence input contains a reparse point: $($child.FullName)"
+                throw 'Evidence input contains a reparse point.'
             }
             if ($child -is [IO.DirectoryInfo]) { $pending.Enqueue($child) }
             else { $files.Add([IO.FileInfo]$child) }
@@ -47,7 +102,7 @@ function Get-BoundedEvidenceFiles([IO.FileSystemInfo]$Item) {
     return $files.ToArray()
 }
 
-function Assert-NonRunnableHeader([byte[]]$Header, [int]$Read, [string]$DisplayPath) {
+function Assert-NonRunnableHeader([byte[]]$Header, [int]$Read) {
     $portableExecutable = $Read -ge 2 -and $Header[0] -eq 0x4D -and $Header[1] -eq 0x5A
     $compoundBinary = $Read -ge 8
     if ($compoundBinary) {
@@ -56,13 +111,13 @@ function Assert-NonRunnableHeader([byte[]]$Header, [int]$Read, [string]$DisplayP
         }
     }
     if ($portableExecutable -or $compoundBinary) {
-        throw "Evidence input contains PE or MSI/OLE runnable content: $DisplayPath"
+        throw 'Evidence input contains PE or MSI/OLE runnable content.'
     }
 }
 
 function Copy-ValidatedEvidence([IO.FileInfo]$File, [string]$Relative, [string]$Destination) {
     if (-not $allowedExtensions.Contains($File.Extension)) {
-        throw "Evidence input has a non-allowlisted extension: $($File.FullName)"
+        throw 'Evidence input has a non-allowlisted extension.'
     }
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Destination))
     $source = [IO.FileStream]::new($File.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read,
@@ -70,13 +125,14 @@ function Copy-ValidatedEvidence([IO.FileInfo]$File, [string]$Relative, [string]$
     try {
         [byte[]]$header = [byte[]]::new(8)
         $read = $source.Read($header, 0, $header.Length)
-        Assert-NonRunnableHeader $header $read $File.FullName
+        Assert-NonRunnableHeader $header $read
         $source.Position = 0
+        Assert-CredentialFreeStream $source
         if ($File.Extension -ieq '.json') {
             $reader = [IO.StreamReader]::new($source, [Text.UTF8Encoding]::new($false), $true, 4096, $true)
             try { $json = $reader.ReadToEnd() } finally { $reader.Dispose() }
             try { $null = $json | ConvertFrom-Json }
-            catch { throw "Evidence input is not valid JSON: $($File.FullName)" }
+            catch { throw 'Evidence input is not valid JSON.' }
             $source.Position = 0
         }
         $sha256 = [Security.Cryptography.SHA256]::Create()
@@ -109,6 +165,7 @@ foreach ($input in $InputPath) {
             throw 'An evidence file escaped its declared source base.'
         }
         $normalized = $relative.Replace('\', '/')
+        Assert-NoProtectedCredential ([Text.Encoding]::Latin1.GetString([Text.Encoding]::UTF8.GetBytes($normalized)))
         if (-not $stagedPaths.Add($normalized)) { continue }
         if ($normalized -ceq 'evidence-manifest.json') { throw 'Evidence input used the reserved manifest path.' }
         $destination = Join-Path $outputPath $relative
@@ -142,5 +199,9 @@ foreach ($row in $rows) {
         (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$row.sha256) {
         throw 'The staged evidence differs from its hash inventory.'
     }
+}
+foreach ($file in $outputFiles) {
+    $staged = [IO.FileStream]::new($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { Assert-CredentialFreeStream $staged } finally { $staged.Dispose() }
 }
 Write-Output $rows.Count

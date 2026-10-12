@@ -232,6 +232,7 @@ public partial class MainWindow : Window
         {
             this.preparingModel = false;
             this.ShowConfiguring();
+            this.ProgressDetail.Text = progress.Message;
             return;
         }
         this.preparingModel = true;
@@ -401,7 +402,6 @@ public partial class MainWindow : Window
 
     private void ApplyRuntimeAvailability()
     {
-        if (!this.runtimeAvailability.IsSelectedRuntimeBuild) return;
         var choices = new[] { this.OpenClawChoice, this.HermesChoice };
         var details = new[] { this.OpenClawAvailability, this.HermesAvailability };
         for (var index = 0; index < choices.Length; index++)
@@ -409,13 +409,15 @@ public partial class MainWindow : Window
             var enabled = this.runtimeAvailability.CanSelect((string)choices[index].Tag);
             choices[index].IsEnabled = enabled;
             var preview = this.runtimeAvailability.IsUnqualified((string)choices[index].Tag);
-            details[index].Text = !enabled ? this.runtimeAvailability.UnavailableText : preview ? this.runtimeAvailability.PreviewText : "";
+            details[index].Text = preview ? this.runtimeAvailability.PreviewText : !enabled ? this.runtimeAvailability.UnavailableText : "";
             details[index].Visibility = !enabled || preview ? Visibility.Visible : Visibility.Collapsed;
         }
         var first = choices.FirstOrDefault(choice => choice.IsEnabled);
         if (first is not null) first.IsChecked = true;
         this.ContinueAgentButton.IsEnabled = first is not null;
-        this.AgentAvailabilityDetail.Text = "Included preview profiles can be tried while runtime qualification continues.";
+        this.AgentAvailabilityDetail.Text = first is null
+            ? "No agent has reviewed runtime qualification in this package. Use a qualified installer to configure an agent."
+            : "Only agents with reviewed runtime qualification can be configured here.";
         this.AgentAvailabilityDetail.Visibility = Visibility.Visible;
     }
 
@@ -482,6 +484,8 @@ public partial class MainWindow : Window
     {
         try
         {
+            if (!this.runtimeAvailability.CanSelect(this.SelectedAgent))
+                throw new InvalidOperationException("This agent requires reviewed runtime qualification before configuration.");
             if (this.LicenseCheck.IsChecked != true) return;
             if (this.ProviderChoice.SelectedItem is not ComboBoxItem { Tag: string provider }) throw new InvalidOperationException("Choose an inference provider.");
             var selectedLocalModel = NativeDownloadedModelSetup.IsModel(provider) ? provider : NativeExpressSetup.Id;

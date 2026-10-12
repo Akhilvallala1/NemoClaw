@@ -15,6 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import {
+  gatewayBrowserConsoleFailure,
   gatewayBrowserMajorVersion,
   gatewayBrowserRoute,
   installGatewayBrowserRouteTrace,
@@ -219,6 +220,7 @@ type BrowserPage = {
   evaluate<T>(script: () => T): Promise<T>;
   url(): string;
   on(event: "pageerror", listener: () => void): void;
+  on(event: "console", listener: (message: { type(): string; text(): string }) => void): void;
   goto(url: string, options: { waitUntil: "domcontentloaded"; timeout: number }): Promise<unknown>;
   on(
     event: "websocket",
@@ -282,6 +284,13 @@ async function browserControl(
     firstRun,
     sockets: 0,
     pageErrors: 0,
+    consoleFailures: {
+      "application-start": 0,
+      "initial-location": 0,
+      "route-navigation": 0,
+      "gateway-snapshot": 0,
+      other: 0,
+    },
     helloResponses: 0,
     lastHello: null as ReturnType<typeof summarizeGatewayHello>,
     detectionRequests: 0,
@@ -304,6 +313,14 @@ async function browserControl(
     page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.addInitScript(installGatewayBrowserRouteTrace);
     page.on("pageerror", () => diagnostics.pageErrors++);
+    page.on("console", (message) => {
+      if (message.type() !== "error") return;
+      const category = gatewayBrowserConsoleFailure(message.text());
+      diagnostics.consoleFailures[category] = Math.min(
+        64,
+        diagnostics.consoleFailures[category] + 1,
+      );
+    });
     let detectionId: string | undefined;
     let detection:
       | { ok?: boolean; payload?: { setupComplete?: boolean }; error?: unknown }

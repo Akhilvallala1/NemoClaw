@@ -315,8 +315,104 @@ internal static class Program
             throw new InvalidOperationException("The maintenance UI no longer clears its cancellation latch for retry.");
     }
 
-    internal static async Task<int> Main()
+    private static async Task<int> RunHelperFixtureAsync(string[] arguments)
     {
+        var root = arguments[1];
+        var exitCode = int.Parse(arguments[2]);
+        var outputSize = int.Parse(arguments[3]);
+        _ = await Console.In.ReadToEndAsync();
+        using var lease = new FileStream(Path.Combine(root, "lease"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        await File.WriteAllTextAsync(Path.Combine(root, "ready"), Environment.ProcessId.ToString());
+        await Console.Out.WriteAsync(new string('x', outputSize));
+        await Console.Error.WriteAsync(new string('y', outputSize));
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        while (!File.Exists(Path.Combine(root, "release"))) await Task.Delay(20, limit.Token);
+        await File.WriteAllTextAsync(Path.Combine(root, "result"), exitCode == 0 ? "committed" : "recovered");
+        return exitCode;
+    }
+
+    private static async Task AssertTransactionOutlivesObserverAsync(int exitCode, int outputSize, bool observerThrows = false)
+    {
+        var root = Directory.CreateTempSubdirectory("nemoclaw-setup-owner-").FullName;
+        var notified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var launcher = Environment.ProcessPath ?? throw new InvalidOperationException("The fixture executable is unavailable.");
+        var arguments = new List<string>();
+        if (Path.GetFileNameWithoutExtension(launcher).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            arguments.Add(typeof(Program).Assembly.Location);
+        arguments.AddRange(new[] { "--helper-fixture", root, exitCode.ToString(), outputSize.ToString(), "--transaction" });
+        void Pending()
+        {
+            notified.SetResult();
+            if (observerThrows) throw new InvalidOperationException("fixture observer failed");
+        }
+        var operation = NativeSetupOperations.RunSetupHelperAsync(launcher, arguments.ToArray(), Array.Empty<byte>(),
+            waitingForTransaction: Pending, observationDeadline: TimeSpan.FromMilliseconds(50));
+        try
+        {
+            await notified.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            using var readyLimit = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!File.Exists(Path.Combine(root, "ready"))) await Task.Delay(20, readyLimit.Token);
+            if (operation.IsCompleted || File.Exists(Path.Combine(root, "result")))
+                throw new InvalidOperationException("Setup returned before the transaction owner finished.");
+            try
+            {
+                using var lease = new FileStream(Path.Combine(root, "lease"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                throw new InvalidOperationException("The observer deadline released the transaction owner's lease.");
+            }
+            catch (IOException) { }
+            await File.WriteAllTextAsync(Path.Combine(root, "release"), "finish");
+            Exception? failure = null;
+            try { await operation.WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (InvalidOperationException error) { failure = error; }
+            if ((failure is not null) != (exitCode != 0 || outputSize != 0 || observerThrows))
+                throw new InvalidOperationException("Setup misclassified the completed helper result.");
+            if (await File.ReadAllTextAsync(Path.Combine(root, "result")) != (exitCode == 0 ? "committed" : "recovered"))
+                throw new InvalidOperationException("The transaction did not finish its commit or recovery fixture.");
+            using var releasedLease = new FileStream(Path.Combine(root, "lease"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        finally
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "release"), "finish");
+            try { await operation.WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (InvalidOperationException) { }
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task AssertPreparationTimeoutStopsHelperAsync()
+    {
+        var root = Directory.CreateTempSubdirectory("nemoclaw-setup-prepare-").FullName;
+        var launcher = Environment.ProcessPath ?? throw new InvalidOperationException("The fixture executable is unavailable.");
+        var arguments = new List<string>();
+        if (Path.GetFileNameWithoutExtension(launcher).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            arguments.Add(typeof(Program).Assembly.Location);
+        arguments.AddRange(new[] { "--helper-fixture", root, "0", "0", "--prepare-all" });
+        var operation = NativeSetupOperations.RunSetupHelperAsync(launcher, arguments.ToArray(), Array.Empty<byte>(),
+            captureOutput: true, observationDeadline: TimeSpan.FromSeconds(1));
+        try
+        {
+            try
+            {
+                await operation.WaitAsync(TimeSpan.FromSeconds(10));
+                throw new InvalidOperationException("The read-only preparation deadline was ignored.");
+            }
+            catch (OperationCanceledException) { }
+            if (File.Exists(Path.Combine(root, "result")))
+                throw new InvalidOperationException("The timed-out preparation helper completed unexpectedly.");
+            using var releasedLease = new FileStream(Path.Combine(root, "lease"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        finally
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "release"), "finish");
+            try { await operation.WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (OperationCanceledException) { }
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    internal static async Task<int> Main(string[] arguments)
+    {
+        if (arguments.FirstOrDefault() == "--helper-fixture") return await RunHelperFixtureAsync(arguments);
         await AssertPrecancelledSaveDoesNotLaunchAsync();
         await AssertCancellationAfterSuccessfulPreparationStopsMutationAsync();
         await AssertCancellationDuringCommitTransitionStopsMutationAsync();
@@ -329,7 +425,13 @@ internal static class Program
         await AssertDownloadedModelOrderingAsync(false, true);
         AssertRecoverableMaintenanceCancellationCanRetry();
         AssertRecoverableMaintenanceProductionWiring();
-        Console.WriteLine("12 native setup controls passed; cancellation and model readiness preserve the credential transaction.");
+        await AssertTransactionOutlivesObserverAsync(0, 0);
+        await AssertTransactionOutlivesObserverAsync(7, 0);
+        await AssertTransactionOutlivesObserverAsync(0, 1);
+        await AssertTransactionOutlivesObserverAsync(0, 65536);
+        await AssertTransactionOutlivesObserverAsync(0, 0, observerThrows: true);
+        await AssertPreparationTimeoutStopsHelperAsync();
+        Console.WriteLine("18 native setup controls passed; observer deadlines preserve transaction ownership through exit.");
         return 0;
     }
 }
