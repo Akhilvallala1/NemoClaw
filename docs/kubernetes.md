@@ -174,6 +174,7 @@ Preserve its state and data; provision a separately identified deployment with a
 Each service has its own retained model PVC mounted at `/data`.
 For vLLM with `authentication: bearer`, a separate retained 1 GiB credential PVC mounts at `/credentials`; the runtime creates the key and the deployment registers it through the existing credential path.
 The key is not stored in the service ConfigMap or authored YAML.
+Principals with `pods/exec` or Pod creation in the namespace, and node, kubelet, and storage administrators, can read the key; see [credential access](security.md#credentials-and-authentication).
 Keep the deployment state and both PVCs together for recovery; deleting a bound credential PVC or substituting another PVC does not authorize generating a replacement identity.
 PVC resize, storage-class changes, changes to vLLM authentication mode, existing-volume adoption, and transfer between clusters are not supported.
 

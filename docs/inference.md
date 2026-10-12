@@ -299,7 +299,8 @@ Recipe environment maps cannot set `VLLM_API_KEY`.
 The OpenShell provider reads the key through the verified runtime container identity and installs it in OpenShell's provider credential store.
 Agent requests use their OpenShell placeholder credential.
 YAML, plans, container launch settings, and OpenTofu state contain no generated key.
-The runtime's root user and Docker administrators can read the key and child environment.
+On Docker, the runtime's root user and Docker administrators can read the key and child environment.
+On Kubernetes and OpenShift, principals with `pods/exec` on the model Pod or permission to create Pods in the managed namespace, and node, kubelet, and storage administrators, can read it; see [credential access](security.md#credentials-and-authentication).
 The key authenticates the `/v1` requests below and does not provide TLS.
 In bearer mode, the NemoClaw image middleware passes only these requests to vLLM:
 
