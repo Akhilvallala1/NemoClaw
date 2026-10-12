@@ -123,15 +123,12 @@ async fn serve(mut stream: tokio::net::TcpStream, objects: Objects) {
     let Some((code, mut body)) = objects.answer(method, path, &body) else {
         return;
     };
-    // The fixture kubelet starts each admitted workload and its runtime. A
+    // The fixture scheduler and kubelet place and start each admitted Pod. A
     // dry-run must neither start nor retain an object.
     if method == "POST" && code == 201 && !path.contains("dryRun=") {
-        let mut object: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let object: serde_json::Value = serde_json::from_slice(&body).unwrap();
         if object["kind"] == "Pod" {
-            object["spec"]["nodeName"] = json!("gpu-node");
-            object["status"] = json!({"phase":"Running", "containerStatuses":[{
-                "name":"runtime", "state":{"running":{"startedAt":STARTED}}
-            }]});
+            let object = schedule(&objects, object);
             objects.insert(object.clone());
             body = object.to_string().into_bytes();
         }
@@ -142,4 +139,47 @@ async fn serve(mut stream: tokio::net::TcpStream, objects: Objects) {
     );
     stream.write_all(response.as_bytes()).await.unwrap();
     stream.write_all(&body).await.unwrap();
+}
+
+/// Bind a Pod to the first Node whose labels match its nodeSelector and start
+/// its runtime. A Node annotated `fixture.example/image: absent` lacks the
+/// runtime image, which the Pod's `imagePullPolicy: Never` cannot pull; with
+/// no matching Node, the Pod stays pending as the scheduler reports it.
+pub fn schedule(objects: &Objects, mut pod: serde_json::Value) -> serde_json::Value {
+    let selector = pod["spec"]["nodeSelector"].clone();
+    let node = objects
+        .0
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|object| object["kind"] == "Node")
+        .find(|node| {
+            selector
+                .as_object()
+                .into_iter()
+                .flatten()
+                .all(|(key, value)| node["metadata"]["labels"][key] == *value)
+        })
+        .cloned();
+    let Some(node) = node else {
+        pod["status"] = json!({"phase":"Pending", "conditions":[{"type":"PodScheduled", "status":"False",
+            "reason":"Unschedulable", "message":"0/1 nodes are available: 1 node(s) didn't match Pod's node affinity/selector."}]});
+        return pod;
+    };
+    pod["spec"]["nodeName"] = node["metadata"]["name"].clone();
+    pod["status"] = if node["metadata"]["annotations"]["fixture.example/image"] == "absent" {
+        json!({"phase":"Pending", "conditions":[{"type":"PodScheduled", "status":"True"}], "containerStatuses":[{
+            "name":"runtime", "state":{"waiting":{"reason":"ErrImageNeverPull"}}
+        }]})
+    } else {
+        running()
+    };
+    pod
+}
+
+/// The status the fixture kubelet reports for a started runtime.
+pub fn running() -> serde_json::Value {
+    json!({"phase":"Running", "containerStatuses":[{
+        "name":"runtime", "state":{"running":{"startedAt":STARTED}}
+    }]})
 }

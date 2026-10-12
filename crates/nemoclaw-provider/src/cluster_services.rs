@@ -210,6 +210,7 @@ impl Backend for ClusterServicesBackend {
             Ok(operations) => operations,
             Err(error) => return Mutation::failed(error),
         };
+        let mut unready = false;
         let result = async {
             let response = if kind == STORAGE_KIND {
                 operations.ensure_storage(&storage, bound(desired)).await?
@@ -217,7 +218,9 @@ impl Backend for ClusterServicesBackend {
                 let spec = specification(desired)?;
                 runtime_image(&spec)?;
                 operations.ensure(&spec, bound(desired)).await?;
-                operations.wait_ready(&spec).await?
+                let ready = operations.wait_ready(&spec).await;
+                unready = ready.is_err();
+                ready?
             };
             row(desired, response)?.ok_or(ObservationError::Incomplete)
         }
@@ -234,6 +237,15 @@ impl Backend for ClusterServicesBackend {
                     }
                 };
                 match observed.and_then(|response| row(desired, response)) {
+                    // OpenTofu would taint a created workload reported with an
+                    // error, and a tainted model service can only be replaced,
+                    // which apply refuses. Record the workload as not running:
+                    // the `running` postcondition still fails this apply, and
+                    // the next apply resumes waiting or applies a correction.
+                    Ok(Some(mut row)) if unready && bound(desired).is_none() => {
+                        row.insert("running".into(), false.to_string());
+                        Mutation::stopped(row, error)
+                    }
                     Ok(Some(row)) => Mutation::partial(row, error),
                     _ => Mutation::failed(error),
                 }
@@ -246,8 +258,13 @@ impl Backend for ClusterServicesBackend {
         prior: &Row,
         destroying: bool,
     ) -> Result<(), ObservationError> {
-        if kind != SERVICE_KIND || !destroying {
+        if kind != SERVICE_KIND {
             return Err(ObservationError::BindingMismatch);
+        }
+        if !destroying {
+            return Err(ObservationError::Backend(
+                "a cluster model workload is removed or replaced only by whole-deployment destroy; resources retained",
+            ));
         }
         let spec = specification(prior)?;
         operations(&spec.storage())
@@ -348,6 +365,20 @@ pub async fn endpoint_addresses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn removing_a_model_workload_outside_destroy_names_whole_deployment_destroy() {
+        let error = ClusterServicesBackend::new()
+            .remove(SERVICE_KIND, &Row::new(), false)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only by whole-deployment destroy"),
+            "{error}"
+        );
+    }
 
     #[tokio::test]
     async fn cluster_credentials_validate_identity_before_resolving_the_kubernetes_target() {

@@ -291,6 +291,15 @@ impl ResourceAdapter {
         desired: &Row,
         prior: Option<State>,
     ) -> Option<State> {
+        if let Some(reason) = mutation.warning() {
+            diags.root_warning(
+                "Resource is not running",
+                self.message(
+                    observation_message(reason, desired.get("name").map(String::as_str)),
+                    desired,
+                ),
+            );
+        }
         let (state, error) = mutation.into_parts();
         if let Some(error) = error {
             diags.root_error(

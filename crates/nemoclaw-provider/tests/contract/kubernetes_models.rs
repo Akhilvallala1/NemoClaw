@@ -108,6 +108,12 @@ impl Model {
     }
 
     fn tofu(&self, args: &[&str], success: bool) -> String {
+        let (succeeded, text) = self.run(args);
+        assert_eq!(succeeded, success, "{args:?}: {text}");
+        text
+    }
+
+    fn run(&self, args: &[&str]) -> (bool, String) {
         fs::write(
             self.workspace.path().join("terraform.tfvars.json"),
             self.variables.to_string(),
@@ -136,8 +142,7 @@ impl Model {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(output.status.success(), success, "{args:?}: {text}");
-        text
+        (output.status.success(), text)
     }
 
     fn apply(&self, success: bool) -> String {
@@ -179,6 +184,47 @@ impl Model {
                 NAME,
             )
             .unwrap()
+    }
+
+    /// The model service's state instance, including any taint status.
+    fn instance(&self) -> Value {
+        self.state()["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["type"] == SERVICE)
+            .unwrap()["instances"][0]
+            .clone()
+    }
+
+    /// The actions an unchanged plan proposes for the model service.
+    fn planned_actions(&self) -> Value {
+        self.tofu(
+            &["plan", "-input=false", "-no-color", "-out=resume.plan"],
+            true,
+        );
+        let plan: Value =
+            serde_json::from_str(&self.tofu(&["show", "-json", "resume.plan"], true)).unwrap();
+        plan["resource_changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|change| change["type"] == SERVICE)
+            .unwrap()["change"]["actions"]
+            .clone()
+    }
+
+    /// A Node in `pool`; without `image`, the fixture kubelet cannot start the
+    /// runtime there.
+    fn node(&self, name: &str, pool: &str, image: bool) {
+        let annotations = if image {
+            json!({})
+        } else {
+            json!({"fixture.example/image":"absent"})
+        };
+        self.objects.insert(json!({"apiVersion":"v1", "kind":"Node", "metadata":{"name":name, "annotations":annotations,
+            "labels":{"kubernetes.io/os":"linux", "kubernetes.io/arch":"amd64", "fixture.example/pool":pool}},
+            "spec":{}, "status":{"conditions":[{"type":"Ready", "status":"True"}], "allocatable":{"cpu":"32", "memory":"256Gi", "nvidia.com/gpu":"2", "pods":"110"}}}));
     }
 
     fn claims(&self) -> Vec<Value> {
@@ -323,4 +369,141 @@ async fn vllm_resources_apply_refresh_update_and_destroy_keeping_model_and_crede
 #[ignore = "requires NEMOCLAW_TEST_BUNDLE; in-memory Kubernetes API and Pod exec"]
 async fn ollama_resources_apply_refresh_update_and_destroy_keeping_model_claim() {
     lifecycle("ollama").await;
+}
+
+/// OpenTofu wraps diagnostics; compare their words.
+fn words(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A readiness failure on create must leave a resource OpenTofu can update:
+/// a tainted model service could only be replaced, which apply refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; in-memory Kubernetes API and Pod exec"]
+async fn a_first_apply_readiness_failure_stays_untainted_and_an_unchanged_apply_resumes() {
+    let mut model = Model::start("vllm").await;
+    model.node("gpu-node", "a", false);
+    model.variables["node_selector"] = json!({"fixture.example/pool":"a"});
+    let failed = words(&model.apply(false));
+    for expected in [
+        "Resource is not running",
+        "cannot start: reason ErrImageNeverPull",
+        "Managed cluster model reconciliation is incomplete",
+    ] {
+        assert!(failed.contains(expected), "{expected}: {failed}");
+    }
+    let instance = model.instance();
+    assert!(instance["status"].is_null(), "{instance}");
+    assert_eq!(instance["attributes"]["running"], "false");
+    assert_eq!(model.planned_actions(), json!(["update"]));
+
+    // The Node receives the image and its kubelet starts the existing Pod.
+    let pod = model.object("Pod");
+    model.node("gpu-node", "a", true);
+    let mut started = pod.clone();
+    started["status"] = crate::kubernetes_model_api::running();
+    model.objects.insert(started);
+    model.apply(true);
+    assert_eq!(
+        model.object("Pod")["metadata"]["uid"],
+        pod["metadata"]["uid"]
+    );
+    assert_eq!(model.resource(SERVICE)["running"], "true");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; in-memory Kubernetes API and Pod exec"]
+async fn update_policy_protects_only_model_pods_that_served() {
+    let mut model = Model::start("ollama").await;
+    model.node("gpu-node", "a", false);
+    model.node("gpu-node-b", "b", true);
+    model.variables["node_selector"] = json!({"fixture.example/pool":"a"});
+    model.apply(false);
+    let claims = model.claims();
+    let unstarted = model.object("Pod");
+
+    // The default policy accepts a correction: the Pod never started.
+    model.variables["node_selector"] = json!({"fixture.example/pool":"b"});
+    model.apply(true);
+    let serving = model.object("Pod");
+    assert_ne!(serving["metadata"]["uid"], unstarted["metadata"]["uid"]);
+    assert_eq!(serving["spec"]["nodeName"], "gpu-node-b");
+    assert_eq!(model.resource(SERVICE)["running"], "true");
+    assert_eq!(model.claims(), claims);
+
+    // Plan refuses to replace the Pod that now serves.
+    let snapshot = model.snapshot();
+    model.variables["memory_limit"] = json!(80);
+    let refused = words(&model.tofu(&["plan", "-input=false", "-no-color"], false));
+    assert!(
+        refused.contains("preserved by service updatePolicy: Preserve"),
+        "{refused}"
+    );
+    assert_eq!(model.snapshot(), snapshot);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; in-memory Kubernetes API and Pod exec"]
+async fn a_recreate_rollout_that_cannot_start_reverts_under_the_default_policy() {
+    let mut model = Model::start("ollama").await;
+    model.node("gpu-node", "a", false);
+    model.node("gpu-node-b", "b", true);
+    model.variables["node_selector"] = json!({"fixture.example/pool":"b"});
+    model.apply(true);
+    let claims = model.claims();
+
+    // Opting into downtime alone does not restart the Pod.
+    let snapshot = model.snapshot();
+    model.variables["update_policy"] = json!("Recreate");
+    model.apply(true);
+    assert_eq!(model.snapshot(), snapshot);
+
+    // A rollout to a Node without the image stops with the state updatable;
+    // reverting needs no Recreate because the replacement never started.
+    model.variables["node_selector"] = json!({"fixture.example/pool":"a"});
+    let failed = words(&model.apply(false));
+    assert!(
+        failed.contains("cannot start: reason ErrImageNeverPull"),
+        "{failed}"
+    );
+    assert!(model.instance()["status"].is_null());
+    model.variables["update_policy"] = Value::Null;
+    model.variables["node_selector"] = json!({"fixture.example/pool":"b"});
+    model.apply(true);
+    assert_eq!(model.object("Pod")["spec"]["nodeName"], "gpu-node-b");
+    assert_eq!(model.resource(SERVICE)["running"], "true");
+    assert_eq!(model.claims(), claims);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; in-memory Kubernetes API and Pod exec"]
+async fn first_apply_waits_while_the_cluster_adds_a_node_for_an_unschedulable_pod() {
+    let mut model = Model::start("ollama").await;
+    model.variables["node_selector"] = json!({"fixture.example/pool":"scaled"});
+    let objects = model.objects.clone();
+    // Simulate an autoscaler: once the scheduler rejects the Pod, add a
+    // matching Node and start the Pod there.
+    let autoscaler = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut pod = loop {
+            if let Some(pod) = objects.get("v1", "Pod", NAMESPACE, NAME)
+                && pod["status"]["conditions"][0]["reason"] == "Unschedulable"
+            {
+                break pod;
+            }
+            assert!(std::time::Instant::now() < deadline, "no pending Pod");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        objects.insert(json!({"apiVersion":"v1", "kind":"Node", "metadata":{"name":"scaled-node",
+            "labels":{"kubernetes.io/os":"linux", "kubernetes.io/arch":"amd64", "fixture.example/pool":"scaled"}},
+            "spec":{}, "status":{"conditions":[{"type":"Ready", "status":"True"}], "allocatable":{"cpu":"32", "memory":"256Gi", "nvidia.com/gpu":"2", "pods":"110"}}}));
+        pod["spec"]["nodeName"] = json!("scaled-node");
+        pod["status"] = crate::kubernetes_model_api::running();
+        objects.insert(pod);
+    });
+    model.apply(true);
+    autoscaler.join().unwrap();
+    assert_eq!(model.object("Pod")["spec"]["nodeName"], "scaled-node");
+    assert_eq!(model.resource(SERVICE)["running"], "true");
 }

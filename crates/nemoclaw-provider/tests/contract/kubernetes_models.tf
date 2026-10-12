@@ -14,6 +14,10 @@ variable "update_policy" {
   type    = string
   default = null
 }
+variable "node_selector" {
+  type    = map(string)
+  default = {}
+}
 variable "keep_workload" { type = bool }
 variable "destroy" { type = bool }
 provider "nemoclaw" { destroy = var.destroy }
@@ -80,7 +84,15 @@ resource "nemoclaw_kubernetes_service" "model" {
       memoryLimitGiB   = var.memory_limit
       storageGiB       = 80
       storageClass     = "model-cache"
+      nodeSelector     = var.node_selector
     }, var.update_policy == null ? {} : { updatePolicy = var.update_policy })
   }))
   depends_on = [nemoclaw_kubernetes_service_storage.model]
+  # The SDK runtime graph adds this postcondition to each model service.
+  lifecycle {
+    postcondition {
+      condition     = self.running == "true"
+      error_message = "Managed cluster model reconciliation is incomplete."
+    }
+  }
 }

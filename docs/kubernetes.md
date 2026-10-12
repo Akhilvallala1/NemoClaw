@@ -223,7 +223,8 @@ Apply creates retained storage and disposable service resources, starts the host
 If Kubernetes reports `PodScheduled=False` with reason `Unschedulable`, apply keeps waiting while the scheduler retries, for example while a cluster autoscaler adds a Node, a volume claim binds, or a GPU device plugin registers.
 Apply also keeps waiting while preemption has nominated a Node for the Pod (`status.nominatedNodeName`).
 When the rejection persists for 15 minutes, apply stops and reports the bounded, redacted scheduler message and owned Pod name.
-The pending Pod, PVCs, and receipt remain available for inspection; correct the reported constraints or capacity, then apply again with the same state directory.
+The pending Pod, PVCs, and receipt remain available for inspection.
+After adding capacity, apply again with the same state directory to resume waiting; after correcting the constraints, apply replaces the Pod without `Recreate` because it never ran.
 The Pod does not automatically restart a stopped inference process.
 On failed model startup or protective shutdown, preserve the state and PVCs, correct the resource or runtime condition, and use [explicit recovery](usage.md#recover-an-interrupted-operation).
 An unfinished cluster runtime apply permits corrections limited to model workloads, including restoring the preceding model digest.
