@@ -55,12 +55,12 @@ The cluster implementation does not replace those contracts with cluster-specifi
 ## OpenClaw Context Budget
 
 The [cluster examples](../kubernetes.md#run-a-managed-model-service) use a `32768`-token service context and matching OpenClaw `model_metadata.contextWindow`.
-The operator credits these context measurements to NemoClaw revision `3c94fda7b` with images built from `377912705`, on a kind cluster with one GB300 GPU through OpenShell `ExecSandbox` and `fabric-agent invoke`.
-With Ollama `qwen3:0.6b` at `32768`, its log recorded `n_tokens=19947` and `truncated=0`, and the reply followed the instruction.
-At `8192`, the turn reported success but the reply ignored the instruction; context truncation is an inference from the changed behavior, not a confirmed truncation log from that run.
-With vLLM `Qwen/Qwen3-4B`, the `8192` setting produced context-overflow HTTP 400 responses and failed automatic compaction; `32768` produced three HTTP 200 chat-completion responses through the supervisor.
-That vLLM run retained `kvCacheGiB: 6` and `maxSequences: 1`.
-The report also lists a 19,980-token prompt without identifying its backend, log, or associated compaction result; it is not attributed to either run above.
+The operator ran these turns on a kind cluster with one GB300 GPU through OpenShell `ExecSandbox` and `fabric-agent invoke`, using images built from `377912705` and reused unchanged through `1d6b414c1`.
+At `3c94fda7b`, with both limits at `8192`, Ollama `qwen3:0.6b` reported success but the reply ignored the instruction; context truncation is an inference from the changed behavior, not a confirmed truncation log from that run.
+At the same revision, vLLM `Qwen/Qwen3-4B` returned context-overflow HTTP 400 responses at `8192` after OpenClaw's automatic compaction failed, and three HTTP 200 chat-completion responses through the supervisor at `32768`, with `kvCacheGiB: 6` and `maxSequences: 1`.
+At `4dedf0a82`, Ollama at `32768` logged `n_tokens=19947` and `truncated=0`, and the reply followed the instruction.
+At `1d6b414c1`, an Ollama turn with the example settings used a 19,980-token prompt with `truncated=0`.
+At the same revision, an Ollama turn with route `contextWindow: 8192` and `contextTokens: 32768` succeeded because OpenClaw compacted its prompt (`route=compact_only`, from about 10,130 to 6,609 estimated tokens).
 This operator report explains the example budget; it is not deployment qualification, does not change Docker-path limits, and does not resolve the pinned Fabric health limitation.
 
 ## Remaining Compatibility and Qualification Work
@@ -73,7 +73,7 @@ This operator report explains the example budget; it is not deployment qualifica
 - [#12692](https://github.com/NVIDIA/NemoClaw/issues/12692) owns managed-gateway OIDC.
   Generated vLLM bearer storage and the gateway's development issuer have separate owners and lifetimes; neither establishes production gateway authentication.
 - [#12733](https://github.com/NVIDIA/NemoClaw/issues/12733) and [#12734](https://github.com/NVIDIA/NemoClaw/issues/12734) track real-cluster qualification and E2E/CI coverage.
-  Deterministic fixtures establish lifecycle behavior only; the [kind GB300 operator report](#openclaw-context-budget) does not establish deployment qualification.
+  Fixture tests establish lifecycle behavior only; the [kind GB300 operator report](#openclaw-context-budget) does not establish deployment qualification.
   Live inference qualification, OpenShift admission, GPU device isolation, and the selected CSI driver's retention behavior remain open.
 - Team approval of the baseline and service boundary remains an acceptance item under [#12730](https://github.com/NVIDIA/NemoClaw/issues/12730) and [#12732](https://github.com/NVIDIA/NemoClaw/issues/12732).
   This implementation does not claim full issue closure.
