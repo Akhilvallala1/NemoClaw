@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -215,6 +219,70 @@ describe("managed snapshot backup authority", () => {
       runtimeSnapshot,
       { nativeRoot: "/sandbox", managedStateRoots: [] },
     );
+  });
+
+  it("prepares a legacy Docker source when the provider reports it stopped", async () => {
+    const sourceDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "nemoclaw-docker-stopped-source-"),
+    );
+    const entry = {
+      name: "alpha",
+      agent: "openclaw",
+      openshellDriver: null,
+      lifecycleLiveIdentityFingerprint: "a".repeat(64),
+      fromDockerfile: "Dockerfile",
+    } as SandboxEntry;
+    const runtimeSnapshot = {
+      schemaVersion: 1,
+      providerId: "docker",
+      providerHandle: "opaque-container",
+      lifecycleState: "stopped",
+      lifecycleGeneration: "generation-1",
+      runtime: {
+        schemaVersion: 1,
+        providerId: "docker",
+        runtime: { kind: "docker-container", handle: "b".repeat(64) },
+        acceleration: { kind: "none" },
+      },
+    } as const;
+    const capture = {
+      capture: async (archiveFd: number) => {
+        const archive = execFileSync("tar", ["-C", sourceDirectory, "-cf", "-", "."]);
+        fs.writeSync(archiveFd, archive);
+      },
+      assertCurrent: vi.fn(),
+    };
+    const prepareCapture = vi.fn(() => capture);
+    const runtimeProvider = {
+      identity: { id: "docker", contractVersion: 1, displayName: "Docker" },
+      snapshot: {
+        providerId: "docker",
+        supported: true,
+        contractVersion: 1,
+        capabilities: { backup: true, restore: true, managedProfileRestore: true },
+        prepareStoppedStateCapture: prepareCapture,
+      },
+    } as unknown as RuntimeProviderBundle;
+
+    try {
+      fs.mkdirSync(path.join(sourceDirectory, ".openclaw"));
+      fs.writeFileSync(path.join(sourceDirectory, ".openclaw", "openclaw.json"), "{}");
+      const prepared = await prepareStoppedAgentState("alpha", () => entry, {
+        requireProvider: () => runtimeProvider,
+        captureRuntime: () => runtimeSnapshot,
+      });
+
+      expect(prepared).not.toBeNull();
+      expect(prepareCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "alpha" }),
+        runtimeSnapshot,
+        { nativeRoot: "/sandbox", managedStateRoots: [] },
+      );
+      expect(fs.existsSync(path.join(prepared!.directory, "openclaw.json"))).toBe(true);
+      prepared!.dispose();
+    } finally {
+      fs.rmSync(sourceDirectory, { recursive: true, force: true });
+    }
   });
 
   it("does not capture a legacy Docker source while the provider reports it running", async () => {

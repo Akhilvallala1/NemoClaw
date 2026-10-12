@@ -124,6 +124,7 @@ describe("rebuildSandbox flow: recovery", () => {
 
   function stoppedRecoveryHarness(
     agentName: "openclaw" | "langchain-deepagents-code" = "openclaw",
+    readiness: "terminal" | "not_ready" = "terminal",
   ) {
     const nativeDirectory = fs.mkdtempSync(
       path.join(os.tmpdir(), "nemoclaw-rebuild-stopped-source-"),
@@ -157,7 +158,13 @@ describe("rebuildSandbox flow: recovery", () => {
           }
         : {}),
       sandboxInventory: {
-        sandboxes: [{ name: "alpha", phase: "Error", readiness: "terminal" }],
+        sandboxes: [
+          {
+            name: "alpha",
+            phase: readiness === "terminal" ? "Error" : "Stopped",
+            readiness,
+          },
+        ],
       },
     });
     const configureSession: typeof configureDcodeSession =
@@ -187,6 +194,34 @@ describe("rebuildSandbox flow: recovery", () => {
       expect(harness.onboardSpy).toHaveBeenCalled();
       expect(openClawLifecycle.beginOpenClawBackupQuiesce).not.toHaveBeenCalled();
       expect(mcpBridgeSource.inspectAgentMcpSources).not.toHaveBeenCalled();
+      expect(captured.dispose).toHaveBeenCalledOnce();
+    } finally {
+      fs.rmSync(captured.cleanupDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds a fresh not-ready sandbox from captured state without inspecting or starting the source", async () => {
+    const { captured, harness } = stoppedRecoveryHarness("openclaw", "not_ready");
+    try {
+      await expect(
+        harness.rebuildSandbox("alpha", ["--yes"], { throwOnError: true }),
+      ).resolves.toBeUndefined();
+      expect(harness.backupSandboxStateSpy).toHaveBeenCalledWith(
+        "alpha",
+        expect.objectContaining({
+          nativeStateSource: {
+            root: "/sandbox",
+            directory: captured.nativeDirectory,
+            assertCurrent: captured.assertCurrent,
+          },
+          validateBeforePublish: expect.any(Function),
+        }),
+      );
+      expect(harness.onboardSpy).toHaveBeenCalled();
+      expect(mcpBridgeSource.inspectAgentMcpSources).not.toHaveBeenCalled();
+      expect(
+        harness.runOpenshellSpy.mock.calls.some(([args]) => (args as string[]).includes("start")),
+      ).toBe(false);
       expect(captured.dispose).toHaveBeenCalledOnce();
     } finally {
       fs.rmSync(captured.cleanupDirectory, { recursive: true, force: true });
