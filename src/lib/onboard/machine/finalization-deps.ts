@@ -143,6 +143,8 @@ export const finalizationHandlerRuntime = {
     require("../experimental/portable-agent-lifecycle") as PortableAgentLifecycleDeps,
   loadPortableLifecycleLock: () =>
     require("../experimental/portable-lifecycle-lock") as PortableLifecycleLockDeps,
+  loadVerifyDeployment: () =>
+    require("../../verify-deployment") as typeof import("../../verify-deployment"),
 };
 
 export async function restartNativeGatewayForInitialSetup(
@@ -404,7 +406,33 @@ export function ordinaryOpenClawPairingIncompleteMessage(
   return `OpenClaw onboarding for '${name}' is incomplete because ${cause}. Resume or rerun onboarding.`;
 }
 
+function readRegistrySandbox(name: string) {
+  try {
+    return finalizationHandlerRuntime.loadRegistryPersistence().load().sandboxes[name] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export const finalizationHandlerDeps = {
+  async probeTerminalInference(input: {
+    sandboxName: string;
+    agentName: string;
+    provider: string;
+    model: string;
+    preferredInferenceApi: string | null;
+  }): Promise<{ ok: boolean; detail?: string }> {
+    const entry = readRegistrySandbox(input.sandboxName);
+    const gatewayName = entry?.gatewayName;
+    if (typeof gatewayName !== "string" || !gatewayName) {
+      return { ok: false, detail: "the sandbox gateway identity is unavailable" };
+    }
+    return finalizationHandlerRuntime.loadVerifyDeployment().probeOnboardInferenceInvocation({
+      ...entry,
+      ...input,
+      gatewayName,
+    });
+  },
   async waitForSandboxControlPlaneReady(name: string): Promise<boolean> {
     return finalizationHandlerRuntime
       .loadProcessRecovery()
