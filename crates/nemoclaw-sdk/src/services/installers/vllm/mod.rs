@@ -9,6 +9,7 @@ mod service_hardware;
 use crate::Error;
 pub use crate::services::placement::{ServicePlacement, ServicePublication};
 pub use config::{Memory, Model, Service, ServiceAuthentication, Serving};
+pub(crate) use container::DEFAULT_MEMORY_LIMIT_GIB;
 pub use container::{ServiceContainer, ServiceIpc};
 pub use hardware_profile::HardwareProfile;
 #[cfg(test)]
@@ -131,7 +132,7 @@ fn targets(
             .container
             .as_ref()
             .and_then(|container| container.memory_limit_gib)
-            .unwrap_or(104)
+            .unwrap_or(DEFAULT_MEMORY_LIMIT_GIB)
             * nemoclaw_runtime::hardware::GIB,
         gpu: true,
     };

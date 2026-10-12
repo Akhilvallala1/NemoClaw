@@ -206,7 +206,7 @@ fn managed_targets(
             .container
             .as_ref()
             .and_then(|container| container.memory_limit_gib)
-            .unwrap_or(104)
+            .unwrap_or(super::vllm::DEFAULT_MEMORY_LIMIT_GIB)
             * nemoclaw_runtime::hardware::GIB,
         gpu: true,
     };

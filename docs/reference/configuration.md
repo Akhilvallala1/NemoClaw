@@ -1034,9 +1034,9 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `cpuLimitMillis` | integer | No | — | CPU usage limit in millicores. Omission leaves Docker CPU usage unrestricted; Kubernetes and OpenShift services require an explicit limit. Constraints: minimum 1; maximum 4294967295. |
+| `cpuLimitMillis` | integer | No | — | CPU usage limit in millicores. Omission leaves Docker CPU usage unrestricted; Kubernetes and OpenShift services require an explicit limit. Changing the limit replaces the model container or Pod. Constraints: minimum 1; maximum 4294967295. |
 | `ipc` | [ServiceIpc](#serviceipc) | No | — | IPC namespace. Omission uses private; host shares the execution host's IPC namespace. |
-| `memoryLimitGiB` | integer | No | — | Container memory limit in GiB, independent of the model's GPU budget. Omission retains Docker's 104 GiB limit; Kubernetes and OpenShift services require an explicit limit. Constraints: minimum 1; maximum 8589934591. |
+| `memoryLimitGiB` | integer | No | — | Container memory limit in GiB, independent of the model's GPU budget. Omission retains Docker's 104 GiB limit; Kubernetes and OpenShift services require an explicit limit. Changing the limit replaces the model container or Pod. Constraints: minimum 1; maximum 8589934591. |
 | `sharedMemoryGiB` | integer | No | — | Shared-memory size in GiB, from 1 through 64. Omission uses 8; host IPC uses the host's existing shared-memory mount instead. Constraints: minimum 1; maximum 64. |
 
 ## ServiceDefinition

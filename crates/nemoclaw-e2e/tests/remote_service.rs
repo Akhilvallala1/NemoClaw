@@ -192,16 +192,22 @@ impl Scenario {
         let config = read(&self.root, "config.yaml");
         let limits = &config["spec"]["services"]["qwen"]["container"];
         let host = &state["container"]["HostConfig"];
-        assert_eq!(host["CpuPeriod"], 1_000_000);
+        // A 100 ms period, as on Kubernetes; Ollama's 10 millicores give the
+        // kernel's 1 ms minimum quota.
+        assert_eq!(host["CpuPeriod"], 100_000);
         assert_eq!(
             host["CpuQuota"],
-            limits["cpuLimitMillis"].as_u64().unwrap() * 1000
+            limits["cpuLimitMillis"].as_u64().unwrap() * 100
         );
         assert_eq!(
             host["Memory"],
             limits["memoryLimitGiB"].as_u64().unwrap() * (1_u64 << 30)
         );
         assert_eq!(host["MemorySwap"], host["Memory"]);
+        assert_eq!(
+            state["container"]["Config"]["Labels"]["nemoclaw.nvidia.com/memory-limit-gib"],
+            limits["memoryLimitGiB"].to_string()
+        );
         state
     }
 
@@ -227,6 +233,7 @@ async fn remote_model_reapply_and_drift_keep_bindings_and_stop_on_observation_fa
     export_and_reapply_are_unchanged(&s, &stable).await;
     let state = readiness_is_checked_on_each_apply(&s, &stable).await;
     image_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
+    memory_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
     plans_stop_on_observation_failure(&s, &stable, &state, json!({"transport_failure":true})).await;
     assert_no_probes(&s);
     removed_pull_policy_reapplies_without_pulling(&s, &stable).await;
@@ -244,6 +251,7 @@ async fn remote_ollama_recovers_reapplies_and_stops_on_observation_failure_keepi
     export_and_reapply_are_unchanged(&s, &stable).await;
     let state = s.runtime_state();
     image_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
+    memory_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
     plans_stop_on_observation_failure(&s, &stable, &state, json!({"transport_failure":true})).await;
     assert_no_probes(&s);
     incompatible_image_blocks_changes_but_not_teardown(&s, &stable["volume"]).await;
@@ -631,15 +639,44 @@ async fn image_change_plans_compute_replacement_without_effects(
     stable: &Value,
     state: &[u8],
 ) {
-    let root = s.root.as_path();
-    let original = read(root, "config.yaml");
-    let mut changed = original.clone();
+    let mut changed = read(&s.root, "config.yaml");
     changed["spec"]["services"]["qwen"]["image"] =
         json!(format!("runtime@sha256:{}", "f".repeat(64)));
+    change_plans_compute_replacement_without_effects(s, stable, state, changed).await;
+}
+
+// The Docker provider would lower memory on the running model in place, where
+// the kernel can OOM-kill it; Preserve must refuse the change as a replacement.
+async fn memory_change_plans_compute_replacement_without_effects(
+    s: &Scenario,
+    stable: &Value,
+    state: &[u8],
+) {
+    let mut changed = read(&s.root, "config.yaml");
+    changed["spec"]["services"]["qwen"]["container"]["memoryLimitGiB"] = json!(32);
+    change_plans_compute_replacement_without_effects(s, stable, state, changed).await;
+}
+
+async fn change_plans_compute_replacement_without_effects(
+    s: &Scenario,
+    stable: &Value,
+    state: &[u8],
+    mut changed: Value,
+) {
+    let root = s.root.as_path();
+    let original = read(root, "config.yaml");
     save(root, "config.yaml", &changed);
     let intent = fs::read(root.join("deployment/intent.json")).unwrap();
     for operation in ["plan", "apply"] {
-        s.run(operation, "config.yaml", false).await;
+        let refusal: Value =
+            serde_json::from_slice(&s.run(operation, "config.yaml", false).await).unwrap();
+        assert!(
+            refusal["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("updatePolicy: Recreate"),
+            "{refusal}"
+        );
         assert_eq!(&read(root, "engine.json"), stable);
         assert_eq!(s.runtime_state(), state);
         assert_eq!(
@@ -737,9 +774,42 @@ async fn removed_pull_policy_reapplies_without_pulling(s: &Scenario, stable: &Va
     stopped["container"]["State"]["Running"] = json!(false);
     save(root, "engine.json", &stopped);
     save(root, "control.json", &json!({"pull_failure":true}));
+    // The provider refreshes a stopped container as must_run=false. Because
+    // the stopped container has no active port map, its published port also
+    // drifts and the plan replaces it, which Preserve allows.
+    let plan: Value = serde_json::from_slice(&s.run("plan", "config.yaml", true).await).unwrap();
+    let address = "docker_container.inference_service_inference_qwen";
+    assert!(
+        plan["changes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"resource": address, "actions": ["delete", "create"]})),
+        "{plan}"
+    );
+    let shown = tokio::process::Command::new(s.bundle.join("libexec/tofu"))
+        .args(["show", "-json", "apply.plan"])
+        .current_dir(root.join("deployment/runtime"))
+        .output()
+        .await
+        .unwrap();
+    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let change = shown["resource_changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|change| change["address"] == address)
+        .unwrap();
+    assert_eq!(change["change"]["before"]["must_run"], false, "{change}");
     s.run("apply", "config.yaml", true).await;
-    assert_eq!(read(root, "engine.json")["pulls"], stable["pulls"]);
-    assert_eq!(read(root, "engine.json")["volume"], stable["volume"]);
+    let replaced = read(root, "engine.json");
+    assert_ne!(replaced["container"]["Id"], stable["container"]["Id"]);
+    assert_eq!(replaced["container"]["State"]["Running"], true);
+    assert_eq!(
+        replaced["creates"].as_u64().unwrap(),
+        stable["creates"].as_u64().unwrap() + 1
+    );
+    assert_eq!(replaced["pulls"], stable["pulls"]);
+    assert_eq!(replaced["volume"], stable["volume"]);
 }
 
 // Compute image changes must not change the identity of retained credentials.

@@ -1,15 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 use serde::{Deserialize, Serialize};
+
+/// Docker memory limit for a managed model container without container.memoryLimitGiB.
+pub(crate) const DEFAULT_MEMORY_LIMIT_GIB: u64 = 104;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Managed inference CPU and memory limits, IPC, and shared-memory settings.
 pub struct ServiceContainer {
-    /// CPU usage limit in millicores. Omission leaves Docker CPU usage unrestricted; Kubernetes and OpenShift services require an explicit limit.
+    /// CPU usage limit in millicores. Omission leaves Docker CPU usage unrestricted; Kubernetes and OpenShift services require an explicit limit. Changing the limit replaces the model container or Pod.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u32", range(min = 1, max = 4294967295_u64))]
     pub cpu_limit_millis: Option<u32>,
-    /// Container memory limit in GiB, independent of the model's GPU budget. Omission retains Docker's 104 GiB limit; Kubernetes and OpenShift services require an explicit limit.
+    /// Container memory limit in GiB, independent of the model's GPU budget. Omission retains Docker's 104 GiB limit; Kubernetes and OpenShift services require an explicit limit. Changing the limit replaces the model container or Pod.
     #[serde(
         rename = "memoryLimitGiB",
         default,

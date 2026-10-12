@@ -2403,7 +2403,7 @@
       "description": "Managed inference CPU and memory limits, IPC, and shared-memory settings.",
       "properties": {
         "cpuLimitMillis": {
-          "description": "CPU usage limit in millicores. Omission leaves Docker CPU usage unrestricted; Kubernetes and OpenShift services require an explicit limit.",
+          "description": "CPU usage limit in millicores. Omission leaves Docker CPU usage unrestricted; Kubernetes and OpenShift services require an explicit limit. Changing the limit replaces the model container or Pod.",
           "format": "uint32",
           "maximum": 4294967295,
           "minimum": 1,
@@ -2414,7 +2414,7 @@
           "description": "IPC namespace. Omission uses private; host shares the execution host's IPC namespace."
         },
         "memoryLimitGiB": {
-          "description": "Container memory limit in GiB, independent of the model's GPU budget. Omission retains Docker's 104 GiB limit; Kubernetes and OpenShift services require an explicit limit.",
+          "description": "Container memory limit in GiB, independent of the model's GPU budget. Omission retains Docker's 104 GiB limit; Kubernetes and OpenShift services require an explicit limit. Changing the limit replaces the model container or Pod.",
           "format": "uint64",
           "maximum": 8589934591,
           "minimum": 1,

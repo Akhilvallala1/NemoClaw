@@ -111,6 +111,7 @@ updatePolicy: Preserve
 
 `cpuLimitMillis: 4000` caps CPU use at four cores; `memoryLimitGiB` limits the container's system memory.
 These fields do not set the GPU budget: `memory.gpuMemoryGiB`, `memory.gpuMemoryUtilization`, and backend-specific cache settings retain their runtime meanings.
+The runtime's resident host-memory monitor reads `/proc`, not cgroup memory pressure, so the kernel can OOM-kill a container that reaches `memoryLimitGiB` before the monitor stops inference.
 Docker defaults to a 104 GiB memory limit and no CPU cap when these limits are omitted.
 Kubernetes and OpenShift require both limits explicitly and keep scheduling requests under `kubernetes.cpuRequestMillis` and `kubernetes.memoryRequestGiB`.
 Requests must not exceed their corresponding container limits.
@@ -121,7 +122,8 @@ Native managed inference on Podman remains unsupported; a Podman gateway can con
 These shared fields do not change [platform qualification limits](limits.md#platforms-models-and-placement).
 
 The service-level `updatePolicy` defaults to `Preserve`.
-For Docker, this refuses an update that would replace a running managed model container; changes the Docker provider can make in place do not require replacement.
+For Docker, this refuses an update that would replace a running managed model container.
+Changing the image, model, serving settings, `cpuLimitMillis`, or `memoryLimitGiB` replaces the container; declaring the omitted 104 GiB default as `memoryLimitGiB: 104` does not.
 For Kubernetes and OpenShift, it refuses an update that would replace an existing nonterminal model Pod, including a pending Pod.
 Set `updatePolicy: Recreate` only when accepting sequential replacement and possible downtime if the replacement cannot start.
 The opt-in persists for later updates until removed or changed to `Preserve`; changing only this policy does not restart the workload.

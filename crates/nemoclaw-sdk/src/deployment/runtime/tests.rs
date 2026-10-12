@@ -19,8 +19,17 @@ fn docker_model_updates_preserve_running_containers_unless_recreation_is_explici
             "ollama-server",
             "ollama_service",
         ),
+        // A Podman gateway with a model placed on a Docker engine over SSH.
+        (
+            include_str!("../../../../../examples/spark/remote-vllm.yaml"),
+            "qwen",
+            "inference_service",
+        ),
     ] {
         let document = Document::parse(source.as_bytes()).unwrap();
+        let mut recreate = serde_json::to_value(&document).unwrap();
+        recreate["spec"]["services"][name]["updatePolicy"] = json!("Recreate");
+        let recreate = Document::parse(recreate.to_string().as_bytes()).unwrap();
         let record = Record::new(document.clone()).unwrap();
         let targets = compile::runtime_targets(&document, &record.generations).unwrap();
         let address = targets
@@ -29,6 +38,28 @@ fn docker_model_updates_preserve_running_containers_unless_recreation_is_explici
             .unwrap()
             .address
             .clone();
+        let plan = |actions: &Value, before: &Value, after: &Value| -> Plan {
+            serde_json::from_value(json!({"resource_changes": [{
+                "address": address,
+                "change": {"actions": actions, "before": before, "after": after}
+            }]}))
+            .unwrap()
+        };
+        let refused = |plan: &Plan| {
+            let message = runtime_observations(&document, &targets, &BTreeMap::new(), plan)
+                .err()
+                .expect("Preserve must refuse disrupting a running or unconfirmed model")
+                .to_string();
+            for expected in [
+                name,
+                "updatePolicy: Preserve",
+                "updatePolicy: Recreate",
+                "downtime",
+            ] {
+                assert!(message.contains(expected), "missing {expected}: {message}");
+            }
+            runtime_observations(&recreate, &targets, &BTreeMap::new(), plan).unwrap();
+        };
         for actions in [
             json!(["delete", "create"]),
             json!(["create", "delete"]),
@@ -38,51 +69,51 @@ fn docker_model_updates_preserve_running_containers_unless_recreation_is_explici
                 json!({"id": "existing-model", "must_run": true}),
                 json!({"id": "existing-model"}),
             ] {
-                let plan: Plan = serde_json::from_value(json!({"resource_changes": [{
-                    "address": address, "change": {"actions": actions, "before": before}
-                }]}))
-                .unwrap();
-                let message = runtime_observations(&document, &targets, &BTreeMap::new(), &plan)
-                    .err()
-                    .expect("Preserve must refuse replacing a running or unconfirmed model")
-                    .to_string();
-                for expected in [
-                    name,
-                    "updatePolicy: Preserve",
-                    "updatePolicy: Recreate",
-                    "downtime",
-                ] {
-                    assert!(message.contains(expected), "missing {expected}: {message}");
-                }
-
-                let mut recreate = serde_json::to_value(&document).unwrap();
-                recreate["spec"]["services"][name]["updatePolicy"] = json!("Recreate");
-                let recreate = Document::parse(recreate.to_string().as_bytes()).unwrap();
-                runtime_observations(&recreate, &targets, &BTreeMap::new(), &plan).unwrap();
+                refused(&plan(&actions, &before, &Value::Null));
+            }
+        }
+        // Docker lowers memory in place, and the kernel can OOM-kill a model
+        // whose usage exceeds the new limit.
+        for running in [
+            json!({"id": "running-model", "must_run": true}),
+            json!({"id": "running-model"}),
+        ] {
+            for (field, lowered) in [("memory", "memory_swap"), ("memory_swap", "memory")] {
+                let mut before = running.clone();
+                before["memory"] = json!(65536);
+                before["memory_swap"] = json!(65536);
+                let mut after = before.clone();
+                after["must_run"] = json!(true);
+                after[field] = json!(16384);
+                after[lowered] = before[lowered].clone();
+                refused(&plan(&json!(["update"]), &before, &after));
             }
         }
         // Provider refresh reports a stopped container as must_run=false and a
-        // missing container with no prior value. Neither requires downtime.
-        for (actions, before) in [
+        // missing container with no prior value. A stopped model container is
+        // replaced because its published port also drifts (remote_service
+        // e2e). Neither requires downtime, and in-place updates that keep or
+        // raise memory do not stop the model.
+        let limits = |memory: u64, must_run: bool| json!({"id": "model", "must_run": must_run, "memory": memory, "memory_swap": memory});
+        for (actions, before, after) in [
             (
                 json!(["delete", "create"]),
                 json!({"id": "stopped-model", "must_run": false}),
+                Value::Null,
             ),
-            (json!(["create"]), Value::Null),
-            (
-                json!(["no-op"]),
-                json!({"id": "running-model", "must_run": true}),
-            ),
-            (
-                json!(["update"]),
-                json!({"id": "running-model", "must_run": true}),
-            ),
+            (json!(["create"]), Value::Null, limits(65536, true)),
+            (json!(["no-op"]), limits(65536, true), limits(65536, true)),
+            (json!(["update"]), limits(65536, true), limits(65536, true)),
+            (json!(["update"]), limits(16384, true), limits(65536, true)),
+            (json!(["update"]), limits(65536, false), limits(16384, true)),
         ] {
-            let plan = serde_json::from_value(json!({"resource_changes": [{
-                "address": address, "change": {"actions": actions, "before": before}
-            }]}))
+            runtime_observations(
+                &document,
+                &targets,
+                &BTreeMap::new(),
+                &plan(&actions, &before, &after),
+            )
             .unwrap();
-            runtime_observations(&document, &targets, &BTreeMap::new(), &plan).unwrap();
         }
         // Replacement cleanup is for a previous instance, not the current model.
         let plan = serde_json::from_value(json!({"resource_changes": [{
