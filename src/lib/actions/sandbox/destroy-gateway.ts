@@ -87,18 +87,40 @@ export async function destroyWithActiveGatewayRestored<T>(
     throw error;
   } finally {
     try {
-      if (
-        priorActiveGateway !== null &&
-        priorActiveGateway !== gatewayName &&
-        before.names.includes(priorActiveGateway)
-      ) {
-        const restored = await lifecycle.selectGateway({
-          target: { kind: "named", gatewayName: priorActiveGateway },
-        });
-        if (!restored.ok) {
+      if (priorActiveGateway !== null && priorActiveGateway !== gatewayName) {
+        const current = await lifecycle.listGateways(request);
+        const priorGatewayRegistered = current.ok && current.names.includes(priorActiveGateway);
+        let restorationError: string | null = null;
+        if (!current.ok) {
+          restorationError = `the gateway registry could not be re-read: ${current.error.message}`;
+        } else if (!current.names.includes(priorActiveGateway)) {
+          restorationError = `the previously active gateway is no longer registered`;
+        } else if (current.activeGateway === undefined) {
+          restorationError = `the gateway registry did not report its active selection`;
+        } else if (current.activeGateway === priorActiveGateway) {
+          // Another actor already restored the original selection.
+        } else if (
+          current.activeGateway === gatewayName ||
+          (current.activeGateway === null && !current.names.includes(gatewayName))
+        ) {
+          const restored = await lifecycle.selectGateway({
+            target: { kind: "named", gatewayName: priorActiveGateway },
+          });
+          if (!restored.ok) restorationError = restored.error.message;
+        } else if (current.activeGateway === null) {
+          restorationError = `there is no active gateway while the temporary target remains registered`;
+        } else {
+          // A distinct active gateway may have been selected concurrently. Never overwrite it.
+        }
+        if (restorationError) {
+          const recovery = !current.ok
+            ? `Check OpenShell connectivity, then run 'openshell gateway list' and select a registered gateway.`
+            : !priorGatewayRegistered
+              ? `List registered gateways with 'openshell gateway list' and select a surviving gateway.`
+              : `Restore it manually with 'openshell gateway select ${priorActiveGateway}'.`;
           const message =
             `Sandbox '${sandboxName}' operation finished, but the previously active gateway ` +
-            `'${priorActiveGateway}' could not be restored: ${restored.error.message}.`;
+            `'${priorActiveGateway}' could not be restored: ${restorationError}. ${recovery}`;
           if (operationFailed) console.error(`  ${message}`);
           else throw new Error(message);
         }

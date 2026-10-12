@@ -662,17 +662,39 @@ describe("CLI dispatch", () => {
   });
 
   it.each([
-    ["--cleanup-gateway", true, false, false, 0, true, true],
-    ["--no-cleanup-gateway", false, false, false, 0, true, true],
-    ["--no-cleanup-gateway", false, true, false, 42, true, true],
-    ["--no-cleanup-gateway", false, false, true, 1, false, false],
+    ["--cleanup-gateway", true, false, false, false, false, "", 0, true, true],
+    ["--no-cleanup-gateway", false, false, false, false, false, "", 0, true, true],
+    ["--no-cleanup-gateway", false, true, false, false, false, "", 42, true, true],
+    ["--no-cleanup-gateway", false, false, true, false, false, "", 1, false, false],
+    ["--no-cleanup-gateway", false, false, false, true, false, "", 0, true, false],
+    ["--no-cleanup-gateway", false, false, false, false, true, "", 1, true, true],
+    ["--no-cleanup-gateway", false, true, false, false, true, "", 42, true, true],
+    ["--no-cleanup-gateway", false, false, false, false, false, "list-failure", 1, true, false],
+    ["--no-cleanup-gateway", false, false, false, false, false, "prior-missing", 1, true, false],
+    ["--no-cleanup-gateway", false, false, false, false, false, "marker-omitted", 1, true, false],
+    ["--no-cleanup-gateway", false, false, false, false, false, "already-restored", 0, true, false],
+    [
+      "--no-cleanup-gateway",
+      false,
+      false,
+      false,
+      false,
+      false,
+      "no-active-target-present",
+      1,
+      true,
+      false,
+    ],
   ] as const)(
-    "preserves active gateway during destroy %s (cleanup: %s, delete failure: %s, missing active marker: %s) (#11897)",
+    "preserves active gateway during destroy %s (cleanup: %s, delete failure: %s, missing marker: %s, concurrent selection: %s, restore failure: %s, registry state: %s) (#11897)",
     (
       cleanupFlag,
       cleanupGateway,
       failDelete,
       missingActive,
+      concurrentSelection,
+      failRestoration,
+      postOperationState,
       expectedExitCode,
       mutationExpected,
       restorationExpected,
@@ -686,8 +708,17 @@ describe("CLI dispatch", () => {
       const deletedSandbox = path.join(home, "sandbox-deleted");
       const failDeleteMarker = path.join(home, "fail-delete");
       const missingActiveMarker = path.join(home, "missing-active");
+      const concurrentSelectionMarker = path.join(home, "concurrent-selection");
+      const enableConcurrentSelectionMarker = path.join(home, "enable-concurrent-selection");
+      const targetSelectedMarker = path.join(home, "target-selected");
+      const failRestorationMarker = path.join(home, "fail-restoration");
+      const postOperationStateMarker = path.join(home, "post-operation-state");
       fs.writeFileSync(failDeleteMarker, failDelete ? "fail" : "");
       fs.writeFileSync(missingActiveMarker, missingActive ? "missing" : "");
+      fs.writeFileSync(concurrentSelectionMarker, "");
+      fs.writeFileSync(enableConcurrentSelectionMarker, concurrentSelection ? "yes" : "");
+      fs.writeFileSync(failRestorationMarker, failRestoration ? "fail" : "");
+      fs.writeFileSync(postOperationStateMarker, "");
       fs.mkdirSync(localBin, { recursive: true });
       fs.mkdirSync(registryDir, { recursive: true });
       fs.writeFileSync(activeGateway, "survivor-gateway\n");
@@ -719,10 +750,29 @@ describe("CLI dispatch", () => {
           `deleted_sandbox=${JSON.stringify(deletedSandbox)}`,
           `fail_delete=${JSON.stringify(failDeleteMarker)}`,
           `missing_active=${JSON.stringify(missingActiveMarker)}`,
+          `concurrent_selection=${JSON.stringify(concurrentSelectionMarker)}`,
+          `enable_concurrent_selection=${JSON.stringify(enableConcurrentSelectionMarker)}`,
+          `target_selected=${JSON.stringify(targetSelectedMarker)}`,
+          `fail_restoration=${JSON.stringify(failRestorationMarker)}`,
+          `post_operation_state=${JSON.stringify(postOperationStateMarker)}`,
+          `post_operation_state_value=${JSON.stringify(postOperationState)}`,
           'printf \'%s\\n\' "$*" >> "$log_file"',
           'if [ "$1" = "gateway" ] && [ "$2" = "list" ]; then',
           '  if [ -s "$missing_active" ]; then printf \'[{"name":"nemoclaw-8081"},{"name":"survivor-gateway"}]\\n\'; exit 0; fi',
           '  active="$(cat "$active_gateway")"',
+          '  if [ -s "$concurrent_selection" ]; then printf \'[{"name":"nemoclaw-8081","active":false},{"name":"survivor-gateway","active":false},{"name":"new-gateway","active":true}]\\n\'; exit 0; fi',
+          '  if [ -s "$post_operation_state" ]; then',
+          '    case "$post_operation_state_value" in',
+
+          '      list-failure) echo "registry unavailable" >&2; exit 44 ;;',
+          '      prior-missing) printf \'[{"name":"nemoclaw-8081","active":true}]\\n\' ;;',
+          '      marker-omitted) printf \'[{"name":"nemoclaw-8081"},{"name":"survivor-gateway"}]\\n\' ;;',
+          '      already-restored) printf \'[{"name":"nemoclaw-8081","active":false},{"name":"survivor-gateway","active":true}]\\n\' ;;',
+          '      no-active-target-present) printf \'[{"name":"nemoclaw-8081","active":false},{"name":"survivor-gateway","active":false}]\\n\' ;;',
+          "    esac",
+          "    exit 0",
+          "  fi",
+          '  if [ -e "$target_selected" ] && [ ! -e "$removed_gateway" ]; then printf \'[{"name":"nemoclaw-8081","active":true},{"name":"survivor-gateway","active":false}]\\n\'; exit 0; fi',
           '  if [ -n "$OPENSHELL_GATEWAY" ]; then active="$OPENSHELL_GATEWAY"; fi',
           '  if [ -e "$removed_gateway" ]; then',
           '    printf \'[{"name":"survivor-gateway","active":%s}]\\n\' "$( [ "$active" = "survivor-gateway" ] && printf true || printf false )"',
@@ -732,7 +782,9 @@ describe("CLI dispatch", () => {
           "  exit 0",
           "fi",
           'if [ "$1" = "gateway" ] && [ "$2" = "select" ]; then',
+          '  if [ "$3" = "survivor-gateway" ] && [ -s "$fail_restoration" ]; then echo "restore failed" >&2; exit 43; fi',
           '  printf "%s\\n" "$3" > "$active_gateway"',
+          '  if [ "$3" = "nemoclaw-8081" ]; then : > "$target_selected"; fi',
           "  exit 0",
           "fi",
           'if [ "$1" = "gateway" ] && [ "$2" = "remove" ] && [ "$3" = "nemoclaw-8081" ]; then',
@@ -742,6 +794,12 @@ describe("CLI dispatch", () => {
           "fi",
           'if [ "$1" = "sandbox" ] && [ "$2" = "delete" ]; then',
           '  if [ -s "$fail_delete" ]; then echo "delete failed" >&2; exit 42; fi',
+          '  if [ -s "$enable_concurrent_selection" ]; then printf "selected\\n" > "$concurrent_selection"; printf "new-gateway\\n" > "$active_gateway"; fi',
+          '  if [ -n "$post_operation_state_value" ]; then',
+          '    printf "%s\\n" "$post_operation_state_value" > "$post_operation_state"',
+          '    if [ "$post_operation_state_value" = "already-restored" ]; then printf "survivor-gateway\\n" > "$active_gateway"; fi',
+          '    if [ "$post_operation_state_value" = "no-active-target-present" ]; then : > "$active_gateway"; fi',
+          "  fi",
           '  : > "$deleted_sandbox"',
           "  exit 0",
           "fi",
@@ -775,15 +833,37 @@ describe("CLI dispatch", () => {
 
       const lines = fs.readFileSync(openshellLog, "utf8").trim().split("\n");
       expect(r.code, r.out).toBe(expectedExitCode);
-      expect(r.out.includes("the gateway registry did not report its active selection")).toBe(
-        missingActive,
-      );
+      expect(
+        r.out.includes(
+          "Could not preserve the active OpenShell gateway before destroying 'alpha':",
+        ),
+      ).toBe(missingActive);
+      expect(
+        r.out.includes(
+          "could not be restored: the gateway registry did not report its active selection",
+        ),
+      ).toBe(postOperationState === "marker-omitted");
       expect(lines.includes("gateway select nemoclaw-8081")).toBe(mutationExpected);
       expect(lines.includes("sandbox delete -g nemoclaw-8081 alpha")).toBe(mutationExpected);
       expect(lines.includes("gateway remove nemoclaw-8081")).toBe(
         cleanupGateway && !failDelete && !missingActive,
       );
-      expect(fs.readFileSync(activeGateway, "utf8").trim()).toBe("survivor-gateway");
+      expect(fs.readFileSync(activeGateway, "utf8").trim()).toBe(
+        concurrentSelection
+          ? "new-gateway"
+          : postOperationState === "no-active-target-present"
+            ? ""
+            : failRestoration ||
+                (postOperationState !== "" && postOperationState !== "already-restored")
+              ? "nemoclaw-8081"
+              : "survivor-gateway",
+      );
+      expect(r.out.includes("openshell gateway select survivor-gateway")).toBe(
+        failRestoration ||
+          postOperationState === "marker-omitted" ||
+          postOperationState === "no-active-target-present",
+      );
+      expect(r.out.includes("delete failed")).toBe(failDelete);
       expect(fs.existsSync(removedGateway)).toBe(cleanupGateway && !failDelete && !missingActive);
       const restoreIndex = lines.lastIndexOf("gateway select survivor-gateway");
       const mutationIndex = Math.max(
@@ -791,6 +871,24 @@ describe("CLI dispatch", () => {
         lines.indexOf("gateway remove nemoclaw-8081"),
       );
       expect(restoreIndex > mutationIndex).toBe(restorationExpected);
+      expect(lines.includes("gateway select survivor-gateway")).toBe(
+        !concurrentSelection && !missingActive && postOperationState === "",
+      );
+      expect(r.out.includes("gateway registry could not be re-read:")).toBe(
+        postOperationState === "list-failure",
+      );
+      expect(r.out.includes("Check OpenShell connectivity")).toBe(
+        postOperationState === "list-failure",
+      );
+      expect(r.out.includes("previously active gateway is no longer registered")).toBe(
+        postOperationState === "prior-missing",
+      );
+      expect(r.out.includes("openshell gateway list")).toBe(
+        postOperationState === "prior-missing" || postOperationState === "list-failure",
+      );
+      expect(
+        r.out.includes("there is no active gateway while the temporary target remains registered"),
+      ).toBe(postOperationState === "no-active-target-present");
     },
   );
 
