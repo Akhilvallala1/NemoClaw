@@ -114,13 +114,13 @@ fn production_provider_validates_protected_input_ownership_without_resolving_cre
         nemoclaw_test_fixtures::Bundle::from_env().tofu(),
         &[("nemoclaw", &crate::provider())],
     );
-    for fault in [None, Some("owner"), Some("generation"), Some("malformed")] {
+    for fault in [None, Some("Owner"), Some("Generation"), Some("malformed")] {
         let mut changed = spec.clone();
         let encoded = if fault == Some("malformed") {
             "PRIVATE_SENTINEL".into()
         } else {
             if let Some(attribute) = fault {
-                changed["storage"][attribute] = json!("");
+                *changed["storage"].get_mut(attribute).unwrap() = json!("");
             }
             changed.to_string()
         };

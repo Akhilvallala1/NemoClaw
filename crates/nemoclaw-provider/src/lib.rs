@@ -107,9 +107,9 @@ mod application_input_contract_tests {
         .await;
         let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
             serde_json::from_str(&target.values["spec"]).unwrap();
-        for attribute in ["owner", "generation"] {
+        for attribute in ["Owner", "Generation"] {
             let mut invalid = serde_json::to_value(&spec).unwrap();
-            invalid["storage"][attribute] = serde_json::json!("");
+            *invalid["storage"].get_mut(attribute).unwrap() = serde_json::json!("");
             assert!(
                 nemoclaw_sdk::services::validate_resource_spec(&target.kind, &invalid.to_string())
                     .is_err(),
