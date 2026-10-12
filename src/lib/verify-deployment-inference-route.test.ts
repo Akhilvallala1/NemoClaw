@@ -91,6 +91,7 @@ describe("verifyDeployment inference route model-catalog validation", () => {
         ...NO_RETRY,
         inferenceRouteContext: {
           provider: "ollama-local",
+          gatewayName: "my-gateway",
           nativeLocalExpected: true,
           nativeLocalProviderAttachment: localAttachment,
         },
@@ -111,6 +112,30 @@ describe("verifyDeployment inference route model-catalog validation", () => {
       {
         ...NO_RETRY,
         inferenceRouteContext: { provider: "ollama-local", nativeLocalExpected: true },
+      },
+    );
+
+    expect(result.verification.inferenceRouteWorking).toBe(false);
+    expect(result.diagnostics.find((entry) => entry.link === "inference")?.detail).toContain(
+      "attachment is missing or invalid",
+    );
+    expect(probeInferenceInvocation).not.toHaveBeenCalled();
+  });
+
+  it("rejects a native local attachment from another gateway before probing inference", async () => {
+    const probeInferenceInvocation = vi.fn(async () => ({ ok: true }) as const);
+    const result = await verifyDeployment(
+      "my-sandbox",
+      buildChain(),
+      makeModelsRouteDeps("200", { probeInferenceInvocation }),
+      {
+        ...NO_RETRY,
+        inferenceRouteContext: {
+          provider: "ollama-local",
+          gatewayName: "other-gateway",
+          nativeLocalExpected: true,
+          nativeLocalProviderAttachment: localAttachment,
+        },
       },
     );
 

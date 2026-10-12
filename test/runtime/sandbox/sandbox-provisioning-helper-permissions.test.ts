@@ -179,9 +179,9 @@ describe("sandbox provisioning: copied OpenClaw helper permissions (#2861)", () 
 it.each([
   {
     agent: "OpenClaw cached install",
-    marker: "# Config inputs precede the cached plugin install.",
+    marker: "# Reuse managed config inputs.",
     dockerfile: "Dockerfile",
-    start: "chmod 444 /src/lib/*.ts",
+    start: "chmod 444 /src/lib/*.ts /src/lib/inference/native-local/agent-config.ts",
     file: "/src/lib/inference/native-local/agent-config.ts",
   },
   {

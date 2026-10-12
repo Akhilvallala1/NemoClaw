@@ -274,6 +274,7 @@ type InferenceRouteStatus = "ok" | "unreachable" | "unhealthy";
  */
 export type InferenceRouteContext = {
   provider?: string | null;
+  gatewayName?: string;
   nativeLocalExpected?: boolean;
   nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeHostedProviderAttachment?: unknown;
@@ -425,6 +426,7 @@ async function verifyInferenceRoute(
     nativeLocal &&
     (!normalizeNativeLocalProviderAttachment(context.nativeLocalProviderAttachment) ||
       context.nativeLocalProviderAttachment?.sandboxName !== sandboxName ||
+      context.nativeLocalProviderAttachment?.gatewayName !== context.gatewayName ||
       context.nativeLocalProviderAttachment?.provider !== context.provider)
   ) {
     return {
@@ -971,6 +973,7 @@ export function onboardInferenceVerificationContext(
   return {
     route: {
       provider: flow.provider,
+      gatewayName,
       nativeLocalExpected,
       nativeLocalProviderAttachment,
       nativeHostedProviderAttachment,
