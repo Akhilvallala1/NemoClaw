@@ -190,6 +190,35 @@ export function nativeAgentConfigurationRecord(configuration: NativeOnboardingCo
   };
 }
 
+export function readNativeAgentConfiguration(agent: string) {
+  if (!["openclaw", "hermes"].includes(agent)) fail("the configured agent is invalid");
+  const localAppData = requiredDirectory(
+    process.env.LOCALAPPDATA ?? "",
+    "Windows local application-data directory",
+  );
+  const stateRoot = path.join(localAppData, "NVIDIA", "NemoClaw", "agents", agent);
+  const configPath = path.join(stateRoot, "native-windows.json");
+  if (!fs.statSync(configPath, { throwIfNoEntry: false })?.isFile())
+    fail("the graphical onboarding configuration is missing");
+  const configText = readOpenedRegularFile(configPath, {
+    encoding: "utf8",
+    maxBytes: 1024 * 1024,
+  });
+  if (configText === null) fail("the graphical onboarding configuration disappeared");
+  const config = JSON.parse(configText);
+  if (
+    config?.schemaVersion !== 1 ||
+    config?.classification !== "nemoclaw-native-windows-agent-configuration" ||
+    config?.agent !== agent ||
+    !["nvidia", "openrouter", "compatible", "local"].includes(config?.inference) ||
+    (typeof config?.endpoint !== "string" && config.localModel === undefined) ||
+    typeof config?.model !== "string" ||
+    typeof config?.credentialStored !== "boolean"
+  )
+    fail("the graphical onboarding configuration is incomplete");
+  return { config, stateRoot };
+}
+
 function writeNativeAgentConfiguration(configuration: NativeOnboardingConfiguration) {
   const localAppData = requiredDirectory(
     process.env.LOCALAPPDATA ?? "",

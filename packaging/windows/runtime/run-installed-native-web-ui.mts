@@ -25,6 +25,7 @@ import { readNativeServiceEnvironment } from "./native-options.mts";
 import {
   configureNativeFromStdin,
   nativeAgentConfigurationRecord,
+  readNativeAgentConfiguration,
   normalizeOnboardingConfiguration,
   type NativeOnboardingConfiguration,
 } from "./native-setup-configuration.mts";
@@ -129,32 +130,6 @@ export async function saveNativeOnboardingConfiguration(
   } finally {
     input.fill(0);
   }
-}
-
-function readNativeAgentConfiguration(agent: string) {
-  const localAppData = requiredDirectory(
-    process.env.LOCALAPPDATA ?? "",
-    "Windows local application-data directory",
-  );
-  const stateRoot = path.join(localAppData, "NVIDIA", "NemoClaw", "agents", agent);
-  const configPath = requiredFile(
-    path.join(stateRoot, "native-windows.json"),
-    `${agentNamesForLaunch[agent]} configuration`,
-  );
-  const configText = readOpenedRegularFile(configPath, { encoding: "utf8", maxBytes: 1024 * 1024 });
-  if (configText === null) fail("graphical onboarding configuration disappeared");
-  const config = JSON.parse(configText);
-  if (
-    config?.schemaVersion !== 1 ||
-    config?.classification !== "nemoclaw-native-windows-agent-configuration" ||
-    config?.agent !== agent ||
-    !["nvidia", "openrouter", "compatible", "local"].includes(config?.inference) ||
-    (typeof config?.endpoint !== "string" && config.localModel === undefined) ||
-    typeof config?.model !== "string" ||
-    typeof config?.credentialStored !== "boolean"
-  )
-    fail(`${agentNamesForLaunch[agent]} graphical configuration is incomplete`);
-  return { config, stateRoot };
 }
 
 export function gatewaySource() {

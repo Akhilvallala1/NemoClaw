@@ -43,13 +43,10 @@ import { startNativeEdgeBrowser } from "./native-edge-browser.mts";
 import { acquireNativeStateSession } from "./native-state.mts";
 
 import { resolveNativeConfiguredInference } from "./native-configured-inference.mts";
+import { readNativeAgentConfiguration } from "./native-setup-configuration.mts";
 import type { NativeInferenceProgress } from "./native-inference-manifest.mts";
 
-import {
-  NATIVE_NODE_UI_POLICY,
-  readOpenedRegularFile,
-  writeNativeGatewayConfig,
-} from "./native-security.mts";
+import { NATIVE_NODE_UI_POLICY, writeNativeGatewayConfig } from "./native-security.mts";
 
 import {
   allowlistedWindowsEnvironment,
@@ -139,32 +136,6 @@ async function waitForConsoleAgentExit(
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   fail("the interactive agent exceeded its session deadline");
-}
-
-function readConfiguration(agentId) {
-  const localAppData = requiredDirectory(
-    process.env.LOCALAPPDATA ?? "",
-    "Windows local application-data directory",
-  );
-  const stateRoot = path.join(localAppData, "NVIDIA", "NemoClaw", "agents", agentId);
-  const configPath = requiredFile(
-    path.join(stateRoot, "native-windows.json"),
-    `${AGENT_ADAPTERS[agentId].displayName} configuration`,
-  );
-  const configText = readOpenedRegularFile(configPath, { encoding: "utf8", maxBytes: 1024 * 1024 });
-  if (configText === null) fail("the graphical onboarding configuration disappeared");
-  const config = JSON.parse(configText);
-  if (
-    config?.schemaVersion !== 1 ||
-    config?.classification !== "nemoclaw-native-windows-agent-configuration" ||
-    config?.agent !== agentId ||
-    !["nvidia", "openrouter", "compatible", "local"].includes(config?.inference) ||
-    (typeof config?.endpoint !== "string" && config.localModel === undefined) ||
-    typeof config?.model !== "string" ||
-    typeof config?.credentialStored !== "boolean"
-  )
-    fail("the graphical onboarding configuration is incomplete");
-  return { config, stateRoot };
 }
 
 export function interactiveWorkloadSource() {
@@ -689,7 +660,7 @@ async function runNativeConsoleAgentInternal(
   let consoleAttachment: ReturnType<typeof openNativeConsoleAttachment> | undefined;
   try {
     stateSession.assertHeld();
-    const { config: storedConfig } = readConfiguration(agentId);
+    const { config: storedConfig } = readNativeAgentConfiguration(agentId);
     webSession?.assertRunning();
     webSession?.progress("inference");
     diagnostics.stage("inference");

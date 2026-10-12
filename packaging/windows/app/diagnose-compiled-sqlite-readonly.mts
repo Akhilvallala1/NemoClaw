@@ -3,6 +3,7 @@
 
 // Failure-only diagnostic, never installer acceptance. Exercise the unchanged
 // compiled worker with synthetic SQLite data and a separate diagnostic preload.
+// The preload adds fixed phase timings to its PowerShell child, not acceptance.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -45,6 +46,7 @@ const result = {
   classification: "compiled-sqlite-readonly-diagnostic",
   installedAcceptance: false,
   instrumented: true,
+  powerShellPhaseInstrumentation: true,
   platform: process.platform,
   architecture: process.arch,
   nodeVersion: process.version,
@@ -185,7 +187,9 @@ try {
         // Never retain worker stdout, exception text, arguments, or environment.
         const trace = stderr
           .split(/\r?\n/u)
-          .filter((line) => /^\[nemoclaw-(?:choice-child|snapshot-backup)\] \{/u.test(line))
+          .filter((line) =>
+            /^\[nemoclaw-(?:choice-child|snapshot-backup|private-directory)\] \{/u.test(line),
+          )
           .join("\n");
         fs.writeFileSync(path.join(output, scenario + ".trace.log"), trace + "\n", { flag: "wx" });
       }

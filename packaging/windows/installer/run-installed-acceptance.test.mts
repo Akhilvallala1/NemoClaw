@@ -87,9 +87,10 @@ for (const [name, read] of [
     assert.throws(() => fs.fstatSync(descriptor!), { code: "EBADF" });
     open.mock.restore();
     assert.deepEqual(read(file), expected);
-    fs.writeFileSync(file, "");
-    if (name === "private-directory library") assert.throws(() => read(file));
-    else assert.deepEqual(read(file), Buffer.alloc(0));
+    const empty = path.join(root, "empty.bin");
+    fs.writeFileSync(empty, "", { flag: "wx" });
+    if (name === "private-directory library") assert.throws(() => read(empty));
+    else assert.deepEqual(read(empty), Buffer.alloc(0));
   });
 }
 
@@ -98,10 +99,14 @@ test("history reads enforce their bound even when the opened file grows", (conte
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, "input.json");
   const oversized = fs.openSync(file, "wx");
-  fs.ftruncateSync(oversized, 16 * 1024 * 1024 + 1);
-  fs.closeSync(oversized);
-  assert.throws(() => readHistoryFixtureFile(file), /exceeds its bound/);
-  fs.writeFileSync(file, "{}");
+  try {
+    fs.ftruncateSync(oversized, 16 * 1024 * 1024 + 1);
+    assert.throws(() => readHistoryFixtureFile(file), /exceeds its bound/);
+    fs.ftruncateSync(oversized, 0);
+    fs.writeFileSync(oversized, "{}");
+  } finally {
+    fs.closeSync(oversized);
+  }
   const originalStat = fs.fstatSync;
   let descriptor: number | undefined;
   context.mock.method(fs, "fstatSync", (...args: Parameters<typeof fs.fstatSync>) => {

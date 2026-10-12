@@ -12,7 +12,11 @@ import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { configureNativeFromStdin } from "./native-setup-configuration.mts";
+import {
+  configureNativeFromStdin,
+  nativeAgentConfigurationRecord,
+  readNativeAgentConfiguration,
+} from "./native-setup-configuration.mts";
 import {
   NATIVE_NODE_UI_POLICY,
   nativeCredentialBinding,
@@ -40,6 +44,78 @@ import {
   acquireNativeRuntimeSession,
   type NativeRuntimePurpose,
 } from "./native-runtime.mts";
+
+for (const agent of ["openclaw", "hermes"] as const) {
+  test(`${agent} reads its persisted configuration and rejects malformed records`, (context) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-configuration-reader-"));
+    const previous = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = root;
+    context.after(() => {
+      if (previous === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previous;
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    assert.throws(() => readNativeAgentConfiguration("../outside"), /configured agent is invalid/);
+    assert.throws(() => readNativeAgentConfiguration(agent), /configuration is missing/);
+    const stateRoot = path.join(root, "NVIDIA", "NemoClaw", "agents", agent);
+    fs.mkdirSync(stateRoot, { recursive: true });
+    const configPath = path.join(stateRoot, "native-windows.json");
+    fs.mkdirSync(configPath);
+    assert.throws(() => readNativeAgentConfiguration(agent), /configuration is missing/);
+    fs.rmdirSync(configPath);
+    const descriptor = fs.openSync(configPath, "wx");
+    const record = nativeAgentConfigurationRecord({
+      agent,
+      inference: "compatible",
+      endpoint: "https://example.invalid/v1",
+      model: "test-model",
+      credential: "",
+      options: {},
+    });
+    const replace = (content: string) => {
+      fs.ftruncateSync(descriptor, 0);
+      fs.writeSync(descriptor, content, 0, "utf8");
+    };
+    try {
+      for (const inference of ["nvidia", "openrouter", "compatible", "local"]) {
+        const expected = { ...record, inference };
+        replace(JSON.stringify(expected));
+        assert.deepEqual(readNativeAgentConfiguration(agent), { config: expected, stateRoot });
+      }
+      const local = {
+        ...record,
+        inference: "local",
+        endpoint: undefined,
+        localModel: "catalog-id",
+      };
+      replace(JSON.stringify(local));
+      assert.deepEqual(
+        readNativeAgentConfiguration(agent).config,
+        JSON.parse(JSON.stringify(local)),
+      );
+      for (const mutation of [
+        { schemaVersion: 2 },
+        { classification: "foreign" },
+        { agent: "foreign" },
+        { inference: "qualification" },
+        { endpoint: undefined },
+        { model: null },
+        { credentialStored: "false" },
+      ]) {
+        replace(JSON.stringify({ ...record, ...mutation }));
+        assert.throws(() => readNativeAgentConfiguration(agent), /configuration is incomplete/);
+      }
+      replace("null");
+      assert.throws(() => readNativeAgentConfiguration(agent), /configuration is incomplete/);
+      replace("{");
+      assert.throws(() => readNativeAgentConfiguration(agent), SyntaxError);
+      fs.ftruncateSync(descriptor, 1024 * 1024 + 1);
+      assert.throws(() => readNativeAgentConfiguration(agent), /file exceeds its limit/);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  });
+}
 
 for (const removed of ["pi", "langchain-deepagents-code", "nemocua"]) {
   test(`retired ${removed} cannot acquire an installed runtime lease`, async () => {

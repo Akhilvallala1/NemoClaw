@@ -7,8 +7,115 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import {
   choiceInspectChildDiagnostics,
+  privateDirectoryDiagnosticCommand,
   sqliteReadonlyWorkerDiagnostics,
 } from "./choice-inspect-diagnostics.mts";
+
+const privateDirectoryCommand = [
+  "$ErrorActionPreference = 'Stop'",
+  "$nativeLibrary = 'private-library-path'",
+  "Add-Type -LiteralPath $nativeLibrary",
+  "$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+  "$sddl = $security.GetSecurityDescriptorSddlForm($sections)",
+  "$errorCode = [OpenClawPrivateDirectory]::Create($path, $sddl)",
+  "if ($errorCode -ne 0) { throw 'retained-error' }",
+].join("; ");
+
+test("private-directory phase diagnostics retain every original statement and reject unknown scripts", () => {
+  const instrumented = privateDirectoryDiagnosticCommand(privateDirectoryCommand);
+  assert(instrumented);
+  assert.equal(
+    instrumented
+      .split("; ")
+      .filter(
+        (statement) =>
+          !statement.startsWith("$nemoPrivateDirectoryTimer =") &&
+          !statement.startsWith("[Console]::Error.WriteLine('[nemoclaw-private-directory]"),
+      )
+      .join("; "),
+    privateDirectoryCommand,
+  );
+  for (const changed of [
+    "unrelated",
+    privateDirectoryCommand.replace(
+      "Add-Type -LiteralPath $nativeLibrary",
+      "Add-Type -TypeDefinition $nativeSource",
+    ),
+    privateDirectoryCommand + "; Add-Type -LiteralPath $nativeLibrary",
+  ])
+    assert.equal(privateDirectoryDiagnosticCommand(changed), null);
+});
+
+test("readonly PowerShell instrumentation preserves call ownership and exports only bounded phase records", () => {
+  const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter() });
+  const lines: string[] = [];
+  const receiver = {},
+    options = { env: { SECRET: "private-environment" }, timeout: 60000 };
+  const callback = () => {};
+  const argv = [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(privateDirectoryCommand, "utf16le").toString("base64"),
+  ];
+  let seen: unknown[] = [];
+  const cp = {
+    execFile(this: unknown, ...args: unknown[]) {
+      assert.equal(this, receiver);
+      seen = args;
+      return child;
+    },
+    spawn() {},
+    spawnSync() {},
+    execFileSync() {},
+  };
+  runInNewContext(sqliteReadonlyWorkerDiagnostics, {
+    Buffer,
+    require(name: string) {
+      if (name === "node:child_process") return cp;
+      if (name === "node:sqlite") return { backup() {} };
+      assert.equal(name, "node:module");
+      return { syncBuiltinESMExports() {} };
+    },
+    process: { execPath: "/private/node", stderr: { write: (line: string) => lines.push(line) } },
+    performance: { now: () => 10 },
+  });
+  assert.equal(
+    cp.execFile.call(receiver, "C:\\Windows\\powershell.exe", argv, options, callback),
+    child,
+  );
+  assert.equal(seen[0], "C:\\Windows\\powershell.exe");
+  assert.equal(seen[2], options);
+  assert.equal(seen[3], callback);
+  assert.notEqual(seen[1], argv);
+  assert.equal(Buffer.from(argv[4], "base64").toString("utf16le"), privateDirectoryCommand);
+  assert.equal(
+    Buffer.from((seen[1] as string[])[4], "base64").toString("utf16le"),
+    privateDirectoryDiagnosticCommand(privateDirectoryCommand),
+  );
+  const record = '[nemoclaw-private-directory] {"stage":"library-loaded","elapsedMs":123}\r\n';
+  child.stderr.emit("data", Buffer.from(record.slice(0, 17)));
+  child.stderr.emit(
+    "data",
+    Buffer.from(
+      record.slice(17) +
+        "private stderr\n" +
+        '[nemoclaw-private-directory] {"stage":"private-secret","elapsedMs":1}\n' +
+        record.repeat(10),
+    ),
+  );
+  const phases = lines.filter((line) => line.startsWith("[nemoclaw-private-directory]"));
+  assert.equal(phases.length, 5);
+  assert(phases.every((line) => line === record.replace("}\r\n", ',"observedAtMs":0}\n')));
+  assert.doesNotMatch(
+    lines.join(""),
+    /private-secret|private stderr|private-environment|private-library-path/,
+  );
+  const originalArgs = ["-NoProfile", "-Command", "unchanged"];
+  cp.execFile.call(receiver, "C:\\Windows\\powershell.exe", originalArgs, options, callback);
+  assert.equal(seen[1], originalArgs);
+});
 
 function fixture(invoke: (...args: unknown[]) => unknown) {
   const methods = ["spawn", "spawnSync", "execFile", "execFileSync"];

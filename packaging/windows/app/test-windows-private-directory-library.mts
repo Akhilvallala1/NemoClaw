@@ -6,6 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { privateDirectoryDiagnosticCommand } from "./choice-inspect-diagnostics.mts";
 import {
   SQLITE_PRIVATE_DIRECTORY_SOURCE,
   SQLITE_PRIVATE_DIRECTORY_LIBRARY,
@@ -104,6 +105,7 @@ for (const directory of ["plain", "spaces and 'quotes'", "[brackets]-é-雪"]) {
   assert.equal(before.powershell, after.powershell);
   assert.deepEqual(before.args.slice(0, -1), after.args.slice(0, -1));
   assert.equal(unchangedPolicy(command(after)), unchangedPolicy(command(before)));
+  assert(privateDirectoryDiagnosticCommand(command(after)));
   assert.equal(
     command(after)
       .split("; ")
