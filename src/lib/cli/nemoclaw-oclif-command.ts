@@ -92,12 +92,11 @@ const REMOVED_IMMUTABILITY_REMEDIATION_COMMANDS = new Set([
   "sandbox:stop",
 ]);
 
-function hasPortableRegistryAuthorityOnHost(sandboxName: string): boolean {
+function hasPortableRegistryAuthorityOnHost(): boolean {
   return listInferenceRouteOwnersAcrossGatewayRoots(process.env.HOME || os.homedir()).some(
     (entry) =>
       entry.portableLifecycleProfile !== undefined ||
-      (entry.name === sandboxName &&
-        entry.agent === "hermes" &&
+      (entry.agent === "hermes" &&
         entry.openshellDriver === "docker" &&
         typeof entry.lifecycleGeneration === "string"),
   );
@@ -132,19 +131,17 @@ function samePortableAuthorityDirectories(
   );
 }
 
-function canUseUnlockedSandboxStatusRead(sandboxName: string): boolean {
+function canUseUnlockedSandboxStatusRead(): boolean {
   const stateDir = defaultPortableDemoStateDir(process.env);
   try {
     const before = readPortableAuthorityDirectories(stateDir);
-    if (hasPortableReceiptAuthority(before) || hasPortableRegistryAuthorityOnHost(sandboxName)) {
-      return false;
-    }
+    if (hasPortableReceiptAuthority(before) || hasPortableRegistryAuthorityOnHost()) return false;
 
     const after = readPortableAuthorityDirectories(stateDir);
     return (
       !hasPortableReceiptAuthority(after) &&
       samePortableAuthorityDirectories(before, after) &&
-      !hasPortableRegistryAuthorityOnHost(sandboxName)
+      !hasPortableRegistryAuthorityOnHost()
     );
   } catch {
     return false;
@@ -270,7 +267,7 @@ export abstract class NemoClawCommand extends Command {
         ) {
           throw error;
         }
-        if (!canUseUnlockedSandboxStatusRead(sandboxName)) {
+        if (!canUseUnlockedSandboxStatusRead()) {
           throw new Error(
             "Another NemoClaw lifecycle operation is in progress on this host. Wait for it to finish, then retry status.",
             { cause: error },
@@ -278,7 +275,7 @@ export abstract class NemoClawCommand extends Command {
         }
         return await withUnlockedSandboxStatusRead(async () => {
           const result = await runLocked();
-          if (!canUseUnlockedSandboxStatusRead(sandboxName)) {
+          if (!canUseUnlockedSandboxStatusRead()) {
             throw new Error(
               "Another NemoClaw lifecycle operation is in progress on this host. Wait for it to finish, then retry status.",
               { cause: error },

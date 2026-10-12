@@ -366,13 +366,13 @@ describe("NemoClawCommand", () => {
     expect(portableHostAuthority.withCurrentPortableHostFenceTry).toHaveBeenCalledOnce();
   });
 
-  it("fails closed on registry-only Portable authority for the requested sandbox (#11903)", async () => {
+  it("fails closed on registry-only Hermes Portable authority for another sandbox (#11903)", async () => {
     vi.spyOn(portableHostAuthority, "withCurrentPortableHostFenceTry").mockRejectedValue(
       new Error(portableHostAuthority.PORTABLE_HOST_FENCE_BUSY_MESSAGE),
     );
     vi.spyOn(registryCrossPort, "listInferenceRouteOwnersAcrossGatewayRoots").mockReturnValue([
       {
-        name: "alpha",
+        name: "beta",
         agent: "hermes",
         openshellDriver: "docker",
         lifecycleGeneration: "generation-1",
@@ -385,6 +385,37 @@ describe("NemoClawCommand", () => {
       "Another NemoClaw lifecycle operation is in progress on this host.",
     );
     expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unlocked status read when Hermes Portable registry authority appears during it (#11903)", async () => {
+    const fence = acquireProcessBoundLockAt(portableHostAuthority.portableHostFencePath(stateDir));
+    let registryReads = 0;
+    vi.spyOn(registryCrossPort, "listInferenceRouteOwnersAcrossGatewayRoots").mockImplementation(
+      () => {
+        registryReads += 1;
+        return registryReads < 3
+          ? []
+          : [
+              {
+                name: "beta",
+                agent: "hermes",
+                openshellDriver: "docker",
+                lifecycleGeneration: "generation-1",
+              } as never,
+            ];
+      },
+    );
+    const operation = vi.fn(async () => undefined);
+    ParsedSupportedSandboxCommand.operation = operation;
+    try {
+      await expect(ParsedSupportedSandboxCommand.run(["alpha"], process.cwd())).rejects.toThrow(
+        "Another NemoClaw lifecycle operation is in progress on this host.",
+      );
+      expect(operation).toHaveBeenCalledOnce();
+      expect(registryReads).toBe(3);
+    } finally {
+      releaseProcessBoundLock(fence);
+    }
   });
 
   it("fails closed on Portable registry authority for another sandbox (#11903)", async () => {
