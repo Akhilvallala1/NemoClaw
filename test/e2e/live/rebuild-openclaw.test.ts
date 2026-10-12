@@ -3,6 +3,7 @@
 
 import { execTimeout, testTimeout } from "../../helpers/timeouts.ts";
 import { shellQuote } from "../../../src/lib/core/shell-quote.ts";
+import { REBUILD_OPENCLAW_TEST_TIMEOUT_MS } from "../../../tools/e2e/rebuild-openclaw-timeout-contract.mts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import { assertExitZero, resultText } from "../fixtures/clients/command.ts";
 import { type SandboxClient, trustedSandboxShellScript } from "../fixtures/clients/sandbox.ts";
@@ -48,7 +49,7 @@ function nativePluginInstallScript(): string {
 test(
   "rebuild-openclaw restores durable state and native readiness",
   {
-    timeout: testTimeout(45 * 60_000),
+    timeout: testTimeout(REBUILD_OPENCLAW_TEST_TIMEOUT_MS),
     meta: {
       e2ePhases: [
         "prepare the OpenClaw rebuild fixture",
