@@ -146,6 +146,65 @@ describe("verifyDeployment inference route model-catalog validation", () => {
     expect(probeInferenceInvocation).not.toHaveBeenCalled();
   });
 
+  it("rejects a native local attachment for a different selected endpoint in both probes", async () => {
+    const context = onboardInferenceVerificationContext(
+      "my-sandbox",
+      "my-gateway",
+      DCODE_AGENT,
+      {
+        provider: "ollama-local",
+        model: "test-model",
+        endpointUrl: "http://host.openshell.internal:11435/v1",
+        preferredInferenceApi: "openai-completions",
+      },
+      { nativeLocalProviderAttachment: localAttachment },
+    );
+    const routeProbe = vi.fn(async () => ({ ok: true }) as const);
+    const deployment = await verifyDeployment(
+      "my-sandbox",
+      buildChain(),
+      makeDeps({ probeInferenceInvocation: routeProbe }),
+      { ...NO_RETRY, inferenceRouteContext: context.route },
+    );
+    expect(deployment.verification.inferenceRouteWorking).toBe(false);
+    expect(routeProbe).not.toHaveBeenCalled();
+
+    const invocationProbe = vi.fn(async () => ({ ok: true }) as const);
+    expect(
+      await probeOnboardInferenceInvocation(context.invocation, invocationProbe),
+    ).toMatchObject({
+      ok: false,
+    });
+    expect(invocationProbe).not.toHaveBeenCalled();
+  });
+
+  it("accepts a normalized spelling of the selected native local endpoint", async () => {
+    const context = onboardInferenceVerificationContext(
+      "my-sandbox",
+      "my-gateway",
+      DCODE_AGENT,
+      {
+        provider: "ollama-local",
+        model: "test-model",
+        endpointUrl: `${localBinding.endpointUrl}/`,
+        preferredInferenceApi: "openai-completions",
+      },
+      { nativeLocalProviderAttachment: localAttachment },
+    );
+    const probe = vi.fn(async () => ({ ok: true }) as const);
+    expect(await probeOnboardInferenceInvocation(context.invocation, probe)).toEqual({ ok: true });
+    expect(probe).toHaveBeenCalledOnce();
+    const routeProbe = vi.fn(async () => ({ ok: true }) as const);
+    const deployment = await verifyDeployment(
+      "my-sandbox",
+      buildChain(),
+      makeDeps({ probeInferenceInvocation: routeProbe }),
+      { ...NO_RETRY, inferenceRouteContext: context.route },
+    );
+    expect(deployment.verification.inferenceRouteWorking).toBe(true);
+    expect(routeProbe).toHaveBeenCalledOnce();
+  });
+
   it("uses the native NVIDIA invocation instead of probing inference.local", async () => {
     const scripts: string[] = [];
     const probeInferenceInvocation = vi.fn(async () => ({ ok: true }) as const);

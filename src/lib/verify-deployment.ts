@@ -34,6 +34,7 @@ import { retryUntilAsync } from "./core/retry";
 import { isNativeNvidiaProvider } from "./inference/native-nvidia";
 import { requireHostedProviderAttachment } from "./inference/native-provider/hosted-attachment";
 import {
+  normalizeNativeLocalBinding,
   normalizeNativeLocalProviderAttachment,
   usesNativeLocalInferenceForAgent,
   type NativeLocalProviderAttachment,
@@ -274,6 +275,7 @@ type InferenceRouteStatus = "ok" | "unreachable" | "unhealthy";
  */
 export type InferenceRouteContext = {
   provider?: string | null;
+  endpointUrl?: string | null;
   gatewayName?: string;
   nativeLocalExpected?: boolean;
   nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
@@ -399,6 +401,23 @@ async function resolveExpectedModelsRoute404(
   };
 }
 
+function matchesNativeLocalVerificationRoute(
+  context: InferenceRouteContext,
+  sandboxName: string,
+): boolean {
+  const attachment = normalizeNativeLocalProviderAttachment(context.nativeLocalProviderAttachment);
+  if (
+    !attachment ||
+    attachment.sandboxName !== sandboxName ||
+    attachment.gatewayName !== context.gatewayName ||
+    attachment.provider !== context.provider
+  )
+    return false;
+  if (context.endpointUrl === undefined) return true;
+  const selected = normalizeNativeLocalBinding({ ...attachment, endpointUrl: context.endpointUrl });
+  return selected?.endpointUrl === attachment.endpointUrl;
+}
+
 async function verifyInferenceRoute(
   sandboxName: string,
   deps: VerifyDeploymentDeps,
@@ -422,13 +441,7 @@ async function verifyInferenceRoute(
       hint: "Restore the recorded provider ownership before retrying onboarding.",
     };
   }
-  if (
-    nativeLocal &&
-    (!normalizeNativeLocalProviderAttachment(context.nativeLocalProviderAttachment) ||
-      context.nativeLocalProviderAttachment?.sandboxName !== sandboxName ||
-      context.nativeLocalProviderAttachment?.gatewayName !== context.gatewayName ||
-      context.nativeLocalProviderAttachment?.provider !== context.provider)
-  ) {
+  if (nativeLocal && !matchesNativeLocalVerificationRoute(context, sandboxName)) {
     return {
       status: "unhealthy",
       detail: "native local provider attachment is missing or invalid",
@@ -973,6 +986,7 @@ export function onboardInferenceVerificationContext(
   return {
     route: {
       provider: flow.provider,
+      endpointUrl: flow.endpointUrl ?? null,
       gatewayName,
       nativeLocalExpected,
       nativeLocalProviderAttachment,
@@ -984,6 +998,7 @@ export function onboardInferenceVerificationContext(
       agentName,
       model: flow.model,
       provider: flow.provider,
+      endpointUrl: flow.endpointUrl ?? null,
       preferredInferenceApi: flow.preferredInferenceApi,
       nativeLocalExpected,
       nativeLocalProviderAttachment,
@@ -1009,10 +1024,7 @@ export async function probeOnboardInferenceInvocation(
   }
   if (
     (context.nativeLocalExpected || context.nativeLocalProviderAttachment !== undefined) &&
-    (!normalizeNativeLocalProviderAttachment(context.nativeLocalProviderAttachment) ||
-      context.nativeLocalProviderAttachment?.sandboxName !== context.sandboxName ||
-      context.nativeLocalProviderAttachment?.gatewayName !== context.gatewayName ||
-      context.nativeLocalProviderAttachment?.provider !== provider)
+    !matchesNativeLocalVerificationRoute(context, context.sandboxName)
   ) {
     return { ok: false, detail: "native local provider attachment is missing or invalid" };
   }
