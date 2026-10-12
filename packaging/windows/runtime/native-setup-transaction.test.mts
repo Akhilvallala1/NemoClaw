@@ -6,14 +6,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   configureNativeFromStdin,
+  readNativeAgentConfiguration,
   type NativeOnboardingConfiguration,
 } from "./native-setup-configuration.mts";
 import { saveNativeOnboardingConfiguration } from "./run-installed-native-web-ui.mts";
 import { nativeCredentialBinding } from "./native-security.mts";
 import { NATIVE_SERVICES, nativeServiceBinding } from "./native-options.mts";
+import { readNativeConfigurationRecovery } from "./native-configuration-recovery.mts";
 
 const configuration = {
   schemaVersion: 1,
@@ -27,6 +30,213 @@ const configuration = {
   options: { search: { provider: "tavily", credentialStored: true } },
 };
 const credentials = { inference: "new-inference", services: { tavily: "new-tavily" } };
+
+test("unfinished credential recovery blocks launch and a full resave removes stranded provider keys", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-pending-configuration-"));
+  const originalEnvironment = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = root;
+  t.after(() => {
+    if (originalEnvironment === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = originalEnvironment;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const directory = path.join(root, "NVIDIA", "NemoClaw", "agents", "hermes");
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "native-windows.json"), JSON.stringify(configuration));
+  const attempted = {
+    ...configuration,
+    inference: "nvidia",
+    endpoint: "https://integrate.api.nvidia.com/v1",
+    options: {},
+  };
+  const stranded = nativeCredentialBinding(attempted);
+  const previous = nativeCredentialBinding(configuration);
+  const vault = new Map([[previous, "old-private-key"]]);
+  let held = false;
+  let failWrite = true;
+  const dependencies = {
+    lookupEndpoint: async () => [{ address: "8.8.8.8", family: 4 }],
+    acquireState: async () => {
+      assert.equal(held, false);
+      held = true;
+      return {
+        stateRoot: root,
+        created: false,
+        removed: false,
+        assertHeld() {
+          assert.equal(held, true);
+        },
+        async release() {
+          held = false;
+        },
+      };
+    },
+    credentialStore: {
+      read: async (_launcher: string, change: { binding: string }) => {
+        assert(held);
+        assert(readNativeConfigurationRecovery(directory, "hermes"));
+        assert.throws(() => readNativeAgentConfiguration("hermes"), /save is unfinished/);
+        return vault.get(change.binding) ?? "";
+      },
+      write: async (_launcher: string, change: { binding: string; value: string }) => {
+        assert(held);
+        if (failWrite && !change.value) throw new Error("rollback could not finish");
+        if (change.value) vault.set(change.binding, change.value);
+        else vault.delete(change.binding);
+        if (failWrite) throw new Error("write result unknown");
+      },
+    },
+    readCredential: async () => "",
+    readServices: async () => ({ options: {}, environment: {} }),
+  };
+  await assert.rejects(
+    configureNativeFromStdin(
+      "unused",
+      ["--transaction"],
+      Readable.from([
+        Buffer.from(
+          JSON.stringify({
+            configuration: attempted,
+            credentials: { inference: "nvapi-private-fixture", services: {} },
+          }),
+        ),
+      ]),
+      process.stdout,
+      dependencies,
+    ),
+    /credential recovery is incomplete/,
+  );
+  assert.equal(held, false);
+  assert.equal(vault.get(stranded), "nvapi-private-fixture");
+  const pending = readNativeConfigurationRecovery(directory, "hermes");
+  assert(pending);
+  assert.equal(pending.writerProcessId, process.pid);
+  assert.equal(pending.identities.length, 2);
+  assert(!JSON.stringify(pending).includes("private"));
+  assert.throws(() => readNativeAgentConfiguration("hermes"), /save is unfinished/);
+  const restartedReader = spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      "--input-type=module",
+      "-e",
+      `import {readNativeAgentConfiguration} from ${JSON.stringify(new URL("./native-setup-configuration.mts", import.meta.url).href)};
+     try { readNativeAgentConfiguration("hermes"); process.exitCode=1; }
+     catch (error) { process.exitCode=/save is unfinished/.test(error.message) ? 0 : 2; }`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(restartedReader.status, 0, restartedReader.stderr);
+  let observation = "";
+  await configureNativeFromStdin(
+    "unused",
+    ["--recovery-status", "hermes"],
+    Readable.from([]),
+    {
+      write(value: string | Uint8Array) {
+        observation += value.toString();
+        return true;
+      },
+    },
+    dependencies,
+  );
+  assert.deepEqual(JSON.parse(observation), {
+    schemaVersion: 1,
+    kind: "native-configuration-recovery",
+    agent: "hermes",
+    state: "needs-resave",
+    operationId: pending.operationId,
+    writerProcessId: pending.writerProcessId,
+  });
+  assert.equal(held, false);
+  assert.equal(
+    readNativeConfigurationRecovery(directory, "hermes")?.operationId,
+    pending.operationId,
+  );
+  const replacement = {
+    ...configuration,
+    inference: "local",
+    endpoint: "http://127.0.0.1:12345/v1",
+    model: "chosen-after-recovery",
+    credentialStored: false,
+    options: {},
+  };
+  await assert.rejects(
+    configureNativeFromStdin(
+      "unused",
+      [],
+      Readable.from([Buffer.from(JSON.stringify(replacement))]),
+      process.stdout,
+      dependencies,
+    ),
+    /complete Setup credential transaction/,
+  );
+  assert.equal(
+    readNativeConfigurationRecovery(directory, "hermes")?.operationId,
+    pending.operationId,
+  );
+  failWrite = false;
+  await configureNativeFromStdin(
+    "unused",
+    ["--transaction"],
+    Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          configuration: replacement,
+          credentials: { inference: "", services: {} },
+        }),
+      ),
+    ]),
+    process.stdout,
+    dependencies,
+  );
+  assert.equal(held, false);
+  assert.equal(vault.size, 0);
+  assert.equal(readNativeConfigurationRecovery(directory, "hermes"), null);
+  assert.equal(readNativeAgentConfiguration("hermes").config.model, "chosen-after-recovery");
+  observation = "";
+  await configureNativeFromStdin(
+    "unused",
+    ["--recovery-status", "hermes"],
+    Readable.from([]),
+    {
+      write(value: string | Uint8Array) {
+        observation += value.toString();
+        return true;
+      },
+    },
+    dependencies,
+  );
+  assert.deepEqual(JSON.parse(observation), {
+    schemaVersion: 1,
+    kind: "native-configuration-recovery",
+    agent: "hermes",
+    state: "clear",
+  });
+});
+
+test("configuration recovery status cannot claim completion without the configuration owner", async () => {
+  const output = {
+    write() {
+      assert.fail("An unowned recovery status was published.");
+      return false;
+    },
+  };
+  await assert.rejects(
+    configureNativeFromStdin("unused", ["--recovery-status", "hermes"], Readable.from([]), output, {
+      acquireState: async () => {
+        throw new Error("configuration owner busy");
+      },
+    }),
+    /owner busy/,
+  );
+  await assert.rejects(
+    configureNativeFromStdin("unused", ["--recovery-status", "pi"], Readable.from([]), output, {
+      acquireState: async () => assert.fail("A retired agent acquired recovery ownership."),
+    }),
+    /recovery request is invalid/,
+  );
+});
 
 test("web onboarding uses the canonical lease and never persists its secret or launch action", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-web-configuration-lease-"));
@@ -195,7 +405,13 @@ test("web onboarding uses the canonical lease and never persists its secret or l
   }
 });
 
-for (const failure of ["none", "credential", "services", "active-pointer"]) {
+for (const failure of [
+  "none",
+  "credential",
+  "services",
+  "active-pointer",
+  "configuration-rollback",
+]) {
   test(`setup transaction ${failure} binds credentials and configuration to one state lease`, async (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-transaction-"));
     const previousEnvironment = process.env.LOCALAPPDATA;
@@ -232,9 +448,12 @@ for (const failure of ["none", "credential", "services", "active-pointer"]) {
       acquiring = resolve;
     });
     const originalRename = fs.renameSync;
-    if (failure === "active-pointer")
+    let configurationRenames = 0;
+    if (failure === "active-pointer" || failure === "configuration-rollback")
       t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
         if (to === activePath) throw new Error("simulated active-agent rename failure");
+        if (to === configPath && ++configurationRenames > 1 && failure === "configuration-rollback")
+          throw new Error("simulated configuration restoration failure");
         originalRename(from, to);
       });
     const input = Buffer.from(JSON.stringify({ configuration, credentials }));
@@ -304,12 +523,20 @@ for (const failure of ["none", "credential", "services", "active-pointer"]) {
       } else {
         await assert.rejects(pending, /previous credentials were preserved/);
         assert.deepEqual(vault, initial);
-        assert.equal(fs.readFileSync(configPath, "utf8"), previous);
+        if (failure === "configuration-rollback") {
+          assert(readNativeConfigurationRecovery(path.dirname(configPath), "hermes"));
+          assert.throws(() => readNativeAgentConfiguration("hermes"), /save is unfinished/);
+        } else assert.equal(fs.readFileSync(configPath, "utf8"), previous);
         assert.equal(fs.readFileSync(activePath, "utf8"), "openclaw\n");
       }
       assert(released);
       assert(input.every((byte) => byte === 0));
-      assert.deepEqual(fs.readdirSync(path.dirname(configPath)), ["native-windows.json"]);
+      assert.deepEqual(
+        fs.readdirSync(path.dirname(configPath)).sort(),
+        failure === "configuration-rollback"
+          ? ["native-configuration-pending.json", "native-windows.json"]
+          : ["native-windows.json"],
+      );
     } finally {
       admit();
       t.mock.restoreAll();

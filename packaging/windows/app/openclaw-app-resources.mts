@@ -83,9 +83,10 @@ function filesBelow(root: string): string[] {
   }
   return result.sort();
 }
-function copyExact(source: string, target: string) {
+function copyExact(source: string, target: string, transform?: (bytes: Buffer) => Buffer) {
   regular(source);
-  const content = fs.readFileSync(source);
+  const original = fs.readFileSync(source);
+  const content = transform ? transform(original) : original;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   try {
     fs.writeFileSync(target, content, { flag: "wx" });
@@ -548,18 +549,59 @@ const sidecarRoots = [
   "undici",
   "ws",
 ];
+export const CONTROL_UI_STARTUP_ENTRY = "dist/control-ui/assets/index-1fvEwqai.js";
+export function deferControlUiStartup(original: Buffer) {
+  if (sha256(original) !== "76a9b487a03b82bb4355d7a9696c2a8c82c38739f29ebe54a71e50371ec5de3a")
+    throw new Error("The reviewed Control UI startup entry changed.");
+  // Edge can restore the initial navigation fragment after an early replaceState.
+  // Let that navigation finish before upstream captures and sanitizes its landing URL.
+  // Keep the upstream initializer, authentication and strict route comparison intact.
+  // Remove this bridge when the pinned upstream startup handles that ordering itself.
+  return Buffer.from(
+    original
+      .toString("utf8")
+      .replace(
+        ";e();",
+        ';if(document.readyState==="complete"){e();}else{window.addEventListener("load",()=>e(),{once:true});}',
+      ),
+  );
+}
 export function stagePublishedResources(source: string, app: string, platform = "win32") {
   const core = path.join(app, inputRelativePath(source, source));
+  const entrySource = path.join(source, CONTROL_UI_STARTUP_ENTRY);
+  regular(entrySource);
+  const entryBytes = fs.readFileSync(entrySource);
+  const startup = deferControlUiStartup(entryBytes);
+  const startupPath = `dist/control-ui/assets/nemoclaw-start-${sha256(startup)}.js`;
+  const indexSource = path.join(source, "dist/control-ui/index.html");
+  regular(indexSource);
+  const indexBytes = fs.readFileSync(indexSource);
+  const originalReference = `src="./assets/${path.basename(CONTROL_UI_STARTUP_ENTRY)}"`;
+  if (indexBytes.toString("utf8").split(originalReference).length !== 2)
+    throw new Error("The reviewed Control UI startup reference changed.");
+  const index = Buffer.from(
+    indexBytes
+      .toString("utf8")
+      .replace(originalReference, `src="./assets/${path.basename(startupPath)}"`),
+  );
   for (const name of ["package.json", "LICENSE", "THIRD_PARTY_NOTICES.md"])
     copyExact(path.join(source, name), path.join(core, name));
   copyExact(path.join(source, "package.json"), path.join(app, "package.json"));
-  // UI JavaScript is already the canonical published frontend build. All its dynamic
-  // chunks, fonts, styles and other data are copied, never compiled on the customer machine.
+  // Keep upstream chunks, compressed siblings and asset manifest byte-identical.
+  // A distinct entry URL prevents old immutable caches from bypassing the startup repair.
+  // No frontend code is compiled on the customer machine.
   // Workspace creation reads the published templates from the canonical package root.
   for (const directory of ["dist/control-ui", "skills", "docs/reference/templates"]) {
-    for (const file of filesBelow(path.join(source, directory)))
-      copyExact(file, path.join(core, path.relative(source, file)));
+    for (const file of filesBelow(path.join(source, directory))) {
+      const relative = path.relative(source, file);
+      copyExact(
+        file,
+        path.join(core, relative),
+        portablePath(relative) === "dist/control-ui/index.html" ? () => index : undefined,
+      );
+    }
   }
+  fs.writeFileSync(path.join(core, startupPath), startup, { flag: "wx" });
   for (const file of filesBelow(path.join(source, "dist"))) {
     const relative = portablePath(path.relative(source, file));
     if (relative.startsWith("dist/control-ui/")) continue;
@@ -682,7 +724,19 @@ export function stagePublishedResources(source: string, app: string, platform = 
       packageSha256: sha256(bytes),
     });
   }
-  return packages.sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    packages: packages.sort((a, b) => a.path.localeCompare(b.path)),
+    controlUiStartup: {
+      originalEntry: CONTROL_UI_STARTUP_ENTRY,
+      sourceSha256: sha256(entryBytes),
+      stagedEntry: startupPath,
+      stagedSha256: sha256(startup),
+      originalIndexSha256: sha256(indexBytes),
+      stagedIndexSha256: sha256(index),
+      adaptation:
+        "Run the original UI initializer after initial document load; authentication and routing are unchanged.",
+    },
+  };
 }
 export function resourceInventory(app: string, facadePaths: string[]): ResourceFile[] {
   const facades = new Set(facadePaths);

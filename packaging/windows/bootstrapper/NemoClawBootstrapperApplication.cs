@@ -506,6 +506,12 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
     private async Task ConfigureInstalledAgentAsync()
     {
         if (this.window is null || !this.window.TryBeginConfiguration()) return;
+        await this.window.ObserveConfigurationAsync(this.FinishConfigurationAsync());
+    }
+
+    private async Task FinishConfigurationAsync()
+    {
+        if (this.window is null) throw new InvalidOperationException("The setup window is unavailable.");
         using var cancellation = new CancellationTokenSource();
         this.modelSetupCancellation = cancellation;
         try

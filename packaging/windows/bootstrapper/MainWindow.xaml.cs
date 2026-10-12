@@ -235,6 +235,7 @@ public partial class MainWindow : Window
     }
 
     internal bool ConfigurationWindowClosed => this.configurationObservation.CloseRequested;
+    internal Task<bool> ObserveConfigurationAsync(Task completion) => this.configurationObservation.ObserveAsync(completion);
 
     internal void ShowConfigurationUnconfirmed(int processId)
     {
@@ -245,7 +246,39 @@ public partial class MainWindow : Window
         this.ClearCredential();
         this.HidePanels();
         this.FailurePanel.Visibility = Visibility.Visible;
-        this.FailureDetail.Text = $"Settings completion is not confirmed. Setup still owns the operation from helper {processId}. You can close this window; Setup will keep waiting in the background. Another save is blocked until completion is confirmed. Do not end Setup or its helper in Task Manager.";
+        this.ConfigurationRecoveryButton.Visibility = Visibility.Visible;
+        this.FailureDetail.Text = $"Settings completion is not confirmed. Setup still owns helper {processId}. Use Check save status, or close this window while recovery stays active. Another save is blocked until the helper finishes. Do not end Setup or its helper in Task Manager.";
+    }
+
+    private async void CheckConfigurationRecoveryClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is not Button button || !button.IsEnabled) return;
+        var generation = this.configurationObservation.Generation;
+        var agent = this.SelectedAgent;
+        button.IsEnabled = false;
+        try
+        {
+            if (this.configurationObservation.Running)
+            {
+                if (!await this.configurationObservation.CheckCompletionAsync(TimeSpan.FromSeconds(5)))
+                    this.FailureDetail.Text = "The original save still owns its helper. No second save has started. You can check again or close this window while recovery remains active.";
+                // The owning completion path presents success/failure and retains launch intent.
+                return;
+            }
+            var pending = await NativeSetupOperations.ReadRecoveryAsync(agent);
+            if (generation != this.configurationObservation.Generation || agent != this.SelectedAgent) return;
+            this.ShowConfigurationError(pending
+                ? "The previous save is unfinished, and its configuration lock was available during this check. Review your provider and model, re-enter required keys, then Save to complete recovery."
+                : "No unfinished save was found and the configuration lock was available. You can review your choices and save again.");
+        }
+        catch (Exception)
+        {
+            if (generation != this.configurationObservation.Generation || agent != this.SelectedAgent) return;
+            const string message = "Save status could not be confirmed. Close any other Setup window and check again. No settings were changed by this check.";
+            if (this.FailurePanel.Visibility == Visibility.Visible) this.FailureDetail.Text = message;
+            else this.ShowConfigurationError(message);
+        }
+        finally { button.IsEnabled = true; }
     }
 
     internal void CompleteConfigurationObservation()
@@ -381,6 +414,7 @@ public partial class MainWindow : Window
 
     private void HidePanels()
     {
+        this.ConfigurationRecoveryButton.Visibility = Visibility.Collapsed;
         foreach (var panel in new[] { this.ReadyPanel, this.ConfigurationPanel, this.ProgressPanel, this.SuccessPanel, this.FailurePanel, this.MaintenancePanel })
         {
             panel.Visibility = Visibility.Collapsed;

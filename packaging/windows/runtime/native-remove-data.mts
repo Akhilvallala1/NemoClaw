@@ -6,6 +6,7 @@ import path from "node:path";
 import { NATIVE_SERVICES, nativeServiceBinding } from "./native-options.mts";
 import { acquireNativeStateRemoval } from "./native-state.mts";
 import { localModelIdentityMatches } from "./native-local-models.mts";
+import { readNativeConfigurationRecovery } from "./native-configuration-recovery.mts";
 import {
   deleteCredentialByBinding,
   nativeCredentialBinding,
@@ -51,7 +52,13 @@ function readRemovalCredential(root: string, directory: string, agent: string) {
       };
     }
   }
-  return inference;
+  const bindings = new Map<string, { provider: string; binding: string }>();
+  if (inference) bindings.set(inference.binding, inference);
+  for (const identity of readNativeConfigurationRecovery(directory, agent)?.identities ?? []) {
+    const binding = nativeCredentialBinding(identity);
+    bindings.set(binding, { provider: identity.inference, binding });
+  }
+  return [...bindings.values()];
 }
 
 export async function removeNativeAgentData(
@@ -80,7 +87,8 @@ export async function removeNativeAgentData(
     // Select the credential from the current settings while that lease is held.
     const inference = readRemovalCredential(root, directory, agent);
     const deleteCredential = dependencies.deleteCredential ?? deleteCredentialByBinding;
-    if (inference) await deleteCredential(launcher, inference.provider, inference.binding);
+    for (const identity of inference)
+      await deleteCredential(launcher, identity.provider, identity.binding);
     for (const service of Object.keys(NATIVE_SERVICES))
       await deleteCredential(launcher, service, nativeServiceBinding(agent, service));
     owner.assertHeld();

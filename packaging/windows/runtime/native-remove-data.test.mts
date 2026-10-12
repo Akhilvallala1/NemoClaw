@@ -11,6 +11,7 @@ import { NATIVE_EXPRESS } from "./native-inference-manifest.mts";
 import { NATIVE_LOCAL_MODELS } from "./native-local-models.mts";
 import { NATIVE_SERVICES, nativeServiceBinding } from "./native-options.mts";
 import { nativeCredentialBinding } from "./native-security.mts";
+import { beginNativeConfigurationRecovery } from "./native-configuration-recovery.mts";
 
 const hosted = {
   schemaVersion: 1,
@@ -148,6 +149,45 @@ test("hosted removal deletes its endpoint-bound key and preserves another active
   assert.equal(fs.readFileSync(files.other, "utf8"), "other-agent");
   assert.equal(fs.readFileSync(files.shared, "utf8"), "shared-model");
   assert.equal(state.released(), true);
+});
+
+test("removal cleans pending provider bindings under the selected agent owner", async (t) => {
+  const files = fixture(t, hosted);
+  const interrupted = {
+    agent: "openclaw",
+    inference: "nvidia",
+    endpoint: "https://integrate.api.nvidia.com/v1",
+  };
+  beginNativeConfigurationRecovery(files.selected, "openclaw", [hosted, interrupted], () => {});
+  const state = owner();
+  await removeNativeAgentData("unused", "openclaw", state.dependencies);
+  assert.deepEqual(state.deleted.slice(0, 2), [
+    { provider: "compatible", binding: nativeCredentialBinding(hosted) },
+    { provider: "nvidia", binding: nativeCredentialBinding(interrupted) },
+  ]);
+  assert.equal(state.deleted.length, 2 + Object.keys(NATIVE_SERVICES).length);
+  assert.equal(state.released(), true);
+  assert.equal(fs.existsSync(files.selected), false);
+  assert.equal(fs.readFileSync(files.other, "utf8"), "other-agent");
+  assert.equal(fs.readFileSync(files.shared, "utf8"), "shared-model");
+});
+
+test("foreign pending credential ownership rejects removal before deleting any state", async (t) => {
+  const files = fixture(t, hosted);
+  const record = beginNativeConfigurationRecovery(files.selected, "openclaw", [hosted], () => {});
+  record.identities[0].agent = "hermes";
+  fs.writeFileSync(
+    path.join(files.selected, "native-configuration-pending.json"),
+    JSON.stringify(record),
+  );
+  const state = owner();
+  await assert.rejects(
+    removeNativeAgentData("unused", "openclaw", state.dependencies),
+    /credential owner is invalid/,
+  );
+  assert.equal(state.acquired(), 0);
+  assert.deepEqual(state.deleted, []);
+  assert.equal(fs.existsSync(files.config), true);
 });
 
 for (const [name, override] of [

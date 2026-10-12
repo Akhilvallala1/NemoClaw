@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { nativeHermesCompatibility, type NativeRuntimeLaunchLease } from "./native-runtime.mts";
 import type { NativeGatewaySession } from "./native-gateway-session.mts";
+import { PROVIDER_CONFIGURATION } from "./native-provider-policy.mts";
 
 type ReadOpenedRegularFileOptions = {
   encoding?: BufferEncoding;
@@ -97,28 +98,22 @@ export function nativeCredentialBinding(identity: NativeCredentialIdentity): str
     !["openclaw", "hermes", "langchain-deepagents-code", "pi", "nemocua"].includes(
       identity.agent,
     ) ||
-    !["nvidia", "openrouter", "compatible", "local"].includes(identity.inference)
+    typeof identity.inference !== "string" ||
+    !Object.hasOwn(PROVIDER_CONFIGURATION, identity.inference)
   )
     fail("the credential identity is invalid");
   // Bind the actual request destination after the same URL normalization used by the broker.
   const destination = resolveBrokerUpstreamUrl(identity.endpoint, "models");
-  if (identity.inference !== "local" && destination.protocol !== "https:")
+  const provider = PROVIDER_CONFIGURATION[identity.inference];
+  if (!provider.loopbackOnly && destination.protocol !== "https:")
     fail("the credential endpoint requires HTTPS");
-  const fixedEndpoint =
-    identity.inference === "nvidia"
-      ? "https://integrate.api.nvidia.com/v1"
-      : identity.inference === "openrouter"
-        ? "https://openrouter.ai/api/v1"
-        : null;
+  const fixedEndpoint = provider.endpoint;
   if (
     fixedEndpoint !== null &&
     destination.href !== resolveBrokerUpstreamUrl(fixedEndpoint, "models").href
   )
     fail("the credential endpoint does not match the selected provider");
-  if (
-    identity.inference === "local" &&
-    !["127.0.0.1", "localhost", "[::1]"].includes(destination.hostname)
-  )
+  if (provider.loopbackOnly && !["127.0.0.1", "localhost", "[::1]"].includes(destination.hostname))
     fail("the local credential endpoint is not loopback");
   return createHash("sha256")
     .update(
@@ -150,10 +145,7 @@ export async function readCredentialByBinding(
 ): Promise<string> {
   if (
     ![
-      "nvidia",
-      "openrouter",
-      "compatible",
-      "local",
+      ...Object.keys(PROVIDER_CONFIGURATION),
       "brave",
       "tavily",
       "telegram",
@@ -238,10 +230,7 @@ export async function deleteCredentialByBinding(
 ): Promise<void> {
   if (
     ![
-      "nvidia",
-      "openrouter",
-      "compatible",
-      "local",
+      ...Object.keys(PROVIDER_CONFIGURATION),
       "brave",
       "tavily",
       "telegram",

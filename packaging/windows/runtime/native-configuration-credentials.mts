@@ -6,6 +6,18 @@ import { deleteCredentialByBinding, readCredentialByBinding } from "./native-sec
 
 export type CredentialChange = { provider: string; binding: string; value: string };
 
+export class NativeCredentialTransactionError extends Error {
+  readonly recoveryComplete: boolean;
+  constructor(recoveryComplete: boolean) {
+    super(
+      recoveryComplete
+        ? "Native setup failed; previous credentials were preserved."
+        : "Native setup failed and credential recovery is incomplete. Reopen Setup before launching.",
+    );
+    this.recoveryComplete = recoveryComplete;
+  }
+}
+
 async function writeCredential(launcher: string, change: CredentialChange): Promise<void> {
   if (!change.value) return deleteCredentialByBinding(launcher, change.provider, change.binding);
   const bytes = Buffer.from(change.value, "utf8");
@@ -90,11 +102,7 @@ export async function withNativeCredentialTransaction<T>(
         rollbackFailed = true;
       }
     }
-    throw new Error(
-      rollbackFailed
-        ? "Native setup failed and credential recovery is incomplete. Reopen Setup before launching."
-        : "Native setup failed; previous credentials were preserved.",
-    );
+    throw new NativeCredentialTransactionError(!rollbackFailed);
   } finally {
     for (const change of previous) change.value = "";
   }

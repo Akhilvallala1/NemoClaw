@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
@@ -15,6 +16,7 @@ import { parse as parseYaml } from "yaml";
 import {
   configureNativeFromStdin,
   nativeAgentConfigurationRecord,
+  normalizeOnboardingConfiguration,
   readNativeAgentConfiguration,
 } from "./native-setup-configuration.mts";
 import {
@@ -44,6 +46,87 @@ import {
   acquireNativeRuntimeSession,
   type NativeRuntimePurpose,
 } from "./native-runtime.mts";
+import { PROVIDER_CONFIGURATION } from "./native-provider-policy.mts";
+
+test("provider policy preserves selectable models and existing credential identities", () => {
+  const cases = [
+    ["nvidia", "https://integrate.api.nvidia.com/v1", "nvapi-fixture", true],
+    ["openrouter", "https://openrouter.ai/api/v1", "sk-or-fixture", true],
+    ["compatible", "https://example.invalid/v1", "", false],
+    ["local", "http://127.0.0.1:12345/v1", "", false],
+  ] as const;
+  assert.deepEqual(Object.keys(PROVIDER_CONFIGURATION).sort(), cases.map(([id]) => id).sort());
+  for (const [inference, endpoint, credential, required] of cases) {
+    const submitted = {
+      agent: "hermes",
+      inference,
+      options: { endpoint, model: "user-selected-model", credential },
+    };
+    const normalized = normalizeOnboardingConfiguration(submitted, false);
+    assert.equal(normalized.endpoint, endpoint);
+    assert.equal(normalized.model, "user-selected-model");
+    assert.equal(normalized.credential, credential);
+    assert.equal(PROVIDER_CONFIGURATION[inference].credentialRequired, required);
+    const expected = createHash("sha256")
+      .update(
+        JSON.stringify([
+          "nemoclaw-native-credential-v1",
+          "hermes",
+          inference,
+          endpoint + "/models",
+        ]),
+      )
+      .digest("hex");
+    assert.equal(nativeCredentialBinding({ ...normalized, endpoint }), expected);
+    assert.equal(nativeCredentialBinding({ ...normalized, endpoint: endpoint + "/" }), expected);
+    const empty = { ...submitted, options: { ...submitted.options, credential: "" } };
+    if (required) {
+      assert.throws(() => normalizeOnboardingConfiguration(empty, false), /requires an API key/);
+      assert.throws(
+        () => nativeCredentialBinding({ ...normalized, endpoint: "https://other.invalid/v1" }),
+        /does not match the selected provider/,
+      );
+    } else assert.equal(normalizeOnboardingConfiguration(empty, false).credential, "");
+  }
+});
+
+test("shared provider policy rejects unknown providers and nonlocal local bindings", () => {
+  const submitted = {
+    agent: "openclaw",
+    inference: "toString",
+    options: { endpoint: "https://example.invalid/v1", model: "selected" },
+  };
+  assert.throws(
+    () => normalizeOnboardingConfiguration(submitted, false),
+    /valid inference provider/,
+  );
+  assert.throws(
+    () => nativeCredentialBinding({ ...submitted, endpoint: submitted.options.endpoint }),
+    /credential identity is invalid/,
+  );
+  assert.throws(
+    () => normalizeOnboardingConfiguration({ ...submitted, inference: "local" }, false),
+    /loopback endpoint/,
+  );
+  assert.throws(
+    () =>
+      nativeCredentialBinding({
+        ...submitted,
+        inference: "local",
+        endpoint: submitted.options.endpoint,
+      }),
+    /not loopback/,
+  );
+  const malformed = { ...submitted, inference: ["nvidia"], endpoint: submitted.options.endpoint };
+  assert.throws(
+    () => Reflect.apply(normalizeOnboardingConfiguration, null, [malformed, false]),
+    /valid inference provider/,
+  );
+  assert.throws(
+    () => Reflect.apply(nativeCredentialBinding, null, [malformed]),
+    /credential identity is invalid/,
+  );
+});
 
 for (const agent of ["openclaw", "hermes"] as const) {
   test(`${agent} reads its persisted configuration and rejects malformed records`, (context) => {

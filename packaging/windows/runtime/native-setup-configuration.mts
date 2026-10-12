@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { PROVIDER_CONFIGURATION } from "./native-provider-policy.mts";
 import {
   assertNativeInferenceEndpoint,
   resolveNativeInferenceAddresses,
@@ -29,10 +30,16 @@ import {
 } from "./native-security.mts";
 import { acquireNativeStateConfiguration } from "./native-state.mts";
 import {
+  NativeCredentialTransactionError,
   nativeConfigurationCredentialStore,
   withNativeCredentialTransaction,
   type CredentialChange,
 } from "./native-configuration-credentials.mts";
+import {
+  beginNativeConfigurationRecovery,
+  completeNativeConfigurationRecovery,
+  readNativeConfigurationRecovery,
+} from "./native-configuration-recovery.mts";
 
 export type NativeOnboardingConfiguration = {
   agent: string;
@@ -53,32 +60,6 @@ function requiredDirectory(directory: string, label: string): string {
   if (!fs.statSync(resolved, { throwIfNoEntry: false })?.isDirectory()) fail(`${label} is missing`);
   return resolved;
 }
-
-const PROVIDER_CONFIGURATION: Record<
-  string,
-  {
-    endpoint: string | null;
-    credentialRequired: boolean;
-    credentialPrefix: string | null;
-  }
-> = {
-  nvidia: {
-    endpoint: "https://integrate.api.nvidia.com/v1",
-    credentialRequired: true,
-    credentialPrefix: "nvapi-",
-  },
-  openrouter: {
-    endpoint: "https://openrouter.ai/api/v1",
-    credentialRequired: true,
-    credentialPrefix: "sk-or-",
-  },
-  compatible: {
-    endpoint: null,
-    credentialRequired: false,
-    credentialPrefix: null,
-  },
-  local: { endpoint: null, credentialRequired: false, credentialPrefix: null },
-};
 
 function normalizeProviderCredential(inference: string, value: unknown): string {
   const provider = PROVIDER_CONFIGURATION[inference];
@@ -115,7 +96,10 @@ export function normalizeOnboardingConfiguration(
       options: submitted.options ?? {},
     };
   }
-  if (!Object.hasOwn(PROVIDER_CONFIGURATION, submitted?.inference))
+  if (
+    typeof submitted?.inference !== "string" ||
+    !Object.hasOwn(PROVIDER_CONFIGURATION, submitted.inference)
+  )
     throw new Error("Select a valid inference provider.");
   const provider = PROVIDER_CONFIGURATION[submitted.inference];
   const options = submitted?.options;
@@ -150,15 +134,11 @@ export function normalizeOnboardingConfiguration(
   } catch {
     throw new Error("Enter a complete inference endpoint URL.");
   }
-  const endpointIsAllowed =
-    submitted.inference === "local"
-      ? endpointUrl.protocol === "http:" || endpointUrl.protocol === "https:"
-      : endpointUrl.protocol === "https:";
+  const endpointIsAllowed = provider.loopbackOnly
+    ? endpointUrl.protocol === "http:" || endpointUrl.protocol === "https:"
+    : endpointUrl.protocol === "https:";
   if (!endpointIsAllowed) throw new Error("The selected inference endpoint protocol is unsafe.");
-  if (
-    submitted.inference === "local" &&
-    !["127.0.0.1", "localhost", "[::1]"].includes(endpointUrl.hostname)
-  )
+  if (provider.loopbackOnly && !["127.0.0.1", "localhost", "[::1]"].includes(endpointUrl.hostname))
     throw new Error("Local inference must use a loopback endpoint.");
   assertNativeInferenceEndpoint(endpointUrl, submitted.inference);
   const model = typeof options.model === "string" ? options.model.trim() : "";
@@ -213,6 +193,10 @@ export function readNativeAgentConfiguration(agent: string) {
     "Windows local application-data directory",
   );
   const stateRoot = path.join(localAppData, "NVIDIA", "NemoClaw", "agents", agent);
+  if (readNativeConfigurationRecovery(stateRoot, agent))
+    fail(
+      "a previous settings save is unfinished. Open NemoClaw Setup, review your choices and save again before launching",
+    );
   const configPath = path.join(stateRoot, "native-windows.json");
   if (!fs.statSync(configPath, { throwIfNoEntry: false })?.isFile())
     fail("the graphical onboarding configuration is missing");
@@ -226,7 +210,8 @@ export function readNativeAgentConfiguration(agent: string) {
     config?.schemaVersion !== 1 ||
     config?.classification !== "nemoclaw-native-windows-agent-configuration" ||
     config?.agent !== agent ||
-    !["nvidia", "openrouter", "compatible", "local"].includes(config?.inference) ||
+    typeof config?.inference !== "string" ||
+    !Object.hasOwn(PROVIDER_CONFIGURATION, config.inference) ||
     (typeof config?.endpoint !== "string" && config.localModel === undefined) ||
     typeof config?.model !== "string" ||
     typeof config?.credentialStored !== "boolean"
@@ -302,6 +287,49 @@ export async function configureNativeFromStdin(
     writeConfiguration?: typeof writeNativeAgentConfiguration;
   } = {},
 ) {
+  const recoveryPosition = args.indexOf("--recovery-status");
+  if (recoveryPosition !== -1) {
+    const agent = args[recoveryPosition + 1];
+    if (
+      !["openclaw", "hermes"].includes(agent) ||
+      recoveryPosition !== args.length - 2 ||
+      args.some((argument) => argument === "--transaction" || argument.startsWith("--prepare"))
+    )
+      fail("the configuration recovery request is invalid");
+    const owner = await (dependencies.acquireState ?? acquireNativeStateConfiguration)(
+      launcher,
+      agent,
+    );
+    try {
+      owner.assertHeld();
+      const directory = path.join(
+        requiredDirectory(
+          process.env.LOCALAPPDATA ?? "",
+          "Windows local application-data directory",
+        ),
+        "NVIDIA",
+        "NemoClaw",
+        "agents",
+        agent,
+      );
+      const pending = readNativeConfigurationRecovery(directory, agent);
+      owner.assertHeld();
+      output.write(
+        JSON.stringify({
+          schemaVersion: 1,
+          kind: "native-configuration-recovery",
+          agent,
+          state: pending ? "needs-resave" : "clear",
+          ...(pending
+            ? { operationId: pending.operationId, writerProcessId: pending.writerProcessId }
+            : {}),
+        }),
+      );
+    } finally {
+      await owner.release();
+    }
+    return;
+  }
   const chunks: Buffer[] = [];
   let bytes = 0;
   const transaction = args.includes("--transaction");
@@ -354,7 +382,8 @@ export async function configureNativeFromStdin(
       ? typeof submitted?.endpoint !== "string"
       : submitted.endpoint !== undefined) ||
     typeof submitted?.model !== "string" ||
-    !Object.hasOwn(PROVIDER_CONFIGURATION, submitted?.inference) ||
+    typeof submitted?.inference !== "string" ||
+    !Object.hasOwn(PROVIDER_CONFIGURATION, submitted.inference) ||
     submitted?.options === null ||
     typeof submitted?.options !== "object" ||
     Array.isArray(submitted.options) ||
@@ -482,6 +511,21 @@ export async function configureNativeFromStdin(
       maxBytes: 16 * 1024,
     });
     const previous = previousText === null ? null : JSON.parse(previousText);
+    const configurationDirectory = path.dirname(previousPath);
+    const activeSelectionPath = path.join(
+      path.dirname(path.dirname(configurationDirectory)),
+      "active-agent.txt",
+    );
+    const previousActiveSelection = readOpenedRegularFile(activeSelectionPath, {
+      encoding: "utf8",
+      maxBytes: 64,
+    });
+    const pendingRecovery = readNativeConfigurationRecovery(
+      configurationDirectory,
+      normalized.agent,
+    );
+    if (pendingRecovery && !transaction)
+      fail("an unfinished settings save requires a new complete Setup credential transaction");
     const previousBinding =
       previous?.schemaVersion === 1 &&
       previous?.agent === normalized.agent &&
@@ -527,14 +571,57 @@ export async function configureNativeFromStdin(
           value: credentials.services?.[service] ?? "",
         });
       }
+      for (const identity of pendingRecovery?.identities ?? []) {
+        const pendingBinding = nativeCredentialBinding(identity);
+        if (!changes.some((change) => change.binding === pendingBinding))
+          changes.push({ provider: identity.inference, binding: pendingBinding, value: "" });
+      }
+      const identities = [
+        ...(normalized.endpoint
+          ? [
+              {
+                agent: normalized.agent,
+                inference: normalized.inference,
+                endpoint: normalized.endpoint,
+              },
+            ]
+          : []),
+        ...(previousBinding
+          ? [{ agent: previous.agent, inference: previous.inference, endpoint: previous.endpoint }]
+          : []),
+      ];
+      const recovery = beginNativeConfigurationRecovery(
+        configurationDirectory,
+        normalized.agent,
+        identities,
+        () => state.assertHeld(),
+      );
       try {
-        return await withNativeCredentialTransaction(
+        const result = await withNativeCredentialTransaction(
           launcher,
           changes,
           () => state.assertHeld(),
           commit,
           dependencies.credentialStore,
         );
+        completeNativeConfigurationRecovery(configurationDirectory, recovery, () =>
+          state.assertHeld(),
+        );
+        return result;
+      } catch (error) {
+        if (
+          error instanceof NativeCredentialTransactionError &&
+          error.recoveryComplete &&
+          !pendingRecovery &&
+          readOpenedRegularFile(previousPath, { encoding: "utf8", maxBytes: 16 * 1024 }) ===
+            previousText &&
+          readOpenedRegularFile(activeSelectionPath, { encoding: "utf8", maxBytes: 64 }) ===
+            previousActiveSelection
+        )
+          completeNativeConfigurationRecovery(configurationDirectory, recovery, () =>
+            state.assertHeld(),
+          );
+        throw error;
       } finally {
         for (const change of changes) change.value = "";
         credentials.inference = "";

@@ -15,15 +15,21 @@ internal delegate Task<string> NativeSetupHelperRunner(string launcher, string[]
 // Closing an unconfirmed window must not release the transaction or permit another save.
 internal sealed class NativeSetupObservation
 {
+    private TaskCompletionSource recoveryAvailable = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private Task? completion;
     internal bool Running { get; private set; }
     internal int? HelperProcessId { get; private set; }
     internal bool CompletionUnconfirmed { get; private set; }
     internal bool CloseRequested { get; private set; }
+    internal long Generation { get; private set; }
 
     internal bool TryBegin()
     {
-        if (Running) return false;
+        if (Running || completion is { IsCompleted: false }) return false;
         Running = true;
+        Generation++;
+        completion = null;
+        recoveryAvailable = new(TaskCreationOptions.RunContinuationsAsynchronously);
         HelperProcessId = null;
         CompletionUnconfirmed = false;
         CloseRequested = false;
@@ -35,6 +41,27 @@ internal sealed class NativeSetupObservation
         if (!Running || processId <= 0) throw new InvalidOperationException("No configuration helper is owned by Setup.");
         HelperProcessId = processId;
         CompletionUnconfirmed = true;
+        recoveryAvailable.TrySetResult();
+    }
+
+    // The bounded visible operation may finish while its transaction owner remains live.
+    // Keep that owner's task here until it drains the pipes and clears its private buffers.
+    internal async Task<bool> ObserveAsync(Task ownedCompletion)
+    {
+        if (completion is not null && !ReferenceEquals(completion, ownedCompletion))
+            throw new InvalidOperationException("Setup already owns another configuration operation.");
+        completion = ownedCompletion;
+        if (await Task.WhenAny(ownedCompletion, recoveryAvailable.Task) != ownedCompletion) return false;
+        await ownedCompletion;
+        return true;
+    }
+
+    internal async Task<bool> CheckCompletionAsync(TimeSpan deadline)
+    {
+        if (completion is null) return !Running;
+        if (await Task.WhenAny(completion, Task.Delay(deadline)) != completion) return false;
+        await completion;
+        return !Running;
     }
 
     internal bool TryCloseWindow()
@@ -57,13 +84,48 @@ internal static class NativeSetupOperations
 {
     internal static async Task SaveAsync(NativeSetupConfiguration configuration, SecureString password, NativeServiceCredentials? serviceCredentials = null, Action<NativeExpressProgress>? progress = null, CancellationToken cancellation = default, Action<int>? completionUnconfirmed = null)
     {
+        cancellation.ThrowIfCancellationRequested();
         var launcher = InstalledLauncher();
         if (!NativeMaintenance.SupportsDataRemoval())
             throw new InvalidOperationException("Install this preview before configuring its native agent settings.");
+        var recovery = await ReadRecoveryAsync(configuration.Agent, launcher);
+        if (recovery)
+            progress?.Invoke(new("configuration", "Recovering an unfinished save with the choices you selected. The agent stays blocked until this save completes.", null, null));
         await SaveWithHelperAsync(configuration, password, serviceCredentials, progress, cancellation, launcher,
             (path, arguments, input, capture) => RunSetupHelperAsync(path, arguments, input, capture,
                 () => progress?.Invoke(new("configuration", "Saving or recovering your settings is taking longer than expected. Setup is waiting for the configuration helper.", null, null)),
                 completionUnconfirmed: completionUnconfirmed));
+    }
+
+    internal static async Task<bool> ReadRecoveryAsync(string agent, string? launcher = null)
+    {
+        if (agent is not ("openclaw" or "hermes")) throw new InvalidOperationException("The selected agent is invalid.");
+        var response = await RunSetupHelperAsync(launcher ?? InstalledLauncher(),
+            new[] { "--configure-native", "--recovery-status", agent }, Array.Empty<byte>(),
+            captureOutput: true, observationDeadline: TimeSpan.FromSeconds(10));
+        return ReadRecovery(response, agent);
+    }
+
+    internal static bool ReadRecovery(string value, string agent)
+    {
+        using var document = JsonDocument.Parse(value);
+        var root = document.RootElement;
+        if (agent is not ("openclaw" or "hermes") || root.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("The configuration recovery result is invalid.");
+        var names = root.EnumerateObject().Select(property => property.Name).ToArray();
+        if (names.Length != names.Distinct(StringComparer.Ordinal).Count() ||
+            !root.TryGetProperty("schemaVersion", out var schema) || schema.ValueKind != JsonValueKind.Number || !schema.TryGetInt32(out var version) || version != 1 ||
+            !root.TryGetProperty("kind", out var kind) || kind.ValueKind != JsonValueKind.String || kind.GetString() != "native-configuration-recovery" ||
+            !root.TryGetProperty("agent", out var selected) || selected.ValueKind != JsonValueKind.String || selected.GetString() != agent ||
+            !root.TryGetProperty("state", out var state) || state.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("The configuration recovery result is invalid.");
+        if (state.GetString() == "clear" && names.Length == 4) return false;
+        if (state.GetString() != "needs-resave" || names.Length != 6 ||
+            !root.TryGetProperty("operationId", out var operation) || operation.ValueKind != JsonValueKind.String ||
+            operation.GetString() is not string id || id.Length != 32 || id.Any(character => !"0123456789abcdef".Contains(character)) ||
+            !root.TryGetProperty("writerProcessId", out var writer) || writer.ValueKind != JsonValueKind.Number || !writer.TryGetInt32(out var processId) || processId <= 0)
+            throw new InvalidOperationException("The configuration recovery result is invalid.");
+        return true;
     }
 
     internal static async Task SaveWithHelperAsync(NativeSetupConfiguration configuration, SecureString password, NativeServiceCredentials? serviceCredentials, Action<NativeExpressProgress>? progress, CancellationToken cancellation, string launcher, NativeSetupHelperRunner runSetupHelper)

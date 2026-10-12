@@ -35,9 +35,8 @@ internal static class NativeOnboarding
                 var window = new MainWindow();
                 CancellationTokenSource? modelCancellation = null;
                 window.ModelSetupCancelRequested += (_, _) => modelCancellation?.Cancel();
-                window.ConfigureRequested += async (_, _) =>
+                async Task FinishConfigurationAsync()
                 {
-                    if (!window.TryBeginConfiguration()) return;
                     using var cancellation = new CancellationTokenSource();
                     modelCancellation = cancellation;
                     try
@@ -65,6 +64,11 @@ internal static class NativeOnboarding
                         window.ShowConfigurationFailure(NativeExpressSetup.FailureDetail(error));
                     }
                     finally { modelCancellation = null; window.CompleteConfigurationObservation(); }
+                }
+                window.ConfigureRequested += async (_, _) =>
+                {
+                    if (!window.TryBeginConfiguration()) return;
+                    await window.ObserveConfigurationAsync(FinishConfigurationAsync());
                 };
                 window.LaunchRequested += (_, _) =>
                 {

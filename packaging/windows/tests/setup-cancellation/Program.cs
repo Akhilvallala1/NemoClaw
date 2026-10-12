@@ -360,6 +360,7 @@ internal static class Program
             waitingForTransaction: Pending, observationDeadline: TimeSpan.FromMilliseconds(50),
             completionUnconfirmed: Unconfirmed,
             recoveryDeadline: recoveryHandoff ? TimeSpan.FromMilliseconds(50) : null);
+        var visibleOperation = observation.ObserveAsync(operation);
         try
         {
             await notified.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -374,7 +375,13 @@ internal static class Program
                     throw new InvalidOperationException("Recovery handoff lost its helper or admitted another save.");
                 using var ownedHelper = System.Diagnostics.Process.GetProcessById(processId);
                 if (ownedHelper.HasExited) throw new InvalidOperationException("Closing the recovery window ended its helper.");
+                if (await visibleOperation.WaitAsync(TimeSpan.FromSeconds(1)))
+                    throw new InvalidOperationException("Recovery handoff reported a completed save.");
             }
+            else if (visibleOperation.IsCompleted)
+                throw new InvalidOperationException("The visible operation ended without completion or recovery handoff.");
+            if (await observation.CheckCompletionAsync(TimeSpan.FromMilliseconds(20)))
+                throw new InvalidOperationException("The bounded status check accepted a live transaction.");
             if (operation.IsCompleted || File.Exists(Path.Combine(root, "result")))
                 throw new InvalidOperationException("Setup returned before the transaction owner finished.");
             try
@@ -387,6 +394,11 @@ internal static class Program
             Exception? failure = null;
             try { await operation.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (InvalidOperationException error) { failure = error; }
+            Exception? visibleFailure = null;
+            try { await visibleOperation.WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (InvalidOperationException error) { visibleFailure = error; }
+            if ((visibleFailure is not null) != (!recoveryHandoff && failure is not null))
+                throw new InvalidOperationException("The visible observer lost the completed helper failure.");
             if ((failure is not null) != (exitCode != 0 || outputSize != 0 || observerThrows || recoveryObserverThrows))
                 throw new InvalidOperationException("Setup misclassified the completed helper result.");
             if (!recoveryHandoff && unconfirmed.Task.IsCompleted)
@@ -407,8 +419,81 @@ internal static class Program
             await File.WriteAllTextAsync(Path.Combine(root, "release"), "finish");
             try { await operation.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (InvalidOperationException) { }
+            try { await visibleOperation.WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (InvalidOperationException) { }
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task AssertBoundedObservationRetainsOwnerAsync()
+    {
+        var observation = new NativeSetupObservation();
+        if (!observation.TryBegin()) throw new InvalidOperationException("Setup rejected its first owner.");
+        var generation = observation.Generation;
+        var owner = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var visible = observation.ObserveAsync(owner.Task);
+        observation.MarkUnconfirmed(1);
+        if (await visible.WaitAsync(TimeSpan.FromSeconds(1)) ||
+            await observation.CheckCompletionAsync(TimeSpan.FromMilliseconds(20)))
+            throw new InvalidOperationException("A pending save was reported as complete.");
+        observation.Complete();
+        if (observation.TryBegin())
+            throw new InvalidOperationException("Setup released ownership before the completion task finished.");
+        owner.SetResult();
+        if (!await observation.CheckCompletionAsync(TimeSpan.FromSeconds(1)) || !observation.TryBegin() ||
+            observation.Generation != generation + 1 || observation.CompletionUnconfirmed)
+            throw new InvalidOperationException("Setup could not start a clean save after completion.");
+        var failure = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextVisible = observation.ObserveAsync(failure.Task);
+        if (nextVisible.IsCompleted)
+            throw new InvalidOperationException("A previous handoff completed the next save's observation.");
+        observation.MarkUnconfirmed(2);
+        if (await nextVisible.WaitAsync(TimeSpan.FromSeconds(1)))
+            throw new InvalidOperationException("A second pending save was reported as complete.");
+        observation.Complete();
+        var expected = new InvalidOperationException("fixture completion failed");
+        failure.SetException(expected);
+        try
+        {
+            await observation.CheckCompletionAsync(TimeSpan.FromSeconds(1));
+            throw new InvalidOperationException("The status check hid the original completion failure.");
+        }
+        catch (InvalidOperationException error) when (ReferenceEquals(error, expected)) { }
+    }
+
+    private static void AssertRecoveryStatusRejectsUntrustedResults()
+    {
+        const string clear = "{\"schemaVersion\":1,\"kind\":\"native-configuration-recovery\",\"agent\":\"openclaw\",\"state\":\"clear\"}";
+        const string pending = "{\"schemaVersion\":1,\"kind\":\"native-configuration-recovery\",\"agent\":\"openclaw\",\"state\":\"needs-resave\",\"operationId\":\"0123456789abcdef0123456789abcdef\",\"writerProcessId\":123}";
+        foreach (var agent in new[] { "openclaw", "hermes" })
+        {
+            if (NativeSetupOperations.ReadRecovery(clear.Replace("openclaw", agent), agent) ||
+                !NativeSetupOperations.ReadRecovery(pending.Replace("openclaw", agent), agent))
+                throw new InvalidOperationException("Setup misclassified a retained agent's recovery status.");
+        }
+        foreach (var value in new[]
+        {
+            "null", "[]", "{", clear.Replace("openclaw", "hermes"), clear.Replace("openclaw", "pi"),
+            clear.Replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
+            clear.Replace("\"state\":\"clear\"", "\"state\":\"clear\",\"state\":\"clear\""),
+            clear.Replace("clear", "unknown"), clear.Replace("clear", "needs-resave"),
+            clear.Replace("}", ",\"unexpected\":true}"), pending.Replace("needs-resave", "clear"),
+            pending.Replace("0123456789abcdef0123456789abcdef", "NOT-AN-OPERATION"),
+            pending.Replace("123", "0"), pending.Replace("123", "-1"), pending.Replace("123", "2147483648"),
+            pending.Replace("123", "1.5"), pending.Replace("123", "\"123\""),
+        })
+        {
+            var rejected = false;
+            try { NativeSetupOperations.ReadRecovery(value, "openclaw"); }
+            catch (Exception error) when (error is InvalidOperationException or JsonException) { rejected = true; }
+            if (!rejected) throw new InvalidOperationException("Setup accepted an invalid or ambiguous recovery result.");
+        }
+        try
+        {
+            NativeSetupOperations.ReadRecovery(clear.Replace("openclaw", "pi"), "pi");
+            throw new Exception("Setup accepted recovery for a retired agent.");
+        }
+        catch (InvalidOperationException) { }
     }
 
     private static async Task AssertPreparationTimeoutStopsHelperAsync()
@@ -468,7 +553,9 @@ internal static class Program
         await AssertTransactionOutlivesObserverAsync(0, 0, observerThrows: true, recoveryHandoff: true);
         await AssertTransactionOutlivesObserverAsync(0, 0, recoveryHandoff: true, recoveryObserverThrows: true);
         await AssertPreparationTimeoutStopsHelperAsync();
-        Console.WriteLine("23 native setup controls passed; recovery handoff preserves transaction ownership through exit.");
+        await AssertBoundedObservationRetainsOwnerAsync();
+        AssertRecoveryStatusRejectsUntrustedResults();
+        Console.WriteLine("25 native setup controls passed; bounded recovery checks preserve transaction ownership and reject invalid status.");
         return 0;
     }
 }
