@@ -82,6 +82,36 @@ jobs:
           'This run records runner prerequisites. It does not qualify the WSL bridge.' |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
+      - name: Install WSL and prove Ubuntu starts under WSL2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Invoke-BoundedWsl {
+            param([string]$Arguments, [int]$TimeoutSeconds)
+            $output = Join-Path $env:RUNNER_TEMP 'wsl-setup-output.txt'
+            $errors = Join-Path $env:RUNNER_TEMP 'wsl-setup-error.txt'
+            $process = Start-Process wsl.exe -ArgumentList $Arguments -NoNewWindow -PassThru `
+              -RedirectStandardOutput $output -RedirectStandardError $errors
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              $process.Kill($true)
+              throw "WSL operation timed out for $Arguments"
+            }
+            Write-Host "wsl $Arguments exited with $($process.ExitCode)"
+            foreach ($file in @($output, $errors)) {
+              if (Test-Path -LiteralPath $file) {
+                Write-Host ((Get-Content -LiteralPath $file -Raw) -replace "`0", '')
+              }
+            }
+            if ($process.ExitCode -ne 0) {
+              throw "WSL operation failed for $Arguments with exit $($process.ExitCode)"
+            }
+          }
+          Invoke-BoundedWsl '--install --no-distribution --web-download' 180
+          Invoke-BoundedWsl '--set-default-version 2' 30
+          Invoke-BoundedWsl '--install --distribution Ubuntu-24.04 --no-launch --web-download' 180
+          Invoke-BoundedWsl '--distribution Ubuntu-24.04 --user root -- uname -a' 60
+          Invoke-BoundedWsl '--list --verbose' 30
+
   config:
     name: Compile declarative image configuration
     if: github.event_name != 'workflow_dispatch' || inputs.windows_cpu_probe != true
