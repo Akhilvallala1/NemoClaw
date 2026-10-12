@@ -100,6 +100,11 @@ Runs without a PR source retain published OpenClaw and Hermes bases; Deep Agents
 uses a published base with v1 activation and a candidate base with v2 activation.
 The receipt command retains its Deep Agents default for existing callers; an
 explicit agent selects the OpenClaw or Hermes contract.
+
+OpenClaw HTTP liveness can precede heartbeat activation. The protected startup check polls only
+missing heartbeat evidence within the shared 240-second startup deadline. It still requires the
+configured interval and rejects malformed or conflicting records without retrying them.
+
 The shared compiler uses native GitHub caching of `dist/` and `nemoclaw/dist/`
 for main CI, PR CI, and E2E candidate preparation. Its key includes the checkout
 SHA, trusted recipe revision, action content, Node version, and runner platform.
@@ -543,6 +548,18 @@ of credential values. It then changes the fixture's recorded sandbox fingerprint
 launchers to fail without publishing a file before restoring the registry. The assertion budget is
 unchanged because this contract replaces a redundant nonempty-log assertion in the same scenario.
 
+The `hermes-discord` target owns the live messaging refusal boundary for #12987. After Discord
+onboarding, it requires the persisted sandbox state to contain the configured Discord channel, then
+uses the shared Hermes export fixture to run both real CLI launchers. Both must refuse the unsupported
+messaging state without publishing a file or exposing credentials. The E2E support tests cover the
+deterministic refusal selection and diagnostic comparison.
+The target owns the shared export fixture in the catalogue so fixture changes select this live check.
+The target removes redundant CLI-presence, sandbox-list, and standalone provider-get probes: later
+live commands use both CLIs, read the persisted sandbox entry, and require the named provider to be
+attached before testing its rewrite. Its health check requires Hermes's `"ok"` response before
+continuing because later phases depend on that instance being ready. No live assertion count
+increases.
+
 The `ubuntu-repo-cloud-langchain-deepagents-code` target owns live Deep Agents export evidence for
 Issue #11860. Its ordered checks first exercise opt-in observability and thread approval, then restore
 the disabled baseline. The TUI check then runs without changing that registry baseline. The installed
@@ -627,6 +644,12 @@ Changes to shared catalogue execution paths select every catalogue target.
 The `openclaw-inference-switch` target owns fresh custom-image route initialization.
 Its fixture contains only a different baked model and stale limits.
 The target requires onboarding to create the selected model without those limits, then preserves that native configuration through restart and rebuild.
+The OpenClaw native NVIDIA and mock Anthropic switch variants start with an authenticated local OpenAI-compatible fixture.
+The native NVIDIA destination uses the public endpoint and its public credential only after switching.
+Route assertions use JSON fields so terminal column alignment does not affect the result.
+Hermes native installation uses the public NVIDIA provider before its same-provider model switch.
+The Hermes native switch derives its baseline model expectation from the environment passed to installation.
+Its later proxy-resolution probe pairs the public NVIDIA credential with the public endpoint.
 
 Most entries use one ID for catalogue selection, evidence, and artifacts.
 Matrix-style targets use one target ID for evidence and artifacts, with separate catalogue IDs and shards for each concrete execution.
@@ -760,6 +783,12 @@ A catalogue Vitest selection that runs no tests exits nonzero before manifest cr
 Failed targets still write a manifest for diagnosis, and the existing artifact upload publishes the manifest with the target artifacts.
 The manifest is secret-free diagnostic evidence.
 It does not replace the workflow job result or the strict `Release qualification` aggregate.
+
+The `model-router-provider-routed-inference` target writes `router-diagnostics.json` before sandbox cleanup.
+It summarizes the final 64 KiB of the router log as fixed status flags and a completion-response count.
+It never copies log text, request content, or credentials into that file.
+An unavailable log is recorded explicitly; a false flag does not prove that an unlogged event did not occur.
+The cleanup registry captures diagnostics before destroying the sandbox and records capture failures separately from the test failure.
 
 Run the planner locally to render the complete default selection as a Markdown table:
 
