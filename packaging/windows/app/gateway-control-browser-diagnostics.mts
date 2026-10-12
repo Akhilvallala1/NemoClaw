@@ -48,7 +48,13 @@ export function gatewayBrowserMajorVersion(value: string) {
 
 // Playwright serializes this function. Keep it independent of module scope.
 export function installGatewayBrowserRouteTrace() {
-  const scope = globalThis as typeof globalThis & {
+  const scope = globalThis as unknown as {
+    location: { pathname: string };
+    history: Record<
+      "pushState" | "replaceState",
+      (data: unknown, unused: string, url?: string | URL | null) => unknown
+    >;
+    addEventListener: (type: "popstate", listener: () => void) => void;
     __nemoclawRouteTrace?: { routes: string[]; truncated: boolean };
   };
   const trace = { routes: [] as string[], truncated: false };
@@ -83,24 +89,25 @@ export function installGatewayBrowserRouteTrace() {
 
 // Read only categorical state from the pinned dashboard's public context getter.
 export function readGatewayBrowserRouteTrace() {
-  const scope = globalThis as typeof globalThis & { __nemoclawRouteTrace?: unknown };
-  const app = scope.document.querySelector("openclaw-app") as
-    | (Element & {
-        context?: {
-          gateway?: {
-            snapshot?: {
-              phase?: string;
-              client?: unknown;
-              hello?: {
-                auth?: { role?: string };
-                snapshot?: { sessionDefaults?: { defaultAgentId?: string } };
-              };
-            };
+  const scope = globalThis as unknown as {
+    document: { querySelector: (selector: string) => unknown };
+    __nemoclawRouteTrace?: unknown;
+  };
+  const app = scope.document.querySelector("openclaw-app") as {
+    context?: {
+      gateway?: {
+        snapshot?: {
+          phase?: string;
+          client?: unknown;
+          hello?: {
+            auth?: { role?: string };
+            snapshot?: { sessionDefaults?: { defaultAgentId?: string } };
           };
-          agentSelection?: { state?: { selectedId?: string } };
         };
-      })
-    | null;
+      };
+      agentSelection?: { state?: { selectedId?: string } };
+    };
+  } | null;
   const snapshot = app?.context?.gateway?.snapshot;
   const selected = app?.context?.agentSelection?.state?.selectedId?.trim();
   const defaultAgent = snapshot?.hello?.snapshot?.sessionDefaults?.defaultAgentId?.trim();
