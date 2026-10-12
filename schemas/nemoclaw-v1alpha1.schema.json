@@ -1069,6 +1069,7 @@
         "cpuLimitMillis": {
           "deprecated": true,
           "description": "Legacy alias for container.cpuLimitMillis. Do not supply both fields.",
+          "format": "uint32",
           "maximum": 4294967295,
           "minimum": 1,
           "type": "integer"
@@ -1081,11 +1082,12 @@
         },
         "imageMetadata": {
           "$ref": "#/$defs/Credential",
-          "description": "Environment reference to an absolute local OCI metadata bundle for the service image."
+          "description": "Environment reference to an absolute local OCI metadata bundle for the service image. Plan and apply verify its digest, Linux architecture, and runtime labels before changing cluster resources. Destroy does not read it."
         },
         "memoryLimitGiB": {
           "deprecated": true,
           "description": "Legacy alias for container.memoryLimitGiB. Do not supply both fields.",
+          "format": "uint64",
           "maximum": 8589934591,
           "minimum": 1,
           "type": "integer"

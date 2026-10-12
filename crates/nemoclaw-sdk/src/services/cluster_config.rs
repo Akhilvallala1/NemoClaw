@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// One GPU model service in the managed gateway's namespace. Storage survives destroy.
 pub struct KubernetesService {
-    /// Environment reference to an absolute local OCI metadata bundle for the service image.
+    /// Environment reference to an absolute local OCI metadata bundle for the service image. Plan and apply verify its digest, Linux architecture, and runtime labels before changing cluster resources. Destroy does not read it.
     pub image_metadata: crate::config::Credential,
     /// Requested CPU capacity in millicores. Must not exceed container.cpuLimitMillis.
     #[schemars(range(min = 1))]
@@ -329,11 +329,11 @@ pub(crate) fn constrain(defs: &mut serde_json::Map<String, Value>, normalized: b
         for (field, schema) in [
             (
                 "cpuLimitMillis",
-                json!({"type":"integer", "minimum":1, "maximum":u32::MAX, "deprecated":true, "description":"Legacy alias for container.cpuLimitMillis. Do not supply both fields."}),
+                json!({"type":"integer", "format":"uint32", "minimum":1, "maximum":u32::MAX, "deprecated":true, "description":"Legacy alias for container.cpuLimitMillis. Do not supply both fields."}),
             ),
             (
                 "memoryLimitGiB",
-                json!({"type":"integer", "minimum":1, "maximum":(i64::MAX as u64) >> 30, "deprecated":true, "description":"Legacy alias for container.memoryLimitGiB. Do not supply both fields."}),
+                json!({"type":"integer", "format":"uint64", "minimum":1, "maximum":(i64::MAX as u64) >> 30, "deprecated":true, "description":"Legacy alias for container.memoryLimitGiB. Do not supply both fields."}),
             ),
             (
                 "updatePolicy",

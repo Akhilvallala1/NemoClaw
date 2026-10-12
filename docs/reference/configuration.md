@@ -523,7 +523,7 @@ Paths:
 |---|---|---|---|---|
 | `cpuLimitMillis` | integer | No | — | Legacy alias for container.cpuLimitMillis. Do not supply both fields. Constraints: minimum 1; maximum 4294967295. |
 | `cpuRequestMillis` | integer | Yes | — | Requested CPU capacity in millicores. Must not exceed container.cpuLimitMillis. Constraints: minimum 1. |
-| `imageMetadata` | [Credential](#credential) | Yes | — | Environment reference to an absolute local OCI metadata bundle for the service image. |
+| `imageMetadata` | [Credential](#credential) | Yes | — | Environment reference to an absolute local OCI metadata bundle for the service image. Plan and apply verify its digest, Linux architecture, and runtime labels before changing cluster resources. Destroy does not read it. |
 | `memoryLimitGiB` | integer | No | — | Legacy alias for container.memoryLimitGiB. Do not supply both fields. Constraints: minimum 1; maximum 8589934591. |
 | `memoryRequestGiB` | integer | Yes | — | Requested container memory in GiB. Must not exceed container.memoryLimitGiB. Constraints: minimum 1; maximum 8589934591. |
 | `nodeSelector` | map of string | No | — | Required node labels in addition to the model's declared CPU architecture. Constraints: keys: pattern `^(?:(?=[^/]{1,253}/)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*/)?[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$(?![\s\S])`; values: pattern `^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?)?$(?![\s\S])`. |
