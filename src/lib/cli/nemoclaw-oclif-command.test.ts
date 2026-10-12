@@ -11,6 +11,8 @@ import { launchSandbox } from "../actions/sandbox/launch";
 import * as portableAgentLifecycle from "../onboard/experimental/portable-agent-lifecycle";
 import * as receiptAuthority from "../onboard/experimental/hermes-portable-receipt";
 import * as portableHostAuthority from "../state/portable-uninstall-retirement";
+import { isUnlockedSandboxStatusRead } from "../actions/sandbox/status-read-context";
+import { acquireProcessBoundLockAt, releaseProcessBoundLock } from "../state/registry/lock";
 import {
   isMcpLifecycleLockHeld,
   withMcpLifecycleLock,
@@ -248,6 +250,41 @@ describe("NemoClawCommand", () => {
     PortableLaunchCommand.observed = { host: false, lifecycle: false, portableLifecycle: false };
     PortableLaunchCommand.operation = async () => undefined;
     PortableStopCommand.observed = { host: false, lifecycle: false, portableLifecycle: false };
+  });
+
+  it("runs sandbox status without either lifecycle fence during ordinary-host contention (#11903)", async () => {
+    const fence = acquireProcessBoundLockAt(portableHostAuthority.portableHostFencePath(stateDir));
+    const operation = vi.fn(async () => {
+      expect(fs.existsSync(portableHostAuthority.portableHostFencePath(stateDir))).toBe(true);
+      expect(isMcpLifecycleLockHeld("alpha")).toBe(false);
+      expect(isUnlockedSandboxStatusRead()).toBe(true);
+    });
+    ParsedSupportedSandboxCommand.operation = operation;
+    try {
+      await expect(
+        ParsedSupportedSandboxCommand.run(["alpha"], process.cwd()),
+      ).resolves.toBeUndefined();
+      expect(operation).toHaveBeenCalledOnce();
+    } finally {
+      releaseProcessBoundLock(fence);
+    }
+  });
+
+  it("fails fast rather than bypassing portable authority during status contention (#11903)", async () => {
+    const authorityDirectory = path.join(stateDir, "hermes-portable-lifecycle");
+    fs.mkdirSync(authorityDirectory, { mode: 0o700 });
+    fs.writeFileSync(path.join(authorityDirectory, "receipt.json"), "authority\n");
+    vi.spyOn(portableHostAuthority, "withCurrentPortableHostFenceTry").mockRejectedValue(
+      new Error(portableHostAuthority.PORTABLE_HOST_FENCE_BUSY_MESSAGE),
+    );
+    const operation = vi.fn(async () => undefined);
+    ParsedSupportedSandboxCommand.operation = operation;
+
+    await expect(ParsedSupportedSandboxCommand.run(["alpha"], process.cwd())).rejects.toThrow(
+      "Another NemoClaw lifecycle operation is in progress on this host.",
+    );
+    expect(operation).not.toHaveBeenCalled();
+    expect(portableHostAuthority.withCurrentPortableHostFenceTry).toHaveBeenCalledOnce();
   });
 
   it("records status-like command results without throwing", () => {

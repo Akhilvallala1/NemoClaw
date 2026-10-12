@@ -27,6 +27,7 @@ import {
 import {
   collectSandboxStatusSnapshot,
   getSandboxStatusReport as getLegacySandboxStatusReport,
+  isUnlockedSandboxStatusRead,
   normalizeSandboxStatusHostMounts,
   resolveSandboxStatusAgent,
   type SandboxStatusReport,
@@ -63,6 +64,15 @@ export {
   type SandboxStatusSnapshot,
   type ServingProcessHealth,
 } from "./status-snapshot";
+
+function withStatusLifecycleLock<T>(
+  sandboxName: string,
+  operation: () => Promise<T> | T,
+): Promise<T> | T {
+  return isUnlockedSandboxStatusRead()
+    ? operation()
+    : withSandboxLifecycleLock(sandboxName, operation);
+}
 
 function inspectHermesPortableStatus(
   sandboxName: string,
@@ -128,7 +138,7 @@ export async function getSandboxStatusReport(
   sandboxName: string,
   deps: Parameters<typeof getLegacySandboxStatusReport>[1] = {},
 ): Promise<SandboxStatusReport> {
-  return withSandboxLifecycleLock(sandboxName, async () => {
+  const read = async () => {
     const hermesPortable = inspectHermesPortableStatus(sandboxName);
     if (hermesPortable) {
       return await hermesPortableStatusReport(
@@ -138,11 +148,13 @@ export async function getSandboxStatusReport(
       );
     }
     return getLegacySandboxStatusReport(sandboxName, { getGatewayPresets, ...deps });
-  });
+  };
+  return await withStatusLifecycleLock(sandboxName, read);
 }
 
 function maybeEnsureHermesToolGatewayBroker(sb: registry.SandboxEntry | null): void {
   if (
+    isUnlockedSandboxStatusRead() ||
     !sb ||
     sb.agent !== "hermes" ||
     !Array.isArray(sb.hermesToolGateways) ||
@@ -161,7 +173,7 @@ function maybeEnsureHermesToolGatewayBroker(sb: registry.SandboxEntry | null): v
 export async function showSandboxStatus(sandboxName: string): Promise<void> {
   let deferredExitCode: number | null = null;
   try {
-    await withSandboxLifecycleLock(sandboxName, async () => {
+    const read = async () => {
       const hermesPortable = inspectHermesPortableStatus(sandboxName);
       if (hermesPortable) {
         console.log(`  Sandbox: ${sandboxName}`);
@@ -171,7 +183,8 @@ export async function showSandboxStatus(sandboxName: string): Promise<void> {
         return;
       }
       await showLegacySandboxStatus(sandboxName);
-    });
+    };
+    await withStatusLifecycleLock(sandboxName, read);
   } catch (error) {
     if (!isSandboxLifecycleDeferredExit(error)) throw error;
     deferredExitCode = error.exitCode;

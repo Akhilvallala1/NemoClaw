@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Command, Flags, type Interfaces } from "@oclif/core";
+import path from "node:path";
 import {
   assertHermesPortableCommandSupported,
   assertHermesPortableCommandUnavailable,
@@ -9,13 +10,23 @@ import {
   HERMES_PORTABLE_UNSUPPORTED_COMMAND_MESSAGE,
   HERMES_PORTABLE_UNSUPPORTED_DOCTOR_FIX_MESSAGE,
 } from "../onboard/experimental/portable-agent-lifecycle";
+import {
+  HERMES_PORTABLE_RECEIPT_DIRECTORY,
+  inspectPortableAgentReceiptAuthorityForClassification,
+} from "../onboard/experimental/hermes-portable-receipt";
 import { defaultPortableDemoStateDir } from "../onboard/experimental/portable-runtime-receipt-readiness";
 import { redactForLog } from "../security/redact";
 import {
   assertNoHermesPortableHostAuthority,
+  PORTABLE_HOST_FENCE_BUSY_MESSAGE,
+  readPortableAuthorityDirectory,
+  samePortableAuthorityDirectory,
   withCurrentPortableHostFence,
+  withCurrentPortableHostFenceTry,
 } from "../state/portable-uninstall-retirement";
 import { withSandboxLifecycleLock } from "../actions/sandbox/lifecycle/lock";
+import { withUnlockedSandboxStatusRead } from "../actions/sandbox/status-snapshot";
+import { findSandboxAcrossGatewayRoots } from "../state/registry/cross-port";
 import {
   enforceRemovedImmutabilityMigrationBoundary,
   reportRemovedImmutabilityUpgrade,
@@ -40,6 +51,43 @@ const REMOVED_IMMUTABILITY_REMEDIATION_COMMANDS = new Set([
   "sandbox:status",
   "sandbox:stop",
 ]);
+
+function hasPortableRegistryAuthority(sandboxName: string): boolean {
+  const entry = findSandboxAcrossGatewayRoots(sandboxName)?.entry;
+  return (
+    entry?.portableLifecycleProfile !== undefined ||
+    (entry?.agent === "hermes" &&
+      entry.openshellDriver === "docker" &&
+      typeof entry.lifecycleGeneration === "string")
+  );
+}
+
+function canUseUnlockedSandboxStatusRead(sandboxName: string): boolean {
+  const stateDir = defaultPortableDemoStateDir(process.env);
+  const authorityDirectory = path.join(stateDir, HERMES_PORTABLE_RECEIPT_DIRECTORY);
+  try {
+    const before = readPortableAuthorityDirectory(authorityDirectory, false);
+    const hasPortableReceiptAuthority = () =>
+      inspectPortableAgentReceiptAuthorityForClassification(sandboxName, stateDir).kind !== "none";
+    if (
+      before.entries.length > 0 ||
+      hasPortableRegistryAuthority(sandboxName) ||
+      hasPortableReceiptAuthority()
+    ) {
+      return false;
+    }
+
+    const after = readPortableAuthorityDirectory(authorityDirectory, false);
+    return (
+      after.entries.length === 0 &&
+      samePortableAuthorityDirectory(before, after) &&
+      !hasPortableRegistryAuthority(sandboxName) &&
+      !hasPortableReceiptAuthority()
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Shared oclif base for NemoClaw commands.
@@ -107,7 +155,7 @@ export abstract class NemoClawCommand extends Command {
     const portablePolicy =
       typeof commandId === "string" ? classifyHermesPortableCommand(commandId, this.argv) : null;
     if (portablePolicy?.hostFence === "read" && !portablePolicy.helpRequested) {
-      return await withCurrentPortableHostFence(() => super._run<T>());
+      return await withCurrentPortableHostFenceTry(() => super._run<T>());
     }
     if (
       typeof commandId === "string" &&
@@ -139,6 +187,30 @@ export abstract class NemoClawCommand extends Command {
       }
       return super._run<T>();
     };
+    if (commandId === "sandbox:status") {
+      let fencedOperationStarted = false;
+      try {
+        return await withCurrentPortableHostFenceTry(() => {
+          fencedOperationStarted = true;
+          return withSandboxLifecycleLock(sandboxName, runLocked);
+        });
+      } catch (error) {
+        if (
+          fencedOperationStarted ||
+          !(error instanceof Error) ||
+          error.message !== PORTABLE_HOST_FENCE_BUSY_MESSAGE
+        ) {
+          throw error;
+        }
+        if (!canUseUnlockedSandboxStatusRead(sandboxName)) {
+          throw new Error(
+            "Another NemoClaw lifecycle operation is in progress on this host. Wait for it to finish, then retry status.",
+            { cause: error },
+          );
+        }
+        return await withUnlockedSandboxStatusRead(runLocked);
+      }
+    }
     return await withSandboxLifecycleLock(sandboxName, runLocked);
   }
 

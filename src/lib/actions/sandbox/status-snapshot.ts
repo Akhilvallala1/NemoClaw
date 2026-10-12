@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import type { OpenShellStateRpcIssue } from "../../adapters/openshell/gateway-drift";
@@ -75,6 +76,18 @@ import {
   probeTerminalRuntimeCgroupOom,
   type TerminalRuntimeOomProbeResult,
 } from "./terminal-runtime-health";
+
+const unlockedStatusRead = new AsyncLocalStorage<boolean>();
+
+/** Run a best-effort status read that may observe transitional ordinary sandbox state. */
+export function withUnlockedSandboxStatusRead<T>(operation: () => Promise<T> | T): Promise<T> | T {
+  return unlockedStatusRead.run(true, operation);
+}
+
+/** Whether status is running in the best-effort ordinary-host read path. */
+export function isUnlockedSandboxStatusRead(): boolean {
+  return unlockedStatusRead.getStore() === true;
+}
 
 type ProbeProviderHealth = (
   provider: string,
@@ -473,7 +486,7 @@ export async function collectSandboxStatusSnapshot(
     ((name: string) =>
       getReconciledSandboxGatewayState(name, {
         getState: getSandboxGatewayStateForStatus,
-        ...(initialPreflight?.intentionalStopConfirmed
+        ...(isUnlockedSandboxStatusRead() || initialPreflight?.intentionalStopConfirmed
           ? { gatewayRecovery: "observe" as const }
           : {}),
       }));
@@ -488,6 +501,7 @@ export async function collectSandboxStatusSnapshot(
     };
   }
   if (
+    !isUnlockedSandboxStatusRead() &&
     sb?.stopped === true &&
     lookup.state === "present" &&
     (lookup.phase === "Ready" || lookup.phase === "Running") &&
@@ -515,6 +529,7 @@ export async function collectSandboxStatusSnapshot(
     !initialPreflight?.intentionalStopConfirmed;
   let recoveredManagedGateway = false;
   if (
+    !isUnlockedSandboxStatusRead() &&
     lookup.state === "present" &&
     (lookup.recoveredSandbox || managedOpenClawDeliveryMustBeProven)
   ) {
