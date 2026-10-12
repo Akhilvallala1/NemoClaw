@@ -268,11 +268,11 @@ export type OllamaModelOwnershipDecision =
 /**
  * Decide whether this sandbox's Ollama model has another active owner.
  *
- * Registry rows persist after a sandbox stops and can also contain incomplete
- * onboarding reservations. Callers should supply the peer rows found in Ready
- * or Running phase. A matching row absent from that live set is evidence to
- * report, not an owner that blocks release; the names set remains as a legacy
- * fallback for callers that do not provide gateway-aware peer rows.
+ * Registry rows can outlive stopped sandboxes and include incomplete
+ * onboarding reservations. Live discovery must account for every requested
+ * peer: a matching peer omitted from a successful gateway inventory makes
+ * ownership inconclusive and must not authorize release. The names set remains
+ * a legacy fallback for callers that do not provide gateway-aware peer rows.
  */
 export function listOllamaModelOwnershipPeersAcrossGatewayRoots(): SandboxEntry[] {
   return listInferenceRouteOwnersAcrossGatewayRoots();
@@ -400,13 +400,13 @@ export function discoverOllamaModelOwnership(
     const activeSandboxes: string[] = [];
     for (const peer of gatewayPeers) {
       const phase = phases.get(peer.name);
-      if (
-        phase === undefined ||
-        phase === "Stopped" ||
-        phase === "Error" ||
-        phase === "Failed" ||
-        phase === "Evicted"
-      ) {
+      if (phase === undefined) {
+        return {
+          ok: false,
+          message: `OpenShell omitted sibling '${peer.name}' from the sandbox phase inventory on gateway '${gateway}'`,
+        };
+      }
+      if (phase === "Stopped" || phase === "Error" || phase === "Failed" || phase === "Evicted") {
         continue;
       }
       if (phase === null || phase === "Unknown") {

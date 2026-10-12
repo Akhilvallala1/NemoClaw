@@ -271,8 +271,8 @@ describe("releaseSupersededOllamaModel", () => {
     }
   });
 
-  it("fails closed and records retry state when default discovery lacks a gateway resolver", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-ollama-missing-resolver-"));
+  it("fails closed and records retry state when a successful inventory omits a matching peer", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-ollama-omitted-inventory-"));
     vi.stubEnv("HOME", home);
     const gatewayRoot = path.join(home, ".nemoclaw", "gateways", "32665");
     fs.mkdirSync(gatewayRoot, { recursive: true });
@@ -296,9 +296,13 @@ describe("releaseSupersededOllamaModel", () => {
       useProductionPeerSource: true,
       useProductionDiscovery: true,
     });
-    const runOpenshell = vi.fn(() => ({ status: 0, stdout: "", stderr: "" }));
-    (harness.deps as SetupInferenceDeps).runOpenshell =
-      runOpenshell as unknown as SetupInferenceDeps["runOpenshell"];
+    const captureOllamaOwnershipPhases = vi.fn(() => ({
+      status: 0,
+      output: "NAME CREATED PHASE",
+    }));
+    const deps = harness.deps as SetupInferenceDeps;
+    deps.captureOllamaOwnershipPhases = captureOllamaOwnershipPhases;
+    deps.resolveOllamaOwnershipGateway = () => "nemoclaw-32677";
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     try {
@@ -309,7 +313,10 @@ describe("releaseSupersededOllamaModel", () => {
         previousLocalOllamaRoute,
         ["qwen2.5:1.5b"],
       );
-      expect(runOpenshell).not.toHaveBeenCalled();
+      expect(captureOllamaOwnershipPhases).toHaveBeenCalledExactlyOnceWith(
+        "nemoclaw-32677",
+        process.env,
+      );
       expect(warning).toHaveBeenCalledWith(expect.stringContaining("No model was unloaded"));
     } finally {
       warning.mockRestore();

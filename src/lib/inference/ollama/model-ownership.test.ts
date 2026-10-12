@@ -254,6 +254,38 @@ describe("discoverOllamaModelOwnership", () => {
       ),
     ).toEqual({ kind: "exclusive", model: "llama3", stalePeers: ["duplicate-peer"] });
   });
+
+  it("fails closed when sibling gateway identity cannot be resolved", () => {
+    const peer = holder({ name: "unbound-peer" });
+    const discovery = discoverOllamaModelOwnership([peer], {}, () => ({
+      status: 0,
+      output: "NAME CREATED PHASE",
+    }));
+
+    expect(discovery).toEqual({
+      ok: false,
+      message: "could not resolve a sibling gateway: gateway binding resolver is unavailable",
+    });
+  });
+
+  it("fails closed when a successful gateway inventory omits a requested peer", () => {
+    const peer = holder({ name: "missing-peer", gatewayName: "gateway-a" });
+    const discovery = discoverOllamaModelOwnership(
+      [peer],
+      {},
+      () => ({ status: 0, output: "NAME CREATED PHASE" }),
+      {
+        parseLiveSandboxEntries: () => [],
+        resolvePersistedSandboxOwnershipGateway: () => "gateway-a",
+      },
+    );
+
+    expect(discovery).toEqual({
+      ok: false,
+      message:
+        "OpenShell omitted sibling 'missing-peer' from the sandbox phase inventory on gateway 'gateway-a'",
+    });
+  });
 });
 
 describe("decideOllamaModelOwnership", () => {

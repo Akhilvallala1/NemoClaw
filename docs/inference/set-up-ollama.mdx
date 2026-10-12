@@ -419,8 +419,8 @@ A legacy cleanup receipt may list model names without recording the gateway and 
 Before manually releasing a listed model, verify that no active sandbox on this host still uses it:
 
 1. Run `openshell gateway list` and identify every NemoClaw gateway on the host. Do not assume the selected gateway is the only one.
-2. For each gateway port, run `NEMOCLAW_GATEWAY_PORT=<port> nemoclaw list --json`. This lists that port's registered sandboxes and any entries recovered from its live gateway; it does not scan other gateway ports.
-3. For every sandbox in each inventory, run `NEMOCLAW_GATEWAY_PORT=<port> nemoclaw <name> status --json` and `NEMOCLAW_GATEWAY_PORT=<port> nemoclaw <name> inference get --json`. Check the live phase and effective provider/model route. A sandbox that is active and uses the same local Ollama daemon and model owns it; do not stop that model. If any gateway, sandbox phase, or route cannot be inspected or is ambiguous, leave the model loaded and restore access or obtain recovery support before retrying.
+2. For each gateway port, run `NEMOCLAW_GATEWAY_PORT=<port> $$nemoclaw list --json`. This lists that port's registered sandboxes and any entries recovered from its live gateway; it does not scan other gateway ports.
+3. For every sandbox in each inventory, run `NEMOCLAW_GATEWAY_PORT=<port> $$nemoclaw <name> status --json` and `NEMOCLAW_GATEWAY_PORT=<port> $$nemoclaw <name> inference get --json`. Check the live phase and effective provider/model route. A sandbox that is active and uses the same local Ollama daemon and model owns it; do not stop that model. If any gateway, sandbox phase, or route cannot be inspected or is ambiguous, leave the model loaded and restore access or obtain recovery support before retrying.
 4. Only after every gateway and sandbox was checked successfully and no active sandbox uses the listed model, confirm the model appears in `ollama ps`. Run these commands against the same host Ollama daemon NemoClaw uses. Stop only the exact listed model, then verify that it is absent:
 
    ```bash

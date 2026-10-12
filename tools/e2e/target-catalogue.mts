@@ -814,6 +814,10 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     installMode: "authenticated",
     restoreCli: true,
     exposeCliBin: true,
+    owningPaths: [
+      "src/lib/inference/ollama/model-ownership.ts",
+      "src/lib/onboard/setup-inference.ts",
+    ],
     environment: {
       ...nonInteractive,
       NEMOCLAW_MODEL: "qwen3.5:9b",

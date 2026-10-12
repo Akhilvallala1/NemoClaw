@@ -257,6 +257,20 @@ describe("E2E workflow plan", () => {
     expect(selectedWorkflowJobs(plan)).toEqual(["catalogue-nvidia-api"]);
   });
 
+  it.each(["src/lib/inference/ollama/model-ownership.ts", "src/lib/onboard/setup-inference.ts"])(
+    "selects the GPU provider-switch target for a source-only %s change",
+    (changedFile) => {
+      const targetId = "gpu-double-onboard";
+      const plan = buildE2eWorkflowPlan({}, { changedFiles: [changedFile] });
+
+      expect(catalogueTargetsForChangedFiles([changedFile]).map((target) => target.id)).toContain(
+        targetId,
+      );
+      expect(plan.catalogueMatrices["nvidia-api"].map((row) => row.id)).toContain(targetId);
+      expect(selectedWorkflowJobs(plan)).toContain("catalogue-nvidia-api");
+    },
+  );
+
   it("routes Pi lifecycle qualification through the AMD64 NVIDIA API key profile (#7926)", () => {
     const targetId = "pi-agent-qualification-amd64";
     const plan = buildE2eWorkflowPlan({ targets: targetId });
