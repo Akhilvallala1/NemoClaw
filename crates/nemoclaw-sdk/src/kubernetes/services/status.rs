@@ -56,9 +56,16 @@ struct Status {
     detail: String,
 }
 
+/// A scheduler rejection, unless preemption has nominated a Node for the Pod.
 pub(super) fn scheduling(pod: &DynamicObject, owned_name: &str) -> Option<ObservationError> {
     use serde_json::Value;
-    if pod.data.pointer("/status/phase").and_then(Value::as_str) != Some("Pending") {
+    if pod.data.pointer("/status/phase").and_then(Value::as_str) != Some("Pending")
+        || pod
+            .data
+            .pointer("/status/nominatedNodeName")
+            .and_then(Value::as_str)
+            .is_some_and(|node| !node.is_empty())
+    {
         return None;
     }
     let condition = pod

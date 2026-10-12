@@ -8,6 +8,12 @@ use std::time::Duration;
 
 const OVERALL: Duration = Duration::from_secs(9 * 3600);
 const TRANSIENT: Duration = Duration::from_secs(30);
+/// How long a scheduler rejection must persist before readiness stops.
+/// Kubernetes reports `Unschedulable` while a cluster autoscaler adds a Node,
+/// a volume claim with Immediate binding is provisioned, or a GPU device
+/// plugin registers; bringing up a GPU Node, including its driver
+/// installation, can take this long.
+const UNSCHEDULABLE_GRACE: Duration = Duration::from_secs(15 * 60);
 
 pub(super) async fn wait<F, Fut>(mut observe: F) -> Result<Response, ObservationError>
 where
@@ -16,6 +22,9 @@ where
 {
     let deadline = tokio::time::Instant::now() + OVERALL;
     let mut failing_since = None;
+    // Measured locally from this wait's first rejection; Pod timestamps come
+    // from another clock.
+    let mut unschedulable_since = None;
     loop {
         let started = tokio::time::Instant::now();
         if started >= deadline {
@@ -30,8 +39,16 @@ where
         match result {
             Ok(response) => {
                 failing_since = None;
+                unschedulable_since = None;
                 if response.running == Some(true) {
                     return Ok(response);
+                }
+            }
+            Err(error @ ObservationError::ModelScheduling { .. }) => {
+                failing_since = None;
+                let since = unschedulable_since.get_or_insert(started);
+                if tokio::time::Instant::now() - *since >= UNSCHEDULABLE_GRACE {
+                    return Err(error);
                 }
             }
             Err(
@@ -131,6 +148,132 @@ mod tests {
         assert_eq!(result.running, Some(true));
         assert_eq!(calls.get(), 41);
     }
+    fn pending(nominated: Option<&str>, message: &str) -> kube::api::DynamicObject {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1", "kind": "Pod", "metadata": {},
+            "status": {"phase": "Pending", "nominatedNodeName": nominated, "conditions": [{
+                "type": "PodScheduled", "status": "False", "reason": "Unschedulable", "message": message}]}
+        }))
+        .unwrap()
+    }
+
+    /// Observe a Pod as the cluster readiness wait does before reading runtime status.
+    fn observe(
+        pod: &kube::api::DynamicObject,
+        running: bool,
+    ) -> Result<Response, ObservationError> {
+        match super::super::status::scheduling(pod, "model") {
+            Some(error) => Err(error),
+            None => Ok(Response {
+                id: Some("owned".into()),
+                running: Some(running),
+            }),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_scheduler_rejection_that_clears_within_the_grace_period_does_not_stop_readiness() {
+        let start = tokio::time::Instant::now();
+        let rejected = pending(
+            None,
+            "0/1 nodes are available: 1 Insufficient nvidia.com/gpu.",
+        );
+        let scheduled = pending(None, "");
+        let result = wait(|| {
+            let elapsed = tokio::time::Instant::now() - start;
+            std::future::ready(if elapsed < UNSCHEDULABLE_GRACE - Duration::from_secs(5) {
+                observe(&rejected, false)
+            } else {
+                // Bound to a Node: the scheduler condition clears.
+                let mut scheduled = scheduled.clone();
+                scheduled.data["status"] = serde_json::json!({"phase": "Running"});
+                observe(
+                    &scheduled,
+                    elapsed >= UNSCHEDULABLE_GRACE + Duration::from_secs(60),
+                )
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.running, Some(true));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_persistent_scheduler_rejection_stops_after_the_grace_period() {
+        let start = tokio::time::Instant::now();
+        let token = "a".repeat(40);
+        let pod = pending(
+            None,
+            &format!(
+                "0/2 nodes are available: 2 Insufficient nvidia.com/gpu; token={token} {}",
+                "x ".repeat(1024)
+            ),
+        );
+        let result = wait(|| std::future::ready(observe(&pod, false))).await;
+        let Err(error @ ObservationError::ModelScheduling { .. }) = result else {
+            panic!("{result:?}");
+        };
+        let elapsed = tokio::time::Instant::now() - start;
+        assert!(
+            elapsed >= UNSCHEDULABLE_GRACE
+                && elapsed < UNSCHEDULABLE_GRACE + Duration::from_secs(2),
+            "{elapsed:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("Insufficient nvidia.com/gpu"), "{message}");
+        assert!(!message.contains(&token), "{message}");
+        assert!(message.len() < 1400, "{message}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_grace_period_restarts_when_the_scheduler_rejection_clears() {
+        let start = tokio::time::Instant::now();
+        let rejected = pending(
+            None,
+            "0/1 nodes are available: 1 node(s) were unschedulable.",
+        );
+        let result = wait(|| {
+            let elapsed = tokio::time::Instant::now() - start;
+            // A brief successful placement attempt clears the condition midway.
+            std::future::ready(
+                if (Duration::from_secs(600)..Duration::from_secs(602)).contains(&elapsed) {
+                    Ok(Response {
+                        id: Some("owned".into()),
+                        running: Some(false),
+                    })
+                } else {
+                    observe(&rejected, false)
+                },
+            )
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(ObservationError::ModelScheduling { .. })
+        ));
+        let elapsed = tokio::time::Instant::now() - start;
+        assert!(
+            elapsed >= Duration::from_secs(602) + UNSCHEDULABLE_GRACE,
+            "{elapsed:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pod_nominated_by_preemption_keeps_waiting_past_the_grace_period() {
+        let start = tokio::time::Instant::now();
+        let nominated = pending(
+            Some("gpu-2"),
+            "0/2 nodes are available: 2 Insufficient nvidia.com/gpu. preemption: 1 victim",
+        );
+        let result = wait(|| {
+            let elapsed = tokio::time::Instant::now() - start;
+            std::future::ready(observe(&nominated, elapsed >= 2 * UNSCHEDULABLE_GRACE))
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.running, Some(true));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn model_preparation_can_run_longer_than_the_runtime_loading_budget() {
         let start = tokio::time::Instant::now();

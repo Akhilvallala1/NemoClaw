@@ -109,68 +109,66 @@ fn ready(updated: &str) -> Vec<u8> {
         .into_bytes()
 }
 
-#[tokio::test]
-async fn unschedulable_pods_report_the_scheduler_reason_without_exec_or_mutation() {
-    for backend in ["vllm", "ollama"] {
-        let spec = spec(backend, backend == "vllm");
-        let objects = Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        operations.ensure(&spec, None).await.unwrap();
-        let mut pod = objects.get("v1", "Pod", "agents", &spec.name).unwrap();
-        pod["status"] = json!({"phase":"Pending", "conditions":[{
-            "type":"PodScheduled", "status":"False", "reason":"Unschedulable",
-            "message":"0/1 nodes are available: 1 Insufficient nvidia.com/gpu; token=private-scheduler-token"
-        }]});
-        objects.insert(pod);
-        let before = objects.0.lock().unwrap().clone();
-        let receipt = directory
-            .path()
-            .join("services")
-            .join(&spec.name)
-            .join("receipt.json");
-        let saved = std::fs::read(&receipt).unwrap();
-        let executor = Exec::new(Vec::new());
-        let error = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            operations.wait_ready_with_exec(&spec, &executor),
-        )
+async fn waits_until_scheduled(backend: &str, status: serde_json::Value) {
+    let spec = spec(backend, backend == "vllm");
+    let objects = Objects::default();
+    let directory = tempfile::tempdir().unwrap();
+    let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
+    operations
+        .ensure_storage(&spec.storage(), None)
         .await
-        .expect("scheduler rejection must not consume the model loading timeout")
-        .unwrap_err();
-        let message = error.to_string();
-        for expected in [
-            spec.name.as_str(),
-            "Unschedulable",
-            "Insufficient nvidia.com/gpu",
-            "retained",
-            "apply",
-        ] {
-            assert!(message.contains(expected), "{message}");
-        }
-        assert!(!message.contains("private-scheduler-token"), "{message}");
+        .unwrap();
+    operations.ensure(&spec, None).await.unwrap();
+    let mut pod = objects.get("v1", "Pod", "agents", &spec.name).unwrap();
+    pod["status"] = status;
+    objects.insert(pod);
+    let before = objects.0.lock().unwrap().clone();
+    let receipt = directory
+        .path()
+        .join("services")
+        .join(&spec.name)
+        .join("receipt.json");
+    let saved = std::fs::read(&receipt).unwrap();
+    let started = "2099-01-01T00:00:00Z";
+    let executor = Exec::new(vec![(RuntimeFile::Status, Ok(Some(ready(started))))]);
+    let schedule = async {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
         assert_eq!(*objects.0.lock().unwrap(), before);
-        assert_eq!(std::fs::read(receipt).unwrap(), saved);
-
-        // A scheduler rejection is recoverable once the operator provides capacity.
-        let started = "2099-01-01T00:00:00Z";
+        assert_eq!(std::fs::read(&receipt).unwrap(), saved);
         running(&objects, &spec.name, started);
-        let executor = Exec::new(vec![(RuntimeFile::Status, Ok(Some(ready(started))))]);
-        assert_eq!(
-            operations
-                .wait_ready_with_exec(&spec, &executor)
-                .await
-                .unwrap()
-                .running,
-            Some(true)
-        );
-        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
-    }
+    };
+    let (result, ()) = tokio::join!(operations.wait_ready_with_exec(&spec, &executor), schedule);
+    assert_eq!(result.unwrap().running, Some(true), "{backend}");
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn unschedulable_pods_keep_waiting_without_exec_or_mutation_until_scheduled() {
+    // Kubernetes reports these while an autoscaler, preemption, or volume
+    // binding can still place the Pod. Readiness unit tests cover the
+    // persistent case with paused time.
+    let rejected = |message: &str| {
+        json!({"phase":"Pending", "conditions":[{"type":"PodScheduled",
+        "status":"False", "reason":"Unschedulable", "message":message}]})
+    };
+    let mut nominated = rejected(
+        "0/2 nodes are available: 2 Insufficient nvidia.com/gpu. preemption: 0/2 nodes are available: 1 No preemption victims found for incoming pod, 1 Preemption is not helpful for scheduling.",
+    );
+    nominated["nominatedNodeName"] = json!("gpu-2");
+    tokio::join!(
+        waits_until_scheduled(
+            "vllm",
+            rejected("0/1 nodes are available: 1 Insufficient nvidia.com/gpu.")
+        ),
+        waits_until_scheduled("ollama", nominated),
+        waits_until_scheduled(
+            "vllm",
+            rejected(
+                "0/1 nodes are available: pod has unbound immediate PersistentVolumeClaims. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling."
+            )
+        ),
+    );
 }
 
 #[tokio::test]

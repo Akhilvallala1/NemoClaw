@@ -481,7 +481,7 @@ Choose the budget for the phase that failed; extending an agent turn does not ex
 | Fabric runtime request | `harness.execution.timeoutSeconds` maps to public Fabric `runtime.timeout_seconds`; omitted values use Fabric defaults |
 | Managed backend loading and readiness after preparation | `spec.services.<name>.serving.startupTimeoutSeconds`; omitted or zero selects 1,800 seconds; explicit values 60–3,600 |
 | Docker-managed service readiness from the SDK, including model preparation | Fixed 9-hour wait; expiration leaves the owned container and data in place |
-| Managed cluster service readiness, including scheduling, image pull, download, and preparation | Fixed 9-hour wait; an explicit `Unschedulable` scheduler result stops early with its reason. The owned Pod and PVCs remain in place; after correcting capacity or constraints, an unchanged apply resumes waiting |
+| Managed cluster service readiness, including scheduling, image pull, download, and preparation | Fixed 9-hour wait; an `Unschedulable` scheduler result that persists for 15 minutes without a nominated Node stops early with its reason. The owned Pod and PVCs remain in place |
 | Each packaged recipe preparation or verification execution | Fixed 8-hour limit; staged data remains after failure |
 | Managed gateway readiness | Fixed 90-second wait |
 | Sandbox/agent readiness | Fixed 300-second wait |
