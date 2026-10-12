@@ -2751,7 +2751,7 @@
             "updatePolicy": {
               "$ref": "#/$defs/ServiceUpdatePolicy",
               "default": "Preserve",
-              "description": "Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed."
+              "description": "Preserve refuses replacement of a running Docker model container or a cluster Pod that may be serving. Recreate permits sequential replacement and possible downtime until removed or changed."
             }
           },
           "required": [
@@ -3257,7 +3257,7 @@
             "updatePolicy": {
               "$ref": "#/$defs/ServiceUpdatePolicy",
               "default": "Preserve",
-              "description": "Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed."
+              "description": "Preserve refuses replacement of a running Docker model container or a cluster Pod that may be serving. Recreate permits sequential replacement and possible downtime until removed or changed."
             }
           },
           "required": [

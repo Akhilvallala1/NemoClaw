@@ -1069,7 +1069,7 @@ Managed Ollama daemon and selected model.
 | `placement` | [ServicePlacement](#serviceplacement) | No | — | Optional remote Docker placement. Requires publication. |
 | `publication` | [ServicePublication](#servicepublication) | No | — | Private inference address for an explicitly placed service. |
 | `serving` | [OllamaServing](#ollamaserving) | No | — | Ollama serving limits. |
-| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed. |
+| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Preserve refuses replacement of a running Docker model container or a cluster Pod that may be serving. Recreate permits sequential replacement and possible downtime until removed or changed. |
 
 ### Alternative 2
 
@@ -1105,7 +1105,7 @@ Managed vLLM runtime and immutable model snapshot.
 | `publication` | [ServicePublication](#servicepublication) | With placement | — | Private inference address reachable by OpenShell. Required with placement. |
 | `recipe` | [InlineRecipe](#inlinerecipe) | Without hardware | — | Inline preparation and serving contract supplied by the pinned runtime image. Required without hardware; excludes hardware. |
 | `serving` | [Serving](#serving) | No | — | Service limits. Omission selects the SDK defaults; recipe serving settings select recipe-specific parsers and execution options. |
-| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed. |
+| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Preserve refuses replacement of a running Docker model container or a cluster Pod that may be serving. Recreate permits sequential replacement and possible downtime until removed or changed. |
 
 ## ServiceHardware
 

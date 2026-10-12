@@ -125,10 +125,10 @@ The service-level `updatePolicy` defaults to `Preserve`.
 For Docker, this refuses an update that would replace a running managed model container.
 Changing the image, model, serving settings, `cpuLimitMillis`, or `memoryLimitGiB` replaces the container; declaring the omitted 104 GiB default as `memoryLimitGiB: 104` does not.
 Earlier bundles replaced a running Docker model container for image, model, and serving changes without a policy; to keep that behavior, for example when automation updates images, set `spec.services.<name>.updatePolicy: Recreate`.
-For Kubernetes and OpenShift, it refuses an update that would replace an existing nonterminal model Pod, including a pending Pod.
+For Kubernetes and OpenShift, it refuses an update that would replace a model Pod that may be serving; see [cluster update policy](kubernetes.md#run-a-managed-model-service).
 Set `updatePolicy: Recreate` only when accepting sequential replacement and possible downtime if the replacement cannot start.
 The opt-in persists for later updates until removed or changed to `Preserve`; changing only this policy does not restart the workload.
-Initial creation, unchanged apply, and recovery of missing or stopped Docker containers or missing or terminal cluster Pods remain allowed after ownership checks.
+Initial creation, unchanged apply, and recovery of missing or stopped Docker containers, and replacement of missing, terminal, or never-served cluster Pods, remain allowed after ownership checks.
 Retained model data and credentials remain bound to the deployment.
 This policy applies to managed vLLM and Ollama, not the Ollama proxy or gateway; see [cluster replacement checks](kubernetes.md#run-a-managed-model-service) and [change constraints](usage.md#choose-the-change-path).
 

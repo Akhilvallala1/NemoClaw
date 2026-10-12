@@ -105,7 +105,7 @@ pub struct KubernetesSettings {
     /// Existing RuntimeClass to use for the model Pod.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_class_name: Option<String>,
-    /// Defaults to Preserve, which refuses replacement of an existing nonterminal Pod. Recreate permits sequential replacement and possible downtime on every update until this policy is removed or changed. Initial creation and recovery of missing or terminal Pods remain allowed; changing only this policy does not restart a Pod.
+    /// Defaults to Preserve, which refuses replacement of a Pod that may be serving. Recreate permits sequential replacement and possible downtime on every update until this policy is removed or changed. Initial creation and replacement of missing, terminal, or never-served Pods remain allowed; changing only this policy does not restart a Pod.
     #[serde(default, skip_serializing_if = "ServiceUpdatePolicy::is_preserve")]
     pub update_policy: ServiceUpdatePolicy,
 }

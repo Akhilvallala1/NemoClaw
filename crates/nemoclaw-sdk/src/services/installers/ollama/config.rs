@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default, deny_unknown_fields)]
 /// Managed GPU Ollama service with an immutable runtime and model snapshot.
 pub struct ManagedOllama {
-    /// Preserve refuses replacement of a running Docker model container or nonterminal cluster Pod. Recreate permits sequential replacement and possible downtime until removed or changed.
+    /// Preserve refuses replacement of a running Docker model container or a cluster Pod that may be serving. Recreate permits sequential replacement and possible downtime until removed or changed.
     #[serde(
         rename = "updatePolicy",
         default,
