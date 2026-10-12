@@ -23,8 +23,8 @@ export const E2E_ACTION_PROVENANCE = {
   },
   stageNativePodmanToolchains: {
     reference:
-      "NVIDIA/NemoClaw/.github/actions/stage-native-podman-e2e-toolchains@76b48ee8c6b7f9c3501ddd2c5cd2a92eb4687275",
-    contentSha256: "42d641520e45c802b950e2b9072fd884e7d716e77251d4431e8c31f36c292cbf",
+      "NVIDIA/NemoClaw/.github/actions/stage-native-podman-e2e-toolchains@5ca450cd2e468d2a9e66e46ad75df0fa32b9f700",
+    contentSha256: "7ecd09edef526eecd70e1355ea5255711947e98cee4810e07a40b1f32cf0c123",
   },
   restoreCliArtifact: {
     reference:
