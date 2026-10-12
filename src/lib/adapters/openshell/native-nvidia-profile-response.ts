@@ -98,9 +98,10 @@ function nativeEndpoint(value: unknown, expected: NativeProfileBoundary): boolea
     endpoint.port === (expected.port ?? 443) &&
     emptyArray(endpoint.ports) &&
     endpoint.protocol === "rest" &&
-    endpoint.tls === "" &&
-    endpoint.enforcement === "enforce" &&
-    endpoint.access === "" &&
+    // OpenShell 0.1.2 raw protobuf responses use numeric network enums.
+    endpoint.tls === 0 && // NetworkTlsMode.UNSPECIFIED
+    endpoint.enforcement === 1 && // NetworkEnforcementMode.ENFORCE
+    endpoint.access === 0 && // NetworkAccessPreset.UNSPECIFIED (explicit rules)
     Array.isArray(rules) &&
     rules.length === expected.rules.length &&
     expected.rules.every((rule, index) => nativeRule(rules[index], rule.method, rule.path)) &&

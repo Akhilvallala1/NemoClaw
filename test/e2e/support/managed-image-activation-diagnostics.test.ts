@@ -1151,6 +1151,17 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
             "http://inference.invalid/v1",
             "langchain-deepagents-code",
             {} as never,
+            {
+              agents: {
+                "langchain-deepagents-code": {
+                  onboard: vi.fn(),
+                  publicLifecycle: vi.fn(),
+                  cleanup: vi.fn(),
+                },
+              },
+              hermesSecretBoundary: vi.fn(),
+              externalImages: vi.fn(),
+            } as never,
           ),
         ).rejects.toThrow(error);
         expect(events).toEqual(expectedEvents);
