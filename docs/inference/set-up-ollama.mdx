@@ -407,9 +407,9 @@ Stopped or incomplete sibling registry rows do not retain the model.
 If NemoClaw cannot verify sibling state, it does not unload the model and `stop` exits nonzero.
 When you re-onboard an Ollama-backed sandbox from the host Ollama route to a different model or provider, NemoClaw checks live ownership before releasing its previous model.
 If another active sandbox uses the same local Ollama model, NemoClaw keeps it loaded.
-If NemoClaw cannot verify whether another sandbox uses the model, it keeps the model, records it for retry, and leaves the new route active.
+If NemoClaw cannot verify whether another sandbox uses the model, it keeps the model loaded and attempts to record cleanup for retry while leaving the new route active. If it reports that retry state could not be recorded, keep the model loaded and restore gateway access before retrying; do not unload it while ownership remains unverified.
 If the new route uses the same model through the same local daemon, NemoClaw keeps the model loaded.
-If the unload cleanup fails, the new route remains active and NemoClaw keeps the model recorded for cleanup retry; rerun onboarding or run `$$nemoclaw <name> destroy` to retry the recorded cleanup.
+If the unload cleanup fails, the new route remains active and NemoClaw attempts to record the model for cleanup retry. Rerun onboarding or run `$$nemoclaw <name> destroy` to retry it; if the warning says the retry state could not be recorded, use its reported manual-release guidance instead.
 This cleanup is best-effort and does not delete downloaded model files.
 
 ## Related Topics
