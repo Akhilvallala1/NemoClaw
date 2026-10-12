@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { managedStartupE2eProfile } from "../../../../../scripts/checks/generate-managed-startup-profile-fixture.mts";
 import {
@@ -19,7 +19,10 @@ import type { RuntimeProviderBundle } from "../../../onboard/runtime-provider/co
 import type { SandboxEntry, SandboxWorkloadReceipt } from "../../../state/registry/types";
 import { createSandboxHostLocalInferenceProvenance } from "../../../state/registry/host-local-inference";
 import type { BackupOptions, BackupResult } from "../../../state/sandbox";
-import { backupSandboxStateWithManagedAuthority } from "./backup-authority";
+import {
+  backupSandboxStateWithManagedAuthority,
+  prepareStoppedAgentState,
+} from "./backup-authority";
 
 function workload(
   agent: ShippedManagedImageAgent,
@@ -164,6 +167,123 @@ function explicitLlamaSandbox(agent: "openclaw" | "hermes" | "langchain-deepagen
 }
 
 describe("managed snapshot backup authority", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("requests provider capture for legacy Docker without managed workload authority", async () => {
+    const entry = {
+      name: "alpha",
+      agent: "openclaw",
+      openshellDriver: null,
+      lifecycleLiveIdentityFingerprint: "a".repeat(64),
+      fromDockerfile: "Dockerfile",
+    } as SandboxEntry;
+    const runtimeSnapshot = {
+      schemaVersion: 1,
+      providerId: "docker",
+      providerHandle: "opaque-container",
+      lifecycleState: "stopped",
+      lifecycleGeneration: "generation-1",
+      runtime: {
+        schemaVersion: 1,
+        providerId: "docker",
+        runtime: { kind: "docker-container", handle: "b".repeat(64) },
+        acceleration: { kind: "none" },
+      },
+    } as const;
+    const prepareCapture = vi.fn(() => null);
+    const runtimeProvider = {
+      identity: { id: "docker", contractVersion: 1, displayName: "Docker" },
+      snapshot: {
+        providerId: "docker",
+        supported: true,
+        contractVersion: 1,
+        capabilities: { backup: true, restore: true, managedProfileRestore: true },
+        prepareStoppedStateCapture: prepareCapture,
+      },
+    } as unknown as RuntimeProviderBundle;
+    const requireProvider = vi.fn(() => runtimeProvider);
+    const captureRuntime = vi.fn(() => runtimeSnapshot);
+
+    await expect(
+      prepareStoppedAgentState("alpha", () => entry, { requireProvider, captureRuntime }),
+    ).resolves.toBeNull();
+
+    expect(requireProvider).toHaveBeenCalledWith(entry);
+    expect(captureRuntime).toHaveBeenCalledWith(runtimeProvider, entry);
+    expect(prepareCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "alpha" }),
+      runtimeSnapshot,
+      { nativeRoot: "/sandbox", managedStateRoots: [] },
+    );
+  });
+
+  it("does not capture a legacy Docker source while the provider reports it running", async () => {
+    const entry = {
+      name: "alpha",
+      agent: "openclaw",
+      openshellDriver: null,
+      lifecycleLiveIdentityFingerprint: "a".repeat(64),
+      fromDockerfile: "Dockerfile",
+    } as SandboxEntry;
+    const runtimeSnapshot = {
+      schemaVersion: 1,
+      providerId: "docker",
+      providerHandle: "opaque-container",
+      lifecycleState: "running",
+      lifecycleGeneration: "generation-1",
+      runtime: {
+        schemaVersion: 1,
+        providerId: "docker",
+        runtime: { kind: "docker-container", handle: "b".repeat(64) },
+        acceleration: { kind: "none" },
+      },
+    } as const;
+    const prepareCapture = vi.fn();
+    const runtimeProvider = {
+      identity: { id: "docker", contractVersion: 1, displayName: "Docker" },
+      snapshot: {
+        providerId: "docker",
+        supported: true,
+        contractVersion: 1,
+        capabilities: { backup: true, restore: true, managedProfileRestore: true },
+        prepareStoppedStateCapture: prepareCapture,
+      },
+    } as unknown as RuntimeProviderBundle;
+    const captureRuntime = vi.fn(() => runtimeSnapshot);
+
+    await expect(
+      prepareStoppedAgentState("alpha", () => entry, {
+        requireProvider: () => runtimeProvider,
+        captureRuntime,
+      }),
+    ).resolves.toBeNull();
+
+    expect(captureRuntime).toHaveBeenCalledOnce();
+    expect(prepareCapture).not.toHaveBeenCalled();
+  });
+
+  it("skips legacy capture when the provider has no stopped-state capability", async () => {
+    const entry = {
+      name: "alpha",
+      agent: "openclaw",
+      openshellDriver: "mxc",
+      fromDockerfile: "Dockerfile",
+    } as SandboxEntry;
+    const runtimeProvider = {
+      identity: { id: "mxc", contractVersion: 1, displayName: "MXC" },
+      snapshot: { supported: true, prepareStoppedStateCapture: undefined },
+    } as unknown as RuntimeProviderBundle;
+    const captureRuntime = vi.fn();
+    const requireProvider = vi.fn(() => runtimeProvider);
+
+    await expect(
+      prepareStoppedAgentState("alpha", () => entry, { requireProvider, captureRuntime }),
+    ).resolves.toBeNull();
+
+    expect(requireProvider).toHaveBeenCalledWith(entry);
+    expect(captureRuntime).not.toHaveBeenCalled();
+  });
+
   it("uses only the whole-home state path for unmanaged Hermes backup", () => {
     const backup = vi.fn((_name: string, options: BackupOptions = {}) => successfulBackup(options));
     const result = backupSandboxStateWithManagedAuthority("alpha", {
