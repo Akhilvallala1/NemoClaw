@@ -84,10 +84,17 @@ export async function removeNativeAgentData(
     for (const service of Object.keys(NATIVE_SERVICES))
       await deleteCredential(launcher, service, nativeServiceBinding(agent, service));
     owner.assertHeld();
-    fs.rmSync(directory, { recursive: true, force: true });
-    const activePath = path.join(root, "active-agent.txt");
-    const active = readOpenedRegularFile(activePath, { encoding: "utf8", maxBytes: 64 });
-    if (active?.trim() === agent) fs.rmSync(activePath);
+    try {
+      fs.rmSync(directory, { recursive: true, force: true });
+      const activePath = path.join(root, "active-agent.txt");
+      const active = readOpenedRegularFile(activePath, { encoding: "utf8", maxBytes: 64 });
+      if (active?.trim() === agent) fs.rmSync(activePath);
+    } catch (error) {
+      throw new Error(
+        `Removal of ${agent} data is incomplete. Its credentials were removed, but settings cleanup failed. Close applications using its files, then retry data removal.`,
+        { cause: error },
+      );
+    }
   } finally {
     await owner.release();
   }

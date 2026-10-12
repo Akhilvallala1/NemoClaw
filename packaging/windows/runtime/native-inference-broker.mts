@@ -98,10 +98,9 @@ export async function startNativeInferenceBroker(
         chunks.push(chunk);
       }
       const responseBody = Buffer.concat(chunks, responseSize);
-      response.writeHead(upstream.statusCode!, {
-        "cache-control": "no-store",
-        "content-type": upstream.headers["content-type"] ?? "application/json",
-      });
+      response.statusCode = upstream.statusCode!;
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("content-type", upstream.headers["content-type"] ?? "application/json");
       response.end(responseBody);
     } catch (error) {
       if (response.destroyed) return;

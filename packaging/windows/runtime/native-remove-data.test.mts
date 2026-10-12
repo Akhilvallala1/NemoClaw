@@ -209,3 +209,60 @@ test("failed credential cleanup preserves settings and releases the removal leas
   assert.equal(fs.readFileSync(files.active, "utf8"), "openclaw\n");
   assert.equal(state.released(), true);
 });
+
+for (const agent of ["openclaw", "hermes"]) {
+  for (const failurePoint of ["directory", "directory-after-configuration", "active-selection"]) {
+    test(`${agent} removal resumes after ${failurePoint} cleanup fails`, async (t) => {
+      const configuration = { ...hosted, agent };
+      const files = fixture(t, configuration, agent);
+      const state = owner(agent);
+      const bindings = new Set([
+        nativeCredentialBinding(configuration),
+        ...Object.keys(NATIVE_SERVICES).map((service) => nativeServiceBinding(agent, service)),
+      ]);
+      const deletion = state.dependencies.deleteCredential;
+      state.dependencies.deleteCredential = async (...args) => {
+        await deletion(...args);
+        // CredDeleteW treats ERROR_NOT_FOUND as success. No credential read is needed.
+        bindings.delete(args[2]);
+      };
+      fs.writeFileSync(path.join(files.selected, "retained-history"), "owned history");
+      const remove = fs.rmSync.bind(fs);
+      const removalError = new Error("owned metadata removal failure");
+      const failure = t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
+        if (args[0] === (failurePoint === "active-selection" ? files.active : files.selected)) {
+          if (failurePoint === "directory-after-configuration") fs.unlinkSync(files.config);
+          throw removalError;
+        }
+        return remove(...args);
+      });
+      try {
+        await assert.rejects(
+          removeNativeAgentData("unused", agent, state.dependencies),
+          (error: unknown) => {
+            assert(error instanceof Error);
+            assert.equal(error.cause, removalError);
+            assert.match(error.message, new RegExp(`Removal of ${agent} data is incomplete`));
+            assert.match(error.message, /credentials were removed/);
+            assert.match(error.message, /retry data removal/);
+            return true;
+          },
+        );
+      } finally {
+        failure.mock.restore();
+      }
+      assert.equal(bindings.size, 0);
+      assert.equal(fs.existsSync(files.config), failurePoint === "directory");
+      assert.equal(fs.readFileSync(files.active, "utf8"), agent + "\n");
+      assert.equal(state.released(), true);
+      await removeNativeAgentData("unused", agent, state.dependencies);
+      assert.equal(state.acquired(), 2);
+      assert.equal(bindings.size, 0);
+      assert.equal(fs.existsSync(files.selected), false);
+      assert.equal(fs.existsSync(files.active), false);
+      assert.equal(fs.readFileSync(files.other, "utf8"), "other-agent");
+      assert.equal(fs.readFileSync(files.shared, "utf8"), "shared-model");
+      assert.equal(state.released(), true);
+    });
+  }
+}

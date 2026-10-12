@@ -193,6 +193,35 @@ describe("native inference failure cleanup", () => {
 
 describe("native inference broker response bounds", () => {
   it.each([
+    { status: 201, contentType: "application/json", body: '{"id":"owned-model"}' },
+    { status: 429, contentType: "application/problem+json", body: '{"error":"rate limited"}' },
+    { status: 200, contentType: "text/event-stream", body: "data: [DONE]\n\n" },
+  ])(
+    "forwards status $status with only fixed response headers",
+    async ({ status, contentType, body }) => {
+      const upstream = createServer((_request, response) => {
+        response.writeHead(status, {
+          "content-type": contentType,
+          "cache-control": "public, max-age=3600",
+          "set-cookie": "foreign=provider-controlled",
+          "x-provider-header": "must-not-forward",
+        });
+        response.end(body);
+      });
+      const owner = await broker(await listen(upstream));
+      const response = await fetch(`http://127.0.0.1:${owner.port}/v1/models`, {
+        headers: { authorization: "Bearer agent-broker-token" },
+      });
+      expect(response.status).toBe(status);
+      expect(response.headers.get("content-type")).toBe(contentType);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.has("set-cookie")).toBe(false);
+      expect(response.headers.has("x-provider-header")).toBe(false);
+      expect(await response.text()).toBe(body);
+    },
+  );
+
+  it.each([
     { encoding: "gzip", compress: gzipSync },
     { encoding: "deflate", compress: deflateSync },
     { encoding: "br", compress: brotliCompressSync },

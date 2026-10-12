@@ -15,6 +15,11 @@ import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import {
+  gatewayBrowserMajorVersion,
+  gatewayBrowserRoute,
+  summarizeGatewayHello,
+} from "./gateway-control-browser-diagnostics.mts";
+import {
   gatewayControlModelProviders,
   isGatewayControlDiscoveryRequest,
 } from "./gateway-control-model-fixture.mts";
@@ -207,6 +212,8 @@ type BrowserLocator = {
   textContent(): Promise<string | null>;
 };
 type BrowserPage = {
+  url(): string;
+  on(event: "pageerror", listener: () => void): void;
   goto(url: string, options: { waitUntil: "domcontentloaded"; timeout: number }): Promise<unknown>;
   on(
     event: "websocket",
@@ -252,6 +259,7 @@ async function browserControl(
     chromium: {
       launch(options: { headless: boolean; executablePath: string; timeout: number }): Promise<{
         newPage(options: { viewport: { width: number; height: number } }): Promise<BrowserPage>;
+        version(): string;
         close(): Promise<void>;
       }>;
     };
@@ -263,8 +271,23 @@ async function browserControl(
   });
   let failed = false;
   let page: BrowserPage | undefined;
+  const diagnostics = {
+    schemaVersion: 1,
+    browserMajorVersion: null as number | null,
+    firstRun,
+    sockets: 0,
+    pageErrors: 0,
+    helloResponses: 0,
+    lastHello: null as ReturnType<typeof summarizeGatewayHello>,
+    detectionRequests: 0,
+    detectionResponses: 0,
+    verificationRequests: 0,
+    verificationResponses: 0,
+  };
   try {
+    diagnostics.browserMajorVersion = gatewayBrowserMajorVersion(browser.version());
     page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    page.on("pageerror", () => diagnostics.pageErrors++);
     let detectionId: string | undefined;
     let detection:
       | { ok?: boolean; payload?: { setupComplete?: boolean }; error?: unknown }
@@ -272,19 +295,33 @@ async function browserControl(
     let verificationId: string | undefined;
     let verification: { ok?: boolean; payload?: { ok?: boolean; modelRef?: string } } | undefined;
     page.on("websocket", (socket) => {
+      diagnostics.sockets++;
       socket.on("framesent", (frame) => {
         const message = JSON.parse(String(frame.payload));
-        if (message.type === "req" && message.method === "openclaw.setup.detect")
+        if (message.type === "req" && message.method === "openclaw.setup.detect") {
+          diagnostics.detectionRequests++;
           detectionId = message.id;
-        if (message.type === "req" && message.method === "openclaw.setup.verify")
+        }
+        if (message.type === "req" && message.method === "openclaw.setup.verify") {
+          diagnostics.verificationRequests++;
           verificationId = message.id;
+        }
       });
       socket.on("framereceived", (frame) => {
         const message = JSON.parse(String(frame.payload));
-        if (message.type === "res" && detectionId && message.id === detectionId)
+        const hello = summarizeGatewayHello(message);
+        if (hello) {
+          diagnostics.helloResponses++;
+          diagnostics.lastHello = hello;
+        }
+        if (message.type === "res" && detectionId && message.id === detectionId) {
+          diagnostics.detectionResponses++;
           detection = message;
-        if (message.type === "res" && verificationId && message.id === verificationId)
+        }
+        if (message.type === "res" && verificationId && message.id === verificationId) {
+          diagnostics.verificationResponses++;
           verification = message;
+        }
       });
     });
     const route = firstRun ? "/chat" : "/settings/model-setup?firstRun=1";
@@ -413,10 +450,26 @@ async function browserControl(
     throw error;
   } finally {
     try {
-      await browser.close();
-    } catch (error) {
-      if (!failed)
-        throw error; /* Preserve the primary browser failure; this path never reports browser success. */
+      try {
+        fs.writeFileSync(
+          path.join(directory, "browser-control.json"),
+          JSON.stringify({
+            ...diagnostics,
+            finalRoute: gatewayBrowserRoute(page?.url() ?? ""),
+            failed,
+          }),
+          { flag: "wx" },
+        );
+      } catch (error) {
+        if (!failed) throw error;
+      }
+    } finally {
+      try {
+        await browser.close();
+      } catch (error) {
+        if (!failed)
+          throw error; /* Preserve the primary browser failure; this path never reports browser success. */
+      }
     }
   }
 }

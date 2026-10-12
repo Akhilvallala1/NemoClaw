@@ -176,7 +176,7 @@ internal static class NativeMaintenance
         var launcher = NativeSetupOperations.InstalledLauncher();
         foreach (var agent in agents)
             await RunOwnedHelperAsync(launcher, new[] { "--remove-native-data", "--agent", agent },
-                "The selected agent data could not be removed. Stop its active session before trying again.", cancellation);
+                $"Removal of {agent} data did not finish. Some data or credentials may already be removed. Stop its active session, close applications using its files, then retry data removal.", cancellation);
     }
 
     internal static async Task StopSharedInferenceAsync(Action? reportProgress = null, CancellationToken cancellation = default)
