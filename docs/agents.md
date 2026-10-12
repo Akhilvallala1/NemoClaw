@@ -57,7 +57,7 @@ A request can incur inference charges and affect retained conversation history.
 
 **A malformed request can leave the runtime unusable.**
 With the current pinned OpenClaw adapter, an operator reported later invocations failing with `runtime_unavailable`, a bridge `runtime_state` of `unknown`, and subsequent deployment operations failing with `observation is incomplete`.
-Ordinary apply cannot recover while the runtime observation is `unknown`, even after a configuration edit; the operator recovered by replacing the sandbox.
+Apply cannot recover while the runtime observation is `unknown`, even after a configuration edit; the operator recovered by replacing the sandbox.
 The [CLI replacement procedure](usage.md#replace-workloads-after-an-unusable-openclaw-runtime) destroys all of the deployment's sandboxes, including their files and conversation history, while retaining managed model and credential storage.
 The affected input cases and recovery inside the existing sandbox remain unqualified ([#12642](https://github.com/NVIDIA/NemoClaw/issues/12642)).
 

@@ -94,6 +94,7 @@ It is not deployment qualification and does not change the Docker-path limits ab
 | A compatibility policy for the SDK, provider, schema and state across releases | [#12645](https://github.com/NVIDIA/NemoClaw/issues/12645) |
 | A hosted Rust API reference | [#12645](https://github.com/NVIDIA/NemoClaw/issues/12645) |
 | Supported HCL examples, import, adoption and remote-state backends | [#12645](https://github.com/NVIDIA/NemoClaw/issues/12645) |
+| Hand-authored HCL for `nemoclaw_kubernetes_service` and `nemoclaw_kubernetes_service_storage`, which take one SDK-compiled JSON `spec` | [#12645](https://github.com/NVIDIA/NemoClaw/issues/12645) |
 
 ## Documentation Site
 
