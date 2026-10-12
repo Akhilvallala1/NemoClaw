@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { captureSandboxPhasesForGateway } from "../../adapters/openshell/runtime";
 import { CLI_NAME } from "../../cli/branding";
 import { G, R, YW } from "../../cli/terminal-style";
 import { prompt as askPrompt } from "../../credentials/store";
@@ -474,20 +475,7 @@ export async function cleanupSandboxServices(
     const owners = deps.listOllamaModelOwnershipPeers ?? listInferenceRouteOwnersAcrossGatewayRoots;
     const ownerRows = owners();
     const captureOwnershipPhases =
-      deps.captureSandboxOwnershipPhases ??
-      ((gatewayName, environment) => {
-        const result = runOpenshell(["sandbox", "list", "-g", gatewayName], {
-          env: environment,
-          ignoreError: true,
-          stdio: ["ignore", "pipe", "pipe"],
-          maxBuffer: 1024 * 1024,
-          timeout: 10_000,
-        });
-        return {
-          status: result.status,
-          output: [result.stdout ?? "", result.stderr ?? ""].join("\n"),
-        };
-      });
+      deps.captureSandboxOwnershipPhases ?? captureSandboxPhasesForGateway;
     const resolveOwnerGateway =
       deps.resolvePersistedSandboxOwnershipGateway ??
       ((owner: Pick<registry.SandboxEntry, "name" | "gatewayName" | "gatewayPort">) => {

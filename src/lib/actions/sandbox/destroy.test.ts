@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import * as openshellRuntime from "../../adapters/openshell/runtime";
 import type { SandboxEntry } from "../../state/registry";
 import { SANDBOX_PROVIDER_SUFFIXES } from "../../onboard/sandbox-provider-cleanup";
 import { assertUnambiguousDestroyContainerIdentity, cleanupSandboxServices } from "./destroy";
+
+afterEach(() => vi.restoreAllMocks());
 
 const SANDBOX = "mybox";
 const mainPidDir = path.resolve("/tmp", `nemoclaw-services-${SANDBOX}`);
@@ -138,11 +141,10 @@ describe("cleanupSandboxServices Ollama ownership", () => {
     } as SandboxEntry;
     const unloadOllamaModels = vi.fn();
     const clearPendingOllamaModelCleanup = vi.fn();
-    const runOpenshell = vi.fn(() => ({
-      status: 0,
-      stdout: "NAME CREATED PHASE\npeer 2026-01-01 Running",
-      stderr: "",
-    }));
+    const captureSandboxOwnershipPhases = vi
+      .spyOn(openshellRuntime, "captureSandboxPhasesForGateway")
+      .mockReturnValue({ status: 0, output: "NAME CREATED PHASE\npeer 2026-01-01 Running" });
+    const runOpenshell = vi.fn(() => ({ status: 0 }));
 
     await cleanupSandboxServices(
       SANDBOX,
@@ -165,15 +167,12 @@ describe("cleanupSandboxServices Ollama ownership", () => {
       },
     );
 
-    expect(runOpenshell).toHaveBeenCalledWith(
-      ["sandbox", "list", "-g", "gateway-b"],
-      expect.objectContaining({ stdio: ["ignore", "pipe", "pipe"] }),
-    );
+    expect(captureSandboxOwnershipPhases).toHaveBeenCalledWith("gateway-b", process.env);
     expect(unloadOllamaModels).not.toHaveBeenCalled();
     expect(clearPendingOllamaModelCleanup).not.toHaveBeenCalled();
   });
 
-  it("uses default phase capture output to fail closed on an unreachable gateway", async () => {
+  it("fails closed when shared phase capture reports an unreachable gateway", async () => {
     const own = {
       name: SANDBOX,
       gatewayName: "gateway-a",
@@ -190,11 +189,10 @@ describe("cleanupSandboxServices Ollama ownership", () => {
     } as SandboxEntry;
     const unloadOllamaModels = vi.fn();
     const clearPendingOllamaModelCleanup = vi.fn();
-    const runOpenshell = vi.fn(() => ({
-      status: 1,
-      stdout: "",
-      stderr: "gateway unreachable",
-    }));
+    const captureSandboxOwnershipPhases = vi
+      .spyOn(openshellRuntime, "captureSandboxPhasesForGateway")
+      .mockReturnValue({ status: 1, output: "gateway unreachable" });
+    const runOpenshell = vi.fn(() => ({ status: 0 }));
 
     await expect(
       cleanupSandboxServices(
@@ -219,13 +217,7 @@ describe("cleanupSandboxServices Ollama ownership", () => {
       ),
     ).rejects.toThrow(/gateway unreachable/);
 
-    expect(runOpenshell).toHaveBeenCalledWith(
-      ["sandbox", "list", "-g", "gateway-b"],
-      expect.objectContaining({
-        ignoreError: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      }),
-    );
+    expect(captureSandboxOwnershipPhases).toHaveBeenCalledWith("gateway-b", process.env);
     expect(unloadOllamaModels).not.toHaveBeenCalled();
     expect(clearPendingOllamaModelCleanup).not.toHaveBeenCalled();
   });
