@@ -364,6 +364,24 @@ impl Operations {
                 .as_ref()
                 .is_some_and(|recorded| compute_objects(recorded, identity) != desired)
         {
+            // Preserve port and ownership diagnostics before asking for permission
+            // to stop a live workload; the policy cannot authorize foreign objects.
+            for owned in &receipt.compute {
+                if matches!(owned.kind.as_str(), "Service" | "NetworkPolicy") {
+                    let observed = self.verify(&receipt.storage, owned).await?;
+                    Self::verify_compute_spec(receipt, &observed)?;
+                }
+            }
+            if (receipt.compute_bound || !receipt.compute.is_empty())
+                && receipt
+                    .specification
+                    .as_ref()
+                    .is_some_and(|recorded| recorded.port() != spec.port())
+            {
+                return Err(ObservationError::Backend(
+                    "changing the model serving port requires whole-deployment destroy and apply; destroy deletes sandbox files and conversation history but retains model and credential PVCs",
+                ));
+            }
             // CREATE admission cannot use a live object's name. Validate only
             // the replacements, under unique names, before deleting runtime
             // objects. This can conservatively reject at full namespace quota:
@@ -384,6 +402,19 @@ impl Operations {
                 let observed = self.verify(&receipt.storage, owned).await?;
                 if owned.kind == "Pod" {
                     Self::verify_pod(receipt, &observed)?;
+                    if spec.settings.update_policy == crate::services::ServiceUpdatePolicy::Preserve
+                        && !matches!(
+                            observed
+                                .data
+                                .pointer("/status/phase")
+                                .and_then(Value::as_str),
+                            Some("Failed" | "Succeeded")
+                        )
+                    {
+                        return Err(ObservationError::ModelUpdateRefused {
+                            name: owned.name.clone(),
+                        });
+                    }
                 } else {
                     Self::verify_compute_spec(receipt, &observed)?;
                 }

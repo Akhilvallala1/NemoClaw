@@ -60,7 +60,18 @@ fn definition(
     provider: SearchProvider,
     want: &Row,
 ) -> Result<proto::ProviderProfile, ObservationError> {
-    let mut rule = nemoclaw_openshell::search::search_policy(provider);
+    definition_with_rule(
+        provider,
+        want,
+        nemoclaw_openshell::search::search_policy(provider),
+    )
+}
+
+fn definition_with_rule(
+    provider: SearchProvider,
+    want: &Row,
+    mut rule: nemoclaw_openshell::policy::PolicyRule,
+) -> Result<proto::ProviderProfile, ObservationError> {
     let name = &want["name"];
     rule.name = name.clone();
     let policy = openshell_policy::parse_sandbox_policy(
@@ -69,7 +80,7 @@ fn definition(
         })
         .to_string(),
     )
-    .expect("static search policy");
+    .map_err(|_| ObservationError::Query)?;
     let network = &policy.network_policies[name];
     let (display, auth_style, header_name) = match provider {
         SearchProvider::Brave => ("Brave", "header", "X-Subscription-Token"),
@@ -1002,6 +1013,25 @@ mod tests {
         let mut fields = native_fields("", true);
         fields.insert("name".into(), provider.profile().into());
         definition(provider, &fields).unwrap()
+    }
+
+    #[test]
+    fn unsupported_search_rules_return_an_observation_error() {
+        for provider in [SearchProvider::Brave, SearchProvider::Tavily] {
+            for invalid_tls in [true, false] {
+                let mut fields = native_fields("", true);
+                fields.insert("name".into(), provider.profile().into());
+                let mut rule = nemoclaw_openshell::search::search_policy(provider);
+                if invalid_tls {
+                    rule.endpoints[0].tls = Some("unsupported-mode".into());
+                } else {
+                    rule.endpoints[0].enforcement = Some("unsupported-mode".into());
+                }
+                let error = definition_with_rule(provider, &fields, rule)
+                    .expect_err("unsupported search policy must return an error, not panic");
+                assert_eq!(error, ObservationError::Query);
+            }
+        }
     }
 
     #[test]

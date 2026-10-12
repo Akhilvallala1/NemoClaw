@@ -54,6 +54,19 @@ Omitting these attributes derives them from that specification; supplied values 
 Refreshing earlier state adds these attributes without changing the serialized specification, resource identity, or retained storage.
 The identity fields inside `spec` remain required.
 
+### Gateway Profile Format Upgrade
+
+The OpenShell 0.1.3 integration stores provider-profile metadata in separate annotations.
+Gateway profiles created by earlier bundles used one `nemoclaw.nvidia.com/profile-v1` annotation; the current provider cannot read that format and reports an identity mismatch during plan, apply, or destroy.
+There is no automatic migration.
+This gateway-side format break is separate from both the provider-type change and the cluster resource identity refresh described above.
+
+Keep the original YAML, state directory, and matching old bundle.
+To retire the old deployment, use that bundle for [teardown](usage.md#destroy) before creating a new deployment with the current bundle.
+Teardown deletes sandbox files and history; retained model and credential PVCs have the lifetimes described in the [cluster guide](kubernetes.md#run-a-managed-model-service).
+To preserve the old deployment, create the new deployment with a separate gateway, UID, and state directory.
+Do not delete profile annotations or edit state to bypass the mismatch; recreating a gateway behind existing state can also violate its retained identity bindings.
+
 ## Provider Catalog
 
 The bundle pins these providers:

@@ -12,5 +12,8 @@ The archive excludes every `runtimes/` directory; it contains no Qwen recipe scr
 The runtime policy credit remains in `crates/nemoclaw-runtime/NOTICE.md` inside the archive.
 `/opt/nemoclaw/source/Dockerfile` and `build.json` retain this image's build instructions and manifest.
 `supervisor.json` records the source archive and executable hashes.
+`nemoclaw_vllm_routes.py` and `test_vllm_auth.py` retain the shared image-local route middleware and its build check under `/opt/nemoclaw/source/`.
+The middleware limits bearer-enabled services to OpenAI routes and the health probe; native vLLM handles the OpenAI bearer key.
+Each image build runs the check without a GPU or model.
 The upstream image retains its vLLM and installed dependency notices.
 Model license and notice files present at the selected repository root are downloaded with the model snapshot.

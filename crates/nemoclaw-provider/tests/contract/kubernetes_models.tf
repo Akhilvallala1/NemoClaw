@@ -10,6 +10,10 @@ variable "image" { type = string }
 variable "runtime" { type = any }
 variable "authenticated" { type = bool }
 variable "memory_limit" { type = number }
+variable "update_policy" {
+  type    = string
+  default = null
+}
 variable "keep_workload" { type = bool }
 variable "destroy" { type = bool }
 provider "nemoclaw" { destroy = var.destroy }
@@ -68,7 +72,7 @@ resource "nemoclaw_kubernetes_service" "model" {
     runtime         = var.runtime
     architecture    = "amd64"
     sharedMemoryGib = 8
-    settings = {
+    settings = merge({
       imageMetadata    = { env = "TEST_MODEL_IMAGE_METADATA" }
       cpuRequestMillis = 1000
       cpuLimitMillis   = 4000
@@ -76,7 +80,7 @@ resource "nemoclaw_kubernetes_service" "model" {
       memoryLimitGiB   = var.memory_limit
       storageGiB       = 80
       storageClass     = "model-cache"
-    }
+    }, var.update_policy == null ? {} : { updatePolicy = var.update_policy })
   }))
   depends_on = [nemoclaw_kubernetes_service_storage.model]
 }

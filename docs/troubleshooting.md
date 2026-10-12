@@ -42,8 +42,10 @@ Do not attach environment dumps, TLS private keys, interface tokens, or the enti
 | Deployment lock error | Check for another operation using the same state directory; a lock failure does not authorize state deletion |
 | Authentication, transport, or incomplete-observation error | Restore access to the selected service; failed observation does not establish absence or authorize recreation. For a persistently unknown OpenClaw runtime after an invocation failure, follow the [replacement procedure](usage.md#replace-workloads-after-an-unusable-openclaw-runtime) |
 | Ownership, generation, or durable identity mismatch | Inspect the selected gateway/engine and retained deployment identity; do not adopt or replace a different resource |
+| Provider-profile identity mismatch after upgrading a bundle | Check the [gateway profile format break](provider.md#gateway-profile-format-upgrade); old `profile-v1` profiles require the original bundle for teardown or a separate deployment |
 | Plan would remove or replace a resource | Check [update constraints](usage.md#updates-and-recovery) and the relevant configuration guide before choosing a new deployment |
 | Managed cluster model update rejected at full namespace quota | Follow [quota recovery](kubernetes.md#recover-a-quota-rejection-during-a-model-update); replacement admission needs temporary headroom while the existing workload remains |
+| Model Pod is preserved by `kubernetes.updatePolicy: Preserve` | The update requires stopping the existing Pod. Keep the current configuration, or explicitly choose `spec.services.<name>.kubernetes.updatePolicy: Recreate` after reviewing the [downtime and recovery limits](kubernetes.md#run-a-managed-model-service) |
 | Managed cluster model Pod cannot be scheduled | Review the named Pod's scheduling reason and the [replacement checks and recovery limits](kubernetes.md#run-a-managed-model-service); correct constraints or capacity, then apply with the retained state |
 | Interrupted apply | Resolve the cause and reapply the original YAML with its retained state |
 | Unfinished destroy | Resume destroy with the same state; other operations refuse unfinished teardown |

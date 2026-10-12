@@ -239,7 +239,7 @@ impl Deployment {
                     if service.kubernetes.is_some() =>
                 {
                     Some(if service.authentication.is_some() {
-                        "uses vLLM, whose bearer authentication does not protect /invocations; that route can run inference without the key"
+                        "requires an image that restricts inference to authenticated /v1 routes"
                     } else {
                         "has no bearer authentication"
                     })
@@ -249,7 +249,7 @@ impl Deployment {
             if let Some(authentication_boundary) = authentication_boundary {
                 (self.progress)(Progress::Warning {
                     message: format!(
-                        "Cluster service {name} {authentication_boundary}. Access depends on NetworkPolicy enforcement, which the Kubernetes API cannot verify. Verify that the network plugin enforces the supervisor-only policy."
+                        "Cluster service {name} {authentication_boundary}. Network isolation depends on NetworkPolicy enforcement, which the Kubernetes API cannot verify. Verify that the network plugin enforces the supervisor-only policy."
                     ),
                 });
             }

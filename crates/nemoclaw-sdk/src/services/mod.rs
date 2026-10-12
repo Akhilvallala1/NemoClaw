@@ -10,7 +10,7 @@
 pub mod authentication;
 pub(crate) mod cluster_config;
 pub use cluster_config::{
-    KubernetesService, ServiceToleration, TolerationEffect, TolerationOperator,
+    KubernetesService, ServiceToleration, ServiceUpdatePolicy, TolerationEffect, TolerationOperator,
 };
 mod cluster;
 mod contract;

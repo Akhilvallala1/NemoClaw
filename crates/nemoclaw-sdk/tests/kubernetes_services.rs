@@ -12,6 +12,8 @@ mod idempotence;
 mod readiness;
 #[path = "kubernetes_service_scheduling.rs"]
 mod scheduling;
+#[path = "kubernetes_service_update_policy.rs"]
+mod update_policy;
 
 fn assert_binding_mismatch<T>(result: Result<T, nemoclaw_sdk::ObservationError>) {
     use nemoclaw_sdk::ObservationError;
@@ -333,6 +335,7 @@ async fn image_updates_and_destroy_reapply_retain_the_same_claims() {
     objects.insert(service.clone());
     objects.insert(json!({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "unrelated", "namespace": "agents"}}));
     spec.image = format!("registry.example/runtime@sha256:{}", "b".repeat(64));
+    spec.settings.update_policy = nemoclaw_sdk::services::ServiceUpdatePolicy::Recreate;
     let second = operations.ensure(&spec, first.id.as_deref()).await.unwrap();
     assert_eq!(
         second.id, first.id,
@@ -546,6 +549,7 @@ async fn an_interrupted_update_keeps_the_binding_and_requires_intent_reconciliat
         .unwrap();
     let first = operations.ensure(&original, None).await.unwrap();
     let mut updated = original.clone();
+    updated.settings.update_policy = nemoclaw_sdk::services::ServiceUpdatePolicy::Recreate;
     updated.image = format!("registry.example/runtime@sha256:{}", "b".repeat(64));
     operations
         .ensure(&updated, first.id.as_deref())
@@ -817,6 +821,7 @@ async fn replacement_admission_rejection_preserves_the_running_model_and_its_rec
             let recorded = std::fs::read(&receipt).unwrap();
             let mut desired = original.clone();
             desired.image = format!("registry.example/runtime@sha256:{}", "b".repeat(64));
+            desired.settings.update_policy = nemoclaw_sdk::services::ServiceUpdatePolicy::Recreate;
             objects.reject_create(rejected_kind);
 
             let error = operations
@@ -858,6 +863,7 @@ async fn an_update_with_no_matching_node_preserves_the_running_pod_and_receipt()
             "name":"gpu-node", "labels":{"kubernetes.io/os":"linux", "kubernetes.io/arch":original.architecture, "gpu-pool":"inference"}},
             "status":{"conditions":[{"type":"Ready", "status":"True"}], "allocatable":{"cpu":"8", "memory":"64Gi", "nvidia.com/gpu":"1"}}}));
         let mut changed = original.clone();
+        changed.settings.update_policy = nemoclaw_sdk::services::ServiceUpdatePolicy::Recreate;
         changed
             .settings
             .node_selector
@@ -913,6 +919,7 @@ async fn replacement_admission_uses_temporary_names_without_changing_the_workloa
         let initial_checks = objects.dry_runs().len();
         let mut desired = original.clone();
         desired.image = format!("registry.example/runtime@sha256:{}", "b".repeat(64));
+        desired.settings.update_policy = nemoclaw_sdk::services::ServiceUpdatePolicy::Recreate;
         operations.preflight_workload(&desired).await.unwrap();
         let checks = objects.dry_runs();
         let replacements = &checks[initial_checks..];
@@ -1060,6 +1067,7 @@ async fn runtime_updates_replace_configuration_and_retry_after_interrupted_creat
     if let nemoclaw_runtime::RuntimeSpec::Ollama(runtime) = &mut spec.runtime {
         runtime.model.digest = "b".repeat(64);
     }
+    spec.settings.update_policy = nemoclaw_sdk::services::ServiceUpdatePolicy::Recreate;
     objects.fail_create("ConfigMap", false);
     assert!(operations.ensure(&spec, first.id.as_deref()).await.is_err());
     assert!(objects.get("v1", "Pod", "agents", &spec.name).is_none());

@@ -66,6 +66,7 @@ pub fn observe_runtime(
                     "org.nemoclaw.inference.authentication".into(),
                     "bearer-v1".into(),
                 );
+                labels.insert("org.nemoclaw.inference.routes".into(), "openai-v1".into());
             }
             ("vllm", labels)
         }

@@ -348,7 +348,7 @@ async fn plan_and_apply_warn_about_cluster_network_boundaries_even_with_bearer_a
         (
             include_bytes!("../../../../../examples/kubernetes/local-vllm.yaml").as_slice(),
             false,
-            Some("bearer authentication does not protect /invocations"),
+            Some("requires an image that restricts inference to authenticated /v1 routes"),
         ),
         (
             include_bytes!("../../../../../examples/kubernetes/local-vllm.yaml").as_slice(),

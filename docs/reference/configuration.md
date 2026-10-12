@@ -531,6 +531,7 @@ Paths:
 | `storageClass` | string | No | — | StorageClass for retained volumes. Omission selects the cluster default. Constraints: pattern `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$(?![\s\S])`; maximum characters 253. |
 | `storageGiB` | integer | Yes | — | Retained model-volume capacity in GiB. Must cover prepared data plus a 16 GiB working reserve; model downloads and earlier snapshots need additional space. Constraints: minimum 16; maximum 8589934591. |
 | `tolerations` | array of [ServiceToleration](#servicetoleration) | No | — | Node taints the model Pod may tolerate. |
+| `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Defaults to Preserve, which refuses replacement of an existing nonterminal Pod. Recreate permits sequential replacement and possible downtime on every update until this policy is removed or changed. Initial creation and recovery of missing or terminal Pods remain allowed; changing only this policy does not restart a Pod. |
 
 ## ManagedKubernetes
 
@@ -1186,6 +1187,20 @@ Paths:
 | `operator` | [TolerationOperator](#tolerationoperator) | Yes | — | Match the taint's value with Equal, or its presence with Exists. |
 | `tolerationSeconds` | integer | No | — | Optional eviction delay, valid only for NoExecute tolerations. Constraints: minimum 0; maximum 9223372036854775807. |
 | `value` | string | No | — | Value matched by Equal; Exists requires an empty value. Constraints: pattern `^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?)?$(?![\s\S])`. |
+
+## ServiceUpdatePolicy
+
+Whether updates may stop an existing cluster model Pod before its replacement is ready.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.kubernetes.updatePolicy`
+
+Accepted input: string.
+
+Constraints: `"Preserve"` or `"Recreate"`.
 
 ## Serving
 

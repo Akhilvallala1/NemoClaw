@@ -53,6 +53,48 @@ fn cluster_model_services_accept_explicit_capacity_storage_and_scheduling() {
 }
 
 #[test]
+fn cluster_update_policy_defaults_to_preserve_and_requires_an_explicit_known_choice() {
+    use nemoclaw_sdk::services::ServiceUpdatePolicy;
+    let validator = jsonschema::validator_for(&schema::input_schema()).unwrap();
+    for backend in ["vllm", "ollama"] {
+        for (authored, expected) in [
+            (None, ServiceUpdatePolicy::Preserve),
+            (Some("Preserve"), ServiceUpdatePolicy::Preserve),
+            (Some("Recreate"), ServiceUpdatePolicy::Recreate),
+        ] {
+            let mut document = cluster_document(backend);
+            if let Some(authored) = authored {
+                document["spec"]["services"]["qwen"]["kubernetes"]["updatePolicy"] =
+                    json!(authored);
+            }
+            assert!(validator.is_valid(&document));
+            Document::parse(document.to_string().as_bytes()).unwrap();
+            let settings: KubernetesService =
+                serde_json::from_value(document["spec"]["services"]["qwen"]["kubernetes"].clone())
+                    .unwrap();
+            assert_eq!(settings.update_policy, expected);
+            assert_eq!(
+                serde_json::to_value(&settings)
+                    .unwrap()
+                    .get("updatePolicy")
+                    .and_then(Value::as_str),
+                if expected == ServiceUpdatePolicy::Recreate {
+                    Some("Recreate")
+                } else {
+                    None
+                }
+            );
+        }
+        for invalid in [Value::Null, json!(true), json!("RollingUpdate")] {
+            let mut document = cluster_document(backend);
+            document["spec"]["services"]["qwen"]["kubernetes"]["updatePolicy"] = invalid;
+            assert!(!validator.is_valid(&document));
+            assert!(Document::parse(document.to_string().as_bytes()).is_err());
+        }
+    }
+}
+
+#[test]
 fn cluster_services_require_image_metadata_before_deployment() {
     for kind in ["vllm", "ollama"] {
         let mut input = cluster_document(kind);

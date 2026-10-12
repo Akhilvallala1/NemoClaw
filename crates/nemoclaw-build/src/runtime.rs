@@ -46,6 +46,7 @@ pub(super) async fn build_runtime(pins: &Pins, manifest: &Path) -> Result<()> {
         }
         fs::copy(source, context.join(name))?;
     }
+    stage_workload_files(Path::new("."), &context)?;
     for (name, source) in &recipe.downloads {
         let bytes = download(&Artifact {
             url: source.url.clone(),
@@ -69,6 +70,22 @@ pub(super) async fn build_runtime(pins: &Pins, manifest: &Path) -> Result<()> {
     let output = root.join("runtime.tar");
     let reference = image::export_and_load(Path::new("docker"), &recipe, &context, &output)?;
     println!("Runtime image loaded: {reference}");
+    Ok(())
+}
+
+fn stage_workload_files(repository: &Path, context: &Path) -> Result<()> {
+    // Shared image-owned Python runs only in the vLLM workloads. Keep one copy
+    // for the generic ARM64/AMD64 and recipe images, including their build check.
+    for (source, target) in [
+        ("nemoclaw_vllm_routes.py", "nemoclaw_vllm_routes.py"),
+        ("test_auth.py", "test_vllm_auth.py"),
+    ] {
+        let source = repository.join("runtimes/vllm").join(source);
+        if !fs::symlink_metadata(&source)?.is_file() {
+            return Err("runtime workload input is not a regular file".into());
+        }
+        fs::copy(source, context.join(target))?;
+    }
     Ok(())
 }
 
@@ -150,6 +167,37 @@ fn compile_retained_source(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_context_stages_shared_vllm_routes_and_the_image_build_check() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let context = tempfile::tempdir().unwrap();
+        stage_workload_files(&repository, context.path()).unwrap();
+        for (source, target) in [
+            ("nemoclaw_vllm_routes.py", "nemoclaw_vllm_routes.py"),
+            ("test_auth.py", "test_vllm_auth.py"),
+        ] {
+            assert_eq!(
+                fs::read(repository.join("runtimes/vllm").join(source)).unwrap(),
+                fs::read(context.path().join(target)).unwrap(),
+            );
+        }
+        for recipe in ["vllm", "vllm-amd64", "qwen38"] {
+            let dockerfile =
+                fs::read_to_string(repository.join("runtimes").join(recipe).join("Dockerfile"))
+                    .unwrap();
+            assert!(
+                dockerfile.contains(
+                    "COPY nemoclaw_vllm_routes.py test_vllm_auth.py /opt/nemoclaw/source/"
+                ),
+                "{recipe}"
+            );
+            assert!(
+                dockerfile.contains("RUN python3 -I /opt/nemoclaw/source/test_vllm_auth.py"),
+                "{recipe}"
+            );
+        }
+    }
 
     #[test]
     #[ignore = "compiles an isolated vendored dependency closure; run explicitly"]

@@ -159,3 +159,51 @@ fn every_runtime_contract_setting_has_an_opentofu_attribute() {
     let snapshot = object(&recipe["snapshot"].shape);
     assert!(matches!(snapshot["files"].shape, Shape::ObjectList(_)));
 }
+
+#[test]
+fn bearer_runtime_launch_restricts_routes_without_changing_unauthenticated_services() {
+    let mut service = service();
+    service.authentication = None;
+    let public = arguments::arguments(&service, "/data/model", 121 * GIB).unwrap();
+    assert!(!public.iter().any(|argument| argument == "--middleware"));
+    service.authentication = Some(super::ServiceAuthentication::Bearer);
+    let bearer = arguments::arguments(&service, "/data/model", 121 * GIB).unwrap();
+    assert!(
+        bearer
+            .windows(2)
+            .any(|arguments| arguments == ["--middleware", "nemoclaw_vllm_routes.OpenAIRoutes"])
+    );
+}
+
+#[test]
+fn bearer_docker_install_requires_an_image_that_restricts_routes() {
+    let document =
+        Document::parse(include_str!("../../../../tests/fixtures/config/spark.yaml").as_bytes())
+            .unwrap();
+    let mut service = service();
+    let generations = [(super::SERVICE_KIND.into(), "a".repeat(32))].into();
+    service.authentication = Some(super::ServiceAuthentication::Bearer);
+    let (_, spec) = super::targets(&document, "qwen", &service, &generations).unwrap();
+    let labels = spec.process.unwrap().image_labels;
+    assert_eq!(
+        labels
+            .get("org.nemoclaw.inference.authentication")
+            .map(String::as_str),
+        Some("bearer-v1")
+    );
+    assert_eq!(
+        labels
+            .get("org.nemoclaw.inference.routes")
+            .map(String::as_str),
+        Some("openai-v1")
+    );
+    service.authentication = None;
+    let (_, spec) = super::targets(&document, "qwen", &service, &generations).unwrap();
+    assert!(
+        !spec
+            .process
+            .unwrap()
+            .image_labels
+            .contains_key("org.nemoclaw.inference.routes")
+    );
+}

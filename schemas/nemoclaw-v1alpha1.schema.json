@@ -1132,6 +1132,11 @@
             "$ref": "#/$defs/ServiceToleration"
           },
           "type": "array"
+        },
+        "updatePolicy": {
+          "$ref": "#/$defs/ServiceUpdatePolicy",
+          "default": "Preserve",
+          "description": "Defaults to Preserve, which refuses replacement of an existing nonterminal Pod. Recreate permits sequential replacement and possible downtime on every update until this policy is removed or changed. Initial creation and recovery of missing or terminal Pods remain allowed; changing only this policy does not restart a Pod."
         }
       },
       "required": [
@@ -3113,6 +3118,21 @@
         "operator"
       ],
       "type": "object"
+    },
+    "ServiceUpdatePolicy": {
+      "description": "Whether updates may stop an existing cluster model Pod before its replacement is ready.",
+      "oneOf": [
+        {
+          "const": "Preserve",
+          "description": "Keep existing nonterminal Pods and reject changes that require their replacement.",
+          "type": "string"
+        },
+        {
+          "const": "Recreate",
+          "description": "Permit sequential replacement, including downtime if the replacement cannot start.",
+          "type": "string"
+        }
+      ]
     },
     "Serving": {
       "additionalProperties": false,

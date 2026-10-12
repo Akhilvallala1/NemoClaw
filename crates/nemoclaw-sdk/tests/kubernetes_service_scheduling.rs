@@ -15,7 +15,7 @@ async fn running(
     Operations,
     String,
 ) {
-    let spec = spec(backend, backend == "vllm");
+    let mut spec = spec(backend, backend == "vllm");
     let objects = crate::kube_api::Objects::default();
     let directory = tempfile::tempdir().unwrap();
     let (fixture, operations) = operations(&objects, directory.path(), &spec).await;
@@ -31,6 +31,9 @@ async fn running(
     objects.insert(json!({"apiVersion":"v1", "kind":"Node", "metadata":{
         "name":"gpu-node", "labels":{"kubernetes.io/os":"linux", "kubernetes.io/arch":spec.architecture, "gpu-pool":"inference"}},
         "status":{"conditions":[{"type":"Ready", "status":"True"}], "allocatable":{"cpu":"8", "memory":"64Gi", "nvidia.com/gpu":"1"}}}));
+    // These scenarios exercise scheduling checks after explicit downtime opt-in;
+    // the existing workload was created with the default Preserve policy.
+    spec.settings.update_policy = nemoclaw_sdk::services::ServiceUpdatePolicy::Recreate;
     (
         spec,
         objects,

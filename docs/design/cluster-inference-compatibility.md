@@ -3,33 +3,35 @@
 
 # Cluster Inference Contract Baseline
 
-Cluster-managed vLLM and Ollama extend the existing SDK/provider lifecycle without changing the Fabric or OpenShell pins.
+Cluster-managed vLLM and Ollama extend the SDK/provider lifecycle.
 This record compares the contracts at NemoClaw `v1` revision `618c002419beb994c62c89b6e1df31783621e481` with the cluster implementation for [#12732](https://github.com/NVIDIA/NemoClaw/issues/12732).
 It does not establish team approval, a release compatibility policy, or general Kubernetes/OpenShift qualification.
 Use the [cluster deployment guide](../kubernetes.md#run-a-managed-model-service) for configuration and retained-resource behavior.
 
 ## Exact Inputs
 
-The source pins below define the baseline; a deployment also needs its own immutable agent and hosted-runtime image digests.
+The source pins below record the historical baseline at `618c002419beb994c62c89b6e1df31783621e481`.
+For a current deployment, use the selected checkout's [workspace dependencies](../../Cargo.toml), [artifact pins](../../versions.json), and [build recipes](../build.md).
 Build the CLI, providers, agent images, and hosted-runtime images from the same checkout.
+Record the deployment's immutable agent and hosted-runtime image digests.
 Keep the generated bundle manifest and the image metadata export with the deployment state.
 
 | Input | Identity and source |
 |---|---|
 | NemoClaw baseline | `618c002419beb994c62c89b6e1df31783621e481` on `v1` |
 | Fabric Rust SDK/provider dependency and image source | `24f068c895e5cbc30286bc743498be4e5014d658`; baseline [SDK dependency](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/crates/nemoclaw-sdk/Cargo.toml), [provider dependency](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/crates/nemoclaw-provider/Cargo.toml), and [image recipe](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/image/fabric/Dockerfile) |
-| Fabric source archive | SHA-256 `77f78f66a24a8cd8e6f33f9cf49f3db8c5de39e12e095f5599cb63909a05865f`; [offline catalog](../../image/fabric/catalog.json), catalog schema `2` |
-| OpenShell | `6648bd0c290efbc41ba131ee9831ee45cd431f94`, version `0.1.2`; [workspace dependencies](../../Cargo.toml), [artifact pins](../../versions.json), [vendored SDK changes](../../crates/vendor/openshell-sdk/NOTICE.md) |
-| Bundle tools | OpenTofu `1.12.6`, Docker provider `4.6.0`, Helm provider `3.3.0`; platform-specific archive checksums in [versions.json](../../versions.json) |
+| Fabric source archive | SHA-256 `77f78f66a24a8cd8e6f33f9cf49f3db8c5de39e12e095f5599cb63909a05865f`; [offline catalog](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/image/fabric/catalog.json), catalog schema `2` |
+| OpenShell | `6648bd0c290efbc41ba131ee9831ee45cd431f94`, version `0.1.2`; [workspace dependencies](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/Cargo.toml), [artifact pins](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/versions.json), [vendored SDK changes](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/crates/vendor/openshell-sdk/NOTICE.md) |
+| Bundle tools | OpenTofu `1.12.6`, Docker provider `4.6.0`, Helm provider `3.3.0`; platform-specific archive checksums in [versions.json](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/versions.json) |
 | Gateway image | `ghcr.io/nvidia/openshell/gateway@sha256:2fe4dad9118e14ab80a8258b545ea6e6cd74c3469e24ad4e6610f964d98913a2` |
 | Gateway chart | `oci://ghcr.io/nvidia/openshell/helm-chart@sha256:7a714bbbbcef7b5ed8dac599e89e89df12eb623fa4454d22f89df41d6f047e2a` |
 | Sandbox runtime image | `ghcr.io/nvidia/openshell/sandbox@sha256:bf4797b6c511f2d8ba02955dbba4bf76c1f0dd6d83531420c5408d5f1fb9d72f` |
 | Supervisor image | `ghcr.io/nvidia/openshell/supervisor@sha256:d7b5264bb6bc56f4796e6fa3617b8e4a8d785be0b7293542efd8cc250b0fb67a` |
 | Development issuer image | `docker.io/nginxinc/nginx-unprivileged@sha256:5aea7cc516b419e3526f47dd1531be31a56a046cfe44754d94f9383e13e2ee99` |
 | Baseline default agent image | `nc-fabric-owner-20260924@sha256:c4c0d3add3869e49d0ce8d03bd7e41bbe2682d0df285ef6fde5f181b123cf83e`; a local default, not a published cluster image |
-| OpenClaw native input | Version `2026.9.4`; `ghcr.io/openclaw/openclaw@sha256:cc596b846506a5f4cfcee111394a2725f375f01cca2ebb492a161fd1b747f101` in the [agent image recipe](../../image/fabric/Dockerfile) |
-| vLLM base image, ARM64 / AMD64 | `vllm/vllm-openai@sha256:3b0e188ffceb3d07e09c3cb5215433a0020eacf02d7f882ed3a8bfd15454477e` / `vllm/vllm-openai@sha256:c2f3b1b964e47809b722b5e75b61b1e7b39a50f70388cf2bf2418f16a9f31da2`; [ARM64 recipe](../../runtimes/vllm/Dockerfile), [AMD64 recipe](../../runtimes/vllm-amd64/Dockerfile) |
-| Ollama base image, ARM64 / AMD64 | `ollama/ollama@sha256:684d8674b4315fa18f4f0e973a118ec2652ed96f67563277839985175858e0ba` / `ollama/ollama@sha256:0ff452f6a4c3c5bb4ab063a1db190b261d5834741a519189ed5301d50e4434d1`; version `0.34.0`; [ARM64 recipe](../../runtimes/ollama/Dockerfile), [AMD64 recipe](../../runtimes/ollama-amd64/Dockerfile) |
+| OpenClaw native input | Version `2026.9.4`; `ghcr.io/openclaw/openclaw@sha256:cc596b846506a5f4cfcee111394a2725f375f01cca2ebb492a161fd1b747f101` in the [agent image recipe](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/image/fabric/Dockerfile) |
+| vLLM base image, ARM64 / AMD64 | `vllm/vllm-openai@sha256:3b0e188ffceb3d07e09c3cb5215433a0020eacf02d7f882ed3a8bfd15454477e` / `vllm/vllm-openai@sha256:c2f3b1b964e47809b722b5e75b61b1e7b39a50f70388cf2bf2418f16a9f31da2`; [ARM64 recipe](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/runtimes/vllm/Dockerfile), [AMD64 recipe](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/runtimes/vllm-amd64/Dockerfile) |
+| Ollama base image, ARM64 / AMD64 | `ollama/ollama@sha256:684d8674b4315fa18f4f0e973a118ec2652ed96f67563277839985175858e0ba` / `ollama/ollama@sha256:0ff452f6a4c3c5bb4ab063a1db190b261d5834741a519189ed5301d50e4434d1`; version `0.34.0`; [ARM64 recipe](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/runtimes/ollama/Dockerfile), [AMD64 recipe](https://github.com/NVIDIA/NemoClaw/blob/618c002419beb994c62c89b6e1df31783621e481/runtimes/ollama-amd64/Dockerfile) |
 
 The runtime base images lack NemoClaw's supervisor until the corresponding recipe is built.
 Their digests cannot replace the built hosted-runtime image digest in `spec.services`.
@@ -58,7 +60,7 @@ With Ollama `qwen3:0.6b` at `32768`, its log recorded `n_tokens=19947` and `trun
 At `8192`, the turn reported success but the reply ignored the instruction; context truncation is an inference from the changed behavior, not a confirmed truncation log from that run.
 With vLLM `Qwen/Qwen3-4B`, the `8192` setting produced context-overflow HTTP 400 responses and failed automatic compaction; `32768` produced three HTTP 200 chat-completion responses through the supervisor.
 That vLLM run retained `kvCacheGiB: 6` and `maxSequences: 1`.
-Another reported prompt measured 19,980 tokens; its backend and log were not recorded here.
+The report also lists a 19,980-token prompt without identifying its backend, log, or associated compaction result; it is not attributed to either run above.
 This operator report explains the example budget; it is not deployment qualification, does not change Docker-path limits, and does not resolve the pinned Fabric health limitation.
 
 ## Remaining Compatibility and Qualification Work

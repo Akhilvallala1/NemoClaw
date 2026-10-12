@@ -296,7 +296,13 @@ mod tests {
             include_bytes!("../../nemoclaw-sdk/tests/fixtures/config/managed-ollama.yaml")
                 .as_slice(),
         ] {
-            let document = Document::parse(bytes).unwrap();
+            let mut document = Document::parse(bytes).unwrap();
+            for service in document.spec.services.values_mut() {
+                if let nemoclaw_sdk::services::ServiceDefinition::Vllm(service) = service {
+                    service.authentication =
+                        Some(nemoclaw_runtime::vllm::ServiceAuthentication::Bearer);
+                }
+            }
             let generations = [
                 ("managed_gateway".into(), "a".repeat(32)),
                 ("inference_service".into(), "b".repeat(32)),
@@ -329,7 +335,14 @@ mod tests {
                 "absent",
                 "authentication",
                 "transport",
+                "legacy_bearer_routes",
+                "wrong_bearer_routes",
             ] {
+                if variant.ends_with("bearer_routes")
+                    && process.image_labels["org.nemoclaw.backend"] != "vllm"
+                {
+                    continue;
+                }
                 let mut image = json!({"Id":"sha256:runtime", "Os":"linux", "Architecture":process.architecture,
                     "Config":{"Labels":process.image_labels}});
                 let code = match variant {
@@ -355,6 +368,16 @@ mod tests {
                     }
                     "architecture" => image["Architecture"] = json!("PRIVATE_SENTINEL"),
                     "identity" => image["Id"] = json!(""),
+                    "legacy_bearer_routes" => {
+                        image["Config"]["Labels"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("org.nemoclaw.inference.routes");
+                    }
+                    "wrong_bearer_routes" => {
+                        image["Config"]["Labels"]["org.nemoclaw.inference.routes"] =
+                            json!("unrestricted")
+                    }
                     _ => {}
                 }
                 let fixture = Fixture::engine(move |request| {

@@ -239,7 +239,8 @@ Live image builds, GPU inference, tools and agent replies through this Docker pr
 
 Set `authentication: bearer` under `spec.services.<name>` to generate a private key for a managed vLLM service.
 Omission preserves the existing unauthenticated serving behavior.
-Build the [runtime image](build.md#build-a-runtime-image) from this revision and use its immutable digest; a container created from an incompatible image will not satisfy application readiness.
+Build the [runtime image](build.md#build-a-runtime-image) from this revision and use its immutable digest.
+Authenticated services require both `org.nemoclaw.inference.authentication=bearer-v1` and `org.nemoclaw.inference.routes=openai-v1`; image validation rejects earlier images that lack the route restriction before creating the runtime.
 Do not supply `inferenceProviders[].credential` for a managed service.
 
 The supervisor creates a mode-0600 key in `/credentials/inference-key` on a separate credential volume under its own writer lock and reuses it after restart.
@@ -249,8 +250,11 @@ The OpenShell provider reads the key through the verified runtime container iden
 Agent requests use their OpenShell placeholder credential.
 YAML, plans, container launch settings, and OpenTofu state contain no generated key.
 The runtime's root user and Docker administrators can read the key and child environment.
-The key authenticates the OpenAI `/v1` routes; it does not protect every route on the HTTP listener and does not provide TLS.
-The [native vLLM authentication middleware](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/utils/server_utils.py) leaves `POST /invocations` unguarded; an operator's cluster test returned a chat completion through that route without a key.
+The key authenticates the OpenAI `/v1` routes and does not provide TLS.
+In bearer mode, the NemoClaw image middleware permits `/v1/**` and public `GET`/`HEAD /health` only; other routes, including `POST /invocations`, return HTTP 404 before reaching inference.
+Inference requests require the key; upstream CORS preflight `OPTIONS` handling under `/v1/**` remains public, and WebSockets are disabled.
+This restriction closes an upstream gap: the [native vLLM authentication middleware](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/utils/server_utils.py) leaves `/invocations` unguarded, and an operator's test of an earlier image returned a chat completion through that route without a key.
+Omitting `authentication: bearer` leaves the upstream route behavior unchanged.
 Keep the whole listener on a trusted private network, including when `authentication: bearer` is enabled.
 For Docker, restrict access through the host's network controls.
 For Kubernetes and OpenShift, require a network plugin that enforces the generated supervisor-only NetworkPolicy; plan and apply warn about this dependency for bearer vLLM as well as services without authentication.

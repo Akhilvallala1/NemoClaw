@@ -107,9 +107,11 @@ Before applying, the platform operator must provide:
 - A network plugin that enforces NetworkPolicies, working cluster DNS, and permitted outbound access for the selected public model registry.
   The current cluster path requires the `cluster.local` DNS domain.
   Every managed model service depends on this policy, including vLLM with `authentication: bearer`.
-  vLLM's key protects its OpenAI `/v1` routes; native `POST /invocations` can serve completions without the key.
+  Hosted bearer-vLLM images require the `org.nemoclaw.inference.routes=openai-v1` image label and restrict serving to `/v1/**` routes, where inference requests require the key.
+  Upstream CORS preflight `OPTIONS` handling under `/v1/**` and `GET` or `HEAD /health` remain public; WebSockets are disabled.
+  They return 404 for `/invocations` and every other route before inference; vLLM without bearer authentication retains its upstream route behavior.
   Managed Ollama has no native bearer authentication.
-  Without enforcement, other Pods can reach these unguarded routes, including Ollama's model-management API; the Kubernetes API cannot prove that the network plugin enforces the policy.
+  Without policy enforcement, other Pods can reach model endpoints, including Ollama's model-management API; the Kubernetes API cannot prove that the network plugin enforces the policy.
   Plan and apply warn about this dependency for each cluster model service; JSON results include `warnings`, including when the operation fails.
 - Runtime and agent images the selected nodes can pull by digest.
   Build the hosted runtime from this checkout using [the runtime image procedure](build.md#build-a-runtime-image); bare upstream vLLM and Ollama images lack the required supervisor.
@@ -174,7 +176,9 @@ The SDK derives the fully qualified internal host `<service>.<namespace>.svc.clu
 Multiple agents and providers may share a service.
 The provider creates a ClusterIP Service and a NetworkPolicy; no host port, NodePort, or LoadBalancer is published.
 The NetworkPolicy admits only OpenShell supervisor Pods in the gateway's namespace on the model port.
-The supervisor proxy's inference grant limits sandbox traffic to `/v1/**`; admitted peers can still reach vLLM's unguarded `/invocations` route and Ollama's full native API directly.
+The supervisor proxy's inference grant limits sandbox traffic to `/v1/**`.
+The hosted bearer-vLLM runtime also blocks direct requests outside `/v1/**`, except public `GET` and `HEAD /health`; `/v1/**` permits public CORS preflight `OPTIONS`, but inference requires the key.
+Admitted peers can still reach Ollama's full native API directly.
 Principals allowed to create or relabel Pods in that namespace remain inside the trust boundary.
 The imported inference profile and each sandbox's matching network rule grant only the verified Service's assigned IP addresses; refresh compares both with the live Service, and a sandbox created against other addresses must be replaced.
 General authored HTTP DNS endpoints remain rejected.
@@ -188,6 +192,11 @@ Use the same plan and apply commands as [the managed gateway procedure](#deploy-
 Plan validates intent and observes bound resources without starting a model or changing cluster resources.
 Preflight checks the selected classes and API permissions and uses [server-side dry runs](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run) to check admission before creating new resources.
 The first plan cannot dry-run namespace-scoped workloads when the managed namespace does not exist yet; apply repeats those checks before workload creation.
+The default `kubernetes.updatePolicy: Preserve` refuses changes that would replace an existing nonterminal Pod, including a running, pending, or incompletely observed Pod.
+The current Pod, configuration, and saved receipt remain unchanged; static checks cannot guarantee that its replacement will obtain the occupied GPU, storage placement, or scheduler approval.
+To permit sequential replacement, set `updatePolicy: Recreate` in the service's existing `kubernetes` mapping and review the plan.
+This is an ongoing opt-in to downtime for future updates until you remove it or set `Preserve`; changing only the policy does not restart the Pod.
+Initial creation, unchanged apply, and recovery of missing or terminal (`Failed` or `Succeeded`) Pods do not require `Recreate`.
 For a changed existing workload, preflight checks the replacement Pod and ConfigMap under temporary names without persisting them, before stopping the current Pod.
 Rejection preserves the current Pod, configuration, and saved service receipt.
 When an update changes the node selector, tolerations, RuntimeClass, architecture, or CPU/memory requests, preflight also requires permission to list Nodes.
@@ -200,7 +209,7 @@ The check can reject a replacement at full namespace quota because the existing 
 Use the [quota recovery procedure](#recover-a-quota-rejection-during-a-model-update) to obtain temporary admission headroom while preserving the running workload.
 Temporary names and existing referenced objects can affect admission; a successful check does not reserve quota or capacity, and admission can change before the real create.
 Competing workloads, PVC topology, and scheduler plugins can still prevent scheduling; the preflight is not a scheduler simulation.
-After preflight passes, replacement stops the old Pod; a later create failure can leave the service down until a corrected apply completes recovery from the saved state.
+With `Recreate`, replacement stops the old Pod after preflight passes; a later admission, scheduling, or startup failure can leave the service down until a corrected apply completes recovery from the saved state.
 Apply creates retained storage and disposable service resources, starts the hosted runtime, and checks its bounded readiness before configuring dependent agents.
 If Kubernetes reports `PodScheduled=False` with reason `Unschedulable`, apply stops waiting and reports the bounded, redacted scheduler message and owned Pod name.
 The pending Pod, PVCs, and receipt remain available for inspection; correct the reported constraints or capacity, then apply again with the same state directory.

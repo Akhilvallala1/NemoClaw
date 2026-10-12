@@ -115,7 +115,7 @@ fn check_runtime(
 }
 
 #[test]
-fn authenticated_runtime_requires_the_image_bearer_contract() {
+fn authenticated_runtime_requires_native_bearer_and_restricted_routes() {
     let labels = json!({"org.nemoclaw.runtime.spec":"v1", "org.nemoclaw.backend":"vllm"});
     let (image, bundle, mut runtime) = runtime_fixture("vllm", "arm64", labels.clone());
     let nemoclaw_runtime::RuntimeSpec::Vllm(service) = &mut runtime else {
@@ -125,8 +125,14 @@ fn authenticated_runtime_requires_the_image_bearer_contract() {
     assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_err());
     let mut authenticated = labels;
     authenticated["org.nemoclaw.inference.authentication"] = json!("bearer-v1");
-    let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated);
+    let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated.clone());
+    assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_err());
+    authenticated["org.nemoclaw.inference.routes"] = json!("openai-v1");
+    let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated.clone());
     assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_ok());
+    authenticated["org.nemoclaw.inference.routes"] = json!("unrestricted");
+    let (image, bundle, _) = runtime_fixture("vllm", "arm64", authenticated);
+    assert!(check_runtime(&image, &bundle, &runtime, "arm64").is_err());
 }
 
 #[test]
@@ -294,7 +300,8 @@ fn deployment_preflight_requires_metadata_for_every_declared_cluster_service() {
             "amd64",
             json!({
                 "org.nemoclaw.runtime.spec":"v1", "org.nemoclaw.backend":kind,
-                "org.nemoclaw.inference.authentication":"bearer-v1"
+                "org.nemoclaw.inference.authentication":"bearer-v1",
+                "org.nemoclaw.inference.routes":"openai-v1"
             }),
         );
         let directory = tempfile::tempdir().unwrap();

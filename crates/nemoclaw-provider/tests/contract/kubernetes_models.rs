@@ -39,7 +39,8 @@ fn image_metadata(backend: &str) -> (String, Value) {
     let (config, size) = add(
         json!({"os":"linux", "architecture":"amd64", "config":{"Labels":{
             "org.nemoclaw.runtime.spec":"v1", "org.nemoclaw.backend":backend,
-            "org.nemoclaw.inference.authentication":"bearer-v1"
+            "org.nemoclaw.inference.authentication":"bearer-v1",
+            "org.nemoclaw.inference.routes":"openai-v1"
         }}}),
     );
     let (manifest, _) = add(
@@ -255,6 +256,7 @@ async fn lifecycle(backend: &str) {
     let pod = model.object("Pod");
     let network = [model.object("Service"), model.object("NetworkPolicy")];
     model.variables["memory_limit"] = json!(80);
+    model.variables["update_policy"] = json!("Recreate");
     model.apply(true);
     let updated = model.object("Pod");
     assert_ne!(updated["metadata"]["uid"], pod["metadata"]["uid"]);

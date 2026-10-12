@@ -85,6 +85,9 @@ pub enum ObservationError {
         name: String,
         detail: Box<str>,
     },
+    ModelUpdateRefused {
+        name: String,
+    },
     UnrecordedResource {
         kind: String,
         namespace: String,
@@ -145,6 +148,11 @@ impl fmt::Display for ObservationError {
             Self::ModelScheduling { name, detail } => write!(
                 f,
                 "Kubernetes model Pod {} cannot be scheduled: {detail}; resources retained; correct scheduling constraints or capacity and apply again",
+                name.escape_default()
+            ),
+            Self::ModelUpdateRefused { name } => write!(
+                f,
+                "Kubernetes model Pod {} is preserved by kubernetes.updatePolicy: Preserve; replacing it requires explicit updatePolicy: Recreate, which permits downtime if the replacement cannot start; Pod, configuration, and saved receipt retained",
                 name.escape_default()
             ),
             Self::ModelRuntimeStopped {

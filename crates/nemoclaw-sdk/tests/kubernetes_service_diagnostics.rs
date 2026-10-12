@@ -189,6 +189,8 @@ async fn api_conflicts_name_the_requested_object_and_preserve_durable_bindings()
             _ => {
                 if operation == "replacement preflight" {
                     spec.image = format!("registry.example/replacement@sha256:{}", "b".repeat(64));
+                    spec.settings.update_policy =
+                        nemoclaw_sdk::services::ServiceUpdatePolicy::Recreate;
                 }
                 operations.preflight_workload(&spec).await.unwrap_err()
             }

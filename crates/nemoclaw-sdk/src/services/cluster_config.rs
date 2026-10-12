@@ -42,6 +42,27 @@ pub struct KubernetesService {
     /// Existing RuntimeClass to use for the model Pod.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_class_name: Option<String>,
+    /// Defaults to Preserve, which refuses replacement of an existing nonterminal Pod. Recreate permits sequential replacement and possible downtime on every update until this policy is removed or changed. Initial creation and recovery of missing or terminal Pods remain allowed; changing only this policy does not restart a Pod.
+    #[serde(default, skip_serializing_if = "ServiceUpdatePolicy::is_preserve")]
+    pub update_policy: ServiceUpdatePolicy,
+}
+
+/// Whether updates may stop an existing cluster model Pod before its replacement is ready.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub enum ServiceUpdatePolicy {
+    /// Keep existing nonterminal Pods and reject changes that require their replacement.
+    #[default]
+    Preserve,
+    /// Permit sequential replacement, including downtime if the replacement cannot start.
+    Recreate,
+}
+
+impl ServiceUpdatePolicy {
+    fn is_preserve(&self) -> bool {
+        *self == Self::Preserve
+    }
 }
 
 impl KubernetesService {
@@ -144,6 +165,11 @@ pub(crate) fn constrain(defs: &mut serde_json::Map<String, Value>) {
     });
     let value = json!({"type":"string", "pattern": format!(r"^(?:{LABEL_NAME})?$(?![\s\S])")});
     let settings = &mut defs["KubernetesService"];
+    property(
+        settings,
+        "updatePolicy",
+        json!({"default": ServiceUpdatePolicy::default()}),
+    );
     // Kubernetes quantities must fit signed 64-bit bytes after conversion from GiB.
     for field in ["memoryRequestGiB", "memoryLimitGiB", "storageGiB"] {
         property(settings, field, json!({"maximum": (i64::MAX as u64) >> 30}));
