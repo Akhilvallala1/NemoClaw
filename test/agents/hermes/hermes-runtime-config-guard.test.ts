@@ -1192,6 +1192,40 @@ print(json.dumps(captured))
 });
 
 describe("Hermes native custom credential refresh (#12636)", () => {
+  it("rejects malformed YAML without exposing config values or changing integrity anchors", () => {
+    const result = runPythonHarness(`${loadGuardModule}
+import json
+import os
+import tempfile
+import yaml
+with tempfile.TemporaryDirectory() as tmp:
+    config_path = os.path.join(tmp, "config.yaml")
+    strict = os.path.join(tmp, "strict-hash")
+    compat = os.path.join(tmp, ".config-hash")
+    malformed = b"model: [private-config-canary\\n"
+    with open(config_path, "wb") as handle: handle.write(malformed)
+    with open(strict, "w") as handle: handle.write("strict-unchanged")
+    with open(compat, "w") as handle: handle.write("compat-unchanged")
+    try:
+        guard.refresh_native_custom_inference(tmp, strict, "both")
+    except guard.UnsafePathError as error:
+        assert str(error) == "Native custom inference configuration is not valid YAML"
+        assert isinstance(error.__cause__, yaml.YAMLError)
+    else:
+        raise AssertionError("accepted malformed YAML")
+    assert open(config_path, "rb").read() == malformed
+    assert open(strict).read() == "strict-unchanged"
+    assert open(compat).read() == "compat-unchanged"
+    print(json.dumps({"malformed_yaml_rejected": True, "config_and_anchors_unchanged": True}))
+`);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      malformed_yaml_rejected: true,
+      config_and_anchors_unchanged: true,
+    });
+    expect(result.stderr).not.toContain("private-config-canary");
+  });
+
   it("refreshes all owned credential fields and integrity hashes across supervisor revisions", () => {
     const result = runPythonHarness(`${loadGuardModule}
 import hashlib

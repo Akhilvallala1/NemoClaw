@@ -3208,7 +3208,10 @@ def refresh_native_custom_inference(hermes_dir: str, hash_file: str, mode: str) 
     if not os.path.exists(config_path):
         return
     text, snapshot = _read_text(config_path, MAX_CONFIG_INPUT_BYTES)
-    config = yaml.safe_load(text)
+    try:
+        config = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise UnsafePathError("Native custom inference configuration is not valid YAML") from exc
     if not isinstance(config, dict):
         return
     upstream = config.get("_nemoclaw_upstream", {})

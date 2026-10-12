@@ -9,7 +9,8 @@ import fs from "node:fs";
 import os from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
-import { buildHttpsPinRouteBaseUrl } from "../inference/https-pin-runtime";
+import { buildHttpsPinRouteBaseUrl, computeHttpsPinRouteId } from "../inference/https-pin-runtime";
+import { buildNativeCustomProfile } from "../inference/native-custom/profile";
 import {
   managedLlamaCppStatePaths,
   reserveManagedLlamaCppOwner,
@@ -1118,6 +1119,46 @@ describe("selected native custom inference get (#12636)", () => {
     });
     expect(deps.observeInferenceRoute).not.toHaveBeenCalled();
   });
+  it.each([
+    ["https://api.example.com/v1", { endpointUrl: "https://api.example.com/v1" }],
+    ["https://api.example.com/opaque-private-path", { endpointStatus: "withheld" }],
+  ])(
+    "reports only a safe upstream endpoint through the HTTPS adapter: %s",
+    async (sourceEndpointUrl, expected) => {
+      const prepared = {
+        ...buildNativeCustomProfile({
+          sandboxName: "custom",
+          provider: "compatible-endpoint",
+          endpointUrl: `${buildHttpsPinRouteBaseUrl(computeHttpsPinRouteId("nemoclaw", "compatible-endpoint", sourceEndpointUrl, "custom"))}/v1`,
+          api: "openai-completions",
+          addresses: [],
+          transport: {
+            kind: "https-pin",
+            gatewayName: "nemoclaw",
+            sourceEndpointUrl,
+            sourceAddresses: ["8.8.8.8"],
+            trustedPrivateEndpoint: false,
+          },
+        }),
+        trustedPrivateEndpoint: false,
+      };
+      const entry = await fixture();
+      entry.nativeCustomProviderAttachment = customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "owned-id",
+      });
+      const deps = createDeps(configuredRoute("other-provider", "other-model"));
+      deps.getSandbox = () => entry;
+      deps.verifyNativeCustomAttachment = async () => undefined;
+      const result = await runInferenceGet({ sandboxName: "custom", json: true }, deps);
+      expect(result).toMatchObject(expected);
+      expect(JSON.stringify(result)).not.toContain("/route/");
+      expect(deps.log.mock.calls.flat().join(" ")).not.toContain("opaque-private-path");
+      expect(deps.observeInferenceRoute).not.toHaveBeenCalled();
+    },
+  );
   it("fails closed when observed attachment identity cannot be verified", async () => {
     const entry = await fixture();
     const deps = createDeps(configuredRoute("other-provider", "other-model"));

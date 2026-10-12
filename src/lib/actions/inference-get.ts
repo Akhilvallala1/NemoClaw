@@ -354,11 +354,12 @@ export async function runInferenceGet(
         `The selected sandbox's native inference attachment could not be verified. ${formatStatusRecovery(options.cliName ?? "nemoclaw", selectedSandboxName)}`,
       );
     }
+    const endpointUrl = receipt.transport?.sourceEndpointUrl ?? receipt.endpointUrl;
     const payload: InferenceGetResult = {
       provider: selectedSandbox.provider,
       model: selectedSandbox.model,
-      ...(endpointPathIsCredentialFreeForDisplay(receipt.endpointUrl)
-        ? { endpointUrl: receipt.endpointUrl }
+      ...(endpointPathIsCredentialFreeForDisplay(endpointUrl)
+        ? { endpointUrl }
         : endpointOmission("withheld")),
     };
     if (!options.quiet) {
