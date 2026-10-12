@@ -86,7 +86,7 @@ async fn archive_transport_bounds_reads_and_distinguishes_missing_paths() {
         (200, good[..514].to_vec(), false, false),
         (200, vec![0; 8192 + 129], false, false),
     ] {
-        let fixture = crate::fixture::Fixture::start(move |_| Some((status, bytes.clone()))).await;
+        let fixture = crate::fixture::Fixture::engine(move |_| Some((status, bytes.clone()))).await;
         let result = Engine::connect(&fixture.endpoint)
             .unwrap()
             .read_file("owned", "/token", 128)
@@ -109,7 +109,7 @@ async fn archive_transport_bounds_reads_and_distinguishes_missing_paths() {
     // The unrelated directory contents exceed the file bound; only the first header is read.
     let mut bytes = header.as_bytes().to_vec();
     bytes.extend(vec![0; 65536]);
-    let fixture = crate::fixture::Fixture::start(move |_| Some((200, bytes.clone()))).await;
+    let fixture = crate::fixture::Fixture::engine(move |_| Some((200, bytes.clone()))).await;
     let entry = Engine::connect(&fixture.endpoint)
         .unwrap()
         .read_entry("owned", "/data", 0, true)

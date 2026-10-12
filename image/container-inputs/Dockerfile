@@ -8,14 +8,17 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml LICENSE ./
 COPY crates/ crates/
 COPY examples/onboarding-tui/ examples/onboarding-tui/
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
+# The check group builds this helper beside the proxy; Cargo caches need one writer.
+RUN --mount=type=cache,id=container-inputs-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=container-inputs-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=container-inputs-target,target=/src/target,sharing=locked \
     cargo build --locked --release -p nemoclaw-container-inputs \
     && install -D -m 0755 target/release/nemoclaw-container-inputs /out/usr/local/bin/nemoclaw-container-inputs \
     && install -D -m 0644 LICENSE /out/usr/share/doc/nemoclaw-container-inputs/LICENSE
 FROM build AS test
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,id=container-inputs-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=container-inputs-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=container-inputs-target,target=/src/target,sharing=locked \
     cargo test --locked --release -p nemoclaw-container-inputs
 FROM scratch AS runtime
 COPY --from=build /out/ /
