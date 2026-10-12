@@ -105,6 +105,15 @@ function createFixture(): Fixture {
   ]) {
     writeExecutable(path.join(repo, file));
   }
+  for (const [file, label] of [
+    ["node_modules/.bin/tsc", "tsc-cli"],
+    ["nemoclaw/node_modules/.bin/tsc", "tsc-plugin"],
+  ]) {
+    writeExecutable(
+      path.join(repo, file),
+      `#!/usr/bin/env bash\nprintf '${label} NODE_OPTIONS=%s\\n' "\${NODE_OPTIONS-}" >>"\${FAKE_COMMAND_LOG}"\n`,
+    );
+  }
   writeExecutable(
     path.join(repo, "node_modules", ".bin", "prek"),
     `#!/usr/bin/env bash
@@ -154,11 +163,20 @@ elif [ "\${FAKE_NPM_ROOT_INSTALL_FAIL:-}" = "1" ] && [ "\${1:-}" = "install" ]; 
   exit 1
 elif [ "\${FAKE_NPM_PLUGIN_INSTALL_FAIL:-}" = "1" ] && [ "\${1:-}" = "--prefix" ] && [ "\${2:-}" = "nemoclaw" ] && [ "\${3:-}" = "install" ]; then
   exit 1
+elif [ "\${FAKE_NPM_PLUGIN_BUILD_OOM:-}" = "1" ] && [ "\${1:-}" = "--prefix" ] && [ "\${2:-}" = "nemoclaw" ] && [ "\${3:-}" = "run" ] && [ "\${4:-}" = "build" ]; then
+  printf '%s\\n' 'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory' >&2
+  exit 134
+elif [ "\${1:-}" = "--prefix" ] && [ "\${2:-}" = "nemoclaw" ] && [ "\${3:-}" = "run" ] && [ "\${4:-}" = "build" ]; then
+  printf 'npm-plugin-build NODE_OPTIONS=%s\\n' "\${NODE_OPTIONS-}" >>"\${FAKE_COMMAND_LOG}"
+  echo "10.9.0"
 elif [ "\${FAKE_NPM_CLI_TYPECHECK_OOM:-}" = "1" ] && [ "\${1:-}" = "run" ] && [ "\${2:-}" = "typecheck:cli" ]; then
   printf '%s\\n' '<--- Last few GCs --->' >&2
   printf '%s\\n' 'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory' >&2
   printf '%s\\n' '----- Native stack trace -----' >&2
   exit 134
+elif [ "\${1:-}" = "run" ] && [ "\${2:-}" = "typecheck:cli" ]; then
+  printf 'NODE_OPTIONS=%s\\n' "\${NODE_OPTIONS-}" >>"\${FAKE_COMMAND_LOG}"
+  echo "10.9.0"
 else
   echo "10.9.0"
 fi`,
@@ -411,7 +429,9 @@ describe("contributor environment doctor", () => {
 
     expect(result.status).toBe(1);
     expect(result.output).toContain("CLI type check: ran out of Node.js heap");
-    expect(result.output).toContain("--max-old-space-size=8192");
+    expect(result.output).toContain(
+      "The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
+    );
     expect(result.output).not.toContain("tsc-path-that-must-not-be-reported");
   });
 
@@ -435,7 +455,9 @@ describe("contributor environment doctor", () => {
 
     expect(result.status).toBe(1);
     expect(result.output).toContain("CLI type check: ran out of Node.js heap");
-    expect(result.output).toContain("--max-old-space-size=8192");
+    expect(result.output).toContain(
+      "The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
+    );
     expect(result.output).not.toContain("large-tsc-path-that-must-not-be-reported");
   });
 
@@ -563,9 +585,23 @@ describe("contributor environment doctor", () => {
 
     expect(result.status).toBe(1);
     expect(result.output).toContain("hadolint: not found");
+    expect(result.output).toContain(
+      "Next: Install hadolint before running Dockerfile lint checks (macOS: brew install hadolint).",
+    );
     expect(result.output).toContain("Root TypeScript dependencies: missing or not executable");
     expect(result.output).toContain("Plugin build artifacts: missing");
     expect(result.output).toContain("Git contributor identity is incomplete");
+  });
+
+  it("keeps the environment ready when optional Dockerfile linting is unavailable", () => {
+    const fixture = createFixture();
+    fs.rmSync(path.join(fixture.fakeBin, "hadolint"));
+
+    const result = runDoctor(fixture);
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("! hadolint: not found");
+    expect(result.output).toContain("Ready to create a feature branch.");
   });
 
   it("does not ask npm to download TypeScript when plugin dependencies are missing", () => {
@@ -588,7 +624,7 @@ describe("contributor environment doctor", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("CLI type check: ran out of Node.js heap");
     expect(result.output).toContain(
-      "Next: Run: NODE_OPTIONS=--max-old-space-size=8192 npm run typecheck:cli",
+      "Next: The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).not.toContain("Native stack trace");
   });
@@ -602,7 +638,7 @@ describe("contributor environment doctor", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("Plugin type check: ran out of Node.js heap");
     expect(result.output).toContain(
-      "Next: Run: NODE_OPTIONS=--max-old-space-size=8192 npm --prefix nemoclaw run build",
+      "Next: The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).not.toContain("Native stack trace");
   });
@@ -862,6 +898,89 @@ describe("contributor repository setup", () => {
     expect(commands).not.toContain("npm --prefix nemoclaw install");
   });
 
+  it("sets a default heap limit for setup type checks and accepts missing optional hadolint", () => {
+    const fixture = createFixture();
+    fs.rmSync(path.join(fixture.fakeBin, "hadolint"));
+
+    const result = runSetup(fixture);
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("! hadolint: not found");
+    const commands = readCommandLog(fixture);
+    expect(commands).toContain("NODE_OPTIONS=--max-old-space-size=8192");
+    expect(commands).toContain("npm-plugin-build NODE_OPTIONS=--max-old-space-size=8192");
+    expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max-old-space-size=8192");
+  });
+
+  it("preserves caller Node.js options while adding a default heap limit", () => {
+    const fixture = createFixture();
+
+    const result = runSetup(fixture, [], { NODE_OPTIONS: "--trace-warnings" });
+
+    expect(result.status).toBe(0);
+    const commands = readCommandLog(fixture);
+    expect(commands).toContain("NODE_OPTIONS=--trace-warnings --max-old-space-size=8192");
+    expect(commands).toContain(
+      "npm-plugin-build NODE_OPTIONS=--trace-warnings --max-old-space-size=8192",
+    );
+    expect(commands).toContain(
+      "tsc-plugin NODE_OPTIONS=--trace-warnings --max-old-space-size=8192",
+    );
+  });
+
+  it("uses the default heap for both doctor type checks", () => {
+    const fixture = createFixture();
+
+    const result = runDoctor(fixture);
+
+    expect(result.status).toBe(0);
+    const commands = readCommandLog(fixture);
+    expect(commands).toContain("tsc-cli NODE_OPTIONS=--max-old-space-size=8192");
+    expect(commands).toContain("tsc-plugin NODE_OPTIONS=--max-old-space-size=8192");
+  });
+
+  it("preserves a caller-specified Node.js heap limit during doctor type checks", () => {
+    const fixture = createFixture();
+
+    const result = runDoctor(fixture, {
+      NODE_OPTIONS: "--trace-warnings --max-old-space-size=4096",
+    });
+
+    expect(result.status).toBe(0);
+    const commands = readCommandLog(fixture);
+    expect(commands).toContain("tsc-cli NODE_OPTIONS=--trace-warnings --max-old-space-size=4096");
+    expect(commands).toContain(
+      "tsc-plugin NODE_OPTIONS=--trace-warnings --max-old-space-size=4096",
+    );
+  });
+
+  it("preserves a caller-specified Node.js heap limit during CLI type checking", () => {
+    const fixture = createFixture();
+
+    const result = runSetup(fixture, [], {
+      NODE_OPTIONS: "--trace-warnings --max-old-space-size=4096",
+    });
+
+    expect(result.status).toBe(0);
+    expect(readCommandLog(fixture)).toContain(
+      "NODE_OPTIONS=--trace-warnings --max-old-space-size=4096",
+    );
+  });
+
+  it("reports a heap-limit remedy when the plugin build exhausts Node.js heap", () => {
+    const fixture = createFixture();
+
+    const result = runSetup(fixture, [], { FAKE_NPM_PLUGIN_BUILD_OOM: "1" });
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("Node.js exhausted its V8 heap while running this type check.");
+    expect(result.output).toContain(
+      "Setup stopped while attempting: Build and type-check the plugin",
+    );
+    expect(result.output).not.toContain("Type-check the CLI");
+    expect(result.output).toContain("NODE_OPTIONS");
+  });
+
   it("stops CLI type-check setup failures with a heap-limit remedy instead of the V8 stack", () => {
     const fixture = createFixture();
 
@@ -870,7 +989,7 @@ describe("contributor repository setup", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("Node.js exhausted its V8 heap while running this type check.");
     expect(result.output).toContain(
-      "Next: Run: NODE_OPTIONS=--max-old-space-size=8192 npm run typecheck:cli",
+      "Next: The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).toContain("Setup stopped while attempting: Type-check the CLI");
     expect(result.output).not.toContain("Native stack trace");
@@ -887,7 +1006,7 @@ describe("contributor repository setup", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("Node.js exhausted its V8 heap while running this type check.");
     expect(result.output).toContain(
-      "Next: Run: NODE_OPTIONS=--max-old-space-size=8192 npm --prefix nemoclaw run build",
+      "Next: The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).toContain(
       "Setup stopped while attempting: Type-check the plugin without emitting files",
@@ -905,7 +1024,9 @@ describe("contributor repository setup", () => {
     const result = runSetup(fixture);
 
     expect(result.status).toBe(1);
-    expect(result.output).toContain("Setup stopped while attempting: Type-check the CLI");
+    expect(result.output).toContain(
+      "Setup stopped while attempting: Build and type-check the plugin",
+    );
     expect(result.output).not.toContain("Install repository Git hooks");
   });
 

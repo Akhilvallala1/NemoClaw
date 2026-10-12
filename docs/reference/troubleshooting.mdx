@@ -94,16 +94,14 @@ command -v sha256sum || command -v shasum
 
 This applies to a source checkout, not to an installed release.
 
-Node.js derives its default old-space limit from host memory. On a host with 8 GB of RAM, that limit is about 2.2 GB. The CLI type check needs more heap than that limit, so `./scripts/dev-setup.sh` stops at the type-check step and Node.js reports `JavaScript heap out of memory`.
-
-Raise the limit, then run setup again:
+Contributor setup gives CLI and plugin type checks an 8 GiB Node.js heap unless `NODE_OPTIONS` already sets a heap limit. If a type check reports `JavaScript heap out of memory`, free host memory. If the host has enough memory, raise the limit instead:
 
 ```bash
-export NODE_OPTIONS=--max-old-space-size=5120
+export NODE_OPTIONS=--max-old-space-size=10240
 ./scripts/dev-setup.sh
 ```
 
-Keep that variable set for later type-check, build, and test commands.
+Setup preserves other `NODE_OPTIONS` values. Keep the larger heap limit set for later type-check, build, and test commands when those commands also need it.
 
 ### Image push fails with out-of-memory errors
 
