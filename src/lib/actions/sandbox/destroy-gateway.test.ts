@@ -32,6 +32,7 @@ vi.mock("../../onboard/gateway-teardown-authority", async (importOriginal) => ({
 import {
   cleanupGatewayAfterLastSandbox,
   resolveGatewayCleanupRuntimeProviderId,
+  selectGatewayForSandboxDestroy,
 } from "./destroy-gateway";
 
 function packagedServiceOwner({
@@ -74,6 +75,24 @@ function idleHostReaperResult() {
     sudoRemediationPids: [],
   };
 }
+
+describe("selectGatewayForSandboxDestroy", () => {
+  it("throws when the target gateway cannot be selected so restore logic can run", async () => {
+    const selectGateway = vi.fn().mockResolvedValue({
+      ok: false,
+      error: { kind: "command", reason: "failed", message: "selection failed" },
+      unsupported: false,
+      ambiguous: false,
+    });
+
+    await expect(
+      selectGatewayForSandboxDestroy("alpha", "nemoclaw-8081", { selectGateway }),
+    ).rejects.toThrow(
+      "Failed to select gateway 'nemoclaw-8081' before destroying sandbox 'alpha': selection failed",
+    );
+    expect(selectGateway).toHaveBeenCalledOnce();
+  });
+});
 
 describe("cleanupGatewayAfterLastSandbox", () => {
   beforeEach(() => {

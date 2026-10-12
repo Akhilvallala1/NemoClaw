@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { isValidName } from "../../../../nemoclaw/dist/shared/sandbox-name.cjs";
-import { withSelectedOpenShellCommandOptions } from "./command-argv";
+import { buildOpenShellCommandEnv, withSelectedOpenShellCommandOptions } from "./command-argv";
 import { assertNoOpenShellGatewayEndpointOverride } from "./gateway-scope";
 import type { ObserveOpenShellGatewayRequest } from "./gateway-observer";
 import type {
@@ -164,12 +164,26 @@ export function createCliOpenShellGatewayLifecycle(
       const values: unknown = JSON.parse(result?.stdout ?? result?.output ?? "");
       if (
         !Array.isArray(values) ||
-        values.some((entry) => !entry || typeof entry !== "object" || !isValidName(entry.name))
+        values.some(
+          (entry) =>
+            !entry ||
+            typeof entry !== "object" ||
+            !isValidName(entry.name) ||
+            (entry.active !== undefined && typeof entry.active !== "boolean"),
+        )
       )
         throw new Error("Invalid registry");
       const names = values.map((entry: { name: string }) => entry.name);
       if (new Set(names).size !== names.length) throw new Error("Duplicate registry entry");
-      return { ok: true, names };
+      const hasActiveState = values.every((entry) => typeof entry.active === "boolean");
+      const activeGateways = values.filter((entry: { active?: boolean }) => entry.active === true);
+      if (activeGateways.length > 1) throw new Error("Multiple active gateways");
+      let activeGateway: string | null | undefined;
+      if (hasActiveState) {
+        activeGateway =
+          activeGateways.length === 1 ? (activeGateways[0] as { name: string }).name : null;
+      }
+      return { ok: true, names, activeGateway };
     } catch {
       return {
         ok: false,
@@ -249,4 +263,17 @@ export function createCliOpenShellGatewayLifecycleFromRunner(
       error: result.error,
     };
   });
+}
+
+export function createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway(
+  run: (
+    args: string[],
+    options?: Record<string, unknown>,
+  ) => { status: number | null; stdout?: unknown; stderr?: unknown; error?: Error },
+): OpenShellGatewayLifecycle {
+  const environment = buildOpenShellCommandEnv();
+  delete environment.OPENSHELL_GATEWAY;
+  return createCliOpenShellGatewayLifecycleFromRunner((args, options) =>
+    run(args, { ...options, env: environment, replaceEnv: true }),
+  );
 }

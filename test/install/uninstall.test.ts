@@ -44,7 +44,7 @@ describe("uninstall CLI flags", () => {
       path.join(fakeBin, "openshell"),
       `#!/usr/bin/env bash
 case "$*" in
-  "gateway list -o json") printf '[{"name":"nemoclaw"}]\\n' ;;
+  "gateway list -o json") printf '[{"name":"nemoclaw","active":true}]\\n' ;;
   "gateway info -g nemoclaw") printf 'Gateway: nemoclaw\\n' ;;
   "sandbox list"|"sandbox list -g nemoclaw")
     if [ -f ${JSON.stringify(remoteSandboxState)} ]; then
@@ -571,7 +571,7 @@ esac
       `#!/usr/bin/env bash
 case "$*" in
   "status -g nemoclaw") printf 'Status: Connected\\nGateway: nemoclaw\\n' ;;
-  "gateway list -o json") printf '[{"name":"nemoclaw"},{"name":"nemoclaw-9124"}]\\n' ;;
+  "gateway list -o json") printf '[{"name":"nemoclaw","active":true},{"name":"nemoclaw-9124","active":false}]\\n' ;;
   "sandbox delete -g nemoclaw my-assistant")
     printf "Error: status: NotFound, sandbox 'my-assistant' not found\\n" >&2
     exit 1
@@ -626,7 +626,7 @@ exit 0
         `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> '${openshellCalls}'
 case "$*" in
-  "gateway list -o json") printf '[{"name":"nemoclaw"},{"name":"nemoclaw-9124"}]\\n' ;;
+  "gateway list -o json") printf '[{"name":"nemoclaw","active":true},{"name":"nemoclaw-9124","active":false}]\\n' ;;
   "gateway info -g nemoclaw") printf 'Gateway: nemoclaw\\n' ;;
   "sandbox list") printf 'ordinary-authority Ready\\n' ;;
   "sandbox ssh-config ordinary-authority") printf 'Host openshell-ordinary-authority.default\\n  HostName 127.0.0.1\\n  User sandbox\\n  Port 2222\\n' ;;

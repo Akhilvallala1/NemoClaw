@@ -65,6 +65,8 @@ import {
 } from "./destroy-execution";
 import {
   cleanupGatewayAfterLastSandbox,
+  destroyWithActiveGatewayRestored,
+  DestroyGatewaySelectionError,
   resolveGatewayCleanupRuntimeProviderId,
 } from "./destroy-gateway";
 import {
@@ -688,21 +690,41 @@ export async function destroySandbox(
   } = {},
 ): Promise<void> {
   try {
-    return await withSandboxLifecycleLock(sandboxName, () => {
+    return await withSandboxLifecycleLock(sandboxName, async () => {
       const removedImmutabilityMigration = enforceRemovedImmutabilityMigrationBoundary(
         sandboxName,
         { allowStateRecord: true },
       );
       assertSandboxDestroyCommandAvailable(sandboxName);
-      return destroySandboxUnlocked(
+      const sandbox = resolveSandboxDestroyRegistryAuthority(sandboxName).entry;
+      const session = onboardSession.loadSession();
+      const retainedRecoveryAuthority = selectRetainedSandboxRecoveryAuthority(
         sandboxName,
-        options,
-        removedImmutabilityMigration.stateRecord !== null,
-        deps,
+        sandbox,
+        onboardSession.listRetainedSandboxRecoveryRecords(),
+        session,
+      );
+      const gatewayName = resolveSandboxDestroyGatewayName(
+        sandboxName,
+        sandbox,
+        retainedRecoveryAuthority?.gatewayName,
+      );
+      const hasRuntimeSelection = Boolean(resolveSandboxDestroyRuntimeSelection(sandbox));
+      return destroyWithActiveGatewayRestored(sandboxName, gatewayName, hasRuntimeSelection, () =>
+        destroySandboxUnlocked(
+          sandboxName,
+          options,
+          removedImmutabilityMigration.stateRecord !== null,
+          deps,
+        ),
       );
     });
   } catch (error) {
     if (error instanceof SandboxDestroyExitRequest) process.exit(error.exitCode);
+    if (error instanceof DestroyGatewaySelectionError) {
+      console.error(`  ${error.message}`);
+      process.exit(1);
+    }
     throw error;
   }
 }

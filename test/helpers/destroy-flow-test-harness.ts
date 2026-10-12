@@ -515,10 +515,22 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
       return session;
     });
   const gatewayPinsAtSandboxList: Array<string | undefined> = [];
+  let activeGateway: string | null = null;
   let identityProbeCall = 0;
   const runOpenshellSpy = vi.spyOn(runtime, "runOpenshell").mockImplementation((args: unknown) => {
     const argv = Array.isArray(args) ? args : [];
     switch (`${String(argv[0])}:${String(argv[1])}`) {
+      case "gateway:list": {
+        const gatewayName = options.registryEntryOverrides?.gatewayName ?? sandboxEntry.gatewayName;
+        return {
+          status: 0,
+          stdout: JSON.stringify([{ name: gatewayName, active: activeGateway === gatewayName }]),
+          stderr: "",
+        };
+      }
+      case "gateway:select":
+        activeGateway = String(argv[2]);
+        return { status: 0, stdout: "", stderr: "" };
       case "sandbox:list":
         gatewayPinsAtSandboxList.push(process.env.OPENSHELL_GATEWAY);
         return (

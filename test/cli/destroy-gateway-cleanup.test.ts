@@ -32,6 +32,10 @@ exit 0
 
 function confirmSandboxMissingAfterDelete(markerPath: string, logPath: string): string[] {
   return [
+    'if [ "$1" = "gateway" ] && [ "$2" = "list" ]; then',
+    '  printf \'[{"name":"nemoclaw","active":true},{"name":"nemoclaw-8081","active":false}]\\n\'',
+    "  exit 0",
+    "fi",
     `deleted_marker=${JSON.stringify(markerPath)}`,
     `delete_log_file=${JSON.stringify(logPath)}`,
     'if [ "$1" = "sandbox" ] && [ "$2" = "delete" ]; then',
@@ -657,6 +661,139 @@ describe("CLI dispatch", () => {
     }
   });
 
+  it.each([
+    ["--cleanup-gateway", true, false, false, 0, true, true],
+    ["--no-cleanup-gateway", false, false, false, 0, true, true],
+    ["--no-cleanup-gateway", false, true, false, 42, true, true],
+    ["--no-cleanup-gateway", false, false, true, 1, false, false],
+  ] as const)(
+    "preserves active gateway during destroy %s (cleanup: %s, delete failure: %s, missing active marker: %s) (#11897)",
+    (
+      cleanupFlag,
+      cleanupGateway,
+      failDelete,
+      missingActive,
+      expectedExitCode,
+      mutationExpected,
+      restorationExpected,
+    ) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-cli-destroy-restore-active-"));
+      const localBin = path.join(home, "bin");
+      const registryDir = path.join(home, ".nemoclaw");
+      const openshellLog = path.join(home, "openshell.log");
+      const activeGateway = path.join(home, "active-gateway");
+      const removedGateway = path.join(home, "gateway-removed");
+      const deletedSandbox = path.join(home, "sandbox-deleted");
+      const failDeleteMarker = path.join(home, "fail-delete");
+      const missingActiveMarker = path.join(home, "missing-active");
+      fs.writeFileSync(failDeleteMarker, failDelete ? "fail" : "");
+      fs.writeFileSync(missingActiveMarker, missingActive ? "missing" : "");
+      fs.mkdirSync(localBin, { recursive: true });
+      fs.mkdirSync(registryDir, { recursive: true });
+      fs.writeFileSync(activeGateway, "survivor-gateway\n");
+      fs.writeFileSync(
+        path.join(registryDir, "sandboxes.json"),
+        JSON.stringify({
+          sandboxes: {
+            alpha: {
+              name: "alpha",
+              model: "test-model",
+              provider: "nvidia-prod",
+              gpuEnabled: false,
+              agent: "langchain-deepagents-code",
+              gatewayName: "nemoclaw-8081",
+              gatewayPort: 8081,
+            },
+          },
+          defaultSandbox: "alpha",
+        }),
+        { mode: 0o600 },
+      );
+      fs.writeFileSync(
+        path.join(localBin, "openshell"),
+        [
+          "#!/bin/sh",
+          `log_file=${JSON.stringify(openshellLog)}`,
+          `active_gateway=${JSON.stringify(activeGateway)}`,
+          `removed_gateway=${JSON.stringify(removedGateway)}`,
+          `deleted_sandbox=${JSON.stringify(deletedSandbox)}`,
+          `fail_delete=${JSON.stringify(failDeleteMarker)}`,
+          `missing_active=${JSON.stringify(missingActiveMarker)}`,
+          'printf \'%s\\n\' "$*" >> "$log_file"',
+          'if [ "$1" = "gateway" ] && [ "$2" = "list" ]; then',
+          '  if [ -s "$missing_active" ]; then printf \'[{"name":"nemoclaw-8081"},{"name":"survivor-gateway"}]\\n\'; exit 0; fi',
+          '  active="$(cat "$active_gateway")"',
+          '  if [ -n "$OPENSHELL_GATEWAY" ]; then active="$OPENSHELL_GATEWAY"; fi',
+          '  if [ -e "$removed_gateway" ]; then',
+          '    printf \'[{"name":"survivor-gateway","active":%s}]\\n\' "$( [ "$active" = "survivor-gateway" ] && printf true || printf false )"',
+          "  else",
+          '    printf \'[{"name":"nemoclaw-8081","active":%s},{"name":"survivor-gateway","active":%s}]\\n\' "$( [ "$active" = "nemoclaw-8081" ] && printf true || printf false )" "$( [ "$active" = "survivor-gateway" ] && printf true || printf false )"',
+          "  fi",
+          "  exit 0",
+          "fi",
+          'if [ "$1" = "gateway" ] && [ "$2" = "select" ]; then',
+          '  printf "%s\\n" "$3" > "$active_gateway"',
+          "  exit 0",
+          "fi",
+          'if [ "$1" = "gateway" ] && [ "$2" = "remove" ] && [ "$3" = "nemoclaw-8081" ]; then',
+          '  : > "$removed_gateway"',
+          '  : > "$active_gateway"',
+          "  exit 0",
+          "fi",
+          'if [ "$1" = "sandbox" ] && [ "$2" = "delete" ]; then',
+          '  if [ -s "$fail_delete" ]; then echo "delete failed" >&2; exit 42; fi',
+          '  : > "$deleted_sandbox"',
+          "  exit 0",
+          "fi",
+          'if [ "$1" = "sandbox" ] && [ "$2" = "get" ] && [ -e "$deleted_sandbox" ]; then',
+          '  echo "Error: code: \'Some requested entity was not found\', message: \\"sandbox not found\\"" >&2',
+          "  exit 1",
+          "fi",
+          'if [ "$1" = "sandbox" ] && [ "$2" = "list" ]; then',
+          '  printf "NAME STATUS\\n"',
+          "  exit 0",
+          "fi",
+          "exit 0",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(path.join(localBin, "docker"), LIVE_DOCKER_IDENTITY, {
+        mode: 0o755,
+      });
+      fs.writeFileSync(path.join(localBin, "pgrep"), "#!/bin/sh\nexit 1\n", {
+        mode: 0o755,
+      });
+      fs.writeFileSync(path.join(localBin, "lsof"), "#!/bin/sh\nexit 1\n", {
+        mode: 0o755,
+      });
+
+      const r = runWithEnv(`alpha destroy --yes ${cleanupFlag}`, {
+        HOME: home,
+        OPENSHELL_GATEWAY: "nemoclaw-8081",
+        PATH: `${localBin}:${process.env.PATH || ""}`,
+      });
+
+      const lines = fs.readFileSync(openshellLog, "utf8").trim().split("\n");
+      expect(r.code, r.out).toBe(expectedExitCode);
+      expect(r.out.includes("the gateway registry did not report its active selection")).toBe(
+        missingActive,
+      );
+      expect(lines.includes("gateway select nemoclaw-8081")).toBe(mutationExpected);
+      expect(lines.includes("sandbox delete -g nemoclaw-8081 alpha")).toBe(mutationExpected);
+      expect(lines.includes("gateway remove nemoclaw-8081")).toBe(
+        cleanupGateway && !failDelete && !missingActive,
+      );
+      expect(fs.readFileSync(activeGateway, "utf8").trim()).toBe("survivor-gateway");
+      expect(fs.existsSync(removedGateway)).toBe(cleanupGateway && !failDelete && !missingActive);
+      const restoreIndex = lines.lastIndexOf("gateway select survivor-gateway");
+      const mutationIndex = Math.max(
+        lines.indexOf("sandbox delete -g nemoclaw-8081 alpha"),
+        lines.indexOf("gateway remove nemoclaw-8081"),
+      );
+      expect(restoreIndex > mutationIndex).toBe(restorationExpected);
+    },
+  );
+
   it("selects the sandbox persisted gateway before provider cleanup and delete", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-cli-destroy-select-gateway-"));
     const localBin = path.join(home, "bin");
@@ -842,6 +979,10 @@ describe("CLI dispatch", () => {
       path.join(localBin, "openshell"),
       [
         "#!/bin/sh",
+        'if [ "$1" = "gateway" ] && [ "$2" = "list" ]; then',
+        '  printf \'[{"name":"nemoclaw","active":true}]\\n\'',
+        "  exit 0",
+        "fi",
         `log_file=${JSON.stringify(openshellLog)}`,
         'printf \'%s\\n\' "$*" >> "$log_file"',
         'if [ "$1" = "sandbox" ] && [ "$2" = "delete" ]; then',
@@ -911,6 +1052,10 @@ describe("CLI dispatch", () => {
         path.join(localBin, "openshell"),
         [
           "#!/bin/sh",
+          'if [ "$1" = "gateway" ] && [ "$2" = "list" ]; then',
+          '  printf \'[{"name":"nemoclaw","active":true}]\\n\'',
+          "  exit 0",
+          "fi",
           `log_file=${JSON.stringify(openshellLog)}`,
           'if [ "$1" = "sandbox" ] && [ "$2" = "delete" ]; then',
           '  printf \'%s\\n\' "$*" >> "$log_file"',

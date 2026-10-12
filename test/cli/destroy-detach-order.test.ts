@@ -45,6 +45,10 @@ describe("CLI dispatch", () => {
           path.join(localBin, "openshell"),
           [
             "#!/bin/sh",
+            'if [ "$1" = "gateway" ] && [ "$2" = "list" ]; then',
+            '  printf \'[{"name":"nemoclaw","active":true}]\\n\'',
+            "  exit 0",
+            "fi",
             `log_file=${JSON.stringify(openshellLog)}`,
             'if [ "$1" = "sandbox" ] && [ "$2" = "list" ]; then',
             '  printf "NAME STATUS\\n" >> "$log_file"',

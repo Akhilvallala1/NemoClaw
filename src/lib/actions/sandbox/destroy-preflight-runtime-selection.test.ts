@@ -27,12 +27,7 @@ describe("destroy preflight runtime selection", () => {
       operationRuntimeSelection: runtimeSelection,
     });
     expect(preflight.runtimeSelection).toEqual(runtimeSelection);
-    expect(harness.selectGatewaySpy).toHaveBeenCalledWith(
-      "alpha",
-      "nemoclaw-19080",
-      expect.anything(),
-      runtimeSelection,
-    );
+    expect(harness.selectGatewaySpy).not.toHaveBeenCalled();
     const frozenOptions = {
       replaceEnv: true,
       env: expect.objectContaining({
@@ -41,10 +36,11 @@ describe("destroy preflight runtime selection", () => {
         OPENSHELL_LOCAL_TLS_DIR: "/authority/tls",
       }),
     };
-    expect(harness.runOpenshellSpy).toHaveBeenCalledWith(
+    expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
       ["gateway", "select", "nemoclaw-19080"],
-      expect.objectContaining(frozenOptions),
+      expect.anything(),
     );
+    expect(process.env.OPENSHELL_GATEWAY).toBe("foreign");
     expect(harness.runOpenshellSpy).toHaveBeenCalledWith(
       ["sandbox", "list", "-o", "json"],
       expect.objectContaining(frozenOptions),

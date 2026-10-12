@@ -609,13 +609,14 @@ export async function prepareSandboxDestroy(
           replaceEnv: true,
         })
     : undefined;
-  await selectGatewayForSandboxDestroy(
-    sandboxName,
-    cleanupGatewayName,
-    createCliOpenShellGatewayLifecycleFromRunner(selectedRunOpenshell),
-    runtimeSelection,
-  );
-  process.env.OPENSHELL_GATEWAY = cleanupGatewayName;
+  if (!runtimeSelection) {
+    await selectGatewayForSandboxDestroy(
+      sandboxName,
+      cleanupGatewayName,
+      createCliOpenShellGatewayLifecycleFromRunner(selectedRunOpenshell),
+    );
+    process.env.OPENSHELL_GATEWAY = cleanupGatewayName;
+  }
 
   const sandboxPresence = classifyDestroySandboxPresence(
     sandboxName,

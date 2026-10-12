@@ -66,7 +66,6 @@ describe("destroySandbox cross-root registry authority", () => {
       "alpha",
       "nemoclaw-8245",
       expect.anything(),
-      undefined,
     );
     expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
   });

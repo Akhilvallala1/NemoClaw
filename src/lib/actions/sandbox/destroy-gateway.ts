@@ -4,7 +4,10 @@
 import os from "node:os";
 import path from "node:path";
 
-import { createCliOpenShellGatewayLifecycleFromRunner } from "../../adapters/openshell/gateway-lifecycle-cli";
+import {
+  createCliOpenShellGatewayLifecycleFromRunner,
+  createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway,
+} from "../../adapters/openshell/gateway-lifecycle-cli";
 import type { OpenShellGatewayLifecycle } from "../../adapters/openshell/gateway-lifecycle";
 import { dockerRemoveVolumesByPrefix } from "../../adapters/docker/volume";
 import { OPENSHELL_HEAVY_TIMEOUT_MS } from "../../adapters/openshell/timeouts";
@@ -40,6 +43,72 @@ export type DestroyRunOpenshell = (
 ) => { error?: Error; status: number | null; stdout?: string; stderr?: string };
 
 export const SANDBOX_DESTROY_TIMEOUT_MS = OPENSHELL_HEAVY_TIMEOUT_MS;
+
+export class DestroyGatewaySelectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DestroyGatewaySelectionError";
+  }
+}
+
+export async function destroyWithActiveGatewayRestored<T>(
+  sandboxName: string,
+  gatewayName: string,
+  hasRuntimeSelection: boolean,
+  operation: () => Promise<T>,
+): Promise<T> {
+  // A frozen runtime selection scopes every OpenShell child without changing
+  // the CLI's persisted gateway. Otherwise, `gateway select` is global state.
+  if (hasRuntimeSelection) return operation();
+
+  const { runOpenshell } =
+    require("../../adapters/openshell/runtime") as typeof import("../../adapters/openshell/runtime");
+  const lifecycle = createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway(runOpenshell);
+  const request = { target: { kind: "named" as const, gatewayName } };
+  const before = await lifecycle.listGateways(request);
+  if (!before.ok) {
+    throw new Error(
+      `Could not preserve the active OpenShell gateway before destroying '${sandboxName}': ${before.error.message}`,
+    );
+  }
+  const priorActiveGateway = before.activeGateway;
+  if (priorActiveGateway === undefined) {
+    throw new Error(
+      `Could not preserve the active OpenShell gateway before destroying '${sandboxName}': the gateway registry did not report its active selection.`,
+    );
+  }
+  const priorEnvironmentGateway = process.env.OPENSHELL_GATEWAY;
+  let operationFailed = false;
+  try {
+    return await operation();
+  } catch (error) {
+    operationFailed = true;
+    throw error;
+  } finally {
+    try {
+      if (
+        priorActiveGateway !== null &&
+        priorActiveGateway !== gatewayName &&
+        before.names.includes(priorActiveGateway)
+      ) {
+        process.env.OPENSHELL_GATEWAY = priorActiveGateway;
+        const restored = await lifecycle.selectGateway({
+          target: { kind: "named", gatewayName: priorActiveGateway },
+        });
+        if (!restored.ok) {
+          const message =
+            `Sandbox '${sandboxName}' operation finished, but the previously active gateway ` +
+            `'${priorActiveGateway}' could not be restored: ${restored.error.message}.`;
+          if (operationFailed) console.error(`  ${message}`);
+          else throw new Error(message);
+        }
+      }
+    } finally {
+      if (priorEnvironmentGateway === undefined) delete process.env.OPENSHELL_GATEWAY;
+      else process.env.OPENSHELL_GATEWAY = priorEnvironmentGateway;
+    }
+  }
+}
 
 export interface CleanupGatewayDeps {
   lifecycle?: OpenShellGatewayLifecycle;
@@ -123,10 +192,9 @@ export async function selectGatewayForSandboxDestroy(
   });
   if (selected.ok) return;
   console.error(`  ${selected.error.message}`);
-  console.error(
-    `  Failed to select gateway '${gatewayName}' before destroying sandbox '${sandboxName}'.`,
+  throw new DestroyGatewaySelectionError(
+    `Failed to select gateway '${gatewayName}' before destroying sandbox '${sandboxName}': ${selected.error.message}`,
   );
-  process.exit(1);
 }
 
 export async function cleanupGatewayAfterLastSandbox(
