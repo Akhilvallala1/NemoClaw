@@ -223,7 +223,9 @@ impl Scenario {
 // vLLM recovery runs in the bearer scenario below. The runtime-independent
 // checks of an applied deployment (the readiness gate and pull policy reapply)
 // run once, against vLLM. Replacement protection runs for both model kinds;
-// the provider's readiness and storage tests cover their own observations.
+// the memory-limit check, whose compiled label does not depend on the kind,
+// runs once, against Ollama. The provider's readiness and storage tests cover
+// their own observations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires NEMOCLAW_TEST_BUNDLE; isolated SSH/Docker and OpenShell fixtures"]
 async fn remote_model_reapply_and_drift_keep_bindings_and_stop_on_observation_failure() {
@@ -233,7 +235,6 @@ async fn remote_model_reapply_and_drift_keep_bindings_and_stop_on_observation_fa
     export_and_reapply_are_unchanged(&s, &stable).await;
     let state = readiness_is_checked_on_each_apply(&s, &stable).await;
     image_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
-    memory_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
     plans_stop_on_observation_failure(&s, &stable, &state, json!({"transport_failure":true})).await;
     assert_no_probes(&s);
     removed_pull_policy_reapplies_without_pulling(&s, &stable).await;
