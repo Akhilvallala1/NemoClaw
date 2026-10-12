@@ -15,6 +15,7 @@ import {
 } from "../../../src/lib/inference/https-pin-runtime.ts";
 import { parseOpenClawAgentText } from "../fixtures/openclaw-agent-output.ts";
 import { approveOpenClawAdminScope } from "./openclaw-admin-scope.ts";
+import { captureSandboxFailureDiagnostics } from "../fixtures/sandbox-failure-diagnostics.ts";
 
 import {
   ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS,
@@ -298,9 +299,6 @@ test(
     const model = "nemoclaw-e2e-https-pin";
     const apiKey = "sk-https-pin-TEST-NOT-A-REAL-VALUE";
     const sandboxName = inferenceSandboxName("e2e-https");
-    cleanup.add(`best-effort inference-routing https-pin cleanup for ${sandboxName}`, () =>
-      cleanupSandbox(host, sandbox, sandboxName),
-    );
     cleanup.add(`strict inference-routing https-pin cleanup for ${sandboxName}`, () =>
       cleanupSandbox(host, sandbox, sandboxName, { strict: true }),
     );
@@ -583,6 +581,11 @@ test(
       progress,
       ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS,
     );
+    await captureSandboxFailureDiagnostics(host, peerOnboard, {
+      sandboxName: peerName,
+      artifactPrefix: "tc-inf-11-peer-onboard",
+      redactionValues: [apiKey],
+    });
     expectOnboardSuccess(peerOnboard, "TC-INF-11 native HTTPS peer onboard");
     const peerReceipt = normalizeNativeCustomProviderAttachment(
       getSandbox(peerName)?.nativeCustomProviderAttachment,
@@ -903,6 +906,11 @@ test(
         timeoutMs: 60_000,
       },
     );
+    await captureSandboxFailureDiagnostics(host, httpSwitch, {
+      sandboxName: peerName,
+      artifactPrefix: "tc-inf-11-public-http-switch",
+      redactionValues: [apiKey],
+    });
     expect(httpSwitch.exitCode, redactedResultText(httpSwitch)).toBe(0);
     const httpReceipt = normalizeNativeCustomProviderAttachment(
       getSandbox(peerName)?.nativeCustomProviderAttachment,

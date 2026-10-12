@@ -8,6 +8,8 @@ import type { ArtifactSink } from "../fixtures/artifacts.ts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import { resultText, shellQuote } from "../fixtures/clients/command.ts";
 import type { NativeCustomProviderAttachment } from "../../../src/lib/inference/native-custom/index.ts";
+import { resolveSandboxGatewayName } from "../../../src/lib/onboard/gateway-binding.ts";
+import { getSandbox } from "../../../src/lib/state/registry.ts";
 import type { HostCliClient } from "../fixtures/clients/host.ts";
 import type { SandboxClient } from "../fixtures/clients/sandbox.ts";
 import { validateSandboxName } from "../fixtures/clients/sandbox.ts";
@@ -206,48 +208,28 @@ async function cleanupSandbox(
     return;
   }
 
-  const cleanupEvidence: string[] = [];
-  try {
-    const destroy = await host.command(
-      process.execPath,
-      [CLI_ENTRYPOINT, sandboxName, "destroy", "--yes"],
-      {
-        artifactName: `cleanup-nemoclaw-destroy-${sandboxName}`,
-        env,
-        timeoutMs: 120_000,
-      },
-    );
-    cleanupEvidence.push(probeSummary("nemoclaw destroy", destroy));
-  } catch (error) {
-    cleanupEvidence.push(
-      `nemoclaw destroy threw: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  try {
-    const deletion = await sandbox.openshell(["sandbox", "delete", sandboxName], {
-      artifactName: `cleanup-openshell-sandbox-delete-${sandboxName}`,
-      env,
-      timeoutMs: 60_000,
-    });
-    cleanupEvidence.push(probeSummary("openshell sandbox delete", deletion));
-  } catch (error) {
-    cleanupEvidence.push(
-      `openshell sandbox delete threw: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  clearOnboardState();
-
-  const status = await sandbox.status(sandboxName, {
-    artifactName: `cleanup-openshell-sandbox-status-${sandboxName}`,
+  // A retained-authority refusal must survive teardown. Do not bypass the
+  // product's recovery gate with an administrator deletion by mutable name.
+  const registered = getSandbox(sandboxName);
+  const gatewayName = registered
+    ? resolveSandboxGatewayName(registered)
+    : (env.OPENSHELL_GATEWAY ?? "nemoclaw");
+  await host.cleanupSandbox(sandboxName, {
+    artifactName: `cleanup-nemoclaw-destroy-${sandboxName}`,
+    env,
+    timeoutMs: 120_000,
+    preserveGatewayRegistration: true,
+  });
+  const status = await sandbox.openshell(["sandbox", "get", sandboxName, "-g", gatewayName], {
+    artifactName: `cleanup-openshell-sandbox-get-${sandboxName}`,
     env,
     timeoutMs: 30_000,
   });
-  cleanupEvidence.push(probeSummary("openshell sandbox status", status));
-  if (status.exitCode === 0) {
+  // OpenShell 0.0.116 has no `sandbox status` subcommand. An unsupported
+  // command, timeout, or gateway failure cannot establish sandbox absence.
+  if (status.exitCode !== 1 || status.timedOut || !/sandbox not found/iu.test(status.stderr)) {
     throw new Error(
-      `sandbox '${sandboxName}' still exists after strict cleanup\n${cleanupEvidence.join("\n")}`,
+      `sandbox '${sandboxName}' absence was not confirmed after strict cleanup\n${probeSummary("openshell sandbox get", status)}`,
     );
   }
 }

@@ -257,9 +257,6 @@ async function runRuntimeIdentityE2EScenario(
     ...buildAvailabilityProbeEnv(),
     OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY ?? "nemoclaw",
   };
-  cleanup.add(`best-effort runtime identity sandbox cleanup for ${sandboxName}`, () =>
-    cleanupSandbox(host, sandbox, sandboxName),
-  );
   cleanup.add(`strict runtime identity sandbox cleanup for ${sandboxName}`, () =>
     cleanupSandbox(host, sandbox, sandboxName, { strict: true }),
   );
@@ -728,10 +725,6 @@ test(
     const apiKey = "sk-compatible-TEST-NOT-A-REAL-VALUE";
     await requireLivePrerequisites(host, runtimeProvider);
     const sandboxName = inferenceSandboxName("e2e-compat");
-    cleanup.add(
-      `best-effort inference-routing compatible-endpoint cleanup for ${sandboxName}`,
-      () => cleanupSandbox(host, sandbox, sandboxName),
-    );
     cleanup.add(`strict inference-routing compatible-endpoint cleanup for ${sandboxName}`, () =>
       cleanupSandbox(host, sandbox, sandboxName, { strict: true }),
     );
