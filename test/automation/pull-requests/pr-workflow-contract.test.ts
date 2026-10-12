@@ -639,9 +639,9 @@ printf '%s  %s\\n' '6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc
         run: step.run?.replaceAll("/usr/local/bin/hadolint", target),
       };
       const result = runWorkflowShellStep(testStep, {
+        GITHUB_ACTION_PATH: join(process.cwd(), ".github/actions/ci-static-checks"),
         PATH: `${bin}:${process.env.PATH ?? ""}`,
       });
-
       expect(result.status, result.stdout + result.stderr).toBe(0);
       expect(readFileSync(target, "utf8")).toBe("fake hadolint");
     } finally {
