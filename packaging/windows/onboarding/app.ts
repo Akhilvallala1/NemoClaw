@@ -76,6 +76,16 @@ const credentialField = document.querySelector("#credential-field");
 const providerHeading = document.querySelector("#provider-heading");
 const credentialLabel = document.querySelector("#credential-label");
 const endpointHelp = document.querySelector("#endpoint-help");
+const agentCards = [...document.querySelectorAll("[data-agent]")];
+for (const card of agentCards) {
+  const available = card.dataset.packageSelectable === "true";
+  card.disabled = !available;
+  card.setAttribute("aria-disabled", String(!available));
+  if (!available) card.querySelector(".badge").textContent = "Unavailable";
+}
+if (!agentCards.some((card) => !card.disabled && card.dataset.agent === state.agent))
+  state.agent = agentCards.find((card) => !card.disabled)?.dataset.agent ?? "";
+document.querySelector("#agent-error").hidden = Boolean(state.agent);
 
 function renderProvider() {
   const config = providerDefaults[state.inference];
@@ -143,6 +153,8 @@ function render() {
   for (const step of steps)
     step.classList.toggle("active", Number(step.dataset.stepTarget) === state.step);
   back.disabled = state.step === 1;
+  next.disabled = !state.agent;
+  launch.disabled = !state.agent;
   next.hidden = state.step === 4;
   launch.hidden = state.step !== 4;
   document.querySelector("#review-agent").textContent = agentNames[state.agent];
@@ -170,6 +182,7 @@ document.querySelectorAll("[data-agent]").forEach((card) => {
     if (card.disabled || card.getAttribute("aria-disabled") === "true") return;
     state.agent = card.dataset.agent;
     select("[data-agent]", "agent", state.agent);
+    render();
   });
 });
 
@@ -182,6 +195,7 @@ document.querySelectorAll("[data-inference]").forEach((choice) => {
 });
 
 next.addEventListener("click", () => {
+  if (!state.agent) return;
   if (state.step === 2 && !validateInference()) return;
   state.step = Math.min(4, state.step + 1);
   render();
@@ -194,6 +208,7 @@ back.addEventListener("click", () => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!state.agent) return;
   error.hidden = true;
   launch.disabled = true;
   launch.textContent = "Preparing…";

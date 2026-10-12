@@ -7,16 +7,160 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import { runInNewContext } from "node:vm";
+import { stripTypeScriptTypes } from "node:module";
+import test, { after } from "node:test";
 import {
   configureNativeFromStdin,
   readNativeAgentConfiguration,
   type NativeOnboardingConfiguration,
 } from "./native-setup-configuration.mts";
-import { saveNativeOnboardingConfiguration } from "./run-installed-native-web-ui.mts";
+import {
+  saveNativeOnboardingConfiguration,
+  startOnboardingServer,
+} from "./run-installed-native-web-ui.mts";
 import { nativeCredentialBinding } from "./native-security.mts";
 import { NATIVE_SERVICES, nativeServiceBinding } from "./native-options.mts";
 import { readNativeConfigurationRecovery } from "./native-configuration-recovery.mts";
+import { nativePackageFixture } from "../tests/native-package-fixture.mts";
+import { readNativePackageAvailability } from "./native-package-availability.mts";
+
+const packageFixture = nativePackageFixture(after);
+
+for (const included of ["openclaw", "hermes"] as const) {
+  const absent = included === "openclaw" ? "hermes" : "openclaw";
+  for (const args of [[], ["--prepare-all"], ["--prepare-service", "tavily"], ["--transaction"]]) {
+    test(`${included}-only setup rejects absent ${absent} before ${args[0] ?? "save"} side effects`, async (t) => {
+      const installed = nativePackageFixture(t.after.bind(t), {
+        openclaw: included === "openclaw" ? "qualified" : "not-included",
+        hermes: included === "hermes" ? "qualified" : "not-included",
+      });
+      const request = { ...configuration, agent: absent };
+      const input = Buffer.from(
+        JSON.stringify(
+          args.includes("--transaction") ? { configuration: request, credentials } : request,
+        ),
+      );
+      let protectedCalls = 0;
+      let emitted = "";
+      await assert.rejects(
+        configureNativeFromStdin(
+          installed.launcher,
+          args,
+          Readable.from([input]),
+          {
+            write(value) {
+              emitted += value.toString();
+              return true;
+            },
+          },
+          {
+            lookupEndpoint: async () => {
+              protectedCalls++;
+              return [{ address: "8.8.8.8", family: 4 }];
+            },
+            inspectModel: async () => {
+              protectedCalls++;
+              throw new Error("unexpected model inspection");
+            },
+            acquireState: async () => {
+              protectedCalls++;
+              throw new Error("unexpected state acquisition");
+            },
+            credentialStore: {
+              read: async () => {
+                protectedCalls++;
+                return "";
+              },
+              write: async () => {
+                protectedCalls++;
+              },
+            },
+            writeConfiguration: () => {
+              protectedCalls++;
+              return "unexpected write";
+            },
+          },
+        ),
+        /not included in this installer/u,
+      );
+      assert.equal(protectedCalls, 0);
+      assert.equal(emitted, "");
+      assert(input.every((byte) => byte === 0));
+      assert.deepEqual(fs.readdirSync(installed.root), ["runtime-package-availability.json"]);
+    });
+  }
+  test(`included unqualified ${included} can prepare qualification without enabling the absent agent`, async (t) => {
+    const installed = nativePackageFixture(t.after.bind(t), {
+      openclaw: included === "openclaw" ? "unqualified" : "not-included",
+      hermes: included === "hermes" ? "unqualified" : "not-included",
+    });
+    let output = "";
+    await configureNativeFromStdin(
+      installed.launcher,
+      ["--prepare-all"],
+      Readable.from([
+        Buffer.from(JSON.stringify({ ...configuration, agent: included, options: {} })),
+      ]),
+      {
+        write(value) {
+          output += value.toString();
+          return true;
+        },
+      },
+      { acquireState: async () => assert.fail("Preparation acquired state.") },
+    );
+    assert.equal(
+      JSON.parse(output).inference,
+      nativeCredentialBinding({ ...configuration, agent: included }),
+    );
+    assert.deepEqual(readNativePackageAvailability(installed.root), {
+      [included]: "unqualified",
+      [absent]: "not-included",
+    });
+  });
+}
+
+test("missing or invalid package availability fails before setup state acquisition", async (t) => {
+  const installed = nativePackageFixture(t.after.bind(t));
+  for (const value of [
+    null,
+    "{",
+    JSON.stringify({ ...installed.record, schemaVersion: 2 }),
+    JSON.stringify({
+      ...installed.record,
+      agents: [installed.record.agents[0], installed.record.agents[0]],
+    }),
+    JSON.stringify({
+      ...installed.record,
+      agents: [{ agent: "pi", status: "qualified" }, installed.record.agents[1]],
+    }),
+    JSON.stringify({
+      ...installed.record,
+      agents: [{ agent: "openclaw", status: "unknown" }, installed.record.agents[1]],
+    }),
+    JSON.stringify({ ...installed.record, prebuiltLocalModelAvailable: "true" }),
+    JSON.stringify({ ...installed.record, extra: true }),
+    "x".repeat(16385),
+  ]) {
+    if (value === null) fs.rmSync(installed.availability);
+    else fs.writeFileSync(installed.availability, value);
+    await assert.rejects(
+      configureNativeFromStdin(
+        installed.launcher,
+        ["--prepare-all"],
+        Readable.from([Buffer.from(JSON.stringify(configuration))]),
+        {
+          write() {
+            assert.fail("Invalid package emitted a setup result.");
+          },
+        },
+        { acquireState: async () => assert.fail("Invalid package acquired state.") },
+      ),
+      /installed agent availability is invalid/u,
+    );
+  }
+});
 
 const configuration = {
   schemaVersion: 1,
@@ -30,6 +174,155 @@ const configuration = {
   options: { search: { provider: "tavily", credentialStored: true } },
 };
 const credentials = { inference: "new-inference", services: { tavily: "new-tavily" } };
+
+test("browser choice initialization disables unavailable agents without fixing the model choice", () => {
+  const script = stripTypeScriptTypes(
+    fs.readFileSync(new URL("../onboarding/app.ts", import.meta.url), "utf8"),
+  );
+  for (const available of ["openclaw", "hermes", "neither"]) {
+    const elements = new Map();
+    const element = (key: string, dataset = {}) => {
+      if (!elements.has(key))
+        elements.set(key, {
+          dataset,
+          disabled: false,
+          value: "",
+          textContent: "",
+          hidden: false,
+          attributes: new Map(),
+          events: new Map(),
+          classList: { toggle() {} },
+          setAttribute(name: string, value: string) {
+            this.attributes.set(name, value);
+          },
+          getAttribute(name: string) {
+            return this.attributes.get(name);
+          },
+          addEventListener(name: string, action: () => void) {
+            this.events.set(name, action);
+          },
+          querySelector(selector: string) {
+            return element(`${key} ${selector}`);
+          },
+        });
+      return elements.get(key);
+    };
+    const cards = ["openclaw", "hermes"].map((agent) =>
+      element(agent, {
+        agent,
+        packageSelectable: String(agent === available),
+      }),
+    );
+    runInNewContext(script, {
+      document: {
+        querySelector: (selector: string) => element(selector),
+        querySelectorAll: (selector: string) => (selector === "[data-agent]" ? cards : []),
+      },
+      window: { location: { search: "?agent=hermes" } },
+      URLSearchParams,
+      URL,
+    });
+    for (const card of cards) {
+      assert.equal(card.disabled, card.dataset.agent !== available);
+      assert.equal(card.getAttribute("aria-disabled"), String(card.disabled));
+      assert.equal(card.getAttribute("aria-checked"), String(card.dataset.agent === available));
+    }
+    const absent = cards.find((card) => card.disabled)!;
+    absent.events.get("click")();
+    assert.equal(absent.getAttribute("aria-checked"), "false");
+    assert.equal(element("#next").disabled, available === "neither");
+    assert.equal(element("#launch").disabled, available === "neither");
+    const model = element("#model");
+    model.value = "user-chosen-model";
+    if (available !== "neither") cards.find((card) => !card.disabled)!.events.get("click")();
+    assert.equal(model.value, "user-chosen-model");
+    assert.notEqual(model.readOnly, true);
+  }
+});
+
+for (const included of ["openclaw", "hermes"] as const) {
+  for (const [qualification, status] of [
+    [false, "qualified"],
+    [false, "unqualified"],
+    [true, "unqualified"],
+  ] as const) {
+    test(`${included}-only browser setup enforces ${status} choices in ${qualification ? "qualification" : "normal"} mode`, async (t) => {
+      const absent = included === "openclaw" ? "hermes" : "openclaw";
+      const installed = nativePackageFixture(t.after.bind(t), {
+        openclaw: included === "openclaw" ? status : "not-included",
+        hermes: included === "hermes" ? status : "not-included",
+      });
+      const assets = path.join(installed.root, "app", "onboarding");
+      fs.mkdirSync(assets, { recursive: true });
+      fs.copyFileSync(
+        new URL("../onboarding/index.html", import.meta.url),
+        path.join(assets, "index.html"),
+      );
+      const previous = process.env.NEMOCLAW_NATIVE_RUNTIME_ROOT;
+      process.env.NEMOCLAW_NATIVE_RUNTIME_ROOT = installed.root;
+      t.after(() => {
+        if (previous === undefined) delete process.env.NEMOCLAW_NATIVE_RUNTIME_ROOT;
+        else process.env.NEMOCLAW_NATIVE_RUNTIME_ROOT = previous;
+      });
+      const server = await startOnboardingServer(
+        installed.root,
+        "",
+        installed.root,
+        qualification,
+        installed.launcher,
+      );
+      try {
+        const page = await fetch(server.url, { signal: AbortSignal.timeout(5000) });
+        assert.equal(page.status, 200);
+        const html = await page.text();
+        assert(
+          html.includes(
+            `data-agent="${included}" data-package-selectable="${qualification || status === "qualified"}"`,
+          ),
+        );
+        assert(html.includes(`data-agent="${absent}" data-package-selectable="false"`));
+        const token = new URL(server.url).searchParams.get("session")!;
+        const submit = (agent: string, session = token) =>
+          fetch(`${server.origin}/api/configure`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-nemoclaw-session": session },
+            body: JSON.stringify({ agent, inference: "qualification", options: {} }),
+            signal: AbortSignal.timeout(5000),
+          });
+        const rejected = await submit(absent);
+        assert.equal(rejected.status, 400);
+        assert.match((await rejected.json()).message, /unavailable in this installer/u);
+        assert.equal(server.selection(), null);
+        assert.equal(server.runtimeConfiguration(), null);
+        assert.equal(fs.existsSync(path.join(installed.root, "onboarding-selection.json")), false);
+        const unauthenticated = await submit(included, "invalid-session");
+        assert.equal(unauthenticated.status, 400);
+        assert.match((await unauthenticated.json()).message, /session token is invalid/u);
+        const selected = await submit(included);
+        assert.equal(selected.status, qualification ? 200 : 400);
+        if (qualification) {
+          assert.equal((await selected.json()).redirect, `/launching.html?agent=${included}`);
+          assert.equal(server.selection()?.agent, included);
+          assert.equal(server.runtimeConfiguration()?.configPath, null);
+        } else {
+          // A selectable normal agent still cannot use qualification inference.
+          assert.match(
+            (await selected.json()).message,
+            status === "qualified"
+              ? /Select a valid inference provider/u
+              : /unavailable in this installer/u,
+          );
+          assert.equal(server.selection(), null);
+        }
+      } finally {
+        server.server.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          server.server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+  }
+}
 
 test("unfinished credential recovery blocks launch and a full resave removes stranded provider keys", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-pending-configuration-"));
@@ -91,7 +384,7 @@ test("unfinished credential recovery blocks launch and a full resave removes str
   };
   await assert.rejects(
     configureNativeFromStdin(
-      "unused",
+      packageFixture.launcher,
       ["--transaction"],
       Readable.from([
         Buffer.from(
@@ -129,7 +422,7 @@ test("unfinished credential recovery blocks launch and a full resave removes str
   assert.equal(restartedReader.status, 0, restartedReader.stderr);
   let observation = "";
   await configureNativeFromStdin(
-    "unused",
+    packageFixture.launcher,
     ["--recovery-status", "hermes"],
     Readable.from([]),
     {
@@ -163,7 +456,7 @@ test("unfinished credential recovery blocks launch and a full resave removes str
   };
   await assert.rejects(
     configureNativeFromStdin(
-      "unused",
+      packageFixture.launcher,
       [],
       Readable.from([Buffer.from(JSON.stringify(replacement))]),
       process.stdout,
@@ -177,7 +470,7 @@ test("unfinished credential recovery blocks launch and a full resave removes str
   );
   failWrite = false;
   await configureNativeFromStdin(
-    "unused",
+    packageFixture.launcher,
     ["--transaction"],
     Readable.from([
       Buffer.from(
@@ -196,7 +489,7 @@ test("unfinished credential recovery blocks launch and a full resave removes str
   assert.equal(readNativeAgentConfiguration("hermes").config.model, "chosen-after-recovery");
   observation = "";
   await configureNativeFromStdin(
-    "unused",
+    packageFixture.launcher,
     ["--recovery-status", "hermes"],
     Readable.from([]),
     {
@@ -223,17 +516,29 @@ test("configuration recovery status cannot claim completion without the configur
     },
   };
   await assert.rejects(
-    configureNativeFromStdin("unused", ["--recovery-status", "hermes"], Readable.from([]), output, {
-      acquireState: async () => {
-        throw new Error("configuration owner busy");
+    configureNativeFromStdin(
+      packageFixture.launcher,
+      ["--recovery-status", "hermes"],
+      Readable.from([]),
+      output,
+      {
+        acquireState: async () => {
+          throw new Error("configuration owner busy");
+        },
       },
-    }),
+    ),
     /owner busy/,
   );
   await assert.rejects(
-    configureNativeFromStdin("unused", ["--recovery-status", "pi"], Readable.from([]), output, {
-      acquireState: async () => assert.fail("A retired agent acquired recovery ownership."),
-    }),
+    configureNativeFromStdin(
+      packageFixture.launcher,
+      ["--recovery-status", "pi"],
+      Readable.from([]),
+      output,
+      {
+        acquireState: async () => assert.fail("A retired agent acquired recovery ownership."),
+      },
+    ),
     /recovery request is invalid/,
   );
 });
@@ -358,7 +663,7 @@ test("web onboarding uses the canonical lease and never persists its secret or l
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, previousText);
     fs.writeFileSync(activePath, "openclaw\n");
-    const pending = saveNativeOnboardingConfiguration("unused", webConfiguration, {
+    const pending = saveNativeOnboardingConfiguration(packageFixture.launcher, webConfiguration, {
       configure,
     });
     await acquiring;
@@ -459,7 +764,7 @@ for (const failure of [
     const input = Buffer.from(JSON.stringify({ configuration, credentials }));
     try {
       const pending = configureNativeFromStdin(
-        "unused",
+        packageFixture.launcher,
         ["--transaction"],
         Readable.from([input]),
         process.stdout,
@@ -550,7 +855,11 @@ for (const failure of [
 test("malformed transaction keys fail before acquiring the state or mutating credentials", async () => {
   const malformed = Buffer.from('{"credentials":{"inference":"private-test-key"},invalid}');
   await assert.rejects(
-    configureNativeFromStdin("unused", ["--transaction"], Readable.from([malformed])),
+    configureNativeFromStdin(
+      packageFixture.launcher,
+      ["--transaction"],
+      Readable.from([malformed]),
+    ),
     { message: "NemoClaw native Windows launch failed: native setup configuration is invalid" },
   );
   assert(malformed.every((byte) => byte === 0));
@@ -563,7 +872,7 @@ test("malformed transaction keys fail before acquiring the state or mutating cre
   ]) {
     await assert.rejects(
       configureNativeFromStdin(
-        "unused",
+        packageFixture.launcher,
         ["--transaction"],
         Readable.from([Buffer.from(JSON.stringify({ configuration, credentials: invalid }))]),
         process.stdout,

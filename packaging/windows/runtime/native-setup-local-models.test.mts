@@ -6,13 +6,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { test } from "node:test";
+import { test, after } from "node:test";
 import {
   configureNativeFromStdin,
   normalizeOnboardingConfiguration,
 } from "./native-setup-configuration.mts";
 import { NATIVE_LOCAL_MODELS } from "./native-local-models.mts";
 import { nativeCredentialBinding } from "./native-security.mts";
+import { nativePackageFixture } from "../tests/native-package-fixture.mts";
+
+const packageFixture = nativePackageFixture(after);
 
 for (const model of NATIVE_LOCAL_MODELS.models) {
   const metadata = {
@@ -56,7 +59,7 @@ for (const model of NATIVE_LOCAL_MODELS.models) {
       let output = "";
       const input = Buffer.from(JSON.stringify(configuration));
       await configureNativeFromStdin(
-        "unused",
+        packageFixture.launcher,
         ["--prepare-all"],
         Readable.from([input]),
         {
@@ -126,7 +129,7 @@ for (const model of NATIVE_LOCAL_MODELS.models) {
           }),
         );
         const result = configureNativeFromStdin(
-          "unused",
+          packageFixture.launcher,
           ["--transaction"],
           Readable.from([input]),
           process.stdout,
@@ -205,7 +208,7 @@ for (const model of NATIVE_LOCAL_MODELS.models) {
       ]) {
         await assert.rejects(
           configureNativeFromStdin(
-            "unused",
+            packageFixture.launcher,
             ["--prepare-all"],
             Readable.from([Buffer.from(JSON.stringify({ ...configuration, ...invalid }))]),
             process.stdout,

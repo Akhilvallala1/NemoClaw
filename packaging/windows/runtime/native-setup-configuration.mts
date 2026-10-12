@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { PROVIDER_CONFIGURATION } from "./native-provider-policy.mts";
+import { assertNativePackageIncludesAgent } from "./native-package-availability.mts";
 import {
   assertNativeInferenceEndpoint,
   resolveNativeInferenceAddresses,
@@ -408,6 +409,10 @@ export async function configureNativeFromStdin(
     true,
   );
   normalized.options = normalizeNativeOptions(submitted.agent, submitted.options);
+  // Qualification configures included, not-yet-qualified runtimes through this
+  // same entrypoint. Inclusion does not grant launch admission. Reject an absent
+  // agent before preparation, model inspection, state acquisition or credentials.
+  assertNativePackageIncludesAgent(path.dirname(path.dirname(launcher)), normalized.agent);
   if (transaction) {
     const value = normalizeProviderCredential(normalized.inference, credentials.inference);
     if (value !== credentials.inference || Boolean(value) !== submitted.credentialStored)

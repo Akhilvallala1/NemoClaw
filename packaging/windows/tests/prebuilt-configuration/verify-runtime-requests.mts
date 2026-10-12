@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { nativePackageFixture } from "../native-package-fixture.mts";
 import {
   configureNativeFromStdin,
   readNativeAgentConfiguration,
@@ -32,6 +33,10 @@ assert.deepEqual(
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bootstrapper-runtime-input-"));
 const prior = process.env.LOCALAPPDATA;
 process.env.LOCALAPPDATA = root;
+let cleanupPackage = () => {};
+const packageFixture = nativePackageFixture((cleanup) => {
+  cleanupPackage = cleanup;
+});
 try {
   for (const request of evidence.requests) {
     assert.equal(request.kind, "native-setup-request");
@@ -47,7 +52,7 @@ try {
       }),
     );
     const result = await configureNativeFromStdin(
-      "unused",
+      packageFixture.launcher,
       ["--transaction"],
       Readable.from([input]),
       process.stdout,
@@ -131,7 +136,7 @@ try {
     ]) {
       await assert.rejects(
         configureNativeFromStdin(
-          "unused",
+          packageFixture.launcher,
           ["--prepare-all"],
           Readable.from([Buffer.from(JSON.stringify({ ...request, ...metadata }))]),
           process.stdout,
@@ -145,6 +150,7 @@ try {
     }
   }
 } finally {
+  cleanupPackage();
   if (prior === undefined) delete process.env.LOCALAPPDATA;
   else process.env.LOCALAPPDATA = prior;
   fs.rmSync(root, { recursive: true, force: true });

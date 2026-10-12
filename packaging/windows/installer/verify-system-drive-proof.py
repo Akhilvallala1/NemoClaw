@@ -13,7 +13,7 @@ import struct
 from pathlib import Path
 
 
-PROFILE = {
+LEGACY_PROFILE = {
     "leastPrivilege": False,
     "capabilities": ["privateNetworkClientServer", "internetClient"],
     "win32kDisabled": False,
@@ -35,8 +35,15 @@ IMAGE_ACL = (
 )
 MXC_SOURCE = "7cd00d1ee6af9208322c924ef64e5113f6704639"
 MXC_NETWORK = {
-    "egress": {"default": "allow"},
-    "ingress": {"default": "allow", "hostLoopback": "allow"},
+    "egress": {"default": "deny"},
+    "ingress": {"default": "deny", "hostLoopback": "deny"},
+}
+PROFILE = {
+    "leastPrivilege": False,
+    "capabilities": ["privateNetworkClientServer", "internetClient"],
+    "win32kDisabled": False,
+    "network": MXC_NETWORK,
+    "childTimeoutMilliseconds": 30000,
 }
 LEGACY_MXC_FILES = {
     "wxc-exec.exe": "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503",
@@ -400,7 +407,7 @@ def verify(
         and proof.get("networkAccessTested") is False
         and proof.get("stdio") == "explicit-pipes-with-closed-input"
         and proof.get("policySha256") == policy_sha
-        and proof.get("requestPolicy") == PROFILE
+        and proof.get("requestPolicy") == (LEGACY_PROFILE if legacy else PROFILE)
         and (
             (
                 proof.get("selectedIsolationTier") == "base-container"

@@ -426,6 +426,61 @@ class SystemDriveProofTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "hashed actual request"):
             self.verify()
 
+    def test_file_only_proof_rejects_network_grants_and_old_profile(self):
+        for section, field in (("egress", "default"), ("ingress", "default"),
+                               ("ingress", "hostLoopback")):
+            with self.subTest(section=section, field=field):
+                self.policy["network"][section][field] = "allow"
+                self.save()
+                with self.assertRaisesRegex(ValueError, "hashed actual request"):
+                    self.verify()
+                self.policy["network"][section][field] = "deny"
+        self.proof["requestPolicy"] = copy.deepcopy(gate.LEGACY_PROFILE)
+        self.save()
+        with self.assertRaisesRegex(ValueError, "Same-source"):
+            self.verify()
+
+    def test_actual_powershell_file_only_policy_denies_network(self):
+        powershell = shutil.which("pwsh") or shutil.which("powershell.exe")
+        self.assertIsNotNone(powershell, "These controls require PowerShell.")
+        producer = MODULE.parent.parent / "host-preparation/test-system-root-mxc.ps1"
+        script = self.root / "file-only-network.ps1"
+        script.write_text(r'''param([string]$Source)
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'The proof producer does not parse.'}
+$statements=@($ast.FindAll({param($node)
+    if($node -is [Management.Automation.Language.AssignmentStatementAst]){
+        return $node.Left.Extent.Text -cin @('$request','$receipt.requestPolicy')
+    }
+    return $node -is [Management.Automation.Language.IfStatementAst] -and
+        $node.Clauses[0].Item1.Extent.Text -ceq '$HostPayloadReceipt' -and
+        ($node.Extent.Text.Contains('$request.version =') -or
+         $node.Extent.Text.Contains('$receipt.requestPolicy.Remove('))
+},$true)|Sort-Object {$_.Extent.StartOffset})
+if($statements.Count -ne 4){throw 'The actual proof policy construction is ambiguous.'}
+$rows=@(foreach($current in @($false,$true)){
+    $HostPayloadReceipt=$current;$receipt=[ordered]@{};$childEnvironment=[ordered]@{}
+    foreach($statement in $statements){. ([ScriptBlock]::Create($statement.Extent.Text))}
+    @{network=$request.network;profile=$receipt.requestPolicy}
+})
+$rows|ConvertTo-Json -Depth 6 -Compress
+''')
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-File", str(script), str(producer)],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        expected = {"egress": {"default": "deny"},
+                    "ingress": {"default": "deny", "hostLoopback": "deny"}}
+        actual = json.loads(result.stdout)
+        self.assertEqual(actual[0], {"network": gate.LEGACY_MXC_NETWORK,
+                                     "profile": gate.LEGACY_PROFILE})
+        self.assertEqual(actual[1], {"network": expected, "profile": gate.PROFILE})
+        self.assertEqual(gate.MXC_NETWORK, expected)
+        self.assertEqual(gate.PROFILE["network"], expected)
+
     def test_cli_requires_current_run_identity_without_creating_gate(self):
         output = self.root / "missing-run.json"
         environment = {key: value for key, value in os.environ.items()
@@ -437,6 +492,7 @@ class SystemDriveProofTests(unittest.TestCase):
 
     def legacy_fixture(self):
         self.proof["requestProfile"] = "existing-personal-node-compatibility"
+        self.proof["requestPolicy"] = copy.deepcopy(gate.LEGACY_PROFILE)
         del self.proof["mxcInput"]
         self.policy["version"] = "0.6.0-alpha"
         self.policy["network"] = copy.deepcopy(gate.LEGACY_MXC_NETWORK)

@@ -8,7 +8,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import test, { after } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -47,6 +47,9 @@ import {
   type NativeRuntimePurpose,
 } from "./native-runtime.mts";
 import { PROVIDER_CONFIGURATION } from "./native-provider-policy.mts";
+import { nativePackageFixture } from "../tests/native-package-fixture.mts";
+
+const packageFixture = nativePackageFixture(after);
 
 test("provider policy preserves selectable models and existing credential identities", () => {
   const cases = [
@@ -227,8 +230,30 @@ test("compiled native workers expose only retained agent modes", async (t) => {
   assert.equal(staged.receipt.preimagesVerified, 0);
   assert.equal(staged.receipt.removedDiagnosticGuards.length, 6);
   const output = path.join(root, "compiled");
-  const report = await buildNativeWorkers(staged.runtime, output);
+  const report = await buildNativeWorkers(staged.runtime, output, undefined, {
+    sourceRevision: "a".repeat(40),
+    onboardingSource: fileURLToPath(new URL("../onboarding", import.meta.url)),
+  });
+  assert.equal(report.deliveryContract, "finished-native-app-v1");
+  assert.deepEqual(report.onboarding.map(({ file }) => file).sort(), [
+    "app.js",
+    "assets/hermes.png",
+    "assets/nvidia.svg",
+    "assets/openclaw.png",
+    "index.html",
+    "styles.css",
+  ]);
+  const html = fs.readFileSync(path.join(output, "onboarding", "index.html"), "utf8");
+  assert(html.includes('src="./app.js"'));
+  assert(!html.includes("app.ts"));
+  assert(html.includes('data-agent="openclaw"'));
+  assert(html.includes('data-agent="hermes"'));
   assert.equal(report.installedExecutionQualified, false);
+  assert.equal(fs.existsSync(path.join(output, "native-host.mjs")), false);
+  assert.equal(
+    report.files.some(({ file }) => file === "native-host.mjs"),
+    false,
+  );
   assert.deepEqual(report.modes, ["openclaw-turn", "openclaw-web", "hermes-turn", "interactive"]);
   const described = spawnSync(
     process.execPath,
@@ -876,7 +901,7 @@ const configuration = {
 async function prepare(value: unknown, args = ["--prepare-all"]): Promise<string> {
   let result = "";
   await configureNativeFromStdin(
-    "nonexistent-credential-helper",
+    packageFixture.launcher,
     args,
     Readable.from([Buffer.from(JSON.stringify(value))]),
     {
@@ -969,7 +994,7 @@ test("private and DNS-rebound endpoint admission cannot acquire state or change 
     );
     await assert.rejects(
       configureNativeFromStdin(
-        "unused",
+        packageFixture.launcher,
         ["--transaction"],
         Readable.from([input]),
         process.stdout,
@@ -1028,7 +1053,7 @@ test("configuration waits for combined configuration and agent ownership before 
   const events: string[] = [];
   try {
     const pending = configureNativeFromStdin(
-      "unused",
+      packageFixture.launcher,
       [],
       Readable.from([
         Buffer.from(
@@ -1187,7 +1212,7 @@ test("configuration requires the shared-owner protocol, not an ordinary session 
     // Exercise the default setup owner, not the injected acquireState test seam.
     const configureHermes = () =>
       owner.configureNativeFromStdin(
-        "owned-launcher",
+        packageFixture.launcher,
         [],
         Readable.from([
           Buffer.from(
@@ -1301,7 +1326,7 @@ test("logical prebuilt model preparation emits no endpoint or external credentia
   let inspections = 0;
   let text = "";
   await configureNativeFromStdin(
-    "unused-native-credential-helper",
+    packageFixture.launcher,
     ["--prepare-all"],
     Readable.from([Buffer.from(JSON.stringify(local))]),
     {
@@ -1331,7 +1356,7 @@ test("a local-model endpoint placeholder is rejected before inspecting a pack", 
   let called = false;
   await assert.rejects(
     configureNativeFromStdin(
-      "unused",
+      packageFixture.launcher,
       ["--prepare-all"],
       Readable.from([
         Buffer.from(

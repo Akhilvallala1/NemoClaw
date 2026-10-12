@@ -237,11 +237,6 @@ export async function buildNativeWorkers(
     metafile: true,
     treeShaking: true,
   };
-  const host = await build({
-    ...common,
-    entryPoints: [path.join(runtimeSource, "native-main.mts")],
-    outfile: path.join(output, "native-host.mjs"),
-  });
   const guestMain =
     [...generated.keys()]
       .map((mode, index) => `import { run as run${index} } from "worker:${mode}";`)
@@ -394,7 +389,6 @@ export async function buildNativeWorkers(
     modes: [...generated.keys()],
     files,
     factoryInputs: Object.fromEntries(inputs),
-    hostInputs: Object.keys(host.metafile!.inputs),
     guestInputs: Object.keys(guest.metafile!.inputs),
     combinedInputs: Object.keys(combined.metafile!.inputs),
     openClawStaticallyLinked: Boolean(openClawBundle),

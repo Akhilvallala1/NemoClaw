@@ -33,11 +33,13 @@
 
           <div class="agent-grid" role="radiogroup" aria-label="Agent runtime">
             <button
-              class="agent-card selected"
+              class="agent-card"
               type="button"
               role="radio"
-              aria-checked="true"
+              aria-checked="false"
               data-agent="openclaw"
+              disabled
+              aria-disabled="true"
             >
               <span class="agent-mark openclaw"><img src="./assets/openclaw.png" alt="" /></span>
               <span class="agent-copy">
@@ -57,6 +59,8 @@
               role="radio"
               aria-checked="false"
               data-agent="hermes"
+              disabled
+              aria-disabled="true"
             >
               <span class="agent-mark hermes"><img src="./assets/hermes.png" alt="" /></span>
               <span class="agent-copy">
@@ -71,6 +75,9 @@
               </span>
             </button>
           </div>
+          <p class="field-error" id="agent-error" role="alert" hidden>
+            No qualified agent is available in this installer.
+          </p>
         </section>
 
         <section class="panel" data-step="2">

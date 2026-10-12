@@ -21,6 +21,11 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import { readNativeServiceEnvironment } from "./native-options.mts";
+import {
+  readNativePackageAvailability,
+  nativePackageAgentSelectable,
+  type NativePackageAvailability,
+} from "./native-package-availability.mts";
 
 import {
   configureNativeFromStdin,
@@ -411,13 +416,14 @@ function resolveEdge() {
   fail("Microsoft Edge is required for the visible Control UI proof");
 }
 
-async function startOnboardingServer(
-  _installRoot: string,
+export async function startOnboardingServer(
+  installRoot: string,
   openClawUrl: string,
   evidenceRoot: string,
   qualification: boolean,
   launcher: string,
 ) {
+  const availability = readNativePackageAvailability(installRoot);
   const onboardingRoot = requiredDirectory(
     nativeDistributionAsset("onboarding"),
     "NemoClaw graphical onboarder",
@@ -463,6 +469,8 @@ async function startOnboardingServer(
           chunks.push(chunk);
         }
         const submitted = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (!nativePackageAgentSelectable(availability, submitted?.agent, qualification))
+          throw new Error("The selected agent is unavailable in this installer.");
         const normalized = normalizeOnboardingConfiguration(submitted, qualification);
         const configPath = qualification
           ? null
@@ -545,7 +553,17 @@ async function startOnboardingServer(
         },
       );
       if (content === null) fail("the onboarding asset disappeared");
-      response.end(content);
+      response.end(
+        relative === "index.html"
+          ? content
+              .toString("utf8")
+              .replace(
+                /data-agent="(openclaw|hermes)"/gu,
+                (_match, agent) =>
+                  `data-agent="${agent}" data-package-selectable="${nativePackageAgentSelectable(availability, agent, qualification)}"`,
+              )
+          : content,
+      );
     } catch (error) {
       response.writeHead(400, { "content-type": "application/json" });
       response.end(
@@ -567,6 +585,7 @@ async function startOnboardingServer(
     url: `${origin}?session=${sessionToken}`,
     selection: () => selection,
     runtimeConfiguration: () => runtimeConfiguration,
+    availability,
   };
 }
 
@@ -583,6 +602,7 @@ async function driveBrowser(
   qualification: boolean,
   targetAgent = "openclaw",
   skipOnboarding = false,
+  availability?: NativePackageAvailability,
 ) {
   const playwrightRoot = requiredDirectory(
     path.join(openClawRoot, "node_modules", "playwright-core"),
@@ -643,6 +663,13 @@ async function driveBrowser(
       await sleep(3000);
       for (const agent of AGENT_CHOICE_PROOF) {
         const card = page.locator(`[data-agent='${agent}']`);
+        if (!availability) fail("the package agent selection record is missing");
+        if (!nativePackageAgentSelectable(availability, agent, qualification)) {
+          if (!(await card.isDisabled()) || (await card.getAttribute("aria-checked")) === "true")
+            fail(`unavailable native agent ${agent} is selectable`);
+          disabledAgentChoices.push(agent);
+          continue;
+        }
         if (await card.isDisabled()) fail(`native agent ${agent} is not selectable`);
         await card.click();
         if ((await card.getAttribute("aria-checked")) !== "true")
@@ -651,6 +678,8 @@ async function driveBrowser(
         console.log(`WEB UI> AGENT CHOICE selected ${agent}`);
         await sleep(1500);
       }
+      if (!availability || !nativePackageAgentSelectable(availability, targetAgent, qualification))
+        fail("the requested agent is unavailable in this installer");
       await page.locator(`[data-agent='${targetAgent}']`).click();
       await page.screenshot({
         path: path.join(evidenceRoot, "onboarding-agent.png"),
@@ -757,6 +786,8 @@ async function runInitialOnboarding(
       evidenceRoot,
       false,
       initialAgent,
+      false,
+      onboarding.availability,
     );
   } finally {
     await new Promise<void>((resolve) => onboarding.server.close(() => resolve()));
@@ -818,6 +849,8 @@ async function runSelectedNonOpenClaw(
       evidenceRoot,
       qualification,
       targetAgent,
+      false,
+      onboarding.availability,
     );
   } finally {
     await new Promise<void>((resolve) => onboarding.server.close(() => resolve()));
@@ -1563,6 +1596,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           evidenceRoot,
           true,
           targetAgent,
+          false,
+          onboarding.availability,
         );
         onboardingSelection = onboarding.selection();
         const server = onboarding.server;

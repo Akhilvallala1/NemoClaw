@@ -340,13 +340,19 @@ console.log('NEMOCLAW_SYSTEM_METADATA_MXC_OK');
         lifecycle=@{destroyOnExit=$false;preservePolicy=$false}}
     if ($HostPayloadReceipt) {
         $request.version = '1.0.0'
-        # Preserve this file-access proof's existing network posture. It does
-        # not qualify networking; installed isolation remains a separate gate.
-        $request.network = @{egress=@{default='allow'};ingress=@{default='allow';hostLoopback='allow'}}
+        # This worker only reads and writes files. It needs no network access,
+        # including host-loopback ingress (unsupported on PSEC 1.0 hosts).
+        # Installed networking and isolation remain separate required gates.
+        $request.network = @{egress=@{default='deny'};ingress=@{default='deny';hostLoopback='deny'}}
     }
     [IO.File]::WriteAllText($policy,($request|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
     $receipt.policySha256=(Get-FileHash -LiteralPath $policy -Algorithm SHA256).Hash.ToLowerInvariant()
     $receipt.requestPolicy=[ordered]@{leastPrivilege=$request.processContainer.leastPrivilege;capabilities=$request.processContainer.capabilities;win32kDisabled=$request.ui.disable;networkDefaultPolicy='allow';allowLocalNetwork=$true;childTimeoutMilliseconds=$request.process.timeout}
+    if ($HostPayloadReceipt) {
+        $receipt.requestPolicy.Remove('networkDefaultPolicy')
+        $receipt.requestPolicy.Remove('allowLocalNetwork')
+        $receipt.requestPolicy.network = $request.network
+    }
     $mxcAttempted=$true;$mxcStopped=$false
     $null=Invoke-ProofProcess $wxc @($policy,'--log-file',(Join-Path $output 'mxc-native.log')) 'mxc-execution' 40
     $mxcStopped=$commands[$commands.Count-1].stopped
