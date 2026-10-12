@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! The steps of `CI / Native`, runnable locally with `cargo ci`.
+//! The steps of `CI / Bundle`, runnable locally with `cargo ci`.
 //!
 //! This module builds without the `sdk` feature, so it can install the pinned
 //! Protocol Buffers compiler before anything that needs it is compiled.
@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// One `CI / Native` step, in workflow order.
+/// One `CI / Bundle` step, in workflow order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     /// Install the pinned `protoc` and `cargo-nextest` into `.tools`.
@@ -23,10 +23,16 @@ pub enum Step {
     Schema,
     Bundle,
     Lifecycle,
+    /// Package built lifecycle tests, Linux live tests, and their inputs for
+    /// other runners; opt-in.
+    Archive,
     /// Docker live tests; opt-in, never part of the default run.
     LiveDocker,
     /// Kubernetes live tests on a temporary kind cluster; opt-in.
     LiveKind,
+    /// Build the Linux live suites' images once and save them for the live
+    /// jobs to load; opt-in.
+    LiveImages,
 }
 
 impl Step {
@@ -51,23 +57,43 @@ impl Step {
             Step::Schema => "schema",
             Step::Bundle => "bundle",
             Step::Lifecycle => "lifecycle",
+            Step::Archive => "archive",
             Step::LiveDocker => "live-docker",
             Step::LiveKind => "live-kind",
+            Step::LiveImages => "live-images",
         }
     }
 
     pub fn parse(name: &str) -> Option<Step> {
         Step::ALL
             .into_iter()
-            .chain([Step::LiveDocker, Step::LiveKind])
+            .chain([
+                Step::Archive,
+                Step::LiveDocker,
+                Step::LiveKind,
+                Step::LiveImages,
+            ])
             .find(|step| step.name() == name)
+    }
+
+    /// The nextest profile and the JUnit report a test step writes under
+    /// `target/nextest`.
+    #[must_use]
+    pub fn junit(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Step::Test => Some(("ci", "test.xml")),
+            Step::Lifecycle => Some(("lifecycle", "lifecycle.xml")),
+            Step::LiveDocker => Some(("live-docker", "live-docker.xml")),
+            Step::LiveKind => Some(("live-kind", "live-kind.xml")),
+            _ => None,
+        }
     }
 
     /// Cargo arguments for this step. Tools, schema, and bundle run in-process
     /// or through the built tool and have none.
     pub fn cargo_args(self) -> &'static [&'static [&'static str]] {
         match self {
-            Step::Tools | Step::Schema | Step::Bundle => &[],
+            Step::Tools | Step::Schema | Step::Bundle | Step::LiveImages => &[],
             Step::LiveKind => &[&[
                 "nextest",
                 "run",
@@ -90,6 +116,15 @@ impl Step {
                 "live-docker",
                 "--run-ignored",
                 "only",
+            ]],
+            Step::Archive => &[&[
+                "nextest",
+                "archive",
+                "--locked",
+                "--workspace",
+                "--all-targets",
+                "--archive-file",
+                ".build/ci/lifecycle.tar.zst",
             ]],
             Step::Fmt => &[&["fmt", "--check"]],
             Step::Clippy => &[&[
@@ -132,6 +167,7 @@ impl Step {
 }
 
 pub mod live;
+pub mod timing;
 
 /// The nextest release target for a bundle platform.
 pub fn nextest_target(platform: &str) -> Result<&'static str, String> {

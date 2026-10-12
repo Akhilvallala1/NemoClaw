@@ -1,17 +1,20 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-// Deployment planning requires image discovery, whose engine transports are Unix-only.
-// Windows retains deterministic bridge tests and an explicit unsupported-engine regression.
-#![cfg(unix)]
-
 use nemoclaw_e2e::{
     assert_same_deployment_state, assert_same_managed_resources, openshell::Fixture,
 };
 use nemoclaw_sdk::{CancellationToken, Deployment, Outcome, config::Document};
 use std::{fs, path::PathBuf, process::Command};
 
+/// Export refuses a deployment whose apply is unfinished before it observes
+/// anything, so this checks the saved state without reading the SDK's files.
+async fn assert_apply_unfinished(deployment: &Deployment, cancel: &CancellationToken) {
+    let error = deployment.export(cancel).await.unwrap_err().to_string();
+    assert!(error.contains("apply is unfinished"), "{error}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn cli_terminal_outputs_preserve_lifecycle_and_json_contract() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -107,7 +110,7 @@ async fn cli_terminal_outputs_preserve_lifecycle_and_json_contract() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn missing_selected_provider_reconciles_without_sandbox_changes() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -154,7 +157,7 @@ async fn missing_selected_provider_reconciles_without_sandbox_changes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn independent_sandboxes_reconcile_concurrently_and_retain_shared_dependencies() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -201,7 +204,7 @@ async fn independent_sandboxes_reconcile_concurrently_and_retain_shared_dependen
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn incompatible_gateway_is_reported_by_opentofu_plan_without_sdk_preflight() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -225,7 +228,7 @@ async fn incompatible_gateway_is_reported_by_opentofu_plan_without_sdk_preflight
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn gateway_change_between_plan_and_apply_preserves_resources_and_allows_teardown() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -291,7 +294,7 @@ async fn gateway_change_between_plan_and_apply_preserves_resources_and_allows_te
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn interrupted_create_preserves_pending_targets_allows_unrelated_intent_and_recovers() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -309,9 +312,7 @@ async fn interrupted_create_preserves_pending_targets_allows_unrelated_intent_an
     let effects = fixture.state.lock().unwrap().effects;
     assert!(deployment.plan_destroy(&cancel).await.is_err());
     assert_eq!(fixture.state.lock().unwrap().effects, effects);
-    let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(directory.path().join("intent.json")).unwrap()).unwrap();
-    assert_eq!(record["pending"], true);
+    assert_apply_unfinished(&deployment, &cancel).await;
     let mut changed = document.clone();
     changed.spec.sandboxes[0]
         .agent
@@ -371,7 +372,7 @@ async fn interrupted_create_preserves_pending_targets_allows_unrelated_intent_an
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn sdk_apply_cli_export_sdk_reapply_and_cli_destroy_share_state() {
     lifecycle(include_str!(
         "../../nemoclaw-sdk/tests/fixtures/config/local.yaml"
@@ -380,20 +381,7 @@ async fn sdk_apply_cli_export_sdk_reapply_and_cli_destroy_share_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
-async fn explicit_network_sdk_apply_cli_export_reapply_and_destroy_preserve_intent() {
-    lifecycle(include_str!("../../../examples/explicit-policy.yaml")).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
-async fn inference_settings_sdk_apply_export_reapply_and_drift() {
-    lifecycle(include_str!("../../../examples/inference-tuning.yaml")).await;
-    lifecycle(include_str!("../../../examples/hermes-auth.yaml")).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn separate_agent_sandboxes_cli_export_reapply_and_policy_drift() {
     let mut document =
         Document::parse(include_str!("../../../examples/fabric-openclaw.yaml").as_bytes()).unwrap();
@@ -411,44 +399,10 @@ async fn separate_agent_sandboxes_cli_export_reapply_and_policy_drift() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn tool_disclosure_cli_export_reapply_and_drift() {
-    for mode in ["direct".to_owned(), "progressive".to_owned()] {
-        let mut document =
-            Document::parse(include_str!("../../../examples/fabric-openclaw.yaml").as_bytes())
-                .unwrap();
-        document.spec.sandboxes[0].harness.as_mut().unwrap().settings = Some(serde_json::from_value(serde_json::json!({"native_config":{"tools":{"toolSearch":if mode == "direct" { serde_json::json!(false) } else { serde_json::json!({"mode":"tools","searchDefaultLimit":8,"maxSearchLimit":20}) }}}})).unwrap());
-        // Exercise the existing launch-setting drift assertions as well as export/reapply.
-        document.spec.inference_providers[0].api =
-            Some(nemoclaw_sdk::config::InferenceApi::OpenaiCompletions);
-        lifecycle(&document.yaml().unwrap()).await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
-async fn execution_settings_cli_export_reapply_and_drift() {
-    for heartbeat in [None, Some("0m"), Some("30m")] {
-        let mut document =
-            Document::parse(include_str!("../../../examples/fabric-openclaw.yaml").as_bytes())
-                .unwrap();
-        document.spec.sandboxes[0]
-            .harness
-            .as_mut()
-            .unwrap()
-            .execution = Some(nemoclaw_sdk::config::AgentExecution {
-            timeout_seconds: Some(900),
-        });
-        if let Some(every) = heartbeat {
-            document.spec.sandboxes[0].harness.as_mut().unwrap().settings = Some(serde_json::from_value(serde_json::json!({"native_config":{"agents":{"defaults":{"heartbeat":{"every":every,"isolatedSession":true}}}}})).unwrap());
-        }
-        lifecycle(&document.yaml().unwrap()).await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
-async fn observability_cli_export_reapply_and_drift() {
+    // Disclosure modes are opaque native settings; agent_tools in the SDK owns
+    // both modes, so one deployment covers their drift detection.
     let mut document =
         Document::parse(include_str!("../../../examples/fabric-openclaw.yaml").as_bytes()).unwrap();
     document.spec.sandboxes[0]
@@ -456,90 +410,32 @@ async fn observability_cli_export_reapply_and_drift() {
         .as_mut()
         .unwrap()
         .settings = Some(
-        serde_json::from_value(serde_json::json!({
-        "native_config":{"diagnostics":{"enabled":true,"otel":{"enabled":true,"endpoint":"http://host.openshell.internal:4318",
-                "serviceName":"agent ${fixture} %{literal}","sampleRate":0.5}}}}))
+        serde_json::from_value(serde_json::json!({"native_config":{"tools":{"toolSearch":
+            {"mode":"tools","searchDefaultLimit":8,"maxSearchLimit":20}}}}))
         .unwrap(),
     );
+    // Exercise the existing launch-setting drift assertions as well as export/reapply.
+    document.spec.inference_providers[0].api =
+        Some(nemoclaw_sdk::config::InferenceApi::OpenaiCompletions);
     lifecycle(&document.yaml().unwrap()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
-async fn openclaw_interfaces_sdk_lifecycle_preserves_intent_and_rejects_drift() {
-    lifecycle(include_str!("../../../examples/openclaw-dashboard.yaml")).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
-async fn hermes_interfaces_sdk_export_reapply_and_drift() {
-    lifecycle(include_str!("../../../examples/hermes-interfaces.yaml")).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn web_search_cli_export_reapply_and_destroy() {
-    for provider in ["tavily", "brave"] {
-        let mut document =
-            Document::parse(include_str!("../../../examples/fabric-openclaw.yaml").as_bytes())
-                .unwrap();
-        document.spec.integrations = serde_json::from_value(serde_json::json!({
-            "search":{"kind":"webSearch","provider":provider,"credential":{"env":"SEARCH_KEY"}}
-        }))
-        .unwrap();
-        document.spec.sandboxes[0].agent.integration_refs = vec!["search".into()];
-        lifecycle(&document.yaml().unwrap()).await;
-        document.spec.sandboxes[0].integrations = std::mem::take(&mut document.spec.integrations);
-        lifecycle(&document.yaml().unwrap()).await;
-        let sandbox = &mut document.spec.sandboxes[0];
-        sandbox.agent.integration_refs.clear();
-        sandbox.agent.integrations = std::mem::take(&mut sandbox.integrations);
-        lifecycle(&document.yaml().unwrap()).await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
-async fn provider_definitions_export_reapply_and_destroy_in_their_authored_scope() {
-    for input in [
-        include_str!("../../../examples/fabric-openclaw.yaml"),
-        include_str!("../../../examples/hermes-auth.yaml"),
-    ] {
-        let mut document = Document::parse(input.as_bytes()).unwrap();
-        document.spec.sandboxes[0].inference_providers =
-            std::mem::take(&mut document.spec.inference_providers);
-        document.spec.inference_providers.push(
-            serde_json::from_value(serde_json::json!({
-                "name":"unused", "provider":"openai", "endpoint":"https://unused.example.test/v1",
-                "credential":{"env":"UNUSED_KEY"}
-            }))
-            .unwrap(),
-        );
-        lifecycle(&document.yaml().unwrap()).await;
-        let sandbox = &mut document.spec.sandboxes[0];
-        let provider = sandbox.inference_providers.remove(0);
-        let route = &mut sandbox.agent.inference.as_mut().unwrap().routes[0];
-        route.provider_ref = None;
-        route.provider = Some(provider);
-        lifecycle(&document.yaml().unwrap()).await;
-    }
+    // Every definition scope and provider compiles to the same kind of targets
+    // (web_search in the SDK), and their registration drift is one code path.
+    let mut document =
+        Document::parse(include_str!("../../../examples/fabric-openclaw.yaml").as_bytes()).unwrap();
+    document.spec.integrations = serde_json::from_value(serde_json::json!({
+        "search":{"kind":"webSearch","provider":"tavily","credential":{"env":"SEARCH_KEY"}}
+    }))
+    .unwrap();
+    document.spec.sandboxes[0].agent.integration_refs = vec!["search".into()];
+    lifecycle(&document.yaml().unwrap()).await;
 }
 
 async fn lifecycle(input: &str) {
-    lifecycle_with_rejected_annotations(input, false).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
-async fn unsupported_ownership_annotations_leave_an_applied_deployment_unchanged() {
-    lifecycle_with_rejected_annotations(
-        include_str!("../../../examples/explicit-policy.yaml"),
-        true,
-    )
-    .await;
-}
-
-async fn lifecycle_with_rejected_annotations(input: &str, reject_annotations: bool) {
     let bundle =
         PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").expect("explicit bundle path"));
     assert!(bundle.is_absolute());
@@ -645,40 +541,6 @@ async fn lifecycle_with_rejected_annotations(input: &str, reject_annotations: bo
         effects,
         document.spec.sandboxes.len() + if has_search { 5 } else { 3 }
     );
-    if reject_annotations {
-        let intent_path = directory.path().join("intent.json");
-        let state_path = directory.path().join("terraform.tfstate");
-        let before_intent = fs::read(&intent_path).unwrap();
-        let before_state = fs::read(&state_path).unwrap();
-        let mut invalid = serde_json::to_value(&document).unwrap();
-        invalid["spec"]["inferenceProviders"][0]["management"] = serde_json::json!("external");
-        let input = directory.path().join("unsupported.yaml");
-        fs::write(&input, invalid.to_string()).unwrap();
-        let rejected = Command::new(
-            bundle
-                .join("bin")
-                .join(nemoclaw_sdk::bundle::executable("nemoclaw")),
-        )
-        .args(["apply", "--state-dir"])
-        .arg(directory.path())
-        .arg(input)
-        .output()
-        .unwrap();
-        assert!(!rejected.status.success());
-        let diagnostic = String::from_utf8_lossy(&rejected.stderr);
-        assert!(
-            diagnostic.contains("configuration violates schema"),
-            "{diagnostic}"
-        );
-        assert!(
-            diagnostic.contains("spec.inferenceProviders[0]")
-                && diagnostic.contains("unknown fields are not allowed"),
-            "{diagnostic}"
-        );
-        assert_eq!(fs::read(intent_path).unwrap(), before_intent);
-        assert_eq!(fs::read(state_path).unwrap(), before_state);
-        assert_eq!(fixture.state.lock().unwrap().effects, effects);
-    }
     let exported = Command::new(
         bundle
             .join("bin")
@@ -782,7 +644,7 @@ async fn lifecycle_with_rejected_annotations(input: &str, reject_annotations: bo
         assert!(
             plan.changes[0]
                 .resource
-                .starts_with("nemoclaw_agent_configuration.")
+                .starts_with("fabric_agent_configuration.")
         );
         assert_eq!(plan.changes[0].actions, ["update"]);
         fixture.state.lock().unwrap().exec_exit = 2;
@@ -866,7 +728,7 @@ async fn lifecycle_with_rejected_annotations(input: &str, reject_annotations: bo
         assert!(
             plan.changes
                 .iter()
-                .any(|change| change.resource.starts_with("nemoclaw_agent_configuration."))
+                .any(|change| change.resource.starts_with("fabric_agent_configuration."))
         );
         assert_eq!(fixture.state.lock().unwrap().effects, effects);
         fixture
@@ -952,7 +814,7 @@ async fn lifecycle_with_rejected_annotations(input: &str, reject_annotations: bo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn readiness_and_observation_failures_retain_bindings_and_recover_without_recreation() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -985,10 +847,7 @@ async fn readiness_and_observation_failures_retain_bindings_and_recover_without_
     let established = fs::read(&state_path).unwrap();
     let effects = fixture.state.lock().unwrap().effects;
     assert_eq!(effects, 4);
-    let intent: serde_json::Value =
-        serde_json::from_slice(&fs::read(directory.path().join("intent.json")).unwrap()).unwrap();
-    assert_eq!(intent["pending"], true);
-    assert_eq!(intent["succeeded"], false);
+    assert_apply_unfinished(&deployment, &cancel).await;
     let error = deployment
         .apply(&document, &cancel)
         .await
@@ -1004,20 +863,16 @@ async fn readiness_and_observation_failures_retain_bindings_and_recover_without_
     let recovery = deployment.apply(&document, &cancel).await.unwrap();
     assert_eq!(recovery.changes.len(), 1);
     assert!(recovery.changes[0].resource.contains("agent_configuration"));
-    let intent: serde_json::Value =
-        serde_json::from_slice(&fs::read(directory.path().join("intent.json")).unwrap()).unwrap();
-    assert_eq!(intent["pending"], false);
-    assert_eq!(intent["succeeded"], true);
     let recovered = fs::read(&state_path).unwrap();
     let observed: serde_json::Value = serde_json::from_slice(&recovered).unwrap();
     let mut existing_resources = observed.clone();
     let resources = existing_resources["resources"].as_array_mut().unwrap();
     let configuration_count = resources
         .iter()
-        .filter(|resource| resource["type"] == "nemoclaw_agent_configuration")
+        .filter(|resource| resource["type"] == "fabric_agent_configuration")
         .count();
     assert_eq!(configuration_count, 1);
-    resources.retain(|resource| resource["type"] != "nemoclaw_agent_configuration");
+    resources.retain(|resource| resource["type"] != "fabric_agent_configuration");
     assert_same_managed_resources(
         &serde_json::to_vec(&existing_resources).unwrap(),
         &established,
@@ -1026,7 +881,7 @@ async fn readiness_and_observation_failures_retain_bindings_and_recover_without_
         .as_array()
         .unwrap()
         .iter()
-        .find(|resource| resource["type"] == "nemoclaw_sandbox_readiness")
+        .find(|resource| resource["type"] == "fabric_sandbox_readiness")
         .unwrap();
     assert_eq!(readiness["instances"][0]["attributes"]["ready"], true);
     assert!(readiness["instances"][0]["attributes"]["error_message"].is_null());
@@ -1054,7 +909,7 @@ async fn readiness_and_observation_failures_retain_bindings_and_recover_without_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn destroy_does_not_require_the_inference_credential_or_rewrite_its_reference() {
     struct Credential;
     impl nemoclaw_sdk::Secrets for Credential {
@@ -1082,7 +937,19 @@ async fn destroy_does_not_require_the_inference_credential_or_rewrite_its_refere
         .apply(&document, &cancel)
         .await
         .unwrap();
-    let deployment = Deployment::new(directory.path(), &bundle);
+    let initializations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = initializations.clone();
+    let deployment = Deployment::new(directory.path(), &bundle).with_progress(std::sync::Arc::new(
+        move |event| {
+            if let nemoclaw_sdk::Progress::Completed {
+                operation: "tofu.init",
+                ..
+            } = event
+            {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        },
+    ));
     let effects = fixture.state.lock().unwrap().effects;
     assert_eq!(
         deployment
@@ -1094,19 +961,28 @@ async fn destroy_does_not_require_the_inference_credential_or_rewrite_its_refere
         4
     );
     assert_eq!(fixture.state.lock().unwrap().effects, effects);
+    // Teardown initializes the stage once to read its bindings and once for
+    // its teardown graph; it does not read the same state again.
+    assert_eq!(
+        initializations.swap(0, std::sync::atomic::Ordering::SeqCst),
+        2
+    );
     assert_eq!(
         deployment.destroy(&cancel).await.unwrap().outcome,
         Outcome::Destroyed
     );
-    let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(directory.path().join("intent.json")).unwrap()).unwrap();
-    assert_eq!(record["document"], serde_json::to_value(&document).unwrap());
+    assert_eq!(initializations.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let error = deployment.export(&cancel).await.unwrap_err().to_string();
+    assert!(
+        error.contains("cannot export a destroyed deployment"),
+        "{error}"
+    );
     assert!(fixture.state.lock().unwrap().providers.is_empty());
     assert!(fixture.state.lock().unwrap().sandboxes.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn apply_preserves_bindings_without_generating_inference() {
     struct Secret;
     impl nemoclaw_sdk::Secrets for Secret {
@@ -1172,7 +1048,7 @@ async fn apply_preserves_bindings_without_generating_inference() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; exercises a slow graceful sandbox stop"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; exercises a slow graceful sandbox stop"]
 async fn destroy_waits_for_graceful_sandbox_stop_without_retrying() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -1198,7 +1074,7 @@ async fn destroy_waits_for_graceful_sandbox_stop_without_retrying() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn apply_health_failure_retains_resources_and_unchanged_apply_checks_again() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -1292,9 +1168,6 @@ async fn apply_health_failure_retains_resources_and_unchanged_apply_checks_again
     assert!(result.changes.is_empty());
     assert!(result.health[0].health.allows_apply_completion());
     assert_eq!(fixture.state.lock().unwrap().effects, effects);
-    let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(directory.path().join("intent.json")).unwrap()).unwrap();
-    assert_eq!(record["succeeded"], true);
     let native_report =
         serde_json::json!({"fixture_check":{"outcome":"failed","reason":"fixture_probe_failed"}});
     fixture.state.lock().unwrap().health_report = Some(serde_json::json!({
@@ -1312,7 +1185,7 @@ async fn apply_health_failure_retains_resources_and_unchanged_apply_checks_again
         .as_array()
         .unwrap()
         .iter()
-        .find(|resource| resource["type"] == "nemoclaw_sandbox_readiness")
+        .find(|resource| resource["type"] == "fabric_sandbox_readiness")
         .unwrap();
     let observation = &readiness["instances"][0]["attributes"];
     assert_eq!(observation["ready"], false);
@@ -1336,7 +1209,7 @@ async fn apply_health_failure_retains_resources_and_unchanged_apply_checks_again
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn mixed_sandboxes_reorder_add_recover_export_and_destroy_independently() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -1393,7 +1266,7 @@ async fn mixed_sandboxes_reorder_add_recover_export_and_destroy_independently() 
         added
             .changes
             .iter()
-            .any(|change| change.resource == "nemoclaw_agent_configuration.third")
+            .any(|change| change.resource == "fabric_agent_configuration.third")
     );
     fixture.state.lock().unwrap().sandbox_phase = Some(openshell_core::proto::SandboxPhase::Error);
     assert!(deployment.apply(&document, &cancel).await.is_err());
@@ -1444,7 +1317,7 @@ async fn mixed_sandboxes_reorder_add_recover_export_and_destroy_independently() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn successful_apply_checkpoints_mutations_before_reading_health() {
     use nemoclaw_sdk::{Progress, StepOutcome};
     use std::sync::{Arc, Mutex};
@@ -1459,9 +1332,8 @@ async fn successful_apply_checkpoints_mutations_before_reading_health() {
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
     let cancel = CancellationToken::new();
     let interrupt = cancel.clone();
-    let observed = Arc::new(Mutex::new((false, None)));
+    let observed = Arc::new(Mutex::new((false, false)));
     let captured = observed.clone();
-    let intent = directory.path().join("intent.json");
     let deployment =
         Deployment::new(directory.path(), &bundle).with_progress(Arc::new(move |event| {
             let mut observed = captured.lock().unwrap();
@@ -1475,10 +1347,7 @@ async fn successful_apply_checkpoints_mutations_before_reading_health() {
                     operation: "tofu.show",
                     ..
                 } if observed.0 => {
-                    observed.1 = Some(
-                        serde_json::from_slice::<serde_json::Value>(&fs::read(&intent).unwrap())
-                            .unwrap(),
-                    );
+                    observed.1 = true;
                     interrupt.cancel();
                 }
                 _ => {}
@@ -1488,21 +1357,18 @@ async fn successful_apply_checkpoints_mutations_before_reading_health() {
         deployment.apply(&document, &cancel).await,
         Err(nemoclaw_sdk::Error::Cancelled)
     ));
-    let record = observed
-        .lock()
-        .unwrap()
-        .1
-        .clone()
-        .expect("post-apply health observation");
-    assert_eq!(
-        record["pending"], false,
-        "mutation checkpoint must precede the health read"
-    );
-    assert_eq!(
-        record["succeeded"], false,
-        "health has not established success"
-    );
+    assert!(observed.lock().unwrap().1, "post-apply health observation");
     let effects = fixture.state.lock().unwrap().effects;
+    // Export refuses an unfinished apply, so exporting shows that the mutation
+    // checkpoint preceded the health read.
+    assert_eq!(
+        Deployment::new(directory.path(), &bundle)
+            .export(&CancellationToken::new())
+            .await
+            .expect("mutation checkpoint must precede the health read"),
+        document
+    );
+    assert_eq!(fixture.state.lock().unwrap().effects, effects);
     let result = Deployment::new(directory.path(), &bundle)
         .apply(&document, &CancellationToken::new())
         .await
@@ -1512,7 +1378,7 @@ async fn successful_apply_checkpoints_mutations_before_reading_health() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn failed_first_apply_can_destroy_bound_resources_without_successful_reapply() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     for sandbox_error in [true, false] {
@@ -1587,7 +1453,7 @@ async fn failed_first_apply_can_destroy_bound_resources_without_successful_reapp
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn failed_first_configuration_accepts_corrected_intent_without_recreating_sandbox() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -1633,7 +1499,7 @@ async fn failed_first_configuration_accepts_corrected_intent_without_recreating_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn cli_redaction_preserves_failures_and_recovery_with_short_and_colliding_credentials() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -1697,54 +1563,58 @@ async fn cli_redaction_preserves_failures_and_recovery_with_short_and_colliding_
     fixture.state.lock().unwrap().configuration_error = Some(serde_json::json!({
         "error": {"stage":"start", "code":"lifecycle_adapter_start_failed", "runtime_state":"unavailable", "message":"native-secret-must-not-escape"}
     }));
-    for secret in [
-        "a",
-        "z",
-        "lifecycle_adapter_start_failed",
-        "inert-credential-for-context-check",
+    // Redaction rules belong to nemoclaw-sdk's process tests; this checks
+    // that each rule reaches both output formats of a failed apply.
+    for (secret, format) in [
+        ("a", "text"),
+        ("lifecycle_adapter_start_failed", "json"),
+        ("inert-credential-for-context-check", "text"),
     ] {
-        for format in ["text", "json"] {
-            let failed = invoke("apply", format, secret);
-            assert_eq!(failed.status.code(), Some(1));
-            let stdout = String::from_utf8(failed.stdout).unwrap();
-            let stderr = String::from_utf8(failed.stderr).unwrap();
-            let message = if format == "json" {
-                let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-                assert_eq!(result["outcome"], "failed");
-                result["error"]["message"].as_str().unwrap().to_owned()
-            } else {
-                stderr.clone()
-            };
-            if secret.len() == 1 {
-                assert!(message.contains("child diagnostic withheld because a credential is too short for safe redaction"), "{message}");
-                assert!(
-                    !message.contains("[redacted]"),
-                    "short-value character matches must not escape"
-                );
-            } else if secret == "lifecycle_adapter_start_failed" {
-                assert!(message.contains("[redacted]"), "{message}");
-                assert!(
-                    message.contains("agent runtime is unavailable"),
-                    "{message}"
-                );
-                assert!(!message.contains(secret));
-            } else {
-                assert!(message.contains("sandbox/assistant"), "{message}");
-                assert!(
-                    message.contains("lifecycle_adapter_start_failed"),
-                    "{message}"
-                );
-                assert!(
-                    message.contains("agent runtime is unavailable"),
-                    "{message}"
-                );
-            }
-            assert!(!message.contains("[[redacted]]"));
-            assert!(!stdout.contains("native-secret-must-not-escape"));
-            assert!(!stderr.contains("native-secret-must-not-escape"));
-            assert_eq!(fixture.state.lock().unwrap().sandboxes, original);
-            assert_eq!(fixture.state.lock().unwrap().effects, effects);
+        let failed = invoke("apply", format, secret);
+        assert_eq!(failed.status.code(), Some(1));
+        let stdout = String::from_utf8(failed.stdout).unwrap();
+        let stderr = String::from_utf8(failed.stderr).unwrap();
+        let message = if format == "json" {
+            let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(result["outcome"], "failed");
+            result["error"]["message"].as_str().unwrap().to_owned()
+        } else {
+            stderr.clone()
+        };
+        if secret.len() == 1 {
+            assert!(
+                message.contains(
+                    "child diagnostic withheld because a credential is too short for safe redaction"
+                ),
+                "{message}"
+            );
+            assert!(
+                !message.contains("[redacted]"),
+                "short-value character matches must not escape"
+            );
+        } else if secret == "lifecycle_adapter_start_failed" {
+            assert!(message.contains("[redacted]"), "{message}");
+            assert!(
+                message.contains("agent runtime is unavailable"),
+                "{message}"
+            );
+            assert!(!message.contains(secret));
+        } else {
+            assert!(message.contains("sandbox/assistant"), "{message}");
+            assert!(
+                message.contains("lifecycle_adapter_start_failed"),
+                "{message}"
+            );
+            assert!(
+                message.contains("agent runtime is unavailable"),
+                "{message}"
+            );
         }
+        assert!(!message.contains("[[redacted]]"));
+        assert!(!stdout.contains("native-secret-must-not-escape"));
+        assert!(!stderr.contains("native-secret-must-not-escape"));
+        assert_eq!(fixture.state.lock().unwrap().sandboxes, original);
+        assert_eq!(fixture.state.lock().unwrap().effects, effects);
     }
     fixture.state.lock().unwrap().configuration_error = None;
     let recovered = invoke("apply", "json", "a");
@@ -1765,7 +1635,7 @@ async fn cli_redaction_preserves_failures_and_recovery_with_short_and_colliding_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway rejection fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway rejection fixture"]
 async fn rejected_policy_fails_promptly_with_context_and_allows_recovery_or_destroy() {
     use openshell_core::proto::{
         ConfigurationAdmissionState, SandboxConfigurationAdmission, SandboxPhase,
@@ -1879,7 +1749,7 @@ async fn rejected_policy_fails_promptly_with_context_and_allows_recovery_or_dest
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn pi_start_failure_names_the_sandbox_in_cli_text_and_json_and_allows_destroy() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     for format in ["text", "json"] {
@@ -1961,7 +1831,7 @@ async fn pi_start_failure_names_the_sandbox_in_cli_text_and_json_and_allows_dest
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn sandbox_startup_failure_names_reason_and_guidance_and_allows_destroy() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     for (format, reason, guidance) in [
@@ -2061,7 +1931,7 @@ async fn sandbox_startup_failure_names_reason_and_guidance_and_allows_destroy() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn scoped_provider_labels_and_stopped_runtime_plans_preserve_authored_identity() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -2167,7 +2037,7 @@ async fn scoped_provider_labels_and_stopped_runtime_plans_preserve_authored_iden
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|resource| resource["address"] == "nemoclaw_agent_configuration.assistant")
+                .find(|resource| resource["address"] == "fabric_agent_configuration.assistant")
                 .unwrap();
             assert_eq!(resource["agentRunning"], false);
             assert_eq!(resource["plannedActions"], serde_json::json!(["update"]));

@@ -1,10 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-// Deployment planning requires image discovery, whose engine transports are Unix-only.
-// Windows retains deterministic bridge tests and an explicit unsupported-engine regression.
-#![cfg(unix)]
-use nemoclaw_sdk::config::InferenceProviderKind;
-
 use nemoclaw_e2e::openshell::Fixture;
 use nemoclaw_sdk::{CancellationToken, Deployment, config::Document};
 use std::{
@@ -16,22 +11,17 @@ use std::{
 macro_rules! harness_test {
     ($name:ident, $harness:literal) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        #[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+        #[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
         async fn $name() {
             harness_reconciles_configuration_and_protects_sandbox_identity($harness).await;
         }
     };
 }
 
-harness_test!(harness_deepagents, "nvidia.fabric.langchain.deepagents");
-harness_test!(harness_hermes, "nvidia.fabric.hermes");
+// Every harness's example compiles, passes the Fabric planner, and exports
+// in the SDK's tests. OpenClaw covers the harness-independent checks here,
+// and Pi its route roles.
 harness_test!(harness_openclaw, "nvidia.fabric.openclaw");
-harness_test!(harness_claude, "nvidia.fabric.claude");
-harness_test!(harness_codex, "nvidia.fabric.codex");
-harness_test!(harness_mini_swe_agent, "nvidia.fabric.mini-swe-agent");
-harness_test!(harness_nooa, "nvidia.fabric.nooa");
-harness_test!(harness_nooa_bench, "nvidia.fabric.nooa.bench-agent");
-harness_test!(harness_remote_agent, "nvidia.fabric.remote-agent");
 harness_test!(harness_pi, "nvidia.fabric.pi");
 
 async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness: &str) {
@@ -46,11 +36,7 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
     // Keep passive discovery deterministic across apply and export. Connection
     // failures can otherwise vary between transport errors and timeouts.
-    let catalog_path = if harness == "nvidia.fabric.claude" {
-        "/v1/models?limit=1000"
-    } else {
-        "/v1/models"
-    };
+    let catalog_path = "/v1/models";
     let unexpected = Arc::new(Mutex::new(Vec::new()));
     let seen = unexpected.clone();
     let catalog = nemoclaw_e2e::http_fixture::Fixture::start_tcp(move |request| {
@@ -85,21 +71,6 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
             .routes[0]
             .overrides
             .clone();
-    }
-    if harness == "nvidia.fabric.claude" {
-        document.spec.inference_providers[0].provider = InferenceProviderKind::Anthropic;
-    }
-    if harness == "nvidia.fabric.codex" {
-        document.spec.inference_providers[0].api =
-            Some(nemoclaw_sdk::config::InferenceApi::OpenaiResponses);
-    }
-    if harness == "nvidia.fabric.nooa" {
-        document.spec.sandboxes[0].harness.as_mut().unwrap().config = Some(
-            serde_json::from_value(
-                serde_json::json!({"workflow":{"target_id":"nvidia.nooa.coding-agent"}}),
-            )
-            .unwrap(),
-        );
     }
     let deployment = Deployment::new(directory.path(), &bundle);
     let cancel = CancellationToken::new();
@@ -186,7 +157,7 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
         assert_eq!(planned.changes.len(), 1, "{harness}");
         assert_eq!(
             planned.changes[0].resource,
-            "nemoclaw_agent_configuration.assistant"
+            "fabric_agent_configuration.assistant"
         );
         assert_eq!(
             writes(),
@@ -241,7 +212,7 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
         let planned = deployment.plan(&changed_model, &cancel).await.unwrap();
         assert!(planned.changes.iter().any(|change| change.resource
             == format!(
-                "nemoclaw_agent_configuration.{}",
+                "fabric_agent_configuration.{}",
                 document.spec.sandboxes[0].name
             )));
         assert_eq!(writes(), initial_writes, "plan must not configure Pi");
@@ -428,7 +399,7 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE"]
 async fn missing_runtime_declaration_stops_planning_without_recreation() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -478,7 +449,7 @@ async fn missing_runtime_declaration_stops_planning_without_recreation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn failed_configuration_reports_safe_runtime_state_and_recovers_without_recreation() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();

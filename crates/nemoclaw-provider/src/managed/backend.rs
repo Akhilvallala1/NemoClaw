@@ -48,10 +48,7 @@ impl ManagedBackend {
         };
         let mut result = match &storage {
             Some(storage) => storage.row()?,
-            None => Row::from([(
-                "spec".into(),
-                row.get("spec").ok_or(ObservationError::Incomplete)?.clone(),
-            )]),
+            None => gateway_row(kind, row)?,
         };
         if let Some(policy) = row.get("image_pull_policy") {
             result.insert("image_pull_policy".into(), policy.clone());
@@ -94,21 +91,22 @@ impl ManagedBackend {
         }))
     }
 }
-fn specification(kind: &str, encoded: &str) -> Result<Spec, Error> {
-    let spec: Spec = serde_json::from_str(encoded).map_err(|_| ObservationError::Incomplete)?;
-    let expected = if kind == GATEWAY_STORAGE_KIND {
-        GATEWAY_KIND
-    } else {
-        kind
-    };
-    if spec.kind != expected {
+/// The configured gateway attributes an observation reports. Observations
+/// report every field, so Docker gateway storage reports its omitted
+/// endpoint as empty.
+fn gateway_row(kind: &str, row: &Row) -> Result<Row, Error> {
+    let mut result = specification(kind, row)?.gateway_row(kind)?;
+    result.entry("endpoint".into()).or_default();
+    Ok(result)
+}
+fn specification(kind: &str, row: &Row) -> Result<Spec, Error> {
+    if !ManagedBackend::supports(kind) {
         return Err(ObservationError::BindingMismatch.into());
     }
-    spec.validate()?;
-    Ok(spec)
+    Spec::from_gateway_row(kind, row)
 }
 fn configured_specification(kind: &str, row: &Row) -> Result<Spec, Error> {
-    let mut spec = specification(kind, row.get("spec").ok_or(ObservationError::Incomplete)?)?;
+    let mut spec = specification(kind, row)?;
     let policy = crate::config::ImagePullPolicy::from_row(row)?;
     if let Some(process) = &mut spec.process {
         process.image_pull_policy = policy;
@@ -141,11 +139,10 @@ impl Backend for ManagedBackend {
             }
             return Ok(());
         }
-        let encoded = desired.get("spec").ok_or(ObservationError::Incomplete)?;
-        nemoclaw_sdk::services::validate_resource_spec(kind, encoded)?;
         let want = configured_specification(kind, desired)?;
+        want.validate_runtime()?;
         let old = prior
-            .map(|row| specification(kind, row.get("spec").ok_or(ObservationError::Incomplete)?))
+            .map(|row| specification(kind, row))
             .transpose()?
             .unwrap_or_else(|| want.clone());
         if self.engine.endpoint() != want.engine()
@@ -218,8 +215,7 @@ impl Backend for ManagedBackend {
                 "persistent storage deletion is forbidden",
             ));
         }
-        let spec = specification(kind, prior.get("spec").ok_or(ObservationError::Incomplete)?)
-            .map_err(|error| diagnostic(&error))?;
+        let spec = specification(kind, prior).map_err(|error| diagnostic(&error))?;
         let id = prior
             .get("id")
             .filter(|id| !id.is_empty())
@@ -234,17 +230,104 @@ impl Backend for ManagedBackend {
     }
 }
 
-#[cfg(all(test, unix))]
+/// Extract connection selection before constructing the resource backend.
+pub fn connection_endpoint(kind: &str, row: &Row) -> Result<String, ObservationError> {
+    if ManagedBackend::supports(kind) {
+        return specification(kind, row)
+            .map(|spec| spec.engine().to_owned())
+            .map_err(|error| diagnostic(&error));
+    }
+    let Some(encoded) = row.get("spec") else {
+        return Storage::from_row(row)
+            .map(|storage| storage.engine)
+            .map_err(|error| diagnostic(&error));
+    };
+    if let Ok(spec) = serde_json::from_str::<Spec>(encoded) {
+        if spec.kind != kind {
+            return Err(ObservationError::BindingMismatch);
+        }
+        spec.validate().map_err(|error| diagnostic(&error))?;
+        Ok(spec.engine().to_owned())
+    } else {
+        Err(ObservationError::Incomplete)
+    }
+}
+
+/// Select the resource's execution target before observing or mutating it.
+pub fn runtime_engine(
+    connections: &crate::docker::Connections,
+    kind: &str,
+    row: &Row,
+) -> Result<Engine, Error> {
+    let endpoint = connection_endpoint(kind, row)?;
+    let service = row
+        .get("spec")
+        .and_then(|encoded| serde_json::from_str::<Spec>(encoded).ok())
+        .is_some_and(|spec| spec.process.is_some());
+    if service {
+        service_engine(connections, &endpoint)
+    } else {
+        connections.resolve(&endpoint)
+    }
+}
+
+/// Apply the same explicit host-observer selection to resource and group checks.
+pub(crate) fn service_engine(
+    connections: &crate::docker::Connections,
+    endpoint: &str,
+) -> Result<Engine, Error> {
+    let engine = connections.resolve(endpoint)?;
+    if engine.endpoint().starts_with("ssh://") && !engine.host_observer_explicit {
+        return Ok(engine.with_host_observer(std::sync::Arc::new(crate::hardware::SshHost)));
+    }
+    Ok(engine)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::docker::fixture::Fixture;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn observations_report_every_gateway_attribute_for_both_drivers() {
+        let fixtures: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("reference.json")).unwrap();
+        let gateway: Spec = serde_json::from_str(fixtures[0]["spec"].as_str().unwrap()).unwrap();
+        for driver in [
+            nemoclaw_sdk::config::ComputeDriver::Docker,
+            nemoclaw_sdk::config::ComputeDriver::Podman,
+        ] {
+            let mut gateway = gateway.clone();
+            gateway.compute_driver = driver;
+            gateway.gateway.runtime.provider = driver;
+            for (kind, spec) in [
+                (GATEWAY_KIND, gateway.clone()),
+                (GATEWAY_STORAGE_KIND, gateway.storage()),
+            ] {
+                let observed = gateway_row(kind, &spec.gateway_row(kind).unwrap()).unwrap();
+                let definition = crate::resource_definition(kind).unwrap();
+                for attribute in definition.attributes() {
+                    // The observation adds the identity and acquisition policy.
+                    if !definition.is_computed(attribute)
+                        && !matches!(attribute, "id" | "image_pull_policy")
+                    {
+                        assert!(
+                            observed.contains_key(attribute),
+                            "{driver:?} {kind}.{attribute}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn shared_backend_preserves_storage_identity_and_diagnostics_without_recreation() {
         let response = Arc::new(Mutex::new((404, json!({}))));
         let state = response.clone();
-        let fixture = Fixture::start(move |request| {
+        let fixture = Fixture::engine(move |request| {
             assert_eq!(
                 request.method, "GET",
                 "observation or rejection mutated Docker"
@@ -305,58 +388,4 @@ mod tests {
         assert!(backend.read(STORAGE_KIND, &row, false).await.is_err());
         assert!(backend.ensure(STORAGE_KIND, &row).await.error().is_some());
     }
-}
-
-/// Extract connection selection before constructing the resource backend.
-pub fn connection_endpoint(kind: &str, row: &Row) -> Result<String, ObservationError> {
-    let Some(encoded) = row.get("spec") else {
-        return Storage::from_row(row)
-            .map(|storage| storage.engine)
-            .map_err(|error| diagnostic(&error));
-    };
-    if let Ok(spec) = serde_json::from_str::<Spec>(encoded) {
-        if spec.kind
-            != if kind == GATEWAY_STORAGE_KIND {
-                GATEWAY_KIND
-            } else {
-                kind
-            }
-        {
-            return Err(ObservationError::BindingMismatch);
-        }
-        spec.validate().map_err(|error| diagnostic(&error))?;
-        Ok(spec.engine().to_owned())
-    } else {
-        Err(ObservationError::Incomplete)
-    }
-}
-
-/// Select the resource's execution target before observing or mutating it.
-pub fn runtime_engine(
-    connections: &crate::docker::Connections,
-    kind: &str,
-    row: &Row,
-) -> Result<Engine, Error> {
-    let endpoint = connection_endpoint(kind, row)?;
-    let service = row
-        .get("spec")
-        .and_then(|encoded| serde_json::from_str::<Spec>(encoded).ok())
-        .is_some_and(|spec| spec.process.is_some());
-    if service {
-        service_engine(connections, &endpoint)
-    } else {
-        connections.resolve(&endpoint)
-    }
-}
-
-/// Apply the same explicit host-observer selection to resource and group checks.
-pub(crate) fn service_engine(
-    connections: &crate::docker::Connections,
-    endpoint: &str,
-) -> Result<Engine, Error> {
-    let engine = connections.resolve(endpoint)?;
-    if engine.endpoint().starts_with("ssh://") && !engine.host_observer_explicit {
-        return Ok(engine.with_host_observer(std::sync::Arc::new(crate::hardware::SshHost)));
-    }
-    Ok(engine)
 }

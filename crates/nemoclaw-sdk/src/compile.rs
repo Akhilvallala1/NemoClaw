@@ -13,10 +13,19 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/nemoclaw";
 /// Registry address of the provider that reconciles OpenShell objects.
 pub const OPENSHELL_PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/openshell";
+/// Registry address of the provider that configures Fabric agents in sandboxes.
+pub const FABRIC_PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/fabric";
+/// Providers that reach the gateway, and so share its connection settings.
+pub const GATEWAY_PROVIDERS: [&str; 2] = ["openshell", "fabric"];
+/// This repository's providers; each takes `destroy`.
+pub const NEMOCLAW_PROVIDERS: [&str; 3] = ["nemoclaw", "openshell", "fabric"];
 
 /// The OpenTofu resource type that reconciles a resource kind.
 pub fn resource_type(kind: &str) -> String {
-    nemoclaw_openshell::resource_type(kind).unwrap_or_else(|| format!("nemoclaw_{kind}"))
+    nemoclaw_openshell::resource_type(kind).unwrap_or_else(|| match kind {
+        "agent_configuration" => format!("fabric_{kind}"),
+        _ => format!("nemoclaw_{kind}"),
+    })
 }
 pub use crate::artifact_pins::OPENTOFU_VERSION;
 pub type Generations = BTreeMap<String, String>;
@@ -129,7 +138,7 @@ fn targets_with_plans(
         {
             result.push(Target {
                 kind: "agent_configuration".into(),
-                address: format!("nemoclaw_agent_configuration.{}", sandbox.name),
+                address: format!("fabric_agent_configuration.{}", sandbox.name),
                 values: [
                     ("workspace".into(), workspace.clone()),
                     ("name".into(), sandbox.name.clone()),
@@ -368,10 +377,12 @@ fn graph_base(document: &Document, version: &str) -> Result<Value, ConfigError> 
     let mut graph = json!({
         "terraform":{"required_version":format!("= {OPENTOFU_VERSION}"),"required_providers":{
             "nemoclaw":{"source":PROVIDER_ADDRESS,"version":format!("= {version}")},
-            "openshell":{"source":OPENSHELL_PROVIDER_ADDRESS,"version":format!("= {version}")}
+            "openshell":{"source":OPENSHELL_PROVIDER_ADDRESS,"version":format!("= {version}")},
+            "fabric":{"source":FABRIC_PROVIDER_ADDRESS,"version":format!("= {version}")}
         }},
-        // Fabric resources still reach the gateway through the nemoclaw provider.
-        "provider":{"nemoclaw":provider.clone(),"openshell":provider}, "resource":{},
+        // The nemoclaw provider reaches engines and clusters named on each
+        // resource; only the gateway providers take the connection.
+        "provider":{"nemoclaw":{},"openshell":provider.clone(),"fabric":provider}, "resource":{},
         "data":{"openshell_gateway":{"current":{"required_compute_drivers":drivers}}}
     });
     crate::discovery_graph::populate(&mut graph, document)?;
@@ -397,7 +408,7 @@ fn compile_with_plans(
     let mut ordered: Vec<_> = document.spec.sandboxes.iter().collect();
     ordered.sort_by_key(|sandbox| &sandbox.name);
     for (index, sandbox) in ordered.iter().enumerate() {
-        let source = format!("data.nemoclaw_fabric_capabilities.sandbox_{index}");
+        let source = format!("data.fabric_capabilities.sandbox_{index}");
         runtime_sources.insert(sandbox.name.clone(), source.clone());
         for provider in document.sandbox_inference_providers(sandbox)? {
             profile_sources
@@ -554,38 +565,57 @@ fn compile_with_plans(
             "error_message":gateway_error_message("self")
         }]}
     });
-    let sandbox_readiness: BTreeMap<_, _> = document.spec.sandboxes.iter().map(|sandbox| {
-        let reference = format!("openshell_sandbox.{}", sandbox.name);
-        // Readiness takes the sandbox's string attributes; typed inputs stay behind.
-        let typed = serde_json::to_string(
-            &nemoclaw_openshell::structured_inputs("sandbox")
-                .iter()
-                .map(|input| input.attribute)
-                .collect::<Vec<_>>(),
-        )
-        .expect("attribute names");
-        let binding = format!(
-            "${{merge({{for key, value in {reference} : key => value if !contains({typed}, key)}}, {{config_json = nemoclaw_agent_configuration.{}.config_json}})}}",
-            sandbox.name
-        );
-        let condition = if sandbox.allow_unsupported_health {
-            "${self.ready || try(jsondecode(self.health_json).supported == false && jsondecode(self.health_json).report == null && jsondecode(self.health_json).reason_code == \"fabric_health_unsupported\", false)}"
-        } else {
-            "${self.ready}"
-        };
-        Ok((sandbox.name.clone(), json!({
-            "sandbox":binding,
+    let sandbox_readiness: BTreeMap<_, _> = document
+        .spec
+        .sandboxes
+        .iter()
+        .map(|sandbox| {
+            // Readiness names the sandbox and configuration attributes it reads.
+            let mut readiness: serde_json::Map<String, Value> = [
+                "workspace",
+                "name",
+                "id",
+                "owner",
+                "generation",
+                "agent_name",
+                "agent_runtime",
+                "runtime_json",
+            ]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    json!(format!("${{openshell_sandbox.{}.{name}}}", sandbox.name)),
+                )
+            })
+            .collect();
+            readiness.insert(
+                "config_json".into(),
+                json!(format!(
+                    "${{fabric_agent_configuration.{}.config_json}}",
+                    sandbox.name
+                )),
+            );
             // uuid() is unknown in a saved plan and records a unique observation
             // token, so failed applies cannot report stale health as a new result.
-            "read_trigger":"${uuid()}",
-            "lifecycle":{"postcondition":[{
-                "condition":condition,
-                "error_message":"${self.error_message != null ? self.error_message : \"Fabric readiness could not be established; resources retained\"}"
-            }]}
-        })))
-    }).collect::<Result<_, ConfigError>>()?;
+            readiness.insert("read_trigger".into(), json!("${uuid()}"));
+            let condition = if sandbox.allow_unsupported_health {
+                "${self.ready || try(jsondecode(self.health_json).supported == false && jsondecode(self.health_json).report == null && jsondecode(self.health_json).reason_code == \"fabric_health_unsupported\", false)}"
+            } else {
+                "${self.ready}"
+            };
+            readiness.insert(
+                "lifecycle".into(),
+                json!({"postcondition":[{
+                    "condition":condition,
+                    "error_message":"${self.error_message != null ? self.error_message : \"Fabric readiness could not be established; resources retained\"}"
+                }]}),
+            );
+            (sandbox.name.clone(), Value::Object(readiness))
+        })
+        .collect();
     graph["resource"] = resources;
-    graph["data"]["nemoclaw_sandbox_readiness"] = json!(sandbox_readiness);
+    graph["data"]["fabric_sandbox_readiness"] = json!(sandbox_readiness);
     graph["data"]["openshell_gateway"]["apply"] = apply_readiness;
     Ok(graph)
 }

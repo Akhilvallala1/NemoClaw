@@ -51,7 +51,7 @@ export OPENSHELL_WORKSPACE=REPLACE_WITH_REPORTED_WORKSPACE
 
 JSON results expose the same values as `connection.gatewayEndpoint` and `connection.workspace`.
 These selectors describe the configured target, including when a plan is incomplete; they do not establish access or create an authenticated OpenShell CLI profile.
-The gateway selectors follow the [pinned OpenShell CLI parser and resolver](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-cli/src/main.rs).
+The gateway selectors follow the [pinned OpenShell CLI parser and resolver](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-cli/src/main.rs).
 The forward or sandbox command below verifies access to the selected workspace; setting an environment variable alone does not.
 On an authentication or missing-sandbox error, check the endpoint, workspace, sandbox name, and operator-provided credentials before changing deployment state.
 
@@ -79,7 +79,7 @@ Select `linux/amd64` on an AMD64 builder.
 Follow the [image build](build.md#build-agent-images), including image availability on the sandbox compute daemon.
 Replace the dashboard example's image digest, deployment UID, endpoint, and model values, then use the [desired-state workflow](usage.md).
 Changes to public Fabric configuration reconcile through the owned agent-configuration resource and restart the runtime inside its existing sandbox.
-Image or sandbox policy changes retain the ordinary replacement protections.
+Image or sandbox policy changes retain the replacement protections.
 
 ## Connect through OpenShell
 

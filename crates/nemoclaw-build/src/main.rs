@@ -56,20 +56,60 @@ enum Action {
     Runtime {
         manifest: PathBuf,
     },
-    /// Run this platform's `CI / Native` steps, or one named step.
+    /// Run this platform's `CI / Bundle` steps, or one named step.
     ///
     /// Build this command without default features (`cargo ci`), so it can
     /// install the pinned Protocol Buffers compiler before anything needs it.
     Ci {
         /// One step: tools, fmt, clippy, build, test, schema, bundle, or lifecycle;
-        /// or live-docker, which runs only when named.
+        /// archive, live-docker, and live-kind run only when named.
         step: Option<String>,
+        /// Nextest partition for an explicitly selected lifecycle run (for example slice:1/2).
+        #[arg(long)]
+        partition: Option<String>,
+        /// Run lifecycle tests from a nextest archive instead of compiling them.
+        #[arg(long)]
+        archive_file: Option<PathBuf>,
+        /// Load the live suites' images from this `ci live-images` archive
+        /// instead of building them.
+        #[arg(long)]
+        images: Option<PathBuf>,
     },
     /// Build agent images with their installed Fabric metadata, or qualify them.
     Images {
         #[command(subcommand)]
         action: ImageAction,
     },
+    /// Print whether changes from a base revision to HEAD can affect a CI workflow.
+    ///
+    /// Writes `WORKFLOW=true` or `WORKFLOW=false` to standard output and the reason to
+    /// standard error. A failed analysis prints `true`, so the workflow runs.
+    Changes {
+        workflow: ChangedWorkflow,
+        /// Base revision, such as the pull request base commit.
+        #[arg(long)]
+        base: String,
+    },
+    /// Report a platform's whole lifecycle suite from its partitions' JUnit
+    /// artifacts, and add the report to the GitHub job summary. On the Linux
+    /// CI runners, fail when a test binary exceeds its budget.
+    LifecycleTiming {
+        /// Directory holding the downloaded lifecycle-PLATFORM-SHARD-ATTEMPT
+        /// artifacts, one subdirectory each.
+        directory: PathBuf,
+        #[arg(long)]
+        platform: String,
+        /// The shards CI ran, as a JSON list such as [1, 2].
+        #[arg(long)]
+        shards: String,
+    },
+}
+#[derive(Clone, clap::ValueEnum)]
+enum ChangedWorkflow {
+    /// `CI / Images`.
+    Images,
+    /// `Live / Docker` and `Live / Kind`.
+    Live,
 }
 #[cfg(feature = "sdk")]
 #[derive(Subcommand)]
@@ -282,7 +322,12 @@ async fn bundle(pins: &Pins, platform: &str) -> Result<()> {
     nemoclaw_build::verify_source_version(&version, &sources()?)?;
     let target = target(platform)?;
     build(
-        &["nemoclaw-cli", "nemoclaw-provider", "openshell-provider"],
+        &[
+            "nemoclaw-cli",
+            "nemoclaw-provider",
+            "openshell-provider",
+            "fabric-provider",
+        ],
         target,
     )?;
     nemoclaw_build::verify_source_version(&version, &sources()?)?;
@@ -296,6 +341,8 @@ async fn bundle(pins: &Pins, platform: &str) -> Result<()> {
     let openshell =
         format!("providers/registry.opentofu.org/nvidia/openshell/{version}/{platform}");
     fs::create_dir_all(root.join(&openshell))?;
+    let fabric = format!("providers/registry.opentofu.org/nvidia/fabric/{version}/{platform}");
+    fs::create_dir_all(root.join(&fabric))?;
     let extension = if platform.starts_with("windows") {
         ".exe"
     } else {
@@ -321,6 +368,10 @@ async fn bundle(pins: &Pins, platform: &str) -> Result<()> {
         (
             format!("terraform-provider-openshell{extension}"),
             format!("{openshell}/terraform-provider-openshell_v{version}{extension}"),
+        ),
+        (
+            format!("terraform-provider-fabric{extension}"),
+            format!("{fabric}/terraform-provider-fabric_v{version}{extension}"),
         ),
     ] {
         fs::copy(
@@ -443,9 +494,42 @@ async fn main() -> Result<()> {
         }
         .map_err(Into::into);
     }
+    if let Action::LifecycleTiming {
+        directory,
+        platform,
+        shards,
+    } = &cli.command
+    {
+        let shards: Vec<u32> = serde_json::from_str(shards)
+            .map_err(|error| format!("--shards must be a JSON list of numbers: {error}"))?;
+        return run_ci::report_lifecycle_suite(directory, platform, &shards);
+    }
+    if let Action::Changes { workflow, base } = &cli.command {
+        let (workflow, name) = match workflow {
+            ChangedWorkflow::Images => (nemoclaw_build::changes::Workflow::Images, "images"),
+            ChangedWorkflow::Live => (nemoclaw_build::changes::Workflow::Live, "live"),
+        };
+        let decision = nemoclaw_build::changes::decide(Path::new("."), base, workflow);
+        eprintln!("{}", decision.reason);
+        println!("{name}={}", decision.run);
+        return Ok(());
+    }
     let pins: Pins = serde_json::from_slice(&fs::read("versions.json")?)?;
-    if let Action::Ci { step } = cli.command {
-        return run_ci::run_steps(&pins, step.as_deref()).await;
+    if let Action::Ci {
+        step,
+        partition,
+        archive_file,
+        images,
+    } = cli.command
+    {
+        return run_ci::run_steps(
+            &pins,
+            step.as_deref(),
+            partition.as_deref(),
+            archive_file.as_deref(),
+            images.as_deref(),
+        )
+        .await;
     }
     let version = cargo().arg("--version").output()?;
     if !version.status.success()
@@ -458,8 +542,11 @@ async fn main() -> Result<()> {
         Action::Schema { .. } | Action::Docs { .. } | Action::Fern { .. } => {
             unreachable!("documentation generation returned before build tool checks")
         }
-        Action::Ci { .. } | Action::Images { .. } => {
-            unreachable!("CI and image commands returned before build tool checks")
+        Action::Ci { .. }
+        | Action::Images { .. }
+        | Action::Changes { .. }
+        | Action::LifecycleTiming { .. } => {
+            unreachable!("CI, image, change, and timing commands returned before build tool checks")
         }
         #[cfg(feature = "sdk")]
         Action::Bundle { platform } => {

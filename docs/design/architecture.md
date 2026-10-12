@@ -17,7 +17,8 @@ The [accepted scope](scope.md) defines the invariants; this page explains the re
 | Docker provider | Docker containers, images, model-cache volumes, and service networks |
 | Helm provider | The pinned OpenShell chart release on the authored Kubernetes cluster |
 | OpenShell provider | OpenShell workspaces, provider registrations and profiles, sandboxes, and gateway capability reads |
-| NemoClaw provider | Fabric runtime configuration, Podman gateway processes, durable storage contracts, and readiness observations |
+| Fabric provider | Fabric runtime configuration and readiness in agent sandboxes |
+| NemoClaw provider | Podman gateway processes, durable storage contracts, and readiness observations |
 | Hosted runtime | Model preparation, startup, application health, and protective shutdown |
 | Fabric | Adapter and target discovery, native schemas, native configuration validation and mapping, and agent execution |
 
@@ -74,7 +75,6 @@ The [Helm removal recovery procedure](../usage.md#recover-an-interrupted-helm-re
 Issuer private material stays outside Helm values and OpenTofu state.
 The provider receives the explicit kubeconfig and context; ambient Helm and Kubernetes provider settings are excluded.
 OpenTofu and its providers inherit only platform variables, so a kubeconfig exec plugin gets the caller variables listed in `gateway.kubernetes.environment` and nothing else.
-The [migration policy](../migration.md#move-from-the-combined-kubernetes-gateway-resource) keeps deployments using the earlier combined gateway resource with their original bundle and state; the new graph starts a separate deployment.
 
 ## OpenShell SDK Boundary
 
@@ -89,7 +89,7 @@ The connected implementation retains the SDK's raw API only for operations or fi
 The Rust SDK uses gRPC; adopting it does not remove the gateway RPC boundary.
 NemoClaw supplies the channel to preserve mutual TLS, lazy connection, and timeout settings that the pinned SDK configuration cannot express.
 
-At the pinned OpenShell revision `6648bd0c290efbc41ba131ee9831ee45cd431f94`, the SDK has these integration limits:
+At the pinned OpenShell revision `e1f3c82caa3ed3b65de22889ae7ef32a774878ef`, the SDK has these integration limits:
 
 | Requirement | SDK limit | Consequence |
 |---|---|---|
@@ -103,7 +103,7 @@ At the pinned OpenShell revision `6648bd0c290efbc41ba131ee9831ee45cd431f94`, the
 | Bounded exec against a verified identity | High-level exec addresses the sandbox by name, buffers output without a size cap, and does not reject every malformed event sequence | Verify identity before workspace-scoped exec; retain the local deadline, output limits, and event validation |
 | Secret-safe diagnostics | SDK bearer construction does not mark metadata sensitive; SDK errors can retain upstream diagnostic text | Preserve sensitive metadata and NemoClaw's redacted error mapping |
 
-These limits are verified against the pinned [SDK manifest](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-sdk/Cargo.toml), [configuration](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-sdk/src/config.rs), [client](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-sdk/src/client.rs), [types](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-sdk/src/types.rs), and [authentication interceptor](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-sdk/src/auth.rs).
+These limits are verified against the pinned [SDK manifest](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sdk/Cargo.toml), [configuration](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sdk/src/config.rs), [client](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sdk/src/client.rs), [types](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sdk/src/types.rs), and [authentication interceptor](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sdk/src/auth.rs).
 The supported raw escape hatch provides an SDK integration point but still exposes protobuf compatibility risk.
 NemoClaw constructs the client without a token refresher; neither the selected high-level operations nor raw calls automatically retry mutations.
 A [telemetry test](../../crates/nemoclaw-sdk/tests/telemetry.rs) proves telemetry remains disabled even when the process environment requests it.
@@ -255,7 +255,7 @@ The SDK requires the gateway's independent storage binding, the compiler orders 
 Missing or substituted bound credentials and gateway storage stop planning; reproducible model caches can be rebuilt.
 
 The shared [OpenShell lifecycle contract](../../crates/nemoclaw-openshell/src/lifecycle.rs) distinguishes retained workspace identity, stateful sandboxes, and reconstructible registrations and configuration.
-Sandbox files and conversation history have no separately retained storage, so ordinary apply refuses sandbox deletion or replacement.
+Sandbox files and conversation history have no separately retained storage, so apply refuses sandbox deletion or replacement.
 It also refuses to recreate a missing sandbox binding.
 Explicit destroy deletes those files even though the OpenShell workspace remains.
 The [retention reference](../state.md#deletion-and-retention) lists what survives.

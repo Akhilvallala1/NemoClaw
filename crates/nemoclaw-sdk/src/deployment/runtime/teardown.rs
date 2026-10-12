@@ -106,14 +106,28 @@ impl Deployment {
         let mut stages = Vec::new();
         if !record.root_destroyed() {
             let (changes, planned) = operation
-                .plan_teardown_stage(&bundle, &store, &record, false, &root_graph, cancel)
+                .plan_teardown_stage(
+                    &bundle,
+                    &store,
+                    &record,
+                    (false, &bindings),
+                    &root_graph,
+                    cancel,
+                )
                 .await?;
             result.changes.extend(changes);
             stages.push((&store, false, planned));
         }
         if let Some((stage, graph)) = runtime.as_ref().zip(runtime_graph.as_ref()) {
             let (changes, planned) = operation
-                .plan_teardown_stage(&bundle, stage, &record, true, graph, cancel)
+                .plan_teardown_stage(
+                    &bundle,
+                    stage,
+                    &record,
+                    (true, &runtime_bindings),
+                    graph,
+                    cancel,
+                )
                 .await?;
             result.changes.extend(changes);
             stages.push((stage, true, planned));
@@ -170,25 +184,17 @@ impl Deployment {
         result.outcome = Outcome::Destroyed;
         Ok(result)
     }
+    /// Plan one stage's teardown from the bindings already read from its state;
+    /// nothing has changed that state since.
     async fn plan_teardown_stage(
         &self,
         bundle: &Bundle,
         store: &Store,
         record: &Record,
-        runtime: bool,
+        (runtime, bindings): (bool, &BTreeMap<String, StateBinding>),
         compiled: &compile::CompiledTeardown,
         cancel: &CancellationToken,
     ) -> Result<(Vec<Change>, bool), Error> {
-        let bindings = self
-            .state_bindings(
-                bundle,
-                store,
-                &record.document,
-                &record.generations,
-                runtime,
-                cancel,
-            )
-            .await?;
         if bindings.is_empty() {
             if record.succeeded() || record.destroying() {
                 return Err(Error::Conflict(
@@ -198,18 +204,11 @@ impl Deployment {
             return Ok((Vec::new(), false));
         }
         let expected = with_observations(
-            &teardown_expected(record, &bindings, runtime)?,
+            &teardown_expected(record, bindings, runtime)?,
             &compiled.observations,
         );
-        self.prepare(bundle, store, &compiled.graph)?;
-        self.tofu(
-            bundle,
-            store,
-            &destroy_environment(&record.document),
-            &["init", "-upgrade", "-input=false", "-no-color"],
-            cancel,
-        )
-        .await?;
+        self.initialize(bundle, store, &compiled.graph, cancel)
+            .await?;
         let plan = self
             .saved_plan(
                 bundle,
@@ -220,7 +219,7 @@ impl Deployment {
             )
             .await?;
         Ok((
-            check_destroy_plan(&plan, &expected, &bindings, &compiled.retained)?,
+            check_destroy_plan(&plan, &expected, bindings, &compiled.retained)?,
             true,
         ))
     }
@@ -285,7 +284,7 @@ fn bind_teardown_processes(
             crate::kubernetes::GATEWAY_KIND | crate::kubernetes::AUTH_KIND
         ) {
             if let Some(binding) = bindings.get(&target.address)
-                && binding.spec != target.values["spec"]
+                && binding.differs(&target.values)
             {
                 return Err(Error::Conflict(
                     "Kubernetes gateway binding differs from retained intent",
@@ -310,15 +309,13 @@ fn bind_teardown_processes(
                 "destroy requires independent storage bindings before removing a managed process",
             ));
         }
-        let want: Spec = serde_json::from_str(&target.values["spec"])
+        let want = Spec::from_values(&target.kind, &target.values)
             .map_err(|_| Error::State("invalid runtime intent"))?;
         if plan::disposable(&target.address) {
             continue;
         }
-        target.values.insert(
-            "spec".into(),
-            bound_spec(&want, bindings.get(&target.address))?.json()?,
-        );
+        bound_spec(&target.kind, &want, bindings.get(&target.address))?
+            .write_values(&target.kind, &mut target.values)?;
     }
     Ok(())
 }
@@ -414,7 +411,7 @@ mod tests {
                 &bundle,
                 &store,
                 &record,
-                false,
+                (false, &BTreeMap::new()),
                 &compiled,
                 &CancellationToken::new(),
             )
@@ -459,8 +456,9 @@ mod tests {
             BTreeSet::from([KUBERNETES_STORAGE.into()])
         );
         let graph = compiled.graph;
-        assert_eq!(graph["provider"]["nemoclaw"]["platform_only"], true);
-        assert_eq!(graph["provider"]["nemoclaw"]["destroy"], true);
+        assert_eq!(graph["provider"]["nemoclaw"], json!({"destroy": true}));
+        assert!(graph["provider"].get("openshell").is_none());
+        assert!(graph["provider"].get("fabric").is_none());
         assert_eq!(graph["resource"].as_object().unwrap().len(), 1);
         assert_eq!(
             graph["resource"]["nemoclaw_kubernetes_storage"]["runtime"]["lifecycle"]["prevent_destroy"],
@@ -545,6 +543,10 @@ mod tests {
             owner: value("owner"),
             generation: value("generation"),
             engine: value("engine"),
+            compute_driver: value("compute_driver"),
+            endpoint: value("endpoint"),
+            image: value("image"),
+            network_cidr: value("network_cidr"),
             ..Default::default()
         }
     }

@@ -713,7 +713,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn invalid_delivery_never_mutates_or_reports_absence() {
-        let fixture = crate::docker::fixture::Fixture::start(|_| {
+        let fixture = crate::docker::fixture::Fixture::engine(|_| {
             panic!("invalid input must not contact the engine")
         })
         .await;

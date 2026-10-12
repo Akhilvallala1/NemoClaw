@@ -1,8 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-// Deployment planning requires image discovery, whose engine transports are Unix-only.
-#![cfg(unix)]
-
 use nemoclaw_e2e::openshell::Fixture;
 use nemoclaw_sdk::{CancellationToken, Deployment, Secrets, config::Document};
 use std::{fs, path::PathBuf, process::Command, sync::Arc};
@@ -28,7 +25,7 @@ fn definitions(registrations: &[String]) -> Vec<&str> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated API fixture, no live inference"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated API fixture, no live inference"]
 async fn provider_union_export_reapply_drift_and_destroy_remain_scoped_to_each_sandbox() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let fixture = Fixture::start().await;

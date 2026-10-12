@@ -3,7 +3,7 @@
 
 [alias]
 coverage = ["llvm-cov", "--workspace", "--locked", "--html", "--exclude-from-report", "nemoclaw-e2e"]
-# Run this platform's CI / Native steps; see docs/contributing/testing.md. The runner builds
+# Run this platform's CI / Bundle steps; see docs/contributing/testing.md. The runner builds
 # without the SDK, in its own target directory, so it can install protoc first
 # and is never overwritten by the workspace build it runs.
 ci = ["run", "--locked", "--quiet", "--target-dir", "target/ci-runner", "-p", "nemoclaw-build", "--no-default-features", "--", "ci"]
@@ -17,6 +17,15 @@ images = ["run", "--locked", "--quiet", "--target-dir", "target/ci-runner", "-p"
 # Keep line-number backtraces without generating full local-variable debug data.
 [profile.dev]
 debug = 1
+
+# Dependencies change rarely, and unoptimized they dominate test time: JSON
+# Schema validation, parsing, and hashing run throughout every test step.
+# Workspace crates stay unoptimized for incremental builds. Third-party crates
+# keep symbol names in backtraces but not line numbers; their debug data was a
+# third of the dependency build output that CI caches.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
 
 # Deployment tests verify native bundle digests on every operation.
 [profile.dev.package.sha2]

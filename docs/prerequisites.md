@@ -31,8 +31,8 @@ Prepare these inputs before running apply:
 - An authenticated OpenShell CLI for native access, configured for the same gateway and the deployment's workspace.
 - A fresh deployment UUID, a separate state directory, and resources you control.
 
-Use OpenShell **0.1.2** for the gateway and native CLI.
-The client, gateway, and supervisor are pinned to commit `6648bd0c290efbc41ba131ee9831ee45cd431f94`, the v0.1.2 release.
+Use OpenShell **0.1.3** for the gateway and native CLI.
+The client, gateway, and supervisor are pinned to commit `e1f3c82caa3ed3b65de22889ae7ef32a774878ef`, the v0.1.3 release.
 The gateway check verifies version and compute driver.
 Select a compatible [inference API](inference.md) and verify an actual agent reply; endpoint reachability alone is insufficient.
 
@@ -46,7 +46,7 @@ Follow the [source-build guide](build.md) for tool versions and a verified CLI/O
 Keep the bundle unchanged while an operation uses it.
 
 The builder accepts `linux_arm64`, `linux_amd64`, `darwin_arm64`, `darwin_amd64`, and `windows_amd64` targets.
-Native CI builds and tests on Linux ARM64, Linux AMD64, macOS ARM64, and Windows AMD64; that does not qualify GPU deployment on every platform.
+`CI / Bundle` builds and tests on Linux ARM64, Linux AMD64, macOS ARM64, and Windows AMD64; that does not qualify GPU deployment on every platform.
 
 There are no release downloads or installer yet ([#12638](https://github.com/NVIDIA/NemoClaw/issues/12638)).
 

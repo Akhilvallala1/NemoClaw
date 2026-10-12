@@ -112,7 +112,9 @@ to allow installation after infrastructure and configuration checks when native
 health reports exactly unsupported. It does not report native health as passing;
 omission or false retains the strict default. Failed or unknown observations still fail.
 VoiceClaw's own readiness must check local inputs and frontend readiness independently.
-A reviewed VoiceClaw profile/image and approved container-reachable HTTPS
-endpoint/service identity remain joint prerequisites. Full apply and voice
+The application image and selected connection profile require joint qualification.
+HTTPS/OIDC connections require a container-reachable HTTPS endpoint and an external
+service identity. The development-only HTTP profile requires this deployment's
+managed local Docker gateway and its owned private network. Full apply and voice
 turns are not qualified by this helper check. Do not substitute liveness, generation,
 operator login, or insecure TLS for those requirements.

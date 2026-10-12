@@ -5,8 +5,12 @@
 
 #[path = "support/examples.rs"]
 mod examples;
-#[path = "support/kube_api.rs"]
+#[path = "../../test-support/kube_api.rs"]
 mod kube_api;
+#[path = "support/kube_client.rs"]
+mod kube_client;
+#[path = "support/kube_faults.rs"]
+mod kube_faults;
 #[path = "support/provider_scope.rs"]
 mod provider_scope;
 #[path = "support/config.rs"]
@@ -76,6 +80,8 @@ mod inference_settings;
 mod inline_recipe;
 #[path = "interfaces.rs"]
 mod interfaces;
+#[path = "json_schema.rs"]
+mod json_schema;
 #[path = "kubernetes_auth.rs"]
 mod kubernetes_auth;
 #[path = "kubernetes_cluster.rs"]
@@ -86,14 +92,22 @@ mod kubernetes_compile;
 mod kubernetes_connect;
 #[path = "kubernetes_connection.rs"]
 mod kubernetes_connection;
+#[path = "kubernetes_corrupt_receipt.rs"]
+mod kubernetes_corrupt_receipt;
+#[path = "kubernetes_expired_authentication.rs"]
+mod kubernetes_expired_authentication;
 #[path = "kubernetes_gateway.rs"]
 mod kubernetes_gateway;
-#[path = "kubernetes_live.rs"]
-mod kubernetes_live;
+#[path = "kubernetes_lost_create_response.rs"]
+mod kubernetes_lost_create_response;
 #[path = "kubernetes_managed_compile.rs"]
 mod kubernetes_managed_compile;
+#[path = "kubernetes_openshift_reapply.rs"]
+mod kubernetes_openshift_reapply;
 #[path = "kubernetes_operations.rs"]
 mod kubernetes_operations;
+#[path = "kubernetes_read_failures.rs"]
+mod kubernetes_read_failures;
 #[path = "kubernetes_receipt.rs"]
 mod kubernetes_receipt;
 #[path = "kubernetes_storage.rs"]

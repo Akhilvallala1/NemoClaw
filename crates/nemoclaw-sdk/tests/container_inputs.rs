@@ -378,7 +378,7 @@ fn complete_container_connection_document_keeps_operator_identity_out_of_applica
     assert_eq!(app["user"], "65532:65532");
     for dependency in [
         "nemoclaw_container_inputs.voice",
-        "data.nemoclaw_sandbox_readiness.assistant",
+        "data.fabric_sandbox_readiness.assistant",
     ] {
         assert!(
             app["depends_on"]
@@ -420,16 +420,15 @@ fn unsupported_health_opt_in_changes_only_the_selected_sandbox_postcondition() {
     value["spec"]["sandboxes"][0]["allowUnsupportedHealth"] = json!(true);
     let optional = graph(&value);
     let condition =
-        optional["data"]["nemoclaw_sandbox_readiness"]["assistant"]["lifecycle"]["postcondition"]
-            [0]["condition"]
+        optional["data"]["fabric_sandbox_readiness"]["assistant"]["lifecycle"]["postcondition"][0]
+            ["condition"]
             .as_str()
             .unwrap();
     assert!(condition.contains("fabric_health_unsupported"));
     assert!(condition.contains("supported == false"));
     assert!(condition.contains("report == null"));
     assert_eq!(
-        strict["data"]["nemoclaw_sandbox_readiness"]["assistant"]["lifecycle"]["postcondition"][0]
-            ["condition"],
+        strict["data"]["fabric_sandbox_readiness"]["assistant"]["lifecycle"]["postcondition"][0]["condition"],
         "${self.ready}"
     );
     assert_eq!(strict["resource"], optional["resource"]);
@@ -456,7 +455,7 @@ fn container_inputs_compile_references_and_order_complete_delivery_before_start(
     let app = &graph["resource"]["docker_container"]["container_service_voice"];
     for dependency in [
         "nemoclaw_container_inputs.voice",
-        "data.nemoclaw_sandbox_readiness.assistant",
+        "data.fabric_sandbox_readiness.assistant",
     ] {
         assert!(
             app["depends_on"]

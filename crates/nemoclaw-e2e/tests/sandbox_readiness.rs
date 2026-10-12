@@ -1,18 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-#![cfg(unix)]
-
 use nemoclaw_e2e::{openshell::Fixture, tofu::TofuWorkspace};
 use nemoclaw_sdk::{compile, config::Document};
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf};
+use std::fs;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit NEMOCLAW_TEST_TOFU and NEMOCLAW_TEST_PROVIDER; isolated gateway fixture"]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindings() {
-    let tofu = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_TOFU").unwrap());
-    let provider = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_PROVIDER").unwrap());
-    let directory = TofuWorkspace::new(tofu, provider);
+    let bundle = nemoclaw_test_fixtures::Bundle::from_env();
+    let directory = TofuWorkspace::new(&bundle, bundle.provider("nemoclaw"));
     let root = directory.path();
     let fixture = Fixture::start().await;
     let mut document = Document::parse(
@@ -54,7 +51,7 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
         .unwrap();
     let health = observations
         .iter()
-        .find(|row| row["address"] == "data.nemoclaw_sandbox_readiness.assistant")
+        .find(|row| row["address"] == "data.fabric_sandbox_readiness.assistant")
         .unwrap();
     assert_eq!(health["values"]["ready"], false);
     let failed_health: nemoclaw_sdk::RuntimeHealth =
@@ -126,7 +123,7 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["address"] == "data.nemoclaw_sandbox_readiness.assistant")
+        .find(|row| row["address"] == "data.fabric_sandbox_readiness.assistant")
         .unwrap();
     assert_ne!(observation["values"]["read_trigger"], token);
     assert_eq!(observation["values"]["ready"], true);
@@ -207,7 +204,7 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["address"] == "data.nemoclaw_sandbox_readiness.assistant")
+        .find(|row| row["address"] == "data.fabric_sandbox_readiness.assistant")
         .unwrap();
     let message = rejection["values"]["error_message"].as_str().unwrap();
     assert!(
@@ -224,8 +221,9 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
     // Teardown omits observations so an unavailable runtime cannot block deletion.
     graph.as_object_mut().unwrap().remove("data");
     graph.as_object_mut().unwrap().remove("output");
-    graph["provider"]["nemoclaw"]["destroy"] = json!(true);
-    graph["provider"]["openshell"]["destroy"] = json!(true);
+    for provider in ["nemoclaw", "openshell", "fabric"] {
+        graph["provider"][provider]["destroy"] = json!(true);
+    }
     let mut workspace = graph["resource"]["openshell_workspace"].clone();
     workspace["deployment"]
         .as_object_mut()

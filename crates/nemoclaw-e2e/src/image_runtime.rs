@@ -40,9 +40,8 @@ pub fn targets(
                 .iter()
                 .find(|sandbox| sandbox.name == target.values["name"])
                 .unwrap();
-            let requirements = nemoclaw_sdk::fabric_capabilities::FabricRequirements::for_sandbox(
-                document, sandbox,
-            )?;
+            let requirements =
+                nemoclaw_sdk::fabric_capabilities::requirements_for_sandbox(document, sandbox)?;
             let adapter = requirements.configuration["harness"]["adapter_id"]
                 .as_str()
                 .unwrap();
@@ -55,7 +54,6 @@ pub fn targets(
     Ok(targets)
 }
 
-#[cfg(unix)]
 use crate::http_fixture as transport;
 
 /// Installed-image metadata for isolated fixtures.
@@ -92,7 +90,6 @@ pub fn catalog() -> nemoclaw_sdk::fabric_catalog::FabricCatalog {
 }
 
 /// Installed-image evidence for isolated deployment tests; never queries a live engine.
-#[cfg(unix)]
 pub async fn engine(document: &mut Document) -> transport::Fixture {
     use nemoclaw_sdk::fabric_catalog::IMAGE_CATALOG_LABEL;
     let label = serde_json::to_string(&catalog()).unwrap();
@@ -102,7 +99,7 @@ pub async fn engine(document: &mut Document) -> transport::Fixture {
         .iter()
         .map(|sandbox| sandbox.image.ref_.clone())
         .collect();
-    let fixture = transport::Fixture::start(move |request| {
+    let fixture = transport::Fixture::engine(move |request| {
         assert_eq!(request.method, "GET");
         assert!(request.body.is_empty());
         let value = if request.path == "/info" {

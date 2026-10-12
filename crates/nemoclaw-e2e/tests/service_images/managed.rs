@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Deterministic managed-service protocol with real agent image execution.
+//! Simulated managed-service protocol with real agent image execution.
 //! GPU admission and weight loading remain runtime qualification responsibilities.
 use super::support::Scenario;
 use nemoclaw_sdk::config::Document;
@@ -21,7 +21,7 @@ impl ManagedService {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("bin")).unwrap();
         std::os::unix::fs::symlink(
-            env!("CARGO_BIN_EXE_nemoclaw-e2e-ssh-fixture"),
+            nemoclaw_test_fixtures::fixture_executable("nemoclaw-fixture-ssh-simulator"),
             root.path().join("bin/ssh"),
         )
         .unwrap();

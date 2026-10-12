@@ -6,10 +6,10 @@ use crate::{Error, ObservationError, docker::Connections, provider::ConfiguredBa
 use async_trait::async_trait;
 use nemoclaw_sdk::{
     discovery::{ObservationStatus, RuntimeImageObservation},
-    managed::{ImageContract, ImageRequirements, RUNTIME_SPEC_VERSION, RUNTIME_SPEC_VERSION_LABEL},
+    managed::{RUNTIME_SPEC_VERSION, RUNTIME_SPEC_VERSION_LABEL},
 };
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tf_provider::{
     DataSource, Diagnostics,
     schema::{Attribute, AttributeConstraint, AttributeType, Block, Schema},
@@ -19,16 +19,95 @@ use tf_provider::{
 pub(crate) struct RuntimeImageDataSource(pub Arc<ConfiguredBackend>);
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct RuntimeImageState {
-    spec: Value<String>,
+    engine: Value<String>,
+    image: Value<String>,
+    architecture: Value<String>,
+    contract: Value<String>,
+    labels: Value<BTreeMap<String, Value<String>>>,
     image_id: Value<String>,
     allow_missing: Value<bool>,
     observation_json: Value<String>,
 }
-fn parse_spec(text: &str) -> Result<ImageRequirements, Error> {
-    let spec: ImageRequirements = serde_json::from_str(text)
-        .map_err(|_| Error::State("invalid runtime image requirements"))?;
-    spec.validate()?;
-    Ok(spec)
+/// The image a service runtime requires on its engine.
+struct Requirements {
+    engine: String,
+    image: String,
+    architecture: String,
+    labels: BTreeMap<String, String>,
+    contract: String,
+}
+impl Requirements {
+    /// The requirements, or `None` while any input is unknown.
+    fn from_state(config: &RuntimeImageState) -> Result<Option<Self>, Error> {
+        let mut known = Vec::new();
+        for (value, required) in [
+            (&config.engine, "runtime image engine is required"),
+            (&config.image, "runtime image is required"),
+            (
+                &config.architecture,
+                "runtime image architecture is required",
+            ),
+        ] {
+            match value {
+                Value::Value(value) => known.push(value.clone()),
+                Value::Unknown => {}
+                Value::Null => return Err(Error::State(required)),
+            }
+        }
+        let labels = match &config.labels {
+            Value::Null => Some(BTreeMap::new()),
+            Value::Unknown => None,
+            Value::Value(labels) => labels
+                .iter()
+                .map(|(key, value)| match value {
+                    Value::Value(value) => Ok(Some((key.clone(), value.clone()))),
+                    Value::Unknown => Ok(None),
+                    Value::Null => Err(Error::State("runtime image label values are required")),
+                })
+                .collect::<Result<Option<_>, _>>()?,
+        };
+        let (Ok([engine, image, architecture]), Some(labels)) =
+            (<[String; 3]>::try_from(known), labels)
+        else {
+            return Ok(None);
+        };
+        let contract = match &config.contract {
+            Value::Null => "runtime",
+            Value::Unknown => return Ok(None),
+            Value::Value(value)
+                if matches!(value.as_str(), "runtime" | "application" | "inputs") =>
+            {
+                value.as_str()
+            }
+            _ => return Err(Error::State("invalid runtime image contract")),
+        };
+        crate::config::validate_engine_endpoint(&engine)?;
+        if contract != "runtime" && !engine.starts_with("unix:///") {
+            return Err(Error::State(
+                "application image requires a local Docker engine",
+            ));
+        }
+        if !regex::Regex::new(r"^[^@\s]+@sha256:[a-f0-9]{64}$")
+            .unwrap()
+            .is_match(&image)
+        {
+            return Err(Error::Conflict(
+                "runtime image must be pinned by SHA-256 digest",
+            ));
+        }
+        if !matches!(architecture.as_str(), "amd64" | "arm64") {
+            return Err(Error::Conflict(
+                "runtime image architecture must be amd64 or arm64",
+            ));
+        }
+        Ok(Some(Self {
+            engine,
+            image,
+            architecture,
+            labels,
+            contract: contract.into(),
+        }))
+    }
 }
 /// Docker injects this PATH; no caller settings reach the fixed publisher.
 pub(crate) fn setup_environment_is_safe(environment: Option<&[String]>) -> bool {
@@ -69,23 +148,25 @@ pub(crate) fn validate_input_image(
 
 async fn observe(
     connections: &Connections,
-    spec: &ImageRequirements,
+    required: &Requirements,
     image_id: Option<&str>,
     allow_missing: bool,
 ) -> Result<RuntimeImageObservation, Error> {
     let image = tokio::time::timeout(
         Duration::from_secs(20),
-        connections.resolve(&spec.engine)?.image(&spec.image),
+        connections
+            .resolve(&required.engine)?
+            .image(&required.image),
     )
     .await
     .map_err(|_| ObservationError::Transport)??;
     let mut observation = RuntimeImageObservation {
         status: ObservationStatus::Unknown,
         source: "engine_image".into(),
-        required_version: match spec.contract {
-            ImageContract::Application => "docker-healthcheck-v1",
-            ImageContract::Inputs => "container-inputs-v1",
-            ImageContract::Runtime { .. } => RUNTIME_SPEC_VERSION,
+        required_version: match required.contract.as_str() {
+            "application" => "docker-healthcheck-v1",
+            "inputs" => "container-inputs-v1",
+            _ => RUNTIME_SPEC_VERSION,
         }
         .into(),
     };
@@ -106,12 +187,12 @@ async fn observe(
         .config
         .as_ref()
         .and_then(|config| config.labels.as_ref());
-    if matches!(spec.contract, ImageContract::Inputs) {
-        validate_input_image(&image, &spec.architecture)?;
+    if required.contract == "inputs" {
+        validate_input_image(&image, &required.architecture)?;
         observation.status = ObservationStatus::Available;
         return Ok(observation);
     }
-    if matches!(spec.contract, ImageContract::Application) {
+    if required.contract == "application" {
         let config = image
             .config
             .as_ref()
@@ -121,7 +202,7 @@ async fn observe(
             .as_ref()
             .and_then(|health| health.test.as_ref());
         if image.os.as_deref() != Some("linux")
-            || image.architecture.as_deref() != Some(spec.architecture.as_str())
+            || image.architecture.as_deref() != Some(required.architecture.as_str())
             || health.is_none_or(|test| {
                 test.len() < 2 || !matches!(test[0].as_str(), "CMD" | "CMD-SHELL")
             })
@@ -136,12 +217,6 @@ async fn observe(
         observation.required_version = "docker-healthcheck-v1".into();
         return Ok(observation);
     }
-    let ImageContract::Runtime {
-        labels: required_labels,
-    } = &spec.contract
-    else {
-        unreachable!()
-    };
     if labels
         .and_then(|labels| labels.get(RUNTIME_SPEC_VERSION_LABEL))
         .map(String::as_str)
@@ -154,8 +229,9 @@ async fn observe(
         )));
     }
     if image.os.as_deref() != Some("linux")
-        || image.architecture.as_deref() != Some(spec.architecture.as_str())
-        || required_labels
+        || image.architecture.as_deref() != Some(required.architecture.as_str())
+        || required
+            .labels
             .iter()
             .any(|(key, value)| labels.and_then(|labels| labels.get(key)) != Some(value))
     {
@@ -172,12 +248,16 @@ impl DataSource for RuntimeImageDataSource {
     type ProviderMetaState<'a> = ValueEmpty;
     fn schema(&self, _: &mut Diagnostics) -> Option<Schema> {
         use AttributeConstraint::{Computed, Optional, Required};
-        use AttributeType::{Bool, String};
+        use AttributeType::{Bool, Map, String};
         Some(Schema {
             version: 0,
             block: Block {
                 attributes: [
-                    ("spec", String, Required),
+                    ("engine", String, Required),
+                    ("image", String, Required),
+                    ("architecture", String, Required),
+                    ("contract", String, Optional),
+                    ("labels", Map(Box::new(String)), Optional),
                     ("image_id", String, Optional),
                     ("allow_missing", Bool, Optional),
                     ("observation_json", String, Computed),
@@ -199,11 +279,7 @@ impl DataSource for RuntimeImageDataSource {
         })
     }
     async fn validate<'a>(&self, diags: &mut Diagnostics, config: RuntimeImageState) -> Option<()> {
-        let result = match config.spec {
-            Value::Value(text) => parse_spec(&text).map(|_| ()),
-            Value::Unknown => Ok(()),
-            Value::Null => Err(Error::State("runtime image requirements are required")),
-        };
+        let result = Requirements::from_state(&config).map(|_| ());
         match result {
             Ok(()) => Some(()),
             Err(error) => {
@@ -219,10 +295,9 @@ impl DataSource for RuntimeImageDataSource {
         _: ValueEmpty,
     ) -> Option<RuntimeImageState> {
         let work = async {
-            let Value::Value(text) = &config.spec else {
+            let Some(required) = Requirements::from_state(&config)? else {
                 return Err(Error::State("runtime image requirements are not yet known"));
             };
-            let spec = parse_spec(text)?;
             let image_id = match &config.image_id {
                 Value::Null => None,
                 Value::Value(id) if !id.is_empty() => Some(id.as_str()),
@@ -237,7 +312,7 @@ impl DataSource for RuntimeImageDataSource {
                     ));
                 }
             };
-            observe(self.0.connections(), &spec, image_id, allow_missing).await
+            observe(self.0.connections(), &required, image_id, allow_missing).await
         }
         .await;
         match work {
@@ -258,7 +333,7 @@ impl DataSource for RuntimeImageDataSource {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::docker::fixture::Fixture;
@@ -345,7 +420,15 @@ mod tests {
         ] {
             value["process"][key] = value_to_set;
         }
-        let spec = ImageRequirements::from_spec(&serde_json::from_value(value).unwrap()).unwrap();
+        let service: nemoclaw_sdk::managed::Spec = serde_json::from_value(value).unwrap();
+        let process = service.process.as_ref().unwrap();
+        let spec = Requirements {
+            engine: service.engine().into(),
+            image: process.image.clone(),
+            architecture: process.architecture.clone(),
+            labels: Default::default(),
+            contract: "application".into(),
+        };
         for variant in [
             "valid",
             "health",
@@ -377,7 +460,7 @@ mod tests {
                 "transport" => 503,
                 _ => 200,
             };
-            let fixture = Fixture::start(move |request| {
+            let fixture = Fixture::engine(move |request| {
                 assert_eq!(request.method, "GET");
                 assert!(request.path.starts_with("/images/"));
                 Some((code, serde_json::to_vec(&image).unwrap()))
@@ -405,6 +488,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn requirements_validate_offline_and_defer_unknown_values() {
+        let valid = || RuntimeImageState {
+            engine: Value::Value("unix:///var/run/docker.sock".into()),
+            image: Value::Value(format!("runtime@sha256:{}", "a".repeat(64))),
+            architecture: Value::Value("arm64".into()),
+            labels: Value::Value(
+                [("org.nemoclaw.backend".into(), Value::Value("vllm".into()))].into(),
+            ),
+            ..Default::default()
+        };
+        let required = Requirements::from_state(&valid()).unwrap().unwrap();
+        assert_eq!(required.labels["org.nemoclaw.backend"], "vllm");
+        let mut unlabeled = valid();
+        unlabeled.labels = Value::Null;
+        assert!(Requirements::from_state(&unlabeled).unwrap().is_some());
+        for change in [
+            |state: &mut RuntimeImageState| state.image = Value::Unknown,
+            |state: &mut RuntimeImageState| state.labels = Value::Unknown,
+            |state: &mut RuntimeImageState| {
+                state.labels =
+                    Value::Value([("org.nemoclaw.backend".into(), Value::Unknown)].into())
+            },
+        ] {
+            let mut state = valid();
+            change(&mut state);
+            assert!(Requirements::from_state(&state).unwrap().is_none());
+        }
+        for change in [
+            |state: &mut RuntimeImageState| state.image = Value::Null,
+            |state: &mut RuntimeImageState| state.image = Value::Value("runtime:latest".into()),
+            |state: &mut RuntimeImageState| state.architecture = Value::Value("riscv64".into()),
+            |state: &mut RuntimeImageState| state.engine = Value::Value("tcp://engine".into()),
+        ] {
+            let mut state = valid();
+            change(&mut state);
+            assert!(Requirements::from_state(&state).is_err());
+        }
+    }
+
     #[tokio::test]
     async fn image_contract_checks_are_read_only_and_fail_closed_before_acquisition() {
         for bytes in [
@@ -426,15 +549,15 @@ mod tests {
                     matches!(target.kind.as_str(), "inference_service" | "ollama_service")
                 })
                 .unwrap();
-            let spec = ImageRequirements::from_spec(
-                &serde_json::from_str(&target.values["spec"]).unwrap(),
-            )
-            .unwrap();
-            let ImageContract::Runtime {
-                labels: required_labels,
-            } = &spec.contract
-            else {
-                panic!("expected runtime image")
+            let spec: nemoclaw_sdk::managed::Spec =
+                serde_json::from_str(&target.values["spec"]).unwrap();
+            let process = spec.process.as_ref().unwrap();
+            let required = Requirements {
+                engine: spec.engine().into(),
+                image: spec.image().into(),
+                architecture: process.architecture.clone(),
+                labels: process.image_labels.clone(),
+                contract: "runtime".into(),
             };
             for variant in [
                 "valid",
@@ -447,8 +570,8 @@ mod tests {
                 "authentication",
                 "transport",
             ] {
-                let mut image = json!({"Id":"sha256:runtime", "Os":"linux", "Architecture":spec.architecture,
-                    "Config":{"Labels":required_labels}});
+                let mut image = json!({"Id":"sha256:runtime", "Os":"linux", "Architecture":process.architecture,
+                    "Config":{"Labels":process.image_labels}});
                 let code = match variant {
                     "absent" => 404,
                     "authentication" => 401,
@@ -474,24 +597,24 @@ mod tests {
                     "identity" => image["Id"] = json!(""),
                     _ => {}
                 }
-                let fixture = Fixture::start(move |request| {
+                let fixture = Fixture::engine(move |request| {
                     assert_eq!(request.method, "GET");
                     assert!(request.path.starts_with("/images/"));
                     Some((code, serde_json::to_vec(&image).unwrap()))
                 })
                 .await;
-                let connections = Connections::fixed([fixture.engine_for(&spec.engine)]).unwrap();
-                let result = observe(&connections, &spec, None, true).await;
+                let connections = Connections::fixed([fixture.engine_for(spec.engine())]).unwrap();
+                let result = observe(&connections, &required, None, true).await;
                 match variant {
                     "valid" => {
                         assert_eq!(result.unwrap().status, ObservationStatus::Available);
                         assert!(
-                            observe(&connections, &spec, Some("sha256:other"), false)
+                            observe(&connections, &required, Some("sha256:other"), false)
                                 .await
                                 .is_err()
                         );
                         assert_eq!(
-                            observe(&connections, &spec, Some("sha256:runtime"), false)
+                            observe(&connections, &required, Some("sha256:runtime"), false)
                                 .await
                                 .unwrap()
                                 .status,
@@ -500,9 +623,9 @@ mod tests {
                     }
                     "absent" => {
                         assert_eq!(result.unwrap().status, ObservationStatus::Unknown);
-                        assert!(observe(&connections, &spec, None, false).await.is_err());
+                        assert!(observe(&connections, &required, None, false).await.is_err());
                         assert!(
-                            observe(&connections, &spec, Some("sha256:runtime"), true)
+                            observe(&connections, &required, Some("sha256:runtime"), true)
                                 .await
                                 .is_err()
                         );

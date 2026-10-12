@@ -30,10 +30,15 @@ fn inputs(query: &DiscoveryQuery) -> Result<(&'static str, Value), ConfigError> 
             let mut inputs = json!({
                 "engine": literal(engine),
                 "image": literal(image),
-                "requirements_json": literal(
-                    &serde_json::to_string(requirements).expect("Fabric requirements")
+                "config_json": literal(
+                    &serde_json::to_string(&requirements.configuration)
+                        .expect("Fabric configuration")
                 ),
             });
+            if let Some(paths) = &requirements.filesystem_read {
+                inputs["filesystem_read"] =
+                    json!(paths.iter().map(|path| literal(path)).collect::<Vec<_>>());
+            }
             if let Some(metadata_env) = metadata_env {
                 inputs["metadata_env"] = json!(metadata_env);
             }
@@ -77,7 +82,12 @@ fn read(
 ) -> Result<(), ConfigError> {
     let (kind, mut inputs) = inputs(query)?;
     extend(&mut inputs);
-    let source = format!("nemoclaw_{kind}");
+    // Fabric image reads belong to the fabric provider; the others to nemoclaw.
+    let source = if kind == "fabric_capabilities" {
+        kind.to_owned()
+    } else {
+        format!("nemoclaw_{kind}")
+    };
     graph["data"][&source][name] = inputs;
     observations.insert(
         key.into(),

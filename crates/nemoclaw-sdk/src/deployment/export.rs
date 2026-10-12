@@ -50,12 +50,7 @@ impl Deployment {
             stage.directory.join("terraform.tfstate"),
         )
         .map_err(|_| Error::State("export requires readable deployment state"))?;
-        let mut configuration =
-            json!({"terraform":graph["terraform"], "provider":graph["provider"]});
-        if let Some(variables) = graph.get("variable") {
-            configuration["variable"] = variables.clone();
-        }
-        self.initialize(bundle, &stage, &configuration, cancel)
+        self.initialize(bundle, &stage, &observation_configuration(&graph), cancel)
             .await?;
         let schema_environment = crate::state::schema_environment(&stage.directory);
         let bindings = stage.bindings(&bundle.tofu(), cancel).await?;
@@ -75,6 +70,8 @@ impl Deployment {
             ))?;
             if !plan::disposable(&target.address)
                 && (target.values.contains_key("spec")
+                    // Gateways, their storage, and Kubernetes resources are typed.
+                    || target.values.contains_key("compute_driver")
                     || crate::services::resource_behavior(&target.kind).retained_storage)
                 && binding.differs(&target.values)
             {
@@ -174,40 +171,62 @@ impl Deployment {
         let observations = operation
             .export_observations(&bundle, &store, &record, false, cancel)
             .await?;
-        let mut document = record.document;
-        consistent_provider_credentials(&document, &record.generations, &observations)?;
-        for target in compile::targets(&document, &record.generations)? {
-            if cancel.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            if target.address.starts_with("data.") || plan::disposable(&target.address) {
-                continue;
-            }
-            let mut observation = observations[&target.address].clone();
-            // Typed OpenShell inputs return to the JSON their rows carry.
-            for input in nemoclaw_openshell::structured_inputs(&target.kind) {
-                if let Some(object) = observation.as_object_mut()
-                    && let Some(value) = object.remove(input.attribute)
-                {
-                    let encoded = input
-                        .row_value(value)
-                        .map_err(|_| Error::State("invalid provider export observation"))?;
-                    object.insert(input.field.into(), json!(encoded.unwrap_or_default()));
-                }
-            }
-            let observed: Row = serde_json::from_value(observation)
-                .map_err(|_| Error::State("invalid provider export observation"))?;
-            let mut expected = target.values;
-            expected.insert("id".into(), observed["id"].clone());
-            match target.kind.as_str() {
-                "provider" => export_provider(&mut document, &expected, &observed)?,
-                "sandbox" => export_sandbox(&expected, &observed)?,
-                _ => {}
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        exported(record.document, &record.generations, &observations)
+    }
+}
+
+/// The saved document, once the observed OpenShell objects agree with what it
+/// compiles to. Observations are the refreshed state's attributes by address.
+/// The graph's provider configuration and the variables it reads, without
+/// resources or data sources.
+fn observation_configuration(graph: &Value) -> Value {
+    let mut configuration = json!({"terraform":graph["terraform"], "provider":graph["provider"]});
+    if let Some(variables) = graph.get("variable") {
+        configuration["variable"] = variables.clone();
+    }
+    configuration
+}
+
+pub(super) fn exported(
+    mut document: Document,
+    generations: &compile::Generations,
+    observations: &BTreeMap<String, Value>,
+) -> Result<Document, Error> {
+    consistent_provider_credentials(&document, generations, observations)?;
+    for target in compile::targets(&document, generations)? {
+        if target.address.starts_with("data.") || plan::disposable(&target.address) {
+            continue;
+        }
+        let mut observation = observations
+            .get(&target.address)
+            .cloned()
+            .ok_or(Error::State("incomplete provider export observation"))?;
+        // Typed OpenShell inputs return to the JSON their rows carry.
+        for input in nemoclaw_openshell::structured_inputs(&target.kind) {
+            if let Some(object) = observation.as_object_mut()
+                && let Some(value) = object.remove(input.attribute)
+            {
+                let encoded = input
+                    .row_value(value)
+                    .map_err(|_| Error::State("invalid provider export observation"))?;
+                object.insert(input.field.into(), json!(encoded.unwrap_or_default()));
             }
         }
-        document.validate()?;
-        Ok(document)
+        let observed: Row = serde_json::from_value(observation)
+            .map_err(|_| Error::State("invalid provider export observation"))?;
+        let mut expected = target.values;
+        expected.insert("id".into(), observed["id"].clone());
+        match target.kind.as_str() {
+            "provider" => export_provider(&mut document, &expected, &observed)?,
+            "sandbox" => export_sandbox(&expected, &observed)?,
+            _ => {}
+        }
     }
+    document.validate()?;
+    Ok(document)
 }
 
 fn validate_projection(target: &Target, observed: &Value) -> Result<(), Error> {
@@ -413,111 +432,111 @@ fn export_sandbox(expected: &Row, observed: &Row) -> Result<(), Error> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    #[ignore = "uses the verified native bundle named by NEMOCLAW_TEST_BUNDLE"]
-    async fn runtime_export_declares_the_native_helm_provider_inputs() {
-        struct Kubeconfig(String);
-        impl Secrets for Kubeconfig {
-            fn resolve(&self, name: &str) -> Result<String, crate::ObservationError> {
-                assert_eq!(name, "TEST_KUBECONFIG");
-                Ok(self.0.clone())
-            }
-        }
-        let bundle = Bundle::open(Path::new(
-            &std::env::var_os("NEMOCLAW_TEST_BUNDLE").expect("explicit verified bundle"),
-        ))
-        .unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let kubeconfig = directory.path().join("synthetic.kubeconfig");
-        save_json(&kubeconfig, &json!({
-            "apiVersion": "v1", "kind": "Config", "current-context": "test-cluster",
-            "clusters": [{"name": "fixture", "cluster": {"server": "https://127.0.0.1:9"}}],
-            "contexts": [{"name": "test-cluster", "context": {"cluster": "fixture", "user": "fixture"}}],
-            "users": [{"name": "fixture", "user": {}}],
-        })).unwrap();
-        let deployment = Deployment::new(directory.path(), &bundle.directory).with_secrets(
-            Arc::new(Kubeconfig(kubeconfig.to_string_lossy().into_owned())),
-        );
-        let (document, _) = crate::deployment::tests::kubernetes_context();
-        let record = Record::new(document).unwrap();
-        let (graph, targets) = compile::compiled_runtime(
-            &record.document,
-            &record.generations,
-            &bundle.manifest.version,
-        )
-        .unwrap();
-        let stage = Store::open(&directory.path().join("runtime")).unwrap();
-        let cancel = CancellationToken::new();
-        deployment
-            .initialize(&bundle, &stage, &graph, &cancel)
-            .await
-            .unwrap();
-        let schema: Value = serde_json::from_slice(
-            &crate::process::run(
-                &stage.directory,
-                &bundle.tofu(),
-                &["providers", "schema", "-json"],
-                &crate::state::schema_environment(&stage.directory),
-                &cancel,
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
-        let resources: Vec<Value> = targets.iter().map(|target| {
-            let (kind, name) = target.address.split_once('.').unwrap();
-            let provider = if kind == "helm_release" {
-                crate::kubernetes::gateway::PROVIDER_ADDRESS
-            } else {
-                compile::PROVIDER_ADDRESS
-            };
-            let resource_schema = &schema["provider_schemas"][provider]["resource_schemas"][kind];
-            let mut attributes: serde_json::Map<String, Value> = resource_schema["block"]["attributes"]
-                .as_object().unwrap().keys().map(|name| (name.clone(), Value::Null)).collect();
-            for (name, value) in &target.values {
-                attributes.insert(name.clone(), json!(value));
-            }
-            attributes.insert("id".into(), json!(if kind == "helm_release" { target.values["name"].as_str() } else { kind }));
-            if kind != "helm_release" {
-                attributes.insert("running".into(), json!("true"));
-            }
-            if target.kind == crate::kubernetes::AUTH_KIND {
-                attributes.insert("release_present".into(), json!("true"));
-                attributes.insert("gateway_values".into(), json!("{}"));
-            }
-            json!({
-                "mode": "managed", "type": kind, "name": name,
-                "provider": format!("provider[\"{provider}\"]"),
-                "instances": [{"schema_version": resource_schema["version"], "attributes": attributes, "sensitive_attributes": []}],
+    /// Observations that echo what `document` compiles to, as providers
+    /// report a deployment applied from it.
+    fn echoed(document: &Document, generations: &compile::Generations) -> BTreeMap<String, Value> {
+        compile::targets(document, generations)
+            .unwrap()
+            .into_iter()
+            .filter(|target| !target.address.starts_with("data."))
+            .map(|target| {
+                let mut row = json!(target.values);
+                row["id"] = json!(format!("{}-id", target.address));
+                (target.address, row)
             })
-        }).collect();
-        let state_path = stage.directory.join("terraform.tfstate");
-        save_json(&state_path, &json!({
-            "version": 4, "terraform_version": compile::OPENTOFU_VERSION, "serial": 1,
-            "lineage": "11111111-1111-4111-8111-111111111111", "outputs": {}, "resources": resources,
-        })).unwrap();
-        assert_eq!(
-            stage.bindings(&bundle.tofu(), &cancel).await.unwrap().len(),
-            4
-        );
-        let before = fs::read(&state_path).unwrap();
-        let error = deployment
-            .export_observations(&bundle, &stage, &record, true, &cancel)
-            .await
-            .expect_err("the fixture has no reachable Kubernetes API");
-        assert_eq!(
-            fs::read(&state_path).unwrap(),
-            before,
-            "export preserves source state"
-        );
+            .collect()
+    }
+
+    /// A generation for every kind `document` records.
+    fn generations(document: &Document) -> compile::Generations {
+        ["workspace", "provider", "sandbox"]
+            .into_iter()
+            .chain(crate::services::generation_kinds(document).unwrap())
+            .map(|key| (key.into(), "a".repeat(32)))
+            .collect()
+    }
+
+    /// Every example's saved document exports unchanged when the providers
+    /// report what it compiled to, and a drifted sandbox or provider stops the
+    /// export.
+    #[test]
+    fn each_example_exports_its_applied_document_and_stops_on_drift() {
+        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let mut exported_examples = 0;
+        for entry in fs::read_dir(&examples).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("yaml") {
+                continue;
+            }
+            let mut document = Document::parse(fs::read(&path).unwrap().as_slice())
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            document.defaults();
+            let generations = generations(&document);
+            let observations = echoed(&document, &generations);
+            assert_eq!(
+                exported(document.clone(), &generations, &observations)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display())),
+                document,
+                "{}",
+                path.display()
+            );
+            for (kind, field, value) in [
+                ("sandbox", "image", "drifted@sha256:0"),
+                ("provider", "endpoint", "https://drifted.example/v1"),
+            ] {
+                let Some(address) = compile::targets(&document, &generations)
+                    .unwrap()
+                    .into_iter()
+                    .find(|target| target.kind == kind && target.values.contains_key(field))
+                    .map(|target| target.address)
+                else {
+                    continue;
+                };
+                let mut drifted = observations.clone();
+                drifted.get_mut(&address).unwrap()[field] = json!(value);
+                assert!(
+                    exported(document.clone(), &generations, &drifted).is_err(),
+                    "{}: {kind}.{field} drift was exported",
+                    path.display()
+                );
+            }
+            let mut missing = observations.clone();
+            missing.pop_first();
+            assert!(exported(document.clone(), &generations, &missing).is_err());
+            exported_examples += 1;
+        }
+        assert!(exported_examples > 20, "examples were not found");
+    }
+
+    /// Export refreshes with only the graph's provider configuration. Each
+    /// variable that configuration reads, such as the Helm provider's
+    /// kubeconfig path, must be declared in it, or OpenTofu stops before
+    /// observing any resource.
+    #[test]
+    fn export_configuration_declares_every_variable_its_providers_read() {
+        let (document, generations) = crate::deployment::tests::kubernetes_context();
+        let (graph, _) = compile::compiled_runtime(&document, &generations, "0.0.0").unwrap();
+        let configuration = observation_configuration(&graph);
+        assert_eq!(configuration["terraform"], graph["terraform"]);
+        assert_eq!(configuration["provider"], graph["provider"]);
+        assert!(configuration.get("resource").is_none());
+        assert!(configuration.get("data").is_none());
+        let providers = configuration["provider"].to_string();
+        let read: BTreeSet<&str> = providers
+            .split("${var.")
+            .skip(1)
+            .map(|rest| rest.split('}').next().unwrap())
+            .collect();
         assert!(
-            !error.to_string().contains("undeclared input variable"),
-            "native export must declare its provider inputs before refreshing: {error}"
+            read.contains(crate::kubernetes::gateway::KUBECONFIG_VARIABLE),
+            "{providers}"
         );
-        assert!(
-            error.to_string().contains("Resource observation"),
-            "native export must reach provider observation: {error}"
-        );
+        for variable in read {
+            assert!(
+                configuration["variable"].get(variable).is_some(),
+                "export reads undeclared variable {variable}"
+            );
+        }
     }
 
     #[test]
@@ -547,7 +566,7 @@ mod tests {
     #[test]
     fn export_rejects_configuration_and_intent_identity_drift_from_provider_observations() {
         let target = Target {
-            address: "nemoclaw_agent_configuration.agent".into(),
+            address: "fabric_agent_configuration.agent".into(),
             kind: "agent_configuration".into(),
             values: Row::from([
                 ("owner".into(), "deployment".into()),

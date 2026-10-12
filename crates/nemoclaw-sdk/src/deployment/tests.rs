@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use crate::config::Gateway;
 
+use super::opentofu::{command_environment, credential_environment, gateway_environment};
 use super::*;
 
 #[test]
@@ -402,7 +403,7 @@ fn teardown_delegates_reconstructible_and_disposable_recovery_to_opentofu() {
     for address in [
         "openshell_provider_registration.example",
         "openshell_provider_profile.example",
-        "nemoclaw_agent_configuration.example",
+        "fabric_agent_configuration.example",
         "docker_container.runtime",
     ] {
         let allowed = BTreeMap::from([(address.into(), Row::new())]);
@@ -547,15 +548,7 @@ async fn schema_commands_do_not_require_inference_credentials() {
         }
     }
     let bundle_directory = tempfile::tempdir().unwrap();
-    let bundle = Bundle {
-        directory: bundle_directory.path().into(),
-        manifest: crate::bundle::Manifest {
-            version: "0.1.0".into(),
-            rust: "fixture".into(),
-            opentofu: crate::compile::OPENTOFU_VERSION.into(),
-            files: BTreeMap::new(),
-        },
-    };
+    let bundle = fixture_bundle(bundle_directory.path());
     fs::create_dir_all(bundle.tofu().parent().unwrap()).unwrap();
     fs::write(
         bundle.tofu(),
@@ -599,6 +592,72 @@ async fn schema_commands_do_not_require_inference_credentials() {
         );
     }
     assert_eq!(secrets.0.load(Ordering::SeqCst), 2);
+}
+
+fn fixture_bundle(directory: &Path) -> Bundle {
+    Bundle {
+        directory: directory.into(),
+        manifest: crate::bundle::Manifest {
+            version: "0.1.0".into(),
+            rust: "fixture".into(),
+            opentofu: crate::compile::OPENTOFU_VERSION.into(),
+            files: BTreeMap::new(),
+        },
+    }
+}
+
+/// Another OpenTofu file would join the root module, so preparation refuses it
+/// before replacing the configuration.
+#[test]
+fn state_directory_refuses_foreign_opentofu_configuration() {
+    let bundle_directory = tempfile::tempdir().unwrap();
+    let bundle = fixture_bundle(bundle_directory.path());
+    let state = tempfile::tempdir().unwrap();
+    let store = Store::open(state.path()).unwrap();
+    let deployment = Deployment::new(state.path(), bundle_directory.path());
+    for name in [".terraform.lock.hcl", "terraform.tfstate", "apply.plan"] {
+        fs::write(state.path().join(name), "{}").unwrap();
+    }
+    deployment
+        .prepare(&bundle, &store, &json!({"prepared": 1}))
+        .unwrap();
+    deployment
+        .prepare(&bundle, &store, &json!({"prepared": 2}))
+        .unwrap();
+    for name in ["extra.tf", "extra.tf.json", "extra.tofu", "extra.tofu.json"] {
+        fs::write(state.path().join(name), "{}").unwrap();
+        assert!(
+            matches!(
+                deployment.prepare(&bundle, &store, &json!({"prepared": 3})),
+                Err(Error::Conflict(_))
+            ),
+            "{name} was accepted"
+        );
+        fs::remove_file(state.path().join(name)).unwrap();
+    }
+    let configuration: Value =
+        serde_json::from_slice(&fs::read(state.path().join("main.tf.json")).unwrap()).unwrap();
+    assert_eq!(configuration, json!({"prepared": 2}));
+}
+
+/// The mirror path keeps its spaces and uses forward slashes on every platform.
+#[test]
+fn provider_mirror_quotes_a_bundle_path_with_spaces() {
+    let parent = tempfile::tempdir().unwrap();
+    let bundle_directory = parent.path().join("NemoClaw bundle 0.1");
+    fs::create_dir(&bundle_directory).unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let store = Store::open(state.path()).unwrap();
+    Deployment::new(state.path(), &bundle_directory)
+        .prepare(&fixture_bundle(&bundle_directory), &store, &json!({}))
+        .unwrap();
+    let prefix = parent.path().to_string_lossy().replace('\\', "/");
+    assert_eq!(
+        fs::read_to_string(state.path().join("providers.tfrc")).unwrap(),
+        format!(
+            "provider_installation {{\n filesystem_mirror {{ path = \"{prefix}/NemoClaw bundle 0.1/providers\" }}\n}}\n"
+        )
+    );
 }
 
 #[test]
@@ -686,225 +745,6 @@ fn gateway_replacement_preserves_the_old_binding_and_rejects_other_actions() {
         let plan:Plan=serde_json::from_value(json!({"resource_changes":[{"address":address,"change":{"actions":action,"before":{"id":"physical","spec":"old"}}}]})).unwrap();
         assert!(runtime::check_runtime_plan(&plan, &expected, &bindings).is_err());
     }
-}
-
-#[cfg(unix)]
-#[tokio::test]
-#[ignore = "creates and removes only an explicitly configured test gateway; retains its storage"]
-async fn managed_gateway_plan_apply_noop_destroy_and_recovery_use_real_opentofu() {
-    use crate::config::ComputeDriver;
-    let path =
-        |name| PathBuf::from(std::env::var_os(name).expect("explicit managed qualification path"));
-    let mut document =
-        Document::parse(fs::File::open(path("NEMOCLAW_TEST_GATEWAY_DOCUMENT")).unwrap()).unwrap();
-    assert!(matches!(document.spec.gateway, Gateway::Managed(_)));
-    assert!(document.spec.inference_providers[0].service_ref.is_none());
-    assert!(document.spec.services.is_empty());
-    let deployment = Deployment::new(
-        &path("NEMOCLAW_TEST_GATEWAY_STATE"),
-        &path("NEMOCLAW_TEST_BUNDLE"),
-    );
-    let cancel = CancellationToken::new();
-    let (bundle, store) = deployment.open().unwrap();
-    let mut record = store
-        .load()
-        .unwrap()
-        .unwrap_or(Record::new(document.clone()).unwrap());
-    assert_eq!(record.document.metadata.uid, document.metadata.uid);
-    let engine = nemoclaw_provider::docker::Engine::connect(
-        &document.spec.gateway.as_managed().unwrap().engine,
-    )
-    .unwrap();
-    let name = format!("{}-gateway", document.workspace());
-    let container_before = engine.container(&name).await.unwrap().map(|c| c.id);
-    let volume_before = engine
-        .volume(&format!("{name}-data"))
-        .await
-        .unwrap()
-        .map(|v| v.created_at);
-    deployment
-        .runtime_stage(&bundle, &store, &document, &mut record, false, &cancel)
-        .await
-        .unwrap();
-    assert_eq!(
-        engine.container(&name).await.unwrap().map(|c| c.id),
-        container_before,
-        "plan created a runtime"
-    );
-    assert_eq!(
-        engine
-            .volume(&format!("{name}-data"))
-            .await
-            .unwrap()
-            .map(|v| v.created_at),
-        volume_before,
-        "plan created storage"
-    );
-    deployment
-        .runtime_stage(&bundle, &store, &document, &mut record, true, &cancel)
-        .await
-        .unwrap();
-    let stage = Store::open(&store.directory.join("runtime")).unwrap();
-    let first = stage.bindings(&bundle.tofu(), &cancel).await.unwrap();
-    let state: Value =
-        serde_json::from_slice(&fs::read(stage.directory.join("terraform.tfstate")).unwrap())
-            .unwrap();
-    let readiness = state["resources"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|resource| resource["mode"] == "data" && resource["type"] == "openshell_gateway")
-        .expect("runtime apply must record provider-owned readiness");
-    assert_eq!(readiness["instances"][0]["attributes"]["compatible"], true);
-    drop(stage);
-    let docker = document.spec.gateway.runtime().provider == ComputeDriver::Docker;
-    let compute = if docker {
-        "docker_container.managed_gateway_runtime"
-    } else {
-        "nemoclaw_managed_gateway.runtime"
-    };
-    assert_eq!(first.len(), if docker { 3 } else { 2 });
-    let (changes, deferred, _, _) = deployment
-        .runtime_stage(&bundle, &store, &document, &mut record, true, &cancel)
-        .await
-        .unwrap();
-    assert!(changes.is_empty() && !deferred);
-    let stage = Store::open(&store.directory.join("runtime")).unwrap();
-    for (address, binding) in stage.bindings(&bundle.tofu(), &cancel).await.unwrap() {
-        assert_eq!(binding.id, first[&address].id);
-    }
-    drop(stage);
-    if docker {
-        let api = bollard::Docker::connect_with_unix(
-            engine.endpoint(),
-            120,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .unwrap();
-        for remove in [false, true] {
-            let old = engine.container(&name).await.unwrap().unwrap().id.unwrap();
-            api.stop_container(&old, None).await.unwrap();
-            if remove {
-                api.remove_container(&old, None).await.unwrap();
-            }
-            deployment
-                .runtime_stage(&bundle, &store, &document, &mut record, true, &cancel)
-                .await
-                .unwrap();
-            let current = engine.container(&name).await.unwrap().unwrap();
-            assert_eq!(current.state.unwrap().running, Some(true));
-            if remove {
-                assert_ne!(current.id.as_deref(), Some(old.as_str()));
-            }
-            assert_eq!(
-                Store::open(&store.directory.join("runtime"))
-                    .unwrap()
-                    .bindings(&bundle.tofu(), &cancel)
-                    .await
-                    .unwrap()["nemoclaw_gateway_storage.runtime"]
-                    .id,
-                first["nemoclaw_gateway_storage.runtime"].id
-            );
-        }
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let old = engine.container(&name).await.unwrap().unwrap().id;
-        *document.spec.gateway.endpoint_mut() = format!("http://127.0.0.1:{port}");
-        deployment
-            .runtime_stage(&bundle, &store, &document, &mut record, true, &cancel)
-            .await
-            .unwrap();
-        assert_ne!(engine.container(&name).await.unwrap().unwrap().id, old);
-        let stage = Store::open(&store.directory.join("runtime")).unwrap();
-        assert_eq!(
-            stage.bindings(&bundle.tofu(), &cancel).await.unwrap()["nemoclaw_gateway_storage.runtime"].id,
-            first["nemoclaw_gateway_storage.runtime"].id
-        );
-        let state_path = stage.directory.join("terraform.tfstate");
-        let prior = fs::read(&state_path).unwrap();
-        drop(stage);
-        let data_path = engine
-            .volume(&format!("{name}-data"))
-            .await
-            .unwrap()
-            .unwrap()
-            .mountpoint;
-        let helper = engine
-            .container(&format!("{name}-initialize"))
-            .await
-            .unwrap()
-            .unwrap()
-            .id
-            .unwrap();
-        let key_path =
-            format!("{data_path}/state/openshell/gateway/credentials/key-encryption-key.bin");
-        let key = engine
-            .read_file(&helper, &key_path, 32)
-            .await
-            .unwrap()
-            .unwrap();
-        let mut replacement = key.clone();
-        replacement[0] ^= 1;
-        engine
-            .write_files(
-                &helper,
-                &format!("{data_path}/state/openshell/gateway/credentials"),
-                &[("key-encryption-key.bin", &replacement, 0o600)],
-            )
-            .await
-            .unwrap();
-        assert!(
-            deployment
-                .runtime_stage(&bundle, &store, &document, &mut record, true, &cancel)
-                .await
-                .is_err()
-        );
-        assert_eq!(fs::read(state_path).unwrap(), prior);
-        engine
-            .write_files(
-                &helper,
-                &format!("{data_path}/state/openshell/gateway/credentials"),
-                &[("key-encryption-key.bin", &key, 0o600)],
-            )
-            .await
-            .unwrap();
-        deployment
-            .runtime_stage(&bundle, &store, &document, &mut record, true, &cancel)
-            .await
-            .unwrap();
-    }
-    // Reproduce a failed runtime apply after OpenTofu saved every declared
-    // identity. Preview must remain read-only; destroy owns the recovery.
-    record.begin_runtime_apply(&document);
-    store.save(&record).unwrap();
-    drop(store);
-    let plan = deployment.plan_destroy(&cancel).await.unwrap();
-    assert_eq!(plan.changes.len(), if docker { 2 } else { 1 });
-    assert_eq!(plan.retained, vec!["nemoclaw_gateway_storage.runtime"]);
-    let (_, store) = deployment.open().unwrap();
-    assert!(store.load().unwrap().unwrap().pending());
-    drop(store);
-    deployment.destroy(&cancel).await.unwrap();
-    assert!(engine.container(&name).await.unwrap().is_none());
-    let (bundle, store) = deployment.open().unwrap();
-    let mut record = store.load().unwrap().unwrap();
-    assert!(!record.pending());
-    deployment
-        .runtime_stage(&bundle, &store, &document, &mut record, true, &cancel)
-        .await
-        .unwrap();
-    let stage = Store::open(&store.directory.join("runtime")).unwrap();
-    let recovered = stage.bindings(&bundle.tofu(), &cancel).await.unwrap();
-    assert_eq!(
-        recovered["nemoclaw_gateway_storage.runtime"].id,
-        first["nemoclaw_gateway_storage.runtime"].id
-    );
-    assert_ne!(recovered[compute].id, first[compute].id);
-    drop(stage);
-    drop(store);
-    deployment.destroy(&cancel).await.unwrap();
-    assert!(engine.container(&name).await.unwrap().is_none());
 }
 
 #[test]
@@ -1345,7 +1185,7 @@ const UNEXPECTED_OBSERVATION: &str = "plan contains an unexpected observation";
 
 // Observations a plan could name without the compiled graph reading them.
 const UNDECLARED_OBSERVATIONS: [&str; 6] = [
-    "data.nemoclaw_fabric_capabilities.sandbox_99",
+    "data.fabric_capabilities.sandbox_99",
     "data.nemoclaw_target_hardware.target_99",
     "data.nemoclaw_inference_capabilities.endpoint_99",
     "data.nemoclaw_engine_capabilities.current",

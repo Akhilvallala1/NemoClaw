@@ -5,8 +5,9 @@
 
 NemoClaw projects deployment intent once into public Fabric configuration.
 Fabric discovers adapters, validates their settings and constraints, maps native configuration, and starts their runtimes.
-The shared [sandbox host](../../image/fabric/fabric.py) owns command parsing, transport, generation checks, and response envelopes.
+The shared [sandbox host](../../image/fabric/fabric.py) owns transport, generation checks, and the runtime lifecycle.
 Its image-installed [Fabric backend](../../image/fabric/backend.py) calls Fabric's public planner and runtime API; the host contains no adapter registry or native settings translation.
+Its [bridge protocol](../../image/fabric/bridge_protocol.py) owns command parsing, size limits, response envelopes, and response validation without importing Fabric.
 
 ## Responsibility Boundary
 
@@ -18,7 +19,7 @@ Its image-installed [Fabric backend](../../image/fabric/backend.py) calls Fabric
 | Fabric | Adapter discovery, schemas, native validation, native mapping and execution |
 | Authoring | Generic questions from owner schemas, accepted intent and unresolved work |
 
-`nemoclaw_agent_configuration` applies the public Fabric document after sandbox creation and route setup.
+`fabric_agent_configuration` applies the public Fabric document after sandbox creation and route setup.
 Unchanged configuration preserves the active handle; a changed document stops the previous runtime before its replacement starts.
 A host process restart waits for explicit apply before starting Fabric so that persisted configuration cannot outrun current gateway routes.
 This resource is reconstructible and separate from immutable sandbox identity and retained deployment bindings.
@@ -50,7 +51,7 @@ A timeout, malformed response, or disconnection leaves the outcome unconfirmed; 
 Prepare and configure compare a generation token atomically before changing the runtime.
 Lifecycle attempts invalidate the token even when they fail; rejected requests and confirmed no-ops preserve it.
 Snapshot reads remain available during invocation and stop.
-Ordinary apply uses configure directly; prepare is an explicit bridge operation.
+Apply uses configure directly; prepare is a separate bridge operation.
 OpenTofu orders dependency changes before agent configuration through its resource graph.
 The protocol adds no separate maintenance gate, consumer inventory, or requirement to stop agents before dependency updates.
 The deployment’s existing apply lock and resource ownership checks still apply.
@@ -149,12 +150,13 @@ Deployment ownership, missing bindings, route drift and observation failures con
 
 ## Validation
 
-[Protocol tests](../../image/fabric/test_protocol.py) cover flags, response limits, generation conflicts, socket ownership, and bounded shutdown.
+[Protocol tests](../../image/fabric/test_protocol.py) cover flags and request limits without Fabric, so they also run in the dummy image.
+[Host tests](../../image/fabric/test_host.py) cover response limits, generation conflicts, socket ownership, and bounded shutdown.
 [Runtime contract tests](../../image/fabric/test_runtime_contract.py) cover configuration readback and installed Fabric invocation.
 [Reference tests](../../image/fabric/test_reference.py) exercise positive and failed health, lifecycle failures, validation, and concurrent observations.
 The [image command suite](../../image/test_agent_contract.py) exercises the same executable interface in the dummy and every production image.
 Its successful dummy health results do not qualify a real adapter’s native health or cleanup through OpenShell.
 The existing installed Fabric fixture adapter remains authored and packaged in Fabric.
 The separate dummy backend is authored in NemoClaw and exercises the image interface without Fabric.
-The [discovery tests](../../crates/nemoclaw-e2e/tests/discovery.rs) read that installed discovery output and image metadata through the real OpenTofu/provider planner.
+The [discovery tests](../../crates/nemoclaw-provider/tests/contract/discovery.rs) read that installed discovery output and image metadata through the real OpenTofu/provider planner.
 [Bundle fixtures](../contributing/integration-tests.md#opentofu-and-bundle-lifecycle) separately exercise deployment recovery, export/reapply and ownership.

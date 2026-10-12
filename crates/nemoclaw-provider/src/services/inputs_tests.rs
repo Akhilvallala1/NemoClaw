@@ -269,7 +269,8 @@ async fn local_connection_payload_delivers_speech_and_descriptor_without_an_open
         "11111111-2222-3333-4444-555555555555".into(),
     );
     let fixture =
-        Fixture::start(|_| panic!("payload assembly must not contact Docker or the gateway")).await;
+        Fixture::engine(|_| panic!("payload assembly must not contact Docker or the gateway"))
+            .await;
     let backend = InputsBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
         .with_secrets(Arc::new(SpeechOnly));
     let spec = backend.spec(&desired).unwrap();
@@ -305,7 +306,7 @@ async fn local_connection_payload_delivers_speech_and_descriptor_without_an_open
 async fn protected_input_plan_checks_credentials_and_image_without_mutation() {
     let requests = Arc::new(Mutex::new(vec![]));
     let seen = requests.clone();
-    let fixture = Fixture::start(move |request| {
+    let fixture = Fixture::engine(move |request| {
         seen.lock()
             .unwrap()
             .push((request.method.clone(), request.path.clone()));

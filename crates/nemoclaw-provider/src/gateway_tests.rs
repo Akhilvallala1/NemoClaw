@@ -19,7 +19,7 @@ async fn exited_gateway_stops_readiness_without_waiting_for_a_stalled_api() {
     let owner = spec.owner.clone();
     let reads = Arc::new(AtomicUsize::new(0));
     let count = reads.clone();
-    let fixture = Fixture::start(move |request| {
+    let fixture = Fixture::engine(move |request| {
         assert_eq!(request.method, "GET");
         assert_eq!(request.path, "/containers/provider-gateway-id/json");
         count.fetch_add(1, Ordering::SeqCst);
@@ -37,15 +37,9 @@ async fn exited_gateway_stops_readiness_without_waiting_for_a_stalled_api() {
     .await;
     let provider = NemoClawProvider::default();
     let mut diags = Diagnostics::default();
+    // Readiness takes its gateway endpoint as an input, not from the provider.
     provider
-        .configure(
-            &mut diags,
-            String::new(),
-            ProviderConfig {
-                endpoint: Value::Value(spec.gateway.endpoint.clone()),
-                ..Default::default()
-            },
-        )
+        .configure(&mut diags, String::new(), ProviderConfig::default())
         .await
         .unwrap();
     let config = serde_json::from_value(json!({

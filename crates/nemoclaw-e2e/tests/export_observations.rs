@@ -1,14 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-// Deployment planning requires image discovery, whose engine transports are Unix-only.
-#![cfg(unix)]
-
 use nemoclaw_e2e::openshell::Fixture;
 use nemoclaw_sdk::{CancellationToken, Deployment, Error, config::Document};
 use std::{fs, path::PathBuf};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn export_refreshes_through_opentofu_without_applying_or_losing_bindings() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -70,7 +67,7 @@ async fn export_refreshes_through_opentofu_without_applying_or_losing_bindings()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn export_uses_provider_observations_without_resolving_inference_credentials() {
     struct Values;
     impl nemoclaw_sdk::Secrets for Values {
@@ -129,7 +126,7 @@ async fn export_uses_provider_observations_without_resolving_inference_credentia
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn export_rejects_observed_pi_model_drift_without_reconfiguring_it() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
@@ -175,7 +172,7 @@ async fn export_rejects_observed_pi_model_drift_without_reconfiguring_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires explicit verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
+#[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
 async fn mixed_search_export_preserves_scopes_shared_registrations_and_state_on_drift() {
     use nemoclaw_sdk::config::SearchProvider;
     use std::{process::Command, sync::Arc};

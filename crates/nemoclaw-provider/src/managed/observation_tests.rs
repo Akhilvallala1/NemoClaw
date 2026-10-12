@@ -34,7 +34,7 @@ async fn service_readiness_observes_only_the_provider_container_identity() {
             "State":{"Running":true,"StartedAt":"2026-09-14T00:00:00Z"}}),
     )));
     let shared = state.clone();
-    let fixture = Fixture::start(move |request| {
+    let fixture = Fixture::engine(move |request| {
         assert_eq!(request.method, "GET", "readiness must never mutate Docker");
         assert!(
             matches!(
@@ -131,21 +131,19 @@ async fn managed_installers_accept_current_runtime_readiness_without_collecting_
                 .map(|kind| (kind.into(), "a".repeat(32)))
                 .into();
         let graph = crate::compile::compile_runtime(&document, &generations, "0.1.0").unwrap();
-        let encoded = graph["data"]["nemoclaw_service_readiness"]
-            .as_object()
-            .unwrap()
-            .values()
-            .next()
-            .unwrap()["spec"]
-            .as_str()
-            .unwrap();
-        let spec: Spec = serde_json::from_str(encoded).unwrap();
+        let spec = service_spec(&document, &generations);
+        let readiness = crate::services::Readiness::new(
+            spec.engine(),
+            &spec.name,
+            spec.runtime_configuration().unwrap(),
+        )
+        .unwrap();
         let name = spec.name.clone();
         let status = Arc::new(Mutex::new(
             json!({"phase":"ready","updated":"2026-09-15T00:00:01Z","detail":"","pid":42}),
         ));
         let shared = status.clone();
-        let fixture = Fixture::start(move |request| {
+        let fixture = Fixture::engine(move |request| {
             assert_eq!(request.method, "GET");
             if request.path == "/containers/provider-container/json" {
                 return Some((
@@ -186,7 +184,7 @@ async fn managed_installers_accept_current_runtime_readiness_without_collecting_
         let cancel = crate::CancellationToken::new();
         crate::services::wait_service_ready(
             &connections,
-            encoded,
+            &readiness,
             "provider-container",
             std::time::Duration::from_secs(2),
             &cancel,
@@ -197,7 +195,7 @@ async fn managed_installers_accept_current_runtime_readiness_without_collecting_
         assert!(
             crate::services::wait_service_ready(
                 &connections,
-                encoded,
+                &readiness,
                 "provider-container",
                 std::time::Duration::from_secs(2),
                 &cancel
@@ -233,7 +231,7 @@ async fn gateway_observation_preserves_identity_and_fails_closed_on_drift_or_par
         false,
     )));
     let shared = state.clone();
-    let fixture = Fixture::start(move |request| {
+    let fixture = Fixture::engine(move |request| {
         assert_eq!(request.method, "GET", "observation mutated Docker");
         let state = shared.lock().unwrap();
         if request.path.contains("/archive?") {
@@ -402,7 +400,7 @@ fn gateway_identity_includes_signing_key_and_persisted_encryption_key() {
 async fn invalid_managed_capacity_requests_fail_before_host_observation() {
     let (mut spec, _, _, _) = reference();
     spec.owner.clear();
-    let fixture = Fixture::start(|_| panic!("invalid spec reached engine")).await;
+    let fixture = Fixture::engine(|_| panic!("invalid spec reached engine")).await;
     let engine = fixture.engine_for(&spec.gateway.engine);
     let error = engine.check_capacity(&spec, None).await.unwrap_err();
     assert!(matches!(error, Error::Conflict(_)));
@@ -445,7 +443,7 @@ async fn capacity_requires_measurements_from_the_selected_execution_target() {
         }
     }
     let (spec, _, _, _) = reference();
-    let fixture = Fixture::start(|request| {
+    let fixture = Fixture::engine(|request| {
         assert_eq!(
             request.path, "/info",
             "invalid host observation reached artifact or resource operations"
@@ -517,7 +515,7 @@ async fn gateway_processes_require_layout_two_before_engine_access() {
     .unwrap();
     let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = requests.clone();
-    let fixture = Fixture::start(move |_| {
+    let fixture = Fixture::engine(move |_| {
         count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Some((503, br#"{"message":"unavailable"}"#.to_vec()))
     })
@@ -534,6 +532,9 @@ async fn gateway_processes_require_layout_two_before_engine_access() {
     }
 }
 
+// Its engine answers archive stat headers, which Fixture cannot yet, on a
+// Unix socket.
+#[cfg(unix)]
 #[tokio::test]
 async fn authenticated_vllm_readiness_rechecks_key_permissions() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -553,16 +554,13 @@ async fn authenticated_vllm_readiness_rechecks_key_permissions() {
             ("managed_gateway".into(), "a".repeat(32)),
         ]
         .into();
-        let graph = crate::compile::compile_runtime(&document, &generations, "0.1.0").unwrap();
-        let encoded = graph["data"]["nemoclaw_service_readiness"]
-            .as_object()
-            .unwrap()
-            .values()
-            .next()
-            .unwrap()["spec"]
-            .as_str()
-            .unwrap();
-        let spec: Spec = serde_json::from_str(encoded).unwrap();
+        let spec = service_spec(&document, &generations);
+        let readiness = crate::services::Readiness::new(
+            spec.engine(),
+            &spec.name,
+            spec.runtime_configuration().unwrap(),
+        )
+        .unwrap();
         let container = serde_json::to_vec(&json!({"Id":"provider-container","Name":format!("/{}", spec.name),"State":{"Running":true,"StartedAt":"2026-09-15T00:00:00Z"}})).unwrap();
         let status = crate::docker::archive(&[(
             "status.json",
@@ -612,7 +610,7 @@ async fn authenticated_vllm_readiness_rechecks_key_permissions() {
         let connections = crate::docker::Connections::fixed([engine]).unwrap();
         let result = crate::services::wait_service_ready(
             &connections,
-            encoded,
+            &readiness,
             "provider-container",
             std::time::Duration::from_secs(2),
             &crate::CancellationToken::new(),
@@ -625,4 +623,17 @@ async fn authenticated_vllm_readiness_rechecks_key_permissions() {
             "credential mode must be checked even when runtime is ready: {result:?}"
         );
     }
+}
+
+/// The compiled specification of the document's managed service.
+fn service_spec(
+    document: &crate::config::Document,
+    generations: &crate::compile::Generations,
+) -> Spec {
+    let target = crate::compile::runtime_targets(document, generations)
+        .unwrap()
+        .into_iter()
+        .find(|target| matches!(target.kind.as_str(), "inference_service" | "ollama_service"))
+        .unwrap();
+    serde_json::from_str(&target.values["spec"]).unwrap()
 }

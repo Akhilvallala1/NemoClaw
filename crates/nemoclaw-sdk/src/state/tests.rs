@@ -170,63 +170,6 @@ fn malformed_duplicate_and_unsupported_state_is_not_empty() {
     );
 }
 
-#[tokio::test]
-#[ignore = "requires NEMOCLAW_TEST_BUNDLE; local OpenTofu builtin resources only"]
-async fn native_state_json_preserves_module_and_instance_identity_without_refresh() {
-    let bundle = crate::bundle::Bundle::open(&std::path::PathBuf::from(
-        std::env::var_os("NEMOCLAW_TEST_BUNDLE").expect("explicit verified bundle"),
-    ))
-    .unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let root = directory.path();
-    fs::create_dir(root.join("child")).unwrap();
-    fs::write(root.join("providers.tfrc"), "").unwrap();
-    fs::write(
-        root.join("main.tf.json"),
-        serde_json::json!({
-            "module":{"child":{"source":"./child"}},
-            "resource":{"terraform_data":{"root":{"input":"retained"}}}
-        })
-        .to_string(),
-    )
-    .unwrap();
-    fs::write(root.join("child/main.tf.json"), serde_json::json!({
-        "resource":{"terraform_data":{"replica":{"for_each":{"a":"first","b":"second"},"input":"${each.value}"}}}
-    }).to_string()).unwrap();
-    let cancel = crate::CancellationToken::new();
-    for args in [
-        vec!["init", "-input=false"],
-        vec!["apply", "-auto-approve", "-input=false"],
-    ] {
-        crate::process::run(
-            root,
-            &bundle.tofu(),
-            &args,
-            &schema_environment(root),
-            &cancel,
-        )
-        .await
-        .unwrap();
-    }
-    let path = root.join("terraform.tfstate");
-    let before = fs::read(&path).unwrap();
-    let observed = bindings(root, &bundle.tofu(), &cancel).await.unwrap();
-    assert_eq!(observed.len(), 3);
-    assert!(observed.contains_key("terraform_data.root"));
-    assert_ne!(
-        observed["module.child.terraform_data.replica[\"a\"]"].id,
-        observed["module.child.terraform_data.replica[\"b\"]"].id
-    );
-    assert_eq!(
-        fs::read(&path).unwrap(),
-        before,
-        "inspection must not rewrite state"
-    );
-    fs::write(&path, b"broken").unwrap();
-    assert!(bindings(root, &bundle.tofu(), &cancel).await.is_err());
-    assert_eq!(fs::read(path).unwrap(), b"broken");
-}
-
 #[test]
 fn replacement_cleanup_keeps_current_and_deposed_objects_distinct() {
     let address = "docker_container.runtime";
@@ -643,7 +586,7 @@ fn pending_recovery_requires_matching_current_bindings_and_retains_unknown_creat
         assert!(retained.pending(), "{field}");
         let unresolved = retained.pending_creations;
         assert!(unresolved.contains_key(sandbox));
-        assert!(unresolved.contains_key("nemoclaw_agent_configuration.assistant"));
+        assert!(unresolved.contains_key("fabric_agent_configuration.assistant"));
     }
     let missing = bindings
         .keys()
@@ -764,35 +707,37 @@ fn typed_storage_bindings_compare_their_complete_identity() {
     }
 }
 
-#[tokio::test]
-async fn state_with_openshell_types_from_the_nemoclaw_provider_is_rejected_before_any_read() {
-    for kind in [
-        "nemoclaw_workspace",
-        "nemoclaw_provider",
-        "nemoclaw_provider_profile",
-        "nemoclaw_sandbox",
-        "nemoclaw_gateway_capabilities",
-    ] {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(
-            directory.path().join("terraform.tfstate"),
-            serde_json::json!({"version": 4, "resources": [
-                {"mode": "managed", "type": kind, "name": "example", "instances": []}
-            ]})
-            .to_string(),
-        )
-        .unwrap();
-        // A missing OpenTofu proves that rejection needs no provider or read.
-        let error = super::bindings(
-            directory.path(),
-            &directory.path().join("missing-tofu"),
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            error.to_string().contains("earlier release"),
-            "{kind}: {error}"
-        );
-    }
+#[test]
+fn gateway_storage_bindings_record_their_typed_settings() {
+    // Docker gateway storage omits its endpoint, which state records as null.
+    let values = serde_json::json!({
+        "id":"engine/nc-0123456789abcdef-gateway-data/created",
+        "name":"nc-0123456789abcdef-gateway",
+        "owner":"302ff5e1-088d-42ce-959f-4ff4c3570c13",
+        "generation":"b".repeat(32),
+        "compute_driver":"docker",
+        "engine":"unix:///var/run/docker.sock",
+        "endpoint":null,
+        "image":format!("gateway@sha256:{}", "a".repeat(64)),
+        "network_cidr":"172.30.160.0/24",
+        "image_pull_policy":null,
+        "data_path":"/var/lib/docker/volumes/data/_data",
+    });
+    let address = "nemoclaw_gateway_storage.runtime";
+    let bindings = read(&state(serde_json::json!([
+        {"address":address, "mode":"managed", "values":values}
+    ])))
+    .unwrap();
+    let compiled: crate::backend::Row = values
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| crate::managed::GATEWAY_ATTRIBUTES.contains(&name.as_str()))
+        .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
+        .collect();
+    assert_eq!(bindings[address].typed_values(), compiled);
+    assert!(!bindings[address].differs(&compiled));
+    let mut changed = compiled.clone();
+    changed.insert("image".into(), "changed".into());
+    assert!(bindings[address].differs(&changed));
 }

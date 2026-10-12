@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 mod helm_recovery;
+#[cfg(feature = "test-scenarios")]
+mod scenarios;
 mod teardown;
 #[cfg(all(test, unix))]
 pub(super) mod tests;
@@ -48,13 +50,14 @@ fn kubernetes_binding(
     }
     Ok(())
 }
-fn bound_spec(want: &Spec, binding: Option<&StateBinding>) -> Result<Spec, Error> {
+fn bound_spec(kind: &str, want: &Spec, binding: Option<&StateBinding>) -> Result<Spec, Error> {
     let Some(binding) = binding else {
         return Ok(want.clone());
     };
-    let old: Spec = serde_json::from_str(&binding.spec)
+    let mut bound = binding.typed_values();
+    bound.insert("spec".into(), binding.spec.clone());
+    let old = Spec::from_values(kind, &bound)
         .map_err(|_| Error::Conflict("bound runtime specification is incomplete"))?;
-    old.validate()?;
     if old.kind != want.kind
         || old.name != want.name
         || old.owner != want.owner
@@ -81,9 +84,7 @@ fn runtime_bindings(
     if bindings.keys().any(|key| {
         !expected.contains_key(key) && (!plan::disposable(key) || key.starts_with("docker_volume."))
     }) {
-        return Err(Error::Conflict(
-            "ordinary apply cannot remove a managed runtime",
-        ));
+        return Err(Error::Conflict("apply cannot remove a managed runtime"));
     }
     for target in targets {
         kubernetes_binding(target, bindings)?;
@@ -104,13 +105,10 @@ fn runtime_bindings(
         if target.kind == GATEWAY_KIND
             || crate::services::resource_behavior(&target.kind).runtime_process
         {
-            let want: Spec = serde_json::from_str(&target.values["spec"])
+            let want = Spec::from_values(&target.kind, &target.values)
                 .map_err(|_| Error::State("invalid compiled runtime"))?;
-            let old = bound_spec(&want, bindings.get(&target.address))?;
-            expected
-                .get_mut(&target.address)
-                .unwrap()
-                .insert("spec".into(), old.json()?);
+            let old = bound_spec(&target.kind, &want, bindings.get(&target.address))?;
+            old.write_values(&target.kind, expected.get_mut(&target.address).unwrap())?;
         } else if bindings
             .get(&target.address)
             .is_some_and(|binding| binding.differs(&target.values))

@@ -22,7 +22,7 @@ cargo ci live-kind
 The runner builds Pi on ARM64 or OpenClaw on AMD64, exports its metadata bundle, loads it by digest, and installs the pinned Agent Sandbox prerequisite.
 The gateway test checks authentication, forged-token rejection, repeated install/removal, and retained storage without a Helm executable on `PATH`.
 The agent test uses the public SDK to deploy a gateway and sandbox from that image.
-It supplies a caller-relative kubeconfig and expects apply to fail only at `data.nemoclaw_sandbox_readiness.assistant`, because the pinned Fabric reports agent health as unsupported ([#12443](https://github.com/NVIDIA/NemoClaw/issues/12443)).
+It supplies a caller-relative kubeconfig and expects apply to fail only at `data.fabric_sandbox_readiness.assistant`, because the pinned Fabric reports agent health as unsupported ([#12443](https://github.com/NVIDIA/NemoClaw/issues/12443)).
 Export must still reproduce the authored configuration without readiness checks; destroy then retains gateway storage.
 The OpenShift-profile test supplies namespace UID-range annotations on kind and checks that gateway and sandbox pods use the assigned UID through the same SDK flow.
 These three live tests request no inference and need no GPU or credentials.
@@ -37,20 +37,20 @@ To render the pinned chart through the bundled provider without cluster access:
 
 ```sh
 NEMOCLAW_TEST_BUNDLE=/absolute/path/to/immutable/bundle \
-  cargo test --locked -p nemoclaw-sdk --test integration \
-    kubernetes_gateway::the_pinned_chart_renders_with_the_sdk_values -- --ignored --exact
+  cargo test --locked -p nemoclaw-e2e --test integration \
+    kubernetes_chart::the_pinned_chart_renders_with_the_sdk_values -- --ignored --exact
 ```
 
 The render test also rejects an unavailable chart digest.
 
 To run only the gateway test, use an owned disposable cluster with Agent Sandbox installed and exactly one default StorageClass.
-Supply its explicit kubeconfig and context, and a verified immutable bundle built from the checkout:
+Supply the cluster's kubeconfig and context, and a verified immutable bundle built from the checkout:
 
 ```sh
 NEMOCLAW_TEST_KUBECONFIG=/absolute/path/to/owned-kubeconfig \
 NEMOCLAW_TEST_KUBE_CONTEXT=kind-owned-test \
 NEMOCLAW_TEST_BUNDLE=/absolute/path/to/immutable/bundle \
-  cargo test --locked -p nemoclaw-sdk --test integration \
+  cargo test --locked -p nemoclaw-e2e --test integration \
     kubernetes_live::the_gateway_installs_authenticates_and_is_removed_keeping_storage \
     -- --ignored --exact --nocapture
 ```
@@ -58,7 +58,7 @@ NEMOCLAW_TEST_BUNDLE=/absolute/path/to/immutable/bundle \
 The test runs the compiled runtime and teardown graphs through the bundled OpenTofu and providers.
 Each OpenTofu process has an empty `PATH` and an isolated home, so a host Helm executable cannot satisfy the test.
 The test creates a fresh namespace, installs the gateway, requires an unchanged plan, verifies authenticated `GetGatewayInfo`, and rejects a forged token.
-It removes and reinstalls the native Helm release, then removes it again, checking that the namespace, encryption key, and PVC identities survive both removals.
+It removes and reinstalls the Helm release, then removes it again, checking that the namespace, encryption key, and PVC identities survive both removals.
 It creates no agent sandbox and requests no inference.
 
 The test prints the path to its private temporary state directory and retains it after success or failure.
@@ -90,7 +90,7 @@ NEMOCLAW_TEST_BUNDLE=/absolute/path/to/immutable/candidate-bundle \
     fabric_live::dependency_upgrade_survives_apply_process_exit -- --ignored --test-threads=1
 ```
 
-The test waits for the real apply CLI to exit, then explicitly invokes the hosted Fabric runtime through OpenShell.
+The test waits for the apply CLI to exit, then invokes the hosted Fabric runtime through OpenShell.
 It requires a successful Fabric result without assuming an adapter-specific output shape or qualifying response quality.
 It checks export/reapply and stable resource/runtime identities before destroying its owned workloads and registrations.
 It retains the workspace and persistent storage; failures retain state and resources for diagnosis and explicit cleanup.
@@ -98,7 +98,7 @@ CLI failures appear in the test output.
 It never starts inference or substitutes another agent process through exec.
 
 If this test fails, passing lower-level fixture tests does not establish compatibility.
-Run it explicitly for candidate dependency upgrades, outside the default build; ordinary CI retains the fast descriptor, reference, and protocol tests.
+Run it explicitly for candidate dependency upgrades, outside the default build; `CI / Bundle` retains the fast descriptor, reference, and protocol tests.
 
 ## Retained Storage Observations
 
@@ -171,7 +171,7 @@ The VM must be AMD64, expose a working Docker daemon with Buildx and a Landlock 
 The test refuses a host with a detected NemoClaw or OpenShell deployment.
 It uses the hosted NVIDIA OpenClaw fixture as the initial v1 configuration, replacing only its deployment UID and agent-image digest for the owned run.
 
-The test proves that plan leaves the Docker inventory unchanged, waits for the real apply CLI process to exit, and then requires an exact agent reply through the hosted runtime.
+The test proves that plan leaves the Docker inventory unchanged, waits for the apply CLI process to exit, and then requires an exact agent reply through the hosted runtime.
 It checks unchanged apply, export/reapply, stable resource and Fabric runtime identities, denied undeclared egress, and preservation of an owned workspace file.
 Destroy must remove the provider, profile, sandbox, and managed gateway while retaining the documented workspace and gateway storage.
 The workflow uploads a sanitized Boolean proof and verifies that the Brev VM is absent before completing.
@@ -239,7 +239,7 @@ Only inside the test, the comparison replaces the single-entry list with `agent`
 Only the authored v1 document drives deployment.
 To refresh a fixture, run the public v0 `nemoclaw config export` against a representative deployment, check the output for credential values, copy the redacted bytes without reshaping them, and update `v1.yaml` in the same change.
 
-Run the deterministic comparisons without Docker or a credential:
+Run the comparisons without Docker or a credential:
 
 ```sh
 cargo test -p nemoclaw-e2e --test integration hosted_parity::
@@ -295,9 +295,100 @@ It invokes the hosted runtime separately from apply with caller-supplied input.
 The test checks managed runtime bindings as well as the hosted agent identity across export/reapply and destroys only the supplied deployment.
 
 
+## Docker Live Suite
+
+`cargo ci live-docker` builds the images and writes the owned inputs for the Ollama cache, runtime image, Docker provider, standalone cache, and Docker gateway tests below, then runs them; see [Run each layer](testing.md#run-each-layer).
+To run one of them by hand, supply its inputs as its section describes.
+
+## Model Cache Compatibility
+
+On native Linux with local Docker, pull the Ollama base image pinned in this checkout before selecting the opt-in cache test.
+The test creates a temporary cache and one container, exposes its inventory API on an ephemeral loopback port, and removes both afterward.
+It resumes complete synthetic files through NemoClaw's verifier, then checks the actual Ollama inventory and version.
+It downloads no model and exposes no GPU.
+From the repository root:
+
+```sh
+ollama_base=$(awk '$1 == "FROM" { print $2; exit }' runtimes/ollama/Dockerfile)
+docker pull "$ollama_base"
+NEMOCLAW_TEST_OLLAMA_CACHE=1 cargo test -p nemoclaw-runtime --test integration ollama_cache:: -- --ignored --nocapture
+```
+
+A failure identifies either the cache contract or a mismatch between the runtime image and `versions.json`.
+Correct the runtime pin or adapter before rerunning; never point the fixture at a deployment's cache.
+If the test process is forcibly killed, inspect containers with label `org.nemoclaw.test=ollama-cache` and remove only the container created by that run.
+
+Evaluate the Hugging Face client shipped in the vLLM base image with a private loopback server:
+
+```sh
+vllm_base=$(awk '$1 == "FROM" { print $2; exit }' runtimes/vllm/Dockerfile)
+docker pull "$vllm_base"
+docker run --rm --runtime=runc --network none --env HF_HUB_DISABLE_PROGRESS_BARS=1 \
+  --volume "$PWD/runtimes/vllm/test_download.py:/test_download.py:ro" \
+  --entrypoint python3 "$vllm_base" /test_download.py
+```
+
+This test documents why post-download verification cannot preserve bounded writes with the evaluated client.
+It expects the client to write an oversized fixture before raising a size error; if that behavior changes, reevaluate whether the owner client can replace NemoClaw's downloader.
+
+
+## Runtime Image Loading
+
+On a native Linux host, complete the [runtime image build prerequisites](../build.md#build-a-runtime-image).
+This test builds a uniquely named scratch image without downloading a base image, exports an OCI archive, loads it, and checks access by the exported digest.
+It removes its image tag afterward; Docker's build cache remains.
+Run from the repository root:
+
+```sh
+NEMOCLAW_TEST_RUNTIME_IMAGE=1 cargo test -p nemoclaw-build --no-default-features --bin nemoclaw-build runtime_archive_loads_with_its_exported_digest -- --ignored
+```
+
+A failure reports the build, load, or identity check that failed; correct the Docker configuration and rerun.
+It does not start containers, run inference, or publish an image.
+
+
+## Docker Provider Lifecycle
+
+On Linux with local Docker, provide a verified bundle and two different, already loaded digest-pinned images containing the Ollama proxy executable.
+Run from the repository root:
+
+```sh
+NEMOCLAW_TEST_BUNDLE=/absolute/path/to/bundle \
+NEMOCLAW_TEST_OLLAMA_PROXY_IMAGE=repository@sha256:YOUR_IMAGE_DIGEST \
+NEMOCLAW_TEST_OLLAMA_PROXY_REPLACEMENT_IMAGE=repository@sha256:YOUR_REPLACEMENT_DIGEST \
+  cargo test -p nemoclaw-e2e --test integration docker_provider_proxy:: -- --ignored
+```
+
+This test creates uniquely named local containers and credential volumes and removes only those owned resources afterward.
+It checks SDK apply, export/reapply, failed readiness, image changes and container replacement with the same key, destroy retention, and rejection of missing, foreign, or substituted retained volumes.
+OpenShell and the upstream Ollama inventory are local protocol fixtures; no model executes.
+
+
+## Standalone Cache and Credential Resources
+
+On Linux with Docker, select a verified bundle, an explicit local engine socket, and an already loaded digest-pinned image containing `python3` and `sha256sum`, such as an agent image.
+The fixture container runs as root, so the image's own user does not matter.
+From the repository root:
+
+```sh
+NEMOCLAW_TEST_BUNDLE=/absolute/path/to/bundle \
+NEMOCLAW_TEST_CACHE_ENGINE=unix:///var/run/docker.sock \
+NEMOCLAW_TEST_CACHE_IMAGE=repository@sha256:YOUR_IMAGE_DIGEST \
+  cargo test -p nemoclaw-e2e --test integration cache_provider:: -- --ignored
+```
+
+The [hand-written HCL](../../crates/nemoclaw-e2e/tests/fixtures/cache_provider.tf) composes `docker_volume`, `docker_container`, and `nemoclaw_inference_storage`; no SDK compiler or deployment coordinator runs.
+The fixture creates fresh owned resources, checks no-op, replacement, failed-start recovery, retained teardown/reapply, and cache reconstruction with the same credential.
+Missing or substituted credential volumes must stop apply before compute creation and preserve state.
+Teardown sets the container count to zero while keeping both volume declarations; `tofu destroy` is deliberately blocked by their retention rules.
+The test removes only its labelled resources afterward and retains logs and state under its printed temporary path for diagnosis.
+The container's Python process simulates model reconstruction and a credential; it does not qualify the vLLM supervisor, GPU execution, model preparation, inference, or OpenShell deployment.
+
+
 ## Docker Gateway Recovery
 
-The SDK's `managed_gateway_plan_apply_noop_destroy_and_recovery_use_real_opentofu` test exercises only the managed runtime stage with a real gateway, Docker, both providers, and OpenTofu.
+nemoclaw-e2e's `managed_gateway_plan_apply_noop_destroy_and_recovery_use_real_opentofu` test exercises only the managed runtime stage with a real gateway, Docker, both providers, and OpenTofu.
+It reaches that stage through the SDK's `test-scenarios` setup, which only nemoclaw-e2e enables, then destroys through the public API.
 Supply a verified bundle and an owned configuration with a fresh UID, free gateway port/subnet, Docker sandboxes, external inference, and no managed services.
 The test does not create sandboxes or request inference.
 It removes its gateway process on completion but retains the database, keys, initializer, bridge, and state.
@@ -308,9 +399,9 @@ From the repository root:
 NEMOCLAW_TEST_BUNDLE=/absolute/path/to/bundle \
 NEMOCLAW_TEST_GATEWAY_DOCUMENT=/absolute/path/to/gateway.yaml \
 NEMOCLAW_TEST_GATEWAY_STATE=/absolute/path/to/new-state \
-cargo test -p nemoclaw-sdk \
-  managed_gateway_plan_apply_noop_destroy_and_recovery_use_real_opentofu \
-  --lib -- --ignored
+cargo test -p nemoclaw-e2e --test integration \
+  managed_gateway::managed_gateway_plan_apply_noop_destroy_and_recovery_use_real_opentofu \
+  -- --ignored --exact
 ```
 
 The test checks read-only planning, unchanged apply, stopped/deleted process recovery, retained credential identity, and destroy/reapply.

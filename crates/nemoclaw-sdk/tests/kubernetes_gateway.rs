@@ -1,15 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! Non-secret gateway chart values and rendering through the bundled Helm
-//! provider. Neither test setup nor rendering needs a Helm executable.
+//! Non-secret gateway chart values. nemoclaw-e2e's kubernetes_chart renders
+//! them with the pinned chart.
 
-use nemoclaw_sdk::{
-    bundle::Bundle,
-    config::ComputeDriver,
-    kubernetes::{GATEWAY_KIND, Spec, auth::Development, gateway, gateway::Identity, issuer},
-};
-use serde_json::{Value, json};
-use std::{fs, path::Path, time::Duration};
+use nemoclaw_sdk::kubernetes::{GATEWAY_KIND, Spec, gateway, gateway::Identity};
+use serde_json::json;
 
 fn spec() -> Spec {
     serde_json::from_value(json!({
@@ -40,7 +35,10 @@ fn the_chart_values_pin_every_image_by_digest_and_require_authentication() {
         assert_eq!(image["pullPolicy"], "IfNotPresent");
         assert!(image.get("tag").is_none(), "mutable image tags are absent");
     }
-    assert_eq!(values["server"]["auth"]["allowUnauthenticatedUsers"], false);
+    assert_eq!(
+        values["gatewayConfig"]["openshell.gateway.auth"],
+        json!({"allow_unauthenticated_users": false})
+    );
     assert_eq!(values["server"]["disableTls"], false);
     assert_eq!(values["server"]["tls"]["enableMtls"], true);
     assert_eq!(values["server"]["telemetryEnabled"], false);
@@ -49,7 +47,23 @@ fn the_chart_values_pin_every_image_by_digest_and_require_authentication() {
 #[test]
 fn chart_authentication_values_contain_only_references_and_public_policy() {
     let spec = spec();
-    let server = gateway::values(&spec).unwrap()["server"].clone();
+    let values = gateway::values(&spec).unwrap();
+    let server = values["server"].clone();
+    // Settings the chart reads only through its legacy server.* mapping belong
+    // in gatewayConfig; server keeps the values its templates read directly.
+    let mut keys: Vec<_> = server.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "credentialStorage",
+            "disableTls",
+            "oidc",
+            "sandboxJwt",
+            "telemetryEnabled",
+            "tls"
+        ]
+    );
     // Exact shapes reject additional inline keys, certificates, tokens, or
     // credential-storage data before they can enter native Helm state.
     assert_eq!(
@@ -70,16 +84,26 @@ fn chart_authentication_values_contain_only_references_and_public_policy() {
     );
     assert_eq!(
         server["oidc"],
+        json!({"caConfigMapName": format!("{}-oidc-ca", spec.name)})
+    );
+    assert_eq!(
+        values["gatewayConfig"],
         json!({
-            "issuer": format!("https://{}-oidc.agents.svc.cluster.local:8443", spec.name),
-            "audience": spec.owner,
-            "jwksTtl": 60,
-            "rolesClaim": "roles",
-            "adminRole": "nemoclaw-development-admin",
-            "userRole": "nemoclaw-development-user",
-            "scopesClaim": "scope",
-            "caConfigMapName": format!("{}-oidc-ca", spec.name),
-            "dangerouslyAllowInsecureHttp": false,
+            "openshell.gateway.oidc": {
+                "issuer": format!("https://{}-oidc.agents.svc.cluster.local:8443", spec.name),
+                "audience": spec.owner,
+                "jwks_ttl_secs": 60,
+                "roles_claim": "roles",
+                "admin_role": "nemoclaw-development-admin",
+                "user_role": "nemoclaw-development-user",
+                "scopes_claim": "scope",
+                "dangerously_allow_insecure_http": false,
+            },
+            "openshell.gateway.auth": {"allow_unauthenticated_users": false},
+            "openshell.drivers.kubernetes": {
+                "workspace_mode": "shared",
+                "workspace_default_storage_size": "2Gi",
+            },
         })
     );
 }
@@ -106,216 +130,6 @@ fn invalid_managed_identity_cannot_produce_chart_values() {
     let mut missing_target = valid;
     missing_target.settings.kubernetes = None;
     assert!(gateway::values(&missing_target).is_err());
-}
-
-async fn tofu(bundle: &Bundle, directory: &Path, arguments: &[&str]) -> std::process::Output {
-    let mut command = tokio::process::Command::new(bundle.tofu());
-    command
-        .args(arguments)
-        .current_dir(directory)
-        .env_clear()
-        .env("PATH", directory.join("empty-path"))
-        .env("HOME", directory.join("home"))
-        .env("TF_IN_AUTOMATION", "1")
-        .env("TF_INPUT", "0")
-        .env("CHECKPOINT_DISABLE", "1")
-        .env("TF_CLI_CONFIG_FILE", directory.join("providers.tfrc"))
-        .kill_on_drop(true);
-    tokio::time::timeout(Duration::from_secs(180), command.output())
-        .await
-        .expect("chart rendering timed out")
-        .expect("cannot execute the verified bundle's OpenTofu")
-}
-
-/// Pull and render the exact OCI digest with the actual bundled provider.
-/// A data source performs no installation and needs no cluster access.
-async fn render(spec: &Spec, chart: &str, identity: Option<Identity>) -> Option<String> {
-    let input = std::env::var_os("NEMOCLAW_TEST_BUNDLE")
-        .expect("NEMOCLAW_TEST_BUNDLE names a verified bundle");
-    let bundle = Bundle::open(Path::new(&input)).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    for name in ["empty-path", "home"] {
-        fs::create_dir(directory.path().join(name)).unwrap();
-    }
-    let mirror = serde_json::to_string(
-        &bundle
-            .directory
-            .join("providers")
-            .to_string_lossy()
-            .replace('\\', "/"),
-    )
-    .unwrap();
-    fs::write(
-        directory.path().join("providers.tfrc"),
-        format!("provider_installation {{ filesystem_mirror {{ path = {mirror} }} }}\n"),
-    )
-    .unwrap();
-    let mut values = gateway::values(spec).unwrap();
-    // Rendering has no cluster from which to observe this existing prerequisite.
-    values["agentSandbox"]["preflight"]["enabled"] = json!(false);
-    let mut chart_values = vec![values.to_string()];
-    if let Some(identity) = identity {
-        // Apply the observed namespace identity as a second values document,
-        // just as the native release receives the authentication resource's output.
-        chart_values.push(identity.values().to_string());
-    }
-    let graph = json!({
-        "terraform": {"required_providers": {"helm": {
-            "source": gateway::PROVIDER_ADDRESS,
-            "version": format!("= {}", gateway::PROVIDER_VERSION)
-        }}},
-        "provider": {"helm": {}},
-        "data": {"helm_template": {"gateway": {
-            "name": spec.name, "namespace": "agents", "chart": chart,
-            "validate": false, "values": chart_values
-        }}},
-        "output": {"manifest": {"value": "${data.helm_template.gateway.manifest}"}}
-    });
-    let config = directory.path().join("main.tf.json");
-    fs::write(&config, serde_json::to_vec(&graph).unwrap()).unwrap();
-    let initialized = tofu(
-        &bundle,
-        directory.path(),
-        &["init", "-input=false", "-no-color"],
-    )
-    .await;
-    assert!(
-        initialized.status.success(),
-        "cannot initialize the chart renderer"
-    );
-    let planned = tofu(
-        &bundle,
-        directory.path(),
-        &["plan", "-input=false", "-no-color", "-out=render.tfplan"],
-    )
-    .await;
-    if !planned.status.success() {
-        return None;
-    }
-    let output = tofu(
-        &bundle,
-        directory.path(),
-        &["show", "-json", "render.tfplan"],
-    )
-    .await;
-    assert!(
-        output.status.success(),
-        "cannot inspect the chart-render plan"
-    );
-    let plan: Value = serde_json::from_slice(&output.stdout).unwrap();
-    Some(
-        plan["planned_values"]["outputs"]["manifest"]["value"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
-    )
-}
-
-/// Check actual chart objects against the objects NemoClaw prepares. Helm must
-/// never include those objects in its release and remove them during uninstall.
-fn assert_release_ownership(rendered: &str, spec: &Spec) {
-    let directory = tempfile::tempdir().unwrap();
-    let namespace = &spec.settings.kubernetes.as_ref().unwrap().namespace;
-    let material = Development::new(
-        directory.path().join("auth"),
-        &spec.name,
-        namespace,
-        &spec.owner,
-    )
-    .ensure()
-    .unwrap();
-    let mut prepared = issuer::objects(&material, &spec.name, namespace);
-    prepared.extend([
-        json!({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": namespace}}),
-        json!({"apiVersion": "v1", "kind": "Secret", "metadata": {
-            "name": format!("{}-kek", spec.name), "namespace": namespace,
-        }}),
-    ]);
-    let objects: Vec<Value> = serde_saphyr::from_multiple(rendered).unwrap();
-    let identity = |object: &Value| {
-        (
-            object["apiVersion"].clone(),
-            object["kind"].clone(),
-            object["metadata"]["name"].clone(),
-        )
-    };
-    for object in &objects {
-        assert!(
-            !prepared
-                .iter()
-                .any(|owned| identity(owned) == identity(object)),
-            "Helm must not own NemoClaw's {} {}",
-            object["kind"],
-            object["metadata"]["name"],
-        );
-        assert_ne!(object["kind"], "Namespace");
-    }
-    assert_eq!(
-        objects
-            .iter()
-            .filter(
-                |object| object["kind"] == "StatefulSet" && object["metadata"]["name"] == spec.name
-            )
-            .count(),
-        1,
-        "the release owns the gateway StatefulSet"
-    );
-}
-
-#[tokio::test]
-#[ignore = "pulls the pinned chart; needs NEMOCLAW_TEST_BUNDLE"]
-async fn the_pinned_chart_renders_with_the_sdk_values() {
-    let spec = spec();
-    let values = gateway::values(&spec).unwrap();
-    let rendered = render(&spec, gateway::CHART, None)
-        .await
-        .expect("the pinned chart renders");
-    assert_release_ownership(&rendered, &spec);
-    assert!(
-        rendered.contains("runAsUser: 1000\n"),
-        "Kubernetes keeps the chart's gateway UID"
-    );
-    let pinned = format!(
-        "{}@{}",
-        values["gateway"]["image"]["repository"].as_str().unwrap(),
-        values["gateway"]["image"]["digest"].as_str().unwrap()
-    );
-    assert!(
-        rendered.contains(&pinned),
-        "the pinned gateway image is rendered"
-    );
-    assert!(rendered.contains("name: nc-0123456789abcdef-gateway"));
-    assert!(rendered.contains("nc-0123456789abcdef-gateway-kek"));
-
-    // A wrong digest must fail; the provider cannot silently select a tag.
-    let unavailable = format!(
-        "oci://ghcr.io/nvidia/openshell/helm-chart@sha256:{}",
-        "0".repeat(64)
-    );
-    assert!(
-        render(&spec, &unavailable, None).await.is_none(),
-        "the provider refuses an unavailable chart digest"
-    );
-}
-
-/// OpenShift assigns the gateway a UID from its namespace's range.
-#[tokio::test]
-#[ignore = "pulls the pinned chart; needs NEMOCLAW_TEST_BUNDLE"]
-async fn on_openshift_the_gateway_takes_the_namespace_uid() {
-    let mut spec = spec();
-    spec.settings.runtime.provider = ComputeDriver::OpenShift;
-    let identity = Identity {
-        user: 1_000_680_000,
-        group: 1_000_690_000,
-    };
-    let rendered = render(&spec, gateway::CHART, Some(identity))
-        .await
-        .expect("the pinned chart renders");
-    assert_release_ownership(&rendered, &spec);
-    assert!(rendered.contains("runAsUser: 1000680000"), "{rendered}");
-    assert!(rendered.contains("fsGroup: 1000690000"), "{rendered}");
-    assert!(!rendered.contains("runAsUser: 1000\n"));
-    assert!(rendered.contains("runAsNonRoot: true"));
 }
 
 #[test]

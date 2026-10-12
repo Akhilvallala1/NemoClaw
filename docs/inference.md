@@ -223,14 +223,13 @@ Nonzero `kvCacheGiB` or `batchTokens`, vLLM parser/compilation settings, inline 
 Context and concurrency use the common `serving.contextTokens` and `serving.maxSequences` fields.
 A dedicated-memory profile can use the common `gpuMemoryUtilization` setting with an explicit minimum GPU memory requirement.
 
-Use the ordinary [plan/apply/export workflow](usage.md) with the adapted complete example.
-A failed startup retains provider state, the model volume, and status for inspection; correct the failure and explicitly reapply.
+Use the [plan/apply/export workflow](usage.md) with the adapted complete example.
+A failed startup retains provider state, the model volume, and status for inspection; correct the failure and reapply.
 Recovery may replace the container while reusing that volume.
 Destroy removes owned runtime resources and retains the model volume.
 Verified cached snapshots can be reused without querying a subsequently changed registry tag.
-There is no automatic migration or adoption of storage from the older `ollama` resource form; use a fresh deployment and retain the old bundle/state for its teardown.
 
-Configuration, registry download, startup protocol, memory checks, and removal behavior are covered by deterministic fixtures.
+Configuration, registry download, startup protocol, memory checks, and removal behavior are covered by fixtures.
 Live image builds, GPU inference, tools and agent replies with this adapter have not been tested ([#12641](https://github.com/NVIDIA/NemoClaw/issues/12641)).
 
 ## Authenticate a Managed vLLM Service
@@ -335,7 +334,7 @@ overrides:
 ```
 
 The SDK forwards `settings` unchanged into the public Fabric model configuration.
-The selected adapter's canonical model schema and implementation own the meanings, accepted values, and defaults.
+The selected adapter's model schema and implementation own the meanings, accepted values, and defaults.
 These settings do not resize a managed inference server; configure that service's limits separately.
 The SDK does not infer native support from an adapter name or from accepting the YAML structure.
 
@@ -418,7 +417,7 @@ Choose the budget for the phase that failed; extending an agent turn does not ex
 These are phase limits, not a promised total duration for apply.
 Other bounded observations can fail earlier, and request or transport failures are not automatically retried as mutations.
 The old onboarding timeout environment variables are not configuration inputs for these SDK paths.
-Use the [field reference](reference/configuration.md), [bound execution](../crates/openshell-provider/src/transport.rs), [agent configuration](../crates/nemoclaw-provider/src/fabric/configuration.rs), [agent readiness](../crates/nemoclaw-provider/src/fabric/bridge.rs), [deployment readiness](../crates/nemoclaw-sdk/src/deployment/runtime.rs), and [recipe runner](../crates/nemoclaw-runtime/src/vllm/runtime/inline_recipe.rs) for the current boundaries.
+Use the [field reference](reference/configuration.md), [bound execution](../crates/openshell-provider/src/transport.rs), [agent configuration](../crates/fabric-provider/src/configuration.rs), [agent readiness](../crates/fabric-provider/src/bridge.rs), [deployment readiness](../crates/nemoclaw-sdk/src/deployment/runtime.rs), and [recipe runner](../crates/nemoclaw-runtime/src/vllm/runtime/inline_recipe.rs) for the current boundaries.
 For a stopped managed service, inspect its [retained status](models.md#diagnose-and-recover-a-stopped-runtime) before choosing recovery.
 
 ## Verify the Result
@@ -444,7 +443,7 @@ Use the selected adapter's public input and output contract for an explicit invo
 Changing a model can expose API, context, or tool-format incompatibility even when the endpoint is reachable.
 Use [change constraints](usage.md#choose-the-change-path) before changing the API or agent launch settings.
 
-The deterministic lifecycle fixture exercises apply, CLI export, unchanged reapply, drift rejection, and destroy.
+The lifecycle fixture exercises apply, CLI export, unchanged reapply, drift rejection, and destroy.
 The [offline harness fixture](contributing/integration-tests.md#inference-api-fixtures) checks actual request paths with local protocol servers; it does not qualify a public endpoint, model quality, or live Nous authentication.
 
 ## Additional Inference Workflows

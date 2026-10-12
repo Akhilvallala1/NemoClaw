@@ -29,7 +29,7 @@ impl Failure {
                 format!("gateway container {name}: {error}; resources retained")
             }
             Self::Stopped { status, exit_code } => format!(
-                "gateway container {name} is {status}, exit code {}; inspect `docker logs {name}` on its configured engine, correct the failure, and explicitly reapply; resources retained",
+                "gateway container {name} is {status}, exit code {}; inspect `docker logs {name}` on its configured engine, correct the failure, and reapply; resources retained",
                 exit_code.map_or_else(|| "unknown".into(), |code| code.to_string())
             ),
         }
@@ -158,7 +158,7 @@ impl ManagedGateway {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::docker::fixture::Fixture;
@@ -181,7 +181,7 @@ mod tests {
     async fn observer(
         mut response: impl FnMut() -> (u16, Value) + Send + 'static,
     ) -> (Fixture, ManagedGateway) {
-        let fixture = Fixture::start(move |request| {
+        let fixture = Fixture::engine(move |request| {
             assert_eq!(
                 request.method, "GET",
                 "readiness must not mutate the engine"

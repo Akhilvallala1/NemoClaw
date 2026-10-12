@@ -319,7 +319,7 @@ impl Installer for Service {
         let mut edges = BTreeMap::new();
         for connection in self.agent_connections.values() {
             dependencies.push(format!(
-                "data.nemoclaw_sandbox_readiness.{}",
+                "data.fabric_sandbox_readiness.{}",
                 connection.sandbox_ref
             ));
         }

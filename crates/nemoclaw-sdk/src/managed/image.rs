@@ -62,6 +62,15 @@ impl ImageRequirements {
     }
     pub fn json(&self) -> Result<String, Error> {
         self.validate()?;
-        serde_json::to_string(self).map_err(|_| Error::State("invalid runtime image requirements"))
+        let (contract, labels) = match &self.contract {
+            ImageContract::Runtime { labels } => ("runtime", labels.clone()),
+            ImageContract::Application => ("application", BTreeMap::new()),
+            ImageContract::Inputs => ("inputs", BTreeMap::new()),
+        };
+        serde_json::to_string(&serde_json::json!({
+            "engine":self.engine, "image":self.image, "architecture":self.architecture,
+            "contract":contract, "labels":labels
+        }))
+        .map_err(|_| Error::State("invalid runtime image requirements"))
     }
 }
