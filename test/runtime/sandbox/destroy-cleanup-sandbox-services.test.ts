@@ -12,6 +12,7 @@ import type { CleanupSandboxServicesDeps } from "../../../src/lib/actions/sandbo
 import { cleanupSandboxServices } from "../../../src/lib/actions/sandbox/destroy.js";
 import { ollamaModelRefsMatch } from "../../../src/lib/inference/ollama/model-discovery.js";
 import type { OllamaModelHolder } from "../../../src/lib/inference/ollama/model-ownership.js";
+import type { SandboxEntry } from "../../../src/lib/state/registry.js";
 import { SANDBOX_PROVIDER_SUFFIXES } from "../../../src/lib/onboard/sandbox-provider-cleanup.js";
 
 type SandboxLike = { name?: string; model?: string | null; provider?: string | null } | null;
@@ -181,6 +182,28 @@ describe("cleanupSandboxServices Ollama unload", () => {
     expect(harness.unloadCalls).toBe(1);
   });
 
+  it("uses the verified pre-destroy route if the registry row is already absent", async () => {
+    const harness = buildDeps(null);
+    const sandboxSnapshot = {
+      name: "regression-2717",
+      provider: "ollama-local",
+      model: "target-model:latest",
+      gatewayName: "nemoclaw-32677",
+      gatewayPort: 32677,
+    } as SandboxEntry;
+
+    await cleanupSandboxServices(
+      "regression-2717",
+      { stopHostServices: false, sandboxSnapshot },
+      harness.deps,
+    );
+
+    expect(harness.deps.getSandbox).not.toHaveBeenCalled();
+    expect(harness.deps.unloadOllamaModels).toHaveBeenCalledExactlyOnceWith([
+      "target-model:latest",
+    ]);
+  });
+
   it("releases only the destroyed sandbox model when another Ollama sandbox uses a different model", async () => {
     const harness = buildDeps({ provider: "ollama-local", model: "target-model:latest" }, [
       { name: "peer", provider: "ollama-local", model: "peer-model:latest" },
@@ -208,9 +231,10 @@ describe("cleanupSandboxServices Ollama unload", () => {
     await cleanupSandboxServices("regression-2717", { stopHostServices: false }, harness.deps);
 
     expect(harness.unloadArgs).toEqual([["old-model"]]);
-    expect(harness.deps.clearPendingOllamaModelCleanup).toHaveBeenCalledWith("regression-2717", [
-      "old-model",
-    ]);
+    expect(harness.deps.clearPendingOllamaModelCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "regression-2717" }),
+      ["old-model"],
+    );
   });
 
   it("keeps a pending superseded model that an Ollama peer shares", async () => {

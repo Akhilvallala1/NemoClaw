@@ -8,7 +8,10 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { OpenShellProviderAdapter } from "../adapters/openshell/provider-adapter";
-import type { OllamaModelHolder } from "../inference/ollama/model-ownership";
+import type {
+  OllamaModelCleanupOwner,
+  OllamaModelHolder,
+} from "../inference/ollama/model-ownership";
 import type { OllamaUnloadResult } from "../inference/ollama/proxy";
 import type { SandboxEntry } from "../state/registry";
 import { setupOllamaLocalInference } from "./inference-providers/ollama-local";
@@ -39,13 +42,17 @@ function createOllamaCleanupHarness(
   let pendingModels = [...(options.pendingModels ?? [])];
   const localInference = {
     loadPersistedOllamaHost: vi.fn(() => "127.0.0.1"),
-    loadPendingOllamaModelCleanup: vi.fn(() => pendingModels),
-    persistPendingOllamaModelCleanup: vi.fn((_name: string, models: readonly string[]) => {
-      pendingModels = [...new Set([...pendingModels, ...models])];
-    }),
-    clearPendingOllamaModelCleanup: vi.fn((_name: string, models: readonly string[]) => {
-      pendingModels = pendingModels.filter((model) => !models.includes(model));
-    }),
+    loadPendingOllamaModelCleanup: vi.fn((_owner: OllamaModelCleanupOwner) => pendingModels),
+    persistPendingOllamaModelCleanup: vi.fn(
+      (_owner: OllamaModelCleanupOwner, models: readonly string[]) => {
+        pendingModels = [...new Set([...pendingModels, ...models])];
+      },
+    ),
+    clearPendingOllamaModelCleanup: vi.fn(
+      (_owner: OllamaModelCleanupOwner, models: readonly string[]) => {
+        pendingModels = pendingModels.filter((model) => !models.includes(model));
+      },
+    ),
     clearPersistedOllamaHostIfUnused: vi.fn(),
   };
   const unloadOllamaModels = vi.fn(
@@ -84,6 +91,10 @@ const previousLocalOllamaRoute: OllamaModelHolder = {
   provider: "ollama-local",
   model: "qwen2.5:1.5b",
   endpointUrl: "http://127.0.0.1:11434",
+  gatewayName: "nemoclaw-32677",
+  gatewayPort: 32677,
+  lifecycleGeneration: "generation-alpha",
+  lifecycleLiveIdentityFingerprint: "a".repeat(64),
 };
 
 function releaseToNvidia(previous: OllamaModelHolder, deps: SetupInferenceDeps): void {
@@ -140,9 +151,10 @@ describe("releaseSupersededOllamaModel", () => {
       expect(discovery.mock.calls[0]?.[0]).toEqual([]);
       expect(discovery.mock.calls[1]?.[0]).toEqual([unrelatedPeer]);
       expect(harness.unloadOllamaModels).toHaveBeenCalledExactlyOnceWith(["qwen2.5:1.5b"]);
-      expect(harness.localInference.clearPendingOllamaModelCleanup).toHaveBeenCalledWith("alpha", [
-        "qwen2.5:1.5b",
-      ]);
+      expect(harness.localInference.clearPendingOllamaModelCleanup).toHaveBeenCalledWith(
+        previousLocalOllamaRoute,
+        ["qwen2.5:1.5b"],
+      );
       expect(harness.localInference.clearPersistedOllamaHostIfUnused).not.toHaveBeenCalled();
       expect(warning).toHaveBeenCalledWith(
         expect.stringContaining("host route receipt was retained"),
@@ -250,7 +262,14 @@ describe("releaseSupersededOllamaModel", () => {
 
       expect(runOpenshell).toHaveBeenCalledExactlyOnceWith(
         ["sandbox", "list", "-g", "nemoclaw-32665"],
-        expect.objectContaining({ suppressOutput: true }),
+        expect.objectContaining({
+          env: process.env,
+          ignoreError: true,
+          maxBuffer: 1024 * 1024,
+          stdio: "pipe",
+          suppressOutput: true,
+          timeout: 10_000,
+        }),
       );
       expect(harness.discoverActiveOllamaSandboxNames).not.toHaveBeenCalled();
       expect(harness.unloadOllamaModels).not.toHaveBeenCalled();
@@ -295,7 +314,7 @@ describe("releaseSupersededOllamaModel", () => {
 
       expect(harness.unloadOllamaModels).not.toHaveBeenCalled();
       expect(harness.localInference.persistPendingOllamaModelCleanup).toHaveBeenCalledWith(
-        "alpha",
+        previousLocalOllamaRoute,
         ["qwen2.5:1.5b"],
       );
       expect(runOpenshell).not.toHaveBeenCalled();
@@ -319,7 +338,7 @@ describe("releaseSupersededOllamaModel", () => {
       releaseToNvidia(previousLocalOllamaRoute, harness.deps);
       expect(harness.unloadOllamaModels).not.toHaveBeenCalled();
       expect(harness.localInference.persistPendingOllamaModelCleanup).toHaveBeenCalledWith(
-        "alpha",
+        previousLocalOllamaRoute,
         ["qwen2.5:1.5b"],
       );
       expect(warning).toHaveBeenCalledWith(expect.stringContaining("No model was unloaded"));
@@ -327,9 +346,52 @@ describe("releaseSupersededOllamaModel", () => {
       releaseToNvidia({ ...previousLocalOllamaRoute, provider: "nvidia-prod" }, harness.deps);
 
       expect(harness.unloadOllamaModels).toHaveBeenCalledExactlyOnceWith(["qwen2.5:1.5b"]);
-      expect(harness.localInference.clearPendingOllamaModelCleanup).toHaveBeenCalledWith("alpha", [
-        "qwen2.5:1.5b",
-      ]);
+      expect(harness.localInference.clearPendingOllamaModelCleanup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "alpha",
+          gatewayName: "nemoclaw-32677",
+          gatewayPort: 32677,
+          lifecycleGeneration: "generation-alpha",
+          lifecycleLiveIdentityFingerprint: "a".repeat(64),
+        }),
+        ["qwen2.5:1.5b"],
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("requires manual recovery when ownership failure cannot be recorded for retry", () => {
+    const discovery = vi.fn<NonNullable<SetupInferenceDeps["discoverActiveOllamaSandboxNames"]>>(
+      () => ({ ok: false, message: "gateway unavailable" }),
+    );
+    const harness = createOllamaCleanupHarness({ discovery });
+    harness.localInference.persistPendingOllamaModelCleanup.mockImplementation(() => {
+      throw new Error(
+        "Cannot persist pending Ollama cleanup without complete sandbox ownership identity",
+      );
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      releaseToNvidia(
+        {
+          ...previousLocalOllamaRoute,
+          lifecycleGeneration: undefined,
+          lifecycleLiveIdentityFingerprint: undefined,
+        },
+        harness.deps,
+      );
+
+      expect(harness.unloadOllamaModels).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Manually verify that no active matching sandbox owns the model before releasing only qwen2.5:1.5b",
+        ),
+      );
+      expect(warning).not.toHaveBeenCalledWith(
+        expect.stringContaining("Re-run onboarding to retry only"),
+      );
     } finally {
       warning.mockRestore();
     }
@@ -353,7 +415,7 @@ describe("releaseSupersededOllamaModel", () => {
 
       expect(harness.unloadOllamaModels).toHaveBeenCalledExactlyOnceWith(["qwen2.5:1.5b"]);
       expect(harness.localInference.persistPendingOllamaModelCleanup).toHaveBeenCalledWith(
-        "alpha",
+        previousLocalOllamaRoute,
         ["qwen2.5:1.5b"],
       );
       expect(harness.localInference.clearPendingOllamaModelCleanup).not.toHaveBeenCalled();
@@ -1145,6 +1207,9 @@ describe("concurrent Ollama ownership transactions", () => {
     expect(alphaOrder).toBe("queued");
     expect(events).toContain("registry-published:beta");
     expect(events).toContain("route-start:gateway-alpha");
+    expect(events).toContain("transaction-exit:gateway-beta");
+    expect(events).toContain("transaction-exit:gateway-alpha");
+    expect(events).toContain("peer-discovery");
     expect(events.indexOf("transaction-exit:gateway-beta")).toBeLessThan(
       events.indexOf("route-start:gateway-alpha"),
     );

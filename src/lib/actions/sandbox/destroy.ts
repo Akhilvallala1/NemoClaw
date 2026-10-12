@@ -35,6 +35,7 @@ import {
   type OllamaUnloadResult,
   withOllamaModelOwnershipTransaction,
 } from "../../inference/ollama/proxy";
+import type { OllamaModelCleanupOwner } from "../../inference/ollama/model-ownership";
 import {
   CURRENT_RUNTIME_PROVIDER_BUNDLES,
   normalizeRuntimeProviderIdentity,
@@ -232,9 +233,9 @@ export type CleanupSandboxServicesDeps = {
     deps?: { recoverySandboxName?: string },
   ) => boolean;
   unloadOllamaModels?: (onlyModels?: readonly string[]) => OllamaUnloadResult | void;
-  loadPendingOllamaModelCleanup?: (sandboxName: string) => readonly string[];
+  loadPendingOllamaModelCleanup?: (owner: OllamaModelCleanupOwner) => readonly string[];
   clearPendingOllamaModelCleanup?: (
-    sandboxName: string,
+    owner: OllamaModelCleanupOwner,
     releasedModels?: readonly string[],
   ) => void;
   loadPersistedOllamaHost?: () => "127.0.0.1" | "host.docker.internal" | null;
@@ -312,10 +313,12 @@ export async function cleanupSandboxServices(
     stopHostServices = false,
     channelStopTransport,
     gatewayPort,
+    sandboxSnapshot,
   }: {
     stopHostServices?: boolean;
     channelStopTransport?: RuntimeProviderChannelStopTransport;
     gatewayPort?: number;
+    sandboxSnapshot?: registry.SandboxEntry | null;
   } = {},
   deps: CleanupSandboxServicesDeps = {},
 ): Promise<void> {
@@ -358,19 +361,22 @@ export async function cleanupSandboxServices(
     });
   const loadPendingOllamaModelCleanup =
     deps.loadPendingOllamaModelCleanup ??
-    ((name: string) => {
+    ((owner: OllamaModelCleanupOwner) => {
       const local = require("../../inference/ollama/proxy") as {
-        loadPendingOllamaModelCleanup(sandboxName: string): readonly string[];
+        loadPendingOllamaModelCleanup(owner: OllamaModelCleanupOwner): readonly string[];
       };
-      return local.loadPendingOllamaModelCleanup(name);
+      return local.loadPendingOllamaModelCleanup(owner);
     });
   const clearPendingOllamaModelCleanup =
     deps.clearPendingOllamaModelCleanup ??
-    ((name: string, releasedModels?: readonly string[]) => {
+    ((owner: OllamaModelCleanupOwner, releasedModels?: readonly string[]) => {
       const local = require("../../inference/ollama/proxy") as {
-        clearPendingOllamaModelCleanup(sandboxName: string, models?: readonly string[]): void;
+        clearPendingOllamaModelCleanup(
+          owner: OllamaModelCleanupOwner,
+          models?: readonly string[],
+        ): void;
       };
-      local.clearPendingOllamaModelCleanup(name, releasedModels);
+      local.clearPendingOllamaModelCleanup(owner, releasedModels);
     });
   const loadPersistedOllamaHost =
     deps.loadPersistedOllamaHost ??
@@ -459,9 +465,9 @@ export async function cleanupSandboxServices(
 
   let ollamaCleanup: OllamaUnloadResult | void = undefined;
   const cleanupScopedOllamaModels = () => {
-    const sb = getSandbox(validatedSandboxName);
+    const sb = sandboxSnapshot !== undefined ? sandboxSnapshot : getSandbox(validatedSandboxName);
     const selectedHost = loadPersistedOllamaHost();
-    const pending = loadPendingOllamaModelCleanup(validatedSandboxName);
+    const pending = sb ? loadPendingOllamaModelCleanup(sb) : [];
     const currentModel = String(sb?.model ?? "").trim();
     const candidates = [
       ...pending,
@@ -514,8 +520,8 @@ export async function cleanupSandboxServices(
     }
     if (releasable.length === 0) return;
     ollamaCleanup = unloadOllamaModels(releasable);
-    if (!ollamaCleanup || ollamaCleanup.ok) {
-      clearPendingOllamaModelCleanup(validatedSandboxName, releasable);
+    if ((!ollamaCleanup || ollamaCleanup.ok) && sb) {
+      clearPendingOllamaModelCleanup(sb, releasable);
     }
   };
 
@@ -1219,6 +1225,7 @@ async function destroySandboxUnlocked(
             ? (retainedRecoveryAuthority?.gatewayPort ?? registryAuthority.gatewayPort)
             : registryAuthority.gatewayPort,
         stopHostServices: shouldStopHostServices,
+        sandboxSnapshot: sandbox,
         ...(destroyChannelStopTransport
           ? { channelStopTransport: destroyChannelStopTransport }
           : {}),

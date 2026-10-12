@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   clearPendingOllamaModelCleanup,
@@ -12,6 +12,7 @@ import {
   discoverOllamaModelOwnership,
   loadPendingOllamaModelCleanup,
   type OllamaHostRoute,
+  type OllamaModelCleanupOwner,
   type OllamaModelHolder,
   type OllamaModelRoute,
   persistPendingOllamaModelCleanup,
@@ -21,6 +22,17 @@ import { isLocalOllamaRouteOwner } from "./model-ownership";
 
 function holder(overrides: Partial<OllamaModelHolder> = {}): OllamaModelHolder {
   return { name: "test-box", provider: "ollama-local", model: "llama3", ...overrides };
+}
+
+function cleanupOwner(overrides: Partial<OllamaModelCleanupOwner> = {}): OllamaModelCleanupOwner {
+  return {
+    name: "test-box",
+    gatewayName: "nemoclaw-32677",
+    gatewayPort: 32677,
+    lifecycleGeneration: "generation-a",
+    lifecycleLiveIdentityFingerprint: "a".repeat(64),
+    ...overrides,
+  };
 }
 
 function route(model: string, overrides: Partial<OllamaModelRoute> = {}): OllamaModelRoute {
@@ -321,27 +333,106 @@ describe("decideOllamaModelOwnership", () => {
 });
 
 describe("pending Ollama model cleanup", () => {
-  it("persists exact sandbox-scoped models until verified release", () => {
+  it("persists models until verified release for the exact sandbox lifecycle", () => {
     const stateRoot = mkdtempSync(join(tmpdir(), "nemoclaw-pending-ollama-cleanup-"));
+    const owner = cleanupOwner();
     try {
-      persistPendingOllamaModelCleanup("test-box", ["llama3", "llama3:latest"], stateRoot);
-      persistPendingOllamaModelCleanup("test-box", ["qwen3.5:9b"], stateRoot);
+      persistPendingOllamaModelCleanup(owner, ["llama3", "llama3:latest"], stateRoot);
+      persistPendingOllamaModelCleanup(owner, ["qwen3.5:9b"], stateRoot);
 
-      expect(loadPendingOllamaModelCleanup("test-box", stateRoot)).toEqual([
-        "llama3",
-        "qwen3.5:9b",
+      expect(loadPendingOllamaModelCleanup(owner, stateRoot)).toEqual(["llama3", "qwen3.5:9b"]);
+      clearPendingOllamaModelCleanup(owner, ["llama3:latest"], stateRoot);
+      expect(loadPendingOllamaModelCleanup(owner, stateRoot)).toEqual(["qwen3.5:9b"]);
+      clearPendingOllamaModelCleanup(owner, undefined, stateRoot);
+      expect(loadPendingOllamaModelCleanup(owner, stateRoot)).toEqual([]);
+    } finally {
+      rmSync(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates same-named cleanup receipts across gateways and lifecycle generations", () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "nemoclaw-pending-ollama-cleanup-"));
+    const gatewayOwner = cleanupOwner();
+    const otherGatewayOwner = cleanupOwner({
+      gatewayName: "nemoclaw-32678",
+      gatewayPort: 32678,
+      lifecycleGeneration: "generation-b",
+      lifecycleLiveIdentityFingerprint: "b".repeat(64),
+    });
+    const recreatedOwner = cleanupOwner({
+      lifecycleGeneration: "generation-c",
+      lifecycleLiveIdentityFingerprint: "c".repeat(64),
+    });
+    try {
+      persistPendingOllamaModelCleanup(gatewayOwner, ["gateway-a-model"], stateRoot);
+      persistPendingOllamaModelCleanup(otherGatewayOwner, ["gateway-b-model"], stateRoot);
+      persistPendingOllamaModelCleanup(recreatedOwner, ["recreated-model"], stateRoot);
+
+      expect(loadPendingOllamaModelCleanup(gatewayOwner, stateRoot)).toEqual(["gateway-a-model"]);
+      expect(loadPendingOllamaModelCleanup(otherGatewayOwner, stateRoot)).toEqual([
+        "gateway-b-model",
       ]);
-      clearPendingOllamaModelCleanup("test-box", ["llama3:latest"], stateRoot);
-      expect(loadPendingOllamaModelCleanup("test-box", stateRoot)).toEqual(["qwen3.5:9b"]);
-      clearPendingOllamaModelCleanup("test-box", undefined, stateRoot);
-      expect(loadPendingOllamaModelCleanup("test-box", stateRoot)).toEqual([]);
+      expect(loadPendingOllamaModelCleanup(recreatedOwner, stateRoot)).toEqual(["recreated-model"]);
+
+      clearPendingOllamaModelCleanup(gatewayOwner, undefined, stateRoot);
+      expect(loadPendingOllamaModelCleanup(gatewayOwner, stateRoot)).toEqual([]);
+      expect(loadPendingOllamaModelCleanup(otherGatewayOwner, stateRoot)).toEqual([
+        "gateway-b-model",
+      ]);
+      expect(loadPendingOllamaModelCleanup(recreatedOwner, stateRoot)).toEqual(["recreated-model"]);
+    } finally {
+      rmSync(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not replay or clear a legacy receipt without gateway and lifecycle identity", () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "nemoclaw-pending-ollama-cleanup-"));
+    const owner = cleanupOwner();
+    const legacyPath = join(stateRoot, "ollama-pending-model-cleanup", `${owner.name}.json`);
+    mkdirSync(join(stateRoot, "ollama-pending-model-cleanup"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({ schemaVersion: 1, sandboxName: owner.name, models: ["llama3"] }),
+      { mode: 0o600 },
+    );
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(loadPendingOllamaModelCleanup(owner, stateRoot)).toEqual([]);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("has no gateway/lifecycle identity"),
+      );
+
+      clearPendingOllamaModelCleanup(owner, undefined, stateRoot);
+      expect(existsSync(legacyPath)).toBe(true);
+    } finally {
+      warning.mockRestore();
+      rmSync(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when cleanup receipt lifecycle identity is incomplete", () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "nemoclaw-pending-ollama-cleanup-"));
+    const owner = cleanupOwner();
+    const incompleteOwner = cleanupOwner({
+      lifecycleGeneration: undefined,
+      lifecycleLiveIdentityFingerprint: undefined,
+    });
+    try {
+      persistPendingOllamaModelCleanup(owner, ["llama3"], stateRoot);
+
+      expect(loadPendingOllamaModelCleanup(incompleteOwner, stateRoot)).toEqual([]);
+      clearPendingOllamaModelCleanup(incompleteOwner, undefined, stateRoot);
+      expect(loadPendingOllamaModelCleanup(owner, stateRoot)).toEqual(["llama3"]);
+      expect(() => persistPendingOllamaModelCleanup(incompleteOwner, ["qwen3"], stateRoot)).toThrow(
+        "Cannot persist pending Ollama cleanup without complete sandbox ownership identity",
+      );
     } finally {
       rmSync(stateRoot, { recursive: true, force: true });
     }
   });
 
   it("rejects an unsafe sandbox name before state access", () => {
-    expect(() => loadPendingOllamaModelCleanup("../peer")).toThrow(
+    expect(() => loadPendingOllamaModelCleanup(cleanupOwner({ name: "../peer" }))).toThrow(
       "Invalid sandbox name for pending Ollama cleanup",
     );
   });

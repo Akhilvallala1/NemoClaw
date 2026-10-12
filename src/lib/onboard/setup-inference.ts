@@ -46,6 +46,7 @@ import {
   matchingOllamaModelPeers,
   type OllamaActiveOwnershipDiscoveryFn,
   type OllamaModelHolder,
+  type OllamaOwnershipPhaseCapture,
   persistPendingOllamaModelCleanup,
   supersededOllamaModelWithActivePeers,
 } from "../inference/ollama/model-ownership";
@@ -250,6 +251,7 @@ export type SetupInferenceDeps = ProviderBranchDeps & {
   getSandbox?: typeof import("../state/registry").getSandbox;
   listOllamaModelOwnershipPeers?: () => readonly OllamaModelHolder[];
   discoverActiveOllamaSandboxNames?: OllamaActiveOwnershipDiscoveryFn;
+  captureOllamaOwnershipPhases?: OllamaOwnershipPhaseCapture;
   resolveOllamaOwnershipGateway?: (peer: OllamaModelHolder) => string;
   environment?: NodeJS.ProcessEnv;
   listSandboxes?: typeof import("../state/registry").listSandboxes;
@@ -556,7 +558,7 @@ export function releaseSupersededOllamaModel(
   const persistRetry = (): string | null => {
     if (attemptedModels.length === 0) return null;
     try {
-      persistPending(previous.name, attemptedModels);
+      persistPending(previous, attemptedModels);
       return null;
     } catch (error) {
       return (error instanceof Error ? error.message : String(error))
@@ -576,7 +578,7 @@ export function releaseSupersededOllamaModel(
         ? supersededOllamaModelWithActivePeers(previous, nextRoute, [], new Set(), selectedHost)
         : null;
       attemptedModels = retryCandidate ? [retryCandidate] : [];
-      const pending = loadPending(previous.name);
+      const pending = loadPending(previous);
       attemptedModels = [...new Set([...attemptedModels, ...pending])];
       if (!retryCandidate && pending.length === 0) return;
 
@@ -587,29 +589,28 @@ export function releaseSupersededOllamaModel(
         isLocalOllamaRouteOwner(peer, selectedHost),
       );
       const environment = deps.environment ?? process.env;
+      const captureOwnershipPhases: OllamaOwnershipPhaseCapture =
+        deps.captureOllamaOwnershipPhases ??
+        ((gatewayName, captureEnvironment) => {
+          const result = deps.runOpenshell(["sandbox", "list", "-g", gatewayName], {
+            env: captureEnvironment,
+            ignoreError: true,
+            maxBuffer: 1024 * 1024,
+            stdio: "pipe",
+            suppressOutput: true,
+            timeout: 10_000,
+          });
+          return {
+            status: result.status,
+            output: [result.stdout ?? "", result.stderr ?? ""].join("\n"),
+          };
+        });
       const discoverPeers = (owners: readonly OllamaModelHolder[]) =>
         deps.discoverActiveOllamaSandboxNames
           ? deps.discoverActiveOllamaSandboxNames(owners, environment)
-          : discoverOllamaModelOwnership(
-              owners,
-              environment,
-              (gateway, env) => {
-                const result = deps.runOpenshell(["sandbox", "list", "-g", gateway], {
-                  env,
-                  ignoreError: true,
-                  suppressOutput: true,
-                  maxBuffer: 1024 * 1024,
-                  timeout: 10_000,
-                });
-                return {
-                  status: result.status,
-                  output: [result.stdout ?? "", result.stderr ?? ""].join("\n"),
-                };
-              },
-              {
-                resolvePersistedSandboxOwnershipGateway: deps.resolveOllamaOwnershipGateway,
-              },
-            );
+          : discoverOllamaModelOwnership(owners, environment, captureOwnershipPhases, {
+              resolvePersistedSandboxOwnershipGateway: deps.resolveOllamaOwnershipGateway,
+            });
       // A different model cannot keep one of the models being released resident.
       // Discover only matching owners before unloading so unrelated gateways do
       // not delay cleanup; all-route discovery is reserved for receipt retirement.
@@ -628,7 +629,7 @@ export function releaseSupersededOllamaModel(
       if (!discovery.ok) {
         pendingRecordFailure = persistRetry();
         const retryMessage = pendingRecordFailure
-          ? `Cleanup retry state could not be recorded: ${pendingRecordFailure}.`
+          ? `Cleanup retry state could not be recorded: ${pendingRecordFailure}. Manually verify that no active matching sandbox owns the model before releasing only ${attemptedModels.join(", ")} from the local Ollama host.`
           : attemptedModels.length > 0
             ? `Re-run onboarding to retry only: ${attemptedModels.join(", ")}.`
             : "The Ollama host receipt was left unchanged.";
@@ -692,7 +693,7 @@ export function releaseSupersededOllamaModel(
                 ? `Cleanup retry state could not be recorded: ${pendingRecordFailure}. Manually release only ${attemptedModels.join(", ")} at ${cleanup.endpoint}.`
                 : `Re-run onboarding or destroy '${previous.name}' to retry only: ${attemptedModels.join(", ")}.`);
           } else {
-            clearPending(previous.name, attemptedModels);
+            clearPending(previous, attemptedModels);
           }
         } catch (error) {
           if (pendingRecordFailure) pendingRecordFailure = persistRetry();
@@ -707,7 +708,7 @@ export function releaseSupersededOllamaModel(
               : `Re-run onboarding or destroy '${previous.name}' to retry only the recorded models: ${attemptedModels.join(", ")}.`);
         }
       }
-      const pendingAfterCleanup = loadPending(previous.name);
+      const pendingAfterCleanup = loadPending(previous);
       if (retireRouteCandidate && !cleanupWarning && pendingAfterCleanup.length === 0) {
         const routeOwnerDiscovery =
           modelOwners.length === ollamaRouteCandidates.length

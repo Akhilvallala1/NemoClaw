@@ -13,6 +13,7 @@ import {
   loadPersistedOllamaHost,
   persistResolvedOllamaHost,
 } from "../../src/lib/inference/local.js";
+import type { OllamaModelCleanupOwner } from "../../src/lib/inference/ollama/model-ownership.js";
 import { createLocalInferenceRouteApplier } from "../../src/lib/onboard/local-inference-route.js";
 import type { SetupInference, SetupInferenceDeps } from "../../src/lib/onboard/setup-inference.js";
 import { writeOkOpenshell } from "../helpers/onboard-openshell-fixture";
@@ -1080,10 +1081,13 @@ describe("re-onboard Ollama GPU release (#9110)", () => {
     applyLocalInferenceRoute?: () => Promise<boolean>;
     loadPersistedOllamaHost?: () => "127.0.0.1" | "host.docker.internal" | null;
     clearPersistedOllamaHostIfUnused?: SetupInferenceDeps["localInference"]["clearPersistedOllamaHostIfUnused"];
-    loadPendingOllamaModelCleanup?: (sandboxName: string) => readonly string[];
-    persistPendingOllamaModelCleanup?: (sandboxName: string, models: readonly string[]) => void;
+    loadPendingOllamaModelCleanup?: (owner: OllamaModelCleanupOwner) => readonly string[];
+    persistPendingOllamaModelCleanup?: (
+      owner: OllamaModelCleanupOwner,
+      models: readonly string[],
+    ) => void;
     clearPendingOllamaModelCleanup?: (
-      sandboxName: string,
+      owner: OllamaModelCleanupOwner,
       releasedModels?: readonly string[],
     ) => void;
   }) {
@@ -1260,7 +1264,10 @@ describe("re-onboard Ollama GPU release (#9110)", () => {
 
     expect(unloadOllamaModels).toHaveBeenNthCalledWith(1, ["llama3"]);
     expect(unloadOllamaModels).toHaveBeenNthCalledWith(2, ["llama3"]);
-    expect(clearPendingOllamaModelCleanup).toHaveBeenCalledWith("test-box", ["llama3"]);
+    expect(clearPendingOllamaModelCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "test-box" }),
+      ["llama3"],
+    );
     expect(pending).toEqual([]);
   });
 

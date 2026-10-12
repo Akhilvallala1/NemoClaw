@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { listInferenceRouteOwnersAcrossGatewayRoots } from "../../state/registry/cross-port";
@@ -21,11 +22,80 @@ export type { OllamaHostRoute, OllamaRouteHolder } from "../local-adapter-lifecy
 
 const PENDING_CLEANUP_DIRECTORY = "ollama-pending-model-cleanup";
 const SAFE_SANDBOX_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+const SANDBOX_IDENTITY_FINGERPRINT = /^[a-f0-9]{64}$/u;
 
-function pendingCleanupPath(sandboxName: string, stateRoot: string): string {
-  if (!SAFE_SANDBOX_NAME.test(sandboxName)) {
-    throw new Error(`Invalid sandbox name for pending Ollama cleanup: ${sandboxName}`);
+type PendingCleanupOwner = {
+  readonly sandboxName: string;
+  readonly gatewayName: string;
+  readonly gatewayPort: number;
+  readonly lifecycleGeneration: string;
+  readonly lifecycleLiveIdentityFingerprint: string;
+};
+
+/** Durable identity required to read or mutate pending cleanup receipts. */
+export type OllamaModelCleanupOwner = Pick<
+  SandboxEntry,
+  | "name"
+  | "gatewayName"
+  | "gatewayPort"
+  | "lifecycleGeneration"
+  | "lifecycleLiveIdentityFingerprint"
+>;
+
+/** The registry fields an Ollama GPU-release decision reads. */
+export type OllamaModelHolder = Pick<
+  SandboxEntry,
+  | "name"
+  | "provider"
+  | "model"
+  | "endpointUrl"
+  | "gatewayName"
+  | "gatewayPort"
+  | "lifecycleGeneration"
+  | "lifecycleLiveIdentityFingerprint"
+>;
+
+function pendingCleanupOwner(owner: OllamaModelCleanupOwner): PendingCleanupOwner | null {
+  if (!owner || typeof owner.name !== "string" || !SAFE_SANDBOX_NAME.test(owner.name)) {
+    throw new Error(`Invalid sandbox name for pending Ollama cleanup: ${String(owner?.name)}`);
   }
+  const gatewayName = typeof owner.gatewayName === "string" ? owner.gatewayName.trim() : "";
+  const gatewayPort = owner.gatewayPort;
+  const lifecycleGeneration =
+    typeof owner.lifecycleGeneration === "string" ? owner.lifecycleGeneration.trim() : "";
+  const lifecycleLiveIdentityFingerprint =
+    typeof owner.lifecycleLiveIdentityFingerprint === "string"
+      ? owner.lifecycleLiveIdentityFingerprint.trim()
+      : "";
+  if (
+    !gatewayName ||
+    !Number.isInteger(gatewayPort) ||
+    gatewayPort === null ||
+    gatewayPort === undefined ||
+    gatewayPort < 1 ||
+    gatewayPort > 65_535 ||
+    !lifecycleGeneration ||
+    lifecycleGeneration.length > 256 ||
+    !lifecycleLiveIdentityFingerprint ||
+    !SANDBOX_IDENTITY_FINGERPRINT.test(lifecycleLiveIdentityFingerprint)
+  ) {
+    return null;
+  }
+  return {
+    sandboxName: owner.name,
+    gatewayName,
+    gatewayPort,
+    lifecycleGeneration,
+    lifecycleLiveIdentityFingerprint,
+  };
+}
+
+function pendingCleanupPath(owner: PendingCleanupOwner, stateRoot: string): string {
+  const identity = createHash("sha256").update(JSON.stringify(owner)).digest("hex");
+  return path.join(stateRoot, PENDING_CLEANUP_DIRECTORY, `${identity}.json`);
+}
+
+function legacyPendingCleanupPath(sandboxName: string, stateRoot: string): string {
   return path.join(stateRoot, PENDING_CLEANUP_DIRECTORY, `${sandboxName}.json`);
 }
 
@@ -39,22 +109,70 @@ function validPendingModel(value: unknown): value is string {
   );
 }
 
+function pendingRecordMatchesOwner(
+  record: Record<string, unknown> | null,
+  owner: PendingCleanupOwner,
+): record is Record<string, unknown> & { models: unknown[] } {
+  const recordedOwner = record?.owner;
+  return (
+    record?.schemaVersion === 2 &&
+    record.sandboxName === owner.sandboxName &&
+    typeof recordedOwner === "object" &&
+    recordedOwner !== null &&
+    !Array.isArray(recordedOwner) &&
+    (recordedOwner as PendingCleanupOwner).sandboxName === owner.sandboxName &&
+    (recordedOwner as PendingCleanupOwner).gatewayName === owner.gatewayName &&
+    (recordedOwner as PendingCleanupOwner).gatewayPort === owner.gatewayPort &&
+    (recordedOwner as PendingCleanupOwner).lifecycleGeneration === owner.lifecycleGeneration &&
+    (recordedOwner as PendingCleanupOwner).lifecycleLiveIdentityFingerprint ===
+      owner.lifecycleLiveIdentityFingerprint &&
+    Array.isArray(record.models)
+  );
+}
+
 export function loadPendingOllamaModelCleanup(
-  sandboxName: string,
+  owner: OllamaModelCleanupOwner,
   stateRoot: string = resolveSharedLocalAdapterStateRoot(),
 ): readonly string[] {
-  const record = readLocalAdapterJsonFile(pendingCleanupPath(sandboxName, stateRoot));
-  return record?.schemaVersion === 1 && Array.isArray(record.models)
-    ? record.models.filter(validPendingModel)
-    : [];
+  const identity = pendingCleanupOwner(owner);
+  const legacyRecord = readLocalAdapterJsonFile(legacyPendingCleanupPath(owner.name, stateRoot));
+  const legacyModels =
+    legacyRecord?.schemaVersion === 1 &&
+    legacyRecord.sandboxName === owner.name &&
+    Array.isArray(legacyRecord.models)
+      ? legacyRecord.models.filter(validPendingModel)
+      : [];
+  if (legacyModels.length > 0) {
+    console.warn(
+      `  Warning: legacy pending Ollama cleanup for '${owner.name}' (${legacyModels.join(", ")}) has no gateway/lifecycle identity. NemoClaw left it untouched; verify active owners before manually releasing any listed model.`,
+    );
+  }
+  if (!identity) return [];
+  const record = readLocalAdapterJsonFile(pendingCleanupPath(identity, stateRoot));
+  return pendingRecordMatchesOwner(record, identity) ? record.models.filter(validPendingModel) : [];
 }
 
 export function persistPendingOllamaModelCleanup(
-  sandboxName: string,
+  owner: OllamaModelCleanupOwner,
   models: readonly string[],
   stateRoot: string = resolveSharedLocalAdapterStateRoot(),
 ): void {
-  const pending = [...loadPendingOllamaModelCleanup(sandboxName, stateRoot)];
+  const identity = pendingCleanupOwner(owner);
+  if (!identity) {
+    throw new Error(
+      "Cannot persist pending Ollama cleanup without complete sandbox ownership identity",
+    );
+  }
+  const receiptPath = pendingCleanupPath(identity, stateRoot);
+  const record = readLocalAdapterJsonFile(receiptPath);
+  if (record && !pendingRecordMatchesOwner(record, identity)) {
+    throw new Error(
+      "Refusing to replace a pending Ollama cleanup receipt with a different owner identity",
+    );
+  }
+  const pending = pendingRecordMatchesOwner(record, identity)
+    ? [...record.models.filter(validPendingModel)]
+    : [];
   for (const model of models) {
     const normalized = model.trim();
     if (!validPendingModel(normalized)) continue;
@@ -63,42 +181,44 @@ export function persistPendingOllamaModelCleanup(
     }
   }
   if (pending.length === 0) return;
-  writeLocalAdapterJsonFile(pendingCleanupPath(sandboxName, stateRoot), {
-    schemaVersion: 1,
-    sandboxName,
+  writeLocalAdapterJsonFile(receiptPath, {
+    schemaVersion: 2,
+    sandboxName: identity.sandboxName,
+    owner: identity,
     models: pending,
   });
 }
 
 export function clearPendingOllamaModelCleanup(
-  sandboxName: string,
+  owner: OllamaModelCleanupOwner,
   releasedModels?: readonly string[],
   stateRoot: string = resolveSharedLocalAdapterStateRoot(),
 ): void {
-  const receiptPath = pendingCleanupPath(sandboxName, stateRoot);
+  const identity = pendingCleanupOwner(owner);
+  if (!identity) return;
+  const receiptPath = pendingCleanupPath(identity, stateRoot);
+  const record = readLocalAdapterJsonFile(receiptPath);
+  if (!pendingRecordMatchesOwner(record, identity)) return;
   if (!releasedModels) {
     removeLocalAdapterFile(receiptPath);
     return;
   }
-  const remaining = loadPendingOllamaModelCleanup(sandboxName, stateRoot).filter(
-    (pending) => !releasedModels.some((released) => ollamaModelRefsMatch(pending, released)),
-  );
+  const remaining = record.models
+    .filter(validPendingModel)
+    .filter(
+      (pending) => !releasedModels.some((released) => ollamaModelRefsMatch(pending, released)),
+    );
   if (remaining.length === 0) {
     removeLocalAdapterFile(receiptPath);
     return;
   }
   writeLocalAdapterJsonFile(receiptPath, {
-    schemaVersion: 1,
-    sandboxName,
+    schemaVersion: 2,
+    sandboxName: identity.sandboxName,
+    owner: identity,
     models: remaining,
   });
 }
-
-/** The registry fields an Ollama GPU-release decision reads. */
-export type OllamaModelHolder = Pick<
-  SandboxEntry,
-  "name" | "provider" | "model" | "endpointUrl" | "gatewayName" | "gatewayPort"
->;
 
 export type OllamaModelRoute = Pick<SandboxEntry, "provider" | "model" | "endpointUrl">;
 
