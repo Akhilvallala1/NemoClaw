@@ -1084,6 +1084,10 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     const monitoring = new AbortController();
     const evidenceRoot = selectedEvidenceRoot;
     const runId = randomBytes(5).toString("hex");
+    let requestStopped = false;
+    let gatewayCleanupConfirmed = false;
+    let uiOwnerStopped = false;
+    let inferenceOwnerStopped = false;
     const cleanup = () =>
       (cleanupPromise ??= attemptNativeUiCleanup([
         [
@@ -1130,7 +1134,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         [
           "sandbox request watcher",
           async () => {
-            if (create && create.pid && !(await stopChild(create))) throw new Error();
+            requestStopped = !create?.pid || (await stopChild(create));
+            if (!requestStopped) throw new Error();
           },
         ],
         [
@@ -1154,18 +1159,21 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           "private gateway cleanup",
           async () => {
             await gatewaySession?.dispose();
+            gatewayCleanupConfirmed = true;
           },
         ],
         [
           "UI file owner",
           async () => {
             if (uiRelay) await uiRelay.dispose();
+            uiOwnerStopped = true;
           },
         ],
         [
           "inference file owner",
           async () => {
             if (brokerRelay) await brokerRelay.dispose();
+            inferenceOwnerStopped = true;
           },
         ],
         [
@@ -1201,6 +1209,13 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         [
           "temporary runtime directories",
           async () => {
+            if (
+              !requestStopped ||
+              !gatewayCleanupConfirmed ||
+              !uiOwnerStopped ||
+              !inferenceOwnerStopped
+            )
+              throw new Error();
             let failed = false;
             for (const directory of ownedRoots) {
               try {

@@ -1429,6 +1429,7 @@ async function runNativeConsoleAgentInternal(
       }
       await gatewaySession?.dispose();
     });
+    const runtimeOwnersStopped = cleanupFailures.length === 0;
     for (const directory of [
       runRoot,
       runtimeRoot,
@@ -1438,6 +1439,12 @@ async function runNativeConsoleAgentInternal(
       browserRelayRoot,
     ]) {
       await attempt("temporary runtime removal", async () => {
+        if (directory && !runtimeOwnersStopped) {
+          rootsRemoved = false;
+          throw new Error(
+            "Temporary native runtime files were retained because owner cleanup is unconfirmed.",
+          );
+        }
         if (directory && !(await removeDirectory(directory))) {
           rootsRemoved = false;
           throw new Error("Temporary native runtime files could not be removed.");

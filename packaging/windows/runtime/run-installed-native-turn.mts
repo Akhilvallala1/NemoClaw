@@ -721,11 +721,14 @@ async function main(runtimeLease: NativeRuntimeSession) {
     primaryFailed = true;
     throw error;
   } finally {
+    let requestStopped = false;
+    let gatewayCleanupConfirmed = false;
     const failures = await attemptNativeUiCleanup([
       [
         "sandbox request stop",
         async () => {
-          if (create?.pid && !(await stopChild(create))) throw new Error();
+          requestStopped = !create?.pid || (await stopChild(create));
+          if (!requestStopped) throw new Error();
         },
       ],
       [
@@ -758,7 +761,13 @@ async function main(runtimeLease: NativeRuntimeSession) {
           if (gateway?.pid && !(await gatewaySession.stopGateway())) throw new Error();
         },
       ],
-      ["private gateway cleanup", () => gatewaySession.dispose()],
+      [
+        "private gateway cleanup",
+        async () => {
+          await gatewaySession.dispose();
+          gatewayCleanupConfirmed = true;
+        },
+      ],
       ...[...ownedLogs].map(
         (descriptor) =>
           [
@@ -799,6 +808,7 @@ async function main(runtimeLease: NativeRuntimeSession) {
           [
             "temporary root removal: " + path.basename(directory),
             async () => {
+              if (!requestStopped || !gatewayCleanupConfirmed) throw new Error();
               if (!(await removeDirectory(directory))) throw new Error();
             },
           ] as const,

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
-import { syncBuiltinESMExports } from "node:module";
+import { stripTypeScriptTypes, syncBuiltinESMExports } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,269 @@ import {
 } from "./run-installed-native-hermes-turn.mts";
 import type { NativeRuntimeSession } from "./native-runtime.mts";
 import { NativeGatewaySession } from "./native-gateway-session.mts";
+import { attemptNativeUiCleanup } from "./native-ui-lifecycle.mts";
+
+// Execute the actual finally block with stubbed process/filesystem boundaries.
+// This checks sequencing without launching an installed runtime or bypassing its platform guard.
+function openClawCleanupController() {
+  const source = fs
+    .readFileSync(new URL("./run-installed-native-turn.mts", import.meta.url), "utf8")
+    .replaceAll("\r\n", "\n");
+  const start = source.lastIndexOf("  } finally {") + "  } finally {".length;
+  const end = source.indexOf("    if (!passed || failures.length)", start);
+  assert(start > 0 && end > start);
+  return new Function(
+    "attemptNativeUiCleanup",
+    "create",
+    "stopChild",
+    "passed",
+    "cliEnvironment",
+    "run",
+    "openshell",
+    "sandboxName",
+    "confirmNativeUiRegistryEmpty",
+    "gateway",
+    "runtimeLease",
+    "gatewaySession",
+    "ownedLogs",
+    "fs",
+    "ownedRoots",
+    "runRoot",
+    "gatewayLogPath",
+    "gatewayErrorPath",
+    "readOpenedRegularFile",
+    "sanitizedDiagnostic",
+    "installRoot",
+    "runtimeRoot",
+    "shareRoot",
+    "evidenceRoot",
+    "runId",
+    "path",
+    "removeDirectory",
+    "console",
+    "return " +
+      stripTypeScriptTypes(`(async () => {${source.slice(start, end)}\nreturn failures;})();`, {
+        mode: "strip",
+      }),
+  );
+}
+
+for (const failure of [
+  "none",
+  "request-stop",
+  "gateway-stop",
+  "gateway-dispose",
+  "registry",
+] as const) {
+  test(`OpenClaw turn retains temporary roots when cleanup is unconfirmed: ${failure}`, async () => {
+    const removed: string[] = [];
+    const roots = ["owned-run", "owned-share", "owned-runtime"];
+    const gateway = { pid: 1234 };
+    const errors = await openClawCleanupController()(
+      attemptNativeUiCleanup,
+      { pid: 5678 },
+      async () => failure !== "request-stop",
+      false,
+      {},
+      async () => {},
+      "owned-openshell",
+      "owned-sandbox",
+      async () => {
+        if (failure === "registry") throw new Error("unconfirmed registry");
+      },
+      gateway,
+      {},
+      {
+        async stopGateway() {
+          return failure !== "gateway-stop";
+        },
+        async dispose() {
+          if (failure === "gateway-stop" || failure === "gateway-dispose")
+            throw new Error("unconfirmed gateway cleanup");
+        },
+      },
+      new Set(),
+      { closeSync() {}, writeFileSync() {} },
+      roots,
+      roots[0],
+      "owned-stdout",
+      "owned-stderr",
+      () => null,
+      () => "",
+      "owned-install",
+      roots[2],
+      roots[1],
+      "owned-evidence",
+      "fixture",
+      path,
+      async (directory: string) => {
+        removed.push(directory);
+        return true;
+      },
+      { error() {} },
+    );
+    if (["request-stop", "gateway-stop", "gateway-dispose"].includes(failure)) {
+      assert.deepEqual(removed, [], "Unconfirmed process cleanup must not remove any owned root.");
+      assert.equal(
+        errors.filter((label: string) => label.startsWith("temporary root removal:")).length,
+        3,
+      );
+    } else {
+      assert.deepEqual(removed, roots);
+      assert.deepEqual(errors, failure === "registry" ? ["sandbox registry verification"] : []);
+    }
+  });
+}
+
+function runCleanupFragment(
+  file: string,
+  startMarker: string,
+  endMarker: string,
+  context: Record<string, unknown>,
+  result: string,
+) {
+  const source = fs.readFileSync(new URL(file, import.meta.url), "utf8").replaceAll("\r\n", "\n");
+  const start = source.lastIndexOf(startMarker);
+  const end = source.indexOf(endMarker, start);
+  assert(start >= 0 && end > start);
+  const code = stripTypeScriptTypes(
+    `(async () => { let {${Object.keys(context).join(",")}} = context;\n${source.slice(start, end)}\nreturn ${result}; })()`,
+    { mode: "strip" },
+  );
+  return new Function("context", `return ${code}`)(context);
+}
+
+for (const failure of [
+  "none",
+  "request-stop",
+  "gateway-cleanup",
+  "ui-owner",
+  "inference-owner",
+  "registry",
+] as const) {
+  test(`OpenClaw web cleanup retains roots until backend cleanup is confirmed: ${failure}`, async () => {
+    const removed: string[] = [];
+    const roots = ["web-run", "web-share", "web-runtime"];
+    const errors = await runCleanupFragment(
+      "./run-installed-native-web-ui.mts",
+      '    const runId = randomBytes(5).toString("hex");',
+      "    try {\n      stateSession?.assertHeld();",
+      {
+        randomBytes: () => Buffer.alloc(5),
+        cleanupPromise: undefined,
+        attemptNativeUiCleanup,
+        monitoring: new AbortController(),
+        monitor: undefined,
+        uiRelay: {
+          async close() {},
+          async dispose() {
+            if (failure === "ui-owner") throw new Error("UI file owner remains");
+          },
+        },
+        brokerRelay: {
+          async close() {},
+          async dispose() {
+            if (failure === "inference-owner") throw new Error("inference file owner remains");
+          },
+        },
+        onboarding: null,
+        create: { pid: 5678 },
+        gateway: { pid: 1234 },
+        gatewaySession: {
+          async stopGateway() {
+            return failure !== "gateway-cleanup";
+          },
+          async dispose() {
+            if (failure === "gateway-cleanup") throw new Error("unconfirmed gateway");
+          },
+        },
+        requestNativeUiSandboxDeletion: async () => {},
+        confirmNativeUiRegistryEmpty: async () => {
+          if (failure === "registry") throw new Error("unconfirmed registry");
+        },
+        stopChild: async () => failure !== "request-stop",
+        openshell: "fixture",
+        cliEnvironment: {},
+        sandboxName: "fixture",
+        stateSession: null,
+        creation: undefined,
+        ownedLogs: [],
+        gatewayLogPath: "",
+        gatewayErrorPath: "",
+        ownedRoots: roots,
+        removeDirectory: async (directory: string) => {
+          removed.push(directory);
+          return true;
+        },
+        inferenceBroker: null,
+      },
+      "await cleanup()",
+    );
+    if (["request-stop", "gateway-cleanup", "ui-owner", "inference-owner"].includes(failure)) {
+      assert.deepEqual(removed, []);
+      assert(errors.includes("temporary runtime directories"));
+    } else {
+      assert.deepEqual(removed, roots);
+      assert.deepEqual(errors, failure === "registry" ? ["sandbox registry"] : []);
+    }
+  });
+}
+
+for (const failure of ["none", "gateway-stop", "gateway-cleanup", "file-owner"] as const) {
+  test(`console cleanup retains temporary roots when an owner cannot stop: ${failure}`, async () => {
+    const removed: string[] = [];
+    const roots = ["console-run", "console-runtime", "dashboard", "status", "broker", "browser"];
+    const errors = await runCleanupFragment(
+      "./run-installed-native-console-agent.mts",
+      "    const cleanupFailures: string[] = [];",
+      "    let released = false;",
+      {
+        diagnostics: { capture() {} },
+        relay: {
+          async close() {},
+          async dispose() {
+            if (failure === "file-owner") throw new Error("file owner still running");
+          },
+        },
+        statusFiles: null,
+        brokerRelay: null,
+        browserRelay: null,
+        edge: null,
+        broker: null,
+        consoleAttachment: { async dispose() {} },
+        gatewaySession: {
+          async stopGateway() {
+            return failure !== "gateway-stop";
+          },
+          async dispose() {
+            if (failure === "gateway-cleanup") throw new Error("unconfirmed gateway");
+          },
+        },
+        runRoot: roots[0],
+        runtimeRoot: roots[1],
+        dashboardRelayRoot: roots[2],
+        statusRoot: roots[3],
+        brokerRelayRoot: roots[4],
+        browserRelayRoot: roots[5],
+        removeDirectory: async (directory: string) => {
+          removed.push(directory);
+          return true;
+        },
+      },
+      "cleanupFailures",
+    );
+    if (failure === "none") {
+      assert.deepEqual(removed, roots);
+      assert.deepEqual(errors, []);
+    } else {
+      assert.deepEqual(removed, []);
+      assert.equal(
+        errors.filter((label: string) => label === "temporary runtime removal").length,
+        6,
+      );
+    }
+  });
+}
 
 // Fault injection executes the actual qualification owner. Filesystem calls are
 // mocked before entry; no installed runtime, service, sandbox or host path is changed.
