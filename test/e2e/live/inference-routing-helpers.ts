@@ -10,6 +10,7 @@ import { resultText, shellQuote } from "../fixtures/clients/command.ts";
 import type { NativeCustomProviderAttachment } from "../../../src/lib/inference/native-custom/index.ts";
 import { resolveSandboxGatewayName } from "../../../src/lib/onboard/gateway-binding.ts";
 import { getSandbox } from "../../../src/lib/state/registry.ts";
+import { NAME_MAX_LENGTH } from "../../../src/lib/name-validation.ts";
 import type { HostCliClient } from "../fixtures/clients/host.ts";
 import type { SandboxClient } from "../fixtures/clients/sandbox.ts";
 import { validateSandboxName } from "../fixtures/clients/sandbox.ts";
@@ -75,7 +76,9 @@ function hasRawNodeStackTrace(text: string): boolean {
 }
 
 function inferenceSandboxName(prefix: string): string {
-  const name = `${prefix}-${process.pid.toString(36)}`;
+  const suffix = process.pid.toString(36);
+  const boundedPrefix = prefix.slice(0, NAME_MAX_LENGTH - suffix.length - 1).replace(/-+$/u, "");
+  const name = `${boundedPrefix}-${suffix}`;
   validateSandboxName(name);
   return name;
 }
