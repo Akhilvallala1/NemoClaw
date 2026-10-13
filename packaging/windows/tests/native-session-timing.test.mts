@@ -107,7 +107,7 @@ for (const surface of ["console", "dashboard"] as const) {
                 },
               };
             },
-            readConfiguration: () => {
+            readNativeAgentConfiguration: () => {
               assert(held, "Settings must not precede state admission.");
               reads++;
               if (failureStage === "configuration") throw primary;
@@ -562,6 +562,53 @@ test("actual OpenClaw final handoff saves success and measures native control cl
     assert(saved.timing.stages.at(-1).elapsedMs >= 10);
   });
 });
+
+for (const agent of ["openclaw", "hermes"] as const) {
+  test(`${agent} records session control close failure instead of successful cleanup`, async () => {
+    await withDiagnostics(async (diagnostics) => {
+      const primary = new Error("session control did not close successfully");
+      const webSession = {
+        signal: new AbortController().signal,
+        progress() {},
+        complete: async (passed: boolean) => {
+          assert(passed);
+          throw primary;
+        },
+      };
+      const footer = webSource.slice(
+        webSource.lastIndexOf(
+          "\n  } catch (error) {\n    diagnostics.fail(error);\n    presentation =",
+        ),
+        webSource.indexOf("\nasync function main()"),
+      );
+      const operation = wrapper(
+        agent === "hermes"
+          ? executableConsole
+          : "async function finishWeb() { let presentation; try { await backend();" + footer,
+        {
+          ...common(diagnostics),
+          diagnostics,
+          argumentValue: () => "hermes",
+          AGENT_ADAPTERS: { hermes: {} },
+          runNativeConsoleAgentInternal: async () => {},
+          backend: async () => {},
+          webSession,
+        },
+        agent === "hermes" ? "runNativeConsoleAgent" : "finishWeb",
+      );
+      await assert.rejects(operation({ webSession }), (error: unknown) => {
+        assert(error instanceof NativeSessionFailure);
+        assert.equal(error.cause, primary);
+        return true;
+      });
+      const saved = record(diagnostics);
+      assert.equal(saved.classification, "native-session-failure");
+      assert.equal(saved.failure.message, primary.message);
+      assert.equal(saved.stage, "cleanup");
+      assert.equal(saved.timing.stages.at(-1).stage, "control-close");
+    });
+  });
+}
 
 const nativeLauncher = process.env.NEMOCLAW_NATIVE_TEST_LAUNCHER;
 test(

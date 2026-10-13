@@ -7,6 +7,49 @@
 
 namespace nemoclaw_msys {
 
+constexpr ACCESS_MASK native_ui_marker_read = READ_CONTROL | SYNCHRONIZE | 1;
+constexpr wchar_t native_ui_marker_leaf[] = L"NemoClawHermesNativeUi-v1";
+
+// Host-created, protected, medium/no-write-up object. A low guest may query it,
+// but cannot manufacture this label or change the owner, DACL or signal state.
+inline bool native_ui_marker_descriptor(PSECURITY_DESCRIPTOR descriptor, PSID user, PSID container) {
+    if (!descriptor || !IsValidSecurityDescriptor(descriptor) || !user || !container ||
+        !IsValidSid(user) || !IsValidSid(container) || EqualSid(user, container)) return false;
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    PSID owner = nullptr;
+    BOOL defaulted = FALSE, present = FALSE;
+    PACL acl = nullptr;
+    if (!GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+        revision != SECURITY_DESCRIPTOR_REVISION || !(control & SE_DACL_PROTECTED) ||
+        !GetSecurityDescriptorOwner(descriptor, &owner, &defaulted) || !owner || !EqualSid(owner, user) ||
+        !GetSecurityDescriptorDacl(descriptor, &present, &acl, &defaulted) ||
+        !present || !acl || !IsValidAcl(acl) || acl->AceCount != 2) return false;
+    PSID identities[2] = {user, container};
+    const ACCESS_MASK rights[2] = {EVENT_ALL_ACCESS, native_ui_marker_read};
+    for (DWORD index = 0; index < 2; ++index) {
+        void* value = nullptr;
+        if (!GetAce(acl, index, &value)) return false;
+        const auto ace = static_cast<ACCESS_ALLOWED_ACE*>(value);
+        if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE || ace->Header.AceFlags != 0 ||
+            ace->Header.AceSize != offsetof(ACCESS_ALLOWED_ACE, SidStart) + GetLengthSid(identities[index]) ||
+            ace->Mask != rights[index] || !IsValidSid(const_cast<DWORD*>(&ace->SidStart)) ||
+            !EqualSid(const_cast<DWORD*>(&ace->SidStart), identities[index])) return false;
+    }
+    if (!GetSecurityDescriptorSacl(descriptor, &present, &acl, &defaulted) ||
+        !present || !acl || !IsValidAcl(acl) || acl->AceCount != 1) return false;
+    void* value = nullptr;
+    if (!GetAce(acl, 0, &value)) return false;
+    const auto label = static_cast<SYSTEM_MANDATORY_LABEL_ACE*>(value);
+    alignas(void*) BYTE medium[SECURITY_MAX_SID_SIZE] = {};
+    DWORD size = sizeof(medium);
+    return CreateWellKnownSid(WinMediumLabelSid, nullptr, medium, &size) &&
+        label->Header.AceType == SYSTEM_MANDATORY_LABEL_ACE_TYPE && label->Header.AceFlags == 0 &&
+        label->Header.AceSize == offsetof(SYSTEM_MANDATORY_LABEL_ACE, SidStart) + size &&
+        label->Mask == SYSTEM_MANDATORY_LABEL_NO_WRITE_UP &&
+        IsValidSid(const_cast<DWORD*>(&label->SidStart)) && EqualSid(const_cast<DWORD*>(&label->SidStart), medium);
+}
+
 struct ScopedDescriptor {
     SECURITY_DESCRIPTOR descriptor;
     alignas(DWORD) BYTE acl[sizeof(ACL) + 2 * (sizeof(ACCESS_ALLOWED_ACE) + SECURITY_MAX_SID_SIZE)];

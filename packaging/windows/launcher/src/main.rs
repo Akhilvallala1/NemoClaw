@@ -256,6 +256,24 @@ fn finish_runtime(code: i32, lease: runtime_lease::native::PackageLease) -> ! {
     exit(code)
 }
 
+fn runtime_capabilities_json() -> String {
+    let enabled = cfg!(feature = "immutable-runtime");
+    format!(
+        "{{\"schemaVersion\":1,\"kind\":\"native-runtime-capabilities\",\"immutableRuntime\":{enabled},\"guardianEnabled\":{enabled},\"supportedCommands\":[\"native-state-inspection-v1\"]}}"
+    )
+}
+
+#[test]
+fn runtime_capabilities_declare_inspection_without_invocation_admission() {
+    let enabled = cfg!(feature = "immutable-runtime");
+    assert_eq!(
+        runtime_capabilities_json(),
+        format!(
+            "{{\"schemaVersion\":1,\"kind\":\"native-runtime-capabilities\",\"immutableRuntime\":{enabled},\"guardianEnabled\":{enabled},\"supportedCommands\":[\"native-state-inspection-v1\"]}}"
+        )
+    );
+}
+
 fn main() {
     #[cfg(not(feature = "immutable-runtime"))]
     let executable =
@@ -297,10 +315,7 @@ fn main() {
         if forwarded.len() != 1 {
             credential_error("The runtime capability query takes no extra arguments.");
         }
-        let enabled = cfg!(feature = "immutable-runtime");
-        println!(
-            "{{\"schemaVersion\":1,\"kind\":\"native-runtime-capabilities\",\"immutableRuntime\":{enabled},\"guardianEnabled\":{enabled}}}"
-        );
+        println!("{}", runtime_capabilities_json());
         return;
     }
     if forwarded
@@ -593,13 +608,16 @@ fn main() {
         credential_delete(provider, credential_binding(&forwarded));
         return;
     }
-    if forwarded
-        .first()
-        .is_some_and(|value| value == "--state-session" || value == "--state-configure")
-    {
+    if forwarded.first().is_some_and(|value| {
+        value == "--state-session" || value == "--state-configure" || value == "--state-inspect"
+    }) {
         let agent = forwarded.get(1).and_then(|value| value.to_str());
         let result = if forwarded.len() == 2 {
-            state_session::run(agent.unwrap_or(""), forwarded[0] == "--state-configure")
+            if forwarded[0] == "--state-inspect" {
+                state_session::inspect(agent.unwrap_or(""))
+            } else {
+                state_session::run(agent.unwrap_or(""), forwarded[0] == "--state-configure")
+            }
         } else {
             Err("A single native state agent is required.".into())
         };

@@ -34,6 +34,252 @@ function step(job: WorkflowJob, name: string): WorkflowStep {
 type Mutation = { name: string; mutate: (value: WindowsInstallerWorkflowSources) => void };
 const mutations: Mutation[] = [
   ...[
+    ["repository", "untrusted/repository"],
+    ["ref", "main"],
+    ["path", "controller"],
+    ["persist-credentials", true],
+    ["submodules", true],
+    ["lfs", true],
+  ].map(([field, value]) => ({
+    name: "candidate source checkout changes " + String(field),
+    mutate: (sources: WindowsInstallerWorkflowSources) => {
+      step(
+        sources.trusted.jobs["full-installed-acceptance"],
+        "Check out OpenClaw candidate source as comparison data",
+      ).with![String(field)] = value;
+    },
+  })),
+  {
+    name: "candidate source checkout runs for a different agent",
+    mutate: (sources) => {
+      step(
+        sources.trusted.jobs["full-installed-acceptance"],
+        "Check out OpenClaw candidate source as comparison data",
+      ).if = undefined;
+    },
+  },
+  {
+    name: "candidate source checkout ignores failure",
+    mutate: (sources) => {
+      step(
+        sources.trusted.jobs["full-installed-acceptance"],
+        "Check out OpenClaw candidate source as comparison data",
+      )["continue-on-error"] = true;
+    },
+  },
+  {
+    name: "OpenClaw source admission uses controller source as artifact source",
+    mutate: (sources) => {
+      const acceptance = step(
+        sources.trusted.jobs["full-installed-acceptance"],
+        "Exercise installed preview, real inference and owned cleanup",
+      );
+      acceptance.run = acceptance.run!.replace(
+        "GITHUB_WORKSPACE\\artifact-source",
+        "GITHUB_WORKSPACE\\controller",
+      );
+    },
+  },
+  ...[
+    "request_kind",
+    "candidate_sha",
+    "agent",
+    "validation_scope",
+    "build_allowed",
+    "trusted_main",
+    "exact_workflow",
+    "credential_authorized",
+  ].map((name) => ({
+    name: "candidate build loses output routing " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const outputs = value.workflow.jobs["windows-finished-request"].outputs!;
+      outputs[name] = outputs[name].replace(`steps.candidate_build.outputs.${name} || `, "");
+    },
+  })),
+  ...[
+    "Resolve a credential-free diagnostic dispatch",
+    "Authorize exact internal PR from the exact main controller",
+  ].map((name) => ({
+    name: "candidate build overlaps " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const admission = step(value.workflow.jobs["windows-finished-request"], name);
+      admission.if = admission.if!.replace("!inputs.build_windows_native_candidate && ", "");
+    },
+  })),
+  {
+    name: "build-only request starts installed migration",
+    mutate: (value) => {
+      const job = value.workflow.jobs["windows-finished-candidate-migration"];
+      job.if = job.if!.replace(
+        "needs.windows-finished-request.outputs.request_kind != 'candidate-build' && ",
+        "",
+      );
+    },
+  },
+  ...[
+    "Prepare pinned interpreters for the finished Hermes producer",
+    "Produce and test Hermes with the same-run native binaries",
+    "Admit the same-run Personal-passing complete Hermes candidate",
+  ].flatMap((name) => [
+    {
+      name: "finished Hermes skips current production: " + name,
+      mutate: (value: WindowsInstallerWorkflowSources) => {
+        step(value.workflow.jobs["windows-finished-installer"], name).if = "${{ false }}";
+      },
+    },
+    {
+      name: "finished Hermes ignores production failure: " + name,
+      mutate: (value: WindowsInstallerWorkflowSources) => {
+        step(value.workflow.jobs["windows-finished-installer"], name)["continue-on-error"] = true;
+      },
+    },
+  ]),
+  ...[
+    [
+      "Produce and test Hermes with the same-run native binaries",
+      "$revision -cne $env:CANDIDATE_SHA",
+      "$false",
+    ],
+    [
+      "Produce and test Hermes with the same-run native binaries",
+      "--toolchain 1.95.0-aarch64-pc-windows-msvc",
+      "--toolchain stable",
+    ],
+    [
+      "Produce and test Hermes with the same-run native binaries",
+      '-NativeCompatibilityDirectory "$work\\native-proof\\bash-compat-evidence"',
+      "",
+    ],
+    [
+      "Admit the same-run Personal-passing complete Hermes candidate",
+      '--same-run-personal-directory "$work\\personal-production"',
+      "",
+    ],
+  ].map(([name, before, after]) => ({
+    name: "finished Hermes loses same-run binding: " + before,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const target = step(value.workflow.jobs["windows-finished-installer"], name);
+      target.run = target.run!.replace(before, after);
+    },
+  })),
+  ...[
+    "Build and qualify current Personal native inputs",
+    "Prepare the complete candidate and test canonical Personal components",
+  ].map((name) => ({
+    name: "Personal producer ignores failure: " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      step(value.workflow.jobs["official-hermes-personal-candidate"], name)["continue-on-error"] =
+        true;
+    },
+  })),
+  ...[
+    [
+      "Build and qualify current Personal native inputs",
+      "run-bash-compat.ps1",
+      "reuse-qualified-proof.py",
+    ],
+    ["Build and qualify current Personal native inputs", "$head -cne $env:GITHUB_SHA", "$false"],
+    ["Prepare the complete candidate and test canonical Personal components", "@native", ""],
+    [
+      "Prepare the complete candidate and test canonical Personal components",
+      "--toolchain 1.95.0",
+      "--toolchain stable",
+    ],
+  ].map(([name, before, after]) => ({
+    name: "Personal producer loses current input binding: " + before,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const target = step(value.workflow.jobs["official-hermes-personal-candidate"], name);
+      target.run = target.run!.replace(before, after);
+    },
+  })),
+  {
+    name: "Personal native build is skipped for ordinary qualification",
+    mutate: (value) => {
+      step(
+        value.workflow.jobs["official-hermes-personal-candidate"],
+        "Build and qualify current Personal native inputs",
+      ).if = "${{ false }}";
+    },
+  },
+  {
+    name: "failed Personal runtime promoted to finished inputs",
+    mutate: (value) => {
+      step(
+        value.workflow.jobs["official-hermes-personal-candidate"],
+        "Preserve current native Personal runtime inputs",
+      ).if = "${{ always() }}";
+    },
+  },
+  {
+    name: "native Bash producer checked out from an old source",
+    mutate: (value) => {
+      step(
+        value.workflow.jobs["windows-bash-compatibility-reuse"],
+        "Check out current Bash qualification inputs",
+      ).with!.ref = "old-source";
+    },
+  },
+  {
+    name: "expired historical Bash evidence substituted for current execution",
+    mutate: (value) => {
+      value.workflow.jobs["windows-bash-compatibility-reuse"].steps!.push({
+        uses: "actions/download-artifact@old",
+        with: { "run-id": 35207682561 },
+      });
+    },
+  },
+  {
+    name: "current native Bash execution replaced with historical receipt rewriting",
+    mutate: (value) => {
+      step(
+        value.workflow.jobs["windows-bash-compatibility-reuse"],
+        "Build and qualify exact current native compatibility",
+      ).run = "python reuse-qualified-proof.py";
+    },
+  },
+  ...[
+    "Verify exact native producer source",
+    "Build and qualify exact current native compatibility",
+    "Seal same-run exact-input Bash evidence",
+  ].flatMap((name) => [
+    {
+      name: "skipped native Bash boundary: " + name,
+      mutate: (value: WindowsInstallerWorkflowSources) => {
+        step(value.workflow.jobs["windows-bash-compatibility-reuse"], name).if = "${{ false }}";
+      },
+    },
+    {
+      name: "ignored native Bash failure: " + name,
+      mutate: (value: WindowsInstallerWorkflowSources) => {
+        step(value.workflow.jobs["windows-bash-compatibility-reuse"], name)["continue-on-error"] =
+          true;
+      },
+    },
+  ]),
+  ...[
+    "$proof.normalCleanup -cne $true",
+    "$runner.cleanup.workRootRemoved -cne $true",
+    "$runner.sourceRevision -cne $env:CANDIDATE_SHA",
+  ].map((predicate) => ({
+    name: "native Bash transfer without " + predicate,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const seal = step(
+        value.workflow.jobs["windows-bash-compatibility-reuse"],
+        "Seal same-run exact-input Bash evidence",
+      );
+      seal.run = seal.run!.replace(predicate, "$false");
+    },
+  })),
+  {
+    name: "native Bash diagnostic upload includes executable payloads",
+    mutate: (value) => {
+      step(
+        value.workflow.jobs["windows-bash-compatibility-reuse"],
+        "Preserve current native Bash diagnostic records without executables",
+      ).with!.path = "${{ runner.temp }}/finished-bash-evidence/**";
+    },
+  },
+  ...[
     "tools/windows-installer/**",
     "test/automation/pull-requests/windows-native-installer-workflow.test.ts",
   ].map((path) => ({
@@ -305,6 +551,8 @@ const mutations: Mutation[] = [
   },
   ...[
     "control-installed-openclaw-input.test.mts",
+    "build-immutable-package-cleanup.test.mts",
+    "qualify-installed-openclaw.test.mts",
     "native-turn-cleanup.test.mts",
     "runtime-published-resources.test.mts",
   ].map((file) => ({
@@ -315,6 +563,97 @@ const mutations: Mutation[] = [
         "Verify observer shutdown and qualification cleanup before building",
       );
       entry.run = entry.run!.replaceAll(file, "unrelated.test.mts");
+    },
+  })),
+  {
+    name: "missing compiled OpenClaw restart controls",
+    mutate: (value) => {
+      const entry = step(
+        value.workflow.jobs["windows-compiled-application"],
+        "Verify installed acceptance controller Windows compatibility",
+      );
+      entry.run = entry.run!.replaceAll(
+        "qualify-installed-openclaw.test.mts",
+        "unrelated.test.mts",
+      );
+    },
+  },
+  ...[
+    {
+      name: "skipped",
+      apply: (entry: WorkflowStep) => {
+        entry.if = "${{ false }}";
+      },
+    },
+    {
+      name: "tolerated",
+      apply: (entry: WorkflowStep) => {
+        entry["continue-on-error"] = true;
+      },
+    },
+  ].map(({ name, apply }) => ({
+    name: "early cleanup preflight " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      apply(
+        step(
+          value.workflow.jobs["windows-runtime-preflight"],
+          "Verify observer shutdown and qualification cleanup before building",
+        ),
+      );
+    },
+  })),
+  ...[
+    {
+      name: "missing",
+      apply: (job: WorkflowJob, entry: WorkflowStep) => {
+        job.steps = job.steps!.filter((item) => item !== entry);
+      },
+    },
+    {
+      name: "skipped",
+      apply: (_job: WorkflowJob, entry: WorkflowStep) => {
+        entry.if = "${{ false }}";
+      },
+    },
+    {
+      name: "tolerated",
+      apply: (_job: WorkflowJob, entry: WorkflowStep) => {
+        entry["continue-on-error"] = true;
+      },
+    },
+    {
+      name: "late",
+      apply: (job: WorkflowJob, entry: WorkflowStep) => {
+        job.steps = job.steps!.filter((item) => item !== entry);
+        job.steps.push(entry);
+      },
+    },
+    {
+      name: "candidate-source",
+      apply: (_job: WorkflowJob, entry: WorkflowStep) => {
+        entry.run = entry.run!.replaceAll("\\controller\\", "\\candidate\\");
+      },
+    },
+    {
+      name: "wrong-node",
+      apply: (_job: WorkflowJob, entry: WorkflowStep) => {
+        entry.run = entry.run!.replaceAll("$env:TRUSTED_CONTROLLER_NODE", "node");
+      },
+    },
+    {
+      name: "no-exit-check",
+      apply: (_job: WorkflowJob, entry: WorkflowStep) => {
+        entry.run = entry.run!.replaceAll(
+          "if ($LASTEXITCODE -ne 0) { throw",
+          "if ($false) { throw",
+        );
+      },
+    },
+  ].map(({ name, apply }) => ({
+    name: "trusted restart controls " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const job = value.trusted.jobs["full-installed-acceptance"];
+      apply(job, step(job, "Verify retained-state qualifier controls from trusted main"));
     },
   })),
   ...["windows-compiled-application", "windows-runtime-controls"].map((name) => ({

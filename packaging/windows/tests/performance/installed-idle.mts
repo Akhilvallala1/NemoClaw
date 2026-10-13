@@ -70,7 +70,7 @@ export function hermesIdleProcessRole(
       "hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-aarch64-none/python.exe",
     ),
     "hermes-python-redirector": path.win32.join(root, "hermes-agent/venv/Scripts/python.exe"),
-    "hermes-tui-node": path.win32.join(root, "node/node.exe"),
+    "hermes-contained-node": path.win32.join(installRoot, "bin/node.exe"),
     "hermes-browser-use-python": path.win32.join(root, "tools/browser-use/Scripts/python.exe"),
     "hermes-console-host": path.win32.join(windowsRoot, "System32/conhost.exe"),
   };
@@ -307,6 +307,14 @@ export function summarizeIdle(
       assert.equal(edge.creationFileTime, row.creationFileTime);
       assert.equal(normalized(edge.executable), normalized(row.executable));
       const chain = ancestors(row.processId);
+      if (row.role === "contained-node") {
+        const launcher = first.processes.find((value) => value.role === "hermes-launcher")!;
+        const executor = first.processes.find((value) => value.role === "mxc-executor")!;
+        const gateway = first.processes.find((value) => value.role === "openshell-gateway")!;
+        assert.equal(chain[1], launcher.processId, "Worker must follow its held launcher");
+        assert.equal(chain[2], executor.processId, "Launcher must follow its held executor");
+        assert(chain.indexOf(gateway.processId) > 2, "Worker must follow its held gateway");
+      }
       if (!hermesRoles.includes(row.role as (typeof hermesRoles)[number])) {
         const wanted = [
           "contained-node",

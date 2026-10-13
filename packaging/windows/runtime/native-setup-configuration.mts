@@ -29,7 +29,7 @@ import {
   readOpenedRegularFile,
   readWindowsCredential,
 } from "./native-security.mts";
-import { acquireNativeStateConfiguration } from "./native-state.mts";
+import { acquireNativeStateConfiguration, acquireNativeStateInspection } from "./native-state.mts";
 import {
   NativeCredentialTransactionError,
   nativeConfigurationCredentialStore,
@@ -281,6 +281,7 @@ export async function configureNativeFromStdin(
       | Awaited<ReturnType<typeof inspectBundledNativeModel>>
     >;
     acquireState?: typeof acquireNativeStateConfiguration;
+    inspectState?: typeof acquireNativeStateInspection;
     readCredential?: typeof readWindowsCredential;
     readServices?: typeof readNativeServiceEnvironment;
     deleteCredential?: typeof deleteCredentialByBinding;
@@ -288,6 +289,136 @@ export async function configureNativeFromStdin(
     writeConfiguration?: typeof writeNativeAgentConfiguration;
   } = {},
 ) {
+  const settingsPosition = args.indexOf("--read-settings");
+  if (settingsPosition !== -1) {
+    const agent = args[settingsPosition + 1];
+    if (
+      agent !== "openclaw" ||
+      settingsPosition !== args.length - 2 ||
+      args.filter((value) => value === "--read-settings").length !== 1 ||
+      args.some(
+        (value) =>
+          value.startsWith("--") && !["--configure-native", "--read-settings"].includes(value),
+      )
+    )
+      fail("the saved settings request is invalid");
+    assertNativePackageIncludesAgent(path.dirname(path.dirname(launcher)), agent);
+    const owner = await (dependencies.inspectState ?? acquireNativeStateInspection)(
+      launcher,
+      agent,
+    );
+    try {
+      owner.assertHeld();
+      if (typeof owner.present !== "boolean" || owner.created || owner.removed)
+        fail("the saved settings inspection is invalid");
+      let settings: Record<string, unknown> | null = null;
+      let state = "unconfigured";
+      if (owner.present) {
+        const directory = path.join(
+          requiredDirectory(
+            process.env.LOCALAPPDATA ?? "",
+            "Windows local application-data directory",
+          ),
+          "NVIDIA",
+          "NemoClaw",
+          "agents",
+          agent,
+        );
+        const recovery = readNativeConfigurationRecovery(directory, agent);
+        if (recovery) state = "needs-resave";
+        else {
+          const bytes = readOpenedRegularFile(path.join(directory, "native-windows.json"), {
+            maxBytes: 16 * 1024,
+            rejectLinks: true,
+            rejectHardLinks: true,
+          });
+          if (bytes !== null) {
+            let saved;
+            try {
+              saved = JSON.parse(
+                new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+              );
+            } catch {
+              fail("the saved settings record is invalid");
+            }
+            if (
+              !saved ||
+              typeof saved !== "object" ||
+              Array.isArray(saved) ||
+              Object.keys(saved).some(
+                (key) =>
+                  ![
+                    "schemaVersion",
+                    "classification",
+                    "agent",
+                    "inference",
+                    "endpoint",
+                    "model",
+                    "credentialStored",
+                    "profile",
+                    "options",
+                    "localModel",
+                  ].includes(key),
+              ) ||
+              saved.schemaVersion !== 1 ||
+              saved.classification !== "nemoclaw-native-windows-agent-configuration" ||
+              saved.agent !== agent ||
+              saved.profile !== "personal" ||
+              typeof saved.credentialStored !== "boolean" ||
+              (saved.localModel !== undefined
+                ? saved.endpoint !== undefined || saved.credentialStored
+                : typeof saved.endpoint !== "string")
+            )
+              fail("the saved settings record is invalid");
+            const normalized = normalizeOnboardingConfiguration(
+              {
+                agent,
+                inference: saved.inference,
+                options: {
+                  endpoint: saved.endpoint,
+                  model: saved.model,
+                  ...(saved.localModel !== undefined ? { localModel: saved.localModel } : {}),
+                },
+              },
+              false,
+              true,
+            );
+            const options = normalizeNativeOptions(agent, saved.options);
+            if (saved.localModel === undefined) nativeCredentialBinding(saved);
+            if (
+              PROVIDER_CONFIGURATION[normalized.inference].credentialRequired &&
+              !saved.credentialStored
+            )
+              fail("the saved settings record is invalid");
+            settings = {
+              inference: normalized.inference,
+              model: normalized.model,
+              credentialStored: saved.credentialStored,
+              options,
+              ...(normalized.localModel
+                ? { localModel: normalized.localModel }
+                : { endpoint: normalized.endpoint }),
+            };
+            state = "saved";
+          }
+        }
+      }
+      const response = JSON.stringify({
+        schemaVersion: 1,
+        kind: "native-saved-settings",
+        agent,
+        state,
+        settings,
+      });
+      if (Buffer.byteLength(response, "utf8") > 16 * 1024)
+        fail("the saved settings response exceeds its limit");
+      owner.assertHeld();
+      output.write(response);
+    } finally {
+      await owner.release();
+    }
+    return;
+  }
   const recoveryPosition = args.indexOf("--recovery-status");
   if (recoveryPosition !== -1) {
     const agent = args[recoveryPosition + 1];

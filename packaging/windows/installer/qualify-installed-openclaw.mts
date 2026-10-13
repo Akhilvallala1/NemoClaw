@@ -3,7 +3,7 @@
 
 // CI-only browser acceptance of the installed executable. Never imported by the app.
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,9 +14,789 @@ import { signalObserverStop } from "./observer-stop.mts";
 import { captureOwned, qualificationEnvironment } from "./qualify-finished-package.mts";
 import { sampleInstalledIdle } from "../tests/performance/installed-idle.mts";
 import { sanitizeNativeDiagnostic } from "../runtime/native-session-diagnostics.mts";
+import { nativeCredentialBinding, readOpenedRegularFile } from "../runtime/native-security.mts";
+import {
+  acquireNativeStateConfiguration,
+  acquireNativeStateInspection,
+  acquireNativeStateRemoval,
+} from "../runtime/native-state.mts";
+import { acceptanceProcessesStopped } from "./qualify-finished-package.mts";
+
+const digest = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+const runtimeKeys = [
+  "runtimeId",
+  "manifestSha256",
+  "sourceRevision",
+  "nodeSha256",
+  "nodeVersion",
+] as const;
+
+export function openClawRestartMode(args: string[]) {
+  const preserve = args.includes("--preserve-configuration");
+  const reuse = args.includes("--reuse-configuration");
+  assert(!(preserve && reuse), "Select either a cold preserved run or a warm reused run.");
+  assert.equal(
+    args.includes("--previous-acceptance"),
+    reuse,
+    "Only a warm run uses a cold receipt.",
+  );
+  return { preserve, reuse, restart: preserve || reuse };
+}
+
+export function openClawTranscriptIdentity(sessionKey: string, history: any) {
+  assert.match(sessionKey, /^agent:main:[A-Za-z0-9:._-]{1,256}$/u);
+  assert(
+    Array.isArray(history?.messages) &&
+      history.messages.length > 0 &&
+      history.messages.length < 100,
+    "The complete controlled conversation must fit within the history bound.",
+  );
+  const messages = history.messages.map((message: any) => {
+    assert(message && ["user", "assistant", "toolResult"].includes(message.role));
+    assert(typeof message.content === "string" || Array.isArray(message.content));
+    return Object.fromEntries(
+      ["role", "content", "toolName", "toolCallId", "stopReason"]
+        .filter((key) => Object.hasOwn(message, key))
+        .map((key) => [key, message[key]]),
+    );
+  });
+  const serialized = JSON.stringify(messages);
+  assert(
+    Buffer.byteLength(serialized) <= 20000,
+    "The conversation exceeds the controlled history bound.",
+  );
+  return { sessionKey, messageCount: messages.length, sha256: digest(serialized) };
+}
+
+export function assertRecordedOpenClawReply(history: any, prompt: string, reply: string) {
+  assert(Array.isArray(history?.messages));
+  let matched = false;
+  for (const message of history.messages) {
+    const text =
+      typeof message?.content === "string"
+        ? message.content
+        : Array.isArray(message?.content)
+          ? message.content
+              .filter((part: any) => part?.type === "text")
+              .map((part: any) => part.text)
+              .join("\n")
+          : "";
+    if (message?.role === "user") matched = text === prompt;
+    else if (
+      matched &&
+      message?.role === "assistant" &&
+      message.stopReason !== "error" &&
+      text === reply
+    )
+      return;
+  }
+  throw new Error("The conversation lacks the selected-provider response to this run's prompt.");
+}
+
+export function assertRetainedOpenClawPrefix(
+  previous: ReturnType<typeof openClawTranscriptIdentity>,
+  history: any,
+) {
+  assert(
+    Array.isArray(history?.messages) && history.messages.length > previous.messageCount,
+    "The warm conversation lacks new messages.",
+  );
+  const retained = openClawTranscriptIdentity(previous.sessionKey, {
+    messages: history.messages.slice(0, previous.messageCount),
+  });
+  assert.deepEqual(retained, previous, "The warm turn changed its retained conversation prefix.");
+}
+
+export function validateOpenClawColdReceipt(
+  previous: any,
+  expected: {
+    controllerRun: string;
+    handoff: string;
+    installation: string;
+    runtime: Record<string, any>;
+    launcherSha256: string;
+    packageBuildSha256: string;
+    artifactSourceSnapshotSha256: string;
+    controllerSourceRevision: string;
+    model: string;
+  },
+) {
+  assert.match(expected.controllerRun, /^[1-9]\d*:[1-9]\d*$/u);
+  assert.match(expected.handoff, /^[a-f0-9]{64}$/u);
+  assert.match(expected.artifactSourceSnapshotSha256, /^[a-f0-9]{64}$/u);
+  assert.match(expected.controllerSourceRevision, /^[a-f0-9]{40}$/u);
+  assert.equal(previous?.schemaVersion, 2, "Restart cannot promote a legacy acceptance receipt.");
+  assert.equal(previous.classification, "installed-compiled-openclaw-acceptance");
+  assert.equal(previous.verdict, "pass");
+  assert.deepEqual(previous.cleanupErrors, []);
+  assert.deepEqual(previous.cleanupErrorDetails, []);
+  assert.equal(previous.primaryFailure, null);
+  const cold = previous.restart;
+  assert.equal(cold?.schemaVersion, 1);
+  assert.equal(cold.mode, "cold-preserved");
+  for (const key of [
+    "controllerRun",
+    "handoff",
+    "installation",
+    "launcherSha256",
+    "packageBuildSha256",
+    "artifactSourceSnapshotSha256",
+    "controllerSourceRevision",
+    "model",
+  ] as const)
+    assert.equal(cold[key], expected[key], "Restart input differs from the same-run cold receipt.");
+  for (const key of runtimeKeys) {
+    assert.match(
+      expected.runtime[key],
+      key === "nodeVersion"
+        ? /^22\.23\.2$/u
+        : key === "sourceRevision"
+          ? /^[a-f0-9]{40}$/u
+          : /^[a-f0-9]{64}$/u,
+    );
+    assert.equal(previous.runtime?.[key], expected.runtime[key]);
+  }
+  assert.equal(cold.provider, "nvidia");
+  assert.equal(cold.endpoint, "https://integrate.api.nvidia.com/v1");
+  assert.equal(cold.configurationReused, false);
+  assert.equal(cold.configurationPreserved, true);
+  assert.equal(cold.cleanupDisposition, "retained-for-warm-run");
+  assert.equal(cold.processesStopped, true);
+  assert.equal(cold.stateOwnerReleased, true);
+  assert.equal(cold.backendCleanupConfirmed, true);
+  assert.equal(cold.mutationUnconfirmed, false);
+  assert.equal(cold.credentialMutationConfirmed, true);
+  assert.match(cold.configurationSha256, /^[a-f0-9]{64}$/u);
+  assert.match(cold.ownedState?.stateRoot, /^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-openclaw$/u);
+  assert.match(cold.ownedState.device, /^\d+$/u);
+  assert.match(cold.ownedState.inode, /^[1-9]\d*$/u);
+  assert.match(cold.retainedConversation?.sessionKey, /^agent:main:[A-Za-z0-9:._-]{1,256}$/u);
+  assert(
+    Number.isSafeInteger(cold.retainedConversation.messageCount) &&
+      cold.retainedConversation.messageCount > 0 &&
+      cold.retainedConversation.messageCount < 100,
+  );
+  assert.match(cold.retainedConversation.sha256, /^[a-f0-9]{64}$/u);
+  assert.equal(previous.results?.response?.provider, "nvidia");
+  assert.equal(previous.results.response.model, expected.model);
+  assert.equal(previous.results.response.deterministicModel, false);
+  assert.match(previous.results.response.visibleReply, /^NEMOCLAW_NVIDIA_[a-f0-9]{24}$/u);
+  assert.equal(previous.results.sessionCleanup?.verdict, "pass");
+  for (const flag of [
+    "sandboxDeleted",
+    "sandboxRegistryAbsent",
+    "gatewayStopped",
+    "qualificationRootsRemoved",
+  ])
+    assert.equal(previous.results.sessionCleanup[flag], true);
+  return cold;
+}
+
+export function openClawCleanupDisposition(input: {
+  owned: boolean;
+  processesStopped: boolean;
+  stateOwnerReleased: boolean;
+  backendCleanupConfirmed: boolean;
+  mutationUnconfirmed: boolean;
+  preserve: boolean;
+  successful: boolean;
+}) {
+  if (!input.owned) return "not-owned";
+  if (
+    !input.processesStopped ||
+    !input.stateOwnerReleased ||
+    !input.backendCleanupConfirmed ||
+    input.mutationUnconfirmed
+  )
+    return "retain-unconfirmed";
+  return input.preserve && input.successful ? "retained-for-warm-run" : "remove-owned-state";
+}
+
+function readAcceptanceBytes(file: string, maxBytes = 2 * 1024 * 1024) {
+  const bytes = readOpenedRegularFile(file, { maxBytes, rejectLinks: true, rejectHardLinks: true });
+  assert(bytes !== null, "An acceptance input is missing.");
+  return bytes;
+}
+
+const launcherSourcePrefix = "packaging/windows/launcher/";
+type ArtifactSourceSnapshot = {
+  schemaVersion: 1;
+  classification: "independent-openclaw-launcher-source-snapshot";
+  artifactSourceRevision: string;
+  controllerSourceRevision: string;
+  controllerRun: string;
+  sources: { file: string; bytes: number; sha256: string }[];
+};
+
+function ordinarySourceDirectory(directory: string) {
+  const resolved = path.resolve(directory);
+  const stat = fs.lstatSync(resolved);
+  assert(stat.isDirectory() && !stat.isSymbolicLink(), "Source directories must not be links.");
+  assert.equal(fs.realpathSync(resolved).toLowerCase(), resolved.toLowerCase());
+  return resolved;
+}
+
+// Read Git's authorized tree, not candidate scripts, filters, hooks or receipt claims.
+export function captureOpenClawArtifactSources(input: {
+  artifactSourceRoot: string;
+  controllerSourceRoot: string;
+  artifactSourceRevision: string;
+  controllerSourceRevision: string;
+  controllerRun: string;
+}): ArtifactSourceSnapshot {
+  assert.match(input.artifactSourceRevision, /^[a-f0-9]{40}$/u);
+  assert.match(input.controllerSourceRevision, /^[a-f0-9]{40}$/u);
+  assert.match(input.controllerRun, /^[1-9]\d*:[1-9]\d*$/u);
+  const artifact = ordinarySourceDirectory(input.artifactSourceRoot);
+  const controller = ordinarySourceDirectory(input.controllerSourceRoot);
+  for (const [root, other] of [
+    [artifact, controller],
+    [controller, artifact],
+  ]) {
+    const relative = path.relative(root.toLowerCase(), other.toLowerCase());
+    assert(
+      relative && (relative.startsWith(".." + path.sep) || path.isAbsolute(relative)),
+      "Controller and candidate sources must use separate checkouts.",
+    );
+  }
+  ordinarySourceDirectory(path.join(artifact, ".git"));
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) =>
+      /^(PATH|SystemRoot|WINDIR|COMSPEC|PATHEXT|TEMP|TMP)$/iu.test(name),
+    ),
+  );
+  Object.assign(environment, {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_OPTIONAL_LOCKS: "0",
+  });
+  const git = (root: string, args: string[]) => {
+    const result = spawnSync(
+      "git",
+      ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "-C", root, ...args],
+      { env: environment, windowsHide: true, timeout: 10000, maxBuffer: 2 * 1024 * 1024 },
+    );
+    assert.equal(result.error, undefined, "Candidate source Git inspection failed.");
+    assert.equal(result.status, 0, "Candidate source Git inspection failed.");
+    return result.stdout;
+  };
+  assert.equal(
+    git(controller, ["rev-parse", "HEAD"]).toString("utf8").trim(),
+    input.controllerSourceRevision,
+  );
+  assert.equal(
+    git(artifact, ["rev-parse", "HEAD"]).toString("utf8").trim(),
+    input.artifactSourceRevision,
+  );
+  const tree = git(artifact, [
+    "ls-tree",
+    "-r",
+    "-z",
+    "--full-tree",
+    input.artifactSourceRevision,
+    "--",
+    launcherSourcePrefix,
+  ]);
+  const entries = new Map<string, string>();
+  for (const entry of tree.toString("utf8").split("\0").filter(Boolean)) {
+    const match =
+      /^(100644|100755) blob ([a-f0-9]{40})\t(packaging\/windows\/launcher\/[A-Za-z0-9_./-]+)$/u.exec(
+        entry,
+      );
+    assert(match, "The candidate launcher tree contains unsupported paths or objects.");
+    const file = match[3];
+    assert(file.split("/").every((part) => part !== "." && part !== ".."));
+    assert(
+      ![...entries.keys()].some((name) => name.toLowerCase() === file.toLowerCase()),
+      "The candidate launcher tree contains duplicate paths.",
+    );
+    entries.set(file, match[2]);
+  }
+  assert(
+    entries.size >= 5 && entries.size <= 512,
+    "The candidate launcher tree exceeds its bounds.",
+  );
+  const observed = new Set<string>();
+  const sources: ArtifactSourceSnapshot["sources"] = [];
+  let totalBytes = 0;
+  const visit = (directory: string) => {
+    ordinarySourceDirectory(directory);
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      assert(!entry.isSymbolicLink(), "The candidate launcher checkout contains a link.");
+      const relative = path.relative(artifact, file).split(path.sep).join("/");
+      if (entry.isDirectory()) {
+        assert(
+          !["target", "bin", "obj"].includes(
+            path
+              .relative(path.join(artifact, "packaging", "windows", "launcher"), file)
+              .split(path.sep)[0],
+          ),
+          "The candidate launcher checkout contains generated output.",
+        );
+        assert(
+          [...entries.keys()].some((name) => name.startsWith(relative + "/")),
+          "The candidate launcher checkout contains an unexpected directory.",
+        );
+        visit(file);
+      } else {
+        assert(
+          entries.has(relative),
+          "The candidate launcher checkout contains an unexpected file.",
+        );
+        const bytes = readAcceptanceBytes(file, 16 * 1024 * 1024);
+        totalBytes += bytes.length;
+        assert(
+          totalBytes <= 64 * 1024 * 1024,
+          "The candidate launcher checkout exceeds its byte bound.",
+        );
+        const blob = createHash("sha1")
+          .update("blob " + bytes.length + "\0")
+          .update(bytes)
+          .digest("hex");
+        assert.equal(
+          blob,
+          entries.get(relative),
+          "The candidate launcher source differs from its authorized Git tree.",
+        );
+        observed.add(relative);
+        if (
+          relative === launcherSourcePrefix + "Cargo.toml" ||
+          relative === launcherSourcePrefix + "Cargo.lock" ||
+          relative.endsWith(".rs") ||
+          relative.startsWith(launcherSourcePrefix + ".cargo/")
+        ) {
+          assert(bytes.length > 0);
+          sources.push({ file: relative, bytes: bytes.length, sha256: digest(bytes) });
+        }
+      }
+    }
+  };
+  visit(path.join(artifact, "packaging", "windows", "launcher"));
+  assert.deepEqual(
+    [...observed].sort(),
+    [...entries.keys()].sort(),
+    "Candidate launcher files are missing.",
+  );
+  return {
+    schemaVersion: 1,
+    classification: "independent-openclaw-launcher-source-snapshot",
+    artifactSourceRevision: input.artifactSourceRevision,
+    controllerSourceRevision: input.controllerSourceRevision,
+    controllerRun: input.controllerRun,
+    sources: sources.sort((a, b) => a.file.localeCompare(b.file)),
+  };
+}
+
+export function validateOpenClawArtifactSourceSnapshot(input: {
+  bytes: Buffer;
+  sha256: string;
+  sourceRevision: string;
+  controllerSourceRevision: string;
+  controllerRun: string;
+}) {
+  assert.match(input.sha256, /^[a-f0-9]{64}$/u);
+  assert.match(input.sourceRevision, /^[a-f0-9]{40}$/u);
+  assert.match(input.controllerSourceRevision, /^[a-f0-9]{40}$/u);
+  assert.match(input.controllerRun, /^[1-9]\d*:[1-9]\d*$/u);
+  assert(input.bytes.length > 0 && input.bytes.length <= 256 * 1024);
+  assert.equal(digest(input.bytes), input.sha256, "The pre-install source snapshot changed.");
+  const document = JSON.parse(input.bytes.toString("utf8"));
+  assert.deepEqual(
+    Object.keys(document).sort(),
+    [
+      "schemaVersion",
+      "classification",
+      "artifactSourceRevision",
+      "controllerSourceRevision",
+      "controllerRun",
+      "sources",
+    ].sort(),
+  );
+  assert.equal(document.schemaVersion, 1);
+  assert.equal(document.classification, "independent-openclaw-launcher-source-snapshot");
+  assert.equal(document.artifactSourceRevision, input.sourceRevision);
+  assert.equal(document.controllerSourceRevision, input.controllerSourceRevision);
+  assert.equal(document.controllerRun, input.controllerRun);
+  assert(
+    Array.isArray(document.sources) &&
+      document.sources.length >= 5 &&
+      document.sources.length <= 512,
+  );
+  const rows = new Map<string, { file: string; bytes: number; sha256: string }>();
+  let total = 0;
+  for (const row of document.sources) {
+    assert(row && typeof row === "object");
+    assert.deepEqual(Object.keys(row).sort(), ["bytes", "file", "sha256"]);
+    assert(
+      typeof row.file === "string" &&
+        /^packaging\/windows\/launcher\/[A-Za-z0-9_./-]+$/u.test(row.file),
+    );
+    assert(row.file.split("/").every((part: string) => part !== "." && part !== ".."));
+    assert(
+      row.file === launcherSourcePrefix + "Cargo.toml" ||
+        row.file === launcherSourcePrefix + "Cargo.lock" ||
+        row.file.endsWith(".rs") ||
+        row.file.startsWith(launcherSourcePrefix + ".cargo/"),
+    );
+    assert(Number.isSafeInteger(row.bytes) && row.bytes > 0 && row.bytes <= 16 * 1024 * 1024);
+    assert.match(row.sha256, /^[a-f0-9]{64}$/u);
+    assert(!rows.has(row.file.toLowerCase()));
+    rows.set(row.file.toLowerCase(), row);
+    total += row.bytes;
+    assert(total <= 64 * 1024 * 1024);
+  }
+  for (const file of [
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/main.rs",
+    "src/state_session.rs",
+    "src/runtime_lease.rs",
+  ])
+    assert(rows.has((launcherSourcePrefix + file).toLowerCase()));
+  return rows;
+}
+
+// The caller's authenticated package transfer owns provenance. These checks bind
+// its selected executable and every launcher source before invoking inspection.
+export function validateOpenClawInspectionInputs(input: {
+  buildBytes: Buffer;
+  sourceBytes: Buffer;
+  capabilityBytes: Buffer;
+  materializationBytes: Buffer;
+  launcherBytes: Buffer;
+  packagedBytes: Buffer;
+  installedBytes: Buffer;
+  sourceRevision: string;
+  controllerRun: string;
+  artifactSourceSnapshotBytes: Buffer;
+  artifactSourceSnapshotSha256: string;
+  controllerSourceRevision: string;
+}) {
+  const independentSources = validateOpenClawArtifactSourceSnapshot({
+    bytes: input.artifactSourceSnapshotBytes,
+    sha256: input.artifactSourceSnapshotSha256,
+    sourceRevision: input.sourceRevision,
+    controllerSourceRevision: input.controllerSourceRevision,
+    controllerRun: input.controllerRun,
+  });
+  const build = JSON.parse(input.buildBytes.toString("utf8"));
+  const source = JSON.parse(input.sourceBytes.toString("utf8"));
+  const capability = JSON.parse(input.capabilityBytes.toString("utf8"));
+  const materialized = JSON.parse(input.materializationBytes.toString("utf8"));
+  assert.match(input.sourceRevision, /^[a-f0-9]{40}$/u);
+  assert.match(input.controllerRun, /^[1-9]\d*:[1-9]\d*$/u);
+  assert.equal(build.schemaVersion, 1);
+  assert.equal(build.classification, "finished-native-runtime-package-build");
+  assert.equal(build.status, "candidate-built-for-installed-qualification");
+  assert.equal(build.sourceRevision, input.sourceRevision);
+  assert.equal(build.launcherBuildInputs?.file, "launcher-build-inputs.json");
+  assert.equal(build.launcherBuildInputs.bytes, input.sourceBytes.length);
+  assert.equal(build.launcherBuildInputs.sha256, digest(input.sourceBytes));
+  assert.equal(build.launcherCapabilitiesSha256, digest(input.capabilityBytes));
+  const copies = build.compiledArtifacts?.filter(
+    (row: any) => row.file === "compiled-launcher.json",
+  );
+  assert.equal(copies?.length, 1);
+  assert.equal(copies[0].sha256, digest(input.materializationBytes));
+  assert.equal(source.schemaVersion, 1);
+  assert.equal(source.classification, "package-selected-launcher-build-inputs");
+  assert.equal(source.sourceRevision, input.sourceRevision);
+  assert.equal(`${source.workflowRunId}:${source.workflowRunAttempt}`, input.controllerRun);
+  assert.equal(source.target, "aarch64-pc-windows-msvc");
+  assert.equal(source.rustToolchain, "1.95.0-aarch64-pc-windows-msvc");
+  assert.deepEqual(source.features, ["immutable-runtime"]);
+  assert.equal(source.lockedDependencies, true);
+  assert.equal(source.staticCrt, true);
+  for (const flag of ["commandSupportValidated", "invocationAdmitted", "installedAcceptance"])
+    assert.equal(source[flag], false);
+  assert(
+    input.launcherBytes.equals(input.packagedBytes) &&
+      input.launcherBytes.equals(input.installedBytes),
+    "The installed inspection helper differs from the package-selected launcher.",
+  );
+  const launcherSha256 = digest(input.launcherBytes);
+  for (const [property, file, bytes] of [
+    ["retainedLauncher", "build/compiled-native/NemoClaw.exe", input.launcherBytes],
+    ["packagedLauncher", "build/payload/bin/NemoClaw.exe", input.packagedBytes],
+    ["materialization", "compiled-launcher.json", input.materializationBytes],
+    ["capabilityObservation", "build/launcher-capabilities.json", input.capabilityBytes],
+  ] as const) {
+    assert.equal(source[property]?.file, file);
+    assert.equal(source[property].bytes, bytes.length);
+    assert.equal(source[property].sha256, digest(bytes));
+  }
+  assert.equal(materialized.schemaVersion, 1);
+  assert.equal(materialized.classification, "ci-native-compiled-artifact");
+  assert.equal(materialized.status, "materialized");
+  assert.equal(materialized.runtimeLaunchCopy, false);
+  for (const key of ["outputSha256", "sourceSha256Before", "sourceSha256After"])
+    assert.equal(materialized[key], launcherSha256);
+  assert.equal(materialized.outputStat?.bytes, input.launcherBytes.length);
+  assert.equal(materialized.outputStat?.links, 1);
+  assert.equal(capability.schemaVersion, 1);
+  assert.equal(capability.launcherSha256, launcherSha256);
+  assert.equal(capability.capabilities?.schemaVersion, 1);
+  assert.equal(capability.capabilities.kind, "native-runtime-capabilities");
+  assert.equal(capability.capabilities.immutableRuntime, true);
+  assert.equal(capability.capabilities.guardianEnabled, true);
+  assert.deepEqual(capability.capabilities.supportedCommands, ["native-state-inspection-v1"]);
+  assert.deepEqual(source.capabilityObservation.advertisedCommands, ["native-state-inspection-v1"]);
+  assert(
+    Array.isArray(source.sources) && source.sources.length >= 5 && source.sources.length <= 512,
+  );
+  const names = new Set<string>();
+  for (const row of source.sources) {
+    assert(
+      typeof row.file === "string" &&
+        /^packaging\/windows\/launcher\/(?:Cargo\.(?:toml|lock)|(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+)$/u.test(
+          row.file,
+        ),
+    );
+    assert(row.file.split("/").every((part: string) => part !== "." && part !== ".."));
+    assert(!names.has(row.file.toLowerCase()));
+    names.add(row.file.toLowerCase());
+    const expected = independentSources.get(row.file.toLowerCase());
+    assert(expected, "The package source is absent from the independently admitted inventory.");
+    assert.equal(row.file, expected.file);
+    assert.equal(row.bytes, expected.bytes);
+    assert.equal(
+      row.sha256,
+      expected.sha256,
+      "The package source differs from the authorized candidate.",
+    );
+  }
+  for (const file of [
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/main.rs",
+    "src/state_session.rs",
+    "src/runtime_lease.rs",
+  ])
+    assert(names.has(("packaging/windows/launcher/" + file).toLowerCase()));
+  assert.deepEqual(
+    [...names].sort(),
+    [...independentSources.keys()].sort(),
+    "The complete launcher source inventory differs from the admitted candidate snapshot.",
+  );
+  return {
+    launcherSha256,
+    packageBuildSha256: digest(input.buildBytes),
+    artifactSourceSnapshotSha256: input.artifactSourceSnapshotSha256,
+    controllerSourceRevision: input.controllerSourceRevision,
+  };
+}
+
+function ownedDirectoryIdentity(stateRoot: string) {
+  const stat = fs.lstatSync(stateRoot, { bigint: true });
+  assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.ino > 0n);
+  assert.equal(fs.realpathSync(stateRoot).toLowerCase(), stateRoot.toLowerCase());
+  return { stateRoot, device: String(stat.dev), inode: String(stat.ino) };
+}
+
+export async function inspectRetainedOpenClawState(
+  input: {
+    launcher: string;
+    expectedState: ReturnType<typeof ownedDirectoryIdentity>;
+    configurationPath: string;
+    configurationSha256?: string;
+    ownerHeld: (held: boolean) => void;
+  },
+  dependencies = {
+    acquire: acquireNativeStateInspection,
+    directoryIdentity: ownedDirectoryIdentity,
+    read: readAcceptanceBytes,
+  },
+) {
+  const owner = await dependencies.acquire(input.launcher, "openclaw");
+  input.ownerHeld(true);
+  try {
+    owner.assertHeld();
+    assert.equal(owner.present, true, "Restart cannot recreate missing agent data.");
+    const ownedState = dependencies.directoryIdentity(owner.stateRoot);
+    assert.deepEqual(ownedState, input.expectedState, "Restart cannot adopt replaced agent data.");
+    if (input.configurationSha256)
+      assert.equal(
+        digest(dependencies.read(input.configurationPath, 16 * 1024)),
+        input.configurationSha256,
+        "Acceptance changed the retained configuration.",
+      );
+    owner.assertHeld();
+    return ownedState;
+  } finally {
+    await owner.release();
+    input.ownerHeld(false);
+  }
+}
+
+export async function saveFreshOpenClawConfiguration(input: {
+  restart: boolean;
+  configuration: { agent: string; inference: string; endpoint: string };
+  secret: string;
+  command: (name: string, args: string[], stdin: string) => Promise<string>;
+  rememberBinding: (binding: string) => void;
+  mutationUnconfirmed: (unconfirmed: boolean) => void;
+}) {
+  const configuration = JSON.stringify(input.configuration);
+  if (input.restart) {
+    input.rememberBinding(nativeCredentialBinding(input.configuration));
+    input.mutationUnconfirmed(true);
+    await input.command(
+      "save-config-transaction",
+      ["--configure-native", "--agent", "openclaw", "--transaction"],
+      JSON.stringify({
+        configuration: input.configuration,
+        credentials: { inference: input.secret, services: {} },
+      }),
+    );
+    input.mutationUnconfirmed(false);
+    return;
+  }
+  const prepared = JSON.parse(
+    await input.command(
+      "prepare-config",
+      ["--configure-native", "--agent", "openclaw", "--prepare-all"],
+      configuration,
+    ),
+  );
+  assert.equal(prepared.schemaVersion, 1);
+  assert.match(prepared.inference, /^[a-f0-9]{64}$/u);
+  assert.deepEqual(prepared.services, {});
+  input.rememberBinding(prepared.inference);
+  await input.command(
+    "credential-write",
+    ["--credential-write", "nvidia", "--binding", prepared.inference],
+    input.secret,
+  );
+  await input.command("save-config", ["--configure-native", "--agent", "openclaw"], configuration);
+}
+
+export async function completeOpenClawRestartState(
+  input: {
+    restart: any;
+    owned: boolean;
+    preserve: boolean;
+    successful: boolean;
+    launcher: string;
+    ownedState?: ReturnType<typeof ownedDirectoryIdentity>;
+    configurationPath: string;
+    configurationSha256?: string;
+    binding?: string;
+    command: (name: string, args: string[], stdin?: string) => Promise<string>;
+    cleanupFailed: (action: string, error: unknown) => void;
+  },
+  dependencies = {
+    inspectRetained: inspectRetainedOpenClawState,
+    acquire: acquireNativeStateInspection,
+    removeRoot: acquireNativeStateRemoval,
+    configurationAbsent: openClawConfigurationAbsent,
+  },
+) {
+  const restart = input.restart;
+  restart.credentialMutationConfirmed = input.binding !== undefined && !restart.mutationUnconfirmed;
+  let disposition = openClawCleanupDisposition({
+    owned: input.owned,
+    processesStopped: restart.processesStopped,
+    stateOwnerReleased: restart.stateOwnerReleased,
+    backendCleanupConfirmed: restart.backendCleanupConfirmed,
+    mutationUnconfirmed: restart.mutationUnconfirmed,
+    preserve: input.preserve,
+    successful: input.successful,
+  });
+  const ownerHeld = (held: boolean) => {
+    restart.stateOwnerReleased = !held;
+  };
+  if (["remove-owned-state", "retained-for-warm-run"].includes(disposition)) {
+    try {
+      await dependencies.inspectRetained({
+        launcher: input.launcher,
+        expectedState: input.ownedState!,
+        configurationPath: input.configurationPath,
+        configurationSha256: input.configurationSha256,
+        ownerHeld,
+      });
+    } catch (error) {
+      disposition = "retain-unconfirmed";
+      input.cleanupFailed("owned state inspection before handoff or removal", error);
+    }
+  }
+  restart.cleanupDisposition = disposition;
+  if (disposition === "remove-owned-state") {
+    try {
+      if (input.binding === undefined) {
+        // No transaction started. Remove only the freshly claimed private root;
+        // ordinary agent removal also deletes service keys that we do not own.
+        assert.equal(input.configurationSha256, undefined);
+        assert(dependencies.configurationAbsent(input.configurationPath));
+        const owner = await dependencies.removeRoot(input.launcher, "openclaw");
+        ownerHeld(true);
+        try {
+          owner.assertHeld();
+          assert.equal(owner.stateRoot, input.ownedState?.stateRoot);
+          assert.equal(owner.removed, true);
+          owner.assertHeld();
+        } finally {
+          await owner.release();
+          ownerHeld(false);
+        }
+        restart.cleanupScope = "fresh-private-root-only-no-credentials-touched";
+      } else {
+        assert.match(input.binding, /^[a-f0-9]{64}$/u);
+        await input.command("remove-configured-data", [
+          "--remove-native-data",
+          "--agent",
+          "openclaw",
+        ]);
+        await input.command("credential-delete", [
+          "--credential-delete",
+          "nvidia",
+          "--binding",
+          input.binding,
+        ]);
+        restart.cleanupScope = "owned-configuration-state-and-credential";
+      }
+      const owner = await dependencies.acquire(input.launcher, "openclaw");
+      ownerHeld(true);
+      try {
+        owner.assertHeld();
+        assert.equal(owner.stateRoot, input.ownedState?.stateRoot);
+        assert.equal(owner.present, false);
+      } finally {
+        await owner.release();
+        ownerHeld(false);
+      }
+      assert(dependencies.configurationAbsent(input.configurationPath));
+      restart.cleanupDisposition = "removed-owned-state";
+    } catch (error) {
+      restart.cleanupDisposition = "retain-unconfirmed";
+      input.cleanupFailed("owned restart data and credential cleanup", error);
+    }
+  }
+  restart.configurationPreserved = restart.cleanupDisposition === "retained-for-warm-run";
+  if (restart.cleanupDisposition === "retain-unconfirmed")
+    input.cleanupFailed(
+      "State or mutation ownership is unconfirmed; data and credentials retained for recovery.",
+      new Error("Do not delete state or uninstall the owned helper before recovery."),
+    );
+}
+
+export function openClawConfigurationAbsent(configurationPath: string) {
+  return fs.lstatSync(path.dirname(configurationPath), { throwIfNoEntry: false }) === undefined;
+}
 
 export function childEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return qualificationEnvironment(source, true);
+}
+
+export function stripInheritedAcceptanceEnvironment(source: NodeJS.ProcessEnv) {
+  const environment = childEnvironment(source);
+  // Native lease helpers and Playwright inherit this environment. The cold key
+  // remains only in the controller variable and the transaction's stdin.
+  for (const name of Object.keys(source))
+    if (!Object.hasOwn(environment, name)) delete source[name];
+  return environment;
 }
 
 export function exactChatAddress(value: string, origin: string) {
@@ -192,11 +972,13 @@ export function recordedFileTool(
   throw new Error("The chat lacks the matching successful " + name + " file-tool execution.");
 }
 
+function redactKey(value: string, secret: string) {
+  return secret ? value.split(secret).join("[REDACTED]") : value;
+}
+
 export function sanitizedFailure(error: unknown, secret: string) {
   const bounded = (value: string, bytes: number) =>
-    Buffer.from(secret ? value.split(secret).join("[REDACTED]") : value)
-      .subarray(0, bytes)
-      .toString("utf8");
+    Buffer.from(redactKey(value, secret)).subarray(0, bytes).toString("utf8");
   const chain: { name: string; message: string; stack: string | null }[] = [];
   const seen = new Set<unknown>();
   let current = error;
@@ -378,11 +1160,20 @@ async function main() {
   const identity = JSON.parse(fs.readFileSync(argument("--runtime-identity"), "utf8"));
   const model = argument("--model", "nvidia/nemotron-3-super-120b-a12b");
   assert.match(model, /^[A-Za-z0-9._/-]{1,256}$/u);
+  const mode = openClawRestartMode(process.argv);
+  const controllerRun = `${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`;
+  const controllerSourceRevision = process.env.GITHUB_SHA ?? "";
+  const handoff = mode.restart ? argument("--restart-handoff") : "";
+  if (mode.restart) {
+    assert.match(controllerRun, /^[1-9]\d*:[1-9]\d*$/u);
+    assert.match(handoff, /^[a-f0-9]{64}$/u);
+  }
   const secret = process.env.NVIDIA_API_KEY || process.env.NVIDIA_INFERENCE_API_KEY || "";
-  assert.ok(
-    secret.startsWith("nvapi-") && secret.length <= 2048 && !/[\r\n\0]/u.test(secret),
-    "An authorized NVIDIA credential is required.",
-  );
+  if (!mode.reuse)
+    assert.ok(
+      secret.startsWith("nvapi-") && secret.length <= 2048 && !/[\r\n\0]/u.test(secret),
+      "An authorized NVIDIA credential is required.",
+    );
   const stateRoot = path.join(
     process.env.LOCALAPPDATA ?? "",
     "NVIDIA",
@@ -390,11 +1181,14 @@ async function main() {
     "agents",
     "openclaw",
   );
-  assert.equal(
-    fs.existsSync(stateRoot),
-    false,
-    "Acceptance requires an unconfigured disposable runner.",
-  );
+  if (!mode.reuse)
+    assert.equal(
+      mode.restart
+        ? openClawConfigurationAbsent(path.join(stateRoot, "native-windows.json"))
+        : !fs.existsSync(stateRoot),
+      true,
+      "Acceptance requires an unconfigured disposable runner.",
+    );
   const runnerTempValue = process.env.RUNNER_TEMP;
   assert(runnerTempValue && path.isAbsolute(runnerTempValue), "RUNNER_TEMP must be absolute.");
   const runnerTemp = path.resolve(runnerTempValue);
@@ -411,7 +1205,7 @@ async function main() {
     output,
     `observer-stop-${randomBytes(32).toString("hex")}.sentinel`,
   );
-  const environment = childEnvironment(process.env);
+  const environment = stripInheritedAcceptanceEnvironment(process.env);
   const launcher = path.join(install, "bin", "NemoClaw.exe");
   const ps = path.join(
     process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "",
@@ -420,7 +1214,7 @@ async function main() {
     "v1.0",
     "powershell.exe",
   );
-  const redact = (text: string) => text.split(secret).join("[REDACTED]");
+  const redact = (text: string) => redactKey(text, secret);
   const write = (name: string, value: unknown) =>
     fs.writeFileSync(path.join(output, name), redact(JSON.stringify(value, null, 2)) + "\n", {
       flag: "wx",
@@ -443,6 +1237,13 @@ async function main() {
   let latest: Observation | undefined, observerFailure: Error | undefined;
   let stopInvoked = false,
     stopped = false;
+  let configurationOwned = false,
+    stateOwnerReleased = true,
+    mutationUnconfirmed = false;
+  let ownedState: ReturnType<typeof ownedDirectoryIdentity> | undefined;
+  let previous: any, restart: any;
+  let configurationSha256: string | undefined;
+  let inspectionAdmission: ReturnType<typeof validateOpenClawInspectionInputs> | undefined;
   const logs = { agentStdout: "", agentStderr: "", observerStderr: "" };
   const observerStarted = performance.now();
   const observerRecords: { receivedMs: number; record: unknown }[] = [];
@@ -515,7 +1316,116 @@ async function main() {
     });
   };
   try {
-    const configuration = JSON.stringify({
+    if (mode.restart) {
+      phase = "inspection-input-admission";
+      const packageRoot = path.resolve(argument("--package-root"));
+      inspectionAdmission = validateOpenClawInspectionInputs({
+        buildBytes: readAcceptanceBytes(path.join(packageRoot, "immutable-package-build.json")),
+        sourceBytes: readAcceptanceBytes(path.join(packageRoot, "launcher-build-inputs.json")),
+        capabilityBytes: readAcceptanceBytes(
+          path.join(packageRoot, "build", "launcher-capabilities.json"),
+          4096,
+        ),
+        materializationBytes: readAcceptanceBytes(
+          path.join(packageRoot, "compiled-launcher.json"),
+          65536,
+        ),
+        launcherBytes: readAcceptanceBytes(
+          path.join(packageRoot, "build", "compiled-native", "NemoClaw.exe"),
+          32 * 1024 * 1024,
+        ),
+        packagedBytes: readAcceptanceBytes(
+          path.join(packageRoot, "build", "payload", "bin", "NemoClaw.exe"),
+          32 * 1024 * 1024,
+        ),
+        installedBytes: readAcceptanceBytes(launcher, 32 * 1024 * 1024),
+        sourceRevision: identity.sourceRevision,
+        controllerRun,
+        artifactSourceSnapshotBytes: readAcceptanceBytes(
+          argument("--artifact-source-snapshot"),
+          256 * 1024,
+        ),
+        artifactSourceSnapshotSha256: argument("--artifact-source-snapshot-sha256"),
+        controllerSourceRevision,
+      });
+      restart = {
+        schemaVersion: 1,
+        mode: mode.reuse ? "warm-reused" : "cold-preserved",
+        controllerRun,
+        handoff,
+        installation: install,
+        ...inspectionAdmission,
+        model,
+        provider: "nvidia",
+        endpoint: "https://integrate.api.nvidia.com/v1",
+        configurationReused: mode.reuse,
+        configurationPreserved: false,
+        stateOwnerReleased: true,
+        processesStopped: false,
+        cleanupDisposition: "not-owned",
+      };
+      if (mode.reuse) {
+        previous = JSON.parse(
+          readAcceptanceBytes(argument("--previous-acceptance"), 4 * 1024 * 1024).toString("utf8"),
+        );
+        validateOpenClawColdReceipt(previous, {
+          controllerRun,
+          handoff,
+          installation: install,
+          runtime: identity,
+          ...inspectionAdmission,
+          model,
+        });
+        binding = nativeCredentialBinding({
+          agent: "openclaw",
+          inference: "nvidia",
+          endpoint: restart.endpoint,
+        });
+        phase = "retained-state-inspection";
+        ownedState = await inspectRetainedOpenClawState({
+          launcher,
+          expectedState: previous.restart.ownedState,
+          configurationPath: path.join(stateRoot, "native-windows.json"),
+          configurationSha256: previous.restart.configurationSha256,
+          ownerHeld: (held) => {
+            stateOwnerReleased = !held;
+          },
+        });
+        configurationSha256 = previous.restart.configurationSha256;
+        configurationOwned = true;
+      } else {
+        phase = "claim-fresh-state";
+        const owner = await acquireNativeStateConfiguration(launcher, "openclaw");
+        stateOwnerReleased = false;
+        try {
+          owner.assertHeld();
+          assert.equal(owner.created, true, "Fresh acceptance cannot adopt existing agent data.");
+          ownedState = ownedDirectoryIdentity(owner.stateRoot);
+          configurationOwned = true;
+          write("owned-openclaw-state.json", {
+            schemaVersion: 1,
+            controllerRun,
+            handoff,
+            ...inspectionAdmission,
+            installation: install,
+            ownedState,
+            credentialBinding: nativeCredentialBinding({
+              agent: "openclaw",
+              inference: "nvidia",
+              endpoint: restart.endpoint,
+            }),
+            classification: "openclaw-restart-owned-state",
+            installedAcceptance: false,
+          });
+          owner.assertHeld();
+        } finally {
+          await owner.release();
+          stateOwnerReleased = true;
+        }
+      }
+      restart.ownedState = ownedState;
+    }
+    const configurationRecord = {
       schemaVersion: 1,
       classification: "nemoclaw-native-windows-agent-configuration",
       agent: "openclaw",
@@ -525,28 +1435,33 @@ async function main() {
       credentialStored: true,
       profile: "personal",
       options: {},
-    });
-    const prepared = JSON.parse(
-      await command(
-        "prepare-config",
-        ["--configure-native", "--agent", "openclaw", "--prepare-all"],
-        configuration,
-      ),
-    );
-    assert.equal(prepared.schemaVersion, 1);
-    assert.match(prepared.inference, /^[a-f0-9]{64}$/u);
-    assert.deepEqual(prepared.services, {});
-    binding = prepared.inference;
-    await command(
-      "credential-write",
-      ["--credential-write", "nvidia", "--binding", binding!],
-      secret,
-    );
-    await command("save-config", ["--configure-native", "--agent", "openclaw"], configuration);
-    const saved = JSON.parse(fs.readFileSync(path.join(stateRoot, "native-windows.json"), "utf8"));
+    };
+    if (!mode.reuse) {
+      phase = "configure";
+      await saveFreshOpenClawConfiguration({
+        restart: mode.restart,
+        configuration: configurationRecord,
+        secret,
+        command,
+        rememberBinding: (value) => {
+          binding = value;
+        },
+        mutationUnconfirmed: (value) => {
+          mutationUnconfirmed = value;
+        },
+      });
+    }
+    const savedBytes = readAcceptanceBytes(path.join(stateRoot, "native-windows.json"), 16 * 1024);
+    const saved = JSON.parse(savedBytes.toString("utf8"));
     assert.equal(saved.inference, "nvidia");
     assert.equal(saved.model, model);
     assert.equal(saved.credentialStored, true);
+    if (mode.restart) {
+      assert.deepEqual(saved, configurationRecord);
+      configurationSha256 ??= digest(savedBytes);
+      assert.equal(digest(savedBytes), configurationSha256);
+      restart.configurationSha256 = configurationSha256;
+    }
     const lease = JSON.parse(
       await command("installed-identity", ["--runtime-session", "openclaw"], "release\n"),
     );
@@ -558,6 +1473,13 @@ async function main() {
       "nodeVersion",
     ])
       assert.equal(lease[key], identity[key]);
+    if (mode.restart) {
+      assert.equal(lease.schemaVersion, 1);
+      assert.equal(lease.kind, "native-runtime-session");
+      assert.equal(lease.agent, "openclaw");
+      assert.equal(lease.integrity, "installer-sealed-content");
+      assert.equal(lease.leaseHeld, true);
+    }
     phase = "launch";
     agent = spawn(
       launcher,
@@ -728,7 +1650,14 @@ async function main() {
     browser = activeBrowser;
     const page = await activeBrowser.newPage({ viewport: { width: 1440, height: 900 } });
     failurePage = page;
-    await page.goto(origin + "/chat", { waitUntil: "domcontentloaded", timeout: 90_000 });
+    await page.goto(
+      origin +
+        "/chat" +
+        (mode.reuse
+          ? "?session=" + encodeURIComponent(previous.restart.retainedConversation.sessionKey)
+          : ""),
+      { waitUntil: "domcontentloaded", timeout: 90_000 },
+    );
     await page.waitForURL((url: URL) => exactChatAddress(url.href, origin!), { timeout: 30_000 });
     const composer = page.locator(".agent-chat__composer-combobox > textarea").first();
     await composer.waitFor({ state: "visible", timeout: 90_000 });
@@ -750,6 +1679,24 @@ async function main() {
       typeof sessionKey === "string" && /^agent:main:[A-Za-z0-9:._-]+$/u.test(sessionKey),
       "The visible chat session identity is missing.",
     );
+    if (mode.reuse) {
+      phase = "conversation-retention";
+      assert.equal(sessionKey, previous.restart.retainedConversation.sessionKey);
+      const retained = openClawTranscriptIdentity(
+        sessionKey,
+        await rpc("chat.history", { sessionKey, limit: 100, maxChars: 20000 }),
+      );
+      assert.deepEqual(
+        retained,
+        previous.restart.retainedConversation,
+        "The prior conversation changed or disappeared across restart.",
+      );
+      await page
+        .getByText(previous.results.response.visibleReply, { exact: true })
+        .last()
+        .waitFor({ state: "visible", timeout: 30_000 });
+      restart.restoredConversation = retained;
+    }
     const waitForReply = async (prompt: string, expected: string) => {
       const diagnosticStop = new AbortController();
       const terminal = (async () => {
@@ -843,6 +1790,8 @@ async function main() {
     await composer.press("Enter");
     await waitForReply(toolPrompt, completed);
     const history = await rpc("chat.history", { sessionKey, limit: 100, maxChars: 20000 });
+    assertRecordedOpenClawReply(history, responsePrompt, reply);
+    assertRecordedOpenClawReply(history, toolPrompt, completed);
     results["tool-write"] = recordedFileTool(history, "write", file, nonce);
     results["tool-read"] = recordedFileTool(history, "read", file, nonce);
     results["tool-shell"] = recordedExec(history, shellCommand, "NEMOCLAW_SHELL_" + nonce);
@@ -853,6 +1802,9 @@ async function main() {
     );
     await page.screenshot({ path: path.join(output, "tool-response.png") });
     results.toolsElapsedMs = performance.now() - toolsStarted;
+    if (mode.restart)
+      restart.retainedConversation = openClawTranscriptIdentity(sessionKey, history);
+    if (mode.reuse) assertRetainedOpenClawPrefix(previous.restart.retainedConversation, history);
     results.browser = {
       version: activeBrowser.version(),
       realDashboard: true,
@@ -975,27 +1927,48 @@ async function main() {
     }
     try {
       write("owned-session-observer.json", observerSnapshot());
-      results.nativeSessionDiagnostics = await retainNativeSessionDiagnostics(
-        stateRoot,
-        async (directory) => {
-          const reply = await captureOwned(
-            launcher,
-            ["--native-ui-file-owner", directory],
-            environment,
-            "read\tready\nclose\n",
-            10_000,
-          );
-          assert.equal(reply.failure, null);
-          assert.equal(reply.exitCode, 0);
-          return decodeDiagnosticOwnerRead(reply.stdout);
-        },
-        write,
-        secret,
-      );
+      if (mode.restart && !configurationOwned)
+        results.nativeSessionDiagnostics = { status: "unowned-not-read", retained: [] };
+      else
+        results.nativeSessionDiagnostics = await retainNativeSessionDiagnostics(
+          stateRoot,
+          async (directory) => {
+            const reply = await captureOwned(
+              launcher,
+              ["--native-ui-file-owner", directory],
+              environment,
+              "read\tready\nclose\n",
+              10_000,
+            );
+            assert.equal(reply.failure, null);
+            assert.equal(reply.exitCode, 0);
+            return decodeDiagnosticOwnerRead(reply.stdout);
+          },
+          write,
+          secret,
+        );
     } catch (error) {
       results.nativeSessionDiagnosticFailure = sanitizedFailure(error, secret);
     }
-    if (binding) {
+    if (mode.restart && restart) {
+      restart.processesStopped = acceptanceProcessesStopped(agent, observer);
+      restart.stateOwnerReleased = stateOwnerReleased;
+      restart.mutationUnconfirmed = mutationUnconfirmed;
+      restart.backendCleanupConfirmed = !agent || results.sessionCleanup !== undefined;
+      await completeOpenClawRestartState({
+        restart,
+        owned: configurationOwned,
+        preserve: mode.preserve,
+        successful: primary === undefined && cleanupErrors.length === 0,
+        launcher,
+        ownedState,
+        configurationPath: path.join(stateRoot, "native-windows.json"),
+        configurationSha256,
+        binding,
+        command,
+        cleanupFailed,
+      });
+    } else if (binding) {
       try {
         await command("remove-configured-data", ["--remove-native-data", "--agent", "openclaw"]);
       } catch (error) {
@@ -1017,9 +1990,10 @@ async function main() {
   if (cleanupErrors.length) primary ??= new Error("Installed acceptance cleanup did not finish.");
   try {
     write("installed-openclaw-acceptance.json", {
-      schemaVersion: 1,
+      schemaVersion: mode.restart ? 2 : 1,
       classification: "installed-compiled-openclaw-acceptance",
       runtime: identity,
+      ...(mode.restart ? { restart } : {}),
       verdict: primary === undefined ? "pass" : "fail",
       failedStage: primary === undefined ? null : phase,
       error:
@@ -1045,5 +2019,18 @@ async function main() {
     );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  await main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv.includes("--capture-artifact-source")) {
+    const snapshot = captureOpenClawArtifactSources({
+      artifactSourceRoot: argument("--artifact-source-root"),
+      controllerSourceRoot: argument("--controller-source-root"),
+      artifactSourceRevision: argument("--artifact-source-revision"),
+      controllerSourceRevision: argument("--controller-source-revision"),
+      controllerRun: argument("--controller-run"),
+    });
+    const bytes = Buffer.from(JSON.stringify(snapshot) + "\n");
+    assert(bytes.length <= 256 * 1024, "The candidate source snapshot exceeds its bound.");
+    fs.writeFileSync(argument("--output"), bytes, { flag: "wx" });
+    process.stdout.write(digest(bytes) + "\n");
+  } else await main();
+}

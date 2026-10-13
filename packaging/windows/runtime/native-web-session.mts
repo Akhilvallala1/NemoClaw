@@ -294,14 +294,24 @@ export async function openNativeWebSession(
           );
         // A startup error is a visible notice after backend cleanup. Let the user
         // read/open its diagnostic file and close the window deliberately.
-        const timer = setTimeout(() => child.kill(), cleanupSucceeded ? 5000 : 24 * 60 * 60_000);
+        let timedOut = false;
+        const timer = setTimeout(
+          () => {
+            timedOut = true;
+            child.kill();
+          },
+          cleanupSucceeded ? 5000 : 24 * 60 * 60_000,
+        );
+        let exitCode: number;
         try {
-          await closed;
+          exitCode = await closed;
         } finally {
           clearTimeout(timer);
         }
         if (failure) throw failure;
         if (browserFailure) throw browserFailure;
+        if (timedOut || (cleanupSucceeded && exitCode !== 0))
+          throw new Error("The native web session control did not close successfully.");
       })();
       return await completion;
     },

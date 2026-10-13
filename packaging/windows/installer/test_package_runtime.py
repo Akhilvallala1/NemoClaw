@@ -130,6 +130,42 @@ class PackageComposition(unittest.TestCase):
             self.compose()
         self.assertFalse(self.output.exists())
 
+    def test_composition_retains_declared_inspection_without_granting_acceptance(self):
+        value = json.loads(self.capabilities.read_text())
+        value["capabilities"]["supportedCommands"] = ["native-state-inspection-v1"]
+        self.capabilities.write_text(json.dumps(value))
+        self.compose()
+        inputs = json.loads((self.output / "immutable-package-inputs.json").read_text())
+        self.assertEqual(inputs["launcher"], value)
+        self.assertFalse(inputs["installedAcceptance"])
+        self.assertFalse(inputs["completePackage"])
+        self.assertEqual(package.validate_launcher_capabilities(value, value["launcherSha256"]),
+                         ["native-state-inspection-v1"])
+
+    def test_capability_validation_rejects_unknown_commands_and_untyped_guardians(self):
+        original = json.loads(self.capabilities.read_text())
+        self.assertEqual(package.validate_launcher_capabilities(original, original["launcherSha256"]), [])
+        mutations = [
+            {"supportedCommands": None}, {"supportedCommands": []},
+            {"supportedCommands": "native-state-inspection-v1"},
+            {"supportedCommands": ["native-state-inspection-v1", "native-state-inspection-v1"]},
+            {"supportedCommands": ["state-remove"]}, {"unknown": True},
+            {"schemaVersion": True}, {"schemaVersion": 1.0},
+            {"immutableRuntime": 1}, {"guardianEnabled": "true"},
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                value = {**original, "capabilities": {**original["capabilities"], **mutation}}
+                self.capabilities.write_text(json.dumps(value))
+                with self.assertRaisesRegex(ValueError, "connected immutable guardian"):
+                    self.compose()
+                self.assertFalse(self.output.exists())
+        for value in (None, [], {**original, "schemaVersion": True},
+                      {**original, "launcherSha256": "b" * 64},
+                      {**original, "capabilities": None}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "connected immutable guardian"):
+                package.validate_launcher_capabilities(value, original["launcherSha256"])
+
     def test_build_presence_does_not_become_qualification(self):
         document, references = package.availability(self.assembly, None)
         self.assertFalse(document["bundledLocalInferenceAvailable"])

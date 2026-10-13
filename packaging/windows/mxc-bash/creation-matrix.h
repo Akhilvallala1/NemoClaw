@@ -98,7 +98,10 @@ void run_case(const wchar_t* image,const char* architecture,const char* context,
 void run(const std::wstring& nonce,bool contained,const Identity* identityValue=nullptr){
   require(lowerHex(nonce,24),"creation-matrix-nonce");
   require(!GetModuleHandleW(L"NemoClawMsysCompat-arm64.dll")&&!GetModuleHandleW(L"NemoClawMsysCompat-x64.dll"),"creation-caller-shimmed");
-  const auto initial=parent();require(!contained||(initial.jobKnown&&initial.inJob&&initial.uiKnown&&initial.ui==0x3bf&&initial.flags==0x2000),"creation-caller-MXC-job");
+  // Native MXC carries UI policy in PSEC, not this cleanup job. The host
+  // controller independently requires the attached full PSEC policy record.
+  // A zero job UI mask alone must never establish UI-policy enforcement.
+  const auto initial=parent();require(!contained||(initial.jobKnown&&initial.inJob&&initial.uiKnown&&initial.ui==0&&initial.flags==0x2000),"creation-caller-native-MXC-job");
   std::array<wchar_t,4096> image{};const DWORD length=GetModuleFileNameW(nullptr,image.data(),static_cast<DWORD>(image.size()));require(length&&length<image.size(),"creation-matrix-image");std::wstring directory=image.data();const auto slash=directory.find_last_of(L'\\');require(slash!=std::wstring::npos,"creation-matrix-directory");directory.resize(slash+1);
   HANDLE token=nullptr,restricted=nullptr;DWORD tokenError=0,restrictedError=0,app=0;std::wstring sid;Close closed;
   if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY|TOKEN_DUPLICATE|TOKEN_ASSIGN_PRIMARY,&token))tokenError=GetLastError();

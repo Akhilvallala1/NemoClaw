@@ -16,10 +16,12 @@ foreach($value in @($SourceRoot,$output,$ToolchainReceipt,$RustBinDirectory)){if
 if(Test-Path -LiteralPath $output){throw 'The MXC inspection build output must be fresh.'}
 [void][IO.Directory]::CreateDirectory($output)
 $build=Join-Path $output 'build';[void][IO.Directory]::CreateDirectory($build)
-$commit='7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a'
-$sourceHash='814659a1db0b4cd06854066705f274bba2b2702f563735d69ba72a407c0ad258'
+$commit='7cd00d1ee6af9208322c924ef64e5113f6704639'
+$sourceHash='9467669fda03a7ad0000a7bc9e0b0d1cab44b1979ee437dd96e8b93646e18029'
+$sourceBytes=6545666
 $patch=Join-Path $SourceRoot 'packaging/windows/mxc-bash/mxc-token-inspection.patch'
-$record=[ordered]@{schemaVersion=1;classification='mxc-owned-token-inspection-build';status='failed';sourceCommit=$commit;sourceSha256=$sourceHash;sourceBytes=6168990;patchSha256=$null;candidateRevision=$env:GITHUB_SHA;tokenQueryRepairSupported=$true;tokenAccessMode='owned-child-query-only';files=@()}
+# Native owner builds require fresh native qualification. Legacy receipts cannot admit them.
+$record=[ordered]@{schemaVersion=2;classification='mxc-native-owned-token-inspection-build';status='failed';sourceCommit=$commit;sourceSha256=$sourceHash;sourceBytes=$sourceBytes;patchSha256=$null;candidateRevision=$env:GITHUB_SHA;tokenQueryRepairSupported=$true;tokenAccessMode='owned-child-query-only';nativeOwnerIdentity='held-primary-appcontainer-token';runtimeExecuted=$false;qualified=$false;files=@()}
 $failure=$null
 function File-Hash([string]$Path){(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
 try{
@@ -38,7 +40,7 @@ try{
  $archive=Join-Path $build 'mxc-source.tar.gz'
  $url='https://codeload.github.com/microsoft/mxc/tar.gz/'+$commit
  Invoke-WebRequest -Uri $url -OutFile $archive -TimeoutSec 180
- if((Get-Item -LiteralPath $archive).Length -ne 6168990 -or (File-Hash $archive) -cne $sourceHash){throw 'The pinned upstream MXC archive changed.'}
+ if((Get-Item -LiteralPath $archive).Length -ne $sourceBytes -or (File-Hash $archive) -cne $sourceHash){throw 'The pinned upstream MXC archive changed.'}
  $record['sourceUrl']=$url
  & (Join-Path ([Environment]::SystemDirectory) 'tar.exe') -xzf $archive -C $build
  if($LASTEXITCODE -ne 0){throw 'MXC source extraction failed.'}

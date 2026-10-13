@@ -225,6 +225,16 @@ jobs:
           ref: ${{ inputs.workflow_sha }}
           path: controller
           persist-credentials: false
+      - name: Check out OpenClaw candidate source as comparison data
+        if: ${{ inputs.agent == 'openclaw' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NVIDIA/NemoClaw
+          ref: ${{ inputs.candidate_sha }}
+          path: artifact-source
+          persist-credentials: false
+          submodules: false
+          lfs: false
       - name: Restore exact same-run installer cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -301,6 +311,12 @@ jobs:
             passed = $true
             files = $files
           } | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+      - name: Verify retained-state qualifier controls from trusted main
+        shell: pwsh
+        run: |
+          & $env:TRUSTED_CONTROLLER_NODE --experimental-strip-types --no-warnings --test `
+            "$env:GITHUB_WORKSPACE\controller\packaging\windows\installer\qualify-installed-openclaw.test.mts"
+          if ($LASTEXITCODE -ne 0) { throw 'The trusted OpenClaw retained-state qualifier controls failed.' }
       - name: Exercise installed preview, real inference and owned cleanup
         # The main-resident controller strips inherited keys from product children.
         # Full acceptance then deliberately supplies a test key through installed
@@ -317,7 +333,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\controller\packaging\windows\installer\run-installed-acceptance.ps1" `
             -SourceRoot "$env:GITHUB_WORKSPACE\controller" -WorkDirectory "$env:RUNNER_TEMP\finished-windows" `
             -ProductVersion $env:PRODUCT_VERSION -ArtifactSourceRevision $env:CANDIDATE_SHA -Mode current-build `
-            -Agent $env:SELECTED_AGENT -ControllerNodePath $env:TRUSTED_CONTROLLER_NODE
+            -Agent $env:SELECTED_AGENT -ControllerNodePath $env:TRUSTED_CONTROLLER_NODE -ArtifactSourceRoot "$env:GITHUB_WORKSPACE\artifact-source"
       - name: Stage only non-runnable full acceptance evidence
         id: full_evidence
         if: ${{ always() }}
@@ -329,7 +345,7 @@ jobs:
           $work = "$env:RUNNER_TEMP\finished-windows"
           $inputs = @(
             "$work\installed-smoke", "$work\installed-acceptance",
-            "$work\installed-acceptance-warm", "$work\installed-stage-timings.json"
+            "$work\installed-acceptance-warm", "$work\installed-stage-timings.json", "$work\openclaw-artifact-source.json"
           )
           foreach ($pattern in @("$work\*.log", "$work\package\*.json")) {
             $inputs += @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | ForEach-Object FullName)

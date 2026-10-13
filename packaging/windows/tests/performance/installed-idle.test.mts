@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
 import { once } from "node:events";
 import { test } from "node:test";
 import {
@@ -224,7 +225,7 @@ function hermesFixture() {
         "\\hermes-agent\\.hermes-runtime\\python\\cpython-3.11.16-windows-aarch64-none\\python.exe",
       113,
     ],
-    ["hermes-tui-node-115", root + "\\node\\node.exe", 114],
+    ["hermes-contained-node-115", install + "\\bin\\node.exe", 114],
   ] as const;
   const frames = value.frames.map((frame) => ({
     ...frame,
@@ -280,6 +281,10 @@ test("Hermes idle plan and summary retain its sealed executor and real Python co
       .executable.includes("\\hermes\\mxc-compat\\"),
   );
   assert.equal(summary.targets.length, 15);
+  assert.equal(
+    summary.targets.find((row) => row.role === "hermes-contained-node-115")!.executable,
+    summary.targets.find((row) => row.role === "contained-node")!.executable,
+  );
   assert.throws(() =>
     validateIdlePlan({ ...checked, stateRoot: "D:\\NemoClawState-S-1-5-21-1-2-3-1001-hermes" }),
   );
@@ -293,6 +298,11 @@ test("Hermes idle rejects stock MXC, absent Python, foreign images and broken pa
     "outside-contained-chain",
     "parent-generation",
     "pid-reuse",
+    "outside-node-chain",
+    "foreign-node",
+    "missing-launcher",
+    "reordered-anchors",
+    "short-node-sample",
   ]) {
     const { checked, result } = hermesFixture();
     if (kind === "stock-executor")
@@ -311,6 +321,112 @@ test("Hermes idle rejects stock MXC, absent Python, foreign images and broken pa
     if (kind === "parent-generation") edge.parentCreationFileTime = "1";
     if (kind === "pid-reuse")
       result.frames[1].processes.find((row) => row.processId === 114)!.creationFileTime = "999";
+    if (kind === "outside-node-chain")
+      result.processRelations.find((row) => row.processId === 115)!.parentProcessId = 101;
+    if (kind === "foreign-node")
+      for (const frame of result.frames)
+        frame.processes.find((row) => row.processId === 115)!.executable = "C:\\HostNode\\node.exe";
+    if (kind === "missing-launcher")
+      for (const frame of result.frames)
+        frame.processes = frame.processes.filter((row) => row.role !== "hermes-launcher");
+    if (kind === "reordered-anchors")
+      result.processRelations.find((row) => row.processId === 111)!.parentProcessId = 109;
+    if (kind === "short-node-sample")
+      result.frames[1].processes.find((row) => row.processId === 115)!.capturedTicks = "2000000";
     assert.throws(() => summarizeIdle(result, checked), kind);
   }
 });
+
+test(
+  "actual PowerShell selector separates same-image descendants and rejects ambiguous roots",
+  {
+    skip: !process.env.NEMOCLAW_TEST_PWSH && process.platform !== "win32",
+  },
+  () => {
+    const source = fs.readFileSync(new URL("./sample-installed-idle.ps1", import.meta.url), "utf8");
+    const encode = (value: string) => Buffer.from(value, "utf8").toString("base64");
+    const install = plan.installRoot;
+    const runtime = install + "\\runtimes\\" + plan.runtimeId + "\\hermes";
+    const gateway = {
+      ProcessId: 1,
+      ParentProcessId: 0,
+      ExecutablePath: install + "\\bin\\openshell-gateway.exe",
+    };
+    const executor = {
+      ProcessId: 2,
+      ParentProcessId: 1,
+      ExecutablePath: runtime + "\\mxc-compat\\wxc-exec.exe",
+    };
+    const launcher = {
+      ProcessId: 3,
+      ParentProcessId: 2,
+      ExecutablePath: runtime + "\\mxc-compat\\NemoClawMsysLauncher.exe",
+    };
+    const worker = {
+      ProcessId: 4,
+      ParentProcessId: 3,
+      ExecutablePath: install + "\\bin\\node.exe",
+    };
+    const python = {
+      ProcessId: 5,
+      ParentProcessId: 4,
+      ExecutablePath: runtime + "\\hermes-agent\\venv\\Scripts\\python.exe",
+    };
+    const nested = { ProcessId: 6, ParentProcessId: 5, ExecutablePath: worker.ExecutablePath };
+    const candidate = { row: worker, chain: [gateway, executor, launcher] };
+    const descendant = { row: nested, chain: [gateway, executor, launcher, worker, python] };
+    const cases = [
+      { guests: [candidate, descendant], accepted: true },
+      { guests: [candidate, { ...candidate, row: { ...worker, ProcessId: 7 } }], accepted: false },
+      { guests: [descendant], accepted: false },
+      { guests: [{ ...candidate, chain: [gateway, launcher, executor] }], accepted: false },
+      { guests: [{ ...candidate, chain: [gateway, launcher] }], accepted: false },
+      {
+        guests: [{ ...candidate, row: { ...worker, ExecutablePath: "C:\\Foreign\\node.exe" } }],
+        accepted: false,
+      },
+      { guests: [{ ...candidate, row: { ...worker, ParentProcessId: 1 } }], accepted: false },
+      {
+        guests: [{ ...candidate, chain: [{ ...gateway, ProcessId: 8 }, executor, launcher] }],
+        accepted: false,
+      },
+    ];
+    // Load only the production pure selector functions. Never execute the sampler,
+    // its CI guard, CIM discovery, native counters or process-handle operations.
+    const script = `
+$ErrorActionPreference='Stop'
+$source=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encode(source)}'))
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Sampler parse failed'}
+foreach($name in @('Require','Same-Path','One','Hermes-Worker')) {
+  $functions=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true))
+  if($functions.Count -ne 1){throw 'Selector function missing or ambiguous'}
+  Invoke-Expression $functions[0].Extent.Text
+}
+$cases=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encode(JSON.stringify(cases))}')) | ConvertFrom-Json
+$count=0
+foreach($case in $cases) {
+  $accepted=$false; $selected=$null
+  try { $selected=Hermes-Worker $case.guests '${worker.ExecutablePath}' '${launcher.ExecutablePath}' '${executor.ExecutablePath}' 1; $accepted=$true } catch {}
+  if($accepted -ne $case.accepted){throw 'Wrong worker selection result'}
+  if($accepted -and $selected.row.ProcessId -ne 4){throw 'Nested Node selected as worker'}
+  $count++
+}
+[Console]::WriteLine($count)
+`;
+    const result = spawnSync(
+      process.env.NEMOCLAW_TEST_PWSH ?? "pwsh.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))",
+      ],
+      { input: script, encoding: "utf8", timeout: 10000, maxBuffer: 128 * 1024 },
+    );
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), String(cases.length));
+  },
+);

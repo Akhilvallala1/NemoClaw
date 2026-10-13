@@ -10,6 +10,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <sddl.h>
+#include <string>
 #include "namespace-security.h"
 #endif
 
@@ -227,6 +228,31 @@ int main() {
     PSID user = nullptr, container = nullptr;
     check(ConvertStringSidToSidW(L"S-1-5-21-1-2-3-1000", &user) &&
           ConvertStringSidToSidW(L"S-1-15-2-1-2-3-4-5-6-7", &container), "windows-test-identity-sids");
+    const std::wstring markerOwner = L"O:S-1-5-21-1-2-3-1000";
+    const std::wstring markerUser = L"(A;;0x001f0003;;;S-1-5-21-1-2-3-1000)";
+    const std::wstring markerContainer = L"(A;;0x00120001;;;S-1-15-2-1-2-3-4-5-6-7)";
+    const std::wstring markerLabel = L"S:(ML;;NW;;;ME)";
+    const std::wstring markers[] = {
+        markerOwner + L"D:P" + markerUser + markerContainer + markerLabel,
+        markerOwner + L"D:P" + markerUser + markerContainer + L"S:(ML;;NW;;;LW)",
+        markerOwner + L"D:P" + markerUser + markerContainer,
+        markerOwner + L"D:NO_ACCESS_CONTROL" + markerLabel,
+        markerOwner + L"D:P" + markerUser + L"(A;;0x00120003;;;S-1-15-2-1-2-3-4-5-6-7)" + markerLabel,
+        L"O:SYD:P" + markerUser + markerContainer + markerLabel,
+        markerOwner + L"D:" + markerUser + markerContainer + markerLabel,
+        markerOwner + L"D:P" + markerContainer + markerUser + markerLabel,
+        markerOwner + L"D:P" + markerUser + markerContainer + L"(A;;GA;;;WD)" + markerLabel,
+    };
+    for (size_t index = 0; index < sizeof(markers) / sizeof(markers[0]); ++index) {
+        PSECURITY_DESCRIPTOR descriptor = nullptr;
+        check(ConvertStringSecurityDescriptorToSecurityDescriptorW(markers[index].c_str(), SDDL_REVISION_1,
+            &descriptor, nullptr) != FALSE, "windows-native-ui-marker-fixture");
+        const bool admitted = native_ui_marker_descriptor(descriptor, user, container);
+        const bool wrongIdentity = native_ui_marker_descriptor(descriptor, world, container) ||
+            native_ui_marker_descriptor(descriptor, user, world);
+        LocalFree(descriptor);
+        check(admitted == (index == 0) && !wrongIdentity, "windows-native-ui-marker-exact-authority-only");
+    }
     ScopedDescriptor scoped = {};
     const char* failedStage = "not-cleared";
     check(make_scoped_descriptor(user, container, scoped, &failedStage) && failedStage == nullptr,

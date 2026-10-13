@@ -58,6 +58,13 @@ fn readiness(agent: &str, root: &str, created: bool, configuration: bool) -> Str
     )
 }
 
+fn inspection_readiness(agent: &str, root: &str, present: bool) -> String {
+    format!(
+        "{{\"schemaVersion\":1,\"kind\":\"native-state-inspection\",\"agent\":\"{agent}\",\"stateRoot\":\"{}\",\"present\":{present},\"leaseHeld\":true}}\n",
+        root.replace('\\', "\\\\")
+    )
+}
+
 #[cfg(windows)]
 mod native {
     use std::ffi::c_void;
@@ -412,13 +419,24 @@ mod native {
             descriptor: security.0,
             inherit_handle: 0,
         };
-        let root = wide(root);
-        let created = unsafe { CreateDirectoryW(root.as_ptr(), &attributes) } != 0;
+        let root_path = wide(root);
+        let created = unsafe { CreateDirectoryW(root_path.as_ptr(), &attributes) } != 0;
         if !created && std::io::Error::last_os_error().raw_os_error() != Some(183) {
             return Err(os_error(
                 "The private native state directory could not be created",
             ));
         }
+        let handle = open_state_directory(root, sid, false)?
+            .ok_or_else(|| "The private native state directory disappeared.".to_string())?;
+        Ok((handle, created))
+    }
+
+    fn open_state_directory(
+        root: &str,
+        sid: &str,
+        allow_absent: bool,
+    ) -> Result<Option<Handle>, String> {
+        let root = wide(root);
         // Inspect the directory itself, never a reparse target. Do not share
         // write/delete handles: the root cannot be replaced or turned into a
         // reparse point while the lease is held. Child data IO and WRITE_DAC
@@ -437,6 +455,10 @@ mod native {
             )
         };
         if raw.is_null() || raw as isize == -1 {
+            if allow_absent && matches!(std::io::Error::last_os_error().raw_os_error(), Some(2 | 3))
+            {
+                return Ok(None);
+            }
             return Err(os_error(
                 "The native state directory could not be opened safely",
             ));
@@ -468,7 +490,7 @@ mod native {
             );
         }
         verify_security(&handle, sid, true)?;
-        Ok((handle, created))
+        Ok(Some(handle))
     }
 
     fn windows_drive() -> Result<char, String> {
@@ -506,6 +528,29 @@ mod native {
             Ok(0) => verify_security(&directory, &sid, true),
             Ok(_) => Err("The native state session received unexpected input.".into()),
             Err(_) => Err("The native state session input failed.".into()),
+        }
+    }
+
+    pub(super) fn inspect(agent: &str) -> Result<(), String> {
+        super::validate_session_agent(agent, true)?;
+        let sid = current_sid()?;
+        let root = super::state_location(windows_drive()?, &sid, agent)?;
+        let _leases = acquire_owner(&sid, agent, true)?;
+        let directory = open_state_directory(&root, &sid, true)?;
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(super::inspection_readiness(agent, &root, directory.is_some()).as_bytes())
+            .and_then(|_| stdout.flush())
+            .map_err(|_| "The native state inspection receipt could not be written.")?;
+        drop(stdout);
+        let mut byte = [0u8; 1];
+        match std::io::stdin().lock().read(&mut byte) {
+            Ok(0) => match directory {
+                Some(directory) => verify_security(&directory, &sid, true),
+                None => Ok(()),
+            },
+            Ok(_) => Err("The native state inspection received unexpected input.".into()),
+            Err(_) => Err("The native state inspection input failed.".into()),
         }
     }
 
@@ -650,6 +695,11 @@ pub fn run(agent: &str, configuration: bool) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+pub fn inspect(agent: &str) -> Result<(), String> {
+    native::inspect(agent)
+}
+
+#[cfg(windows)]
 pub fn remove(agent: &str) -> Result<(), String> {
     native::remove(agent)
 }
@@ -739,5 +789,19 @@ mod tests {
         let configuration = readiness("hermes", &root, false, true);
         assert!(configuration.contains("\"kind\":\"native-state-configuration\""));
         assert!(!configuration.contains("\"kind\":\"native-state-session\""));
+    }
+
+    #[test]
+    fn inspection_receipt_cannot_claim_a_creating_lease() {
+        let root = state_location('C', "S-1-5-21-1001", "openclaw").unwrap();
+        for present in [false, true] {
+            let line = inspection_readiness("openclaw", &root, present);
+            assert!(line.contains("\"kind\":\"native-state-inspection\""));
+            assert!(line.contains(&format!("\"present\":{present}")));
+            assert!(!line.contains("\"created\""));
+            assert!(!line.contains("\"removed\""));
+            assert_eq!(line.lines().count(), 1);
+            assert!(line.len() < 1024);
+        }
     }
 }

@@ -18,6 +18,8 @@ if((Test-Path -LiteralPath $build) -or (Test-Path -LiteralPath $candidate)){thro
 $null=New-Item -ItemType Directory -Path $build
 $receipt=[ordered]@{schemaVersion=1;classification='official-hermes-runtime-build-phase';controllerSource=$ControllerSource;status='failed';phase='complete-canonical-reuse';installedAcceptance=$false;runtimeExecutionQualified=$false;activationAllowed=$false;reusedCompleteBase=$true;runtimeRoot=$RuntimeRoot;wheelAttempted=$false;buildProcessesClosed=$true;stages=@()}
 $primary=$null
+$receipt['workflowRunId']=$env:GITHUB_RUN_ID
+$receipt['workflowRunAttempt']=$env:GITHUB_RUN_ATTEMPT
 function Assert-ReuseBytes([string]$File,[long]$Bytes,[string]$Sha){
     if((Get-Item -LiteralPath $File).Length -ne $Bytes -or (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Sha){throw 'A pinned canonical reuse input changed.'}
 }
@@ -91,8 +93,11 @@ finally{
     if($receipt.wheelAttempted){
         try{
             $wheel=Get-Content -LiteralPath (Join-Path $build 'pywinpty/pywinpty-rebuild.json') -Raw|ConvertFrom-Json
-            $receipt.buildProcessesClosed=$wheel.schemaVersion -eq 1 -and $wheel.classification -ceq 'ci-targeted-pywinpty-conpty-rebuild' -and
-                [string]::Equals([IO.Path]::GetFullPath([string]$wheel.runtimeRoot),[IO.Path]::GetFullPath($RuntimeRoot),[StringComparison]::OrdinalIgnoreCase) -and $wheel.allOwnedProcessesClosed -ceq $true
+            $receipt.buildProcessesClosed=($wheel.schemaVersion -is [int] -or $wheel.schemaVersion -is [long]) -and
+                $wheel.schemaVersion -eq 1 -and $wheel.classification -ceq 'ci-targeted-pywinpty-conpty-rebuild' -and
+                $wheel.sourceRevision -ceq $ControllerSource -and
+                [string]::Equals([IO.Path]::GetFullPath([string]$wheel.runtimeRoot),[IO.Path]::GetFullPath($RuntimeRoot),[StringComparison]::OrdinalIgnoreCase) -and
+                $wheel.allOwnedProcessesClosed -is [bool] -and $wheel.allOwnedProcessesClosed -ceq $true
         }catch{$receipt.buildProcessesClosed=$false;$receipt['buildCleanupError']=$_.Exception.Message}
         if(-not $receipt.buildProcessesClosed){
             $receipt.status='failed'

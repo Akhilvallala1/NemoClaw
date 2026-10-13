@@ -50,6 +50,89 @@ function Test-OwnedStopSentinel {
     }
     return $true
 }
+function Assert-OwnedFailureNoticeIdentity($HostProcess, $SessionProcess, [datetime]$HostStarted, [datetime]$SessionStarted, [string]$HostPath, [string]$SessionPath, $Window, $Button, $Open) {
+    if ($HostProcess.HasExited -or $SessionProcess.HasExited -or
+        $HostProcess.StartTime.ToUniversalTime() -ne $HostStarted -or
+        $SessionProcess.StartTime.ToUniversalTime() -ne $SessionStarted -or
+        -not [string]::Equals($HostProcess.MainModule.FileName, $HostPath, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($SessionProcess.MainModule.FileName, $SessionPath, [StringComparison]::OrdinalIgnoreCase) -or
+        $null -eq $Window -or $null -eq $Button -or $null -eq $Open -or
+        $Window.Current.ProcessId -ne $SessionProcess.Id -or
+        $Button.Current.ProcessId -ne $SessionProcess.Id -or $Open.Current.ProcessId -ne $SessionProcess.Id -or
+        $Button.Current.AutomationId -cne 'NativeWebSessionStop' -or
+        $Open.Current.AutomationId -cne 'NativeWebSessionOpen' -or
+        -not $Button.Current.IsEnabled -or $Button.Current.Name -cne 'Close' -or
+        $Open.Current.Name -cne 'Open diagnostics') {
+        throw 'The failed notice does not belong to the held runtime and session window.'
+    }
+    # The shutdown-timeout notice also says Close, but never Open diagnostics.
+    switch -CaseSensitive ($Window.Current.Name) {
+        'NemoClaw Hermes session' { return 'hermes' }
+        'NemoClaw OpenClaw session' { return 'openclaw' }
+        default { throw 'The failed notice has an unexpected agent identity.' }
+    }
+}
+function Read-OwnedFailureSnapshot([string]$File, [string]$Boundary, [int]$HostProcessId, [datetime]$HostStarted, [string]$Agent) {
+    $full = [IO.Path]::GetFullPath($File)
+    $boundaryPath = [IO.Path]::GetFullPath($Boundary).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if (-not $full.StartsWith($boundaryPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($full) -cne 'session-failure.json' -or $HostProcessId -le 0) {
+        throw 'The failed notice snapshot is outside its owned evidence directory.'
+    }
+    $parent = [IO.Path]::GetDirectoryName($full)
+    while ($true) {
+        $directory = [IO.DirectoryInfo]::new($parent)
+        if (-not $directory.Exists -or ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'The failed notice snapshot traverses an unavailable or linked directory.'
+        }
+        if ([string]::Equals($parent, $boundaryPath, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $parent = [IO.Path]::GetDirectoryName($parent)
+    }
+    $item = [IO.FileInfo]::new($full)
+    if (-not $item.Exists -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -le 0 -or $item.Length -gt 1048576 -or $item.LastWriteTimeUtc -lt $HostStarted) {
+        throw 'The failed notice snapshot is absent, stale, linked or outside its byte bound.'
+    }
+    $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -le 0 -or $stream.Length -gt 1048576) { throw 'The failed notice snapshot exceeds its byte bound.' }
+        $bytes = [byte[]]::new([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $count = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($count -eq 0) { throw 'The failed notice snapshot ended early.' }
+            $offset += $count
+        }
+        $value = [Text.UTF8Encoding]::new($false, $true).GetString($bytes) | ConvertFrom-Json
+        $recorded = if ($value.diagnostics.recordedAt -is [datetime]) { $value.diagnostics.recordedAt.ToUniversalTime() }
+            else { [datetimeoffset]::Parse([string]$value.diagnostics.recordedAt, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
+        if ($value.schemaVersion -isnot [long] -and $value.schemaVersion -isnot [int]) { throw 'The failed notice snapshot schema is not numeric.' }
+        if ($value.diagnostics.schemaVersion -isnot [long] -and $value.diagnostics.schemaVersion -isnot [int]) { throw 'The failure diagnostic schema is not numeric.' }
+        if ($value.nodeProcessId -isnot [long] -and $value.nodeProcessId -isnot [int]) { throw 'The failed notice snapshot host identity is not numeric.' }
+        foreach ($field in @('classification','agent','interface','stage')) {
+            if ($value.$field -isnot [string]) { throw 'The failed notice snapshot identity is not scalar text.' }
+        }
+        foreach ($field in @('classification','agent','stage')) {
+            if ($value.diagnostics.$field -isnot [string]) { throw 'The failure diagnostic identity is not scalar text.' }
+        }
+        if ($value.schemaVersion -ne 1 -or $value.classification -cne 'native-session-failure-evidence' -or
+            $value.agent -cne $Agent -or $value.interface -cne 'dashboard' -or $value.nodeProcessId -ne $HostProcessId -or
+            $value.backendCleanupFinished -isnot [bool] -or $value.backendCleanupFinished -ne $true -or
+            @('inference','runtime','broker','gateway','sandbox','bootstrap','dashboard','agent','cleanup') -cnotcontains $value.stage -or
+            $value.diagnostics.schemaVersion -ne 1 -or $value.diagnostics.classification -cne 'native-session-failure' -or
+            $value.diagnostics.agent -cne $Agent -or $value.diagnostics.stage -cne $value.stage -or
+            $null -eq $value.diagnostics.failure -or $value.diagnostics.failure -isnot [pscustomobject] -or
+            $recorded -lt $HostStarted -or $recorded -gt [datetime]::UtcNow) {
+            throw 'The failed notice snapshot does not confirm this host failure and finished backend cleanup.'
+        }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        # No diagnostic text or saved path is copied to the observer output.
+        return [ordered]@{ snapshotSha256=$digest; hostPid=$HostProcessId; agent=$Agent; stage=$value.stage; backendCleanupFinished=$true }
+    } catch { throw 'The owned failed notice snapshot could not be validated.' }
+    finally { $stream.Dispose() }
+}
 $rootPath = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
 $root = [Diagnostics.Process]::GetProcessById($RootProcessId)
 $handle = $root.Handle
@@ -61,14 +144,17 @@ $watch = [Diagnostics.Stopwatch]::StartNew()
 $stopWatch = $null
 $last = ''
 $stopped = $false
+$failureCloseInvoked = $false
 $session = $null
 $sessionStarted = $null
+$heldWindowHandle = $null
 $heldHost = $null
 $heldHostPath = $null
 $heldHostStarted = $null
 $stopSnapshot = $null
 $nextSnapshot = 0
 $stopSnapshotTimes = @(0, 2000, 8000)
+$failureSnapshotPath = Join-Path ([IO.Path]::GetDirectoryName($stopSentinelPath)) 'session/session-failure.json'
 function Write-StopSnapshot([string]$Label) {
     $captureWatch = [Diagnostics.Stopwatch]::StartNew()
     $record = [ordered]@{ kind='stop-snapshot'; label=$Label; rootPid=$RootProcessId; stopElapsedMs=$stopWatch.ElapsedMilliseconds; captureElapsedMs=0; snapshot=$null; error=$null }
@@ -86,16 +172,17 @@ try {
         if ($controller.HasExited) { throw 'The installed UI controller owner exited before Stop.' }
         if ($watch.ElapsedMilliseconds -gt 600000) { throw 'The installed session observer exceeded its bound.' }
         if ($null -ne $stopWatch -and $stopWatch.ElapsedMilliseconds -gt 120000) {
+            if ($failureCloseInvoked) { throw 'The owned failed notice did not finish closing.' }
             Write-StopSnapshot 'stop-deadline'
             throw 'The actual session did not finish its Stop cleanup.'
         }
+        if ($failureCloseInvoked) { Start-Sleep -Milliseconds 100; continue }
         if ($stopped) {
             if ($nextSnapshot -lt $stopSnapshotTimes.Count -and $stopWatch.ElapsedMilliseconds -ge $stopSnapshotTimes[$nextSnapshot]) {
                 Write-StopSnapshot ('after-' + $stopSnapshotTimes[$nextSnapshot] + 'ms')
                 $nextSnapshot++
             }
-            Start-Sleep -Milliseconds 100
-            continue
+            if (-not [IO.File]::Exists($failureSnapshotPath)) { Start-Sleep -Milliseconds 100; continue }
         }
         # Only the native launcher's direct SEA child may own this gateway.
         $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$RootProcessId" -ErrorAction Stop)
@@ -139,6 +226,9 @@ try {
                     $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty, $session.Id)
                     $window = [Windows.Automation.AutomationElement]::RootElement.FindFirst([Windows.Automation.TreeScope]::Children, $condition)
                     if ($null -ne $window) {
+                        if ($window.Current.NativeWindowHandle -eq 0) { throw 'The session window has no native identity.' }
+                        if ($null -eq $heldWindowHandle) { $heldWindowHandle = $window.Current.NativeWindowHandle }
+                        elseif ($window.Current.NativeWindowHandle -ne $heldWindowHandle) { throw 'The held session window identity changed.' }
                         $record.windowFound = $true
                         foreach ($entry in @(@('phase','NativeWebSessionPhase'), @('status','NativeWebSessionStatus'))) {
                             $textCondition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, $entry[1])
@@ -154,22 +244,36 @@ try {
                         $record.openEnabled = $null -ne $open -and $open.Current.IsEnabled -and $open.Current.Name -ceq 'Open Web UI'
                         $record.openFound = $null -ne $open
                         if ($null -ne $open) { $record.openName = $open.Current.Name; $record.openControlEnabled = $open.Current.IsEnabled }
-                        if (-not $stopped -and (Test-OwnedStopSentinel)) {
+                        if (Test-OwnedStopSentinel) {
                             $stopCondition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, 'NativeWebSessionStop')
                             $button = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $stopCondition)
-                            if ($null -eq $button -or -not $button.Current.IsEnabled -or $button.Current.Name -cne 'Stop session') { throw 'The actual session Stop control is unavailable.' }
-                            # Compile/hold only after the command arrives, before Stop. No startup or idle sampling work.
-                            try {
-                                Add-Type -Path (Join-Path $PSScriptRoot 'InstalledStopSnapshot.cs')
-                                $stopSnapshot = [NemoClaw.InstalledStop.Snapshot]::new($RootProcessId, $handle, (Join-Path $rootPath 'bin\NemoClaw.exe'), $started.ToFileTimeUtc(), $heldHost.Id, $heldHost.Handle, $heldHostPath, $heldHostStarted.ToFileTimeUtc())
-                                $null = $stopSnapshot.Capture() # retain descendants before they can exit
-                            } catch { [Console]::Error.WriteLine('Owned Stop snapshot preparation failed: ' + $_.Exception.GetType().FullName) }
-                            ([Windows.Automation.InvokePattern]$button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke()
-                            $stopped = $true; $stopWatch = [Diagnostics.Stopwatch]::StartNew()
-                            [Console]::Out.WriteLine('{"kind":"stop-invoked"}')
-                            [Console]::Out.Flush()
-                            Write-StopSnapshot 'after-0ms'
-                            $nextSnapshot = 1
+                            if ($null -ne $button -and $button.Current.Name -ceq 'Close') {
+                                $sessionPath = Join-Path $rootPath 'native-ui\NemoClaw.Bootstrapper.exe'
+                                $agent = Assert-OwnedFailureNoticeIdentity $heldHost $session $heldHostStarted $sessionStarted $heldHostPath $sessionPath $window $button $open
+                                # Both installed qualifiers put their fresh session evidence beside this private sentinel.
+                                $failure = Read-OwnedFailureSnapshot $failureSnapshotPath $runnerTemp $heldHost.Id $heldHostStarted $agent
+                                $null = Assert-OwnedFailureNoticeIdentity $heldHost $session $heldHostStarted $sessionStarted $heldHostPath $sessionPath $window $button $open
+                                if ($root.HasExited -or $controller.HasExited -or $window.Current.NativeWindowHandle -ne $heldWindowHandle) { throw 'The failed notice owner exited before closure or its window changed.' }
+                                ([Windows.Automation.InvokePattern]$button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke()
+                                $failureCloseInvoked = $true
+                                if ($null -eq $stopWatch) { $stopWatch = [Diagnostics.Stopwatch]::StartNew() }
+                                [Console]::Out.WriteLine(([ordered]@{ kind='failure-notice-close-invoked'; rootPid=$RootProcessId; sessionPid=$session.Id; windowHandle=$heldWindowHandle; hostStartedUtc=$heldHostStarted.ToString('O'); sessionStartedUtc=$sessionStarted.ToString('O'); failure=$failure } | ConvertTo-Json -Depth 4 -Compress))
+                                [Console]::Out.Flush()
+                            } elseif (-not $stopped) {
+                                if ($null -eq $button -or -not $button.Current.IsEnabled -or $button.Current.Name -cne 'Stop session') { throw 'The actual session Stop control is unavailable.' }
+                                # Compile/hold only after the command arrives, before Stop. No startup or idle sampling work.
+                                try {
+                                    Add-Type -Path (Join-Path $PSScriptRoot 'InstalledStopSnapshot.cs')
+                                    $stopSnapshot = [NemoClaw.InstalledStop.Snapshot]::new($RootProcessId, $handle, (Join-Path $rootPath 'bin\NemoClaw.exe'), $started.ToFileTimeUtc(), $heldHost.Id, $heldHost.Handle, $heldHostPath, $heldHostStarted.ToFileTimeUtc())
+                                    $null = $stopSnapshot.Capture() # retain descendants before they can exit
+                                } catch { [Console]::Error.WriteLine('Owned Stop snapshot preparation failed: ' + $_.Exception.GetType().FullName) }
+                                ([Windows.Automation.InvokePattern]$button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke()
+                                $stopped = $true; $stopWatch = [Diagnostics.Stopwatch]::StartNew()
+                                [Console]::Out.WriteLine('{"kind":"stop-invoked"}')
+                                [Console]::Out.Flush()
+                                Write-StopSnapshot 'after-0ms'
+                                $nextSnapshot = 1
+                            }
                         }
                     }
                 }
@@ -178,6 +282,13 @@ try {
             } finally { if (-not [object]::ReferenceEquals($hostProcess, $heldHost)) { $hostProcess.Dispose() } }
         }
         Start-Sleep -Milliseconds 500
+    }
+    if ($failureCloseInvoked) {
+        $root.WaitForExit()
+        if (-not $session.HasExited -or -not $heldHost.HasExited) { throw 'The failed notice closed without its held host/window exiting.' }
+        [Console]::Out.WriteLine(([ordered]@{ kind='failure-notice-closed'; rootPid=$RootProcessId; hostPid=$heldHost.Id; sessionPid=$session.Id; exitCode=$root.ExitCode; failure=$true; elapsedMs=$stopWatch.ElapsedMilliseconds } | ConvertTo-Json -Compress))
+        [Console]::Out.Flush()
+        exit 1 # A closed failure notice is never successful Stop/qualification evidence.
     }
     if (-not $stopped) { throw 'The installed launcher exited before the actual Stop action.' }
     Write-StopSnapshot 'guardian-exited'

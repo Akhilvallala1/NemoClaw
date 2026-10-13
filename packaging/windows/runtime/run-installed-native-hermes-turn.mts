@@ -571,7 +571,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       cliEnvironment,
       sandboxName,
       gateway,
-      null,
+      runtimeLease,
     );
     if (completion === "ExecFailed" || completion === "MainProcessFailed")
       fail(`The native ${agentLabel} execution failed`);

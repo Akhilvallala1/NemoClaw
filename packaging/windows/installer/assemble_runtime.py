@@ -655,17 +655,36 @@ def reference_document(parent: Path, record, name: str):
 
 
 def validate_hermes_executor_build(build, source_revision: str):
+    native = build.get("classification") == "mxc-native-owned-token-inspection-build"
+    if native:
+        if (
+            type(build.get("schemaVersion")) is not int
+            or build["schemaVersion"] != 2
+            or build.get("nativeOwnerIdentity") != "held-primary-appcontainer-token"
+            or type(build.get("sourceBytes")) is not int
+            or build["sourceBytes"] != 6545666
+            or build.get("runtimeExecuted") is not False
+            or build.get("qualified") is not False
+        ):
+            raise ValueError("The native Hermes executor build contract differs.")
+        source_commit = "7cd00d1ee6af9208322c924ef64e5113f6704639"
+        source_sha = "9467669fda03a7ad0000a7bc9e0b0d1cab44b1979ee437dd96e8b93646e18029"
+    else:
+        if build.get("classification") != "mxc-owned-token-inspection-build":
+            raise ValueError("The Hermes executor build classification differs.")
+        source_commit = "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a"
+        source_sha = "814659a1db0b4cd06854066705f274bba2b2702f563735d69ba72a407c0ad258"
     if (
-        build.get("classification") != "mxc-owned-token-inspection-build"
+        not re.fullmatch(r"[a-f0-9]{40}", source_revision)
         or build.get("status") != "built"
         or build.get("candidateRevision") != source_revision
-        or build.get("sourceCommit") != "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a"
-        or build.get("sourceSha256")
-        != "814659a1db0b4cd06854066705f274bba2b2702f563735d69ba72a407c0ad258"
+        or build.get("sourceCommit") != source_commit
+        or build.get("sourceSha256") != source_sha
         or build.get("target") != "aarch64-pc-windows-msvc"
         or build.get("compilerClosed") is not True
         or build.get("compilerForced") is not False
-        or build.get("compilerExitCode") != 0
+        or type(build.get("compilerExitCode")) is not int
+        or build["compilerExitCode"] != 0
         or build.get("compilerCleanupErrors") != []
         or build.get("tokenQueryRepairSupported") is not True
         or build.get("tokenAccessMode") != "owned-child-query-only"
@@ -673,7 +692,14 @@ def validate_hermes_executor_build(build, source_revision: str):
     ):
         raise ValueError("The same-source Hermes executor build did not complete.")
     executable = build["files"][0]
-    if executable.get("file") != "wxc-exec.exe" or executable.get("machine") != 0xAA64:
+    if (
+        executable.get("file") != "wxc-exec.exe"
+        or executable.get("machine") != 0xAA64
+        or type(executable.get("bytes")) is not int
+        or executable["bytes"] <= 0
+        or not isinstance(executable.get("sha256"), str)
+        or not re.fullmatch(r"[a-f0-9]{64}", executable["sha256"])
+    ):
         raise ValueError(
             "The canonical Hermes executor is not the expected ARM64 file."
         )
@@ -725,6 +751,40 @@ COMPATIBILITY_MEMBERS = {
     "NemoClawMsysCompat-arm64.dll": "arm64",
     "NemoClawMsysCompat-x64.dll": "x64",
 }
+
+
+def validate_hermes_native_proof(proof, compatibility, executor, source_revision, personal=None):
+    spec = importlib.util.spec_from_file_location(
+        "native_compatibility_proof",
+        Path(__file__).parents[1] / "mxc-bash/native-compatibility-proof.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.validate_native_proof(proof, compatibility, executor, source_revision)
+    if personal is not None:
+        module.validate_native_personal_inputs(personal, compatibility, executor, source_revision)
+
+
+def validate_hermes_native_personal(personal, personal_file, source_revision):
+    spec = importlib.util.spec_from_file_location(
+        "native_personal_proof",
+        Path(__file__).parents[1] / "mxc-bash/native-compatibility-proof.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    documents = []
+    values = []
+    for name, maximum in (("personal-request.json", 1024 * 1024),
+                          ("mxc-native.log", 4 * 1024 * 1024)):
+        file = personal_file.parent / name
+        ordinary(file, False)
+        if not 0 < file.stat().st_size <= maximum:
+            raise ValueError("Native Personal document exceeds its bound.")
+        raw = file.read_bytes()
+        values.append(raw)
+        documents.append((file, (len(raw), hashlib.sha256(raw).hexdigest()), name))
+    module.validate_native_personal(personal, source_revision, *values)
+    return documents
 
 # The replay is of one already-exported complete runtime, never a general
 # permission to mix a candidate with an unrelated Personal controller.
@@ -815,6 +875,7 @@ def personal_replay_lineage(personal, candidate, candidate_identity, actual, par
     if (
         not re.fullmatch(r"[a-f0-9]{40}", source)
         or proof.get("classification") != "small-msys-appcontainer-compatibility-proof"
+        or mxc.get("classification") != "mxc-owned-token-inspection-build"
         or proof.get("sourceRevision") != source
         or proof.get("passed") is not True
         or proof.get("normalCleanup") is not True
@@ -945,6 +1006,11 @@ def hermes_composition(
         root, actual, candidate_file
     )
     personal, personal_document = bound_document(personal_file)
+    native_personal = type(personal.get("schemaVersion")) is int and personal["schemaVersion"] == 2
+    native_personal_documents = (
+        validate_hermes_native_personal(personal, personal_file, source_revision)
+        if native_personal else []
+    )
     edge_mode = personal.get("browserMode") == "host-native-edge-cdp"
     expected_personal_pass = not edge_mode
     recorded_candidate = personal.get("derivedRuntime", {}).get("candidate", {})
@@ -986,7 +1052,7 @@ def hermes_composition(
             for key in (
                 "executorClosed",
                 "hostDiagnosticChildrenClosed",
-                "profileDeleted",
+                "nativeTeardownVerified" if native_personal else "profileDeleted",
                 "ownedRootsRemoved",
             )
         )
@@ -1055,11 +1121,26 @@ def hermes_composition(
         "value"
     ):
         raise ValueError("Canonical Hermes derivation differs from the Personal proof.")
+    if native_personal:
+        spec = importlib.util.spec_from_file_location(
+            "finished_hermes_inventory", Path(__file__).with_name("prepare-finished-hermes.py")
+        )
+        intake = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(intake)
+        # verify_hermes_input already bound every row to the hashed source inventory.
+        verified_inventory = {
+            "files": [row for row in actual if row["kind"] == "file"],
+            "directories": [row["path"] for row in actual if row["kind"] == "directory"],
+        }
+        intake.validate_native_runtime_inventory(personal, candidate, candidate_document[1],
+                                                  derivation, verified_inventory, source_revision)
     lineage = [
         (*candidate_document, "runtime-candidate.json"),
         (*derivation_document, "candidate-derivation.json"),
         (*personal_document, "personal-feasibility.json"),
         *replay_lineage,
+        *[row for row in native_personal_documents
+          if row[2] not in {item[2] for item in replay_lineage}],
     ]
     lineage.append((*inventory_document, "payload-inventory.json"))
     for key, name in (
@@ -1078,8 +1159,20 @@ def hermes_composition(
     executor, files = hermes_executor_files(
         executor_directory, build_file, source_revision
     )
+    native_proof = (
+        proof.get("classification") == "small-msys-native-basecontainer-compatibility-proof"
+    )
+    if native_proof:
+        if not native_personal:
+            raise ValueError("Native composition requires same-source native Personal execution.")
+        validate_hermes_native_proof(proof, compatibility, executor, source_revision, personal)
+    elif native_personal:
+        raise ValueError("Native Personal requires the same-source passed native proof.")
     if (
-        proof.get("classification") != "small-msys-appcontainer-compatibility-proof"
+        (not native_proof and (
+            proof.get("classification") != "small-msys-appcontainer-compatibility-proof"
+            or executor.get("classification") != "mxc-owned-token-inspection-build"
+        ))
         or proof.get("sourceRevision") != source_revision
         or proof.get("passed") is not True
         or proof.get("normalCleanup") is not True
@@ -1099,9 +1192,12 @@ def hermes_composition(
             "Hermes compatibility requires the same-source passed native proof."
         )
     source_files = compatibility.get("sourceFiles", [])
+    expected_sources = NATIVE_SOURCE_FILES | (
+        {"namespace-adapter-controls.cpp"} if native_proof else set()
+    )
     if (
-        len(source_files) != len(NATIVE_SOURCE_FILES)
-        or {row.get("path") for row in source_files} != NATIVE_SOURCE_FILES
+        len(source_files) != len(expected_sources)
+        or {row.get("path") for row in source_files} != expected_sources
     ):
         raise ValueError("The compatibility source-file set changed.")
     for row in source_files:

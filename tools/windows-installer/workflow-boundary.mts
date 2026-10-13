@@ -8,10 +8,13 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 export type WorkflowStep = {
+  id?: string;
+  shell?: string;
   name?: string;
   run?: string;
   uses?: string;
   if?: string;
+  "continue-on-error"?: boolean | string;
   env?: Record<string, string>;
   with?: Record<string, unknown>;
 };
@@ -26,6 +29,7 @@ export type WorkflowJob = {
   with?: Record<string, unknown>;
   strategy?: { "fail-fast"?: boolean; matrix?: { node?: string[] } };
   "runs-on"?: string;
+  "timeout-minutes"?: number;
 };
 export type Workflow = { jobs: Record<string, WorkflowJob> };
 type WindowsInstallerWorkflow = Workflow & {
@@ -105,6 +109,184 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     evidenceSource,
     acceptanceSource,
   } = input;
+  {
+    const personal = requiredJob(workflow, "official-hermes-personal-candidate");
+    assert.equal(personal["runs-on"], "windows-11-vs2026-arm");
+    assert.equal(personal["timeout-minutes"], 60);
+    assert.deepEqual(personal.permissions, { contents: "read", actions: "read" });
+    const helper = requiredStep(personal, "Build the fixed-purpose system-drive metadata helper");
+    const rust = requiredStep(personal, "Prepare pinned native Rust for Personal compatibility");
+    const native = requiredStep(personal, "Build and qualify current Personal native inputs");
+    const prepare = requiredStep(
+      personal,
+      "Prepare the complete candidate and test canonical Personal components",
+    );
+    const upload = requiredStep(personal, "Preserve current native Personal runtime inputs");
+    const selected = "${{ inputs.official_hermes_phase == 'personal-candidate' }}";
+    for (const required of [rust, native]) {
+      assert.equal(required.if, selected);
+      assert.equal(required["continue-on-error"], undefined);
+    }
+    assert.deepEqual(rust.with, {
+      toolchain: "1.93.0",
+      target: "aarch64-pc-windows-msvc",
+      override: false,
+      cache: false,
+    });
+    assert.equal(prepare.if, undefined);
+    assert.equal(prepare["continue-on-error"], undefined);
+    assert.ok(personal.steps!.indexOf(helper) < personal.steps!.indexOf(native));
+    assert.ok(personal.steps!.indexOf(rust) < personal.steps!.indexOf(native));
+    assert.ok(personal.steps!.indexOf(native) < personal.steps!.indexOf(prepare));
+    assert.ok(personal.steps!.indexOf(prepare) < personal.steps!.indexOf(upload));
+    for (const text of [
+      "git rev-parse HEAD",
+      "$head -cne $env:GITHUB_SHA",
+      "packaging/windows/mxc-bash/run-bash-compat.ps1 -SourceRoot $env:GITHUB_WORKSPACE",
+      '-ArtifactDirectory "$env:RUNNER_TEMP\\personal-native-inputs"',
+      '-HelperDirectory "$env:RUNNER_TEMP\\personal-helper"',
+    ])
+      assert.ok(native.run?.includes(text), text);
+    for (const text of [
+      "\"${{ inputs.official_hermes_phase }}\" -ceq 'personal-candidate'",
+      "rustup which --toolchain 1.95.0 rustc",
+      'NativeCompatibilityDirectory = "$env:RUNNER_TEMP\\personal-native-inputs"',
+      "RustBinDirectory = (Split-Path -Parent $rustc)",
+      "packaging/windows/hermes/probe-personal-candidate.ps1",
+      "@native",
+    ])
+      assert.ok(prepare.run?.includes(text), text);
+    assert.equal(
+      upload.if,
+      "${{ success() && inputs.official_hermes_phase == 'personal-candidate' }}",
+    );
+    assert.equal(upload.with?.["if-no-files-found"], "error");
+    assert.ok(
+      String(upload.with?.path).includes(
+        "official-hermes-personal/official-hermes-runtime-candidate/",
+      ),
+    );
+    assert.ok(String(upload.with?.path).includes("official-hermes-personal/personal-mxc/"));
+    assert.ok(String(upload.with?.path).includes("personal-native-inputs/"));
+  }
+  (() => {
+    const finished = requiredJob(workflow, "windows-finished-installer");
+    const restored = requiredStep(
+      finished,
+      "Verify and materialize exact same-run compatibility proof",
+    );
+    const bootstrap = requiredStep(
+      finished,
+      "Prepare pinned interpreters for the finished Hermes producer",
+    );
+    const produce = requiredStep(
+      finished,
+      "Produce and test Hermes with the same-run native binaries",
+    );
+    const admit = requiredStep(
+      finished,
+      "Admit the same-run Personal-passing complete Hermes candidate",
+    );
+    const assemble = requiredStep(
+      finished,
+      "Seal only Hermes with current-source native compatibility and precompiled workers",
+    );
+    let previous = -1;
+    for (const step of [restored, bootstrap, produce, admit, assemble]) {
+      assert.strictEqual(
+        step.if,
+        "${{ needs.windows-finished-request.outputs.agent == 'hermes' }}",
+      );
+      assert.strictEqual(step["continue-on-error"], undefined);
+      const index = finished.steps!.indexOf(step);
+      assert.ok(index > previous);
+      previous = index;
+    }
+    assert.ok(bootstrap.run?.includes("test-official-runtime-export.ps1"));
+    assert.strictEqual(produce.env?.GH_TOKEN, "${{ github.token }}");
+    for (const expected of [
+      "$env:GITHUB_SHA = $env:CANDIDATE_SHA",
+      "$revision -cne $env:CANDIDATE_SHA",
+      "--toolchain 1.95.0-aarch64-pc-windows-msvc",
+      "probe-personal-candidate.ps1",
+      '-ArtifactDirectory "$work\\personal-production"',
+      '-BootstrapDirectory "$work\\personal-bootstrap"',
+      '-NativeCompatibilityDirectory "$work\\native-proof\\bash-compat-evidence"',
+      '-HelperDirectory "$work\\system-drive-helper"',
+    ])
+      assert.ok(produce.run?.includes(expected));
+    assert.ok(admit.run?.includes('--same-run-personal-directory "$work\\personal-production"'));
+    assert.ok(
+      admit.run?.includes('--native-proof-directory "$work\\native-proof\\bash-compat-evidence"'),
+    );
+    assert.strictEqual(admit.env?.GH_TOKEN, undefined);
+    const evidence = requiredStep(finished, "Stage only non-runnable finished build evidence");
+    assert.strictEqual(evidence.if, "${{ always() }}");
+    for (const expected of [
+      "$work\\personal-production\\*.json",
+      "$work\\personal-production\\personal-mxc\\*.log",
+      "$work\\hermes-input\\mxc-native.log",
+      "stage-windows-native-evidence.ps1",
+    ])
+      assert.ok(evidence.run?.includes(expected));
+  })();
+  (() => {
+    const request = requiredJob(workflow, "windows-finished-request");
+    const admission = requiredStep(request, "Admit an exact credential-free candidate build");
+    assert.strictEqual(admission.id, "candidate_build");
+    assert.strictEqual(
+      admission.if,
+      "${{ github.event_name == 'workflow_dispatch' && inputs.build_windows_native_candidate }}",
+    );
+    assert.strictEqual(admission["continue-on-error"], undefined);
+    assert.strictEqual(admission.shell, "bash");
+    assert.ok(
+      matchesFields(workflow.on.workflow_dispatch.inputs.build_windows_native_candidate, {
+        required: false,
+        default: false,
+        type: "boolean",
+      }),
+    );
+    for (const field of [
+      "request_kind",
+      "candidate_repository",
+      "candidate_sha",
+      "base_sha",
+      "pr_number",
+      "workflow_sha",
+      "agent",
+      "product_version",
+      "validation_scope",
+      "build_allowed",
+      "trusted_main",
+      "exact_workflow",
+      "exact_pr",
+      "credential_authorized",
+    ])
+      assert.ok(request.outputs?.[field]?.includes(`steps.candidate_build.outputs.${field}`));
+    assert.strictEqual(admission.env?.GH_TOKEN, "${{ github.token }}");
+    for (const field of ["CANDIDATE_SHA", "BASE_SHA", "PR_NUMBER", "EXPECTED_WORKFLOW_SHA"])
+      assert.ok(admission.env?.[field]?.startsWith("${{ inputs.finished_windows_"));
+    for (const line of [
+      "request_kind=candidate-build",
+      "validation_scope=build-only",
+      "build_allowed=true",
+      "trusted_main=false",
+      "exact_workflow=false",
+      "credential_authorized=false",
+    ])
+      assert.ok(admission.run?.includes(`echo '${line}'`));
+    for (const name of [
+      "Resolve a credential-free diagnostic dispatch",
+      "Authorize exact internal PR from the exact main controller",
+    ])
+      assert.ok(requiredStep(request, name).if?.includes("!inputs.build_windows_native_candidate"));
+    assert.ok(
+      requiredJob(workflow, "windows-finished-candidate-migration").if?.includes(
+        "request_kind != 'candidate-build'",
+      ),
+    );
+  })();
   for (const scenario of [
     "windows-finished-request",
     "windows-compiled-application",
@@ -215,8 +397,12 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       preflight,
       "Verify observer shutdown and qualification cleanup before building",
     );
+    assert.strictEqual(preflightTests.if, undefined);
+    assert.strictEqual(preflightTests["continue-on-error"], undefined);
     for (const name of [
       "control-installed-openclaw-input.test.mts",
+      "build-immutable-package-cleanup.test.mts",
+      "qualify-installed-openclaw.test.mts",
       "native-turn-cleanup.test.mts",
       "runtime-published-resources.test.mts",
     ])
@@ -261,6 +447,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     );
     const requiredControllerTest = "control-installed-openclaw-input.test.mts";
     assert.ok(compiledController.run?.includes(requiredControllerTest));
+    assert.ok(compiledController.run?.includes("qualify-installed-openclaw.test.mts"));
     assert.ok(
       compiled.steps!.indexOf(compiledController) <
         compiled.steps!.findIndex(
@@ -270,6 +457,79 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     assert.strictEqual(runtimeNode.with?.["node-version"], "24.18.1");
     assert.ok(runtimeController.run?.includes(requiredControllerTest));
     assert.ok(runtime.steps!.indexOf(runtimeController) < runtime.steps!.indexOf(runtimeRust));
+  })();
+  (() => {
+    const native = requiredJob(workflow, "windows-bash-compatibility-reuse");
+    assert.deepStrictEqual(jobNeeds(native), ["windows-finished-request"]);
+    assert.strictEqual(native["runs-on"], "windows-11-vs2026-arm");
+    assert.strictEqual(native["timeout-minutes"], 25);
+    assert.deepStrictEqual(native.permissions, { contents: "read" });
+    assert.strictEqual(native.environment, undefined);
+    assert.strictEqual(
+      native.if,
+      "${{ needs.windows-finished-request.outputs.build_allowed == 'true' && needs.windows-finished-request.outputs.agent == 'hermes' }}",
+    );
+    const checkout = requiredStep(native, "Check out current Bash qualification inputs");
+    assert.deepStrictEqual(checkout.with, {
+      repository: "${{ needs.windows-finished-request.outputs.candidate_repository }}",
+      ref: "${{ needs.windows-finished-request.outputs.candidate_sha }}",
+      path: "current",
+      "persist-credentials": false,
+    });
+    const identity = requiredStep(native, "Verify exact native producer source");
+    const helper = requiredStep(
+      native,
+      "Build the existing fixed-purpose system-drive metadata helper",
+    );
+    const produce = requiredStep(native, "Build and qualify exact current native compatibility");
+    const seal = requiredStep(native, "Seal same-run exact-input Bash evidence");
+    let previous = -1;
+    for (const step of [checkout, identity, helper, produce, seal]) {
+      assert.strictEqual(step.if, undefined);
+      assert.strictEqual(step["continue-on-error"], undefined);
+      const index = native.steps!.indexOf(step);
+      assert.ok(index > previous);
+      previous = index;
+    }
+    for (const step of [identity, helper, produce, seal]) {
+      assert.strictEqual(
+        step.env?.CANDIDATE_SHA,
+        "${{ needs.windows-finished-request.outputs.candidate_sha }}",
+      );
+    }
+    assert.ok(identity.run?.includes("$revision -cne $env:CANDIDATE_SHA"));
+    assert.ok(helper.run?.includes("current/packaging/windows/host-preparation/build-helper.ps1"));
+    assert.ok(produce.run?.includes("$env:GITHUB_SHA = $env:CANDIDATE_SHA"));
+    assert.ok(produce.run?.includes("current/packaging/windows/mxc-bash/run-bash-compat.ps1"));
+    assert.ok(produce.run?.includes('-SourceRoot "$env:GITHUB_WORKSPACE\\current"'));
+    for (const predicate of [
+      "$proof.schemaVersion -ne 2",
+      "$proof.classification -cne 'small-msys-native-basecontainer-compatibility-proof'",
+      "$proof.sourceRevision -cne $env:CANDIDATE_SHA",
+      "$proof.passed -cne $true",
+      "$proof.normalCleanup -cne $true",
+      "$runner.sourceRevision -cne $env:CANDIDATE_SHA",
+      "$runner.status -cne 'pass'",
+      "$runner.cleanup.workRootRemoved -cne $true",
+      "$runner.cleanup.workRetainedForUnconfirmedExecutor -cne $false",
+      "native-proof/bash-compat-evidence",
+      "windows-finished-bash-v2-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_SHA-hermes",
+    ])
+      assert.ok(seal.run?.includes(predicate));
+    assert.ok(!JSON.stringify(native).includes("reuse-qualified-proof.py"));
+    assert.ok(!native.steps?.some((step) => step.uses?.startsWith("actions/download-artifact@")));
+    const records = requiredStep(
+      native,
+      "Preserve current native Bash diagnostic records without executables",
+    );
+    assert.strictEqual(records.if, "always()");
+    const included = String(records.with?.path)
+      .split("\n")
+      .filter((line) => line && !line.startsWith("!"));
+    assert.deepStrictEqual(included, [
+      "${{ runner.temp }}/finished-bash-evidence/**/*.json",
+      "${{ runner.temp }}/finished-bash-evidence/**/*.log",
+    ]);
   })();
   for (const scenario of [
     {
@@ -492,6 +752,24 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       full,
       "Rebuild acceptance-controller proof from trusted main",
     );
+    const restartControls = requiredStep(
+      full,
+      "Verify retained-state qualifier controls from trusted main",
+    );
+    assert.strictEqual(restartControls.if, undefined);
+    assert.strictEqual(restartControls["continue-on-error"], undefined);
+    assert.strictEqual(restartControls.env, undefined);
+    assert.ok(
+      restartControls.run?.includes(
+        "& $env:TRUSTED_CONTROLLER_NODE --experimental-strip-types --no-warnings --test",
+      ),
+    );
+    assert.ok(
+      restartControls.run?.includes(
+        '"$env:GITHUB_WORKSPACE\\controller\\packaging\\windows\\installer\\qualify-installed-openclaw.test.mts"',
+      ),
+    );
+    assert.ok(restartControls.run?.includes("if ($LASTEXITCODE -ne 0) { throw"));
     const qualificationGate = requiredStep(
       full,
       "Require configured protected qualification environment",
@@ -500,10 +778,38 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       full,
       "Exercise installed preview, real inference and owned cleanup",
     );
+    const artifactSource = requiredStep(
+      full,
+      "Check out OpenClaw candidate source as comparison data",
+    );
+    assert.strictEqual(artifactSource.if, "${{ inputs.agent == 'openclaw' }}");
+    assert.strictEqual(
+      artifactSource.uses,
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    );
+    assert.deepStrictEqual(artifactSource.with, {
+      repository: "NVIDIA/NemoClaw",
+      ref: "${{ inputs.candidate_sha }}",
+      path: "artifact-source",
+      "persist-credentials": false,
+      submodules: false,
+      lfs: false,
+    });
+    assert.strictEqual(artifactSource.run, undefined);
+    assert.strictEqual(artifactSource.env, undefined);
+    assert.strictEqual(artifactSource["continue-on-error"], undefined);
+    assert.ok(full.steps!.indexOf(qualificationGate) < full.steps!.indexOf(artifactSource));
+    assert.ok(full.steps!.indexOf(artifactSource) < full.steps!.indexOf(inference));
+    assert.ok(
+      inference.run?.includes('-ArtifactSourceRoot "$env:GITHUB_WORKSPACE\\artifact-source"'),
+    );
+    assert.ok(inference.run?.includes('-SourceRoot "$env:GITHUB_WORKSPACE\\controller"'));
     const verifyIndex = full.steps!.indexOf(verifyInputs);
     const rebuildIndex = full.steps!.indexOf(rebuildProof);
     const gateIndex = full.steps!.indexOf(qualificationGate);
     const inferenceIndex = full.steps!.indexOf(inference);
+    assert.ok(rebuildIndex < full.steps!.indexOf(restartControls));
+    assert.ok(full.steps!.indexOf(restartControls) < inferenceIndex);
     assert.strictEqual(gateIndex, 0);
     assert.deepStrictEqual(
       [gateIndex, verifyIndex, rebuildIndex, inferenceIndex],
@@ -663,7 +969,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     ]);
     assert.strictEqual(
       candidate.if,
-      "${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-installer.result == 'success' }}",
+      "${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' }}",
     );
     assert.deepStrictEqual(candidate.permissions, { actions: "read", contents: "read" });
     assert.strictEqual(candidate["runs-on"], "windows-11-vs2026-arm");

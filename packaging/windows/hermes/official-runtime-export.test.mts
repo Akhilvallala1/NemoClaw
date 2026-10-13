@@ -136,3 +136,13 @@ test("candidate build admission does not weaken the separate failed MXC qualific
 });
 for (const mode of ["fallback", "missing-stage", "wrong-adapter"])
   test(`candidate build refuses ${mode}`, () => assert.equal(run(mode).ok, false));
+test("native composition requires current controller, exact owned executor and complete sources", () => {
+  const controls = fileURLToPath(new URL("./test_native_export_admission.py", import.meta.url));
+  const result = spawnSync(python, ["-I", "-B", controls, "-v"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /Ran 8 tests/u);
+  assert.match(result.stderr, /\nOK\s*$/u);
+});

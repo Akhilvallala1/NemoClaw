@@ -223,6 +223,17 @@ try {
     if ([bool]$RuntimeImage -ne [bool]$RuntimeImageReceipt) { throw 'The runtime image and receipt must be supplied together.' }
     if ($RuntimeImage) { $compose += @('--runtime-image', $RuntimeImage, '--runtime-image-receipt', $RuntimeImageReceipt) }
     Invoke-BuildTool $PythonPath $compose 'compose'
+    # The same-run transfer retains this compiled launcher outside the install
+    # root. Bind its source and packaged bytes; this does not authorize inspection.
+    $launcherEvidencePath = Join-Path $OutputDirectory 'launcher-build-inputs.json'
+    Invoke-BuildTool $PythonPath @((Join-Path $owner 'launcher-build-evidence.py'),
+        '--source-root', $SourceRoot, '--package-root', $OutputDirectory,
+        '--source-revision', $SourceRevision, '--run-id', $env:GITHUB_RUN_ID,
+        '--run-attempt', $env:GITHUB_RUN_ATTEMPT, '--output', $launcherEvidencePath) 'launcher-build-inputs'
+    $receipt['launcherBuildInputs'] = @{
+        file = 'launcher-build-inputs.json'; bytes = (Get-Item -LiteralPath $launcherEvidencePath).Length;
+        sha256 = (Get-FileHash -LiteralPath $launcherEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
     if ($RuntimeImage) {
         Remove-Item -LiteralPath (Join-Path $RuntimeAssemblyRoot 'runtimes') -Recurse -Force
     }
@@ -249,22 +260,25 @@ try {
     if ((Test-Path -LiteralPath $cabinetRoot) -or (Test-Path -LiteralPath $runtimeCabinetRoot)) {
         throw 'A fixed CI cabinet source drive is already in use.'
     }
-    & $subst $cabinetDrive $payload
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $cabinetRoot 'immutable-package-inputs.json') -PathType Leaf)) {
-        throw 'The short CI cabinet source drive could not be bound to the verified payload.'
-    }
     $imageDelivery = [bool]$RuntimeImage
-    if (-not $imageDelivery) {
-        $runtimePayload = Join-Path $payload (Join-Path 'runtimes' ([string]$assembly.runtime.runtimeId))
-        & $subst $runtimeDrive $runtimePayload
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $runtimeCabinetRoot 'runtime.manifest') -PathType Leaf)) {
-            & $subst $runtimeDrive /D
-            & $subst $cabinetDrive /D
-            throw 'The short CI runtime cabinet drive could not be bound to the verified runtime.'
-        }
-    }
     $cabinetFailure = $null
+    $cabinetMapped = $false
+    $runtimeMapped = $false
+    $cabinetCleanupErrors = [Collections.Generic.List[object]]::new()
     try {
+        & $subst $cabinetDrive $payload
+        $cabinetMapped = $LASTEXITCODE -eq 0
+        if (-not $cabinetMapped -or -not (Test-Path -LiteralPath (Join-Path $cabinetRoot 'immutable-package-inputs.json') -PathType Leaf)) {
+            throw 'The short CI cabinet source drive could not be bound to the verified payload.'
+        }
+        if (-not $imageDelivery) {
+            $runtimePayload = Join-Path $payload (Join-Path 'runtimes' ([string]$assembly.runtime.runtimeId))
+            & $subst $runtimeDrive $runtimePayload
+            $runtimeMapped = $LASTEXITCODE -eq 0
+            if (-not $runtimeMapped -or -not (Test-Path -LiteralPath (Join-Path $runtimeCabinetRoot 'runtime.manifest') -PathType Leaf)) {
+                throw 'The short CI runtime cabinet drive could not be bound to the verified runtime.'
+            }
+        }
         $author = @($composer, 'author', '--payload', $payload, '--cabinet-source', $cabinetRoot,
             '--output', $payloadAuthoring, '--transaction-helper', $helper, '--transaction-output', $transactions)
         if (-not $imageDelivery) { $author += @('--cabinet-runtime-source', $runtimeCabinetRoot) }
@@ -274,16 +288,21 @@ try {
             (Join-Path $windows 'Product.wxs'), $payloadAuthoring, '-pdbtype', 'none', '-wx', '-out', $msi) 'msi-build'
     } catch { $cabinetFailure = $_ }
     finally {
-        if (-not $imageDelivery) {
-            & $subst $runtimeDrive /D
-            if ($LASTEXITCODE -ne 0 -and $null -eq $cabinetFailure) {
-                $cabinetFailure = [InvalidOperationException]::new('The short CI runtime cabinet drive could not be released.')
+        foreach ($mapping in @(
+            @{ owned=$runtimeMapped; drive=$runtimeDrive; error='The short CI runtime cabinet drive could not be released.' },
+            @{ owned=$cabinetMapped; drive=$cabinetDrive; error='The short CI cabinet source drive could not be released.' }
+        )) {
+            if ($mapping.owned) {
+                try {
+                    & $subst $mapping.drive /D
+                    if ($LASTEXITCODE -ne 0) { throw [InvalidOperationException]::new($mapping.error) }
+                } catch {
+                    $cabinetCleanupErrors.Add(@{ drive=$mapping.drive; error=$mapping.error })
+                    if ($null -eq $cabinetFailure) { $cabinetFailure = [InvalidOperationException]::new($mapping.error) }
+                }
             }
         }
-        & $subst $cabinetDrive /D
-        if ($LASTEXITCODE -ne 0 -and $null -eq $cabinetFailure) {
-            $cabinetFailure = [InvalidOperationException]::new('The short CI cabinet source drive could not be released.')
-        }
+        $receipt['cabinetCleanupErrors'] = @($cabinetCleanupErrors.ToArray())
     }
     if ($null -ne $cabinetFailure) { throw $cabinetFailure }
     # Same existing ICE60 exception as NemoClaw.wixproj; all other ICEs run.

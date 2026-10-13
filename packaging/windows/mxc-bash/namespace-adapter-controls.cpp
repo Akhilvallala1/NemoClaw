@@ -58,6 +58,16 @@ NTSTATUS NTAPI inspect_mutex_call(PHANDLE, ACCESS_MASK access, POBJECT_ATTRIBUTE
 }
 
 int main() {
+    for (DWORD mask : {0xbfu, 0x1bfu, 0x3bfu}) {
+        HANDLE marker = nullptr;
+        check_adapter(browser_ui_policy_admitted(mask, marker) && marker == nullptr,
+                      "legacy-browser-policy-unchanged-without-marker");
+    }
+    for (DWORD mask : {0u, 1u, 0x3ffu}) {
+        HANDLE marker = nullptr;
+        check_adapter(!browser_ui_policy_admitted(mask, marker) && marker == nullptr,
+                      "uncontained-or-unknown-browser-policy-refused");
+    }
     HANDLE borrowed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     check_adapter(borrowed != nullptr, "create-owned-control-event");
     for (const auto code : {0xc0000022u, 0xc0000034u, 0x80000005u}) {
@@ -113,5 +123,5 @@ int main() {
     }
     heldSharedDirectory = nullptr;
     printf("NEMOCLAW_MSYS_ADAPTER_CONTROLS=%u\n", controlsPassed);
-    return controlsPassed == 30 ? 0 : 1;
+    return controlsPassed == 36 ? 0 : 1;
 }

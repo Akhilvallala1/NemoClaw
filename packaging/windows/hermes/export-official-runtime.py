@@ -113,7 +113,90 @@ def git_inventory_summary(files):
     )
 
 
-def validate_reuse(runtime, inputs, output, inventory_owner, *, payload=None):
+def validate_compatibility_proof(proof, proof_sha, compat, mxc, controller_source):
+    if (
+        proof.get("passed") is not True
+        or proof.get("normalCleanup") is not True
+        or proof.get("inputs", {}).get("compatibility") != compat
+        or proof.get("inputs", {}).get("mxcBuild") != mxc
+        or compat.get("status") != "built"
+    ):
+        raise ValueError("The compatibility bytes lack their passed Windows proof")
+    classification = proof.get("classification")
+    if classification == "small-msys-appcontainer-compatibility-proof":
+        if (
+            proof_sha
+            != "59019111819aa577c30fc494616932486effef4af8b5e850040ecac860a93a1a"
+            or proof.get("sourceRevision")
+            != "43c9e32485f802ac277d9d0f7959c802facda04d"
+        ):
+            raise ValueError("The exact historical Windows compatibility proof changed")
+        return
+    if (
+        classification != "small-msys-native-basecontainer-compatibility-proof"
+        or type(proof.get("schemaVersion")) is not int
+        or proof["schemaVersion"] != 2
+        or not re.fullmatch(r"[a-f0-9]{40}", controller_source or "")
+        or proof.get("sourceRevision") != controller_source
+        or proof.get("imageVariant")
+        != "ci-derived-unsigned-msys-dll-bash-and-sh-dynamic-base"
+        or compat.get("sourceRevision") != controller_source
+        or compat.get("classification") != "mxc-msys-compatibility-prototype-build"
+        or compat.get("runtimeExecuted") is not False
+        or compat.get("qualified") is not False
+        or compat.get("cleanupErrors") != []
+        or type(mxc.get("schemaVersion")) is not int
+        or mxc["schemaVersion"] != 2
+        or mxc.get("classification") != "mxc-native-owned-token-inspection-build"
+        or mxc.get("candidateRevision") != controller_source
+        or mxc.get("status") != "built"
+        or mxc.get("tokenQueryRepairSupported") is not True
+        or mxc.get("tokenAccessMode") != "owned-child-query-only"
+        or mxc.get("nativeOwnerIdentity") != "held-primary-appcontainer-token"
+        or mxc.get("sourceCommit") != "7cd00d1ee6af9208322c924ef64e5113f6704639"
+        or mxc.get("sourceSha256")
+        != "9467669fda03a7ad0000a7bc9e0b0d1cab44b1979ee437dd96e8b93646e18029"
+        or type(mxc.get("sourceBytes")) is not int or mxc["sourceBytes"] != 6545666
+        or mxc.get("target") != "aarch64-pc-windows-msvc"
+        or mxc.get("runtimeExecuted") is not False
+        or mxc.get("qualified") is not False
+        or mxc.get("compilerClosed") is not True
+        or mxc.get("compilerForced") is not False
+        or type(mxc.get("compilerExitCode")) is not int
+        or mxc["compilerExitCode"] != 0
+        or mxc.get("compilerCleanupErrors") != []
+    ):
+        raise ValueError("Native compatibility proof does not match this controller build")
+    files = mxc.get("files", [])
+    if (
+        not isinstance(files, list) or len(files) != 1
+        or files[0].get("file") != "wxc-exec.exe"
+        or type(files[0].get("machine")) is not int or files[0]["machine"] != 0xAA64
+        or type(files[0].get("bytes")) is not int
+        or files[0]["bytes"] <= 0
+        or not re.fullmatch(r"[a-f0-9]{64}", files[0].get("sha256", ""))
+        or proof["inputs"].get("mxcSha256") != files[0]["sha256"]
+    ):
+        raise ValueError("Native compatibility proof has a different executor identity")
+    source_names = [row["path"] for row in compat.get("sourceFiles", [])]
+    if len(source_names) != 9 or set(source_names) != {
+        "compat-launcher.cpp", "process-propagation.cpp", "process-propagation.h",
+        "namespace-compat.cpp", "namespace-path.h", "namespace-security.h",
+        "namespace-controls.cpp", "namespace-adapter-controls.cpp", "compat.def",
+    }:
+        raise ValueError("Native compatibility proof lacks its complete source set")
+    spec = importlib.util.spec_from_file_location(
+        "native_compatibility_proof",
+        Path(__file__).parents[1] / "mxc-bash/native-compatibility-proof.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.validate_native_proof(proof, compat, mxc, controller_source)
+
+
+def validate_reuse(
+    runtime, inputs, output, inventory_owner, *, payload=None, controller_source=None
+):
     """Bind the one-package rebuild and exact Git/compat changes to the full base."""
     if sys.platform != "win32" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise ValueError("Complete runtime reuse requires Windows CI")
@@ -166,28 +249,14 @@ def validate_reuse(runtime, inputs, output, inventory_owner, *, payload=None):
     ):
         raise ValueError("First-launch Git setup returned to the runtime")
     proof_path = Path(inputs["compatibilityProof"])
-    if (
-        digest(proof_path)
-        != "59019111819aa577c30fc494616932486effef4af8b5e850040ecac860a93a1a"
-    ):
-        raise ValueError("The exact passed Windows compatibility proof changed")
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
     compat_path = Path(inputs["compatibilityReceipt"])
     compat = json.loads(compat_path.read_text(encoding="utf-8"))
     mxc_path = Path(inputs["mxcBuildReceipt"])
     mxc = json.loads(mxc_path.read_text(encoding="utf-8"))
-    if (
-        proof.get("classification") != "small-msys-appcontainer-compatibility-proof"
-        or proof.get("sourceRevision") != "43c9e32485f802ac277d9d0f7959c802facda04d"
-        or proof.get("passed") is not True
-        or proof.get("normalCleanup") is not True
-        or proof["inputs"]["compatibility"] != compat
-        or proof["inputs"]["mxcBuild"] != mxc
-        or compat.get("status") != "built"
-    ):
-        raise ValueError(
-            "The reused compatibility bytes lack their passed Windows proof"
-        )
+    validate_compatibility_proof(
+        proof, digest(proof_path), compat, mxc, controller_source
+    )
     source_directory = here.parent / "mxc-bash"
     for row in compat["sourceFiles"]:
         if (
@@ -446,6 +515,7 @@ def main():
                 output,
                 inventory,
                 payload=payload,
+                controller_source=args.controller_source,
             )
         save(output / "payload-inventory.json", payload)
         save(

@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
+    fn GetSecurityDescriptorLength(descriptor: *const c_void) -> u32;
     fn ConvertStringSidToSidW(string: *const u16, sid: *mut *mut c_void) -> i32;
     fn GetSecurityDescriptorDacl(
         descriptor: *const c_void,
@@ -23,6 +24,73 @@ unsafe extern "system" {
         dacl: *const Acl,
         sacl: *const Acl,
     ) -> u32;
+}
+
+fn security_bytes(handle: &Handle) -> Vec<u8> {
+    let mut descriptor = null_mut();
+    assert_eq!(
+        unsafe {
+            GetSecurityInfo(
+                handle.0,
+                1,
+                5,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut descriptor,
+            )
+        },
+        0
+    );
+    let _memory = LocalMemory(descriptor);
+    let length = unsafe { GetSecurityDescriptorLength(descriptor) } as usize;
+    assert!(length > 0 && length <= 65536);
+    unsafe { std::slice::from_raw_parts(descriptor.cast::<u8>(), length).to_vec() }
+}
+
+#[test]
+fn inspection_of_absent_state_does_not_create_a_directory() {
+    let sid = current_sid().unwrap();
+    let root = format!(
+        "{}:\\NemoClawState-{}",
+        windows_drive().unwrap(),
+        unique_name()
+    );
+    assert!(!Path::new(&root).exists());
+    assert!(open_state_directory(&root, &sid, true).unwrap().is_none());
+    assert!(!Path::new(&root).exists());
+}
+
+#[test]
+fn inspection_preserves_data_security_and_sharing_until_release() {
+    let fixture = Fixture::new();
+    let marker = Path::new(&fixture.root).join("qualification-marker.txt");
+    std::fs::write(&marker, b"retained settings").unwrap();
+    let before = {
+        let handle = open_state_directory(&fixture.root, &fixture.sid, true)
+            .unwrap()
+            .unwrap();
+        security_bytes(&handle)
+    };
+    let handle = open_state_directory(&fixture.root, &fixture.sid, true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(security_bytes(&handle), before);
+    assert_eq!(std::fs::read(&marker).unwrap(), b"retained settings");
+    let moved = format!("{}.moved", fixture.root);
+    let rename = std::fs::rename(&fixture.root, &moved);
+    if rename.is_ok() {
+        std::fs::rename(&moved, &fixture.root).unwrap();
+    }
+    assert!(rename.is_err());
+    verify_security(&handle, &fixture.sid, true).unwrap();
+    drop(handle);
+    let after = open_state_directory(&fixture.root, &fixture.sid, true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(security_bytes(&after), before);
+    assert_eq!(std::fs::read(&marker).unwrap(), b"retained settings");
 }
 
 fn unique_name() -> String {
@@ -215,6 +283,12 @@ fn reparse_state_is_rejected_without_following_the_target() {
     std::os::windows::fs::symlink_dir(&target.root, &fixture.root).unwrap();
     let error = state_directory(&fixture.root, &fixture.sid).err().unwrap();
     assert!(error.contains("without a reparse point"));
+    assert!(
+        open_state_directory(&fixture.root, &fixture.sid, true)
+            .err()
+            .unwrap()
+            .contains("without a reparse point")
+    );
     assert!(Path::new(&target.root).is_dir());
 }
 
@@ -232,6 +306,12 @@ fn an_existing_foreign_owner_is_rejected_without_repair() {
     fixture.write_security(1, administrator_sid, null());
     let error = state_directory(&fixture.root, &fixture.sid).err().unwrap();
     assert!(error.contains("belongs to another Windows account"));
+    assert!(
+        open_state_directory(&fixture.root, &fixture.sid, true)
+            .err()
+            .unwrap()
+            .contains("belongs to another Windows account")
+    );
 }
 
 #[test]
@@ -265,6 +345,12 @@ fn a_broad_access_grant_is_rejected_without_rewriting_existing_state() {
     fixture.write_security(0x8000_0004, null(), dacl);
     let error = state_directory(&fixture.root, &fixture.sid).err().unwrap();
     assert!(error.contains("unexpected grants"));
+    assert!(
+        open_state_directory(&fixture.root, &fixture.sid, true)
+            .err()
+            .unwrap()
+            .contains("unexpected grants")
+    );
 }
 
 #[test]

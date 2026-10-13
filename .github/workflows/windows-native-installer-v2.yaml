@@ -48,7 +48,7 @@ on:
         default: ""
         type: string
       finished_windows_workflow_sha:
-        description: Exact current main SHA containing the trusted controller
+        description: Exact workflow SHA (main for qualification, PR head for credential-free build)
         required: false
         default: ""
         type: string
@@ -66,13 +66,19 @@ on:
         default: "0.1.10"
         type: string
       finished_windows_validation_scope:
-        description: Full installed lifecycle with real inference, or startup-only with a local mock model
+        description: Protected full lifecycle, credential-free OpenClaw startup, or candidate build only
         required: false
         default: full-acceptance
         type: choice
         options:
           - full-acceptance
           - startup-only
+          - build-only
+      build_windows_native_candidate:
+        description: Build an exact internal PR installer without inference credentials, installation or publication
+        required: false
+        default: false
+        type: boolean
       run_windows_native_installer:
         description: Build the selected finished native preview installer, then test it
         required: false
@@ -150,20 +156,20 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      request_kind: ${{ steps.pull_request.outputs.request_kind || steps.authorize.outputs.request_kind || steps.diagnostic.outputs.request_kind }}
-      candidate_repository: ${{ steps.pull_request.outputs.candidate_repository || steps.authorize.outputs.candidate_repository || steps.diagnostic.outputs.candidate_repository }}
-      candidate_sha: ${{ steps.pull_request.outputs.candidate_sha || steps.authorize.outputs.candidate_sha || steps.diagnostic.outputs.candidate_sha }}
-      base_sha: ${{ steps.pull_request.outputs.base_sha || steps.authorize.outputs.base_sha || steps.diagnostic.outputs.base_sha }}
-      pr_number: ${{ steps.pull_request.outputs.pr_number || steps.authorize.outputs.pr_number }}
-      workflow_sha: ${{ steps.pull_request.outputs.workflow_sha || steps.authorize.outputs.workflow_sha || steps.diagnostic.outputs.workflow_sha }}
-      agent: ${{ steps.pull_request.outputs.agent || steps.authorize.outputs.agent || steps.diagnostic.outputs.agent }}
-      product_version: ${{ steps.pull_request.outputs.product_version || steps.authorize.outputs.product_version || steps.diagnostic.outputs.product_version }}
-      validation_scope: ${{ steps.pull_request.outputs.validation_scope || steps.authorize.outputs.validation_scope || steps.diagnostic.outputs.validation_scope }}
-      build_allowed: ${{ steps.pull_request.outputs.build_allowed || steps.authorize.outputs.build_allowed || steps.diagnostic.outputs.build_allowed }}
-      trusted_main: ${{ steps.pull_request.outputs.trusted_main || steps.authorize.outputs.trusted_main || steps.diagnostic.outputs.trusted_main }}
-      exact_workflow: ${{ steps.pull_request.outputs.exact_workflow || steps.authorize.outputs.exact_workflow || steps.diagnostic.outputs.exact_workflow }}
-      exact_pr: ${{ steps.pull_request.outputs.exact_pr || steps.authorize.outputs.exact_pr || steps.diagnostic.outputs.exact_pr }}
-      credential_authorized: ${{ steps.pull_request.outputs.credential_authorized || steps.authorize.outputs.credential_authorized || steps.diagnostic.outputs.credential_authorized }}
+      request_kind: ${{ steps.pull_request.outputs.request_kind || steps.candidate_build.outputs.request_kind || steps.authorize.outputs.request_kind || steps.diagnostic.outputs.request_kind }}
+      candidate_repository: ${{ steps.pull_request.outputs.candidate_repository || steps.candidate_build.outputs.candidate_repository || steps.authorize.outputs.candidate_repository || steps.diagnostic.outputs.candidate_repository }}
+      candidate_sha: ${{ steps.pull_request.outputs.candidate_sha || steps.candidate_build.outputs.candidate_sha || steps.authorize.outputs.candidate_sha || steps.diagnostic.outputs.candidate_sha }}
+      base_sha: ${{ steps.pull_request.outputs.base_sha || steps.candidate_build.outputs.base_sha || steps.authorize.outputs.base_sha || steps.diagnostic.outputs.base_sha }}
+      pr_number: ${{ steps.pull_request.outputs.pr_number || steps.candidate_build.outputs.pr_number || steps.authorize.outputs.pr_number }}
+      workflow_sha: ${{ steps.pull_request.outputs.workflow_sha || steps.candidate_build.outputs.workflow_sha || steps.authorize.outputs.workflow_sha || steps.diagnostic.outputs.workflow_sha }}
+      agent: ${{ steps.pull_request.outputs.agent || steps.candidate_build.outputs.agent || steps.authorize.outputs.agent || steps.diagnostic.outputs.agent }}
+      product_version: ${{ steps.pull_request.outputs.product_version || steps.candidate_build.outputs.product_version || steps.authorize.outputs.product_version || steps.diagnostic.outputs.product_version }}
+      validation_scope: ${{ steps.pull_request.outputs.validation_scope || steps.candidate_build.outputs.validation_scope || steps.authorize.outputs.validation_scope || steps.diagnostic.outputs.validation_scope }}
+      build_allowed: ${{ steps.pull_request.outputs.build_allowed || steps.candidate_build.outputs.build_allowed || steps.authorize.outputs.build_allowed || steps.diagnostic.outputs.build_allowed }}
+      trusted_main: ${{ steps.pull_request.outputs.trusted_main || steps.candidate_build.outputs.trusted_main || steps.authorize.outputs.trusted_main || steps.diagnostic.outputs.trusted_main }}
+      exact_workflow: ${{ steps.pull_request.outputs.exact_workflow || steps.candidate_build.outputs.exact_workflow || steps.authorize.outputs.exact_workflow || steps.diagnostic.outputs.exact_workflow }}
+      exact_pr: ${{ steps.pull_request.outputs.exact_pr || steps.candidate_build.outputs.exact_pr || steps.authorize.outputs.exact_pr || steps.diagnostic.outputs.exact_pr }}
+      credential_authorized: ${{ steps.pull_request.outputs.credential_authorized || steps.candidate_build.outputs.credential_authorized || steps.authorize.outputs.credential_authorized || steps.diagnostic.outputs.credential_authorized }}
     steps:
       - name: Admit the exact pull request head without credentials
         id: pull_request
@@ -195,9 +201,74 @@ jobs:
             echo 'exact_pr=true'
             echo 'credential_authorized=false'
           } >> "$GITHUB_OUTPUT"
+      - name: Admit an exact credential-free candidate build
+        id: candidate_build
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_windows_native_candidate }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.finished_windows_pr_number }}
+          CANDIDATE_REPOSITORY: ${{ inputs.finished_windows_candidate_repository }}
+          CANDIDATE_SHA: ${{ inputs.finished_windows_candidate_sha }}
+          BASE_SHA: ${{ inputs.finished_windows_base_sha }}
+          EXPECTED_WORKFLOW_SHA: ${{ inputs.finished_windows_workflow_sha }}
+          SELECTED_AGENT: ${{ inputs.finished_windows_agent }}
+          PRODUCT_VERSION: ${{ inputs.finished_windows_product_version }}
+          VALIDATION_SCOPE: ${{ inputs.finished_windows_validation_scope }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          EVENT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          PROTECTED_REQUEST: ${{ inputs.run_windows_native_installer }}
+          OTHER_COMPONENTS: ${{ inputs.probe_official_hermes_components }}
+          OTHER_PROFILE: ${{ inputs.profile_native_windows }}
+          OTHER_RUNTIME: ${{ inputs.test_native_windows_runtime }}
+          DIAGNOSTIC_SOURCE_RUN: ${{ inputs.windows_native_diagnostic_source_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'NVIDIA/NemoClaw' && "$CANDIDATE_REPOSITORY" == "$GITHUB_REPOSITORY" ]]
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ && "$BASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_WORKFLOW_SHA" == "$CANDIDATE_SHA" && "$EVENT_SHA" == "$CANDIDATE_SHA" && "$EVENT_WORKFLOW_SHA" == "$CANDIDATE_SHA" ]]
+          [[ "$SELECTED_AGENT" =~ ^(openclaw|hermes)$ && "$VALIDATION_SCOPE" == 'build-only' ]]
+          [[ "$PRODUCT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$PROTECTED_REQUEST" == 'false' && "$OTHER_COMPONENTS" == 'false' && "$OTHER_PROFILE" == 'false' && "$OTHER_RUNTIME" == 'false' && -z "$DIAGNOSTIC_SOURCE_RUN" ]]
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          [[ "$(jq -r '.number' <<<"$pr")" == "$PR_NUMBER" && "$(jq -r '.state' <<<"$pr")" == 'open' ]]
+          [[ "$(jq -r '.base.repo.full_name' <<<"$pr")" == "$GITHUB_REPOSITORY" && "$(jq -r '.base.ref' <<<"$pr")" == 'main' ]]
+          [[ "$(jq -r '.base.sha' <<<"$pr")" == "$BASE_SHA" ]]
+          [[ "$(jq -r '.head.repo.full_name' <<<"$pr")" == "$CANDIDATE_REPOSITORY" ]]
+          [[ "$(jq -r '.head.repo.owner.login' <<<"$pr")" == 'NVIDIA' && "$(jq -r '.head.repo.owner.type' <<<"$pr")" == 'Organization' ]]
+          [[ "$(jq -r '.head.sha' <<<"$pr")" == "$CANDIDATE_SHA" ]]
+          [[ "$EVENT_REF" == "refs/heads/$(jq -r '.head.ref' <<<"$pr")" && "$EVENT_REF" != 'refs/heads/main' ]]
+          for principal in "$ACTOR" "$TRIGGERING_ACTOR"; do
+            permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$principal/permission" --jq '.permission')"
+            [[ "$permission" =~ ^(admin|maintain|write)$ ]]
+          done
+          current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          for field in '.number' '.state' '.base.repo.full_name' '.base.ref' '.base.sha' '.head.repo.full_name' '.head.repo.owner.login' '.head.repo.owner.type' '.head.ref' '.head.sha'; do
+            [[ "$(jq -r "$field" <<<"$current")" == "$(jq -r "$field" <<<"$pr")" ]]
+          done
+          {
+            echo 'request_kind=candidate-build'
+            echo "candidate_repository=$CANDIDATE_REPOSITORY"
+            echo "candidate_sha=$CANDIDATE_SHA"
+            echo "base_sha=$BASE_SHA"
+            echo "pr_number=$PR_NUMBER"
+            echo "workflow_sha=$EXPECTED_WORKFLOW_SHA"
+            echo "agent=$SELECTED_AGENT"
+            echo "product_version=$PRODUCT_VERSION"
+            echo 'validation_scope=build-only'
+            echo 'build_allowed=true'
+            echo 'trusted_main=false'
+            echo 'exact_workflow=false'
+            echo 'exact_pr=true'
+            echo 'credential_authorized=false'
+          } >> "$GITHUB_OUTPUT"
       - name: Resolve a credential-free diagnostic dispatch
         id: diagnostic
-        if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_windows_native_installer && inputs.windows_native_diagnostic_source_run_id == '') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.build_windows_native_candidate && !(inputs.run_windows_native_installer && inputs.windows_native_diagnostic_source_run_id == '') }}
         shell: bash
         env:
           CANDIDATE_SHA: ${{ github.sha }}
@@ -224,7 +295,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Authorize exact internal PR from the exact main controller
         id: authorize
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows_native_installer && inputs.windows_native_diagnostic_source_run_id == '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.build_windows_native_candidate && inputs.run_windows_native_installer && inputs.windows_native_diagnostic_source_run_id == '' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -586,7 +657,14 @@ jobs:
             throw 'The Bash compatibility transfer is not exact.'
           }
           Copy-Item -LiteralPath "$transfer\native-proof" -Destination "$env:RUNNER_TEMP\finished-windows\native-proof" -Recurse
-      - name: Verify the explicitly pinned Personal-passing complete Hermes candidate
+      - name: Prepare pinned interpreters for the finished Hermes producer
+        if: ${{ needs.windows-finished-request.outputs.agent == 'hermes' }}
+        shell: pwsh
+        run: |
+          $env:GITHUB_SHA = $env:CANDIDATE_SHA
+          & "$env:GITHUB_WORKSPACE\candidate\packaging\windows\hermes\test-official-runtime-export.ps1" `
+            -ArtifactDirectory "$env:RUNNER_TEMP\finished-windows\personal-bootstrap"
+      - name: Produce and test Hermes with the same-run native binaries
         if: ${{ needs.windows-finished-request.outputs.agent == 'hermes' }}
         shell: pwsh
         env:
@@ -594,7 +672,22 @@ jobs:
         run: |
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
           $work = "$env:RUNNER_TEMP\finished-windows"
+          $revision = (& git -C "$env:GITHUB_WORKSPACE\candidate" rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $revision -cne $env:CANDIDATE_SHA) { throw 'Hermes producer checkout differs from the admitted candidate.' }
+          $rustc = & rustup which --toolchain 1.95.0-aarch64-pc-windows-msvc rustc
+          if ($LASTEXITCODE -ne 0) { throw 'The pinned ConPTY compiler is unavailable.' }
+          & "$env:GITHUB_WORKSPACE\candidate\packaging\windows\hermes\probe-personal-candidate.ps1" `
+            -ArtifactDirectory "$work\personal-production" -BootstrapDirectory "$work\personal-bootstrap" `
+            -HelperDirectory "$work\system-drive-helper" -NativeCompatibilityDirectory "$work\native-proof\bash-compat-evidence" `
+            -RustBinDirectory (Split-Path -Parent $rustc)
+      - name: Admit the same-run Personal-passing complete Hermes candidate
+        if: ${{ needs.windows-finished-request.outputs.agent == 'hermes' }}
+        shell: pwsh
+        run: |
+          $env:GITHUB_SHA = $env:CANDIDATE_SHA
+          $work = "$env:RUNNER_TEMP\finished-windows"
           & python "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\prepare-finished-hermes.py" `
+            --same-run-personal-directory "$work\personal-production" `
             --output "$work\hermes-input" --native-proof-directory "$work\native-proof\bash-compat-evidence" --source-revision $env:GITHUB_SHA
           if ($LASTEXITCODE -ne 0) { throw 'The exact complete Personal-passing Hermes input was not admitted.' }
       - name: Seal only Hermes with current-source native compatibility and precompiled workers
@@ -732,6 +825,8 @@ jobs:
             "$work\hermes-input\intake.json",
             "$work\hermes-input\personal-feasibility.json",
             "$work\hermes-input\personal-request.json",
+            "$work\hermes-input\mxc-native.log",
+            "$work\personal-bootstrap\export-controls.json",
             "$work\hermes-input\current-native-proof.json",
             "$work\hermes-input\current-msys-build.json",
             "$work\hermes-input\current-mxc-build.json",
@@ -743,6 +838,9 @@ jobs:
           )
           foreach ($pattern in @(
             "$work\assembled\*.json", "$work\hermes-input\candidate\*.json",
+            "$work\personal-production\*.json", "$work\personal-production\*.log",
+            "$work\personal-production\personal-mxc\*.json", "$work\personal-production\personal-mxc\*.log",
+            "$work\personal-production\official-hermes-runtime-build\*.log",
             "$work\package\*.json", "$work\package\build\*.log",
             "$work\*.log", "$work\openshell-logs\*.log"
           )) {
@@ -841,7 +939,7 @@ jobs:
   windows-finished-candidate-migration:
     name: Credential-free candidate migration controllers (ARM64)
     needs: [windows-finished-request, windows-finished-installer]
-    if: ${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-installer.result == 'success' }}
+    if: ${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 35
     permissions:
@@ -1077,9 +1175,12 @@ jobs:
           $log = Join-Path $output 'observer-cleanup-tests.log'
           $tests = @(
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/app/runtime-published-resources.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/build-immutable-package-cleanup.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/control-installed-openclaw-input.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/qualify-installed-openclaw.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/mxc-probe-identity.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-ui-lifecycle.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-web-session.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-gateway-configuration.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-turn-cleanup.test.mts')
           )
@@ -1192,6 +1293,7 @@ jobs:
           & "$work\node\node.exe" --experimental-strip-types --no-warnings --test `
             packaging/windows/app/choice-inspect-diagnostics.test.mts `
             packaging/windows/installer/qualify-installed-hermes.test.mts `
+            packaging/windows/installer/qualify-installed-openclaw.test.mts `
             packaging/windows/installer/windows-native-transfer.test.mts `
             packaging/windows/runtime/native-configuration-credentials.test.mts `
             packaging/windows/runtime/native-setup-transaction.test.mts `
@@ -1813,12 +1915,13 @@ jobs:
           retention-days: 14
 
   windows-bash-compatibility-reuse:
-    name: Reuse byte-identical canonical Bash qualification
+    # Keep the job/output identity used by the same-run installer transfer.
+    name: Build and qualify current native Bash inputs
     needs: windows-finished-request
     if: ${{ needs.windows-finished-request.outputs.build_allowed == 'true' && needs.windows-finished-request.outputs.agent == 'hermes' }}
-    runs-on: ubuntu-latest
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 25
     permissions:
-      actions: read
       contents: read
     outputs:
       compatibility_cache_key: ${{ steps.compatibility_manifest.outputs.cache_key }}
@@ -1831,48 +1934,102 @@ jobs:
           ref: ${{ needs.windows-finished-request.outputs.candidate_sha }}
           path: current
           persist-credentials: false
-      - name: Check out the passing baseline inputs
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: 67c9166dcf0523cb5a8e689611d2acdb5aa8574c
-          path: baseline
-          persist-credentials: false
-      - name: Download the immutable passing Bash evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: bash-compatibility-67c9166dcf0523cb5a8e689611d2acdb5aa8574c-1
-          github-token: ${{ github.token }}
-          run-id: 35207682561
-          path: baseline-evidence
-      - name: Require byte-identical producer inputs and rebind receipts
+      - name: Verify exact native producer source
+        shell: pwsh
         env:
           CANDIDATE_SHA: ${{ needs.windows-finished-request.outputs.candidate_sha }}
         run: |
-          export GITHUB_SHA="$CANDIDATE_SHA"
-          python current/packaging/windows/mxc-bash/reuse-qualified-proof.py \
-            --current current --baseline baseline --evidence baseline-evidence \
-            --output reused-evidence --current-source "$GITHUB_SHA"
+          $revision = (& git -C current rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $revision -cne $env:CANDIDATE_SHA) { throw 'The native producer checkout differs from the admitted candidate.' }
+      - name: Prepare pinned Rust for the existing metadata helper
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.95.0
+          target: aarch64-pc-windows-msvc
+          cache: false
+      - name: Build the existing fixed-purpose system-drive metadata helper
+        shell: pwsh
+        env:
+          CANDIDATE_SHA: ${{ needs.windows-finished-request.outputs.candidate_sha }}
+        run: |
+          $env:GITHUB_SHA = $env:CANDIDATE_SHA
+          & current/packaging/windows/host-preparation/build-helper.ps1 -OutputDirectory "$env:RUNNER_TEMP\finished-bash-helper"
+      - name: Prepare upstream-pinned Rust for MXC token inspection
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.93.0
+          target: aarch64-pc-windows-msvc
+          cache: false
+          override: false
+      - name: Build and qualify exact current native compatibility
+        shell: pwsh
+        env:
+          CANDIDATE_SHA: ${{ needs.windows-finished-request.outputs.candidate_sha }}
+        run: |
+          $env:GITHUB_SHA = $env:CANDIDATE_SHA
+          & current/packaging/windows/mxc-bash/run-bash-compat.ps1 `
+            -SourceRoot "$env:GITHUB_WORKSPACE\current" `
+            -ArtifactDirectory "$env:RUNNER_TEMP\finished-bash-evidence" `
+            -HelperDirectory "$env:RUNNER_TEMP\finished-bash-helper"
       - name: Seal same-run exact-input Bash evidence
         id: compatibility_manifest
         shell: pwsh
         env:
           CANDIDATE_SHA: ${{ needs.windows-finished-request.outputs.candidate_sha }}
         run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'finished-bash-evidence'
+          $proof = Get-Content -LiteralPath (Join-Path $evidence 'result.json') -Raw | ConvertFrom-Json
+          $runner = Get-Content -LiteralPath (Join-Path $evidence 'runner-result.json') -Raw | ConvertFrom-Json
+          if ($proof.schemaVersion -ne 2 -or $proof.classification -cne 'small-msys-native-basecontainer-compatibility-proof' -or
+              $proof.sourceRevision -cne $env:CANDIDATE_SHA -or $proof.passed -cne $true -or $proof.normalCleanup -cne $true -or
+              $runner.sourceRevision -cne $env:CANDIDATE_SHA -or $runner.status -cne 'pass' -or
+              $runner.cleanup.workRootRemoved -cne $true -or $runner.cleanup.workRetainedForUnconfirmedExecutor -cne $false) {
+            throw 'The current native Bash execution or cleanup did not pass.'
+          }
           $transfer = Join-Path $env:RUNNER_TEMP 'finished-windows-bash-transfer'
-          [void][IO.Directory]::CreateDirectory($transfer)
-          Copy-Item -LiteralPath reused-evidence -Destination (Join-Path $transfer 'native-proof') -Recurse
+          if (Test-Path -LiteralPath $transfer) { throw 'The native Bash transfer must be fresh.' }
+          $destination = Join-Path $transfer 'native-proof/bash-compat-evidence'
+          [void][IO.Directory]::CreateDirectory($destination)
+          # Preserve the producer's evidence layout, excluding only the same
+          # build/download trees omitted by the standalone Bash evidence lane.
+          $items = @(Get-ChildItem -LiteralPath $evidence -Recurse -Force)
+          if (@($items | Where-Object { $_.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) }).Count -ne 0) {
+            throw 'Native Bash evidence contains a reparse point.'
+          }
+          foreach ($file in $items | Where-Object { $_ -is [IO.FileInfo] }) {
+            $relative = [IO.Path]::GetRelativePath($evidence, $file.FullName).Replace('\', '/')
+            if ($relative -match '^(?:downloads|build|compatibility-build/build|mxc-token-inspection-build/build)/' -or
+                $relative -eq 'node/node.exe' -or $relative -match '^node/[^/]+\.zip$') { continue }
+            $target = Join-Path $destination $relative
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $target))
+            Copy-Item -LiteralPath $file.FullName -Destination $target
+          }
           $manifest = @(& current/scripts/checks/windows-native-transfer.ps1 -Mode Create -Root $transfer `
             -Kind bash-compatibility -SourceRevision $env:CANDIDATE_SHA -Agent hermes `
             -RunId $env:GITHUB_RUN_ID -RunAttempt $env:GITHUB_RUN_ATTEMPT)
           if ($manifest.Count -ne 1 -or [string]$manifest[0] -cnotmatch '^[a-f0-9]{64}$') { throw 'The Bash transfer manifest failed.' }
           "manifest_sha256=$([string]$manifest[0])" >> $env:GITHUB_OUTPUT
-          "cache_key=windows-finished-bash-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_SHA-hermes" >> $env:GITHUB_OUTPUT
+          "cache_key=windows-finished-bash-v2-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_SHA-hermes" >> $env:GITHUB_OUTPUT
       - name: Save executable-bearing compatibility inputs only in the same-run cache
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/finished-windows-bash-transfer
           key: ${{ steps.compatibility_manifest.outputs.cache_key }}
           enableCrossOsArchive: true
+      - name: Preserve current native Bash diagnostic records without executables
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: finished-native-bash-records-${{ needs.windows-finished-request.outputs.candidate_sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/finished-bash-evidence/**/*.json
+            ${{ runner.temp }}/finished-bash-evidence/**/*.log
+            !${{ runner.temp }}/finished-bash-evidence/downloads/
+            !${{ runner.temp }}/finished-bash-evidence/build/
+            !${{ runner.temp }}/finished-bash-evidence/compatibility-build/build/
+            !${{ runner.temp }}/finished-bash-evidence/mxc-token-inspection-build/build/
+          if-no-files-found: warn
+          retention-days: 7
 
   windows-bash-compatibility:
     name: Canonical Bash private-namespace prototype (Windows ARM64)
@@ -1935,7 +2092,8 @@ jobs:
     name: Canonical Hermes candidate Personal MXC feasibility (Windows ARM64)
     if: ${{ github.event_name == 'workflow_dispatch' && !inputs.run_windows_native_installer && inputs.probe_official_hermes_components && (inputs.official_hermes_phase == 'personal-browser-first' || inputs.official_hermes_phase == 'personal-candidate' || inputs.official_hermes_phase == 'personal-cold-job' || inputs.official_hermes_phase == 'personal-renderer-wer' || inputs.official_hermes_phase == 'personal-postmortem') && !inputs.test_native_windows_runtime && !inputs.profile_native_windows }}
     runs-on: windows-11-vs2026-arm
-    # Replays complete immutable candidate bytes with a separately proved native component.
+    # Ordinary qualification derives the current complete base with same-run native proof.
+    # Explicit historical diagnostic phases retain their immutable replay contract.
     # The contained component/startup deadlines remain unchanged.
     timeout-minutes: 60
     permissions:
@@ -1967,11 +2125,33 @@ jobs:
         shell: pwsh
         run: |
           & packaging/windows/host-preparation/build-helper.ps1 -OutputDirectory "$env:RUNNER_TEMP\personal-helper"
-      - name: Replay the complete candidate and test canonical Personal components
+      - name: Prepare pinned native Rust for Personal compatibility
+        if: ${{ inputs.official_hermes_phase == 'personal-candidate' }}
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.93.0
+          target: aarch64-pc-windows-msvc
+          override: false
+          cache: false
+      - name: Build and qualify current Personal native inputs
+        if: ${{ inputs.official_hermes_phase == 'personal-candidate' }}
+        shell: pwsh
+        run: |
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:GITHUB_SHA) { throw 'Personal producer checkout differs from its source.' }
+          & packaging/windows/mxc-bash/run-bash-compat.ps1 -SourceRoot $env:GITHUB_WORKSPACE `
+            -ArtifactDirectory "$env:RUNNER_TEMP\personal-native-inputs" -HelperDirectory "$env:RUNNER_TEMP\personal-helper"
+      - name: Prepare the complete candidate and test canonical Personal components
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $native = @{}
+          if ("${{ inputs.official_hermes_phase }}" -ceq 'personal-candidate') {
+            $rustc = & rustup which --toolchain 1.95.0 rustc
+            if ($LASTEXITCODE -ne 0) { throw 'The pinned ConPTY Rust compiler is unavailable.' }
+            $native = @{ NativeCompatibilityDirectory = "$env:RUNNER_TEMP\personal-native-inputs"; RustBinDirectory = (Split-Path -Parent $rustc) }
+          }
           & packaging/windows/hermes/probe-personal-candidate.ps1 `
             -ArtifactDirectory "$env:RUNNER_TEMP\official-hermes-personal" `
             -BootstrapDirectory "$env:RUNNER_TEMP\personal-bootstrap" `
@@ -1981,7 +2161,28 @@ jobs:
             -ColdJobProbe:("${{ inputs.official_hermes_phase }}" -ceq 'personal-cold-job') `
             -RendererWer:("${{ inputs.official_hermes_phase }}" -ceq 'personal-renderer-wer') `
             -RendererPostmortem:("${{ inputs.official_hermes_phase }}" -ceq 'personal-postmortem') `
-            -BrowserFirst:("${{ inputs.official_hermes_phase }}" -ceq 'personal-browser-first')
+            -BrowserFirst:("${{ inputs.official_hermes_phase }}" -ceq 'personal-browser-first') @native
+      - name: Preserve current native Personal runtime inputs
+        if: ${{ success() && inputs.official_hermes_phase == 'personal-candidate' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: official-hermes-native-personal-runtime-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/official-hermes-personal/official-hermes-runtime-candidate/
+            ${{ runner.temp }}/official-hermes-personal/official-hermes-runtime-build/official-runtime-build.json
+            ${{ runner.temp }}/official-hermes-personal/official-hermes-runtime-build/native-adaptation.json
+            ${{ runner.temp }}/official-hermes-personal/official-hermes-runtime-phase.json
+            ${{ runner.temp }}/official-hermes-personal/personal-phase.json
+            ${{ runner.temp }}/official-hermes-personal/personal-mxc/
+            ${{ runner.temp }}/personal-native-inputs/
+            !${{ runner.temp }}/personal-native-inputs/downloads/
+            !${{ runner.temp }}/personal-native-inputs/build/
+            !${{ runner.temp }}/personal-native-inputs/compatibility-build/build/
+            !${{ runner.temp }}/personal-native-inputs/mxc-token-inspection-build/build/
+            !${{ runner.temp }}/personal-native-inputs/node/node.exe
+            !${{ runner.temp }}/personal-native-inputs/node/*.zip
+          if-no-files-found: error
+          retention-days: 7
       - name: Preserve small exact-candidate feasibility evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -2006,6 +2207,12 @@ jobs:
             ${{ runner.temp }}/personal-controls/
             ${{ runner.temp }}/personal-helper/build-receipt.json
             ${{ runner.temp }}/personal-helper/build.log
+            ${{ runner.temp }}/personal-native-inputs/**/*.json
+            ${{ runner.temp }}/personal-native-inputs/**/*.log
+            !${{ runner.temp }}/personal-native-inputs/downloads/
+            !${{ runner.temp }}/personal-native-inputs/build/
+            !${{ runner.temp }}/personal-native-inputs/compatibility-build/build/
+            !${{ runner.temp }}/personal-native-inputs/mxc-token-inspection-build/build/
           if-no-files-found: error
           retention-days: 7
 
@@ -2605,8 +2812,8 @@ jobs:
             $pythonResult = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           $pythonText = [string](Get-Content -LiteralPath $pythonLog -Raw)
-          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 132 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
-            throw 'The 132 MSI build and metadata controls did not all pass.'
+          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 164 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
+            throw 'The 164 MSI build and metadata controls did not all pass.'
           }
 
       - name: Build and exercise actual isolated MSI transactions

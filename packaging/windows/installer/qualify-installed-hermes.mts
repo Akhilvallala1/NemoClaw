@@ -20,6 +20,98 @@ import {
 import { childEnvironment, sanitizedFailure } from "./qualify-installed-openclaw.mts";
 import { nativeCredentialBinding, readOpenedRegularFile } from "../runtime/native-security.mts";
 import { sampleInstalledIdle } from "../tests/performance/installed-idle.mts";
+import { sanitizeNativeDiagnostic } from "../runtime/native-session-diagnostics.mts";
+
+export function captureHermesNativeFailure(file: string, hostPid: number, secret: string) {
+  const text = readOpenedRegularFile(file, {
+    encoding: "utf8",
+    maxBytes: 1024 * 1024,
+    rejectLinks: true,
+  });
+  if (text === null) return null;
+  const snapshot = JSON.parse(text);
+  assert(Number.isSafeInteger(hostPid) && hostPid > 0, "Native failure has no observed host owner");
+  assert.equal(snapshot?.schemaVersion, 1);
+  assert.equal(snapshot?.classification, "native-session-failure-evidence");
+  assert.equal(snapshot?.agent, "hermes");
+  assert.equal(snapshot?.interface, "dashboard");
+  assert.equal(snapshot?.nodeProcessId, hostPid, "Native failure belongs to a different host");
+  assert.equal(snapshot?.backendCleanupFinished, true);
+  assert(
+    [
+      "inference",
+      "runtime",
+      "broker",
+      "gateway",
+      "sandbox",
+      "bootstrap",
+      "dashboard",
+      "agent",
+      "cleanup",
+    ].includes(snapshot?.stage),
+    "Native failure has an invalid stage",
+  );
+  assert.equal(snapshot?.diagnostics?.schemaVersion, 1);
+  assert.equal(snapshot?.diagnostics?.classification, "native-session-failure");
+  assert.equal(snapshot?.diagnostics?.agent, "hermes");
+  assert.equal(snapshot?.diagnostics?.stage, snapshot.stage);
+  assert(
+    snapshot?.diagnostics?.failure &&
+      typeof snapshot.diagnostics.failure === "object" &&
+      !Array.isArray(snapshot.diagnostics.failure),
+  );
+  return {
+    sourceSha256: createHash("sha256").update(text).digest("hex"),
+    snapshot: JSON.parse(sanitizeNativeDiagnostic(text, [secret])),
+  };
+}
+
+export function validateHermesFailureNoticeClosure(
+  invoked: any,
+  completed: any,
+  failure: any,
+  observation: any,
+  guardianCode: number,
+  observerCode: number,
+) {
+  assert(failure, "Failed notice closure has no retained native failure");
+  assert.match(failure.sourceSha256 ?? "", /^[a-f0-9]{64}$/u);
+  assert.equal(failure.snapshot?.agent, "hermes");
+  assert.equal(invoked?.kind, "failure-notice-close-invoked");
+  assert.equal(completed?.kind, "failure-notice-closed");
+  assert(Number.isSafeInteger(observation?.rootPid) && observation.rootPid > 0);
+  assert(Number.isSafeInteger(observation?.hostPid) && observation.hostPid > 0);
+  assert(Number.isSafeInteger(observation?.sessionPid) && observation.sessionPid > 0);
+  assert.equal(invoked.rootPid, observation.rootPid);
+  assert.equal(completed.rootPid, observation.rootPid);
+  assert.equal(invoked.sessionPid, observation.sessionPid);
+  assert.equal(completed.sessionPid, observation.sessionPid);
+  assert.equal(completed.hostPid, observation.hostPid);
+  assert.match(observation.hostStartedUtc ?? "", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/u);
+  assert.equal(invoked.hostStartedUtc, observation.hostStartedUtc);
+  assert(Number.isSafeInteger(invoked.windowHandle) && invoked.windowHandle !== 0);
+  assert.equal(invoked.failure?.snapshotSha256, failure.sourceSha256);
+  assert.equal(invoked.failure?.hostPid, observation.hostPid);
+  assert.equal(failure.snapshot?.nodeProcessId, observation.hostPid);
+  assert.equal(invoked.failure?.agent, "hermes");
+  assert.equal(invoked.failure?.stage, failure.snapshot?.stage);
+  assert.equal(invoked.failure?.backendCleanupFinished, true);
+  assert.equal(completed.failure, true);
+  assert(Number.isSafeInteger(guardianCode) && guardianCode !== 0);
+  assert.equal(completed.exitCode, guardianCode);
+  assert.equal(observerCode, 1);
+  assert(Number.isFinite(completed.elapsedMs) && completed.elapsedMs >= 0);
+  return {
+    failure: true,
+    guardianClosed: true,
+    observerClosed: true,
+    sourceSha256: failure.sourceSha256,
+    elapsedMs: completed.elapsedMs,
+    guardianExitCode: guardianCode,
+    observerExitCode: observerCode,
+    successfulStop: false,
+  };
+}
 
 export function recordedHermesTerminal(messages: any[], command: string, sentinel: string) {
   for (const message of messages) {
@@ -143,6 +235,26 @@ export function validateHermesEdgeReceipt(receipt: any, sessionId: string) {
   assert.equal(receipt?.generalHostProxy, false);
   assert.equal(receipt?.inheritedKillOnCloseJob, true);
   return receipt;
+}
+
+export function validateHermesDashboardReady(ready: any, stateRoot: string, hostPid: number) {
+  assert.equal(ready?.schemaVersion, 1);
+  assert.equal(ready?.classification, "native-hermes-dashboard-qualification");
+  assert.equal(ready?.agent, "hermes");
+  assert.match(ready?.sessionId ?? "", /^[a-f0-9]{10}$/u);
+  assert(Number.isSafeInteger(hostPid) && hostPid > 0, "Hermes readiness has no observed host");
+  assert.equal(ready?.nodeProcessId, hostPid, "Hermes readiness belongs to a different host");
+  assert(Number.isSafeInteger(ready?.gatewayProcessId) && ready.gatewayProcessId > 0);
+  assert.equal(ready?.agentRuntimeRoot, stateRoot, "Hermes started with different agent data");
+  return ready;
+}
+
+export function validateHermesInstalledConfiguration(config: any, model: string) {
+  assert.equal(config?.model, model, "The live Hermes model differs from the onboarding selection");
+  assert.equal(config?.web?.keyless_fallback, false);
+  assert(config?.agent?.disabled_toolsets?.includes("web"));
+  assert.equal(config?.security?.allow_lazy_installs, false);
+  return config.model as string;
 }
 
 export function hermesInstalledToolCommand(nonce: string) {
@@ -531,6 +643,44 @@ export function hermesMessagesAfter(messages: any[], mark: number) {
   return [...messages].sort((left, right) => left.id - right.id).filter((row) => row.id > mark);
 }
 
+export function hermesTranscriptIdentity(sessionId: string, profile: string, messages: any[]) {
+  hermesTranscriptRoute(sessionId, profile, 1);
+  const ordered = hermesMessagesAfter(messages, 0);
+  assert(
+    ordered.length > 0 && ordered.length < 500,
+    "Hermes retention needs a complete transcript",
+  );
+  assert.equal(new Set(ordered.map((row) => row.id)).size, ordered.length);
+  assert(finalHermesTurn(ordered), "Hermes retention needs a completed conversation");
+  const retained = ordered.map(({ id, role, content, tool_calls, tool_call_id }) => ({
+    id,
+    role,
+    content,
+    tool_calls: typeof tool_calls === "string" ? JSON.parse(tool_calls) : (tool_calls ?? null),
+    tool_call_id: tool_call_id ?? null,
+  }));
+  return {
+    storedSessionId: sessionId,
+    profileName: profile,
+    messageCount: retained.length,
+    lastMessageId: retained.at(-1)!.id,
+    transcriptSha256: createHash("sha256").update(JSON.stringify(retained)).digest("hex"),
+  };
+}
+
+export function validateHermesRetainedTranscript(previous: any, detail: any) {
+  assert(previous, "The cold Hermes receipt has no retained conversation evidence");
+  assert.equal(detail?.session_id, previous.storedSessionId);
+  assert(Array.isArray(detail?.messages), "The retained Hermes conversation is missing");
+  const observed = hermesTranscriptIdentity(
+    previous.storedSessionId,
+    previous.profileName,
+    detail.messages,
+  );
+  assert.deepEqual(observed, previous, "The saved Hermes conversation changed across restart");
+  return observed;
+}
+
 function argument(name: string, fallback?: string) {
   const i = process.argv.indexOf(name);
   if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1];
@@ -616,7 +766,11 @@ async function main() {
     latest: any,
     stopInvoked = false,
     stopCompleted = false,
+    nativeLaunchAttempted = false,
+    nativeCleanupConfirmed = false,
     observerFailure: Error | undefined;
+  let failureNoticeInvoked: any, failureNoticeCompleted: any;
+  let observeNativeFailure = () => {};
   const write = (name: string, value: unknown) =>
     fs.writeFileSync(path.join(output, name), JSON.stringify(value, null, 2) + "\n", {
       flag: "wx",
@@ -642,16 +796,19 @@ async function main() {
     if (!reuse)
       assert(!fs.existsSync(state), "Fresh Hermes acceptance requires no saved configuration");
     const configurationPath = path.join(state, "native-windows.json");
+    const previousAcceptance = reuse
+      ? JSON.parse(
+          readOpenedRegularFile(argument("--previous-acceptance"), {
+            encoding: "utf8",
+            maxBytes: 1024 * 1024,
+            rejectLinks: true,
+          }) ?? "null",
+        )
+      : undefined;
     const retainedState = reuse
       ? retainedAcceptance(
           "hermes",
-          JSON.parse(
-            readOpenedRegularFile(argument("--previous-acceptance"), {
-              encoding: "utf8",
-              maxBytes: 1024 * 1024,
-              rejectLinks: true,
-            }) ?? "null",
-          ),
+          previousAcceptance,
           identity,
           readOpenedRegularFile(configurationPath, {
             encoding: "utf8",
@@ -703,6 +860,18 @@ async function main() {
       assert.equal(results.onboarding.successfulConfigurationSaves, 1);
       assert.equal(results.onboarding.rejectedEmptyIntegrationSave, true);
       assert.equal(results.onboarding.cleanupClosed, true);
+      assert.deepEqual(
+        results.onboarding.providerDrafts,
+        ["nvidia", "openrouter", "compatible", "local"].map((provider) => ({
+          provider,
+          endpointRetained: true,
+          modelRetained: true,
+          fixedEndpoint: ["nvidia", "openrouter"].includes(provider),
+          saved: false,
+          providerReplyQualified: false,
+        })),
+        "Native onboarding did not retain each provider's endpoint and model drafts",
+      );
     }
     const configurationText = readOpenedRegularFile(configurationPath, {
       encoding: "utf8",
@@ -755,7 +924,20 @@ async function main() {
     phase = "dashboard-startup";
     const session = path.join(output, "session");
     fs.mkdirSync(session);
+    observeNativeFailure = () => {
+      if (!latest?.hostPid) return;
+      const failure = captureHermesNativeFailure(
+        path.join(session, "session-failure.json"),
+        latest?.hostPid,
+        secret,
+      );
+      if (failure) {
+        results.nativeFailure = failure;
+        throw new Error("Native Hermes failed during " + failure.snapshot.stage);
+      }
+    };
     const started = performance.now();
+    nativeLaunchAttempted = true;
     guardian = spawn(
       launcher,
       ["--wait", "--dashboard-qualification", "--artifact-directory", session],
@@ -818,6 +1000,15 @@ async function main() {
           if (event.kind === "observation") latest = event;
           if (event.kind === "stop-invoked") stopInvoked = true;
           if (event.kind === "closed" && event.exitCode === 0) stopCompleted = true;
+          if (event.kind === "failure-notice-close-invoked") {
+            assert.equal(failureNoticeInvoked, undefined, "Duplicate failed-notice invocation");
+            failureNoticeInvoked = event;
+          }
+          if (event.kind === "failure-notice-closed") {
+            assert(failureNoticeInvoked, "Failed notice closed before its invocation");
+            assert.equal(failureNoticeCompleted, undefined, "Duplicate failed-notice closure");
+            failureNoticeCompleted = event;
+          }
           fs.appendFileSync(path.join(output, "observer.jsonl"), JSON.stringify(event) + "\n");
         } catch {
           observerFailure = new Error("Native UI observer emitted invalid JSON");
@@ -834,6 +1025,7 @@ async function main() {
     let ready: any;
     while (performance.now() < deadline) {
       if (observerFailure) throw observerFailure;
+      observeNativeFailure();
       assert.equal(guardian.exitCode, null);
       assert.equal(observer.exitCode, null);
       const file = path.join(session, "dashboard-ready.json");
@@ -843,12 +1035,8 @@ async function main() {
       }
       await sleep(250);
     }
-    assert(ready?.agent === "hermes", "The actual Hermes dashboard did not become ready");
-    assert.equal(
-      ready.agentRuntimeRoot,
-      results.stateRoot,
-      "Hermes started with different agent data",
-    );
+    assert(ready, "The actual Hermes dashboard did not become ready");
+    validateHermesDashboardReady(ready, results.stateRoot, latest?.hostPid);
     results.edgeBrowser = validateHermesEdgeReceipt(
       JSON.parse(fs.readFileSync(path.join(session, "edge-browser.json"), "utf8")),
       ready.sessionId,
@@ -1119,9 +1307,7 @@ async function main() {
       );
     };
     const config = await api("/api/config");
-    assert.equal(config.web?.keyless_fallback, false);
-    assert(config.agent?.disabled_toolsets?.includes("web"));
-    assert.equal(config.security?.allow_lazy_installs, false);
+    results.dashboardModel = validateHermesInstalledConfiguration(config, model);
     results.optionalConfiguration = {
       searchDisabled: true,
       keylessFallback: false,
@@ -1129,6 +1315,15 @@ async function main() {
       messagingRequested: false,
       tavilyLiveLookup: "not-tested-user-waiver",
     };
+    if (reuse) {
+      phase = "conversation-retention";
+      const previous = previousAcceptance.results.retainedConversation;
+      assert(previous, "The cold Hermes receipt has no retained conversation evidence");
+      results.restoredConversation = validateHermesRetainedTranscript(
+        previous,
+        await api(hermesTranscriptRoute(previous.storedSessionId, previous.profileName, 1)),
+      );
+    }
     let transcriptPoll = 0;
     const sessionMessages = async () => {
       const id = pty.storedSessionId(),
@@ -1167,6 +1362,7 @@ async function main() {
       await submitPrompt(prompt);
       while (performance.now() - start < 120_000) {
         if (observerFailure) throw observerFailure;
+        observeNativeFailure();
         await pumpHermesSockets();
         pty.assertHealthy();
         const messages = hermesMessagesAfter(await sessionMessages(), transcriptMark);
@@ -1250,6 +1446,11 @@ async function main() {
       localBundledBrowserExecuted: false,
       visibleSentinel: browserSentinel,
     };
+    results.retainedConversation = hermesTranscriptIdentity(
+      pty.storedSessionId()!,
+      pty.profileName()!,
+      await sessionMessages(),
+    );
     await page.screenshot({ path: path.join(output, "dashboard-model-tools.png"), fullPage: true });
     phase = "idle-measurement";
     pty.beginIdle(lastTurnMark);
@@ -1284,36 +1485,63 @@ async function main() {
     primary = error;
   } finally {
     if (browser) await browser.close().catch(() => cleanupErrors.push("automation browser"));
+    try {
+      observeNativeFailure();
+    } catch (error) {
+      primary ??= error;
+    }
     if (observer && guardianClosed && observerClosed) {
       try {
         signalObserverStop(observerStopSentinel);
-        assert.equal(await bounded(guardianClosed, 130_000), 0);
-        assert.equal(await bounded(observerClosed, 5000), 0);
+        const guardianCode = await bounded(guardianClosed, 130_000);
+        const observerCode = await bounded(observerClosed, 5000);
         fs.unlinkSync(observerStopSentinel);
-        assert(stopInvoked && stopCompleted, "Actual native Stop did not finish");
-        const end = JSON.parse(
-          fs.readFileSync(path.join(output, "session/dashboard-end.json"), "utf8"),
-        );
-        for (const key of [
-          "sandboxDeleted",
-          "gatewayStopped",
-          "ephemeralRootsRemoved",
-          "stateRetained",
-          "leaseReleased",
-          "cleanupSucceeded",
-        ])
-          assert.equal(end[key], true, key);
-        for (const key of ["runtimeId", "manifestSha256", "sourceRevision"])
-          assert.equal(end.runtimeIdentity[key], identity[key]);
-        assert.equal(end.runtimeCounterSource, "held-runtime-session");
-        assert.equal(end.runtimeBytesCopied, 0);
-        assert.equal(end.runtimeFilesHashedAtLaunch, 0);
-        results.cleanup = {
-          ...end,
-          guardianClosed: true,
-          observerClosed: true,
-          runtimeLeaseOwnerClosedWithGuardian: true,
-        };
+        assert.equal(observerFailure, undefined, "Native observer protocol failed during closure");
+        if (failureNoticeInvoked || failureNoticeCompleted) {
+          try {
+            observeNativeFailure();
+          } catch (error) {
+            primary ??= error;
+          }
+          assert.equal(latest?.rootPid, guardian!.pid);
+          results.failureNoticeClosure = validateHermesFailureNoticeClosure(
+            failureNoticeInvoked,
+            failureNoticeCompleted,
+            results.nativeFailure,
+            latest,
+            guardianCode,
+            observerCode,
+          );
+          primary ??= new Error("Native Hermes failure notice closed after backend cleanup");
+        } else {
+          assert.equal(guardianCode, 0);
+          assert.equal(observerCode, 0);
+          assert(stopInvoked && stopCompleted, "Actual native Stop did not finish");
+          const end = JSON.parse(
+            fs.readFileSync(path.join(output, "session/dashboard-end.json"), "utf8"),
+          );
+          for (const key of [
+            "sandboxDeleted",
+            "gatewayStopped",
+            "ephemeralRootsRemoved",
+            "stateRetained",
+            "leaseReleased",
+            "cleanupSucceeded",
+          ])
+            assert.equal(end[key], true, key);
+          for (const key of ["runtimeId", "manifestSha256", "sourceRevision"])
+            assert.equal(end.runtimeIdentity[key], identity[key]);
+          assert.equal(end.runtimeCounterSource, "held-runtime-session");
+          assert.equal(end.runtimeBytesCopied, 0);
+          assert.equal(end.runtimeFilesHashedAtLaunch, 0);
+          results.cleanup = {
+            ...end,
+            guardianClosed: true,
+            observerClosed: true,
+            runtimeLeaseOwnerClosedWithGuardian: true,
+          };
+          nativeCleanupConfirmed = true;
+        }
       } catch (error) {
         cleanupErrors.push("native Stop: " + JSON.stringify(sanitizedFailure(error, secret)));
       }
@@ -1339,9 +1567,22 @@ async function main() {
           cleanupErrors.push("observer remained live"),
         );
     }
-    if (!acceptanceProcessesStopped(guardian, observer)) {
+    const processesStopped = acceptanceProcessesStopped(guardian, observer);
+    const uninstallSafe = processesStopped && (!nativeLaunchAttempted || nativeCleanupConfirmed);
+    results.custody = {
+      nativeLaunchAttempted,
+      nativeCleanupConfirmed,
+      processesStopped,
+      uninstallSafe,
+      configurationRetainedForRecovery: configurationOwned && !uninstallSafe,
+    };
+    if (!processesStopped) {
       cleanupErrors.push(
         "Processes remain live or unconfirmed; saved data and credentials retained",
+      );
+    } else if (!uninstallSafe) {
+      cleanupErrors.push(
+        "Native cleanup remains unconfirmed; retain the installation, saved data and credentials for recovery",
       );
     } else if (configurationOwned && (!preserve || primary !== undefined || cleanupErrors.length)) {
       try {

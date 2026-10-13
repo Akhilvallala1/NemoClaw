@@ -28,7 +28,301 @@ import {
   hermesPromptFrames,
   sendHermesPromptFrames,
   sanitizeHermesBrowserDiagnostic,
+  hermesTranscriptIdentity,
+  validateHermesRetainedTranscript,
+  captureHermesNativeFailure,
+  validateHermesDashboardReady,
+  validateHermesInstalledConfiguration,
+  validateHermesFailureNoticeClosure,
 } from "./qualify-installed-hermes.mts";
+
+function failureNoticeClosureFixture() {
+  const observation = {
+    rootPid: 40,
+    hostPid: 42,
+    sessionPid: 43,
+    hostStartedUtc: "2026-10-13T01:00:00.0000000Z",
+  };
+  const failure = {
+    sourceSha256: "a".repeat(64),
+    snapshot: { agent: "hermes", nodeProcessId: 42, stage: "gateway" },
+  };
+  const invoked = {
+    kind: "failure-notice-close-invoked",
+    rootPid: 40,
+    sessionPid: 43,
+    hostStartedUtc: observation.hostStartedUtc,
+    windowHandle: 44,
+    failure: {
+      snapshotSha256: failure.sourceSha256,
+      hostPid: 42,
+      agent: "hermes",
+      stage: "gateway",
+      backendCleanupFinished: true,
+    },
+  };
+  const completed = {
+    kind: "failure-notice-closed",
+    rootPid: 40,
+    hostPid: 42,
+    sessionPid: 43,
+    exitCode: 1,
+    failure: true,
+    elapsedMs: 500,
+  };
+  return { invoked, completed, failure, observation };
+}
+
+test("Hermes failed notice closure remains failure and binds the held host snapshot", () => {
+  const { invoked, completed, failure, observation } = failureNoticeClosureFixture();
+  const result = validateHermesFailureNoticeClosure(invoked, completed, failure, observation, 1, 1);
+  assert.equal(result.failure, true);
+  assert.equal(result.successfulStop, false);
+  assert.equal(result.sourceSha256, failure.sourceSha256);
+  assert.equal(result.guardianExitCode, 1);
+  assert.equal(result.observerExitCode, 1);
+});
+
+test("Hermes failed notice closure rejects successful Stop and mismatched ownership", () => {
+  const fixture = failureNoticeClosureFixture();
+  const check = (value: typeof fixture, guardianCode = 1, observerCode = 1) =>
+    validateHermesFailureNoticeClosure(
+      value.invoked,
+      value.completed,
+      value.failure,
+      value.observation,
+      guardianCode,
+      observerCode,
+    );
+  assert.throws(() => check(fixture, 0, 1));
+  assert.throws(() => check(fixture, 1, 0));
+  for (const mutate of [
+    (f: typeof fixture) => {
+      f.invoked.kind = "stop-invoked";
+    },
+    (f: typeof fixture) => {
+      f.completed.kind = "closed";
+    },
+    (f: typeof fixture) => {
+      f.completed.failure = false;
+    },
+    (f: typeof fixture) => {
+      f.completed.exitCode = 0;
+    },
+    (f: typeof fixture) => {
+      f.invoked.rootPid = 41;
+    },
+    (f: typeof fixture) => {
+      f.completed.hostPid = 41;
+    },
+    (f: typeof fixture) => {
+      f.completed.sessionPid = 41;
+    },
+    (f: typeof fixture) => {
+      f.invoked.hostStartedUtc = "different generation";
+    },
+    (f: typeof fixture) => {
+      f.invoked.windowHandle = 0;
+    },
+    (f: typeof fixture) => {
+      f.invoked.failure.snapshotSha256 = "b".repeat(64);
+    },
+    (f: typeof fixture) => {
+      f.invoked.failure.backendCleanupFinished = false;
+    },
+    (f: typeof fixture) => {
+      f.invoked.failure.stage = "runtime";
+    },
+    (f: typeof fixture) => {
+      f.failure.sourceSha256 = "";
+    },
+  ]) {
+    const changed = structuredClone(fixture);
+    mutate(changed);
+    assert.throws(() => check(changed));
+  }
+});
+
+test("Hermes live configuration retains the selected model and disabled optional fallbacks", () => {
+  const model = "nvidia/selected-model";
+  const config = {
+    model,
+    web: { keyless_fallback: false },
+    agent: { disabled_toolsets: ["web"] },
+    security: { allow_lazy_installs: false },
+  };
+  assert.equal(validateHermesInstalledConfiguration(config, model), model);
+  for (const change of [
+    { model: "different-model" },
+    { model: { default: model } },
+    { model: undefined },
+    { web: { keyless_fallback: true } },
+    { agent: { disabled_toolsets: [] } },
+    { security: { allow_lazy_installs: true } },
+  ])
+    assert.throws(() => validateHermesInstalledConfiguration({ ...config, ...change }, model));
+});
+
+test("Hermes dashboard readiness belongs to its observed host and retained data", () => {
+  const ready = {
+    schemaVersion: 1,
+    classification: "native-hermes-dashboard-qualification",
+    agent: "hermes",
+    sessionId: "0123456789",
+    nodeProcessId: 42,
+    gatewayProcessId: 43,
+    agentRuntimeRoot: "C:\\NemoClawState-S-1-5-21-1000-hermes",
+  };
+  assert.equal(validateHermesDashboardReady(ready, ready.agentRuntimeRoot, 42), ready);
+  for (const change of [
+    { schemaVersion: true },
+    { classification: "sidecar-ready" },
+    { agent: "openclaw" },
+    { sessionId: "different-session" },
+    { nodeProcessId: 44 },
+    { gatewayProcessId: undefined },
+    { agentRuntimeRoot: "C:\\DifferentData" },
+  ])
+    assert.throws(() =>
+      validateHermesDashboardReady({ ...ready, ...change }, ready.agentRuntimeRoot, 42),
+    );
+  assert.throws(() => validateHermesDashboardReady(ready, ready.agentRuntimeRoot, 0));
+});
+
+function nativeFailureSnapshot() {
+  return {
+    schemaVersion: 1,
+    classification: "native-session-failure-evidence",
+    agent: "hermes",
+    interface: "dashboard",
+    nodeProcessId: 42,
+    backendCleanupFinished: true,
+    stage: "gateway",
+    diagnostics: {
+      schemaVersion: 1,
+      classification: "native-session-failure",
+      agent: "hermes",
+      stage: "gateway",
+      failure: { message: "Failed with nvapi-owned-secret" },
+      cleanupFailures: [],
+      output: { stderr: "Authorization: Bearer private-broker-token" },
+    },
+  };
+}
+
+test("Hermes native failure evidence retains its owned stage and redacts credentials", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-native-failure-"));
+  const file = path.join(root, "session-failure.json");
+  try {
+    assert.equal(captureHermesNativeFailure(file, 42, "nvapi-owned-secret"), null);
+    fs.writeFileSync(file, JSON.stringify(nativeFailureSnapshot()));
+    const retained = captureHermesNativeFailure(file, 42, "nvapi-owned-secret");
+    assert(retained);
+    assert.equal(retained.snapshot.stage, "gateway");
+    assert.match(retained.sourceSha256, /^[a-f0-9]{64}$/u);
+    assert(!JSON.stringify(retained).includes("nvapi-owned-secret"));
+    assert(!JSON.stringify(retained).includes("private-broker-token"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Hermes native failure evidence rejects another host, agent or unfinished backend", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-native-failure-"));
+  const file = path.join(root, "session-failure.json");
+  try {
+    for (const change of [
+      { nodeProcessId: 43 },
+      { agent: "openclaw" },
+      { interface: "console" },
+      { backendCleanupFinished: false },
+      { stage: "unexpected" },
+      { diagnostics: { ...nativeFailureSnapshot().diagnostics, stage: "runtime" } },
+      { diagnostics: { ...nativeFailureSnapshot().diagnostics, failure: [] } },
+    ]) {
+      fs.writeFileSync(file, JSON.stringify({ ...nativeFailureSnapshot(), ...change }));
+      assert.throws(() => captureHermesNativeFailure(file, 42, "nvapi-owned-secret"));
+    }
+    fs.writeFileSync(file, JSON.stringify(nativeFailureSnapshot()));
+    assert.throws(() => captureHermesNativeFailure(file, 0, "nvapi-owned-secret"));
+    fs.writeFileSync(file, "{");
+    assert.throws(() => captureHermesNativeFailure(file, 42, "nvapi-owned-secret"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function retainedConversation() {
+  return [
+    { id: 1, role: "user", content: "Remember this conversation." },
+    {
+      id: 2,
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "call-1", function: { name: "terminal", arguments: "{}" } }],
+    },
+    { id: 3, role: "tool", content: "saved tool output", tool_call_id: "call-1" },
+    { id: 4, role: "assistant", content: "Conversation complete." },
+  ];
+}
+
+test("Hermes restart preserves saved messages and tool results despite API ordering and metadata", () => {
+  const messages = retainedConversation();
+  const previous = hermesTranscriptIdentity("saved-session", "personal", messages);
+  const restored = messages.map((row) => ({
+    ...row,
+    timestamp: "later API read",
+    ...(row.tool_calls ? { tool_calls: JSON.stringify(row.tool_calls) } : {}),
+  }));
+  assert.deepEqual(
+    validateHermesRetainedTranscript(previous, {
+      session_id: "saved-session",
+      messages: restored.reverse(),
+    }),
+    previous,
+  );
+  assert.equal(previous.messageCount, 4);
+  assert.equal(previous.lastMessageId, 4);
+  assert.match(previous.transcriptSha256, /^[a-f0-9]{64}$/u);
+});
+
+test("Hermes restart rejects missing, replaced, truncated or changed saved conversations", () => {
+  const messages = retainedConversation();
+  const previous = hermesTranscriptIdentity("saved-session", "personal", messages);
+  assert.throws(() => validateHermesRetainedTranscript(undefined, {}), /no retained/u);
+  assert.throws(() => validateHermesRetainedTranscript(previous, null));
+  assert.throws(() =>
+    validateHermesRetainedTranscript(previous, { session_id: "different", messages }),
+  );
+  for (const changed of [
+    messages.slice(1),
+    messages.map((row) => (row.id === 1 ? { ...row, content: "Replaced prompt" } : row)),
+    messages.map((row) => (row.id === 3 ? { ...row, content: "Replaced tool output" } : row)),
+    messages.map((row) => (row.id === 4 ? { ...row, content: "Replaced reply" } : row)),
+    [...messages, { id: 5, role: "assistant", content: "Unexpected additional turn" }],
+  ])
+    assert.throws(() =>
+      validateHermesRetainedTranscript(previous, {
+        session_id: "saved-session",
+        messages: changed,
+      }),
+    );
+});
+
+test("Hermes retention refuses incomplete transcripts and duplicate message identities", () => {
+  const messages = retainedConversation();
+  for (const invalid of [
+    [],
+    messages.slice(0, -1),
+    [...messages, messages.at(-1)],
+    Array.from({ length: 500 }, (_, index) => ({
+      id: index + 1,
+      role: index === 0 ? "user" : "assistant",
+      content: "Bounded transcript",
+    })),
+  ])
+    assert.throws(() => hermesTranscriptIdentity("saved-session", "personal", invalid));
+});
 
 for (const existing of ["configuration", "agent-data"])
   test(`fresh Hermes rejection preserves pre-existing ${existing} and credentials`, async () => {
@@ -109,6 +403,131 @@ for (const existing of ["configuration", "agent-data"])
     assert.equal(receipt.failedStage, "configuration");
     assert.deepEqual(receipt.cleanupErrors, []);
   });
+
+test("Hermes cleanup retains data until both native cleanup and process closure are confirmed", async () => {
+  const source = fs.readFileSync(
+    new URL("./qualify-installed-hermes.mts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("    const processesStopped = acceptanceProcessesStopped(");
+  const end = source.indexOf("\n  }\n  if (cleanupErrors.length)", start);
+  assert(start > 0 && end > start);
+  const block = stripTypeScriptTypes(source.slice(start, end));
+  const finished = { exitCode: 0, signalCode: null };
+  const cases = [
+    {
+      name: "closed UI without backend evidence",
+      launched: true,
+      cleaned: false,
+      closed: true,
+      owned: true,
+      preserve: false,
+      remove: false,
+      safe: false,
+    },
+    {
+      name: "failed launch without backend evidence",
+      launched: true,
+      cleaned: false,
+      closed: true,
+      owned: true,
+      preserve: true,
+      remove: false,
+      safe: false,
+    },
+    {
+      name: "live process after backend report",
+      launched: true,
+      cleaned: true,
+      closed: false,
+      owned: true,
+      preserve: false,
+      remove: false,
+      safe: false,
+    },
+    {
+      name: "confirmed native Stop",
+      launched: true,
+      cleaned: true,
+      closed: true,
+      owned: true,
+      preserve: false,
+      remove: true,
+      safe: true,
+    },
+    {
+      name: "preserved successful cold run",
+      launched: true,
+      cleaned: true,
+      closed: true,
+      owned: true,
+      preserve: true,
+      remove: false,
+      safe: true,
+    },
+    {
+      name: "owned configuration before launch",
+      launched: false,
+      cleaned: false,
+      closed: true,
+      owned: true,
+      preserve: false,
+      remove: true,
+      safe: true,
+    },
+    {
+      name: "unowned existing configuration",
+      launched: false,
+      cleaned: false,
+      closed: true,
+      owned: false,
+      preserve: false,
+      remove: false,
+      safe: true,
+    },
+  ];
+  for (const row of cases) {
+    const calls: string[][] = [];
+    const results: Record<string, any> = {};
+    const cleanupErrors: string[] = [];
+    const bindings = {
+      acceptanceProcessesStopped,
+      guardian: row.closed ? finished : { exitCode: null, signalCode: null },
+      observer: finished,
+      nativeLaunchAttempted: row.launched,
+      nativeCleanupConfirmed: row.cleaned,
+      configurationOwned: row.owned,
+      preserve: row.preserve,
+      primary: undefined,
+      binding: "test-binding",
+      results,
+      cleanupErrors,
+      command: async (_name: string, args: string[]) => {
+        calls.push(args);
+      },
+    };
+    await new Function(...Object.keys(bindings), `return (async () => {${block}\n})();`)(
+      ...Object.values(bindings),
+    );
+    assert.deepEqual(
+      calls,
+      row.remove
+        ? [
+            ["--remove-native-data", "--agent", "hermes"],
+            ["--credential-delete", "nvidia", "--binding", "test-binding"],
+          ]
+        : [],
+      row.name,
+    );
+    assert.equal(results.custody.uninstallSafe, row.safe, row.name);
+    assert.equal(
+      results.custody.configurationRetainedForRecovery,
+      row.owned && !row.safe,
+      row.name,
+    );
+    assert.equal(cleanupErrors.length, row.safe ? 0 : 1, row.name);
+  }
+});
 
 test("Hermes Edge acceptance requires the exact browser_exec code and successful sentinel", () => {
   const code = "print('EDGE_SENTINEL')";

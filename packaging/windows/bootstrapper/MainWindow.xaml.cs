@@ -30,6 +30,13 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer elapsedTimer;
     private readonly NativeCancellationState cancellation = new();
     private readonly NativeSetupObservation configurationObservation = new();
+    private readonly Dictionary<(string Agent, string Provider), (string Endpoint, string Model)> providerDrafts = new();
+    private (string Agent, string Provider)? activeProviderDraft;
+    private readonly HashSet<string> savedChoicesLoaded = new(StringComparer.Ordinal);
+    private Func<string, Task<string>> readSavedSettings = NativeSetupOperations.ReadSavedSettingsAsync;
+    private bool savedSettingsReady = true;
+    private bool readingSavedSettings;
+    private int savedSettingsGeneration;
     private bool busy;
     private bool canCancel;
     private bool completed;
@@ -71,9 +78,9 @@ public partial class MainWindow : Window
                 if (eligibility.Eligible && download)
                 {
                     foreach (var model in NativeDownloadedModelSetup.Models)
-                        this.ProviderChoice.Items.Add(new ComboBoxItem { Tag = model.GetProperty("id").GetString(), Content = model.GetProperty("displayName").GetString() + " · on this PC" });
+                        this.AddModelChoice(new ComboBoxItem { Tag = model.GetProperty("id").GetString(), Content = model.GetProperty("displayName").GetString() + " · on this PC" });
                 }
-                else if (eligibility.Eligible) this.ProviderChoice.Items.Add(new ComboBoxItem { Tag = "n1x", Content = NativeExpressSetup.DisplayName });
+                else if (eligibility.Eligible) this.AddModelChoice(new ComboBoxItem { Tag = "n1x", Content = NativeExpressSetup.DisplayName });
             }
             catch (Exception) { this.ExpressOffer.Visibility = Visibility.Collapsed; }
         };
@@ -120,7 +127,8 @@ public partial class MainWindow : Window
         choice.IsChecked = true;
         if (!choice.IsEnabled)
         {
-            this.AgentAvailabilityDetail.Text = this.runtimeAvailability.UnavailableText;
+            this.AgentAvailabilityDetail.Text = this.runtimeAvailability.IsUnqualified(this.SelectedAgent)
+                ? this.runtimeAvailability.PreviewText : this.runtimeAvailability.UnavailableText;
             this.AgentAvailabilityDetail.Visibility = Visibility.Visible;
             this.ContinueAgentButton.IsEnabled = false;
             return;
@@ -258,6 +266,11 @@ public partial class MainWindow : Window
         button.IsEnabled = false;
         try
         {
+            if (this.SelectedAgent == "openclaw" && !this.savedSettingsReady)
+            {
+                await this.LoadSavedSettingsAsync();
+                return;
+            }
             if (this.configurationObservation.Running)
             {
                 if (!await this.configurationObservation.CheckCompletionAsync(TimeSpan.FromSeconds(5)))
@@ -347,7 +360,10 @@ public partial class MainWindow : Window
         if (action == LaunchAction.Uninstall)
         {
             this.SuccessTitle.Text = "NemoClaw was removed.";
-            this.SuccessDetail.Text = "The application was removed. Your personal agent settings remain in your Windows account.";
+            var removed = this.SelectedRemovalAgents;
+            this.SuccessDetail.Text = removed.Length == 0
+                ? "The application was removed. Your agent data and saved keys were kept. Shared local models were kept."
+                : $"The application was removed. {string.Join(", ", removed.Select(NativeDesktopIntegration.AgentName))} data and saved keys were removed. Other agent data and shared local models were kept.";
         }
         else if (action == LaunchAction.Repair)
         {
@@ -441,14 +457,21 @@ public partial class MainWindow : Window
 
     private void LicenseChanged(object sender, RoutedEventArgs args)
     {
-        if (this.InstallButton is not null) this.InstallButton.IsEnabled = this.LicenseCheck.IsChecked == true;
+        if (this.InstallButton is not null) this.InstallButton.IsEnabled = this.LicenseCheck.IsChecked == true
+            && this.savedSettingsReady && !this.readingSavedSettings && this.ProviderChoice?.SelectedItem is ComboBoxItem { IsEnabled: true };
     }
 
     private void AgentSelected(object sender, RoutedEventArgs args)
     {
         if (sender is RadioButton { Tag: string agent } choice && AgentNames.ContainsKey(agent))
         {
+            if (agent != this.SelectedAgent) this.savedChoicesLoaded.Remove("openclaw");
             this.SelectedAgent = agent;
+            this.savedSettingsGeneration++;
+            this.readingSavedSettings = false;
+            this.savedSettingsReady = !this.packageInstalled || agent != "openclaw" || this.savedChoicesLoaded.Contains(agent);
+            if (this.ConfigurationPanel is not null) this.ConfigurationPanel.IsEnabled = true;
+            this.RefreshProviderChoice();
             if (this.ContinueAgentButton is not null)
                 this.ContinueAgentButton.IsEnabled = this.runtimeAvailability.CanSelect(agent);
             choice.BringIntoView();
@@ -465,6 +488,84 @@ public partial class MainWindow : Window
         this.ConfigurationDetail.Text = $"Choose a model for {AgentNames[this.SelectedAgent]} on this PC, a hosted provider, or an existing local server.";
         this.UpdateModelSetupAction();
         this.ProviderChoice.Focus();
+        if (this.packageInstalled && this.SelectedAgent == "openclaw" && !this.savedChoicesLoaded.Contains(this.SelectedAgent))
+            _ = this.LoadSavedSettingsAsync();
+        else this.LicenseChanged(this, new RoutedEventArgs());
+    }
+
+    private async Task LoadSavedSettingsAsync()
+    {
+        if (this.readingSavedSettings || this.SelectedAgent != "openclaw" || !this.runtimeAvailability.CanSelect(this.SelectedAgent)) return;
+        var agent = this.SelectedAgent;
+        var generation = ++this.savedSettingsGeneration;
+        this.savedChoicesLoaded.Remove(agent);
+        this.savedSettingsReady = false;
+        this.readingSavedSettings = true;
+        this.ConfigurationPanel.IsEnabled = false;
+        this.ConfigurationDetail.Text = "Loading your saved choices…";
+        this.LicenseChanged(this, new RoutedEventArgs());
+        try
+        {
+            var response = await this.readSavedSettings(agent);
+            if (generation != this.savedSettingsGeneration || agent != this.SelectedAgent || !this.IsVisible) return;
+            this.ApplySavedSettings(NativeSetupOperations.ReadSavedSettings(response, agent));
+            this.savedChoicesLoaded.Add(agent);
+            this.savedSettingsReady = true;
+        }
+        catch (Exception)
+        {
+            if (generation != this.savedSettingsGeneration || agent != this.SelectedAgent || !this.IsVisible) return;
+            this.ShowConfigurationError("Saved choices could not be confirmed. Your settings have not changed. Close any active OpenClaw session, then use Check save status to retry.");
+        }
+        finally
+        {
+            if (generation == this.savedSettingsGeneration)
+            {
+                this.readingSavedSettings = false;
+                this.ConfigurationPanel.IsEnabled = true;
+                this.LicenseChanged(this, new RoutedEventArgs());
+            }
+        }
+    }
+
+    private void ApplySavedSettings(NativeSavedSettings saved)
+    {
+        this.ServiceOptions.SetAgent(this.SelectedAgent);
+        this.ClearCredential();
+        if (saved.Configuration is not NativeSetupConfiguration configuration)
+        {
+            this.ConfigurationDetail.Text = "Choose a provider and model for OpenClaw.";
+            if (saved.State == "needs-resave")
+                this.ShowConfigurationError("A previous settings save is unfinished. Review your choices and re-enter the required keys before saving to recover it.");
+            return;
+        }
+        var provider = configuration.LocalModel == NativeExpressSetup.Id ? "n1x" : configuration.LocalModel ?? configuration.Inference;
+        var choice = this.ProviderChoice.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.Tag as string == provider);
+        if (choice is null && configuration.LocalModel is not null)
+        {
+            choice = new ComboBoxItem { Tag = provider, Content = "Saved local model (unavailable)", IsEnabled = false };
+            this.ProviderChoice.Items.Add(choice);
+        }
+        if (choice is null) throw new InvalidOperationException("The saved inference provider is unavailable.");
+        this.ServiceOptions.SetOptions(configuration.Options);
+        this.ProviderChoice.SelectedItem = choice;
+        if (configuration.Endpoint is not null) this.EndpointBox.Text = configuration.Endpoint;
+        this.ModelBox.Text = configuration.Model;
+        this.ConfigurationDetail.Text = "Your saved choices are loaded. Re-enter required API keys before saving changes.";
+        if (!choice.IsEnabled) this.ShowConfigurationError("The saved on-device model is unavailable in this package. Choose another listed provider to change your settings.");
+    }
+
+    private void AddModelChoice(ComboBoxItem choice)
+    {
+        var existing = this.ProviderChoice.Items.OfType<ComboBoxItem>().FirstOrDefault(item => Equals(item.Tag, choice.Tag));
+        if (existing is null) this.ProviderChoice.Items.Add(choice);
+        else
+        {
+            existing.Content = choice.Content;
+            existing.IsEnabled = true;
+            if (this.ProviderChoice.SelectedItem == existing) this.ConfigurationErrorPanel.Visibility = Visibility.Collapsed;
+        }
+        this.LicenseChanged(this, new RoutedEventArgs());
     }
 
     private void ApplyRuntimeAvailability()
@@ -501,9 +602,14 @@ public partial class MainWindow : Window
         this.ShowReady(false);
     }
 
-    private void ProviderChanged(object sender, SelectionChangedEventArgs args)
+    private void ProviderChanged(object sender, SelectionChangedEventArgs args) => this.RefreshProviderChoice();
+
+    private void RefreshProviderChoice()
     {
-        if (this.EndpointBox is null || this.ProviderChoice.SelectedItem is not ComboBoxItem { Tag: string provider }) return;
+        if (this.EndpointBox is null || this.ProviderChoice?.SelectedItem is not ComboBoxItem { Tag: string provider }) return;
+        if (this.activeProviderDraft is { } previous)
+            this.providerDrafts[previous] = (this.EndpointBox.Text, this.ModelBox.Text);
+        this.activeProviderDraft = (this.SelectedAgent, provider);
         var download = NativeDownloadedModelSetup.IsModel(provider);
         var managed = download || provider == "n1x";
         this.CredentialBox.Clear();
@@ -524,6 +630,11 @@ public partial class MainWindow : Window
         };
         if (download) this.EndpointBox.Text = string.Empty;
         this.ModelBox.Text = download ? provider : provider == "n1x" ? NativeExpressSetup.Model : provider is "nvidia" or "openrouter" ? "nvidia/nemotron-3-super-120b-a12b" : string.Empty;
+        if (!managed && this.providerDrafts.TryGetValue(this.activeProviderDraft.Value, out var draft))
+        {
+            if (!this.EndpointBox.IsReadOnly) this.EndpointBox.Text = draft.Endpoint;
+            this.ModelBox.Text = draft.Model;
+        }
         this.CredentialLabel.Content = provider is "nvidia" or "openrouter" ? "API _key" : "API _key (optional)";
         this.InferenceHelpPanel.Visibility = provider is "nvidia" or "openrouter" ? Visibility.Visible : Visibility.Collapsed;
         var helpUrl = provider == "openrouter" ? "https://openrouter.ai/settings/keys" : "https://build.nvidia.com/";
@@ -533,6 +644,7 @@ public partial class MainWindow : Window
         this.EndpointHelp.Text = provider == "local" ? "Use an already-running server at 127.0.0.1 or [::1]. Local inference is experimental." : "Use the provider's HTTPS API root. API keys belong in the protected field below.";
         this.UpdateModelSetupAction();
         this.ConfigurationErrorPanel.Visibility = Visibility.Collapsed;
+        this.LicenseChanged(this, new RoutedEventArgs());
     }
 
     private void UpdateModelSetupAction()
@@ -551,10 +663,12 @@ public partial class MainWindow : Window
     {
         try
         {
+            if (!this.savedSettingsReady || this.readingSavedSettings)
+                throw new InvalidOperationException("Confirm the saved settings before saving changes.");
             if (!this.runtimeAvailability.CanSelect(this.SelectedAgent))
                 throw new InvalidOperationException("This agent requires reviewed runtime qualification before configuration.");
             if (this.LicenseCheck.IsChecked != true) return;
-            if (this.ProviderChoice.SelectedItem is not ComboBoxItem { Tag: string provider }) throw new InvalidOperationException("Choose an inference provider.");
+            if (this.ProviderChoice.SelectedItem is not ComboBoxItem { Tag: string provider, IsEnabled: true }) throw new InvalidOperationException("Choose an available inference provider.");
             var selectedLocalModel = NativeDownloadedModelSetup.IsModel(provider) ? provider : NativeExpressSetup.Id;
             var express = provider == "n1x" || NativeDownloadedModelSetup.IsModel(provider);
             if (express) provider = "local";

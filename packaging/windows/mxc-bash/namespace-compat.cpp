@@ -1950,6 +1950,99 @@ DWORD adapt_browser_discarded_stdio() {
 
 decltype(&CreateWindowStationW) realCreateBrowserStation = CreateWindowStationW;
 LONG browserStationRecords = 0;
+LONG nativeUiAdmissionRecords = 0;
+
+bool browser_ui_policy_admitted(DWORD mask, HANDLE& marker) {
+    marker = nullptr;
+    if (mask == 0xbf || mask == 0x1bf || mask == 0x3bf) return true;
+    if (mask != 0) return false;
+    const char* reason = nullptr;
+    DWORD error = 0;
+    if (!not_impersonating(reason, error)) return false;
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    bool admitted = false;
+    do {
+        DWORD needed = 0, appcontainer = 0, session = 0;
+        TOKEN_MANDATORY_POLICY policy = {};
+        alignas(void*) BYTE identity[sizeof(TOKEN_APPCONTAINER_INFORMATION) + SECURITY_MAX_SID_SIZE] = {};
+        alignas(void*) BYTE user[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
+        alignas(void*) BYTE integrity[sizeof(TOKEN_MANDATORY_LABEL) + SECURITY_MAX_SID_SIZE] = {};
+        alignas(void*) BYTE privileges[2048] = {};
+        if (!GetTokenInformation(token, TokenIsAppContainer, &appcontainer, sizeof(appcontainer), &needed) || appcontainer != 1 ||
+            !GetTokenInformation(token, TokenAppContainerSid, identity, sizeof(identity), &needed) ||
+            !GetTokenInformation(token, TokenUser, user, sizeof(user), &needed) ||
+            !GetTokenInformation(token, TokenSessionId, &session, sizeof(session), &needed) || session != ownSession ||
+            !GetTokenInformation(token, TokenIntegrityLevel, integrity, sizeof(integrity), &needed) ||
+            !GetTokenInformation(token, TokenMandatoryPolicy, &policy, sizeof(policy), &needed) ||
+            !(policy.Policy & TOKEN_MANDATORY_POLICY_NO_WRITE_UP)) break;
+        const auto container = reinterpret_cast<TOKEN_APPCONTAINER_INFORMATION*>(identity)->TokenAppContainer;
+        const auto userSid = reinterpret_cast<TOKEN_USER*>(user)->User.Sid;
+        const auto level = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(integrity)->Label.Sid;
+        alignas(void*) BYTE lowSid[SECURITY_MAX_SID_SIZE] = {};
+        DWORD lowSize = sizeof(lowSid);
+        if (!container || !IsValidSid(container) || !EqualSid(container, pidLinkContainerSid) ||
+            !level || !IsValidSid(level) || !CreateWellKnownSid(WinLowLabelSid, nullptr, lowSid, &lowSize) ||
+            !EqualSid(level, lowSid)) break;
+        // Even a disabled relabel privilege could be enabled by its holder.
+        LUID relabel = {};
+        if (!LookupPrivilegeValueW(nullptr, L"SeRelabelPrivilege", &relabel) ||
+            !GetTokenInformation(token, TokenPrivileges, privileges, sizeof(privileges), &needed)) break;
+        const auto held = reinterpret_cast<TOKEN_PRIVILEGES*>(privileges);
+        if (needed < sizeof(DWORD) || held->PrivilegeCount >
+            (needed - offsetof(TOKEN_PRIVILEGES, Privileges)) / sizeof(LUID_AND_ATTRIBUTES)) break;
+        bool canRelabel = false;
+        for (DWORD index = 0; index < held->PrivilegeCount; ++index)
+            if (held->Privileges[index].Luid.LowPart == relabel.LowPart &&
+                held->Privileges[index].Luid.HighPart == relabel.HighPart) canRelabel = true;
+        if (canRelabel) break;
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+        BOOL inJob = FALSE;
+        if (!IsProcessInJob(GetCurrentProcess(), nullptr, &inJob) || !inJob ||
+            !QueryInformationJobObject(nullptr, JobObjectExtendedLimitInformation, &limits, sizeof(limits), &needed) ||
+            !(limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)) break;
+        WCHAR name[maximum_target_characters] = {};
+        const int count = _snwprintf_s(name, maximum_target_characters, _TRUNCATE,
+            L"%s\\%s", privateRoot, native_ui_marker_leaf);
+        if (count <= 0) break;
+        UNICODE_STRING unicode = {};
+        unicode.Buffer = name; unicode.Length = static_cast<USHORT>(count * sizeof(WCHAR));
+        unicode.MaximumLength = static_cast<USHORT>((count + 1) * sizeof(WCHAR));
+        OBJECT_ATTRIBUTES attributes = {};
+        attributes.Length = sizeof(attributes); attributes.ObjectName = &unicode;
+        using OpenEvent = NTSTATUS (NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+        using QueryEvent = NTSTATUS (NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto open = reinterpret_cast<OpenEvent>(GetProcAddress(ntdll, "NtOpenEvent"));
+        const auto query = reinterpret_cast<QueryEvent>(GetProcAddress(ntdll, "NtQueryEvent"));
+        if (!open || !query) break;
+        const NTSTATUS opened = open(&marker, native_ui_marker_read, &attributes);
+        if (opened != 0 || !marker) {
+            if (opened >= 0 && marker) CloseHandle(marker);
+            marker = nullptr;
+            break;
+        }
+        struct EventBasic { ULONG type; LONG state; } event = {};
+        if (query(marker, 0, &event, sizeof(event), &needed) != 0 || needed != sizeof(event) ||
+            event.type != 0 || event.state != 1) break;
+        alignas(void*) BYTE descriptor[4096] = {};
+        if (!GetKernelObjectSecurity(marker, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+            descriptor, sizeof(descriptor), &needed) || needed < SECURITY_DESCRIPTOR_MIN_LENGTH || needed > sizeof(descriptor) ||
+            !native_ui_marker_descriptor(descriptor, userSid, container)) break;
+        admitted = true;
+    } while (false);
+    if (!CloseHandle(token)) admitted = false;
+    if (!admitted && marker) { CloseHandle(marker); marker = nullptr; }
+    if (InterlockedIncrement(&nativeUiAdmissionRecords) <= 2) {
+        char line[256];
+        const int size = _snprintf_s(line, sizeof(line), _TRUNCATE,
+            "NEMOCLAW_NATIVE_UI_ADMISSION={\"schemaVersion\":1,\"pid\":%lu,\"admitted\":%s,\"guestAccess\":1179649,\"enforcementReadback\":false}\n",
+            GetCurrentProcessId(), admitted ? "true" : "false");
+        DWORD written = 0;
+        if (size > 0) WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, static_cast<DWORD>(size), &written, nullptr);
+    }
+    return admitted;
+}
 
 bool canonical_browser_station_attributes(LPSECURITY_ATTRIBUTES attributes) {
     __try {
@@ -2024,7 +2117,8 @@ HWINSTA WINAPI create_browser_station(LPCWSTR name, DWORD flags, ACCESS_MASK acc
         return nullptr;
     }
     const DWORD mask = restrictions.UIRestrictionsClass;
-    if (mask != 0x000000bf && mask != 0x000001bf && mask != 0x000003bf) {
+    HANDLE nativeMarker = nullptr;
+    if (!browser_ui_policy_admitted(mask, nativeMarker)) {
         log_browser_station(access, mask, nullptr, nullptr, false, false, ERROR_ACCESS_DENIED, false, 0);
         SetLastError(originalError);
         return nullptr;
@@ -2066,6 +2160,7 @@ HWINSTA WINAPI create_browser_station(LPCWSTR name, DWORD flags, ACCESS_MASK acc
             if (!sameObject || !sameContext) operationError = ERROR_INVALID_STATE;
         }
     }
+    if (nativeMarker && !CloseHandle(nativeMarker)) operationError = GetLastError();
     const bool returned = operationError == ERROR_SUCCESS && flagsKnown && noninheritable &&
         originalGrant.known && duplicateGrant.known && originalGrant.granted == duplicateGrant.granted &&
         sameObject && sameContext;
@@ -2156,7 +2251,8 @@ HDESK create_browser_desktop_for_variant(LPCWSTR name, LPCWSTR device, DEVMODEW*
     if (!QueryInformationJobObject(nullptr, JobObjectBasicUIRestrictions, &restrictions,
             sizeof(restrictions), nullptr)) operationError = GetLastError();
     const DWORD mask = restrictions.UIRestrictionsClass;
-    if (!operationError && mask != 0xbf && mask != 0x1bf && mask != 0x3bf)
+    HANDLE nativeMarker = nullptr;
+    if (!operationError && !browser_ui_policy_admitted(mask, nativeMarker))
         operationError = ERROR_ACCESS_DENIED;
     const HWINSTA borrowedStation = operationError ? nullptr : GetProcessWindowStation();
     const HDESK borrowedDesktop = operationError ? nullptr : GetThreadDesktop(GetCurrentThreadId());
@@ -2194,6 +2290,7 @@ HDESK create_browser_desktop_for_variant(LPCWSTR name, LPCWSTR device, DEVMODEW*
             if (!sameContext) operationError = ERROR_INVALID_STATE;
         }
     }
+    if (nativeMarker && !CloseHandle(nativeMarker)) operationError = GetLastError();
     const bool returned = !operationError && nameMatches && flagsKnown && noninheritable && sameContext;
     if (!returned && opened && opened != borrowedDesktop && opened != INVALID_HANDLE_VALUE &&
         !CloseDesktop(opened)) cleanupError = GetLastError();

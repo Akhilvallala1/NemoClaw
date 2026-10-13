@@ -45,6 +45,23 @@ public partial class DownstreamOptions : UserControl
         return result;
     }
 
+    internal void SetOptions(NativeSetupOptions options)
+    {
+        options.Validate(this.agent);
+        var search = this.SearchProvider.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.Tag as string == options.SearchProvider);
+        if (options.SearchProvider is not null && search is null)
+            throw new InvalidOperationException("The saved search provider is unavailable for this agent.");
+        this.ClearSecrets();
+        if (search is not null) this.SearchProvider.SelectedItem = search;
+        this.SearchEnabled.IsChecked = options.SearchProvider is not null;
+        this.TelegramEnabled.IsChecked = options.Messaging.ContainsKey("telegram");
+        this.DiscordEnabled.IsChecked = options.Messaging.ContainsKey("discord");
+        this.SlackEnabled.IsChecked = options.Messaging.ContainsKey("slack");
+        this.TelegramUsers.Text = string.Join(", ", options.Messaging.GetValueOrDefault("telegram") ?? Array.Empty<string>());
+        this.DiscordUsers.Text = string.Join(", ", options.Messaging.GetValueOrDefault("discord") ?? Array.Empty<string>());
+        this.SlackUsers.Text = string.Join(", ", options.Messaging.GetValueOrDefault("slack") ?? Array.Empty<string>());
+    }
+
     internal NativeServiceCredentials CopyCredentials()
     {
         this.ReadOptions();

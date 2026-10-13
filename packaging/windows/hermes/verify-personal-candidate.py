@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import posixpath
+import re
 import shutil
 import tarfile
 import time
@@ -24,6 +25,7 @@ SIZE = 1099967399
 SHA = "c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc"
 UPSTREAM = "2237be355906fbe6065ce1815711eee52b2d646e"
 ADAPTER = "d8e8b5524ca783dccc0024a1eed61a4c0955cf73b7d45157093787070dc8ed16"
+BUILD_ROOT = r"C:\NemoClawHermesProbe-00503572df74"
 
 
 def digest(file):
@@ -381,6 +383,63 @@ def extract_verified(archive, details, destination, *, created=None):
         )
 
 
+def verify_original_source(runtime, source_archive):
+    spec = importlib.util.spec_from_file_location(
+        "official_inventory", Path(__file__).with_name("official-runtime-inventory.py")
+    )
+    owner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(owner)
+    return owner.verify_official_source(runtime, source_archive)
+
+
+def stage_verified(archive, details, runtime, output, source_archive, controller_source):
+    """Own only a newly created extraction; never adopt or remove an existing root."""
+    created = False
+
+    def owned(destination):
+        nonlocal created
+        created = True
+        save(
+            output / "runtime-ownership.json",
+            {
+                "schemaVersion": 1,
+                "classification": "verified-current-Hermes-base-extraction",
+                "controllerSource": controller_source,
+                "runtimeRoot": str(destination),
+                "createdByExtraction": True,
+                "baseSource": HEAD,
+                "baseZipSha256": SHA,
+            },
+        )
+
+    try:
+        extract_verified(archive, details, runtime, created=owned)
+        source_count = verify_original_source(runtime, source_archive)
+        require(
+            source_count == details[0]["sourceFilesVerified"],
+            "The independently verified original source count differs",
+        )
+        save(
+            output / "extraction.json",
+            {
+                "controllerSource": controller_source,
+                "runtimeRoot": str(runtime),
+                "originalBuildRoot": BUILD_ROOT,
+                "allFilesRehashed": True,
+                "allLinksContained": True,
+                "originalSourceFilesVerified": source_count,
+                "runtimeExecuted": False,
+            },
+        )
+    except BaseException as error:
+        if created:
+            try:
+                shutil.rmtree(runtime)
+            except Exception as cleanup:
+                error.add_note("Owned base extraction cleanup also failed: " + str(cleanup))
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--zip", type=Path, required=True)
@@ -391,6 +450,22 @@ def main():
     require(
         os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true",
         "Candidate staging requires disposable Windows CI",
+    )
+    controller_source = os.environ.get("GITHUB_SHA", "")
+    require(
+        re.fullmatch(r"[a-f0-9]{40}", controller_source)
+        and re.fullmatch(
+            r"[A-Za-z]:\\NemoClawHermesProbe-[a-f0-9]{12}", str(args.runtime_root)
+        )
+        and args.runtime_root != Path(BUILD_ROOT)
+        and not Path(BUILD_ROOT).exists(),
+        "Current base requires a fresh probe root and absent original build root",
+    )
+    require(
+        args.source_archive.stat().st_size == 69242564
+        and digest(args.source_archive)
+        == "c1f2401c8096e9372c46fa4ef8bdada18ed3cc84c0f5274562b86b7646ed3a87",
+        "Original Hermes source archive differs from its pin",
     )
     args.output.mkdir(parents=True)
     if not args.zip.exists():
@@ -446,29 +521,13 @@ def main():
                 "installedAcceptance": False,
             },
         )
-        extract_verified(archive, details, args.runtime_root)
-        spec = importlib.util.spec_from_file_location(
-            "official_inventory",
-            Path(__file__).with_name("official-runtime-inventory.py"),
-        )
-        owner = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(owner)
-        source_count = owner.verify_official_source(
-            args.runtime_root, args.source_archive
-        )
-        require(
-            source_count == candidate["sourceFilesVerified"],
-            "The independently verified original source count differs",
-        )
-        save(
-            args.output / "extraction.json",
-            {
-                "runtimeRoot": str(args.runtime_root),
-                "allFilesRehashed": True,
-                "allLinksContained": True,
-                "originalSourceFilesVerified": source_count,
-                "runtimeExecuted": False,
-            },
+        stage_verified(
+            archive,
+            details,
+            args.runtime_root,
+            args.output,
+            args.source_archive,
+            controller_source,
         )
 
 

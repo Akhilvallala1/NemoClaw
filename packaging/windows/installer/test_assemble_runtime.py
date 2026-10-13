@@ -4,6 +4,7 @@
 """Build real trees and manifests; placeholder Windows binaries are not executed."""
 
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PureWindowsPath
@@ -16,6 +17,12 @@ import unittest.mock as mock
 
 from assign_runtime_namespace import assign
 import assemble_runtime as assembler
+
+spec = importlib.util.spec_from_file_location(
+    "native_personal_fixture", Path(__file__).parents[1] / "hermes/test_native_export_admission.py"
+)
+native_personal_fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native_personal_fixture)
 
 
 class RuntimeAssembly(unittest.TestCase):
@@ -490,7 +497,7 @@ class RuntimeAssembly(unittest.TestCase):
             self.assemble({"hermes": self.root / "curated-hermes"})
         self.assertFalse(self.output.exists())
 
-    def executor_fixture(self):
+    def executor_fixture(self, native=False):
         directory = self.root / "hermes-executor"
         directory.mkdir()
         shutil.copyfile(self.node, directory / "wxc-exec.exe")
@@ -523,6 +530,17 @@ class RuntimeAssembly(unittest.TestCase):
                 directory / "NEMOCLAW-LICENSE.txt"
             )[1],
         }
+        if native:
+            build.update(
+                schemaVersion=2,
+                classification="mxc-native-owned-token-inspection-build",
+                nativeOwnerIdentity="held-primary-appcontainer-token",
+                sourceCommit="7cd00d1ee6af9208322c924ef64e5113f6704639",
+                sourceSha256="9467669fda03a7ad0000a7bc9e0b0d1cab44b1979ee437dd96e8b93646e18029",
+                sourceBytes=6545666,
+                runtimeExecuted=False,
+                qualified=False,
+            )
         metadata = self.root / "hermes-provenance"
         metadata.mkdir()
 
@@ -565,6 +583,65 @@ class RuntimeAssembly(unittest.TestCase):
         (directory / "MXC-LICENSE.txt").unlink()
         with self.assertRaises((ValueError, FileNotFoundError)):
             assembler.hermes_executor_files(directory, receipt, "a" * 40)
+
+    def test_native_hermes_executor_binds_build_only_receipt_and_actual_bytes(self):
+        directory, receipt = self.executor_fixture(native=True)
+        build, files = assembler.hermes_executor_files(directory, receipt, "a" * 40)
+        self.assertFalse(build["qualified"])
+        self.assertFalse(build["runtimeExecuted"])
+        self.assertEqual(len(files), 4)
+        for source, _, expected, previous in files:
+            self.assertEqual(assembler.hash_file(source), expected)
+            self.assertIsNone(previous)
+        (directory / "wxc-exec.exe").write_bytes(b"unproved replacement")
+        with self.assertRaisesRegex(ValueError, "input changed"):
+            assembler.hermes_executor_files(directory, receipt, "a" * 40)
+
+    def test_native_hermes_executor_rejects_stale_owner_and_invalid_build_claims(self):
+        _, receipt = self.executor_fixture(native=True)
+        original = json.loads(receipt.read_text())
+        changes = {
+            "schemaVersion": 1,
+            "classification": "mxc-owned-token-inspection-build",
+            "candidateRevision": "b" * 40,
+            "nativeOwnerIdentity": "supplied-profile-sid",
+            "sourceCommit": "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a",
+            "sourceSha256": "0" * 64,
+            "sourceBytes": 6545666.0,
+            "runtimeExecuted": True,
+            "qualified": True,
+            "tokenQueryRepairSupported": False,
+            "tokenAccessMode": "full-access",
+            "target": "x86_64-pc-windows-msvc",
+            "compilerClosed": False,
+            "compilerForced": True,
+            "compilerExitCode": False,
+            "compilerCleanupErrors": ["open child"],
+            "files": [],
+        }
+        for key, value in changes.items():
+            with self.subTest(field=key):
+                with self.assertRaises(ValueError):
+                    assembler.validate_hermes_executor_build(
+                        {**original, key: value}, "a" * 40
+                    )
+        for key in (
+            "schemaVersion", "nativeOwnerIdentity", "sourceBytes",
+            "runtimeExecuted", "qualified",
+        ):
+            missing = dict(original)
+            missing.pop(key)
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                assembler.validate_hermes_executor_build(missing, "a" * 40)
+        for change in (
+            {"bytes": True}, {"bytes": 0}, {"sha256": "bad"},
+            {"machine": 0x8664}, {"file": "other.exe"},
+        ):
+            with self.subTest(output=change), self.assertRaises(ValueError):
+                assembler.validate_hermes_executor_build(
+                    {**original, "files": [{**original["files"][0], **change}]},
+                    "a" * 40,
+                )
 
     def composition_fixture(self):
         executor, build_file = self.executor_fixture()
@@ -814,6 +891,240 @@ class RuntimeAssembly(unittest.TestCase):
             (output / "mxc-compat/native-compatibility-proof.json").read_bytes(),
             args[5].read_bytes(),
         )
+
+    def native_composition_fixture(self):
+        args = self.composition_fixture()
+        build_file = args[6] / "mxc-token-inspection-build.json"
+        build = json.loads(build_file.read_text())
+        build.update(
+            schemaVersion=2,
+            classification="mxc-native-owned-token-inspection-build",
+            nativeOwnerIdentity="held-primary-appcontainer-token",
+            sourceCommit="7cd00d1ee6af9208322c924ef64e5113f6704639",
+            sourceSha256="9467669fda03a7ad0000a7bc9e0b0d1cab44b1979ee437dd96e8b93646e18029",
+            sourceBytes=6545666,
+            runtimeExecuted=False,
+            qualified=False,
+        )
+        build_file.write_text(json.dumps(build))
+        proof = json.loads(args[5].read_text())
+        proof["inputs"]["mxcBuild"] = build
+        compatibility_file = args[4] / "build-receipt.json"
+        compatibility = json.loads(compatibility_file.read_text())
+        compatibility.update(schemaVersion=1, runtimeExecuted=False, qualified=False)
+        extra_source = assembler.NATIVE_SOURCE_ROOT / "namespace-adapter-controls.cpp"
+        extra_source.write_text("native adapter controls fixture")
+        compatibility["sourceFiles"].append({
+            "path": extra_source.name, "sha256": assembler.hash_file(extra_source)[1],
+        })
+        compatibility_file.write_text(json.dumps(compatibility))
+        proof["inputs"]["compatibility"] = compatibility
+        proof.update(
+            schemaVersion=2,
+            classification="small-msys-native-basecontainer-compatibility-proof",
+            imageVariant="ci-derived-unsigned-msys-dll-bash-and-sh-dynamic-base",
+            nonce="1234567890abcdef12345678",
+            startedExecutors=5,
+            hostProcessesClosed=True,
+            hostProcessesNormal=True,
+            nativeExecutions={},
+            cleanup={},
+        )
+        # Synthetic records prove admission behavior, never native execution.
+        for index, role in enumerate(("base", "start", "d", "a", "b")):
+            container_id = "nm-" + proof["nonce"][:12] + "-" + role
+            proof["nativeExecutions"][container_id] = {
+                "logSha256": "1" * 64,
+                "uiMarker": native_personal_fixture.marker_fixture(100 + index) if role == "d" else None,
+                "policy": {
+                    "event": "mxc.NetworkPolicyApplied", "backend": "processcontainer",
+                    "identity": "redacted", "tier": "base-container",
+                    "enforcement_mode": "capabilities", "default_policy": "block",
+                    "proxy_port": 0, "firewall_rules_created": 0,
+                    "firewall_applied": False, "status": "success",
+                },
+               "jobTeardown": {
+                    "schemaVersion": 1, "classification": "owned-native-MXC-job-teardown",
+                    "stage": "before-primary-handle-release", "clock": "GetTickCount64",
+                    "rootPid": 100 + index, "tickMilliseconds": 2345,
+                    "jobAccountingQueried": True, "jobAccountingKnown": True,
+                    "jobAccountingBytes": 48, "jobAccountingExpectedBytes": 48,
+                    "jobAccountingError": 0, "activeProcesses": 0,
+                    "totalProcesses": 4, "terminatedProcesses": 0,
+                   "rootWaitStatus": 0, "rootSignaled": True, "rootWaitError": 0,
+               },
+                "uiPolicy": {
+                    "schemaVersion": 1, "classification": "native-MXC-ui-policy-assignment",
+                    "stage": "before-primary-thread-resume",
+                    "policyOrigin": "serialized-process-security-environment",
+                    "securityEnvironmentAttached": True, "rootPid": 100 + index,
+                    "uiRestrictions": 0x3ff, "disallowWin32k": False,
+                    "policyMutated": False, "enforcementReadback": False,
+                },
+            }
+            proof["cleanup"][container_id] = {
+                "executor": {"closed": True, "forced": False, "exitCode": 0, "error": None},
+                "nativeTeardownVerified": True, "nativeTeardownError": None,
+                "shareRemoved": True,
+            }
+        args[5].write_text(json.dumps(proof))
+        personal = json.loads(args[3].read_text())
+        fields, request, log = native_personal_fixture.personal_fixture(args[7])
+        personal.update(fields)
+        # This native fixture represents a new candidate and Personal producer
+        # from one revision, not the historical three-lineage replay fixture.
+        candidate = json.loads(args[2].read_text())
+        candidate["controllerSource"] = args[7]
+        inventory = json.loads(args[2].with_name("payload-inventory.json").read_text())
+        candidate["fileCount"] = len(inventory["files"])
+        candidate["logicalBytes"] = sum(row["bytes"] for row in inventory["files"])
+        runtime = r"C:\NemoClawHermesProbe-001122334455"
+        derivation_file = args[2].with_name("candidate-derivation.json")
+        derivation = json.loads(derivation_file.read_text())
+        derivation["runtimeRootAtExport"] = runtime
+        derivation_file.write_text(json.dumps(derivation))
+        derivation_bytes, derivation_sha = assembler.hash_file(derivation_file)
+        candidate["derivation"].update(bytes=derivation_bytes, sha256=derivation_sha)
+        personal["derivedRuntime"]["derivation"]["value"] = derivation
+        args[2].write_text(json.dumps(candidate))
+        candidate_bytes, candidate_sha = assembler.hash_file(args[2])
+        personal["candidateSource"] = args[7]
+        personal["runtime"] = runtime
+        personal["derivedRuntime"]["candidate"].update(
+            value=candidate, bytes=candidate_bytes, sha256=candidate_sha
+        )
+        observed = {"allFilesAndDirectoriesVerified": True,
+                    "files": candidate["fileCount"], "directories": len(inventory["directories"]),
+                    "logicalBytes": candidate["logicalBytes"], "inventorySha256": candidate["inventorySha256"]}
+        personal["runtimeInventory"] = {
+            "schemaVersion": 1, "classification": "current-canonical-Personal-runtime-inventory",
+            "sourceRevision": args[7], "runtimeRoot": runtime,
+            "candidateReceiptSha256": candidate_sha,
+            "before": dict(observed), "after": dict(observed),
+        }
+        personal["hostInputs"] = {
+            "mxc": {"path": personal["execution"]["executable"], "peMachine": 0xAA64,
+                    "bytes": build["files"][0]["bytes"], "sha256": build["files"][0]["sha256"]},
+            "compatibility": {"sourceRevision": args[7], "mxcFile": build["files"][0],
+                              "files": compatibility["files"], "license": compatibility["license"]},
+        }
+        args[3].write_text(json.dumps(personal))
+        (args[3].parent / "personal-request.json").write_bytes(request)
+        (args[3].parent / "mxc-native.log").write_bytes(log)
+        return args
+
+    def test_composition_cannot_pair_native_executor_with_legacy_proof(self):
+        args = self.native_composition_fixture()
+        proof = json.loads(args[5].read_text())
+        proof["classification"] = "small-msys-appcontainer-compatibility-proof"
+        args[5].write_text(json.dumps(proof))
+        # Build validation succeeds, but cannot confer native execution evidence.
+        assembler.hermes_executor_files(args[6], args[6] / "mxc-token-inspection-build.json", args[7])
+        with self.assertRaisesRegex(ValueError, "same-source passed native proof"):
+            assembler.hermes_composition(*args)
+
+    def test_native_composition_requires_all_five_executions_and_remains_unqualified(self):
+        args = self.native_composition_fixture()
+        files, receipt = assembler.hermes_composition(*args)
+        output = self.root / "native-composed"
+        shutil.copytree(args[0], output)
+        assembler.copy_hermes_composition(output, files)
+        self.assertEqual((output / "mxc-compat/native-compatibility-proof.json").read_bytes(),
+                         args[5].read_bytes())
+        self.assertFalse(receipt["installedAcceptance"])
+        self.assertFalse(receipt["fullAgentQualified"])
+        self.assertFalse(receipt["privateStateLeaseTested"])
+        self.assertEqual((output / "mxc-compat/provenance/canonical/mxc-native.log").read_bytes(),
+                         (args[3].parent / "mxc-native.log").read_bytes())
+
+    def test_native_composition_rejects_legacy_personal_or_unbound_current_execution(self):
+        args = self.native_composition_fixture()
+        original = args[3].read_text()
+        changes = [
+            lambda p: p.update(schemaVersion=1),
+            lambda p: p.update(sourceRevision="c" * 40),
+            lambda p: p["cleanup"].update(nativeTeardownVerified=False),
+            lambda p: p["nativeExecution"].update(logSha256="0" * 64),
+            lambda p: p["hostInputs"]["mxc"].update(sha256="0" * 64),
+            lambda p: p["hostInputs"]["compatibility"].update(sourceRevision="c" * 40),
+            lambda p: p["hostInputs"]["compatibility"].update(mxcFile={}),
+            lambda p: p.update(runtimeInventory=None),
+            lambda p: p["runtimeInventory"].update(before=None),
+            lambda p: p["runtimeInventory"].update(after=None),
+            lambda p: p["runtimeInventory"]["after"].update(files=0),
+            lambda p: p["runtimeInventory"]["before"].update(directories=True),
+            lambda p: p["runtimeInventory"]["after"].update(inventorySha256="f" * 64),
+            lambda p: p["runtimeInventory"].update(candidateReceiptSha256="f" * 64),
+        ]
+        for index, mutate in enumerate(changes):
+            personal = json.loads(original)
+            mutate(personal)
+            args[3].write_text(json.dumps(personal))
+            with self.subTest(case=index), self.assertRaises(ValueError):
+                assembler.hermes_composition(*args)
+        args[3].write_text(original)
+        log = args[3].parent / "mxc-native.log"
+        log.write_bytes(log.read_bytes() + b"changed")
+        with self.assertRaises(ValueError):
+            assembler.hermes_composition(*args)
+
+    def test_native_composition_rejects_incomplete_policy_job_and_cleanup_records(self):
+        args = self.native_composition_fixture()
+        original = args[5].read_text()
+        container_id = "nm-1234567890ab-a"
+        mutations = [
+            lambda p: p.update(schemaVersion=True),
+            lambda p: p.update(imageVariant="original"),
+            lambda p: p.update(startedExecutors=4),
+            lambda p: p.update(hostProcessesNormal=False),
+            lambda p: p["nativeExecutions"].pop(container_id),
+            lambda p: p["cleanup"].pop(container_id),
+            lambda p: p["nativeExecutions"][container_id].update(logSha256="bad"),
+            lambda p: p["nativeExecutions"][container_id].pop("uiPolicy"),
+            lambda p: p["nativeExecutions"][container_id]["uiPolicy"].update(uiRestrictions=0),
+            lambda p: p["nativeExecutions"][container_id]["uiPolicy"].update(rootPid=99),
+            lambda p: p["nativeExecutions"][container_id]["policy"].update(tier="appcontainer-dacl"),
+            lambda p: p["nativeExecutions"][container_id]["policy"].update(default_policy="allow"),
+            lambda p: p["nativeExecutions"][container_id]["policy"].update(firewall_applied=0),
+            lambda p: p["nativeExecutions"][container_id]["jobTeardown"].update(activeProcesses=1),
+            lambda p: p["nativeExecutions"][container_id]["jobTeardown"].update(rootSignaled=False),
+            lambda p: p["nativeExecutions"][container_id]["jobTeardown"].update(rootPid=True),
+            lambda p: p["nativeExecutions"][container_id]["jobTeardown"].update(jobAccountingKnown=False),
+            lambda p: p["nativeExecutions"][container_id]["jobTeardown"].update(terminatedProcesses=5),
+            lambda p: p["cleanup"][container_id].update(nativeTeardownVerified=1),
+            lambda p: p["cleanup"][container_id].pop("nativeTeardownError"),
+            lambda p: p["cleanup"][container_id].update(shareRemoved=False),
+            lambda p: p["cleanup"][container_id]["executor"].update(forced=True),
+            lambda p: p["cleanup"][container_id]["executor"].update(exitCode=False),
+            lambda p: p["cleanup"][container_id]["executor"].pop("error"),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(case=index):
+                proof = json.loads(original)
+                mutate(proof)
+                args[5].write_text(json.dumps(proof))
+                with self.assertRaises(ValueError):
+                    assembler.hermes_composition(*args)
+        args[5].write_text(original)
+        compatibility_file = args[4] / "build-receipt.json"
+        compatibility = json.loads(compatibility_file.read_text())
+        for field, value in (
+            ("schemaVersion", True), ("runtimeExecuted", True), ("qualified", True),
+        ):
+            changed = {**compatibility, field: value}
+            compatibility_file.write_text(json.dumps(changed))
+            proof = json.loads(original)
+            proof["inputs"]["compatibility"] = changed
+            args[5].write_text(json.dumps(proof))
+            with self.subTest(build_field=field), self.assertRaises(ValueError):
+                assembler.hermes_composition(*args)
+        compatibility["sourceFiles"].pop()
+        compatibility_file.write_text(json.dumps(compatibility))
+        proof = json.loads(original)
+        proof["inputs"]["compatibility"] = compatibility
+        args[5].write_text(json.dumps(proof))
+        with self.assertRaisesRegex(ValueError, "source-file set"):
+            assembler.hermes_composition(*args)
 
     def test_host_edge_admission_keeps_passing_personal_tools_and_requires_installed_acceptance(
         self,

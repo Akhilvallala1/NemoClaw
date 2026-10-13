@@ -1,14 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Admit a pinned Personal-passing complete candidate for CI installer assembly."""
+"""Admit a pinned or same-run Personal-passing candidate for CI installer assembly."""
 
 import argparse
 import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import stat
 import urllib.request
 import zipfile
 
@@ -35,7 +36,7 @@ def digest(file):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def exact_root_document(archive, name, maximum):
+def exact_archive_bytes(archive, name, maximum):
     matches = [entry for entry in archive.infolist() if entry.filename == name]
     require(
         len(matches) == 1
@@ -44,18 +45,37 @@ def exact_root_document(archive, name, maximum):
         "Missing, duplicate or oversized root metadata: " + name,
     )
     data = archive.read(matches[0])
+    return data
+
+
+def exact_root_document(archive, name, maximum):
+    data = exact_archive_bytes(archive, name, maximum)
     return data, json.loads(data)
 
 
+def native_personal_documents(archive, personal_member):
+    member = PurePosixPath(personal_member)
+    require(member.name == "personal-feasibility.json" and not member.is_absolute()
+            and ".." not in member.parts and "\\" not in personal_member,
+            "Invalid Personal receipt archive member")
+    # Bind to the primary receipt's directory, never a same-named warm replay log.
+    return {
+        name: exact_archive_bytes(archive, (member.parent / name).as_posix(), maximum)
+        for name, maximum in (("personal-request.json", 1024 * 1024),
+                              ("mxc-native.log", 4 * 1024 * 1024))
+    }
+
+
 def source_run(pin, kind):
-    if pin["schemaVersion"] == 1:
+    if pin["schemaVersion"] in (1, 4, 5):
         return pin["sourceRevision"], pin["runId"]
     return pin[kind + "SourceRevision"], pin[kind + "RunId"]
 
 
 def validate_pin(pin):
     require(
-        pin.get("schemaVersion") in (1, 2, 3)
+        type(pin.get("schemaVersion")) is int
+        and pin["schemaVersion"] in (1, 2, 3, 4)
         and pin.get("classification") == "personal-passing-hermes-installer-input"
         and pin.get("status")
         == ("edge-broker-prepared" if pin.get("schemaVersion") == 3 else "personal-passed"),
@@ -132,13 +152,31 @@ def validate_pin(pin):
             and re.fullmatch(r"[a-f0-9]{64}", edge.get("sha256", "")),
             "Invalid bounded Edge prerequisite artifact pin",
         )
+    if pin["schemaVersion"] == 4:
+        require(pin.get("evidenceMode") == "same-source-native-personal"
+                and not any(key in pin for key in (
+                    "candidateSourceRevision", "personalSourceRevision", "candidateRunId",
+                    "personalRunId", "browserMode", "edgeEvidenceArtifact",
+                )), "Native input pin cannot substitute historical replay or host Edge evidence")
     return pin
 
 
-def validate_personal(record, pin):
+def validate_personal(record, pin, request_raw=None, log_raw=None):
     edge_mode = pin["schemaVersion"] == 3
+    native_personal = type(record.get("schemaVersion")) is int and record["schemaVersion"] == 2
+    require(native_personal == (pin["schemaVersion"] in (4, 5)),
+            "Personal backend differs from its explicit input pin schema")
+    if native_personal:
+        require(not edge_mode, "Native Personal requires its own passing browser evidence")
+        spec = importlib.util.spec_from_file_location(
+            "finished_native_personal",
+            Path(__file__).parents[1] / "mxc-bash/native-compatibility-proof.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.validate_native_personal(record, source_run(pin, "personal")[0], request_raw, log_raw)
     require(
-        record.get("schemaVersion") == 1
+        (native_personal or type(record.get("schemaVersion")) is int and record["schemaVersion"] == 1)
         and record.get("classification") == "canonical-personal-mxc-feasibility"
         and record.get("sourceRevision") == source_run(pin, "personal")[0]
         and record.get("feasibilityPassed") is (not edge_mode),
@@ -156,7 +194,7 @@ def validate_personal(record, pin):
             for k in [
                 "executorClosed",
                 "hostDiagnosticChildrenClosed",
-                "profileDeleted",
+                "nativeTeardownVerified" if native_personal else "profileDeleted",
                 "ownedRootsRemoved",
             ]
         ),
@@ -205,6 +243,59 @@ def validate_personal(record, pin):
         ),
         "Personal evidence route differs from its explicit pin schema",
     )
+
+
+def validate_native_runtime_inventory(record, candidate, candidate_identity, derivation, inventory, source):
+    """Bind both Personal byte comparisons to the candidate admitted for assembly."""
+    identity = record.get("derivedRuntime", {}).get("candidate", {})
+    candidate_bytes, candidate_sha = candidate_identity
+    require(
+        type(identity.get("bytes")) is int
+        and identity["bytes"] == candidate_bytes
+        and identity.get("sha256") == candidate_sha
+        and identity.get("value") == candidate,
+        "Native Personal candidate differs from the admitted archive",
+    )
+    runtime = record.get("runtime")
+    require(
+        isinstance(runtime, str)
+        and re.fullmatch(r"C:\\NemoClawHermesProbe-[a-f0-9]{12}", runtime)
+        and derivation.get("runtimeRootAtExport") == runtime
+        and record.get("sourceRevision") == source
+        and record.get("candidateSource") == source
+        and candidate.get("controllerSource") == source,
+        "Native Personal source/runtime binding differs",
+    )
+    comparison = record.get("runtimeInventory")
+    require(
+        isinstance(comparison, dict)
+        and type(comparison.get("schemaVersion")) is int
+        and comparison["schemaVersion"] == 1
+        and comparison.get("classification") == "current-canonical-Personal-runtime-inventory"
+        and comparison.get("sourceRevision") == source
+        and comparison.get("runtimeRoot") == runtime
+        and comparison.get("candidateReceiptSha256") == candidate_sha,
+        "Native Personal full inventory identity is missing or mismatched",
+    )
+    require(all(type(row.get("bytes")) is int and row["bytes"] >= 0
+                and "linkTarget" not in row for row in inventory["files"]),
+            "Native Personal inventory requires regular files with byte counts")
+    counts = {"files": len(inventory["files"]), "directories": len(inventory["directories"]),
+              "logicalBytes": sum(row["bytes"] for row in inventory["files"])}
+    require(type(candidate.get("fileCount")) is int and candidate["fileCount"] == counts["files"]
+            and type(candidate.get("logicalBytes")) is int
+            and candidate["logicalBytes"] == counts["logicalBytes"],
+            "Native candidate counts differ from its hashed inventory")
+    for phase in ("before", "after"):
+        observed = comparison.get(phase)
+        require(
+            isinstance(observed, dict)
+            and observed.get("allFilesAndDirectoriesVerified") is True
+            and observed.get("inventorySha256") == candidate["inventorySha256"]
+            and all(type(observed.get(key)) is int and observed[key] == value
+                    for key, value in counts.items()),
+            "Native Personal full inventory comparison is missing or mismatched: " + phase,
+        )
 
 
 def validate_replay(record, pin, candidate, candidate_raw, derivation):
@@ -375,6 +466,9 @@ def replay_native_documents(archive, owner, record):
         and proof.get("inputs", {}).get("mxcBuild") == mxc,
         "Replay native proof/build lineage differs",
     )
+    validate_current_compatibility(
+        proof, references["proof"]["sha256"], build, mxc, native["sourceRevision"]
+    )
     for field, key in [("proof", "proof"), ("build", "compatibility")]:
         require(
             all(
@@ -429,36 +523,177 @@ def replay_native_documents(archive, owner, record):
     return documents
 
 
-def validate_run(run, source, run_id, *, passing):
+def validate_run(run, source, run_id, *, passing, native_mode=False):
     require(
         run.get("id") == run_id
         and run.get("head_sha") == source
         and run.get("status") == "completed"
         and (not passing or run.get("conclusion") == "success")
-        and run.get("path") == ".github/workflows/windows-native-installer.yaml",
+        and run.get("path") == (
+            ".github/workflows/windows-native-installer-v2.yaml" if native_mode
+            else ".github/workflows/windows-native-installer.yaml"
+        ),
         "Pinned workflow identity or result differs",
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--pin",
-        type=Path,
-        default=Path(__file__).with_name("finished-hermes-inputs.json"),
-    )
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--native-proof-directory", type=Path, required=True)
-    parser.add_argument("--source-revision", required=True)
-    args = parser.parse_args()
-    pin = validate_pin(json.loads(args.pin.read_text()))
+def validate_current_compatibility(proof, proof_sha, compatibility, mxc, source):
+    """Admit native evidence without treating legacy reuse as a native execution."""
     require(
-        os.name == "nt"
-        and os.environ.get("GITHUB_ACTIONS") == "true"
-        and args.source_revision == os.environ.get("GITHUB_SHA"),
-        "Finished Hermes intake requires exact Windows CI",
+        proof.get("sourceRevision") == source
+        and proof.get("passed") is True
+        and proof.get("normalCleanup") is True
+        and compatibility.get("sourceRevision") == source
+        and compatibility.get("status") == "built"
+        and mxc.get("candidateRevision") == source
+        and mxc.get("status") == "built",
+        "Current-source compatibility proof did not pass",
     )
-    require(not args.output.exists(), "Hermes intake output must be fresh")
+    if proof.get("classification") == "small-msys-appcontainer-compatibility-proof":
+        require(
+            mxc.get("classification") == "mxc-owned-token-inspection-build",
+            "Legacy compatibility proof cannot admit a native executor",
+        )
+        return
+    require(
+        proof.get("classification")
+        == "small-msys-native-basecontainer-compatibility-proof"
+        and proof.get("qualificationReuse") is None,
+        "Native compatibility requires fresh native evidence, not legacy reuse",
+    )
+    spec = importlib.util.spec_from_file_location(
+        "finished_hermes_exporter",
+        Path(__file__).parents[1] / "hermes/export-official-runtime.py",
+    )
+    exporter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(exporter)
+    exporter.validate_compatibility_proof(
+        proof, proof_sha, compatibility, mxc, source
+    )
+
+
+def validate_personal_composition(personal, proof, compatibility, mxc, source):
+    """Keep native and historical Personal evidence on separate composition paths."""
+    native_personal = type(personal.get("schemaVersion")) is int and personal["schemaVersion"] == 2
+    if proof.get("classification") != "small-msys-native-basecontainer-compatibility-proof":
+        require(not native_personal, "Native Personal cannot use legacy compatibility proof")
+        return
+    require(native_personal and personal.get("sourceRevision") == source,
+            "Native composition requires same-source native Personal execution")
+    spec = importlib.util.spec_from_file_location(
+        "finished_native_personal_inputs",
+        Path(__file__).parents[1] / "mxc-bash/native-compatibility-proof.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.validate_native_personal_inputs(personal, compatibility, mxc, source)
+
+
+def read_same_run_file(file, maximum):
+    info = file.lstat()
+    require(stat.S_ISREG(info.st_mode) and not file.is_symlink()
+            and not (getattr(info, "st_file_attributes", 0) & 0x400)
+            and info.st_nlink == 1 and 0 < info.st_size <= maximum,
+            "Same-run producer input is not bounded and ordinary: " + file.name)
+    return file.read_bytes()
+
+
+def prepare_same_run_archives(root, output, source, run_id, run_attempt):
+    """Snapshot this job's completed producer; never label it a published artifact."""
+    require(re.fullmatch(r"[a-f0-9]{40}", source)
+            and re.fullmatch(r"[1-9][0-9]*", run_id or "")
+            and re.fullmatch(r"[1-9][0-9]*", run_attempt or ""),
+            "Same-run intake requires the actual workflow identity")
+    for directory in (root, root / "official-hermes-runtime-candidate",
+                      root / "official-hermes-runtime-build", root / "personal-mxc"):
+        info = directory.lstat()
+        require(stat.S_ISDIR(info.st_mode) and not directory.is_symlink()
+                and not (getattr(info, "st_file_attributes", 0) & 0x400),
+                "Same-run producer directory is redirected")
+    phase_raw = read_same_run_file(root / "personal-phase.json", 1024 * 1024)
+    build_raw = read_same_run_file(root / "official-hermes-runtime-phase.json", 1024 * 1024)
+    phase, build = json.loads(phase_raw), json.loads(build_raw)
+    for value, source_key, classification, status in (
+        (phase, "sourceRevision", "canonical-personal-mxc-candidate-feasibility", "pass"),
+        (build, "controllerSource", "official-hermes-runtime-build-phase", "candidate-bytes-exported-unqualified"),
+    ):
+        require(type(value.get("schemaVersion")) is int and value["schemaVersion"] == 1
+                and value.get("classification") == classification and value.get("status") == status
+                and value.get(source_key) == source
+                and value.get("workflowRunId") == run_id and value.get("workflowRunAttempt") == run_attempt
+                and value.get("buildProcessesClosed") is True
+                and value.get("installedAcceptance") is False,
+                "Same-run producer identity, result or build closure differs")
+    require(phase.get("currentNativeProduction") is True
+            and phase.get("diagnosticOnly") is False and phase.get("cleanupErrors") == []
+            and phase.get("runtimeRootRemoved") is True
+            and phase.get("runtimeRetainedForUnclosedBuild") is False
+            and phase.get("runtimeRetainedForUnclosedExecutor") is False
+            and phase.get("runtimeRebuilt") is True and phase.get("runtimeExported") is True
+            and phase.get("fullAgentQualified") is False
+            and phase.get("replayInputSha256") is None
+            and isinstance(phase.get("runtimeRoot"), str)
+            and re.fullmatch(r"C:\\NemoClawHermesProbe-[a-f0-9]{12}", phase["runtimeRoot"])
+            and phase["runtimeRoot"] == build.get("runtimeRoot")
+            and build.get("runtimeExecutionQualified") is False and build.get("activationAllowed") is False,
+            "Same-run Personal production or cleanup did not complete")
+    candidate_root = root / "official-hermes-runtime-candidate"
+    candidate_raw = read_same_run_file(candidate_root / "runtime-candidate.json", 65536)
+    candidate_sha = hashlib.sha256(candidate_raw).hexdigest()
+    require(candidate_sha == phase.get("derivedCandidateReceiptSha256")
+            and candidate_sha == build.get("candidateReceiptSha256"),
+            "Same-run producer receipts identify another candidate")
+    personal_raw = read_same_run_file(root / "personal-mxc/personal-feasibility.json", 16 * 1024 * 1024)
+    require(json.loads(personal_raw).get("runtime") == phase["runtimeRoot"],
+            "Same-run Personal tested another runtime")
+    candidate_files = list(candidate_root.iterdir())
+    require(0 < len(candidate_files) <= 32, "Same-run candidate metadata count exceeds its bound")
+    archive_name = json.loads(candidate_raw)["archive"]["file"]
+    require(archive_name == "official-hermes-runtime-candidate.tar.gz",
+            "Same-run candidate archive name differs")
+    entries = []
+    for file in candidate_files:
+        require(file.name == archive_name or file.suffix == ".json",
+                "Unexpected same-run candidate member")
+        info = file.lstat()
+        require(stat.S_ISREG(info.st_mode) and not file.is_symlink() and info.st_nlink == 1
+                and not (getattr(info, "st_file_attributes", 0) & 0x400)
+                and 0 < info.st_size <= (2_000_000_000 if file.name == archive_name else 256 * 1024 * 1024),
+                "Same-run candidate member is not bounded and ordinary")
+        entries.append((file, "candidate/" + file.name))
+    for name in ("official-runtime-build.json", "native-adaptation.json"):
+        file = root / "official-hermes-runtime-build" / name
+        read_same_run_file(file, 16 * 1024 * 1024)
+        entries.append((file, "build/" + name))
+    require(sum(file.stat().st_size for file, _ in entries) <= 2_000_000_000,
+            "Same-run complete candidate exceeds its byte bound")
+    candidate_zip = output / "candidateArtifact.zip"
+    with zipfile.ZipFile(candidate_zip, "x", compression=zipfile.ZIP_STORED) as archive:
+        for file, name in entries:
+            archive.write(file, name)
+    personal_zip = output / "personalEvidenceArtifact.zip"
+    with zipfile.ZipFile(personal_zip, "x", compression=zipfile.ZIP_STORED) as archive:
+        for name, maximum in (("personal-feasibility.json", 16 * 1024 * 1024),
+                              ("personal-request.json", 1024 * 1024), ("mxc-native.log", 4 * 1024 * 1024)):
+            archive.writestr("personal/" + name, read_same_run_file(root / "personal-mxc" / name, maximum))
+    (output / "personal-phase.json").write_bytes(phase_raw)
+    (output / "official-hermes-runtime-phase.json").write_bytes(build_raw)
+    paths = {"candidateArtifact": candidate_zip, "personalEvidenceArtifact": personal_zip}
+    context = {"schemaVersion": 5, "classification": "same-run-native-personal-installer-input",
+               "sourceRevision": source, "runId": int(run_id), "runAttempt": int(run_attempt),
+               "candidateReceiptSha256": candidate_sha,
+               "personalReceiptSha256": hashlib.sha256(personal_raw).hexdigest(),
+               "localArchives": {key: {"bytes": file.stat().st_size, "sha256": digest(file)}
+                                 for key, file in paths.items()},
+               "producerReceipts": {"personal-phase.json": hashlib.sha256(phase_raw).hexdigest(),
+                                    "official-hermes-runtime-phase.json": hashlib.sha256(build_raw).hexdigest()}}
+    # The enclosing run is still live. Phase checks do not claim workflow success.
+    runs = {int(run_id): {"id": int(run_id), "run_attempt": int(run_attempt), "head_sha": source,
+                         "evidenceMode": "same-run-local-producer", "workflowCompleted": False}}
+    return context, runs, paths
+
+
+def prepare_pinned_archives(pin, owner, output):
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "NemoClaw-CI"}
     if os.environ.get("GH_TOKEN"):
         headers["Authorization"] = "Bearer " + os.environ["GH_TOKEN"]
@@ -481,7 +716,8 @@ def main():
             source_revision,
             run_id,
             passing=(kind == "personal" and pin["schemaVersion"] != 3)
-            or pin["schemaVersion"] == 1,
+            or pin["schemaVersion"] in (1, 4),
+            native_mode=pin["schemaVersion"] == 4,
         )
     if pin["schemaVersion"] == 3:
         with urllib.request.urlopen(
@@ -498,18 +734,13 @@ def main():
             pin["edgeRunId"],
             passing=True,
         )
-    source = Path(__file__).parents[1] / "hermes/verify-personal-candidate.py"
-    spec = importlib.util.spec_from_file_location("complete_candidate", source)
-    owner = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(owner)
-    args.output.mkdir(parents=True)
     paths = {}
     for key in ["personalEvidenceArtifact", "candidateArtifact"]:
         row = pin[key]
         source_revision, run_id = source_run(
             pin, "personal" if key == "personalEvidenceArtifact" else "candidate"
         )
-        file = args.output / (key + ".zip")
+        file = output / (key + ".zip")
         owner.download(
             file,
             artifact=row["id"],
@@ -523,7 +754,7 @@ def main():
     edge_identity = None
     if pin["schemaVersion"] == 3:
         row = pin["edgeEvidenceArtifact"]
-        file = args.output / "edgeEvidenceArtifact.zip"
+        file = output / "edgeEvidenceArtifact.zip"
         owner.download(
             file,
             artifact=row["id"],
@@ -547,15 +778,57 @@ def main():
             and edge_identity.get("executed") is False,
             "Native Edge prerequisite receipt differs",
         )
+    return runs, paths, edge_identity
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    inputs = parser.add_mutually_exclusive_group()
+    inputs.add_argument("--pin", type=Path)
+    inputs.add_argument("--same-run-personal-directory", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--native-proof-directory", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    args = parser.parse_args()
+    require(
+        os.name == "nt"
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and args.source_revision == os.environ.get("GITHUB_SHA")
+        and re.fullmatch(r"[a-f0-9]{40}", args.source_revision),
+        "Finished Hermes intake requires exact Windows CI",
+    )
+    require(not args.output.exists(), "Hermes intake output must be fresh")
+    source = Path(__file__).parents[1] / "hermes/verify-personal-candidate.py"
+    spec = importlib.util.spec_from_file_location("complete_candidate", source)
+    owner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(owner)
+    args.output.mkdir(parents=True)
+    if args.same_run_personal_directory:
+        pin, runs, paths = prepare_same_run_archives(
+            args.same_run_personal_directory, args.output, args.source_revision,
+            os.environ.get("GITHUB_RUN_ID"), os.environ.get("GITHUB_RUN_ATTEMPT"),
+        )
+        edge_identity = None
+    else:
+        pin_file = args.pin or Path(__file__).with_name("finished-hermes-inputs.json")
+        pin = validate_pin(json.loads(pin_file.read_text()))
+        if pin["schemaVersion"] == 4:
+            require(pin["sourceRevision"] == args.source_revision,
+                    "Native finished inputs must match the current assembly source")
+        runs, paths, edge_identity = prepare_pinned_archives(pin, owner, args.output)
     with zipfile.ZipFile(paths["personalEvidenceArtifact"]) as archive:
-        _, raw, personal = owner.document(
+        personal_member, raw, personal = owner.document(
             archive, "personal-feasibility.json", 16 * 1024 * 1024
         )
         require(
             hashlib.sha256(raw).hexdigest() == pin["personalReceiptSha256"],
             "Personal receipt changed",
         )
-        validate_personal(personal, pin)
+        native_documents = {}
+        if type(personal.get("schemaVersion")) is int and personal["schemaVersion"] == 2:
+            native_documents = native_personal_documents(archive, personal_member)
+        validate_personal(personal, pin, native_documents.get("personal-request.json"),
+                          native_documents.get("mxc-native.log"))
         if pin["schemaVersion"] == 3:
             personal = {
                 **personal,
@@ -574,6 +847,10 @@ def main():
             if pin["schemaVersion"] in (2, 3)
             else {}
         )
+        for name, data in native_documents.items():
+            require(name not in current_documents or current_documents[name] == data,
+                    "Native Personal archive documents disagree")
+            current_documents[name] = data
         for name, data in current_documents.items():
             (args.output / name).write_bytes(data)
     metadata = args.output / "candidate"
@@ -602,6 +879,10 @@ def main():
         )
         if pin["schemaVersion"] in (2, 3):
             validate_replay(personal, pin, candidate, raw, derivation)
+        elif pin["schemaVersion"] in (4, 5):
+            validate_native_runtime_inventory(personal, candidate,
+                                              (len(raw), hashlib.sha256(raw).hexdigest()),
+                                              derivation, details[1], args.source_revision)
         documents = [
             ("runtime-candidate.json", pin["candidateReceiptSha256"]),
             ("payload-inventory.json", candidate["inventorySha256"]),
@@ -636,13 +917,7 @@ def main():
             and reuse.get("baselinePassed") is True,
             "Reused Bash qualification is not bound to exact producer inputs",
         )
-    require(
-        proof.get("classification") == "small-msys-appcontainer-compatibility-proof"
-        and proof.get("sourceRevision") == args.source_revision
-        and proof.get("passed") is True
-        and proof.get("normalCleanup") is True,
-        "Current-source compatibility proof did not pass",
-    )
+    builds = []
     for name, field in [
         ("compatibility-build/build-receipt.json", "sourceRevision"),
         (
@@ -651,6 +926,7 @@ def main():
         ),
     ]:
         record = json.loads((proof_root / name).read_text())
+        builds.append(record)
         require(
             record.get(field) == args.source_revision
             and record.get("status") == "built",
@@ -664,6 +940,10 @@ def main():
                 and digest(file) == row["sha256"],
                 "Native composition member changed",
             )
+    validate_current_compatibility(
+        proof, digest(proof_root / "result.json"), *builds, args.source_revision
+    )
+    validate_personal_composition(personal, proof, *builds, args.source_revision)
     (args.output / "intake.json").write_text(
         json.dumps(
             {
@@ -686,7 +966,7 @@ def main():
                     "bytes": len(current_documents["personal-request.json"]),
                     "sha256": personal["requestSha256"],
                 }
-                if pin["schemaVersion"] in (2, 3)
+                if pin["schemaVersion"] in (2, 3, 4, 5)
                 else None,
                 "edgePrerequisite": edge_identity,
                 "nativeProofSha256": digest(proof_root / "result.json"),

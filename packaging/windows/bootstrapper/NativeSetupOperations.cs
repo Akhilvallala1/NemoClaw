@@ -11,6 +11,7 @@ using System.Text.Json;
 namespace Nvidia.NemoClaw.Bootstrapper;
 
 internal delegate Task<string> NativeSetupHelperRunner(string launcher, string[] arguments, byte[] input, bool captureOutput);
+internal sealed record NativeSavedSettings(string State, NativeSetupConfiguration? Configuration);
 
 // Closing an unconfirmed window must not release the transaction or permit another save.
 internal sealed class NativeSetupObservation
@@ -82,6 +83,105 @@ internal sealed class NativeSetupObservation
 
 internal static class NativeSetupOperations
 {
+    internal static Task<string> ReadSavedSettingsAsync(string agent)
+    {
+        if (agent != "openclaw") throw new InvalidOperationException("Saved settings inspection is unavailable for this agent.");
+        var launcher = InstalledLauncher();
+        // Read-only helper cleanup must not depend on a window's dispatcher surviving.
+        return Task.Run(() => RunSetupHelperAsync(launcher, new[] { "--configure-native", "--read-settings", agent },
+            Array.Empty<byte>(), captureOutput: true, observationDeadline: TimeSpan.FromSeconds(45), maxOutputCharacters: 16384));
+    }
+
+    internal static NativeSavedSettings ReadSavedSettings(string value, string agent)
+    {
+        const string invalid = "The saved settings response is invalid.";
+        if (agent != "openclaw" || value.Length is < 1 or > 16384) throw new InvalidOperationException(invalid);
+        try
+        {
+            using var document = JsonDocument.Parse(value, new JsonDocumentOptions { MaxDepth = 8 });
+            var root = document.RootElement;
+            Fields(root, true, "schemaVersion", "kind", "agent", "state", "settings");
+            if (root.GetProperty("schemaVersion").GetInt32() != 1 || root.GetProperty("kind").GetString() != "native-saved-settings"
+                || root.GetProperty("agent").GetString() != agent) throw new InvalidOperationException(invalid);
+            var state = root.GetProperty("state").GetString();
+            var settings = root.GetProperty("settings");
+            if (state is "unconfigured" or "needs-resave")
+            {
+                if (settings.ValueKind != JsonValueKind.Null) throw new InvalidOperationException(invalid);
+                return new(state, null);
+            }
+            if (state != "saved") throw new InvalidOperationException(invalid);
+            var managed = settings.TryGetProperty("localModel", out var local);
+            Fields(settings, true, "inference", "model", "credentialStored", "options", managed ? "localModel" : "endpoint");
+            var provider = settings.GetProperty("inference").GetString();
+            var model = settings.GetProperty("model").GetString();
+            var stored = settings.GetProperty("credentialStored").GetBoolean();
+            if (provider is not ("nvidia" or "openrouter" or "compatible" or "local")
+                || model is null || model.Length is 0 or > 256 || model.Any(char.IsControl)
+                || provider is "nvidia" or "openrouter" && !stored) throw new InvalidOperationException(invalid);
+            string? endpoint = null;
+            string? localModel = null;
+            if (managed)
+            {
+                localModel = local.GetString();
+                var known = localModel == NativeExpressSetup.Id && model == NativeExpressSetup.Model
+                    || NativeDownloadedModelSetup.IsModel(localModel) && model == localModel;
+                if (!known || provider != "local" || stored) throw new InvalidOperationException(invalid);
+            }
+            else
+            {
+                endpoint = settings.GetProperty("endpoint").GetString();
+                if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || uri.UserInfo.Length != 0
+                    || uri.Query.Length != 0 || uri.Fragment.Length != 0
+                    || (provider == "local" ? uri.Host is not ("127.0.0.1" or "[::1]" or "::1") || uri.Scheme is not ("http" or "https") : uri.Scheme != "https")
+                    || provider == "nvidia" && endpoint != "https://integrate.api.nvidia.com/v1"
+                    || provider == "openrouter" && endpoint != "https://openrouter.ai/api/v1") throw new InvalidOperationException(invalid);
+            }
+            var options = settings.GetProperty("options");
+            Fields(options, false, "search", "messaging");
+            string? search = null;
+            if (options.TryGetProperty("search", out var selectedSearch))
+            {
+                Fields(selectedSearch, true, "provider", "credentialStored");
+                if (selectedSearch.GetProperty("credentialStored").ValueKind != JsonValueKind.True) throw new InvalidOperationException(invalid);
+                search = selectedSearch.GetProperty("provider").GetString();
+                if (search is null) throw new InvalidOperationException(invalid);
+            }
+            var messaging = new Dictionary<string, string[]>();
+            if (options.TryGetProperty("messaging", out var channels))
+            {
+                Fields(channels, false, "telegram", "discord", "slack");
+                foreach (var channel in channels.EnumerateObject())
+                {
+                    if (channel.Name == "slack") Fields(channel.Value, true, "credentialStored", "appCredentialStored", "allowedUsers");
+                    else Fields(channel.Value, true, "credentialStored", "allowedUsers");
+                    if (channel.Value.GetProperty("credentialStored").ValueKind != JsonValueKind.True
+                        || channel.Name == "slack" && channel.Value.GetProperty("appCredentialStored").ValueKind != JsonValueKind.True)
+                        throw new InvalidOperationException(invalid);
+                    var users = channel.Value.GetProperty("allowedUsers");
+                    if (users.ValueKind != JsonValueKind.Array || users.GetArrayLength() > 50
+                        || users.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String)) throw new InvalidOperationException(invalid);
+                    messaging[channel.Name] = users.EnumerateArray().Select(item => item.GetString()!).ToArray();
+                }
+            }
+            var restored = new NativeSetupOptions { SearchProvider = search, Messaging = messaging };
+            restored.Validate(agent);
+            return new(state, new NativeSetupConfiguration(agent, provider, endpoint, model, stored) { LocalModel = localModel, Options = restored });
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            throw new InvalidOperationException(invalid);
+        }
+
+        static void Fields(JsonElement record, bool exact, params string[] allowed)
+        {
+            if (record.ValueKind != JsonValueKind.Object) throw new InvalidOperationException(invalid);
+            var names = record.EnumerateObject().Select(item => item.Name).ToArray();
+            if ((exact && names.Length != allowed.Length) || names.Length != names.Distinct(StringComparer.Ordinal).Count()
+                || names.Any(name => !allowed.Contains(name, StringComparer.Ordinal))) throw new InvalidOperationException(invalid);
+        }
+    }
+
     internal static async Task SaveAsync(NativeSetupConfiguration configuration, SecureString password, NativeServiceCredentials? serviceCredentials = null, Action<NativeExpressProgress>? progress = null, CancellationToken cancellation = default, Action<int>? completionUnconfirmed = null)
     {
         cancellation.ThrowIfCancellationRequested();
@@ -217,8 +317,11 @@ internal static class NativeSetupOperations
 
     internal static async Task<string> RunSetupHelperAsync(string launcher, string[] arguments, byte[] input, bool captureOutput = false,
         Action? waitingForTransaction = null, TimeSpan? observationDeadline = null,
-        Action<int>? completionUnconfirmed = null, TimeSpan? recoveryDeadline = null)
+        Action<int>? completionUnconfirmed = null, TimeSpan? recoveryDeadline = null, int maxOutputCharacters = 4096)
     {
+        if (maxOutputCharacters is < 4096 or > 16384 ||
+            maxOutputCharacters != 4096 && (!captureOutput || arguments.Contains("--transaction") || !arguments.Contains("--read-settings")))
+            throw new ArgumentOutOfRangeException(nameof(maxOutputCharacters));
         var startInfo = new ProcessStartInfo
         {
             FileName = launcher,
@@ -239,7 +342,7 @@ internal static class NativeSetupOperations
         if (!process.Start()) throw new InvalidOperationException("The native setup helper could not start.");
         try
         {
-            var stdout = ReadBoundedOutputAsync(process.StandardOutput, timeout.Token, captureOutput, transaction);
+            var stdout = ReadBoundedOutputAsync(process.StandardOutput, timeout.Token, captureOutput, transaction, maxOutputCharacters);
             var stderr = ReadBoundedOutputAsync(process.StandardError, timeout.Token, drainOnOverflow: transaction);
             var completion = Task.WhenAll(WriteHelperInputAsync(process.StandardInput, input, timeout.Token), process.WaitForExitAsync(timeout.Token), stdout, stderr);
             Exception? observationError = null;
@@ -323,7 +426,7 @@ internal static class NativeSetupOperations
         finally { writer.Close(); }
     }
 
-    private static async Task<(int Count, string Value)> ReadBoundedOutputAsync(StreamReader reader, CancellationToken cancellation, bool capture = false, bool drainOnOverflow = false)
+    private static async Task<(int Count, string Value)> ReadBoundedOutputAsync(StreamReader reader, CancellationToken cancellation, bool capture = false, bool drainOnOverflow = false, int maximum = 4096)
     {
         var buffer = new char[512];
         var value = capture ? new StringBuilder() : null;
@@ -333,13 +436,13 @@ internal static class NativeSetupOperations
         {
             while ((count = await reader.ReadAsync(buffer.AsMemory(), cancellation)) != 0)
             {
-                total = Math.Min(4097, total + count);
-                if (total > 4096 && !drainOnOverflow) throw new InvalidOperationException("The native setup helper exceeded its output bound.");
+                total = Math.Min(maximum + 1, total + count);
+                if (total > maximum && !drainOnOverflow) throw new InvalidOperationException("The native setup helper exceeded its output bound.");
                 // Discard excess transaction output without breaking its pipe during rollback.
-                if (total <= 4096) value?.Append(buffer, 0, count);
+                if (total <= maximum) value?.Append(buffer, 0, count);
                 Array.Clear(buffer);
             }
-            if (total > 4096) throw new InvalidOperationException("The native setup helper exceeded its output bound.");
+            if (total > maximum) throw new InvalidOperationException("The native setup helper exceeded its output bound.");
             return (total, value?.ToString() ?? string.Empty);
         }
         finally { Array.Clear(buffer); }

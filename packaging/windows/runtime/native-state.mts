@@ -16,6 +16,17 @@ export async function acquireNativeStateConfiguration(launcher: string, purpose:
   return await acquireStateOwner(launcher, purpose, "configuration");
 }
 
+export async function acquireNativeStateInspection(launcher: string, purpose: string) {
+  if (!["openclaw", "hermes"].includes(purpose))
+    throw new Error("Select a supported native agent to inspect.");
+  const owner = await acquireStateOwner(launcher, purpose, "inspection");
+  if (typeof owner.present !== "boolean") {
+    await owner.release();
+    throw new Error("The private Windows state inspection receipt is invalid.");
+  }
+  return { ...owner, present: owner.present };
+}
+
 export async function acquireNativeStateRemoval(launcher: string, purpose: string) {
   if (purpose === "inference")
     throw new Error("Agent removal cannot remove shared inference state.");
@@ -25,7 +36,7 @@ export async function acquireNativeStateRemoval(launcher: string, purpose: strin
 async function acquireStateOwner(
   launcher: string,
   purpose: string,
-  mode: "session" | "configuration" | "remove",
+  mode: "session" | "configuration" | "inspection" | "remove",
 ) {
   const removal = mode === "remove";
   if (
@@ -34,7 +45,13 @@ async function acquireStateOwner(
     )
   )
     throw new Error("The native state purpose is invalid.");
-  const command = mode === "configuration" ? "--state-configure" : `--state-${mode}`;
+  const inspection = mode === "inspection";
+  const command =
+    mode === "configuration"
+      ? "--state-configure"
+      : inspection
+        ? "--state-inspect"
+        : `--state-${mode}`;
   const child = spawn(launcher, [command, purpose], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -97,58 +114,76 @@ async function acquireStateOwner(
   let bytes = 0;
   let ready;
   try {
-    ready = await new Promise<{ stateRoot: string; created: boolean; removed: boolean }>(
-      (resolve, reject) => {
-        const timeout = setTimeout(
-          () => reject(new Error("Opening private Windows state timed out.")),
-          15_000,
-        );
-        const rejectReady = (error: Error) => {
-          clearTimeout(timeout);
-          reject(error);
-        };
-        child.once("error", () => rejectReady(new Error("Opening private Windows state failed.")));
-        child.once("close", () =>
-          rejectReady(new Error("Private Windows state is unavailable or already in use.")),
-        );
-        child.stdout.on("data", (chunk: Buffer) => {
-          bytes += chunk.length;
-          if (bytes > 4096) {
-            rejectReady(new Error("The native state receipt exceeds its limit."));
-            return;
-          }
-          text += chunk.toString("utf8");
-          if (!text.endsWith("\n")) return;
-          try {
-            const record = JSON.parse(text);
-            const suffix = `-${purpose}`;
-            if (
-              record.schemaVersion !== 1 ||
-              record.kind !== `native-state-${mode}` ||
-              record.agent !== purpose ||
-              record.leaseHeld !== true ||
-              (removal
+    ready = await new Promise<{
+      stateRoot: string;
+      created: boolean;
+      removed: boolean;
+      present?: boolean;
+    }>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("Opening private Windows state timed out.")),
+        15_000,
+      );
+      const rejectReady = (error: Error) => {
+        clearTimeout(timeout);
+        reject(error);
+      };
+      child.once("error", () => rejectReady(new Error("Opening private Windows state failed.")));
+      child.once("close", () =>
+        rejectReady(new Error("Private Windows state is unavailable or already in use.")),
+      );
+      child.stdout.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > 4096) {
+          rejectReady(new Error("The native state receipt exceeds its limit."));
+          return;
+        }
+        text += chunk.toString("utf8");
+        if (!text.endsWith("\n")) return;
+        try {
+          const record = JSON.parse(text);
+          const suffix = `-${purpose}`;
+          if (
+            record.schemaVersion !== 1 ||
+            record.kind !== `native-state-${mode}` ||
+            record.agent !== purpose ||
+            record.leaseHeld !== true ||
+            (inspection
+              ? typeof record.present !== "boolean" ||
+                Object.keys(record).length !== 6 ||
+                Object.keys(record).some(
+                  (key) =>
+                    ![
+                      "schemaVersion",
+                      "kind",
+                      "agent",
+                      "stateRoot",
+                      "present",
+                      "leaseHeld",
+                    ].includes(key),
+                )
+              : removal
                 ? typeof record.removed !== "boolean"
                 : typeof record.created !== "boolean") ||
-              typeof record.stateRoot !== "string" ||
-              !record.stateRoot.endsWith(suffix) ||
-              !/^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-(?:openclaw|nemocua|pi|hermes|langchain-deepagents-code|inference)$/u.test(
-                record.stateRoot,
-              )
+            typeof record.stateRoot !== "string" ||
+            !record.stateRoot.endsWith(suffix) ||
+            !/^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-(?:openclaw|nemocua|pi|hermes|langchain-deepagents-code|inference)$/u.test(
+              record.stateRoot,
             )
-              throw new Error("The private Windows state receipt is invalid.");
-            clearTimeout(timeout);
-            resolve({
-              stateRoot: record.stateRoot,
-              created: record.created === true,
-              removed: record.removed === true,
-            });
-          } catch {
-            rejectReady(new Error("The private Windows state receipt is invalid."));
-          }
-        });
-      },
-    );
+          )
+            throw new Error("The private Windows state receipt is invalid.");
+          clearTimeout(timeout);
+          resolve({
+            stateRoot: record.stateRoot,
+            created: record.created === true,
+            removed: record.removed === true,
+            ...(inspection ? { present: record.present } : {}),
+          });
+        } catch {
+          rejectReady(new Error("The private Windows state receipt is invalid."));
+        }
+      });
+    });
   } catch (error) {
     releasing = true;
     try {

@@ -221,3 +221,166 @@ test("Stop refuses a hard-linked path without changing its target", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+async function failureNoticeControls(body: string) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "observer-failure-control-"));
+  const source = fs.readFileSync(
+    new URL("./control-installed-openclaw.ps1", import.meta.url),
+    "utf8",
+  );
+  const functions = ["Assert-OwnedFailureNoticeIdentity", "Read-OwnedFailureSnapshot"].map(
+    (name) => {
+      const value = source.match(
+        new RegExp(`^function ${name}[^\\n]*\\{[\\s\\S]*?^\\}`, "mu"),
+      )?.[0];
+      assert(value, name);
+      return value;
+    },
+  );
+  const script = path.join(root, "control.ps1");
+  fs.writeFileSync(
+    script,
+    `$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+${functions.join("\n")}
+$testRoot = '${root.replaceAll("'", "''")}'
+function Reject([scriptblock]$Action) {
+  $rejected = $false
+  try { $null = & $Action } catch { $rejected = $true }
+  if (-not $rejected) { throw 'Invalid failure notice was accepted.' }
+}
+${body}
+[Console]::Out.WriteLine('failure-controls-passed')
+`,
+  );
+  const powershell =
+    process.platform === "win32"
+      ? path.join(
+          process.env.SystemRoot ?? process.env.SYSTEMROOT!,
+          "System32/WindowsPowerShell/v1.0/powershell.exe",
+        )
+      : "pwsh";
+  const child = spawn(powershell, ["-NoProfile", "-File", script], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stdout = "",
+    stderr = "",
+    timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill();
+  }, 60_000);
+  child.stdout.on("data", (data: Buffer) => {
+    stdout += data.toString("utf8");
+  });
+  child.stderr.on("data", (data: Buffer) => {
+    stderr += data.toString("utf8");
+  });
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    assert.equal(timedOut, false, stdout + stderr);
+    assert.equal(code, 0, stdout + stderr);
+    assert.match(stdout, /failure-controls-passed/u);
+  } finally {
+    clearTimeout(timer);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("failure notice requires the held host, session and failed action, not a shutdown timeout", async () => {
+  await failureNoticeControls(`
+$started = [datetime]::UtcNow.AddMinutes(-1)
+function Identity {
+  $hostOwner = [pscustomobject]@{ Id=111; HasExited=$false; StartTime=$started; MainModule=[pscustomobject]@{ FileName='host.exe' } }
+  $sessionOwner = [pscustomobject]@{ Id=222; HasExited=$false; StartTime=$started; MainModule=[pscustomobject]@{ FileName='ui.exe' } }
+  $window = [pscustomobject]@{ Current=[pscustomobject]@{ ProcessId=222; Name='NemoClaw Hermes session' } }
+  $button = [pscustomobject]@{ Current=[pscustomobject]@{ ProcessId=222; AutomationId='NativeWebSessionStop'; Name='Close'; IsEnabled=$true } }
+  $open = [pscustomobject]@{ Current=[pscustomobject]@{ ProcessId=222; AutomationId='NativeWebSessionOpen'; Name='Open diagnostics' } }
+  return @($hostOwner, $sessionOwner, $started, $started, 'host.exe', 'ui.exe', $window, $button, $open)
+}
+$identityInputs = Identity
+if ((Assert-OwnedFailureNoticeIdentity @identityInputs) -cne 'hermes') { throw 'Wrong agent.' }
+$identityInputs[6].Current.Name='NemoClaw OpenClaw session'
+if ((Assert-OwnedFailureNoticeIdentity @identityInputs) -cne 'openclaw') { throw 'Wrong sibling agent.' }
+foreach ($change in @(
+  { $identityInputs[0].HasExited=$true }, { $identityInputs[1].HasExited=$true },
+  { $identityInputs[0].StartTime=$started.AddSeconds(1) }, { $identityInputs[1].StartTime=$started.AddSeconds(1) },
+  { $identityInputs[0].MainModule.FileName='other.exe' }, { $identityInputs[1].MainModule.FileName='other.exe' },
+  { $identityInputs[6].Current.ProcessId=333 }, { $identityInputs[7].Current.ProcessId=333 }, { $identityInputs[8].Current.ProcessId=333 },
+  { $identityInputs[6].Current.Name='Unrelated window' }, { $identityInputs[7].Current.Name='Stop session' },
+  { $identityInputs[7].Current.IsEnabled=$false }, { $identityInputs[8].Current.Name='Open Web UI' },
+  { $identityInputs[7].Current.AutomationId='Other' }, { $identityInputs[8].Current.AutomationId='Other' },
+  { $identityInputs[6]=$null }, { $identityInputs[7]=$null }, { $identityInputs[8]=$null }
+)) { $identityInputs = Identity; . $change; Reject { Assert-OwnedFailureNoticeIdentity @identityInputs } }
+`);
+});
+
+test("failure snapshot admission is bounded, fresh, host-bound and never success evidence", async () => {
+  await failureNoticeControls(`
+$started = [datetime]::UtcNow.AddMinutes(-1)
+$file = [IO.Path]::Combine($testRoot, 'session-failure.json')
+function Snapshot {
+  return @{ schemaVersion=1; classification='native-session-failure-evidence'; agent='hermes'; interface='dashboard'; nodeProcessId=111; backendCleanupFinished=$true; stage='sandbox'; diagnostics=@{ schemaVersion=1; classification='native-session-failure'; agent='hermes'; stage='sandbox'; recordedAt=[datetime]::UtcNow.ToString('O'); failure=@{message='private diagnostic text'} } }
+}
+function Publish($Value) { [IO.File]::WriteAllText($file, ($Value | ConvertTo-Json -Depth 8 -Compress), [Text.UTF8Encoding]::new($false)) }
+function Read-Snapshot { Read-OwnedFailureSnapshot $file $testRoot 111 $started 'hermes' }
+Publish (Snapshot)
+$accepted = Read-Snapshot
+if ($accepted.snapshotSha256 -cnotmatch '^[a-f0-9]{64}$' -or $accepted.hostPid -ne 111 -or -not $accepted.backendCleanupFinished) { throw 'No bound failure evidence.' }
+if (($accepted | ConvertTo-Json) -match 'private diagnostic text|diagnosticPath|stop-invoked') { throw 'Failure evidence leaked or became Stop evidence.' }
+foreach ($change in @(
+  { $value.schemaVersion='1' }, { $value.schemaVersion=2 }, { $value.classification='native-session-success' },
+  { $value.agent='openclaw' }, { $value.interface='console' }, { $value.nodeProcessId=112 }, { $value.nodeProcessId='111' },
+  { $value.agent=@('hermes') }, { $value.stage=@('sandbox') }, { $value.diagnostics.schemaVersion='1' },
+  { $value.diagnostics.agent=@('hermes') },
+  { $value.backendCleanupFinished=$false }, { $value.backendCleanupFinished='true' }, { $value.Remove('backendCleanupFinished') },
+  { $value.stage='unknown' }, { $value.diagnostics.classification='native-session-success' },
+  { $value.diagnostics.agent='openclaw' }, { $value.diagnostics.stage='cleanup' },
+  { $value.diagnostics.failure=$null }, { $value.diagnostics.failure='error' },
+  { $value.diagnostics.recordedAt=$started.AddSeconds(-1).ToString('O') },
+  { $value.diagnostics.recordedAt=[datetime]::UtcNow.AddMinutes(5).ToString('O') }
+)) { $value=Snapshot; . $change; Publish $value; Reject { Read-Snapshot } }
+Publish (Snapshot)
+[IO.File]::SetLastWriteTimeUtc($file, $started.AddMinutes(-1))
+Reject { Read-Snapshot }
+[IO.File]::WriteAllText($file, 'malformed-private-marker')
+$parseFailure=$null
+try { $null = Read-Snapshot } catch { $parseFailure=$_.Exception.Message }
+if ($null -eq $parseFailure -or $parseFailure -match 'malformed-private-marker') { throw 'Malformed snapshot accepted or exposed diagnostic text.' }
+[IO.File]::WriteAllText($file, ('x' * 1048577))
+Reject { Read-Snapshot }
+[IO.File]::WriteAllText($file, '')
+Reject { Read-Snapshot }
+[IO.File]::Delete($file)
+Reject { Read-Snapshot }
+Publish (Snapshot)
+Reject { Read-OwnedFailureSnapshot $file ([IO.Path]::Combine($testRoot, 'other')) 111 $started 'hermes' }
+`);
+});
+
+test("failed notice closure remains a separate nonzero terminal path", () => {
+  const source = fs.readFileSync(
+    new URL("./control-installed-openclaw.ps1", import.meta.url),
+    "utf8",
+  );
+  const failureAction = source
+    .split("$button.Current.Name -ceq 'Close') {")[1]
+    ?.split("} elseif (-not $stopped)")[0];
+  assert(failureAction);
+  assert.match(failureAction, /Read-OwnedFailureSnapshot/u);
+  assert.equal(failureAction.match(/Assert-OwnedFailureNoticeIdentity/gu)?.length, 2);
+  assert.match(failureAction, /NativeWindowHandle -ne \$heldWindowHandle/u);
+  assert.match(failureAction, /failure-notice-close-invoked/u);
+  assert.doesNotMatch(failureAction, /stop-invoked|Write-StopSnapshot|\$stopped = \$true/u);
+  const terminal = source
+    .split("if ($failureCloseInvoked) {\n        $root.WaitForExit()")[1]
+    ?.split("if (-not $stopped)")[0];
+  assert(terminal);
+  assert.match(terminal, /failure-notice-closed/u);
+  assert.match(terminal, /exit 1/u);
+  assert.doesNotMatch(terminal, /kind='closed'|Write-StopSnapshot/u);
+});

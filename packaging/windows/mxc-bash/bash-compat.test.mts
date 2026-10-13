@@ -15,6 +15,10 @@ import {
   validateCreationMatrix,
   validateCreationSentinelBuild,
   validateMxcInspectionBuild,
+  validateNativePolicyLog,
+  validateNativeJobTeardownLog,
+  validateNativeUiPolicyLog,
+  validateNativeUiMarkerLog,
   validateDerivedMetadata,
   binaryPins,
   originalBinaryPins,
@@ -213,14 +217,24 @@ test("host desktop proof requires exact owned names, actual attachment, restore 
   assert.throws(() => validatePrivateDesktop([rows[4], ...rows.slice(0, 4), rows[5]], c.nonce));
   assert.throws(() => validatePrivateDesktop(rows.slice(1), c.nonce));
 });
-test("Personal request grants only fixed inputs and its own share, without profile destruction before explicit cleanup", () => {
+test("native Bash request confines file access and denies network, fallback and environment inheritance", () => {
   const row = request(
     c,
     "C:\\owned\\control\\worker.mts",
     "C:\\owned\\control\\base.json",
     "C:\\Windows",
   );
+  assert.equal(row.version, "1.0.0");
+  assert.equal(row.containment, "processcontainer");
+  assert.deepEqual(row.fallback, { allowDaclMutation: false });
   assert.equal(row.processContainer.leastPrivilege, false);
+  assert.deepEqual(row.processContainer.capabilities, []);
+  assert.deepEqual(row.network, {
+    egress: { default: "deny" },
+    ingress: { default: "deny", hostLoopback: "deny" },
+  });
+  assert.deepEqual(row.ui, { disable: false, clipboard: "none", injection: false });
+  assert.deepEqual(row.telemetry, { enabled: false });
   assert.deepEqual(row.filesystem, {
     readonlyPaths: ["C:\\owned"],
     readwritePaths: [c.share],
@@ -228,6 +242,7 @@ test("Personal request grants only fixed inputs and its own share, without profi
   assert.equal(row.process.cwd, c.share);
   assert(!row.filesystem.readonlyPaths.some((root) => c.share.startsWith(root + "\\")));
   assert.equal(row.process.timeout, 120000);
+  assert.equal(row.process.inheritDefaultEnv, false);
   assert.equal(row.lifecycle.destroyOnExit, false);
   assert.equal(row.ui.disable, false);
   assert(row.process.commandLine.startsWith('"' + c.node + '"'));
@@ -411,6 +426,301 @@ test("baseline key requires exact known native failure, not a generic denial", (
   assert.throws(() => baselineKey("Access denied"));
   assert.throws(() => baselineKey(error.replace("0022", "0001")));
   assert.throws(() => baselineKey(error + error.replace("dc460fdc78643717", "ac460fdc78643717")));
+});
+test("native policy evidence rejects fallback, permissive, missing and duplicated host records", () => {
+  const policy = {
+    event: "mxc.NetworkPolicyApplied",
+    backend: "processcontainer",
+    identity: "redacted",
+    tier: "base-container",
+    enforcement_mode: "capabilities",
+    default_policy: "block",
+    proxy_port: 0,
+    firewall_rules_created: 0,
+    firewall_applied: false,
+    status: "success",
+  };
+  const line = (row: unknown) => "[1791848997] " + JSON.stringify(row) + "\n";
+  assert.deepEqual(validateNativePolicyLog(line(policy)), policy);
+  for (const [key, value] of Object.entries({
+    tier: "appcontainer-dacl",
+    backend: "wslc",
+    identity: "unredacted",
+    enforcement_mode: "firewall",
+    default_policy: "allow",
+    proxy_port: 8080,
+    firewall_rules_created: 1,
+    firewall_applied: true,
+    status: "failure",
+  }))
+    assert.throws(() => validateNativePolicyLog(line({ ...policy, [key]: value })), key);
+  for (const key of Object.keys(policy)) {
+    const missing: Record<string, unknown> = { ...policy };
+    delete missing[key];
+    assert.throws(() => validateNativePolicyLog(line(missing)), key);
+  }
+  assert.throws(() => validateNativePolicyLog(""));
+  assert.throws(() => validateNativePolicyLog(JSON.stringify(policy)));
+  assert.throws(() => validateNativePolicyLog(line(policy) + line(policy)));
+  assert.throws(() => validateNativePolicyLog(line(policy) + "x".repeat(4 * 1024 * 1024)));
+});
+test("native UI assignment requires the full serialized policy and its original root before exit", () => {
+  const row = {
+    schemaVersion: 1,
+    classification: "native-MXC-ui-policy-assignment",
+    stage: "before-primary-thread-resume",
+    policyOrigin: "serialized-process-security-environment",
+    securityEnvironmentAttached: true,
+    rootPid: 1234,
+    uiRestrictions: 0x3ff,
+    disallowWin32k: false,
+    policyMutated: false,
+    enforcementReadback: false,
+  };
+  const line = (value: unknown) =>
+    "[1791848996] NEMOCLAW_NATIVE_MXC_UI_POLICY=" + JSON.stringify(value) + "\n";
+  const exit = '[1791848997] {"event":"mxc.ProcessExited","pid":1234}\n';
+  assert.deepEqual(validateNativeUiPolicyLog(line(row) + exit, 1234), row);
+  for (const [key, value] of Object.entries({
+    schemaVersion: 2,
+    classification: "legacy-job-mask",
+    stage: "after-resume",
+    policyOrigin: "requested-config",
+    securityEnvironmentAttached: false,
+    rootPid: 4321,
+    uiRestrictions: 0x3bf,
+    disallowWin32k: true,
+    policyMutated: true,
+    enforcementReadback: true,
+  })) {
+    assert.throws(() => validateNativeUiPolicyLog(line({ ...row, [key]: value }) + exit, 1234));
+  }
+  for (const key of Object.keys(row)) {
+    const missing: Record<string, unknown> = { ...row };
+    delete missing[key];
+    assert.throws(() => validateNativeUiPolicyLog(line(missing) + exit, 1234));
+  }
+  for (const log of [
+    "",
+    line(row),
+    exit + line(row),
+    line(row).repeat(2) + exit,
+    JSON.stringify(row) + "\n" + exit,
+    line(row).replace("[1791848996] ", "") + exit,
+  ]) {
+    assert.throws(() => validateNativeUiPolicyLog(log, 1234));
+  }
+});
+
+test("native UI marker requires host creation before policy and absence after teardown", () => {
+  const prepared = {
+    schemaVersion: 1,
+    classification: "native-Hermes-ui-owner",
+    stage: "prepare",
+    rootPid: 1234,
+    appContainerSid: "S-1-15-2-123-456",
+    sessionId: 2,
+    exclusiveCreation: true,
+    mediumNoWriteUp: true,
+    guestAccess: 0x120001,
+    descriptorMatched: true,
+    policyAssignment: "PSEC-0x3ff-Win32k-false",
+    enforcementReadback: false,
+  };
+  const closed = {
+    schemaVersion: 1,
+    classification: "native-Hermes-ui-owner",
+    stage: "owner-close",
+    rootPid: 1234,
+    closed: true,
+    absentAfterOwnerClose: true,
+    presenceHandleClosed: true,
+    absenceStatus: 0xc0000034,
+  };
+  const line = (row: unknown) =>
+    "[1791848997] NEMOCLAW_NATIVE_UI_OWNER=" + JSON.stringify(row) + "\n";
+  const policy = "[1791848997] NEMOCLAW_NATIVE_MXC_UI_POLICY={}\n";
+  const teardown = "[1791848998] NEMOCLAW_NATIVE_MXC_TEARDOWN={}\n";
+  const log = line(prepared) + policy + teardown + line(closed);
+  assert.deepEqual(validateNativeUiMarkerLog(log, 1234, true), { prepared, closed });
+  assert.equal(validateNativeUiMarkerLog(policy + teardown, 1234, false), null);
+  assert.throws(() => validateNativeUiMarkerLog(log, 1234, false));
+  assert.throws(() => validateNativeUiMarkerLog(log, 4321, true));
+  for (const invalid of [
+    "",
+    policy + teardown,
+    line(prepared) + policy + teardown,
+    line(prepared) + policy + line(closed) + teardown,
+    policy + line(prepared) + teardown + line(closed),
+    log + line(closed),
+    line(prepared) + log,
+    log.replaceAll("[1791848997] ", ""),
+    log + "x".repeat(4 * 1024 * 1024),
+  ])
+    assert.throws(() => validateNativeUiMarkerLog(invalid, 1234, true));
+  for (const [record, changes] of [
+    [
+      prepared,
+      {
+        rootPid: 0,
+        appContainerSid: "S-1-5-21-1",
+        sessionId: -1,
+        exclusiveCreation: false,
+        mediumNoWriteUp: false,
+        guestAccess: 0x1f0003,
+        descriptorMatched: false,
+        policyAssignment: "job-0",
+        enforcementReadback: true,
+      },
+    ],
+    [
+      closed,
+      {
+        rootPid: 4321,
+        closed: false,
+        absentAfterOwnerClose: false,
+        presenceHandleClosed: false,
+        absenceStatus: 0xc0000022,
+      },
+    ],
+  ] as const) {
+    const check = (changed: unknown) =>
+      validateNativeUiMarkerLog(
+        (record === prepared ? line(changed) : line(prepared)) +
+          policy +
+          teardown +
+          (record === closed ? line(changed) : line(closed)),
+        1234,
+        true,
+      );
+    for (const [key, value] of Object.entries(changes))
+      assert.throws(() => check({ ...record, [key]: value }), key);
+    for (const key of Object.keys(record)) {
+      const missing: Record<string, unknown> = { ...record };
+      delete missing[key];
+      assert.throws(() => check(missing), key);
+    }
+  }
+});
+
+test("native cleanup requires successful teardown, a signaled root and an empty owned job", () => {
+  const exit = {
+    event: "mxc.ProcessExited",
+    backend: "processcontainer",
+    tier: "base-container",
+    pid: 1234,
+    exit_code: 0,
+  };
+  const snapshot = {
+    schemaVersion: 1,
+    classification: "owned-native-MXC-job-teardown",
+    stage: "before-primary-handle-release",
+    clock: "GetTickCount64",
+    tickMilliseconds: 5678,
+    rootPid: 1234,
+    jobAccountingQueried: true,
+    jobAccountingKnown: true,
+    jobAccountingBytes: 48,
+    jobAccountingExpectedBytes: 48,
+    jobAccountingError: 0,
+    activeProcesses: 0,
+    totalProcesses: 4,
+    terminatedProcesses: 0,
+    rootWaitStatus: 0,
+    rootSignaled: true,
+    rootWaitError: 0,
+  };
+  const teardown = {
+    event: "mxc.SandboxTornDown",
+    backend: "processcontainer",
+    identity: "redacted",
+    tier: "base-container",
+    pid: 1234,
+    status: "success",
+    firewall_rules_removed: 0,
+    firewall_removal_ok: true,
+    bfs_removed: false,
+    proxy_stopped: false,
+    preserve_policy: false,
+    container_released: false,
+  };
+  const eventLine = (value: unknown) => "[1791848997] " + JSON.stringify(value) + "\n";
+  const exitLine = (value: unknown) => eventLine(value) + eventLine(teardown);
+  const snapshotLine = (value: unknown) =>
+    "[1791848998] NEMOCLAW_NATIVE_MXC_TEARDOWN=" + JSON.stringify(value) + "\n";
+  assert.deepEqual(validateNativeJobTeardownLog(exitLine(exit) + snapshotLine(snapshot)), snapshot);
+  // Only the successful wait -> teardown -> Drop snapshot sequence proves
+  // that the job was observed empty after the security environment closed.
+  for (const log of [
+    snapshotLine(snapshot) + exitLine(exit),
+    eventLine(exit) + snapshotLine(snapshot) + eventLine(teardown),
+  ])
+    assert.throws(
+      () => validateNativeJobTeardownLog(log),
+      /snapshot must follow sandbox teardown/u,
+    );
+  for (const [key, value] of Object.entries({
+    classification: "owned-Hermes-desktop-teardown",
+    rootPid: 4321,
+    jobAccountingKnown: false,
+    jobAccountingQueried: false,
+    jobAccountingBytes: 0,
+    jobAccountingExpectedBytes: 56,
+    jobAccountingError: 5,
+    activeProcesses: 1,
+    totalProcesses: 0,
+    terminatedProcesses: 5,
+    rootWaitStatus: 258,
+    rootSignaled: false,
+    rootWaitError: 6,
+    tickMilliseconds: -1,
+  }))
+    assert.throws(() =>
+      validateNativeJobTeardownLog(exitLine(exit) + snapshotLine({ ...snapshot, [key]: value })),
+    );
+  for (const key of Object.keys(snapshot)) {
+    const missing: Record<string, unknown> = { ...snapshot };
+    delete missing[key];
+    assert.throws(() => validateNativeJobTeardownLog(exitLine(exit) + snapshotLine(missing)), key);
+  }
+  for (const change of [{ pid: 0 }, { exit_code: 1 }, { tier: "appcontainer-dacl" }])
+    assert.throws(() =>
+      validateNativeJobTeardownLog(exitLine({ ...exit, ...change }) + snapshotLine(snapshot)),
+    );
+  assert.throws(() => validateNativeJobTeardownLog(exitLine(exit)));
+  assert.throws(() => validateNativeJobTeardownLog(snapshotLine(snapshot)));
+  assert.throws(() =>
+    validateNativeJobTeardownLog(exitLine(exit) + snapshotLine(snapshot).repeat(2)),
+  );
+  for (const [key, value] of Object.entries({
+    tier: "appcontainer-dacl",
+    pid: 4321,
+    status: "failed",
+    preserve_policy: true,
+    firewall_removal_ok: false,
+    proxy_stopped: true,
+  }))
+    assert.throws(() =>
+      validateNativeJobTeardownLog(
+        eventLine(exit) + eventLine({ ...teardown, [key]: value }) + snapshotLine(snapshot),
+      ),
+    );
+  for (const key of Object.keys(teardown)) {
+    const missing: Record<string, unknown> = { ...teardown };
+    delete missing[key];
+    assert.throws(
+      () =>
+        validateNativeJobTeardownLog(eventLine(exit) + eventLine(missing) + snapshotLine(snapshot)),
+      key,
+    );
+  }
+  for (const events of [
+    eventLine(exit),
+    eventLine(teardown) + eventLine(exit),
+    exitLine(exit) + eventLine(teardown),
+    exitLine(exit) + eventLine(exit),
+  ])
+    assert.throws(() => validateNativeJobTeardownLog(events + snapshotLine(snapshot)));
 });
 test("partial pipe record remains unparsed until its newline arrives", () => {
   assert.deepEqual(parseJsonLines('{"kind":"ready"}\n{"kind":'), [{ kind: "ready" }]);
@@ -698,38 +1008,77 @@ test("tracker requires actual writer-only inheritance, data, EOF and closed hand
     assert.throws(() => validateTracker({ ...row, [key]: value }));
 });
 
-test("patched MXC receipt requires exact upstream source, patch and sole ARM64 executor", () => {
+test("native MXC build requires matching source and a normally closed ARM64 compiler", () => {
   const patch = "a".repeat(64);
+  const revision = "c".repeat(40);
   const file = { file: "wxc-exec.exe", machine: 0xaa64, bytes: 1024, sha256: "b".repeat(64) };
   const receipt = {
-    schemaVersion: 1,
-    classification: "mxc-owned-token-inspection-build",
+    schemaVersion: 2,
+    classification: "mxc-native-owned-token-inspection-build",
+    candidateRevision: revision,
     status: "built",
     tokenQueryRepairSupported: true,
     tokenAccessMode: "owned-child-query-only",
-    sourceCommit: "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a",
-    sourceSha256: "814659a1db0b4cd06854066705f274bba2b2702f563735d69ba72a407c0ad258",
+    nativeOwnerIdentity: "held-primary-appcontainer-token",
+    runtimeExecuted: false,
+    qualified: false,
+    sourceCommit: "7cd00d1ee6af9208322c924ef64e5113f6704639",
+    sourceSha256: "9467669fda03a7ad0000a7bc9e0b0d1cab44b1979ee437dd96e8b93646e18029",
+    sourceBytes: 6545666,
+    target: "aarch64-pc-windows-msvc",
+    compilerClosed: true,
+    compilerForced: false,
+    compilerExitCode: 0,
+    compilerCleanupErrors: [],
     patchSha256: patch,
     files: [file],
   };
-  assert.equal(validateMxcInspectionBuild(receipt, patch), file);
+  assert.equal(validateMxcInspectionBuild(receipt, patch, revision), file);
   for (const [key, value] of Object.entries({
-    sourceCommit: "main",
+    schemaVersion: 1,
+    classification: "mxc-owned-token-inspection-build",
+    candidateRevision: "d".repeat(40),
+    sourceCommit: "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a",
     sourceSha256: "0".repeat(64),
+    sourceBytes: 6545665,
     patchSha256: "0".repeat(64),
     status: "pending",
     tokenQueryRepairSupported: false,
     tokenAccessMode: "unrestricted",
+    nativeOwnerIdentity: "name-derived-appcontainer-token",
+    runtimeExecuted: true,
+    qualified: true,
+    target: "x86_64-pc-windows-msvc",
+    compilerClosed: false,
+    compilerForced: true,
+    compilerExitCode: 1,
+    compilerCleanupErrors: ["output remained open"],
   }))
-    assert.throws(() => validateMxcInspectionBuild({ ...receipt, [key]: value }, patch));
+    assert.throws(() => validateMxcInspectionBuild({ ...receipt, [key]: value }, patch, revision));
+  for (const key of Object.keys(receipt)) {
+    const incomplete: Record<string, unknown> = { ...receipt };
+    delete incomplete[key];
+    assert.throws(() => validateMxcInspectionBuild(incomplete, patch, revision), key);
+  }
+  for (const claimed of ["false", 0, null])
+    for (const key of ["runtimeExecuted", "qualified"])
+      assert.throws(() =>
+        validateMxcInspectionBuild({ ...receipt, [key]: claimed }, patch, revision),
+      );
+  assert.throws(() => validateMxcInspectionBuild(receipt, patch, "main"));
+  assert.throws(() => validateMxcInspectionBuild(receipt, "invalid", revision));
   for (const invalid of [
     { ...file, machine: 0x8664 },
     { ...file, file: "other.exe" },
     { ...file, bytes: 0 },
     { ...file, sha256: "missing" },
   ])
-    assert.throws(() => validateMxcInspectionBuild({ ...receipt, files: [invalid] }, patch));
-  assert.throws(() => validateMxcInspectionBuild({ ...receipt, files: [file, file] }, patch));
+    assert.throws(() =>
+      validateMxcInspectionBuild({ ...receipt, files: [invalid] }, patch, revision),
+    );
+  assert.throws(() =>
+    validateMxcInspectionBuild({ ...receipt, files: [file, file] }, patch, revision),
+  );
   assert.equal(
     "NEMOCLAW_MSYS_TOKEN_INSPECTION" in fixedEnvironment("C:\\Windows", c.share, c.git, c.node),
     false,
@@ -797,7 +1146,9 @@ function creationRows(context: "host" | "contained" = "contained") {
     callerUnshimmed: true,
     chromeQualified: false,
     diagnosticOnly: true,
-    callerUi: 0x3bf,
+    callerUi: 0,
+    callerJobKnown: true,
+    callerUiKnown: true,
     callerExtendedFlags: 0x2000,
     callerInJob: true,
   });
@@ -820,6 +1171,9 @@ test("creation matrix retains API refusals but rejects incomplete coverage and o
     (rows: any[]) => (rows[0] = rows[1]),
     (rows: any[]) => (rows[0].ownedHandlesClosed = false),
     (rows: any[]) => (rows[16].callerExtendedFlags = 0x3c00),
+    (rows: any[]) => (rows[16].callerUi = 0x3bf),
+    (rows: any[]) => (rows[16].callerJobKnown = false),
+    (rows: any[]) => (rows[16].callerUiKnown = false),
     (rows: any[]) => (rows[0].callerAppSid = "S-1-15-2-999"),
     (rows: any[]) => (rows[0].innerUi = 0x40),
   ]) {

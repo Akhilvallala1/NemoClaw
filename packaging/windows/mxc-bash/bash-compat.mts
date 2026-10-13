@@ -158,9 +158,10 @@ export function fixedEnvironment(windows: string, home: string, git: string, nod
 }
 export function request(config: Config, script: string, configFile: string, windows: string) {
   return {
-    version: "0.6.0-alpha",
+    version: "1.0.0",
     containerId: config.containerId,
     containment: "processcontainer",
+    fallback: { allowDaclMutation: false },
     process: {
       commandLine: [
         config.node,
@@ -174,39 +175,54 @@ export function request(config: Config, script: string, configFile: string, wind
         .join(" "),
       cwd: config.share,
       timeout: 120000,
+      inheritDefaultEnv: false,
       env: Object.entries(fixedEnvironment(windows, config.share, config.git, config.node)).map(
         ([key, value]) => key + "=" + value,
       ),
     },
     processContainer: {
       leastPrivilege: false,
-      capabilities: ["privateNetworkClientServer", "internetClient"],
+      capabilities: [],
     },
-    ui: { disable: false },
+    ui: { disable: false, clipboard: "none", injection: false },
     network: {
-      defaultPolicy: "allow",
-      allowedHosts: [],
-      blockedHosts: [],
-      allowLocalNetwork: true,
+      egress: { default: "deny" },
+      ingress: { default: "deny", hostLoopback: "deny" },
     },
     filesystem: {
       readonlyPaths: [path.win32.dirname(config.compat)],
       readwritePaths: [config.share],
     },
     lifecycle: { destroyOnExit: false, preservePolicy: false },
+    telemetry: { enabled: false },
   };
 }
-export function validateMxcInspectionBuild(build: any, patchSha256: string) {
-  assert.equal(build.schemaVersion, 1);
-  assert.equal(build.classification, "mxc-owned-token-inspection-build");
+export function validateMxcInspectionBuild(
+  build: any,
+  patchSha256: string,
+  sourceRevision: string,
+) {
+  assert.match(sourceRevision, /^[a-f0-9]{40}$/u);
+  assert.equal(build.candidateRevision, sourceRevision);
+  assert.equal(build.schemaVersion, 2);
+  assert.equal(build.classification, "mxc-native-owned-token-inspection-build");
   assert.equal(build.status, "built");
   assert.equal(build.tokenQueryRepairSupported, true);
   assert.equal(build.tokenAccessMode, "owned-child-query-only");
-  assert.equal(build.sourceCommit, "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a");
+  assert.equal(build.nativeOwnerIdentity, "held-primary-appcontainer-token");
+  assert.equal(build.runtimeExecuted, false);
+  assert.equal(build.qualified, false);
+  assert.equal(build.sourceCommit, "7cd00d1ee6af9208322c924ef64e5113f6704639");
   assert.equal(
     build.sourceSha256,
-    "814659a1db0b4cd06854066705f274bba2b2702f563735d69ba72a407c0ad258",
+    "9467669fda03a7ad0000a7bc9e0b0d1cab44b1979ee437dd96e8b93646e18029",
   );
+  assert.equal(build.sourceBytes, 6545666);
+  assert.equal(build.target, "aarch64-pc-windows-msvc");
+  assert.equal(build.compilerClosed, true);
+  assert.equal(build.compilerForced, false);
+  assert.equal(build.compilerExitCode, 0);
+  assert.deepEqual(build.compilerCleanupErrors, []);
   assert.match(patchSha256, /^[a-f0-9]{64}$/u);
   assert.equal(build.patchSha256, patchSha256);
   assert(Array.isArray(build.files) && build.files.length === 1);
@@ -226,6 +242,241 @@ export function baselineKey(stderr: string) {
   assert(matches.length > 0, "Original Bash did not report the known global-directory denial.");
   assert.equal(new Set(matches.map((row) => row[1]!.toLowerCase())).size, 1);
   return matches[0]![1]!.toLowerCase();
+}
+function nativeAuditRecords(log: string) {
+  assert(Buffer.byteLength(log, "utf8") <= 4 * 1024 * 1024, "Native log exceeds its bound");
+  return log.split(/\r?\n/u).flatMap((line, index) => {
+    const match = /^\[\d+\] (\{"event":.*\})$/u.exec(line);
+    return match ? [{ index, value: JSON.parse(match[1]!) }] : [];
+  });
+}
+export function validateNativePolicyLog(log: string) {
+  const policies = nativeAuditRecords(log)
+    .map((row) => row.value)
+    .filter((row) => row.event === "mxc.NetworkPolicyApplied");
+  assert.equal(policies.length, 1);
+  return validateNativePolicyRecord(policies[0]);
+}
+function validateNativePolicyRecord(policy: any) {
+  // This is backend-selection evidence from the host-only diagnostic sink,
+  // not a network-denial test or post-executor resource-absence check.
+  assert.deepEqual(policy, {
+    event: "mxc.NetworkPolicyApplied",
+    backend: "processcontainer",
+    identity: "redacted",
+    tier: "base-container",
+    enforcement_mode: "capabilities",
+    default_policy: "block",
+    proxy_port: 0,
+    firewall_rules_created: 0,
+    firewall_applied: false,
+    status: "success",
+  });
+  return policy;
+}
+export function validateNativeJobTeardownLog(log: string) {
+  const indexedRecords = nativeAuditRecords(log);
+  const records = indexedRecords.map((row) => row.value);
+  const exits = records.filter((row) => row.event === "mxc.ProcessExited");
+  assert.equal(exits.length, 1);
+  const exit = exits[0];
+  assert.equal(exit.backend, "processcontainer");
+  assert.equal(exit.tier, "base-container");
+  assert.equal(exit.exit_code, 0);
+  assert(Number.isSafeInteger(exit.pid) && exit.pid > 0 && exit.pid <= 0xffffffff);
+  const teardowns = records.filter((row) => row.event === "mxc.SandboxTornDown");
+  assert.deepEqual(teardowns, [
+    {
+      event: "mxc.SandboxTornDown",
+      backend: "processcontainer",
+      identity: "redacted",
+      tier: "base-container",
+      pid: exit.pid,
+      status: "success",
+      firewall_rules_removed: 0,
+      firewall_removal_ok: true,
+      bfs_removed: false,
+      proxy_stopped: false,
+      preserve_policy: false,
+      container_released: false,
+    },
+  ]);
+  // The pinned native runner emits this after releasing its security environment.
+  // container_released is legacy telemetry; job drainage is measured separately.
+  assert(records.indexOf(exit) < records.indexOf(teardowns[0]));
+  const snapshots = log.split(/\r?\n/u).flatMap((line, index) => {
+    const match = /^\[\d+\] NEMOCLAW_NATIVE_MXC_TEARDOWN=(\{.*\})$/u.exec(line);
+    return match ? [{ index, value: JSON.parse(match[1]!) }] : [];
+  });
+  assert.equal(snapshots.length, 1);
+  // Successful wait closes the security environment before Drop records the
+  // final job state. An earlier snapshot cannot prove that terminal ordering.
+  assert(
+    snapshots[0].index > indexedRecords.find((row) => row.value === teardowns[0])!.index,
+    "Native job snapshot must follow sandbox teardown",
+  );
+  const row = snapshots[0].value;
+  assert.equal(row.rootPid, exit.pid);
+  return validateNativeJobTeardownRecord(row);
+}
+function validateNativeJobTeardownRecord(row: any) {
+  assert.equal(row.schemaVersion, 1);
+  assert.equal(row.classification, "owned-native-MXC-job-teardown");
+  assert.equal(row.stage, "before-primary-handle-release");
+  assert.equal(row.clock, "GetTickCount64");
+  assert(Number.isSafeInteger(row.tickMilliseconds) && row.tickMilliseconds >= 0);
+  assert(Number.isSafeInteger(row.rootPid) && row.rootPid > 0 && row.rootPid <= 0xffffffff);
+  assert.equal(row.jobAccountingQueried, true);
+  assert.equal(row.jobAccountingKnown, true);
+  assert.equal(row.jobAccountingBytes, 48);
+  assert.equal(row.jobAccountingExpectedBytes, 48);
+  assert.equal(row.jobAccountingError, 0);
+  assert.equal(row.activeProcesses, 0);
+  assert(Number.isSafeInteger(row.totalProcesses) && row.totalProcesses >= 1);
+  assert(
+    Number.isSafeInteger(row.terminatedProcesses) &&
+      row.terminatedProcesses >= 0 &&
+      row.terminatedProcesses <= row.totalProcesses,
+  );
+  assert.equal(row.rootWaitStatus, 0);
+  assert.equal(row.rootSignaled, true);
+  assert.equal(row.rootWaitError, 0);
+  return row;
+}
+function validateNativeUiPolicyRecord(row: any, rootPid: number) {
+  assert.deepEqual(row, {
+    schemaVersion: 1,
+    classification: "native-MXC-ui-policy-assignment",
+    stage: "before-primary-thread-resume",
+    policyOrigin: "serialized-process-security-environment",
+    securityEnvironmentAttached: true,
+    rootPid,
+    uiRestrictions: 0x3ff,
+    disallowWin32k: false,
+    policyMutated: false,
+    enforcementReadback: false,
+  });
+  assert(Number.isSafeInteger(rootPid) && rootPid > 0 && rootPid <= 0xffffffff);
+  return row;
+}
+export function validateNativeUiPolicyLog(log: string, rootPid: number) {
+  assert(Buffer.byteLength(log, "utf8") <= 4 * 1024 * 1024);
+  const lines = log.split(/\r?\n/u);
+  const records = lines.flatMap((line, index) => {
+    const match = /^\[\d+\] NEMOCLAW_NATIVE_MXC_UI_POLICY=(\{.*\})$/u.exec(line);
+    return match ? [{ index, value: JSON.parse(match[1]!) }] : [];
+  });
+  assert.equal(records.length, 1);
+  const exit = lines.findIndex((line) => /^\[\d+\] \{"event":"mxc.ProcessExited",/u.test(line));
+  assert(exit > records[0].index, "Native UI policy must precede process exit");
+  return validateNativeUiPolicyRecord(records[0].value, rootPid);
+}
+function validateNativeUiMarkerRecord(marker: any, rootPid: number, required: boolean) {
+  if (!required) {
+    assert.equal(marker, null, "Unexpected native UI marker outside the desktop execution");
+    return null;
+  }
+  const prepared = marker?.prepared;
+  assert.match(prepared?.appContainerSid, /^S-1-15-2-(?:[0-9]+-)*[0-9]+$/u);
+  assert(prepared.appContainerSid.length <= 184);
+  assert(
+    Number.isSafeInteger(prepared.sessionId) &&
+      prepared.sessionId >= 0 &&
+      prepared.sessionId <= 0xffffffff,
+  );
+  assert.deepEqual(prepared, {
+    schemaVersion: 1,
+    classification: "native-Hermes-ui-owner",
+    stage: "prepare",
+    rootPid,
+    appContainerSid: prepared.appContainerSid,
+    sessionId: prepared.sessionId,
+    exclusiveCreation: true,
+    mediumNoWriteUp: true,
+    guestAccess: 0x120001,
+    descriptorMatched: true,
+    policyAssignment: "PSEC-0x3ff-Win32k-false",
+    enforcementReadback: false,
+  });
+  assert([0xc0000034, 0xc000003a].includes(marker.closed?.absenceStatus));
+  assert.deepEqual(marker.closed, {
+    schemaVersion: 1,
+    classification: "native-Hermes-ui-owner",
+    stage: "owner-close",
+    rootPid,
+    closed: true,
+    absentAfterOwnerClose: true,
+    presenceHandleClosed: true,
+    absenceStatus: marker.closed.absenceStatus,
+  });
+  assert.deepEqual(Object.keys(marker).sort(), ["closed", "prepared"]);
+  return marker;
+}
+export function validateNativeUiMarkerLog(log: string, rootPid: number, required: boolean) {
+  assert(Buffer.byteLength(log, "utf8") <= 4 * 1024 * 1024);
+  const lines = log.split(/\r?\n/u);
+  const records = lines.flatMap((line, index) => {
+    const match = /^\[\d+\] NEMOCLAW_NATIVE_UI_OWNER=(\{.*\})$/u.exec(line);
+    return match ? [{ index, value: JSON.parse(match[1]!) }] : [];
+  });
+  assert.equal(records.length, required ? 2 : 0);
+  if (!required) return null;
+  // This file is the host diagnostic sink, outside the writable guest state.
+  // Creation precedes resume; absence must follow the final empty-job snapshot.
+  const policies = lines.flatMap((line, index) =>
+    /^\[\d+\] NEMOCLAW_NATIVE_MXC_UI_POLICY=/u.test(line) ? [index] : [],
+  );
+  const teardowns = lines.flatMap((line, index) =>
+    /^\[\d+\] NEMOCLAW_NATIVE_MXC_TEARDOWN=/u.test(line) ? [index] : [],
+  );
+  assert.equal(policies.length, 1);
+  assert.equal(teardowns.length, 1);
+  assert(
+    records[0].index < policies[0] && policies[0] < teardowns[0] && teardowns[0] < records[1].index,
+  );
+  return validateNativeUiMarkerRecord(
+    { prepared: records[0].value, closed: records[1].value },
+    rootPid,
+    true,
+  );
+}
+export function validateNativeProofExecutions(proof: any) {
+  assert.equal(proof.schemaVersion, 2);
+  assert.equal(proof.classification, "small-msys-native-basecontainer-compatibility-proof");
+  assert.equal(proof.passed, true);
+  assert.equal(proof.normalCleanup, true);
+  assert.equal(proof.phase, "two-container-isolation");
+  assert.match(proof.nonce, /^[a-f0-9]{24}$/u);
+  assert.equal(proof.startedExecutors, 5);
+  assert.equal(proof.hostProcessesClosed, true);
+  assert.equal(proof.hostProcessesNormal, true);
+  const ids = ["base", "start", "d", "a", "b"].map(
+    (role) => "nm-" + proof.nonce.slice(0, 12) + "-" + role,
+  );
+  for (const records of [proof.nativeExecutions, proof.cleanup]) {
+    assert(records && typeof records === "object" && !Array.isArray(records));
+    assert.deepEqual(new Set(Object.keys(records)), new Set(ids));
+  }
+  for (const id of ids) {
+    const execution = proof.nativeExecutions[id];
+    assert.match(execution.logSha256, /^[a-f0-9]{64}$/u);
+    validateNativePolicyRecord(execution.policy);
+    validateNativeJobTeardownRecord(execution.jobTeardown);
+    validateNativeUiPolicyRecord(execution.uiPolicy, execution.jobTeardown.rootPid);
+    validateNativeUiMarkerRecord(
+      execution.uiMarker,
+      execution.jobTeardown.rootPid,
+      id.endsWith("-d"),
+    );
+    const cleanup = proof.cleanup[id];
+    assert.equal(cleanup.nativeTeardownVerified, true);
+    assert.equal(cleanup.nativeTeardownError, null);
+    assert.equal(cleanup.shareRemoved, true);
+    assert.equal(cleanup.executor.closed, true);
+    assert.equal(cleanup.executor.forced, false);
+    assert.equal(cleanup.executor.error, null);
+    checkSuccess(cleanup.executor);
+  }
 }
 export function parseJsonLines(text: string) {
   const lines = text.split(/\r?\n/u);
@@ -606,7 +857,11 @@ export function validateCreationMatrix(rows: any[], nonce: string, context: "hos
   assert.equal(summary.chromeQualified, false);
   assert.equal(summary.diagnosticOnly, true);
   if (context === "contained") {
-    assert.equal(summary.callerUi, 0x3bf);
+    // Only the native cleanup job is measured here. The host log separately
+    // binds the full PSEC UI policy to the root before resume.
+    assert.equal(summary.callerUi, 0);
+    assert.equal(summary.callerJobKnown, true);
+    assert.equal(summary.callerUiKnown, true);
     assert.equal(summary.callerExtendedFlags, 0x2000);
     assert.equal(summary.callerInJob, true);
     assert.match(summary.callerAppSid, /^S-1-15-2-(?:[0-9]+-)*[0-9]+$/u);
@@ -1084,6 +1339,7 @@ async function main() {
   const mxcFile = validateMxcInspectionBuild(
     mxcBuild,
     sha(path.join(path.dirname(fileURLToPath(import.meta.url)), "mxc-token-inspection.patch")),
+    process.env.GITHUB_SHA!,
   );
   assert.equal(fs.statSync(mxc).size, mxcFile.bytes);
   assert.equal(sha(mxc), mxcFile.sha256);
@@ -1142,11 +1398,11 @@ async function main() {
   const source = fileURLToPath(import.meta.url),
     copied = path.join(work, "control/bash-compat.mts");
   fs.copyFileSync(source, copied, fs.constants.COPYFILE_EXCL);
-  const executions: { c: Config; process: Owned }[] = [];
+  const executions: { c: Config; process: Owned; logFile: string }[] = [];
   const hostExecutions: Owned[] = [];
   const report: any = {
-    schemaVersion: 1,
-    classification: "small-msys-appcontainer-compatibility-proof",
+    schemaVersion: 2,
+    classification: "small-msys-native-basecontainer-compatibility-proof",
     sourceRevision: process.env.GITHUB_SHA,
     nonce,
     phase: "baseline",
@@ -1167,6 +1423,7 @@ async function main() {
       objectProbe: objectBuild,
     },
     hostCreationMatrix: { execution: null },
+    nativeExecutions: {},
     stages: [],
     cleanup: {},
   };
@@ -1192,9 +1449,10 @@ async function main() {
     write(config, c);
     const policy = path.join(output, role + "-request.json");
     write(policy, request(c, copied, config, windows));
+    const logFile = path.join(output, role + "-mxc.log");
     const child = new Owned(
       mxc,
-      [policy, "--log-file", path.join(output, role + "-mxc.log")],
+      [policy, "--log-file", logFile],
       {
         ...env,
         NEMOCLAW_MSYS_TOKEN_INSPECTION: "repair-query",
@@ -1203,16 +1461,37 @@ async function main() {
       share,
       125000,
     );
-    const value = { c, process: child };
+    const value = { c, process: child, logFile };
     executions.push(value);
     if (child.child.pid) report.startedExecutors++;
     child.child.stdin!.end();
     atomic(path.join(share, "host.json"), { nonce, executorPid: child.child.pid });
     return value;
   };
+  const observeNativeExecution = (value: (typeof executions)[number]) => {
+    assert(value.process.closed);
+    const logStat = fs.lstatSync(value.logFile);
+    assert(logStat.isFile() && !logStat.isSymbolicLink() && logStat.size <= 4 * 1024 * 1024);
+    const log = fs.readFileSync(value.logFile);
+    const jobTeardown = validateNativeJobTeardownLog(log.toString("utf8"));
+    report.nativeExecutions[value.c.containerId] = {
+      logSha256: createHash("sha256").update(log).digest("hex"),
+      policy: validateNativePolicyLog(log.toString("utf8")),
+      jobTeardown,
+      uiPolicy: validateNativeUiPolicyLog(log.toString("utf8"), jobTeardown.rootPid),
+      uiMarker: validateNativeUiMarkerLog(
+        log.toString("utf8"),
+        jobTeardown.rootPid,
+        value.c.mode === "desktop",
+      ),
+    };
+    return report.nativeExecutions[value.c.containerId];
+  };
   const completed = async (value: (typeof executions)[number]) => {
     await value.process.finish();
     write(path.join(output, value.c.containerId + "-executor.json"), value.process.result());
+    observeNativeExecution(value);
+    save();
     if (value.c.mode !== "desktop") checkSuccess(value.process.result());
     const r = await waitFile(path.join(value.c.share, "done.json"), Date.now() + 1000);
     write(path.join(output, value.c.containerId + "-result.json"), r);
@@ -1223,21 +1502,12 @@ async function main() {
         .stderr.split(/\r?\n/u)
         .filter((line) => line.startsWith("NEMOCLAW_HERMES_DESKTOP_MASK="))
         .map((line) => JSON.parse(line.slice(line.indexOf("=") + 1)));
-      assert.equal(masks.length, 1);
-      const mask = masks[0];
-      assert.equal(mask.afterMask, mask.beforeMask & ~0x40);
-      assert.equal(mask.removedMask, 0x40);
-      assert(
-        mask.logoutRestrictionPreserved &&
-          mask.everyOtherUiBitPreserved &&
-          !mask.hostDesktopGrantsAdded &&
-          mask.childResumed === false,
-      );
-      report.privateDesktopMask = mask;
+      assert.equal(masks.length, 0, "Native desktop proof must not remove legacy UI restrictions");
+      report.privateDesktopPolicy = report.nativeExecutions[value.c.containerId].uiPolicy;
     }
     save();
     // A failed desktop feasibility child still publishes all independent
-    // observations. Retain those and the effective mask before its verdict.
+    // observations. Retain those and the attached policy before its verdict.
     if (value.c.mode === "desktop") checkSuccess(value.process.result());
     assert.equal(r.passed, true, r.error);
     return r;
@@ -1327,24 +1597,20 @@ async function main() {
         } catch {}
         await value.process.stop();
       }
-      if (value.process.closed) {
-        const deletion = new Owned(
-          mxc,
-          ["--delete", "--containername", value.c.containerId],
-          env,
-          work,
-          15000,
-        );
-        deletion.child.stdin!.end();
-        await deletion.finish();
-        report.cleanup[value.c.containerId] = {
-          executor: value.process.result(),
-          deletion: deletion.result(),
-        };
-        if (deletion.child.exitCode !== 0 || !deletion.closed || deletion.forced)
-          report.passed = false;
-      } else {
-        report.cleanup[value.c.containerId] = { executorClosed: false };
+      const cleanup = {
+        executor: value.process.result(),
+        nativeTeardownVerified: false,
+        nativeTeardownError: null as string | null,
+      };
+      report.cleanup[value.c.containerId] = cleanup;
+      try {
+        checkSuccess(cleanup.executor);
+        // --delete removes legacy profiles; native runs own no such profile.
+        // Require host teardown and empty-job evidence before removing state.
+        observeNativeExecution(value);
+        cleanup.nativeTeardownVerified = true;
+      } catch (error) {
+        cleanup.nativeTeardownError = String(error);
         report.passed = false;
       }
     }
@@ -1379,9 +1645,7 @@ async function main() {
     report.aliasHostComparisonsRequired = originalBashPassed;
     if (
       executions.every((value) => value.process.closed) &&
-      Object.values(report.cleanup).every(
-        (v: any) => v.deletion?.closed && v.deletion?.exitCode === 0,
-      )
+      Object.values(report.cleanup).every((v: any) => v.nativeTeardownVerified === true)
     )
       for (const [label, tree] of [
         ["official-original", originalGit],
@@ -1421,7 +1685,7 @@ async function main() {
     for (const value of executions) {
       const row = report.cleanup[value.c.containerId];
       row.shareRemoved = false;
-      if (value.process.closed && row.deletion?.closed && row.deletion?.exitCode === 0) {
+      if (value.process.closed && row.nativeTeardownVerified === true) {
         try {
           fs.rmSync(value.c.share, { recursive: true });
           row.shareRemoved = !fs.existsSync(value.c.share);
@@ -1440,10 +1704,17 @@ async function main() {
       report.startedExecutors === executions.length &&
       executions.every((value) => value.process.closed && !value.process.forced) &&
       Object.values(report.cleanup).every(
-        (v: any) =>
-          v.deletion?.exitCode === 0 && v.deletion?.closed && !v.deletion?.forced && v.shareRemoved,
+        (v: any) => v.nativeTeardownVerified === true && v.shareRemoved,
       );
     if (!report.normalCleanup) report.passed = false;
+    if (report.passed) {
+      try {
+        validateNativeProofExecutions(report);
+      } catch (error) {
+        report.passed = false;
+        report.nativeEvidenceError = String(error);
+      }
+    }
     save();
     write(path.join(output, "result.json"), report);
   }

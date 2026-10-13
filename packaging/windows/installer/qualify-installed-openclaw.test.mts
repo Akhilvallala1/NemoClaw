@@ -6,6 +6,8 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   captureFailure,
   terminalAgentError,
@@ -20,7 +22,919 @@ import {
   toolIds,
   verifyToolOutput,
   visibleChatReady,
+  openClawRestartMode,
+  openClawTranscriptIdentity,
+  assertRecordedOpenClawReply,
+  assertRetainedOpenClawPrefix,
+  validateOpenClawColdReceipt,
+  validateOpenClawInspectionInputs,
+  captureOpenClawArtifactSources,
+  validateOpenClawArtifactSourceSnapshot,
+  openClawCleanupDisposition,
+  inspectRetainedOpenClawState,
+  saveFreshOpenClawConfiguration,
+  stripInheritedAcceptanceEnvironment,
+  completeOpenClawRestartState,
+  openClawConfigurationAbsent,
 } from "./qualify-installed-openclaw.mts";
+
+test("OpenClaw restart flags preserve fresh defaults and reject ambiguous handoffs", () => {
+  assert.deepEqual(openClawRestartMode([]), { preserve: false, reuse: false, restart: false });
+  assert.deepEqual(openClawRestartMode(["--preserve-configuration"]), {
+    preserve: true,
+    reuse: false,
+    restart: true,
+  });
+  assert.deepEqual(
+    openClawRestartMode(["--reuse-configuration", "--previous-acceptance", "cold.json"]),
+    { preserve: false, reuse: true, restart: true },
+  );
+  for (const args of [
+    ["--reuse-configuration"],
+    ["--previous-acceptance", "old.json"],
+    ["--preserve-configuration", "--reuse-configuration", "--previous-acceptance", "cold.json"],
+  ])
+    assert.throws(() => openClawRestartMode(args));
+});
+
+test("OpenClaw transcript identity proves semantic retention and a new provider response", () => {
+  const sessionKey = "agent:main:main";
+  const history = {
+    messages: [
+      { role: "user", content: [{ type: "text", text: "prompt" }], timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "reply" }],
+        stopReason: "stop",
+        timestamp: 2,
+      },
+    ],
+  };
+  const cold = openClawTranscriptIdentity(sessionKey, history);
+  const metadataChange = structuredClone(history);
+  metadataChange.messages[0].timestamp = 20;
+  assert.deepEqual(openClawTranscriptIdentity(sessionKey, metadataChange), cold);
+  assertRecordedOpenClawReply(history, "prompt", "reply");
+  const warm = {
+    messages: [
+      ...history.messages,
+      { role: "user", content: "new prompt" },
+      { role: "assistant", content: "new reply" },
+    ],
+  };
+  assertRetainedOpenClawPrefix(cold, warm);
+  assertRecordedOpenClawReply(warm, "new prompt", "new reply");
+  for (const candidate of [
+    { messages: history.messages },
+    { messages: warm.messages.slice(1) },
+    { messages: [{ role: "user", content: "replacement" }, ...warm.messages.slice(1)] },
+  ])
+    assert.throws(() => assertRetainedOpenClawPrefix(cold, candidate));
+  for (const candidate of [
+    { messages: [{ role: "user", content: "reply" }] },
+    { messages: [{ role: "assistant", content: "reply" }] },
+    {
+      messages: [
+        { role: "user", content: "prompt" },
+        { role: "assistant", content: "reply", stopReason: "error" },
+      ],
+    },
+    { messages: [...history.messages, { role: "user", content: "new prompt" }] },
+  ])
+    assert.throws(() => assertRecordedOpenClawReply(candidate, "new prompt", "reply"));
+  for (const candidate of [
+    { messages: [] },
+    { messages: Array(100).fill(history.messages[0]) },
+    { messages: [{ role: "user", content: "x".repeat(20001) }] },
+    { messages: [{ role: "system", content: "unrecognized" }] },
+  ])
+    assert.throws(() => openClawTranscriptIdentity(sessionKey, candidate));
+  assert.throws(() => openClawTranscriptIdentity("agent:other:main", history));
+});
+
+function coldOpenClawFixture() {
+  const expected = {
+    controllerRun: "123:1",
+    handoff: "a".repeat(64),
+    installation: "C:\\Program Files\\NVIDIA\\NemoClaw",
+    runtime: {
+      runtimeId: "b".repeat(64),
+      manifestSha256: "c".repeat(64),
+      sourceRevision: "d".repeat(40),
+      nodeSha256: "e".repeat(64),
+      nodeVersion: "22.23.2",
+    },
+    launcherSha256: "f".repeat(64),
+    packageBuildSha256: "1".repeat(64),
+    artifactSourceSnapshotSha256: "7".repeat(64),
+    controllerSourceRevision: "8".repeat(40),
+    model: "nvidia/test-model",
+  };
+  const receipt = {
+    schemaVersion: 2,
+    classification: "installed-compiled-openclaw-acceptance",
+    verdict: "pass",
+    runtime: expected.runtime,
+    cleanupErrors: [],
+    cleanupErrorDetails: [],
+    primaryFailure: null,
+    restart: {
+      ...expected,
+      runtime: undefined,
+      schemaVersion: 1,
+      mode: "cold-preserved",
+      provider: "nvidia",
+      endpoint: "https://integrate.api.nvidia.com/v1",
+      configurationReused: false,
+      configurationPreserved: true,
+      cleanupDisposition: "retained-for-warm-run",
+      processesStopped: true,
+      stateOwnerReleased: true,
+      backendCleanupConfirmed: true,
+      mutationUnconfirmed: false,
+      credentialMutationConfirmed: true,
+      configurationSha256: "2".repeat(64),
+      ownedState: { stateRoot: "C:\\NemoClawState-S-1-5-21-1-openclaw", device: "4", inode: "55" },
+      retainedConversation: {
+        sessionKey: "agent:main:main",
+        messageCount: 2,
+        sha256: "3".repeat(64),
+      },
+    },
+    results: {
+      response: {
+        provider: "nvidia",
+        model: expected.model,
+        deterministicModel: false,
+        visibleReply: "NEMOCLAW_NVIDIA_" + "4".repeat(24),
+      },
+      sessionCleanup: {
+        verdict: "pass",
+        sandboxDeleted: true,
+        sandboxRegistryAbsent: true,
+        gatewayStopped: true,
+        qualificationRootsRemoved: true,
+      },
+    },
+  };
+  return { expected, receipt };
+}
+
+test("OpenClaw restart rejects stale, failed, foreign or incomplete cold receipts", () => {
+  const { expected, receipt } = coldOpenClawFixture();
+  assert.equal(validateOpenClawColdReceipt(receipt, expected), receipt.restart);
+  const mutations: ((value: any) => void)[] = [
+    (v) => (v.schemaVersion = 1),
+    (v) => (v.verdict = "fail"),
+    (v) => v.cleanupErrors.push("cleanup"),
+    (v) => (v.primaryFailure = {}),
+    (v) => (v.restart.mode = "warm-reused"),
+    (v) => (v.restart.controllerRun = "122:1"),
+    (v) => (v.restart.handoff = "9".repeat(64)),
+    (v) => (v.restart.installation = "C:\\other"),
+    (v) => (v.restart.launcherSha256 = "9".repeat(64)),
+    (v) => (v.restart.packageBuildSha256 = "9".repeat(64)),
+    (v) => (v.restart.artifactSourceSnapshotSha256 = "9".repeat(64)),
+    (v) => (v.restart.controllerSourceRevision = "9".repeat(40)),
+    (v) => (v.restart.model = "other"),
+    (v) => (v.restart.provider = "compatible"),
+    (v) => (v.restart.endpoint = "https://other.example/v1"),
+    (v) => (v.restart.configurationReused = true),
+    (v) => (v.restart.configurationPreserved = false),
+    (v) => (v.restart.cleanupDisposition = "removed-owned-state"),
+    (v) => (v.restart.processesStopped = false),
+    (v) => (v.restart.stateOwnerReleased = false),
+    (v) => (v.restart.backendCleanupConfirmed = false),
+    (v) => (v.restart.mutationUnconfirmed = true),
+    (v) => (v.restart.credentialMutationConfirmed = false),
+    (v) => (v.restart.configurationSha256 = "bad"),
+    (v) => (v.restart.ownedState.inode = "0"),
+    (v) => (v.restart.ownedState.stateRoot = "C:\\NemoClawState-S-1-5-21-1-hermes"),
+    (v) => (v.restart.retainedConversation.messageCount = 100),
+    (v) => (v.restart.retainedConversation.sha256 = "bad"),
+    (v) => (v.results.response.deterministicModel = true),
+    (v) => (v.results.response.visibleReply = "old reply"),
+    ...["runtimeId", "manifestSha256", "sourceRevision", "nodeSha256", "nodeVersion"].map(
+      (key) => (v: any) => (v.runtime[key] = "other"),
+    ),
+    ...[
+      "sandboxDeleted",
+      "sandboxRegistryAbsent",
+      "gatewayStopped",
+      "qualificationRootsRemoved",
+    ].map((key) => (v: any) => (v.results.sessionCleanup[key] = false)),
+  ];
+  for (const mutate of mutations) {
+    const candidate = structuredClone(receipt);
+    mutate(candidate);
+    assert.throws(() => validateOpenClawColdReceipt(candidate, expected));
+  }
+});
+
+test("OpenClaw cleanup retains ambiguous mutation, process, backend and lease ownership", () => {
+  const input = {
+    owned: true,
+    processesStopped: true,
+    stateOwnerReleased: true,
+    backendCleanupConfirmed: true,
+    mutationUnconfirmed: false,
+    preserve: true,
+    successful: true,
+  };
+  assert.equal(openClawCleanupDisposition(input), "retained-for-warm-run");
+  assert.equal(openClawCleanupDisposition({ ...input, preserve: false }), "remove-owned-state");
+  assert.equal(openClawCleanupDisposition({ ...input, successful: false }), "remove-owned-state");
+  assert.equal(openClawCleanupDisposition({ ...input, owned: false }), "not-owned");
+  for (const change of [
+    { processesStopped: false },
+    { stateOwnerReleased: false },
+    { backendCleanupConfirmed: false },
+    { mutationUnconfirmed: true },
+  ])
+    assert.equal(openClawCleanupDisposition({ ...input, ...change }), "retain-unconfirmed");
+});
+
+test("OpenClaw retained inspection reads only while held and rejects absent or replaced state", async () => {
+  const state = { stateRoot: "C:\\NemoClawState-S-1-5-21-1-openclaw", device: "4", inode: "55" };
+  const configuration = Buffer.from("controlled config");
+  const sha256 = createHash("sha256").update(configuration).digest("hex");
+  for (const scenario of [
+    "pass",
+    "missing",
+    "replaced",
+    "changed-config",
+    "lost-lease",
+    "release-failure",
+  ]) {
+    let held = false,
+      released = 0,
+      reads = 0,
+      checks = 0;
+    const owner = {
+      present: scenario !== "missing",
+      stateRoot: state.stateRoot,
+      assertHeld() {
+        checks++;
+        assert(held);
+        if (scenario === "lost-lease" && checks > 1) throw new Error("lease lost");
+      },
+      async release() {
+        released++;
+        if (scenario === "release-failure") throw new Error("release failed");
+      },
+      created: false,
+      removed: false,
+    };
+    const result = inspectRetainedOpenClawState(
+      {
+        launcher: "fixture-only",
+        expectedState: state,
+        configurationPath: "fixture-only",
+        configurationSha256: sha256,
+        ownerHeld: (value) => {
+          held = value;
+        },
+      },
+      {
+        acquire: async () => owner,
+        directoryIdentity: () => {
+          assert(held);
+          return { ...state, inode: scenario === "replaced" ? "56" : "55" };
+        },
+        read: () => {
+          assert(held);
+          reads++;
+          return scenario === "changed-config" ? Buffer.from("changed") : configuration;
+        },
+      },
+    );
+    if (scenario === "pass") assert.deepEqual(await result, state);
+    else await assert.rejects(result);
+    assert.equal(released, 1);
+    assert.equal(held, scenario === "release-failure");
+    assert.equal(reads, ["missing", "replaced"].includes(scenario) ? 0 : 1);
+  }
+});
+
+test("OpenClaw cold restart uses one credential transaction and retains ambiguity on failure", async () => {
+  for (const fail of [false, true]) {
+    const calls: { name: string; args: string[]; stdin: string }[] = [];
+    const custody: boolean[] = [];
+    let binding = "";
+    const configuration = {
+      agent: "openclaw",
+      inference: "nvidia",
+      endpoint: "https://integrate.api.nvidia.com/v1",
+    };
+    const operation = saveFreshOpenClawConfiguration({
+      restart: true,
+      configuration,
+      secret: "fixture-private-key",
+      rememberBinding: (value) => {
+        binding = value;
+      },
+      mutationUnconfirmed: (value) => custody.push(value),
+      command: async (name, args, stdin) => {
+        calls.push({ name, args, stdin });
+        if (fail) throw new Error("unconfirmed");
+        return "saved";
+      },
+    });
+    if (fail) await assert.rejects(operation, /unconfirmed/u);
+    else await operation;
+    assert.match(binding, /^[a-f0-9]{64}$/u);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].name, "save-config-transaction");
+    assert.deepEqual(calls[0].args, ["--configure-native", "--agent", "openclaw", "--transaction"]);
+    assert(!calls[0].args.includes("fixture-private-key"));
+    assert.deepEqual(JSON.parse(calls[0].stdin), {
+      configuration,
+      credentials: { inference: "fixture-private-key", services: {} },
+    });
+    assert.deepEqual(custody, fail ? [true] : [true, false]);
+  }
+});
+
+test("OpenClaw native owners and automation inherit no provider key or runtime override", () => {
+  const source = {
+    SystemRoot: "C:\\Windows",
+    GITHUB_ACTIONS: "true",
+    NVIDIA_API_KEY: "private",
+    NVIDIA_INFERENCE_API_KEY: "private",
+    NODE_OPTIONS: "untrusted",
+    NEMOCLAW_NATIVE_INSTALL_ROOT: "override",
+    RUNNER_TEMP: "controller-only",
+  };
+  assert.deepEqual(stripInheritedAcceptanceEnvironment(source), {
+    SystemRoot: "C:\\Windows",
+    GITHUB_ACTIONS: "true",
+  });
+  assert.deepEqual(source, { SystemRoot: "C:\\Windows", GITHUB_ACTIONS: "true" });
+});
+
+test("OpenClaw restart hands off only successful cold state and proves removal before releasing cleanup custody", async () => {
+  const state = { stateRoot: "C:\\NemoClawState-S-1-5-21-1-openclaw", device: "4", inode: "55" };
+  for (const scenario of [
+    "cold-pass",
+    "cold-failure",
+    "warm-pass",
+    "not-owned",
+    "live-process",
+    "unknown-backend",
+    "unknown-mutation",
+    "failed-inspection",
+    "failed-remove",
+    "failed-key-delete",
+    "state-still-present",
+    "failed-release",
+    "metadata-remains",
+    "different-inspection-root",
+  ]) {
+    const events: string[] = [],
+      errors: string[] = [];
+    const restart = {
+      processesStopped: scenario !== "live-process",
+      backendCleanupConfirmed: scenario !== "unknown-backend",
+      stateOwnerReleased: true,
+      mutationUnconfirmed: scenario === "unknown-mutation",
+      cleanupDisposition: "pending",
+      configurationPreserved: false,
+    };
+    await completeOpenClawRestartState(
+      {
+        restart,
+        owned: scenario !== "not-owned",
+        preserve: scenario.startsWith("cold"),
+        successful: scenario !== "cold-failure",
+        launcher: "fixture-only",
+        ownedState: state,
+        configurationPath: "fixture-only",
+        configurationSha256: "c".repeat(64),
+        binding: "b".repeat(64),
+        command: async (name) => {
+          events.push(name);
+          if (
+            (scenario === "failed-remove" && name === "remove-configured-data") ||
+            (scenario === "failed-key-delete" && name === "credential-delete")
+          )
+            throw new Error("controlled failure");
+          return "";
+        },
+        cleanupFailed: (action) => errors.push(action),
+      },
+      {
+        inspectRetained: async (input) => {
+          events.push("inspect");
+          assert.deepEqual(input.expectedState, state);
+          input.ownerHeld(true);
+          if (scenario === "failed-inspection") throw new Error("unconfirmed inspection");
+          input.ownerHeld(false);
+          return state;
+        },
+        acquire: async () => {
+          events.push("confirm-absent");
+          return {
+            present: scenario === "state-still-present",
+            stateRoot: scenario === "different-inspection-root" ? "C:\\different" : state.stateRoot,
+            created: false,
+            removed: false,
+            assertHeld() {},
+            async release() {
+              events.push("release");
+              if (scenario === "failed-release") throw new Error("release failed");
+            },
+          };
+        },
+        removeRoot: async () => {
+          throw new Error("Configured cleanup must not use root-only removal.");
+        },
+        configurationAbsent: () => scenario !== "metadata-remains",
+      },
+    );
+    const removed = ["warm-pass", "cold-failure"].includes(scenario);
+    assert.equal(
+      restart.cleanupDisposition,
+      scenario === "cold-pass"
+        ? "retained-for-warm-run"
+        : removed
+          ? "removed-owned-state"
+          : scenario === "not-owned"
+            ? "not-owned"
+            : "retain-unconfirmed",
+    );
+    assert.equal(restart.configurationPreserved, scenario === "cold-pass");
+    assert.equal(
+      errors.length > 0,
+      !["cold-pass", "warm-pass", "cold-failure", "not-owned"].includes(scenario),
+    );
+    if (["not-owned", "live-process", "unknown-backend", "unknown-mutation"].includes(scenario))
+      assert.deepEqual(events, []);
+    if (["cold-pass", "failed-inspection"].includes(scenario))
+      assert.deepEqual(events, ["inspect"]);
+    if (scenario === "failed-remove")
+      assert.deepEqual(events, ["inspect", "remove-configured-data"]);
+    if (scenario === "failed-key-delete")
+      assert.deepEqual(events, ["inspect", "remove-configured-data", "credential-delete"]);
+    if (removed)
+      assert.deepEqual(events, [
+        "inspect",
+        "remove-configured-data",
+        "credential-delete",
+        "confirm-absent",
+        "release",
+      ]);
+    assert.equal(
+      restart.stateOwnerReleased,
+      !["failed-inspection", "failed-release"].includes(scenario),
+    );
+  }
+});
+
+test("OpenClaw failure before its credential transaction removes only fresh owned private state", async () => {
+  const state = { stateRoot: "C:\\NemoClawState-S-1-5-21-1-openclaw", device: "4", inode: "55" };
+  for (const scenario of [
+    "pass",
+    "metadata-appeared",
+    "configured-hash",
+    "different-root",
+    "not-removed",
+    "release-failure",
+  ]) {
+    const events: string[] = [],
+      errors: string[] = [];
+    const restart: any = {
+      processesStopped: true,
+      backendCleanupConfirmed: true,
+      stateOwnerReleased: true,
+      mutationUnconfirmed: false,
+    };
+    await completeOpenClawRestartState(
+      {
+        restart,
+        owned: true,
+        preserve: true,
+        successful: false,
+        launcher: "fixture-only",
+        ownedState: state,
+        configurationPath: "fixture-only",
+        configurationSha256: scenario === "configured-hash" ? "c".repeat(64) : undefined,
+        command: async () => {
+          throw new Error(
+            "Pre-transaction cleanup must not run configuration or credential removal.",
+          );
+        },
+        cleanupFailed: (action) => errors.push(action),
+      },
+      {
+        inspectRetained: async (input) => {
+          events.push("inspect");
+          assert.deepEqual(input.expectedState, state);
+          return state;
+        },
+        removeRoot: async () => {
+          events.push("remove-root");
+          return {
+            stateRoot: scenario === "different-root" ? "C:\\different" : state.stateRoot,
+            removed: scenario !== "not-removed",
+            created: false,
+            assertHeld() {},
+            async release() {
+              events.push("release-root");
+              if (scenario === "release-failure") throw new Error("release failed");
+            },
+          };
+        },
+        acquire: async () => {
+          events.push("confirm-absent");
+          return {
+            stateRoot: state.stateRoot,
+            present: false,
+            removed: false,
+            created: false,
+            assertHeld() {},
+            async release() {
+              events.push("release-inspection");
+            },
+          };
+        },
+        configurationAbsent: () => scenario !== "metadata-appeared",
+      },
+    );
+    assert.equal(restart.credentialMutationConfirmed, false);
+    assert.equal(
+      restart.cleanupDisposition,
+      scenario === "pass" ? "removed-owned-state" : "retain-unconfirmed",
+    );
+    assert.equal(errors.length === 0, scenario === "pass");
+    assert.equal(restart.configurationPreserved, false);
+    if (scenario === "pass") {
+      assert.equal(restart.cleanupScope, "fresh-private-root-only-no-credentials-touched");
+      assert.deepEqual(events, [
+        "inspect",
+        "remove-root",
+        "release-root",
+        "confirm-absent",
+        "release-inspection",
+      ]);
+    }
+    if (["metadata-appeared", "configured-hash"].includes(scenario))
+      assert.deepEqual(events, ["inspect"]);
+    if (["different-root", "not-removed", "release-failure"].includes(scenario))
+      assert.deepEqual(events, ["inspect", "remove-root", "release-root"]);
+    assert.equal(restart.stateOwnerReleased, scenario !== "release-failure");
+  }
+});
+
+test("OpenClaw fresh-state and cleanup checks reject present, redirected or unreadable settings directories", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-absence-control-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const configuration = path.join(root, "agent", "native-windows.json");
+  assert.equal(openClawConfigurationAbsent(configuration), true);
+  fs.mkdirSync(path.dirname(configuration));
+  assert.equal(openClawConfigurationAbsent(configuration), false);
+  fs.rmdirSync(path.dirname(configuration));
+  fs.writeFileSync(path.dirname(configuration), "not-a-directory");
+  assert.equal(openClawConfigurationAbsent(configuration), false);
+  const stat = fs.lstatSync(path.dirname(configuration));
+  const mocked = context.mock.method(
+    fs,
+    "lstatSync",
+    () =>
+      new Proxy(stat, {
+        get(target, property) {
+          return property === "isSymbolicLink" ? () => true : Reflect.get(target, property);
+        },
+      }),
+  );
+  assert.equal(openClawConfigurationAbsent(configuration), false);
+  mocked.mock.restore();
+  const denied = context.mock.method(fs, "lstatSync", () => {
+    throw Object.assign(new Error("access denied"), { code: "EACCES" });
+  });
+  try {
+    assert.throws(() => openClawConfigurationAbsent(configuration), { code: "EACCES" });
+  } finally {
+    denied.mock.restore();
+  }
+});
+
+function inspectionOpenClawFixture() {
+  const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+  const bytes = (document: any) => Buffer.from(JSON.stringify(document));
+  const sourceRevision = "a".repeat(40),
+    controllerRun = "123:1",
+    launcherBytes = Buffer.from("fixture-only-launcher");
+  const row = (file: string, content: Buffer) => ({
+    file,
+    bytes: content.length,
+    sha256: hash(content),
+  });
+  const sourceFiles = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/main.rs",
+    "src/state_session.rs",
+    "src/runtime_lease.rs",
+    "src/other.rs",
+  ].map((file) => "packaging/windows/launcher/" + file);
+  const readSource = (file: string) => Buffer.from("fixture-source:" + file);
+  const materialization = {
+    schemaVersion: 1,
+    classification: "ci-native-compiled-artifact",
+    status: "materialized",
+    runtimeLaunchCopy: false,
+    outputSha256: hash(launcherBytes),
+    sourceSha256Before: hash(launcherBytes),
+    sourceSha256After: hash(launcherBytes),
+    outputStat: { bytes: launcherBytes.length, links: 1 },
+  };
+  const materializationBytes = bytes(materialization);
+  const capabilities = {
+    schemaVersion: 1,
+    launcherSha256: hash(launcherBytes),
+    capabilities: {
+      schemaVersion: 1,
+      kind: "native-runtime-capabilities",
+      immutableRuntime: true,
+      guardianEnabled: true,
+      supportedCommands: ["native-state-inspection-v1"],
+    },
+  };
+  const capabilityBytes = bytes(capabilities);
+  const source = {
+    schemaVersion: 1,
+    classification: "package-selected-launcher-build-inputs",
+    sourceRevision,
+    workflowRunId: "123",
+    workflowRunAttempt: "1",
+    target: "aarch64-pc-windows-msvc",
+    rustToolchain: "1.95.0-aarch64-pc-windows-msvc",
+    features: ["immutable-runtime"],
+    lockedDependencies: true,
+    staticCrt: true,
+    commandSupportValidated: false,
+    invocationAdmitted: false,
+    installedAcceptance: false,
+    retainedLauncher: row("build/compiled-native/NemoClaw.exe", launcherBytes),
+    packagedLauncher: row("build/payload/bin/NemoClaw.exe", launcherBytes),
+    materialization: row("compiled-launcher.json", materializationBytes),
+    capabilityObservation: {
+      ...row("build/launcher-capabilities.json", capabilityBytes),
+      advertisedCommands: ["native-state-inspection-v1"],
+    },
+    sources: sourceFiles.map((file) => row(file, readSource(file))),
+  };
+  const sourceBytes = bytes(source);
+  const artifactSourceSnapshotBytes = bytes({
+    schemaVersion: 1,
+    classification: "independent-openclaw-launcher-source-snapshot",
+    artifactSourceRevision: sourceRevision,
+    controllerSourceRevision: "b".repeat(40),
+    controllerRun,
+    sources: sourceFiles.map((file) => row(file, readSource(file))),
+  });
+  const build = {
+    schemaVersion: 1,
+    classification: "finished-native-runtime-package-build",
+    status: "candidate-built-for-installed-qualification",
+    sourceRevision,
+    launcherBuildInputs: row("launcher-build-inputs.json", sourceBytes),
+    launcherCapabilitiesSha256: hash(capabilityBytes),
+    compiledArtifacts: [row("compiled-launcher.json", materializationBytes)],
+  };
+  const input = {
+    buildBytes: bytes(build),
+    sourceBytes,
+    capabilityBytes,
+    materializationBytes,
+    launcherBytes,
+    packagedBytes: launcherBytes,
+    installedBytes: launcherBytes,
+    sourceRevision,
+    controllerRun,
+    artifactSourceSnapshotBytes,
+    artifactSourceSnapshotSha256: hash(artifactSourceSnapshotBytes),
+    controllerSourceRevision: "b".repeat(40),
+  };
+  const rebuild = () => {
+    input.capabilityBytes = bytes(capabilities);
+    input.materializationBytes = bytes(materialization);
+    source.capabilityObservation = {
+      ...row("build/launcher-capabilities.json", input.capabilityBytes),
+      advertisedCommands: capabilities.capabilities.supportedCommands,
+    };
+    source.materialization = row("compiled-launcher.json", input.materializationBytes);
+    input.sourceBytes = bytes(source);
+    build.launcherBuildInputs = row("launcher-build-inputs.json", input.sourceBytes);
+    build.launcherCapabilitiesSha256 = hash(input.capabilityBytes);
+    build.compiledArtifacts = [row("compiled-launcher.json", input.materializationBytes)];
+    input.buildBytes = bytes(build);
+  };
+  return { input, source, capabilities, materialization, build, rebuild };
+}
+
+test("OpenClaw inspection admission binds package bytes, declared support and complete source/build provenance", () => {
+  const fixture = inspectionOpenClawFixture();
+  const admitted = validateOpenClawInspectionInputs(fixture.input);
+  assert.match(admitted.launcherSha256, /^[a-f0-9]{64}$/u);
+  assert.match(admitted.packageBuildSha256, /^[a-f0-9]{64}$/u);
+  const mutations: ((f: ReturnType<typeof inspectionOpenClawFixture>) => void)[] = [
+    (f) => (f.input.installedBytes = Buffer.from("other")),
+    (f) => (f.input.packagedBytes = Buffer.from("other")),
+    (f) => (f.input.controllerRun = "124:1"),
+    (f) => (f.source.sourceRevision = "b".repeat(40)),
+    (f) => (f.source.target = "x86_64-pc-windows-msvc"),
+    (f) => (f.source.rustToolchain = "other"),
+    (f) => (f.source.features = []),
+    (f) => (f.source.staticCrt = false),
+    (f) => (f.source.invocationAdmitted = true),
+    (f) => (f.source.commandSupportValidated = true),
+    (f) => (f.materialization.outputSha256 = "b".repeat(64)),
+    (f) => (f.materialization.runtimeLaunchCopy = true),
+    (f) => (f.materialization.outputStat.links = 2),
+    (f) => (f.capabilities.capabilities.supportedCommands = []),
+    (f) => (f.capabilities.capabilities.guardianEnabled = false),
+    (f) => f.source.sources.pop(),
+    (f) => (f.source.sources[0].file = "packaging/windows/launcher/../secret"),
+    (f) => f.source.sources.push(f.source.sources[0]),
+    (f) => (f.source.sources[0].sha256 = "b".repeat(64)),
+    (f) => (f.input.artifactSourceSnapshotBytes = Buffer.from("{}")),
+    (f) => (f.input.artifactSourceSnapshotSha256 = "b".repeat(64)),
+    (f) => (f.input.controllerSourceRevision = "c".repeat(40)),
+    (f) => (f.build.sourceRevision = "b".repeat(40)),
+  ];
+  for (const mutate of mutations) {
+    const candidate = inspectionOpenClawFixture();
+    mutate(candidate);
+    candidate.rebuild();
+    assert.throws(() => validateOpenClawInspectionInputs(candidate.input));
+  }
+  fixture.input.sourceBytes = Buffer.concat([fixture.input.sourceBytes, Buffer.from(" ")]);
+  assert.throws(() => validateOpenClawInspectionInputs(fixture.input));
+});
+
+test("candidate source capture verifies Git bytes without executing candidate code", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-source-capture-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const controller = path.join(root, "controller");
+  const artifact = path.join(root, "artifact");
+  const git = (directory: string, ...args: string[]) => {
+    const result = spawnSync("git", ["-c", "core.hooksPath=", "-C", directory, ...args], {
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_AUTHOR_NAME: "Fixture",
+        GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+        GIT_COMMITTER_NAME: "Fixture",
+        GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+      },
+      encoding: "utf8",
+      timeout: 10000,
+      windowsHide: true,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const create = (directory: string) => {
+    fs.mkdirSync(directory);
+    git(directory, "init", "--quiet");
+    fs.writeFileSync(path.join(directory, ".gitattributes"), "* text=auto eol=lf\n");
+  };
+  create(controller);
+  git(controller, "add", ".");
+  git(controller, "commit", "--quiet", "-m", "Controller fixture");
+  create(artifact);
+  const launcher = path.join(artifact, "packaging", "windows", "launcher");
+  fs.mkdirSync(path.join(launcher, "src"), { recursive: true });
+  for (const file of [
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/main.rs",
+    "src/state_session.rs",
+    "src/runtime_lease.rs",
+  ])
+    fs.writeFileSync(path.join(launcher, file), "fixture source: " + file + "\n");
+  fs.writeFileSync(
+    path.join(launcher, "README.md"),
+    "Data only. Never execute candidate scripts.\n",
+  );
+  git(artifact, "add", ".");
+  git(artifact, "commit", "--quiet", "-m", "Artifact fixture");
+  const input = {
+    artifactSourceRoot: artifact,
+    controllerSourceRoot: controller,
+    artifactSourceRevision: git(artifact, "rev-parse", "HEAD"),
+    controllerSourceRevision: git(controller, "rev-parse", "HEAD"),
+    controllerRun: "123:1",
+  };
+  const captured = captureOpenClawArtifactSources(input);
+  assert.equal(captured.sources.length, 5);
+  assert.notEqual(captured.artifactSourceRevision, captured.controllerSourceRevision);
+  const original = fs.readFileSync(path.join(launcher, "src/main.rs"));
+  fs.writeFileSync(path.join(launcher, "src/main.rs"), "modified\n");
+  assert.throws(() => captureOpenClawArtifactSources(input), /authorized Git tree/);
+  fs.writeFileSync(path.join(launcher, "src/main.rs"), original);
+  fs.unlinkSync(path.join(launcher, "src/main.rs"));
+  assert.throws(() => captureOpenClawArtifactSources(input), /missing/);
+  fs.writeFileSync(path.join(launcher, "src/main.rs"), original);
+  const unexpected = path.join(launcher, "untracked.rs");
+  fs.writeFileSync(unexpected, "untracked\n");
+  assert.throws(() => captureOpenClawArtifactSources(input), /unexpected file/);
+  fs.unlinkSync(unexpected);
+  fs.mkdirSync(path.join(launcher, "target"));
+  assert.throws(() => captureOpenClawArtifactSources(input), /generated output/);
+  fs.rmdirSync(path.join(launcher, "target"));
+  assert.throws(() =>
+    captureOpenClawArtifactSources({ ...input, artifactSourceRevision: "a".repeat(40) }),
+  );
+  assert.throws(() =>
+    captureOpenClawArtifactSources({ ...input, controllerSourceRevision: "b".repeat(40) }),
+  );
+  assert.throws(
+    () => captureOpenClawArtifactSources({ ...input, artifactSourceRoot: controller }),
+    /separate checkouts/,
+  );
+  const alias = path.join(launcher, "hardlink.rs");
+  fs.linkSync(path.join(launcher, "src/main.rs"), alias);
+  assert.throws(() => captureOpenClawArtifactSources(input));
+  fs.unlinkSync(alias);
+  assert.deepEqual(captureOpenClawArtifactSources(input), captured);
+  const bytes = Buffer.from(JSON.stringify(captured));
+  const snapshot = {
+    bytes,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sourceRevision: input.artifactSourceRevision,
+    controllerSourceRevision: input.controllerSourceRevision,
+    controllerRun: input.controllerRun,
+  };
+  assert.equal(validateOpenClawArtifactSourceSnapshot(snapshot).size, 5);
+  fs.writeFileSync(path.join(launcher, "src/main.rs"), "changed after capture\n");
+  assert.equal(validateOpenClawArtifactSourceSnapshot(snapshot).size, 5);
+});
+
+test("source snapshots reject changes, foreign identities and malformed inventories", () => {
+  const fixture = inspectionOpenClawFixture().input;
+  const input = {
+    bytes: fixture.artifactSourceSnapshotBytes,
+    sha256: fixture.artifactSourceSnapshotSha256,
+    sourceRevision: fixture.sourceRevision,
+    controllerSourceRevision: fixture.controllerSourceRevision,
+    controllerRun: fixture.controllerRun,
+  };
+  const original = JSON.parse(input.bytes.toString("utf8"));
+  for (const mutate of [
+    (v: any) => {
+      v.artifactSourceRevision = "b".repeat(40);
+    },
+    (v: any) => {
+      v.controllerSourceRevision = "c".repeat(40);
+    },
+    (v: any) => {
+      v.controllerRun = "122:1";
+    },
+    (v: any) => {
+      v.invocationAdmitted = true;
+    },
+    (v: any) => {
+      v.sources.pop();
+      v.sources.pop();
+    },
+    (v: any) => {
+      v.sources.push(v.sources[0]);
+    },
+    (v: any) => {
+      v.sources[0].file = "packaging/windows/launcher/../secret.rs";
+    },
+    (v: any) => {
+      v.sources[0].bytes = 0;
+    },
+    (v: any) => {
+      v.sources[0].bytes = "1";
+    },
+    (v: any) => {
+      v.sources[0].sha256 = "bad";
+    },
+    (v: any) => {
+      v.sources[0].execute = true;
+    },
+  ]) {
+    const document = structuredClone(original);
+    mutate(document);
+    const bytes = Buffer.from(JSON.stringify(document));
+    assert.throws(() =>
+      validateOpenClawArtifactSourceSnapshot({
+        ...input,
+        bytes,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      }),
+    );
+  }
+  assert.throws(() =>
+    validateOpenClawArtifactSourceSnapshot({ ...input, bytes: Buffer.from("{}") }),
+  );
+});
 
 test("the browser RPC uses the connected OpenClaw9.2 snapshot and rejects stale clients", async () => {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, "document");

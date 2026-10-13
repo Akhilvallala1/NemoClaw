@@ -20,8 +20,8 @@ import {
   primaryDebugRequest,
   directBrowserDiagnostic,
   stockBrowserEnvironment,
-  validateHermesDesktopMask,
   inspectHermesDesktopCleanup,
+  inspectPersonalNativeExecution,
   desktopAbsenceRequest,
   validateStockBrowserExecutor,
   validateBrowserUseLaunch,
@@ -31,17 +31,599 @@ import {
   primaryComparisonMetadata,
   completedPersonalReplayPin,
   validatePersonalReplayInput,
-  verifyPersonalReplayInventory,
+  verifyPersonalRuntimeInventory,
   removePersonalRoots,
   publishPersonalReceipt,
   validatePersonalBase,
+  validatePersonalCompatibility,
 } from "./probe-personal-candidate.mts";
 import { parseComponent, personalCommand } from "./probe-personal-workload.mts";
+import { binaryPins, originalBinaryPins } from "../mxc-bash/bash-compat.mts";
+import { originals } from "../mxc-bash/prepare-msys-aslr.mts";
 
 const browserRuntime = "C:\\NemoClawHermesProbe-274d797050ea";
 const browserOriginalNonce = "00112233445566778899aabb";
 const browserNewNonce = "ffeeddccbbaa998877665544";
 const browserController = "C:\\NemoClawPersonalNode-001122334455";
+
+test("Personal wrapper removes only its current runtime after confirmed native closure", () => {
+  const source = "a".repeat(40);
+  const closed = {
+    schemaVersion: 2,
+    classification: "canonical-personal-mxc-feasibility",
+    sourceRevision: source,
+    runtime: browserRuntime,
+    executorAttempted: true,
+    rootsRetainedForUnclosedExecutor: false,
+    cleanup: {
+      executorClosed: true,
+      nativeTeardownVerified: true,
+      hostDesktopsReleased: true,
+      hostDiagnosticChildrenClosed: true,
+      ownedRootsRemoved: true,
+    },
+  };
+  const cases: { name: string; receipt: any; expected: boolean }[] = [
+    { name: "closed native workload", receipt: closed, expected: true },
+    {
+      name: "failed workload with confirmed cleanup",
+      receipt: { ...closed, feasibilityPassed: false, error: "browser failed" },
+      expected: true,
+    },
+    {
+      name: "rejected before executor with all host resources closed",
+      receipt: {
+        ...closed,
+        executorAttempted: false,
+        cleanup: {
+          ...closed.cleanup,
+          executorClosed: false,
+          nativeTeardownVerified: false,
+          hostDesktopsReleased: false,
+        },
+      },
+      expected: true,
+    },
+  ];
+  for (const [field, values] of Object.entries({
+    schemaVersion: [1, "2", null],
+    classification: ["historical-personal-proof", null],
+    sourceRevision: ["b".repeat(40), null],
+    runtime: ["C:\\NemoClawHermesProbe-ffffffffffff", null],
+    executorAttempted: ["false", 0, null],
+    rootsRetainedForUnclosedExecutor: [true, "false", 0, null],
+  })) {
+    for (const value of [...values, undefined]) {
+      cases.push({
+        name: `${field}=${String(value)}`,
+        receipt: { ...closed, [field]: value },
+        expected: false,
+      });
+    }
+  }
+  for (const field of Object.keys(closed.cleanup)) {
+    for (const value of [false, "true", 1, null, undefined]) {
+      cases.push({
+        name: `cleanup.${field}=${String(value)}`,
+        receipt: { ...closed, cleanup: { ...closed.cleanup, [field]: value } },
+        expected: false,
+      });
+    }
+  }
+  cases.push({
+    name: "missing cleanup",
+    receipt: { ...closed, cleanup: undefined },
+    expected: false,
+  });
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:NEMOCLAW_PERSONAL_WRAPPER_PATH,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Personal wrapper parsing failed.'}
+$functions=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Test-PersonalRuntimeRemoval'},$true))
+if($functions.Count -ne 1){throw 'Personal cleanup owner is missing or ambiguous.'}
+# Load only the actual deterministic production function, not the guarded live controller.
+Invoke-Expression $functions[0].Extent.Text
+$cases=ConvertFrom-Json $env:NEMOCLAW_PERSONAL_REMOVAL_CASES
+$results=@(foreach($case in $cases){Test-PersonalRuntimeRemoval $case.receipt '${browserRuntime}' '${source}'})
+$finish=($ast.EndBlock.Statements | Select-Object -Last 2 | ForEach-Object {$_.Extent.Text}) -join [Environment]::NewLine
+$completion=@(foreach($status in @('pass','failed')) {
+ $primary=$null;$receipt=@{status=$status}
+ try {Invoke-Expression $finish; @{status=$status;accepted=$true}}
+ catch {@{status=$status;accepted=$false;error=$_.Exception.Message}}
+})
+ConvertTo-Json -InputObject @{removal=$results;completion=$completion} -Depth 4 -Compress
+`;
+  const child = spawnSync(
+    process.env.NEMOCLAW_TEST_PWSH ?? "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: {
+        ...process.env,
+        NEMOCLAW_PERSONAL_WRAPPER_PATH: fileURLToPath(
+          new URL("./probe-personal-candidate.ps1", import.meta.url),
+        ),
+        NEMOCLAW_PERSONAL_REMOVAL_CASES: JSON.stringify(cases),
+      },
+    },
+  );
+  assert.equal(child.status, 0, child.stderr || String(child.error));
+  const results = JSON.parse(child.stdout);
+  assert.equal(results.removal.length, cases.length);
+  cases.forEach((row, index) => assert.equal(results.removal[index], row.expected, row.name));
+  assert.equal(results.completion[0].status, "pass");
+  assert.equal(results.completion[0].accepted, true);
+  assert.equal(results.completion[1].status, "failed");
+  assert.equal(results.completion[1].accepted, false);
+  assert.match(results.completion[1].error, /production or cleanup did not pass/u);
+});
+
+test("Reused runtime cleanup requires current typed build closure evidence", () => {
+  const source = "a".repeat(40);
+  const closed = {
+    schemaVersion: 1,
+    classification: "ci-targeted-pywinpty-conpty-rebuild",
+    sourceRevision: source,
+    runtimeRoot: browserRuntime,
+    allOwnedProcessesClosed: true,
+  };
+  const cases: { name: string; receipt: Record<string, unknown>; expected: boolean }[] = [
+    { name: "closed build", receipt: closed, expected: true },
+    {
+      name: "failed build with confirmed closure",
+      receipt: { ...closed, status: "failed" },
+      expected: true,
+    },
+  ];
+  for (const [field, values] of Object.entries({
+    schemaVersion: ["1", true, 2, null],
+    classification: ["other-build", null],
+    sourceRevision: ["b".repeat(40), null],
+    runtimeRoot: ["C:\\NemoClawHermesProbe-ffffffffffff", null],
+    allOwnedProcessesClosed: [false, "True", "true", 1, null],
+  })) {
+    for (const value of [...values, undefined]) {
+      cases.push({
+        name: `${field}=${String(value)}`,
+        receipt: { ...closed, [field]: value },
+        expected: false,
+      });
+    }
+  }
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:NEMOCLAW_REUSE_PATH,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Runtime reuse wrapper parsing failed.'}
+$blocks=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Extent.Text.StartsWith('if($receipt.wheelAttempted)')},$true))
+if($blocks.Count -ne 1){throw 'Build closure block is missing or ambiguous.'}
+$build=[IO.Path]::GetTempPath()
+$RuntimeRoot='${browserRuntime}'
+$ControllerSource='${source}'
+function Get-Content {param($LiteralPath,[switch]$Raw) return $script:wheelJson}
+$results=@(foreach($case in (ConvertFrom-Json $env:NEMOCLAW_REUSE_CASES)) {
+ foreach($hadPrimary in @($false,$true)) {
+  $script:wheelJson=ConvertTo-Json -InputObject $case.receipt -Depth 4 -Compress
+  $receipt=@{wheelAttempted=$true;buildProcessesClosed=$false;status='candidate-bytes-exported-unqualified'}
+  $original=if($hadPrimary){[InvalidOperationException]::new('original build failure')}else{$null}
+  $primary=$original
+  Invoke-Expression $blocks[0].Extent.Text
+  @{closed=$receipt.buildProcessesClosed;status=$receipt.status;primaryPresent=($null -ne $primary);primaryPreserved=(!$hadPrimary -or [object]::ReferenceEquals($primary,$original))}
+ }
+})
+ConvertTo-Json -InputObject $results -Compress
+`;
+  const child = spawnSync(
+    process.env.NEMOCLAW_TEST_PWSH ?? "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: {
+        ...process.env,
+        NEMOCLAW_REUSE_PATH: fileURLToPath(
+          new URL("./prepare-reused-runtime.ps1", import.meta.url),
+        ),
+        NEMOCLAW_REUSE_CASES: JSON.stringify(cases),
+      },
+    },
+  );
+  assert.equal(child.status, 0, child.stderr || String(child.error));
+  const results = JSON.parse(child.stdout);
+  assert.equal(results.length, cases.length * 2);
+  cases.forEach((row, index) => {
+    for (let primary = 0; primary < 2; primary++) {
+      const result = results[index * 2 + primary];
+      assert.equal(result.closed, row.expected, row.name);
+      assert.equal(
+        result.status,
+        row.expected ? "candidate-bytes-exported-unqualified" : "failed",
+        row.name,
+      );
+      assert.equal(result.primaryPresent, Boolean(primary) || !row.expected, row.name);
+      assert.equal(result.primaryPreserved, true, row.name);
+    }
+  });
+});
+
+function nativeCompatibilityFixture() {
+  const source = "a".repeat(40),
+    patch = "b".repeat(64),
+    digest = "c".repeat(64);
+  const build = {
+    schemaVersion: 1,
+    classification: "mxc-msys-compatibility-prototype-build",
+    status: "built",
+    sourceRevision: source,
+    runtimeExecuted: false,
+    qualified: false,
+    cleanupErrors: [],
+    files: [
+      ["NemoClawMsysLauncher.exe", "arm64"],
+      ["NemoClawMsysCompat-arm64.dll", "arm64"],
+      ["NemoClawMsysCompat-x64.dll", "x64"],
+    ].map(([file, machine]) => ({ file, machine, bytes: 123, sha256: digest })),
+    license: { file: "DETOURS-LICENSE.txt", bytes: 123, sha256: digest },
+    sourceFiles: [
+      "compat-launcher.cpp",
+      "process-propagation.cpp",
+      "process-propagation.h",
+      "namespace-compat.cpp",
+      "namespace-path.h",
+      "namespace-security.h",
+      "namespace-controls.cpp",
+      "namespace-adapter-controls.cpp",
+      "compat.def",
+    ].map((path) => ({ path, sha256: digest })),
+  };
+  const mxc = {
+    schemaVersion: 2,
+    classification: "mxc-native-owned-token-inspection-build",
+    status: "built",
+    candidateRevision: source,
+    patchSha256: patch,
+    nativeOwnerIdentity: "held-primary-appcontainer-token",
+    tokenQueryRepairSupported: true,
+    tokenAccessMode: "owned-child-query-only",
+    sourceCommit: "7cd00d1ee6af9208322c924ef64e5113f6704639",
+    sourceSha256: "9467669fda03a7ad0000a7bc9e0b0d1cab44b1979ee437dd96e8b93646e18029",
+    sourceBytes: 6545666,
+    target: "aarch64-pc-windows-msvc",
+    runtimeExecuted: false,
+    qualified: false,
+    compilerClosed: true,
+    compilerForced: false,
+    compilerExitCode: 0,
+    compilerCleanupErrors: [],
+    files: [{ file: "wxc-exec.exe", machine: 0xaa64, bytes: 123, sha256: digest }],
+  };
+  // Synthetic status records test intake. Windows produces the real signature evidence.
+  const derivation = {
+    classification: "ci-derived-canonical-msys-dynamic-base",
+    sourceRevision: source,
+    adaptation: "msys-dll-and-unsigned-bash-sh-dynamic-base",
+    untouchedOfficialBytes: false,
+    originalsPreserved: true,
+    allOtherFilesUnchanged: true,
+    arm64WrapperUnchanged: true,
+    arm64ShWrapperUnchanged: true,
+    derivedBashExplicitlyUnsigned: true,
+    derivedShExplicitlyUnsigned: true,
+    nativeChecksumVerified: true,
+    derivedBashUnsignedVerified: true,
+    derivedShUnsignedVerified: true,
+    qualified: false,
+    upstream: {
+      nousCommit: "2237be355906fbe6065ce1815711eee52b2d646e",
+      sha256: "f8e92cd3359fcbb96998cfd606a536ccc6dbfb23c04e12b29042f9ba45b6b0c7",
+    },
+    files: Object.entries(originals).map(([name, pin]) => ({
+      path: name,
+      beforeSha256: pin.sha256,
+      afterSha256: binaryPins[name as keyof typeof binaryPins],
+      beforeFlags: pin.flags,
+      afterFlags: pin.flags | 0x40,
+      onlyMetadataChanged: true,
+      certificateDirectoryAbsent: true,
+      derivedNotSigned: true,
+      certificateTableRemoved: Boolean(pin.certificate),
+      beforeBytes: pin.bytes,
+      bytes: pin.certificate?.offset ?? pin.bytes,
+      originalCertificate: pin.certificate
+        ? { ...pin.certificate, authenticodeStatus: "Valid" }
+        : null,
+    })),
+    nativeSignatures: [
+      ["original-bash.exe", originalBinaryPins["usr/bin/bash.exe"], "Valid"],
+      ["derived-bash.exe", binaryPins["usr/bin/bash.exe"], "NotSigned"],
+      ["original-arm64-wrapper.exe", originalBinaryPins["bin/bash.exe"], "NotSigned"],
+      ["original-sh.exe", originalBinaryPins["usr/bin/sh.exe"], "Valid"],
+      ["derived-sh.exe", binaryPins["usr/bin/sh.exe"], "NotSigned"],
+      ["original-arm64-sh-wrapper.exe", originalBinaryPins["bin/sh.exe"], "NotSigned"],
+    ].map(([file, sha256, status]) => ({ file, sha256, status })),
+  };
+  const nonce = "0123456789abcdef01234567";
+  const ids = ["base", "start", "d", "a", "b"].map(
+    (role) => "nm-" + nonce.slice(0, 12) + "-" + role,
+  );
+  const proof = {
+    schemaVersion: 2,
+    classification: "small-msys-native-basecontainer-compatibility-proof",
+    sourceRevision: source,
+    imageVariant: "ci-derived-unsigned-msys-dll-bash-and-sh-dynamic-base",
+    passed: true,
+    normalCleanup: true,
+    phase: "two-container-isolation",
+    nonce,
+    startedExecutors: 5,
+    hostProcessesClosed: true,
+    hostProcessesNormal: true,
+    nativeExecutions: Object.fromEntries(
+      ids.map((id, index) => [
+        id,
+        {
+          logSha256: digest,
+          uiMarker: id.endsWith("-d") ? nativeMarkerFixture(1234 + index) : null,
+          policy: {
+            event: "mxc.NetworkPolicyApplied",
+            backend: "processcontainer",
+            identity: "redacted",
+            tier: "base-container",
+            enforcement_mode: "capabilities",
+            default_policy: "block",
+            proxy_port: 0,
+            firewall_rules_created: 0,
+            firewall_applied: false,
+            status: "success",
+          },
+          jobTeardown: {
+            schemaVersion: 1,
+            classification: "owned-native-MXC-job-teardown",
+            stage: "before-primary-handle-release",
+            clock: "GetTickCount64",
+            tickMilliseconds: 5678,
+            rootPid: 1234 + index,
+            jobAccountingQueried: true,
+            jobAccountingKnown: true,
+            jobAccountingBytes: 48,
+            jobAccountingExpectedBytes: 48,
+            jobAccountingError: 0,
+            activeProcesses: 0,
+            totalProcesses: 4,
+            terminatedProcesses: 0,
+            rootWaitStatus: 0,
+            rootSignaled: true,
+            rootWaitError: 0,
+          },
+          uiPolicy: {
+            schemaVersion: 1,
+            classification: "native-MXC-ui-policy-assignment",
+            stage: "before-primary-thread-resume",
+            policyOrigin: "serialized-process-security-environment",
+            securityEnvironmentAttached: true,
+            rootPid: 1234 + index,
+            uiRestrictions: 0x3ff,
+            disallowWin32k: false,
+            policyMutated: false,
+            enforcementReadback: false,
+          },
+        },
+      ]),
+    ),
+    cleanup: Object.fromEntries(
+      ids.map((id) => [
+        id,
+        {
+          nativeTeardownVerified: true,
+          nativeTeardownError: null,
+          shareRemoved: true,
+          executor: { closed: true, forced: false, exitCode: 0, error: null, stderr: "" },
+        },
+      ]),
+    ),
+    inputs: {
+      compatibility: build,
+      mxcBuild: mxc,
+      mxcSha256: digest,
+      gitDerivation: derivation,
+      git: binaryPins,
+    },
+  };
+  return { proof, build, mxc, patch, source };
+}
+
+test("Personal native intake binds the controller, build, images and complete source set", () => {
+  const f = nativeCompatibilityFixture();
+  const result = validatePersonalCompatibility(f.proof, f.build, f.mxc, f.patch, f.source);
+  assert.equal(result.mxcFile, f.mxc.files[0]);
+  assert.deepEqual(result.gitPins, binaryPins);
+  assert.equal(result.sourceRevision, f.source);
+  for (const source of ["main", "d".repeat(40)])
+    assert.throws(() => validatePersonalCompatibility(f.proof, f.build, f.mxc, f.patch, source));
+});
+
+test("Personal native intake rejects historical labels, mixed builds and incomplete controls", () => {
+  const mutations = [
+    (f: any) => {
+      f.proof.schemaVersion = 1;
+    },
+    (f: any) => {
+      f.proof.classification = "small-msys-appcontainer-compatibility-proof";
+    },
+    (f: any) => {
+      f.proof.imageVariant = "original";
+    },
+    (f: any) => {
+      f.proof.normalCleanup = false;
+    },
+    (f: any) => {
+      f.proof.passed = false;
+    },
+    (f: any) => {
+      f.build.runtimeExecuted = true;
+    },
+    (f: any) => {
+      f.build.qualified = true;
+    },
+    (f: any) => {
+      f.build.cleanupErrors = ["open child"];
+    },
+    (f: any) => {
+      f.build.sourceFiles.pop();
+    },
+    (f: any) => {
+      f.build.sourceFiles[0] = f.build.sourceFiles[1];
+    },
+    (f: any) => {
+      f.mxc.nativeOwnerIdentity = "supplied-profile-sid";
+    },
+    (f: any) => {
+      f.mxc.patchSha256 = "0".repeat(64);
+    },
+    (f: any) => {
+      f.proof.inputs.mxcBuild = { ...f.mxc, compilerForced: true };
+    },
+    (f: any) => {
+      f.proof.inputs.gitDerivation.files[0].afterSha256 = "0".repeat(64);
+    },
+  ];
+  for (const mutate of mutations) {
+    const f = nativeCompatibilityFixture();
+    mutate(f);
+    assert.throws(() => validatePersonalCompatibility(f.proof, f.build, f.mxc, f.patch, f.source));
+  }
+});
+
+test("Personal native intake requires all five executions and their owned cleanup", () => {
+  const mutateProof = [
+    (p: any) => {
+      delete p.nativeExecutions;
+    },
+    (p: any) => {
+      delete p.cleanup;
+    },
+    (p: any) => {
+      p.startedExecutors = 4;
+    },
+    (p: any) => {
+      p.nonce = "f".repeat(24);
+    },
+    (p: any) => {
+      p.hostProcessesClosed = false;
+    },
+    (p: any) => {
+      p.hostProcessesNormal = false;
+    },
+    (p: any) => {
+      p.nativeExecutions.extra = Object.values(p.nativeExecutions)[0];
+    },
+    (p: any) => {
+      p.cleanup.extra = Object.values(p.cleanup)[0];
+    },
+  ];
+  const validate = (f: ReturnType<typeof nativeCompatibilityFixture>) =>
+    validatePersonalCompatibility(f.proof, f.build, f.mxc, f.patch, f.source);
+  for (const mutate of mutateProof) {
+    const f = nativeCompatibilityFixture();
+    mutate(f.proof);
+    assert.throws(() => validate(f));
+  }
+  for (const id of Object.keys(nativeCompatibilityFixture().proof.nativeExecutions)) {
+    const mutations = [
+      (p: any) => {
+        delete p.nativeExecutions[id];
+      },
+      (p: any) => {
+        delete p.cleanup[id];
+      },
+      (p: any) => {
+        p.nativeExecutions[id].logSha256 = "missing";
+      },
+      (p: any) => {
+        delete p.nativeExecutions[id].uiPolicy;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].uiPolicy.uiRestrictions = 0x3bf;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].uiPolicy.rootPid = 99;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].policy.tier = "appcontainer-dacl";
+      },
+      (p: any) => {
+        p.nativeExecutions[id].policy.default_policy = "allow";
+      },
+      (p: any) => {
+        p.nativeExecutions[id].policy.firewall_applied = 0;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].jobTeardown.activeProcesses = 1;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].jobTeardown.rootSignaled = false;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].jobTeardown.jobAccountingKnown = false;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].jobTeardown.jobAccountingBytes = 0;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].jobTeardown.rootPid = true;
+      },
+      (p: any) => {
+        p.nativeExecutions[id].jobTeardown.terminatedProcesses = 5;
+      },
+      (p: any) => {
+        p.cleanup[id].nativeTeardownVerified = 1;
+      },
+      (p: any) => {
+        p.cleanup[id].nativeTeardownError = "failed query";
+      },
+      (p: any) => {
+        delete p.cleanup[id].nativeTeardownError;
+      },
+      (p: any) => {
+        p.cleanup[id].shareRemoved = false;
+      },
+      (p: any) => {
+        p.cleanup[id].executor.closed = 1;
+      },
+      (p: any) => {
+        p.cleanup[id].executor.forced = true;
+      },
+      (p: any) => {
+        p.cleanup[id].executor.exitCode = false;
+      },
+      (p: any) => {
+        p.cleanup[id].executor.error = "failed process";
+      },
+      (p: any) => {
+        p.cleanup[id].executor.stderr = 'NEMOCLAW_MSYS_FAILED_CHILD={"closed":false}\n';
+      },
+    ];
+    for (const mutate of mutations) {
+      const f = nativeCompatibilityFixture();
+      mutate(f.proof);
+      assert.throws(() => validate(f), id);
+    }
+  }
+});
 
 function currentBaseDerivation() {
   return {
@@ -971,6 +1553,138 @@ test("ordinary warm and job-only comparisons label additional launch dimensions 
   }
 });
 
+function nativeMarkerFixture(rootPid: number) {
+  return {
+    prepared: {
+      schemaVersion: 1,
+      classification: "native-Hermes-ui-owner",
+      stage: "prepare",
+      rootPid,
+      appContainerSid: "S-1-15-2-123-456",
+      sessionId: 2,
+      exclusiveCreation: true,
+      mediumNoWriteUp: true,
+      guestAccess: 0x120001,
+      descriptorMatched: true,
+      policyAssignment: "PSEC-0x3ff-Win32k-false",
+      enforcementReadback: false,
+    },
+    closed: {
+      schemaVersion: 1,
+      classification: "native-Hermes-ui-owner",
+      stage: "owner-close",
+      rootPid,
+      closed: true,
+      absentAfterOwnerClose: true,
+      presenceHandleClosed: true,
+      absenceStatus: 0xc0000034,
+    },
+  };
+}
+function nativePersonalLog() {
+  const proof = nativeCompatibilityFixture().proof;
+  const observed = Object.values(proof.nativeExecutions)[0] as any;
+  const pid = observed.jobTeardown.rootPid;
+  const marker = nativeMarkerFixture(pid);
+  const event = (row: unknown) => "[1791848997] " + JSON.stringify(row) + "\n";
+  return (
+    event(observed.policy) +
+    "[1791848995] NEMOCLAW_NATIVE_UI_OWNER=" +
+    JSON.stringify(marker.prepared) +
+    "\n" +
+    "[1791848996] NEMOCLAW_NATIVE_MXC_UI_POLICY=" +
+    JSON.stringify(observed.uiPolicy) +
+    "\n" +
+    event({
+      event: "mxc.ProcessExited",
+      backend: "processcontainer",
+      tier: "base-container",
+      pid,
+      exit_code: 0,
+    }) +
+    event({
+      event: "mxc.SandboxTornDown",
+      backend: "processcontainer",
+      identity: "redacted",
+      tier: "base-container",
+      pid,
+      status: "success",
+      firewall_rules_removed: 0,
+      firewall_removal_ok: true,
+      bfs_removed: false,
+      proxy_stopped: false,
+      preserve_policy: false,
+      container_released: false,
+    }) +
+    "[1791848998] NEMOCLAW_NATIVE_MXC_TEARDOWN=" +
+    JSON.stringify(observed.jobTeardown) +
+    "\n" +
+    "[1791848999] NEMOCLAW_NATIVE_UI_OWNER=" +
+    JSON.stringify(marker.closed) +
+    "\n"
+  );
+}
+
+test("native Personal cleanup binds full UI policy and empty job to the closed executor", () => {
+  const policyFile = "/owned/request.json";
+  const execution: any = {
+    executable: "native-executor",
+    args: [policyFile, "--log-file", "/owned/mxc-native.log"],
+    pid: 42,
+    childClosed: true,
+    timedOut: false,
+    outputExceeded: false,
+    nativeOutputExceeded: false,
+    error: null,
+    exitCode: 0,
+    signal: null,
+    stderr: "",
+    nativeStderr: "",
+  };
+  const binding = { executable: execution.executable, policyFile, requestSha256: "a".repeat(64) };
+  const log = nativePersonalLog();
+  const observed = inspectPersonalNativeExecution(execution, binding, log);
+  assert.equal(observed.classification, "native-Personal-execution-cleanup");
+  assert.equal(observed.binding.executorPid, 42);
+  assert.equal(observed.uiPolicy.uiRestrictions, 0x3ff);
+  assert.equal(observed.uiPolicy.enforcementReadback, false);
+  assert.equal(observed.policy.default_policy, "block");
+  assert.equal(observed.policy.proxy_port, 0);
+  assert.equal(observed.jobTeardown.activeProcesses, 0);
+  assert.equal(observed.logSha256, createHash("sha256").update(log).digest("hex"));
+  for (const [key, value] of Object.entries({
+    childClosed: false,
+    timedOut: true,
+    outputExceeded: true,
+    nativeOutputExceeded: true,
+    error: "failed",
+    exitCode: 1,
+    signal: "SIGKILL",
+    executable: "foreign",
+    pid: 0,
+    args: ["/other/request.json", "--log-file", "/owned/mxc-native.log"],
+    stderr: "NEMOCLAW_HERMES_DESKTOP_MASK={}",
+    nativeStderr: "NEMOCLAW_HERMES_DESKTOP_MASK={}",
+  }))
+    assert.throws(
+      () => inspectPersonalNativeExecution({ ...execution, [key]: value }, binding, log),
+      key,
+    );
+  for (const invalid of [
+    "",
+    log.replace('"activeProcesses":0', '"activeProcesses":1'),
+    log.replace('"default_policy":"block"', '"default_policy":"allow"'),
+    log.replace('"proxy_port":0', '"proxy_port":1234'),
+    log.replace(/^.*mxc.NetworkPolicyApplied.*\n/mu, ""),
+    log.replace('"uiRestrictions":1023', '"uiRestrictions":959'),
+    log.replaceAll('"tier":"base-container"', '"tier":"appcontainer-dacl"'),
+    log.replace(/^.*NEMOCLAW_NATIVE_UI_OWNER=.*\n/gmu, ""),
+    log.replace('"absentAfterOwnerClose":true', '"absentAfterOwnerClose":false'),
+    log + "NEMOCLAW_HERMES_DESKTOP_MASK={}\n",
+  ])
+    assert.throws(() => inspectPersonalNativeExecution(execution, binding, invalid));
+});
+
 function browserControl(
   t: TestContext,
   mode:
@@ -978,7 +1692,7 @@ function browserControl(
     | "browser-failure"
     | "parse-failure"
     | "unclosed"
-    | "delete-failure"
+    | "native-log-failure"
     | "existing"
     | "stock-mismatch",
 ) {
@@ -1002,10 +1716,15 @@ function browserControl(
     if (directories.has(name)) throw Object.assign(new Error("already exists"), { code: "EEXIST" });
     directories.add(name);
   });
-  t.mock.method(fs, "readFileSync", (file: any) => {
+  t.mock.method(fs, "readFileSync", (file: any, encoding?: any) => {
     const value = files.get(String(file));
     assert(value, "unknown read " + file);
-    return value;
+    return encoding === "utf8" ? value.toString("utf8") : value;
+  });
+  t.mock.method(fs, "lstatSync", (file: any) => {
+    const value = files.get(String(file));
+    assert(value, "unknown stat " + file);
+    return { isFile: () => true, isSymbolicLink: () => false, size: value.length };
   });
   t.mock.method(fs, "writeFileSync", (file: any, value: any, options: any) => {
     assert.equal(options.flag, "wx");
@@ -1034,6 +1753,7 @@ function browserControl(
     assert.equal(exe, executor);
     assert.equal(env, environment);
     const deletion = args[0] === "--delete";
+    assert.equal(deletion, false, "A native diagnostic must not delete an AppContainer profile");
     events.push(deletion ? "delete-profile" : "execute-direct-python");
     if (deletion) {
       assert.equal(cwd, "C:\\");
@@ -1052,14 +1772,15 @@ function browserControl(
       passed: mode !== "browser-failure",
       error: mode === "browser-failure" ? "original Chrome failure" : null,
     };
+    files.set(
+      args[2]!,
+      Buffer.from(mode === "native-log-failure" ? "incomplete native log" : nativePersonalLog()),
+    );
     return {
       executable: exe,
       args,
       pid: 42,
-      exitCode:
-        (deletion && mode === "delete-failure") || (!deletion && mode === "browser-failure")
-          ? 1
-          : 0,
+      exitCode: !deletion && mode === "browser-failure" ? 1 : 0,
       signal: null,
       timedOut: !deletion && mode === "unclosed",
       outputExceeded: false,
@@ -1100,7 +1821,7 @@ function browserControl(
   };
 }
 
-test("direct browser retains raw successful result and closes executor before profile/root cleanup", async (t) => {
+test("native direct browser retains its result and verifies job teardown before root cleanup", async (t) => {
   const control = browserControl(t, "success");
   const original = structuredClone(control.primary);
   const result = await control.run();
@@ -1110,11 +1831,10 @@ test("direct browser retains raw successful result and closes executor before pr
   assert.equal(result.diagnosticOnly, true);
   assert.equal(result.canonicalQualification, false);
   assert.equal(result.dllAbsenceIndependentlyVerified, false);
-  assert.deepEqual(control.events, [
-    "execute-direct-python",
-    "delete-profile",
-    "remove-owned-root",
-  ]);
+  assert.equal(result.cleanup.nativeTeardownVerified, true);
+  assert.equal(result.cleanup.profileDeleted, undefined);
+  assert.equal(result.profileDeletion, undefined);
+  assert.deepEqual(control.events, ["execute-direct-python", "remove-owned-root"]);
   assert.deepEqual(control.primary, original);
 });
 
@@ -1122,7 +1842,7 @@ for (const mode of [
   "browser-failure",
   "parse-failure",
   "unclosed",
-  "delete-failure",
+  "native-log-failure",
   "existing",
   "stock-mismatch",
 ] as const) {
@@ -1133,7 +1853,9 @@ for (const mode of [
       assert.equal(result.operationSucceeded, false);
       assert.equal(result.result.error, "original Chrome failure");
       assert.equal(result.execution.stderr, "ordinary Chrome stderr");
-      assert.equal(result.cleanupComplete, true);
+      assert.equal(result.cleanupComplete, false);
+      assert(control.directories.has(browserShare));
+      assert(result.nativeExecutionError);
     } else if (mode === "parse-failure") {
       assert.equal(result.operationSucceeded, false);
       assert.equal(result.execution.stdout, "missing result\n");
@@ -1144,9 +1866,12 @@ for (const mode of [
       assert.equal(result.cleanupComplete, false);
       assert(control.directories.has(browserShare));
       assert.deepEqual(control.events, ["execute-direct-python"]);
-    } else if (mode === "delete-failure") {
+    } else if (mode === "native-log-failure") {
       assert.equal(result.cleanupComplete, false);
-      assert.equal(result.cleanup.profileDeleted, false);
+      assert.equal(result.cleanup.nativeTeardownVerified, false);
+      assert.equal(result.cleanup.profileDeleted, undefined);
+      assert(control.directories.has(browserShare));
+      assert.deepEqual(control.events, ["execute-direct-python"]);
       assert.equal(result.cleanupErrors.length, 1);
     } else if (mode === "existing") {
       assert.equal(result.attempted, false);
@@ -1261,7 +1986,7 @@ with tarfile.open(fileobj=raw,mode='w:gz') as tar:
  if mode=='duplicate':
   item=tarfile.TarInfo('runtime/asset.dat');item.size=0;tar.addfile(item,io.BytesIO())
 tarbytes=raw.getvalue()
-candidate={'controllerSource':m.HEAD,'upstreamCommit':m.UPSTREAM,'status':'candidate-bytes-exported','completeByteInventory':True,'runtimeExecutionQualified':False,'installedAcceptance':False,'activationAllowed':False,'inventorySha256':sha(encoded(inventory)),'buildReceiptSha256':sha(encoded(build)),'adaptationReceiptSha256':sha(encoded(adapt)),'startupAdapterSha256':m.ADAPTER,'archive':{'file':'candidate.tar.gz','bytes':len(tarbytes),'sha256':sha(tarbytes)}}
+candidate={'controllerSource':m.HEAD,'upstreamCommit':m.UPSTREAM,'status':'candidate-bytes-exported','completeByteInventory':True,'runtimeExecutionQualified':False,'installedAcceptance':False,'activationAllowed':False,'sourceFilesVerified':1,'inventorySha256':sha(encoded(inventory)),'buildReceiptSha256':sha(encoded(build)),'adaptationReceiptSha256':sha(encoded(adapt)),'startupAdapterSha256':m.ADAPTER,'archive':{'file':'candidate.tar.gz','bytes':len(tarbytes),'sha256':sha(tarbytes)}}
 if mode=='wrong-source':candidate['controllerSource']='0'*40
 if mode=='wrong-adapter':candidate['startupAdapterSha256']='0'*64
 if mode=='false-qualified':candidate['runtimeExecutionQualified']=True
@@ -1273,13 +1998,28 @@ expected_size=zipfile_path.stat().st_size;expected_hash=m.digest(zipfile_path)
 if mode=='zip-hash':
  rawzip=bytearray(zipfile_path.read_bytes());rawzip[-1]^=1;zipfile_path.write_bytes(rawzip)
 if mode=='zip-size':expected_size+=1
+evidence=root/'evidence';evidence.mkdir()
+if mode=='owned-existing':
+ (root/'runtime').mkdir();(root/'runtime/sentinel').write_bytes(b'existing user data')
+if mode=='owned-ownership-conflict':(evidence/'runtime-ownership.json').write_bytes(b'existing evidence')
 try:
  m.verify_zip(zipfile_path,expected_size,expected_hash)
  with zipfile.ZipFile(zipfile_path) as z:
   details=m.documents(z);size=m.verify_members(z,details)
-  m.extract_verified(z,details,root/'runtime')
+  if mode.startswith('owned'):
+   # Exercise the real extraction/ownership boundary; source validation has its own controls.
+   def source_control(runtime,source_archive):
+    if mode=='owned-source-failure':raise ValueError('source verification failed')
+    return 1
+   m.verify_original_source=source_control
+   m.stage_verified(z,details,root/'runtime',evidence,root/'source.tar.gz','a'*40)
+  else:m.extract_verified(z,details,root/'runtime')
  result={'ok':True,'bytes':size,'regular':(root/'runtime/asset.dat').read_bytes().decode(),'link':(root/'runtime/resource-link').read_bytes().decode(),'empty':(root/'runtime/empty').is_dir()}
 except BaseException as error:result={'ok':False,'error':str(error),'traceback':traceback.format_exc()[-12000:],'extracted':(root/'runtime').exists()}
+if mode.startswith('owned'):
+ result['sentinel']=(root/'runtime/sentinel').read_text() if (root/'runtime/sentinel').exists() else None
+ result['ownership']=(evidence/'runtime-ownership.json').read_text() if (evidence/'runtime-ownership.json').exists() else None
+ result['extraction']=(evidence/'extraction.json').read_text() if (evidence/'extraction.json').exists() else None
 print(json.dumps(result))
 `;
 
@@ -1313,6 +2053,40 @@ test("verified nested bytes retain regular data, a safe link and an empty direct
   assert.equal(result.link, "correct payload");
   assert.equal(result.empty, true);
 });
+test("current base extraction records this controller and its fresh root without replay claims", () => {
+  const result = run("owned");
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const ownership = JSON.parse(result.ownership);
+  const extraction = JSON.parse(result.extraction);
+  assert.equal(ownership.classification, "verified-current-Hermes-base-extraction");
+  assert.equal(ownership.controllerSource, "a".repeat(40));
+  assert.equal(ownership.createdByExtraction, true);
+  assert.equal(ownership.createdByReplay, undefined);
+  assert.equal(ownership.runtimeRoot, extraction.runtimeRoot);
+  assert.equal(extraction.originalBuildRoot, "C:\\NemoClawHermesProbe-00503572df74");
+  assert.equal(extraction.allFilesRehashed, true);
+  assert.equal(extraction.allLinksContained, true);
+  assert.equal(extraction.runtimeExecuted, false);
+});
+for (const mode of ["owned-existing", "owned-source-failure", "owned-ownership-conflict"]) {
+  test(`${mode} preserves existing data and removes only a failed fresh extraction`, () => {
+    const result = run(mode);
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(result.extracted, mode === "owned-existing");
+    assert.equal(result.sentinel, mode === "owned-existing" ? "existing user data" : null);
+    assert.equal(result.extraction, null);
+    if (mode === "owned-existing") {
+      assert.equal(result.ownership, null);
+      assert.match(result.error, /must be fresh/u);
+    } else if (mode === "owned-ownership-conflict") {
+      assert.equal(result.ownership, "existing evidence");
+      assert.match(result.error, /File exists/u);
+    } else {
+      assert.equal(JSON.parse(result.ownership).createdByExtraction, true);
+      assert.match(result.error, /source verification failed/u);
+    }
+  });
+}
 for (const [mode, expected] of [
   ["zip-hash", /ZIP hash\/size mismatch/u],
   ["zip-size", /ZIP hash\/size mismatch/u],
@@ -1334,7 +2108,7 @@ for (const [mode, expected] of [
   });
 }
 
-test("Personal request matches the existing driver profile and keeps filesystem grants exact", () => {
+test("native Personal request denies external networking and preserves owned filesystem grants", () => {
   const request = personalRequest(
     "C:\\node\\node.exe",
     "C:\\node\\worker.mts",
@@ -1343,21 +2117,23 @@ test("Personal request matches the existing driver profile and keeps filesystem 
     "1234567890abcdef12345678",
     "C:\\Windows",
   );
+  assert.equal(request.version, "1.0.0");
+  assert.deepEqual(request.fallback, { allowDaclMutation: false });
+  assert.equal(request.process.inheritDefaultEnv, false);
+  assert.deepEqual(request.telemetry, { enabled: false });
   assert.deepEqual(request.processContainer, {
     leastPrivilege: false,
-    capabilities: ["privateNetworkClientServer", "internetClient"],
+    capabilities: [],
   });
   assert.deepEqual(request.network, {
-    defaultPolicy: "allow",
-    allowedHosts: [],
-    blockedHosts: [],
-    allowLocalNetwork: true,
+    egress: { default: "deny" },
+    ingress: { default: "deny", hostLoopback: "deny" },
   });
   assert.deepEqual(request.filesystem, {
     readonlyPaths: ["C:\\runtime", "C:\\node"],
     readwritePaths: ["C:\\NemoClawMsysProof-1234567890ab-state-start"],
   });
-  assert.equal(request.ui.disable, false);
+  assert.deepEqual(request.ui, { disable: false, clipboard: "none", injection: false });
   assert.equal(request.containerId, "nm-1234567890ab-start");
   assert(
     request.process.commandLine.startsWith(
@@ -1385,37 +2161,6 @@ test("Personal request matches the existing driver profile and keeps filesystem 
   assert(
     !request.process.env.some((entry) => entry.startsWith("NEMOCLAW_HERMES_PRIVATE_DESKTOP=")),
   );
-});
-test("one bounded host desktop mask row permits only the bundled0x40 removal", () => {
-  const row = {
-    schemaVersion: 1,
-    classification: "admitted-Hermes-desktop-creation",
-    beforeMask: 0x3ff,
-    afterMask: 0x3bf,
-    removedMask: 0x40,
-    bundledCreateAndSwitch: true,
-    logoutRestrictionPreserved: true,
-    everyOtherUiBitPreserved: true,
-    hostDesktopGrantsAdded: false,
-    childResumed: false,
-  };
-  const line = (value: any) => "NEMOCLAW_HERMES_DESKTOP_MASK=" + JSON.stringify(value) + "\n";
-  assert.deepEqual(validateHermesDesktopMask("ordinary stderr\n" + line(row)), row);
-  for (const change of [
-    { afterMask: 0x33f },
-    { beforeMask: 0 },
-    { removedMask: 0xc0 },
-    { logoutRestrictionPreserved: false },
-    { everyOtherUiBitPreserved: false },
-    { hostDesktopGrantsAdded: true },
-    { childResumed: true },
-    { classification: "other" },
-    { extra: "x".repeat(2048) },
-  ])
-    assert.throws(() => validateHermesDesktopMask(line({ ...row, ...change })));
-  assert.throws(() => validateHermesDesktopMask(""));
-  assert.throws(() => validateHermesDesktopMask(line(row) + line(row)));
-  assert.throws(() => validateHermesDesktopMask("NEMOCLAW_HERMES_DESKTOP_MASK=invalid\n"));
 });
 test("the fixed request rejects a command-line quote or invalid nonce", () => {
   assert.throws(
@@ -1612,7 +2357,7 @@ test("replay launches only the separately admitted readonly native component", (
   assert.throws(() => personalRequest(...args, "C:\\outside"));
 });
 
-test("full replay post-inventory rejects changed, missing, and additional bytes", async () => {
+test("full Personal runtime inventory rejects changed, missing, and additional bytes", async () => {
   const { createHash } = await import("node:crypto");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "full-replay-inventory-"));
   try {
@@ -1629,14 +2374,19 @@ test("full replay post-inventory rejects changed, missing, and additional bytes"
         },
       ],
     };
-    assert.equal(verifyPersonalReplayInventory(root, expected, "a".repeat(64)).files, 1);
+    const before = verifyPersonalRuntimeInventory(root, expected, "a".repeat(64));
+    assert.equal(before.files, 1);
+    assert.equal(before.directories, 1);
+    assert.equal(before.logicalBytes, 3);
+    assert.equal(before.inventorySha256, "a".repeat(64));
+    assert.equal(before.allFilesAndDirectoriesVerified, true);
     fs.writeFileSync(file, "abd");
-    assert.throws(() => verifyPersonalReplayInventory(root, expected, "a".repeat(64)));
+    assert.throws(() => verifyPersonalRuntimeInventory(root, expected, "a".repeat(64)));
     fs.unlinkSync(file);
-    assert.throws(() => verifyPersonalReplayInventory(root, expected, "a".repeat(64)));
+    assert.throws(() => verifyPersonalRuntimeInventory(root, expected, "a".repeat(64)));
     fs.writeFileSync(file, "abc");
     fs.mkdirSync(path.join(root, "unexpected"));
-    assert.throws(() => verifyPersonalReplayInventory(root, expected, "a".repeat(64)));
+    assert.throws(() => verifyPersonalRuntimeInventory(root, expected, "a".repeat(64)));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1848,6 +2598,8 @@ test("host comparison starts only after every prior owner closes", async () => {
     attempted: true,
     cleanup: {
       executorClosed: true,
+      nativeTeardownVerified: true,
+      hostDesktopsReleased: true,
       hostDiagnosticChildrenClosed: true,
       browserDiagnosticComplete: true,
     },
@@ -1869,6 +2621,20 @@ test("host comparison starts only after every prior owner closes", async () => {
   assert.equal(calls, 0);
   assert.equal(options.cleanup.hostDiagnosticChildrenClosed, true);
   assert.equal(options.errors.length, 0);
+  options.browserDiagnosticChildrenClosed = true;
+  options.cleanup.nativeTeardownVerified = false;
+  await completeBrowserFirstHostControl(options, async () => {
+    calls++;
+    return {} as any;
+  });
+  assert.equal(calls, 0, "Executor closure alone must not authorize a successor");
+  options.cleanup.nativeTeardownVerified = true;
+  options.cleanup.hostDesktopsReleased = false;
+  await completeBrowserFirstHostControl(options, async () => {
+    calls++;
+    return {} as any;
+  });
+  assert.equal(calls, 0, "An unconfirmed desktop must not authorize a successor");
 });
 
 test("uncertain host control retains ownership and the original browser error", async () => {
@@ -1879,6 +2645,8 @@ test("uncertain host control retains ownership and the original browser error", 
     attempted: true,
     cleanup: {
       executorClosed: true,
+      nativeTeardownVerified: true,
+      hostDesktopsReleased: true,
       hostDiagnosticChildrenClosed: true,
       browserDiagnosticComplete: true,
     },

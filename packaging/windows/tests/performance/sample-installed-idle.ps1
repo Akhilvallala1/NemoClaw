@@ -43,7 +43,7 @@ function Hermes-Role([string]$Image, [int]$Id) {
     $paths = @{
         'hermes-python' = (Join-Path $hermesRoot 'hermes-agent\.hermes-runtime\python\cpython-3.11.16-windows-aarch64-none\python.exe')
         'hermes-python-redirector' = (Join-Path $hermesRoot 'hermes-agent\venv\Scripts\python.exe')
-        'hermes-tui-node' = (Join-Path $hermesRoot 'node\node.exe')
+        'hermes-contained-node' = (Join-Path $installation 'bin\node.exe')
         'hermes-browser-use-python' = (Join-Path $hermesRoot 'tools\browser-use\Scripts\python.exe')
         'hermes-console-host' = (Join-Path $windowsRoot 'System32\conhost.exe')
     }
@@ -53,6 +53,20 @@ function Hermes-Role([string]$Image, [int]$Id) {
     return 'hermes-tool-' + $Id
 }
 function One($Rows, [string]$Label) { $values = @($Rows); Require ($values.Count -eq 1) ('The ' + $Label + ' role is missing or ambiguous.'); return $values[0] }
+function Hermes-Worker($Guests, [string]$NodeImage, [string]$LauncherImage, [string]$ExecutorImage, [int]$GatewayId) {
+    $roots = @($Guests | Where-Object {
+        $chain = @($_.chain)
+        $chain.Count -ge 3 -and
+        [int]$chain[0].ProcessId -eq $GatewayId -and
+        (Same-Path $_.row.ExecutablePath $NodeImage) -and
+        (Same-Path $chain[-1].ExecutablePath $LauncherImage) -and
+        (Same-Path $chain[-2].ExecutablePath $ExecutorImage) -and
+        [int]$_.row.ParentProcessId -eq [int]$chain[-1].ProcessId -and
+        [int]$chain[-1].ParentProcessId -eq [int]$chain[-2].ProcessId -and
+        @($chain | Where-Object { Same-Path $_.ExecutablePath $NodeImage }).Count -eq 0
+    })
+    return One $roots 'contained-node'
+}
 function Frame {
     $start = [Diagnostics.Stopwatch]::GetTimestamp()
     $rows = @($handles | ForEach-Object { $_.Snapshot() })
@@ -156,12 +170,12 @@ try {
             if ($isHermes -or -not (Same-Path $row.ExecutablePath $guestImage)) { $queue.Enqueue(@{ row=$row; depth=($entry.depth+1); chain=$chain }) }
         }
     }
-    $guest = One $guests 'contained-node'
+    $launcherImage = Join-Path $hermesRoot 'mxc-compat\NemoClawMsysLauncher.exe'
+    $guest = if ($isHermes) { Hermes-Worker $guests $guestImage $launcherImage $executorImage ([int]$gateway.ProcessId) } else { One $guests 'contained-node' }
     $executor = One @($guest.chain | Where-Object { $_.ExecutablePath -and (Same-Path $_.ExecutablePath $executorImage) }) 'mxc-executor'
     Hold $executor $executorImage 'mxc-executor'
     Hold $guest.row $guestImage 'contained-node'
     if ($isHermes) {
-        $launcherImage = Join-Path $hermesRoot 'mxc-compat\NemoClawMsysLauncher.exe'
         $launcher = One @($guest.chain | Where-Object { Same-Path $_.ExecutablePath $launcherImage }) 'Hermes compatibility launcher'
         Hold $launcher $launcherImage 'hermes-launcher'
         $pythonCount = 0

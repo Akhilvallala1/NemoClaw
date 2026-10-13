@@ -45,6 +45,35 @@ LEGACY_DIRECTORIES = {
 COMPONENT_NAMESPACE = uuid.UUID("b90129a5-8564-43de-b5e4-99617eec329d")
 
 
+def validate_launcher_capabilities(native, launcher_sha256):
+    """Validate the build observation; command declarations do not authorize invocation."""
+    message = "The actual launcher does not report the connected immutable guardian."
+    if (
+        not isinstance(native, dict)
+        or set(native) != {"schemaVersion", "launcherSha256", "capabilities"}
+        or type(native["schemaVersion"]) is not int
+        or native["schemaVersion"] != 1
+        or native["launcherSha256"] != launcher_sha256
+    ):
+        raise ValueError(message)
+    value = native["capabilities"]
+    fields = {"schemaVersion", "kind", "immutableRuntime", "guardianEnabled"}
+    if (
+        not isinstance(value, dict)
+        or set(value) not in (fields, fields | {"supportedCommands"})
+        or type(value["schemaVersion"]) is not int
+        or value["schemaVersion"] != 1
+        or value["kind"] != "native-runtime-capabilities"
+        or value["immutableRuntime"] is not True
+        or value["guardianEnabled"] is not True
+        or ("supportedCommands" in value
+            and value["supportedCommands"] != ["native-state-inspection-v1"])
+    ):
+        raise ValueError(message)
+    # An older package can still be composed. It cannot claim inspection support.
+    return value.get("supportedCommands", []).copy()
+
+
 def exact_copy(source: Path, destination: Path):
     before = inventory(source)
     destination.mkdir()
@@ -210,21 +239,7 @@ def compose(
     if hash_file(host / "bin/node.exe")[1] != identity["nodeSha256"]:
         raise ValueError("The package shared Node differs from the runtime seal.")
     native = read_json(capabilities, 4096)
-    if (
-        set(native) != {"schemaVersion", "launcherSha256", "capabilities"}
-        or native["schemaVersion"] != 1
-        or native["launcherSha256"] != hash_file(launcher)[1]
-        or native["capabilities"]
-        != {
-            "schemaVersion": 1,
-            "kind": "native-runtime-capabilities",
-            "immutableRuntime": True,
-            "guardianEnabled": True,
-        }
-    ):
-        raise ValueError(
-            "The actual launcher does not report the connected immutable guardian."
-        )
+    validate_launcher_capabilities(native, hash_file(launcher)[1])
     document, references = availability(
         record, read_json(selection) if selection else None
     )

@@ -53,6 +53,35 @@ try {
     $choice = Wait-InstalledElement $window $choiceId
     ([Windows.Automation.SelectionItemPattern]$choice.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern)).Select()
     Invoke-PreviewButton (Wait-InstalledElement $window 'ConfigureInference')
+    $phase = 'provider-choice-retention'
+    $providers = @(
+        @{ id='nvidia'; name='NVIDIA hosted inference'; endpoint='https://integrate.api.nvidia.com/v1'; fixed=$true },
+        @{ id='openrouter'; name='OpenRouter'; endpoint='https://openrouter.ai/api/v1'; fixed=$true },
+        @{ id='compatible'; name='Compatible HTTPS endpoint'; endpoint='https://provider.invalid/retained/v1'; fixed=$false },
+        @{ id='local'; name=('Local endpoint ' + [char]0x00b7 + ' experimental'); endpoint='http://127.0.0.1:18080/retained/v1'; fixed=$false }
+    )
+    foreach ($provider in $providers) {
+        Select-OnboardingProvider (Wait-InstalledElement $window 'InferenceProvider') $provider.name
+        $endpointDraft = [Windows.Automation.ValuePattern](Wait-InstalledElement $window 'InferenceEndpoint').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+        $modelDraft = [Windows.Automation.ValuePattern](Wait-InstalledElement $window 'InferenceModel').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+        if ($endpointDraft.Current.IsReadOnly -ne $provider.fixed -or $modelDraft.Current.IsReadOnly) { throw 'The inference endpoint or model editability differs from the provider choice.' }
+        if ($provider.fixed) {
+            if ($endpointDraft.Current.Value -cne $provider.endpoint) { throw 'A hosted provider has the wrong fixed endpoint.' }
+        } else { $endpointDraft.SetValue($provider.endpoint) }
+        $modelDraft.SetValue('qualification/retained-' + $provider.id)
+        if (-not (Wait-InstalledElement $window 'InferenceApiKey').Current.IsPassword) { throw 'An inference provider key field is not concealed.' }
+    }
+    $retainedProviders = @()
+    foreach ($provider in $providers) {
+        Select-OnboardingProvider (Wait-InstalledElement $window 'InferenceProvider') $provider.name
+        $endpointDraft = [Windows.Automation.ValuePattern](Wait-InstalledElement $window 'InferenceEndpoint').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+        $modelDraft = [Windows.Automation.ValuePattern](Wait-InstalledElement $window 'InferenceModel').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+        if ($endpointDraft.Current.Value -cne $provider.endpoint -or $modelDraft.Current.Value -cne ('qualification/retained-' + $provider.id)) { throw 'Switching inference providers lost an endpoint or model draft.' }
+        if (Test-Path -LiteralPath $configFile) { throw 'Provider draft changes saved configuration before the requested action.' }
+        $retainedProviders += @{ provider=$provider.id; endpointRetained=$true; modelRetained=$true; fixedEndpoint=$provider.fixed; saved=$false; providerReplyQualified=$false }
+    }
+    $result['providerDrafts'] = $retainedProviders
+    $phase = "$Agent-provider"
     Select-OnboardingProvider (Wait-InstalledElement $window 'InferenceProvider') 'NVIDIA hosted inference'
     $endpoint = [Windows.Automation.ValuePattern](Wait-InstalledElement $window 'InferenceEndpoint').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
     if (-not $endpoint.Current.IsReadOnly -or $endpoint.Current.Value -cne 'https://integrate.api.nvidia.com/v1') { throw 'The fixed NVIDIA endpoint contract changed.' }

@@ -10,7 +10,8 @@ param([Parameter(Mandatory)][string]$SourceRoot,
     [ValidateSet('current-build','built-0.1.3-replay')][string]$Mode = 'current-build',
     [ValidateSet('openclaw','hermes')][string]$Agent = 'openclaw',
     [ValidateSet('full-acceptance','startup-only')][string]$ValidationScope = 'full-acceptance',
-    [string]$ControllerNodePath = '')
+    [string]$ControllerNodePath = '',
+    [string]$ArtifactSourceRoot = '')
 $ErrorActionPreference = 'Stop'
 $controllerSource = $env:GITHUB_SHA
 if ($Agent -cne 'openclaw' -and $Mode -cne 'current-build') { throw 'Only OpenClaw can reuse the historical replay lane.' }
@@ -81,6 +82,9 @@ $setup = "$work\package\NemoClawSetup-$ProductVersion-windows-arm64.exe"
 $installation = "$env:ProgramFiles\NVIDIA\NemoClaw"
 if (Test-Path -LiteralPath $installation) { throw 'Fresh preview acceptance requires no preexisting NemoClaw installation.' }
 $primary = $null
+$restartCustodyUnresolved = $false
+$openClawRestart = $Agent -ceq 'openclaw' -and $Mode -ceq 'current-build' -and $ValidationScope -ceq 'full-acceptance'
+$restartHandoff = if ($openClawRestart) { [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant() } else { '' }
 $build = Get-Content -LiteralPath "$work\package\immutable-package-build.json" -Raw | ConvertFrom-Json
 if ($build.sourceRevision -cne $ArtifactSourceRevision -or $build.status -cne 'candidate-built-for-installed-qualification') { throw 'The preview build receipt differs from this acceptance source.' }
 foreach ($file in $build.files) {
@@ -90,6 +94,37 @@ foreach ($file in $build.files) {
       (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $file.sha256) {
     throw 'The downloaded preview executable/MSI differs from its build receipt.'
   }
+}
+$expectedOpenClawRuntime = $null
+$expectedOpenClawLauncher = ''
+$expectedOpenClawPackageBuild = ''
+$artifactSourceSnapshot = ''
+$artifactSourceSnapshotSha256 = ''
+$expectedHermesRuntime = if ($Agent -ceq 'hermes') {
+  $runtime = Get-Content -LiteralPath "$work\assembled\runtime-identity.json" -Raw | ConvertFrom-Json
+  if ($runtime.sourceRevision -cne $ArtifactSourceRevision) { throw 'Hermes runtime differs from the selected artifact source.' }
+  $runtime
+} else { $null }
+if ($openClawRestart) {
+  if (-not $ArtifactSourceRoot) { throw 'Retained OpenClaw acceptance requires an independent artifact source checkout.' }
+  $artifactSourceSnapshot = Join-Path $work 'openclaw-artifact-source.json'
+  # Capture independent source bytes before installation. Product processes cannot
+  # replace this caller-held hash with a later read of mutable candidate source.
+  $captureArguments = @('--capture-artifact-source', '--artifact-source-root', $ArtifactSourceRoot,
+    '--controller-source-root', $SourceRoot, '--artifact-source-revision', $ArtifactSourceRevision,
+    '--controller-source-revision', $controllerSource, '--controller-run', ($env:GITHUB_RUN_ID + ':' + $env:GITHUB_RUN_ATTEMPT),
+    '--output', $artifactSourceSnapshot)
+  $capturedHash = @(& $ciNode --experimental-strip-types --no-warnings "$SourceRoot\packaging\windows\installer\qualify-installed-openclaw.mts" @captureArguments)
+  if ($LASTEXITCODE -ne 0 -or $capturedHash.Count -ne 1 -or [string]$capturedHash[0] -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'Independent candidate launcher source capture failed.'
+  }
+  $artifactSourceSnapshotSha256 = [string]$capturedHash[0]
+  if ((Get-FileHash -LiteralPath $artifactSourceSnapshot -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifactSourceSnapshotSha256) {
+    throw 'Independent candidate launcher source capture changed.'
+  }
+  $expectedOpenClawRuntime = Get-Content -LiteralPath "$work\assembled\runtime-identity.json" -Raw | ConvertFrom-Json
+  $expectedOpenClawLauncher = (Get-Content -LiteralPath "$work\package\launcher-build-inputs.json" -Raw | ConvertFrom-Json).retainedLauncher.sha256
+  $expectedOpenClawPackageBuild = (Get-FileHash -LiteralPath "$work\package\immutable-package-build.json" -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $timings = [ordered]@{ schemaVersion = 1; sourceRevision = $ArtifactSourceRevision; artifactSourceRevision = $ArtifactSourceRevision; controllerSourceRevision = $controllerSource; currentHeadQualification = ($ArtifactSourceRevision -ceq $controllerSource); mode = $Mode; measurement = 'fresh-runner-installed-preview'; agent = $Agent;
   validationScope = $ValidationScope; fullInstalledQualification = $false; migrationQualified = $false;
@@ -112,6 +147,154 @@ function Invoke-OwnedSetup([string]$Action, [string]$Log) {
   $timings.stages[$Action] = @{ elapsedMilliseconds = $clock.ElapsedMilliseconds; exitCode = $code }
   if ($code -ne 0) { throw "Finished preview $Action failed with status $code." }
 }
+function Assert-HermesCaseReceipt($Receipt, [string]$CaseName, $ColdReceipt) {
+  $warm = $CaseName -ceq 'warmInstalledLaunch'
+  if ($CaseName -cnotin @('firstInstalledLaunch','warmInstalledLaunch') -or
+      $Receipt -isnot [pscustomobject] -or $Receipt.results -isnot [pscustomobject] -or
+      $Receipt.runtime -isnot [pscustomobject] -or $Receipt.results.custody -isnot [pscustomobject] -or
+      $Receipt.results.cleanup -isnot [pscustomobject] -or
+      ($Receipt.schemaVersion -isnot [long] -and $Receipt.schemaVersion -isnot [int]) -or $Receipt.schemaVersion -ne 1 -or
+      $Receipt.classification -isnot [string] -or $Receipt.verdict -isnot [string] -or $Receipt.controllerRun -isnot [string] -or
+      $Receipt.classification -cne 'installed-canonical-hermes-acceptance' -or $Receipt.verdict -cne 'pass' -or
+      $Receipt.controllerRun -cne ($env:GITHUB_RUN_ID + ':' + $env:GITHUB_RUN_ATTEMPT) -or
+      $Receipt.cleanupErrors -isnot [array] -or @($Receipt.cleanupErrors).Count -ne 0 -or
+      $Receipt.fullInstalledQualification -isnot [bool] -or $Receipt.fullInstalledQualification -or
+      $Receipt.results.configurationReused -isnot [bool] -or $Receipt.results.configurationReused -ne $warm -or
+      $Receipt.results.configurationPreserved -isnot [bool] -or $Receipt.results.configurationPreserved -eq $warm -or
+      $Receipt.results.stateRoot -isnot [string] -or $Receipt.results.stateRoot -cnotmatch '^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-hermes$' -or
+      $Receipt.results.configurationSha256 -isnot [string] -or $Receipt.results.configurationSha256 -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'Hermes acceptance lacks current-case identity and configuration evidence.'
+  }
+  if (($Receipt.results.cleanup.schemaVersion -isnot [long] -and $Receipt.results.cleanup.schemaVersion -isnot [int]) -or
+      $Receipt.results.cleanup.schemaVersion -ne 1 -or $Receipt.results.cleanup.classification -isnot [string] -or
+      $Receipt.results.cleanup.classification -cne 'native-hermes-dashboard-qualification' -or
+      $Receipt.results.cleanup.agent -isnot [string] -or $Receipt.results.cleanup.agent -cne 'hermes') {
+    throw 'Hermes backend cleanup receipt identity differs.'
+  }
+  foreach ($name in @('nativeLaunchAttempted','nativeCleanupConfirmed','processesStopped','uninstallSafe')) {
+    if ($Receipt.results.custody.$name -isnot [bool] -or -not $Receipt.results.custody.$name) {
+      throw 'Hermes process and native cleanup custody is unresolved.'
+    }
+  }
+  if ($Receipt.results.custody.configurationRetainedForRecovery -isnot [bool] -or $Receipt.results.custody.configurationRetainedForRecovery) {
+    throw 'Hermes recovery state remains retained.'
+  }
+  foreach ($name in @('sandboxDeleted','gatewayStopped','ephemeralRootsRemoved','stateRetained','leaseReleased','cleanupSucceeded',
+      'guardianClosed','observerClosed','runtimeLeaseOwnerClosedWithGuardian')) {
+    if ($Receipt.results.cleanup.$name -isnot [bool] -or -not $Receipt.results.cleanup.$name) {
+      throw 'Hermes acceptance lacks confirmed backend cleanup.'
+    }
+  }
+  foreach ($name in @('runtimeId','manifestSha256','sourceRevision','nodeSha256','nodeVersion')) {
+    if ($expectedHermesRuntime.$name -isnot [string] -or [string]::IsNullOrWhiteSpace($expectedHermesRuntime.$name) -or
+        $Receipt.runtime.$name -isnot [string] -or $Receipt.runtime.$name -cne $expectedHermesRuntime.$name) {
+      throw 'Hermes cleanup differs from the selected artifact runtime.'
+    }
+  }
+  # The backend receipt publishes the held runtime's three-field identity;
+  # Node identity belongs to the independently checked qualifier runtime tuple.
+  foreach ($name in @('runtimeId','manifestSha256','sourceRevision')) {
+    if ($Receipt.results.cleanup.runtimeIdentity.$name -isnot [string] -or
+        $Receipt.results.cleanup.runtimeIdentity.$name -cne $expectedHermesRuntime.$name) {
+      throw 'Hermes backend cleanup differs from the selected runtime.'
+    }
+  }
+  if ($warm) {
+    foreach ($name in @('stateRoot','configurationSha256')) {
+      if ($Receipt.results.$name -cne $ColdReceipt.results.$name) { throw 'Hermes restart changed the retained state or configuration.' }
+    }
+  }
+}
+function Assert-OpenClawRestartReceipt($Receipt, [string]$CaseName, $ColdReceipt) {
+  $restart = $Receipt.restart
+  $warm = $CaseName -ceq 'warmInstalledLaunch'
+  $expectedMode = if ($warm) { 'warm-reused' } else { 'cold-preserved' }
+  $expectedCleanup = if ($warm) { 'removed-owned-state' } else { 'retained-for-warm-run' }
+  if ($Receipt.schemaVersion -ne 2 -or $Receipt.classification -cne 'installed-compiled-openclaw-acceptance' -or
+      $Receipt.verdict -cne 'pass' -or @($Receipt.cleanupErrors).Count -ne 0 -or @($Receipt.cleanupErrorDetails).Count -ne 0 -or
+      $null -ne $Receipt.primaryFailure -or $restart.schemaVersion -ne 1 -or $restart.mode -cne $expectedMode -or
+      $restart.controllerRun -cne ($env:GITHUB_RUN_ID + ':' + $env:GITHUB_RUN_ATTEMPT) -or
+      $restart.handoff -cne $restartHandoff -or $restart.installation -cne $installation -or
+      $restart.configurationReused -isnot [bool] -or $restart.configurationReused -ne $warm -or
+      $restart.configurationPreserved -isnot [bool] -or $restart.configurationPreserved -eq $warm -or
+      $restart.processesStopped -cne $true -or $restart.backendCleanupConfirmed -cne $true -or
+      $restart.stateOwnerReleased -cne $true -or $restart.mutationUnconfirmed -cne $false -or
+      $restart.credentialMutationConfirmed -cne $true -or
+      ($warm -and $restart.cleanupScope -cne 'owned-configuration-state-and-credential') -or
+      $restart.cleanupDisposition -cne $expectedCleanup -or $restart.provider -cne 'nvidia' -or
+      $restart.endpoint -cne 'https://integrate.api.nvidia.com/v1' -or
+      $restart.launcherSha256 -cne $expectedOpenClawLauncher -or $restart.packageBuildSha256 -cne $expectedOpenClawPackageBuild -or
+      $restart.artifactSourceSnapshotSha256 -cne $artifactSourceSnapshotSha256 -or $restart.controllerSourceRevision -cne $controllerSource -or
+      $restart.launcherSha256 -cnotmatch '^[a-f0-9]{64}$' -or $restart.packageBuildSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $restart.configurationSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $restart.ownedState.stateRoot -cnotmatch '^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-openclaw$' -or
+      $restart.ownedState.device -cnotmatch '^\d+$' -or $restart.ownedState.inode -cnotmatch '^[1-9]\d*$' -or
+      $restart.retainedConversation.sessionKey -cnotmatch '^agent:main:[A-Za-z0-9:._-]{1,256}$' -or
+      $restart.retainedConversation.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $restart.retainedConversation.messageCount -lt 1 -or $restart.retainedConversation.messageCount -ge 100 -or
+      $Receipt.results.response.provider -cne 'nvidia' -or $Receipt.results.response.model -cne $restart.model -or
+      $Receipt.results.response.deterministicModel -cne $false -or
+      $Receipt.results.response.visibleReply -cnotmatch '^NEMOCLAW_NVIDIA_[a-f0-9]{24}$') {
+    throw 'The OpenClaw cold/warm receipt lacks required restart and cleanup evidence.'
+  }
+  foreach ($name in @('processesStopped','backendCleanupConfirmed','stateOwnerReleased','mutationUnconfirmed','credentialMutationConfirmed')) {
+    if ($restart.$name -isnot [bool]) { throw 'OpenClaw restart cleanup evidence must use Boolean values.' }
+  }
+  foreach ($name in @('runtimeId','manifestSha256','sourceRevision','nodeSha256','nodeVersion')) {
+    if ($Receipt.runtime.$name -cne $expectedOpenClawRuntime.$name) { throw 'OpenClaw restart differs from the selected runtime.' }
+  }
+  if ($warm) {
+    foreach ($name in @('launcherSha256','packageBuildSha256','artifactSourceSnapshotSha256','controllerSourceRevision','configurationSha256','model')) {
+      if ($restart.$name -cne $ColdReceipt.restart.$name) { throw 'OpenClaw restart changed its package or saved selection.' }
+    }
+    foreach ($name in @('stateRoot','device','inode')) {
+      if ($restart.ownedState.$name -cne $ColdReceipt.restart.ownedState.$name) { throw 'OpenClaw restart changed its owned state.' }
+    }
+    foreach ($name in @('sessionKey','messageCount','sha256')) {
+      if ($restart.restoredConversation.$name -cne $ColdReceipt.restart.retainedConversation.$name) { throw 'OpenClaw restart did not restore the cold conversation.' }
+    }
+    if ($restart.retainedConversation.sessionKey -cne $ColdReceipt.restart.retainedConversation.sessionKey -or
+        $restart.retainedConversation.messageCount -le $ColdReceipt.restart.retainedConversation.messageCount -or
+        $restart.retainedConversation.sha256 -ceq $ColdReceipt.restart.retainedConversation.sha256 -or
+        $Receipt.results.response.visibleReply -ceq $ColdReceipt.results.response.visibleReply) {
+      throw 'OpenClaw warm acceptance lacks a new response in the retained conversation.'
+    }
+    foreach ($name in @('runtimeId','manifestSha256','sourceRevision','nodeSha256','nodeVersion')) {
+      if ($Receipt.runtime.$name -cne $ColdReceipt.runtime.$name) { throw 'OpenClaw restart changed the runtime identity.' }
+    }
+  }
+}
+function Test-OpenClawOwnedCleanupReceipt($Receipt, [string]$CaseName, $ColdReceipt) {
+  $restart = $Receipt.restart
+  $expectedMode = if ($CaseName -ceq 'warmInstalledLaunch') { 'warm-reused' } else { 'cold-preserved' }
+  if ($Receipt.schemaVersion -ne 2 -or $Receipt.classification -cne 'installed-compiled-openclaw-acceptance' -or
+      $Receipt.verdict -cnotin @('pass','fail') -or $Receipt.cleanupErrors -isnot [array] -or @($Receipt.cleanupErrors).Count -ne 0 -or
+      $restart.schemaVersion -ne 1 -or $restart.mode -cne $expectedMode -or
+      $restart.controllerRun -cne ($env:GITHUB_RUN_ID + ':' + $env:GITHUB_RUN_ATTEMPT) -or $restart.handoff -cne $restartHandoff -or
+      $restart.installation -cne $installation -or $restart.launcherSha256 -cne $expectedOpenClawLauncher -or
+      $restart.packageBuildSha256 -cne $expectedOpenClawPackageBuild -or $restart.cleanupDisposition -cne 'removed-owned-state' -or
+      $restart.artifactSourceSnapshotSha256 -cne $artifactSourceSnapshotSha256 -or $restart.controllerSourceRevision -cne $controllerSource -or
+      $restart.mutationUnconfirmed -isnot [bool] -or $restart.mutationUnconfirmed -or
+      $restart.ownedState.stateRoot -cnotmatch '^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-openclaw$' -or
+      $restart.ownedState.device -cnotmatch '^\d+$' -or $restart.ownedState.inode -cnotmatch '^[1-9]\d*$') { return $false }
+  foreach ($name in @('processesStopped','backendCleanupConfirmed','stateOwnerReleased')) {
+    if ($restart.$name -isnot [bool] -or -not $restart.$name) { return $false }
+  }
+  foreach ($name in @('runtimeId','manifestSha256','sourceRevision','nodeSha256','nodeVersion')) {
+    if ($Receipt.runtime.$name -cne $expectedOpenClawRuntime.$name) { return $false }
+  }
+  if ($restart.credentialMutationConfirmed -isnot [bool]) { return $false }
+  if ($restart.credentialMutationConfirmed) {
+    if ($restart.cleanupScope -cne 'owned-configuration-state-and-credential') { return $false }
+  } elseif ($CaseName -ceq 'warmInstalledLaunch' -or $null -ne $restart.configurationSha256 -or
+      $restart.cleanupScope -cne 'fresh-private-root-only-no-credentials-touched') { return $false }
+  if ($CaseName -ceq 'warmInstalledLaunch') {
+    foreach ($name in @('stateRoot','device','inode')) {
+      if ($restart.ownedState.$name -cne $ColdReceipt.restart.ownedState.$name) { return $false }
+    }
+  }
+  return $true
+}
 try {
   Invoke-OwnedSetup '-install' "$work\install.log"
   $timings['startupComparisonAvailable'] = $false
@@ -124,6 +307,8 @@ try {
         $smoke.fullInstalledQualification -isnot [bool] -or $smoke.fullInstalledQualification) { throw 'The installed startup-only receipt is incomplete.' }
     $timings['startupSmoke'] = @{ receipt = 'installed-smoke/finished-package-smoke.json'; deterministicLocalModel = $true }
   } else {
+  $coldOpenClawReceipt = $null
+  $coldHermesReceipt = $null
   foreach ($case in @(
     @{ name = 'firstInstalledLaunch'; directory = 'installed-acceptance' },
     @{ name = 'warmInstalledLaunch'; directory = 'installed-acceptance-warm' }
@@ -132,21 +317,56 @@ try {
     $driverRoot = if ($Agent -ceq 'hermes') { "$work\application\inputs\tools\node_modules\playwright-core" } else { "$work\application\build\app\node_modules\playwright-core" }
     [string[]]$caseArguments = @()
     if ($Agent -ceq 'hermes') {
+      # Preserve recovery custody even when the qualifier exits before writing a
+      # receipt. Cold success retains it until the matching warm case finishes.
+      $restartCustodyUnresolved = $true
+      if (Test-Path -LiteralPath "$work\$($case.directory)\installed-hermes-acceptance.json") {
+        throw 'Hermes acceptance refuses a preexisting case receipt.'
+      }
       $caseArguments = if ($case.name -ceq 'firstInstalledLaunch') { @('--preserve-configuration') } else { @('--reuse-configuration') }
     }
     if ($Agent -ceq 'hermes' -and $case.name -ceq 'warmInstalledLaunch') {
       $caseArguments += @('--previous-acceptance', "$work\installed-acceptance\installed-$Agent-acceptance.json")
+    }
+    if ($openClawRestart) {
+      $caseArguments = if ($case.name -ceq 'firstInstalledLaunch') { @('--preserve-configuration') } else {
+        @('--reuse-configuration', '--previous-acceptance', "$work\installed-acceptance\installed-openclaw-acceptance.json")
+      }
+      $caseArguments += @('--restart-handoff', $restartHandoff, '--package-root', "$work\package",
+        '--artifact-source-snapshot', $artifactSourceSnapshot, '--artifact-source-snapshot-sha256', $artifactSourceSnapshotSha256)
+      # A failed process or missing receipt cannot authorize deleting retained state
+      # or uninstalling the helper required for its recovery.
+      $restartCustodyUnresolved = $true
     }
     & $ciNode --experimental-strip-types --no-warnings $qualification `
       --install-root $installation --runtime-identity "$work\assembled\runtime-identity.json" `
       --output "$work\$($case.directory)" --browser-driver-root $driverRoot @caseArguments
     $code = $LASTEXITCODE
     $timings[$case.name] = @{ exitCode = $code; receipt = "$($case.directory)/installed-$Agent-acceptance.json";
-      modelAndToolDurationsSeparate = ($Agent -ceq 'openclaw'); conversationIntervalsSeparateFromStartup = ($Agent -ceq 'hermes'); isolatedProviderLatencyClaimed = $false; agentStateResetPerCase = ($Agent -ceq 'openclaw') }
+      modelAndToolDurationsSeparate = ($Agent -ceq 'openclaw'); conversationIntervalsSeparateFromStartup = ($Agent -ceq 'hermes'); isolatedProviderLatencyClaimed = $false; agentStateResetPerCase = ($Agent -ceq 'openclaw' -and -not $openClawRestart) }
+    $accepted = $null
+    if ($openClawRestart) {
+      $accepted = Get-Content -LiteralPath "$work\$($case.directory)\installed-$Agent-acceptance.json" -Raw | ConvertFrom-Json
+      if (Test-OpenClawOwnedCleanupReceipt $accepted $case.name $coldOpenClawReceipt) { $restartCustodyUnresolved = $false }
+    }
     if ($code -ne 0) { throw "The $($case.name) selected-agent acceptance failed; no startup comparison is claimed." }
-    $accepted = Get-Content -LiteralPath "$work\$($case.directory)\installed-$Agent-acceptance.json" -Raw | ConvertFrom-Json
+    if (-not $openClawRestart) { $accepted = Get-Content -LiteralPath "$work\$($case.directory)\installed-$Agent-acceptance.json" -Raw | ConvertFrom-Json }
     if ($accepted.verdict -cne 'pass' -or @($accepted.cleanupErrors).Count -ne 0) {
       throw 'Ordinary launch did not finish its required agent checks and owned cleanup.'
+    }
+    if ($Agent -ceq 'hermes') {
+      Assert-HermesCaseReceipt $accepted $case.name $coldHermesReceipt
+      if ($case.name -ceq 'firstInstalledLaunch') { $coldHermesReceipt = $accepted }
+      else { $restartCustodyUnresolved = $false }
+    }
+    if ($openClawRestart) {
+      Assert-OpenClawRestartReceipt $accepted $case.name $coldOpenClawReceipt
+      if ($case.name -ceq 'firstInstalledLaunch') { $coldOpenClawReceipt = $accepted }
+      else {
+        $restartCustodyUnresolved = $false
+        $timings['restartPersistence'] = @{ qualified=$true; configurationRewritten=$false; credentialRecreated=$false;
+          sameConversation=$true; sameOwnedState=$true; coldReceipt='installed-acceptance/installed-openclaw-acceptance.json'; warmReceipt='installed-acceptance-warm/installed-openclaw-acceptance.json' }
+      }
     }
 
   }
@@ -196,6 +416,10 @@ finally {
     }
   } catch { if ($null -eq $primary) { $primary = $_ } else { Write-Warning 'The original failure is preserved; installed counts also failed.' } }
   try {
+    if ($restartCustodyUnresolved) {
+      $timings['uninstallDeferredForRecovery'] = $true
+      throw 'Selected-agent retained-state custody is unresolved; preserve the installation, data and credentials for recovery.'
+    }
     Invoke-OwnedSetup '-uninstall' "$work\uninstall.log"
     $timings['installationRootRemoved'] = -not (Test-Path -LiteralPath $installation)
     $remaining = [Collections.Generic.List[object]]::new()

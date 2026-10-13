@@ -47,6 +47,7 @@ import {
   type NativeRuntimePurpose,
 } from "./native-runtime.mts";
 import { PROVIDER_CONFIGURATION } from "./native-provider-policy.mts";
+import { beginNativeConfigurationRecovery } from "./native-configuration-recovery.mts";
 import { nativePackageFixture } from "../tests/native-package-fixture.mts";
 
 const packageFixture = nativePackageFixture(after);
@@ -897,6 +898,250 @@ const configuration = {
     },
   },
 };
+
+async function withSavedSettingsFixture(
+  action: (fixture: {
+    directory: string;
+    configurationPath: string;
+    events: string[];
+    read: (args?: string[], present?: boolean, loseOwner?: boolean) => Promise<string>;
+  }) => Promise<void>,
+) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-saved-settings-"));
+  const previous = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = root;
+  const directory = path.join(root, "NVIDIA", "NemoClaw", "agents", "openclaw");
+  fs.mkdirSync(directory, { recursive: true });
+  const configurationPath = path.join(directory, "native-windows.json");
+  const events: string[] = [];
+  const read = async (
+    args = ["--read-settings", "openclaw"],
+    present = true,
+    loseOwner = false,
+  ) => {
+    let result = "";
+    let assertions = 0;
+    await configureNativeFromStdin(
+      packageFixture.launcher,
+      args,
+      {
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              assert.fail("A saved-settings query read its stdin.");
+            },
+          };
+        },
+      },
+      {
+        write(chunk: string | Uint8Array) {
+          result += chunk.toString();
+          return true;
+        },
+      },
+      {
+        inspectState: async () => {
+          events.push("inspect");
+          return {
+            stateRoot: "C:\\NemoClawState-S-1-5-21-1001-openclaw",
+            created: false,
+            removed: false,
+            present,
+            assertHeld() {
+              events.push("held");
+              if (loseOwner && ++assertions === 2) throw new Error("owner lost");
+            },
+            async release() {
+              events.push("release");
+            },
+          };
+        },
+        acquireState: async () => assert.fail("Inspection used a creating configuration lease."),
+        readCredential: async () => assert.fail("Inspection read an inference credential."),
+        readServices: async () => assert.fail("Inspection read service credentials."),
+        deleteCredential: async () => assert.fail("Inspection deleted credentials."),
+        credentialStore: {
+          read: async () => assert.fail("Inspection accessed the credential store."),
+          write: async () => assert.fail("Inspection changed the credential store."),
+        },
+        writeConfiguration: () => assert.fail("Inspection wrote configuration."),
+        inspectModel: async () => assert.fail("Inspection prepared a model."),
+        lookupEndpoint: async () => assert.fail("Inspection performed a network lookup."),
+      },
+    );
+    return result;
+  };
+  try {
+    await action({ directory, configurationPath, events, read });
+  } finally {
+    if (previous === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("saved settings return only validated OpenClaw metadata under a non-creating lease", async () => {
+  await withSavedSettingsFixture(async ({ configurationPath, events, read }) => {
+    const saved = { ...configuration, agent: "openclaw", model: "user-selected-model" };
+    const bytes = JSON.stringify(saved);
+    fs.writeFileSync(configurationPath, bytes);
+    assert.deepEqual(JSON.parse(await read()), {
+      schemaVersion: 1,
+      kind: "native-saved-settings",
+      agent: "openclaw",
+      state: "saved",
+      settings: {
+        inference: "nvidia",
+        endpoint: "https://integrate.api.nvidia.com/v1",
+        model: "user-selected-model",
+        credentialStored: true,
+        options: saved.options,
+      },
+    });
+    assert.equal(fs.readFileSync(configurationPath, "utf8"), bytes);
+    assert.deepEqual(events, ["inspect", "held", "held", "release"]);
+  });
+});
+
+test("absent native state is unconfigured without reading any saved record", async () => {
+  await withSavedSettingsFixture(async ({ configurationPath, read }) => {
+    fs.writeFileSync(configurationPath, "must not be parsed");
+    assert.deepEqual(JSON.parse(await read(undefined, false)), {
+      schemaVersion: 1,
+      kind: "native-saved-settings",
+      agent: "openclaw",
+      state: "unconfigured",
+      settings: null,
+    });
+    assert.equal(fs.readFileSync(configurationPath, "utf8"), "must not be parsed");
+  });
+});
+
+test("missing settings remain missing after inspection of existing private state", async () => {
+  await withSavedSettingsFixture(async ({ configurationPath, read }) => {
+    assert.equal(JSON.parse(await read()).state, "unconfigured");
+    assert.equal(fs.existsSync(configurationPath), false);
+  });
+});
+
+test("saved managed and local-server choices keep their distinct endpoint contracts", async () => {
+  await withSavedSettingsFixture(async ({ configurationPath, read }) => {
+    const local = {
+      ...configuration,
+      agent: "openclaw",
+      inference: "local",
+      endpoint: "http://127.0.0.1:12345/v1",
+      model: "chosen-local-model",
+      credentialStored: false,
+      options: {},
+    };
+    fs.writeFileSync(configurationPath, JSON.stringify(local));
+    assert.equal(JSON.parse(await read()).settings.endpoint, local.endpoint);
+    const managed = {
+      ...local,
+      endpoint: undefined,
+      model: NATIVE_EXPRESS.model,
+      localModel: NATIVE_EXPRESS.id,
+    };
+    fs.writeFileSync(configurationPath, JSON.stringify(managed));
+    const settings = JSON.parse(await read()).settings;
+    assert.equal(settings.localModel, NATIVE_EXPRESS.id);
+    assert.equal(settings.model, NATIVE_EXPRESS.model);
+    assert.equal(Object.hasOwn(settings, "endpoint"), false);
+  });
+});
+
+test("pending recovery is distinct and its record is never cleared by inspection", async () => {
+  await withSavedSettingsFixture(async ({ directory, configurationPath, read }) => {
+    fs.writeFileSync(configurationPath, "must not be trusted during recovery");
+    beginNativeConfigurationRecovery(directory, "openclaw", [], () => {});
+    const pending = path.join(directory, "native-configuration-pending.json");
+    const bytes = fs.readFileSync(pending);
+    assert.deepEqual(JSON.parse(await read()), {
+      schemaVersion: 1,
+      kind: "native-saved-settings",
+      agent: "openclaw",
+      state: "needs-resave",
+      settings: null,
+    });
+    assert.deepEqual(fs.readFileSync(pending), bytes);
+    assert.equal(fs.readFileSync(configurationPath, "utf8"), "must not be trusted during recovery");
+  });
+});
+
+test("invalid saved records and credential-bearing fields fail without publishing values", async () => {
+  await withSavedSettingsFixture(async ({ configurationPath, events, read }) => {
+    const saved = { ...configuration, agent: "openclaw" };
+    for (const value of [
+      '{"secret":"nvapi-private-fixture',
+      "null",
+      JSON.stringify({ ...saved, credential: "nvapi-private-fixture" }),
+      JSON.stringify({ ...saved, endpoint: "https://user:private-fixture@example.invalid/v1" }),
+      JSON.stringify({ ...saved, options: { ...saved.options, secret: "private-fixture" } }),
+      JSON.stringify({ ...saved, agent: "hermes" }),
+      JSON.stringify({ ...saved, profile: "unknown" }),
+      JSON.stringify({ ...saved, model: "x".repeat(257) }),
+      JSON.stringify({ ...saved, credentialStored: "true" }),
+      JSON.stringify({
+        ...saved,
+        options: { messaging: { telegram: { credentialStored: true, allowedUsers: ["*"] } } },
+      }),
+      "x".repeat(16385),
+    ]) {
+      fs.writeFileSync(configurationPath, value);
+      await assert.rejects(read(), (error: Error) => !error.message.includes("private-fixture"));
+      assert.equal(events.at(-1), "release");
+      assert.equal(fs.readFileSync(configurationPath, "utf8"), value);
+    }
+  });
+});
+
+test("malformed saved-settings commands do not acquire state", async () => {
+  await withSavedSettingsFixture(async ({ events, read }) => {
+    for (const args of [
+      ["--read-settings"],
+      ["--read-settings", "hermes"],
+      ["--read-settings", "pi"],
+      ["--read-settings", "openclaw", "extra"],
+      ["--transaction", "--read-settings", "openclaw"],
+      ["--prepare-all", "--read-settings", "openclaw"],
+      ["--read-settings", "--read-settings", "openclaw"],
+    ])
+      await assert.rejects(read(args), /saved settings request is invalid/);
+    assert.deepEqual(events, []);
+  });
+});
+
+test("saved settings reject malformed UTF-8 without replacing model characters", async () => {
+  await withSavedSettingsFixture(async ({ configurationPath, events, read }) => {
+    const prefix = Buffer.from(
+      JSON.stringify({ ...configuration, agent: "openclaw", model: "MODEL" }).split("MODEL")[0],
+    );
+    const suffix = Buffer.from(
+      JSON.stringify({ ...configuration, agent: "openclaw", model: "MODEL" }).split("MODEL")[1],
+    );
+    for (const encoded of [Buffer.from([0xff]), Buffer.from([0xc3]), Buffer.from([0xc0, 0xaf])]) {
+      const bytes = Buffer.concat([prefix, encoded, suffix]);
+      fs.writeFileSync(configurationPath, bytes);
+      await assert.rejects(read(), /saved settings record is invalid/);
+      assert.deepEqual(fs.readFileSync(configurationPath), bytes);
+      assert.equal(events.at(-1), "release");
+    }
+    fs.writeFileSync(
+      configurationPath,
+      JSON.stringify({ ...configuration, agent: "openclaw", model: "chosen-\u00e9-model" }),
+    );
+    assert.equal(JSON.parse(await read()).settings.model, "chosen-\u00e9-model");
+  });
+});
+
+test("lost inspection ownership rejects publication and still releases the helper", async () => {
+  await withSavedSettingsFixture(async ({ configurationPath, events, read }) => {
+    fs.writeFileSync(configurationPath, JSON.stringify({ ...configuration, agent: "openclaw" }));
+    await assert.rejects(read(undefined, true, true), /owner lost/);
+    assert.equal(events.at(-1), "release");
+  });
+});
 
 async function prepare(value: unknown, args = ["--prepare-all"]): Promise<string> {
   let result = "";
