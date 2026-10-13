@@ -161,7 +161,7 @@ async function verifyFreshNativeTerminalEndpoint(
   const { artifacts, cleanup, host, progress, sandbox } = fixtures;
   const { agent } = selected;
   const label = agent === "pi" ? "pi" : "dcode";
-  const sandboxName = inferenceSandboxName(`e2e-native-${label}`);
+  const sandboxName = inferenceSandboxName(`e2e-nt-${label}`);
   const env = await selected.environment(artifacts);
   delete env.COMPATIBLE_API_KEY;
   cleanup.add(`strict native ${agent} cleanup for ${sandboxName}`, () =>
@@ -606,7 +606,7 @@ test(
         ),
     ).toBe(true);
     progress.phase("verify peer attachment and isolation");
-    const peerName = inferenceSandboxName("e2e-https-peer");
+    const peerName = inferenceSandboxName("e2e-h-peer");
     cleanup.add(`strict native HTTPS peer cleanup for ${peerName}`, () =>
       cleanupSandbox(host, sandbox, peerName, { strict: true }),
     );
@@ -927,6 +927,7 @@ test(
     )!;
     const httpConfig = await sandbox.exec(peerName, ["cat", "/sandbox/.openclaw/openclaw.json"], {
       artifactName: "tc-inf-11-direct-http-native-agent-config",
+      env: buildAvailabilityProbeEnv(),
       timeoutMs: 30_000,
     });
     expect(httpConfig.exitCode, resultText(httpConfig)).toBe(0);

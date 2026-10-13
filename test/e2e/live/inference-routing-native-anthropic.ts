@@ -84,6 +84,7 @@ export async function verifyFreshNativeAnthropicEndpoint(
     ["cat", "/sandbox/.openclaw/openclaw.json"],
     {
       artifactName: "tc-inf-11-native-anthropic-config-after-restart",
+      env: restartEnv,
       timeoutMs: 30_000,
       redactionValues: [apiKey],
     },

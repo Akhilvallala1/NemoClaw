@@ -24,7 +24,7 @@ export async function verifyFreshNativeHermesEndpoint(
 ) {
   const { artifacts, cleanup, host, progress, sandbox } = fixtures;
   const { endpoint, apiKey, model } = options;
-  const sandboxName = inferenceSandboxName("e2e-native-hermes");
+  const sandboxName = inferenceSandboxName("e2e-n-hermes");
   cleanup.add(`strict native Hermes cleanup for ${sandboxName}`, () =>
     cleanupSandbox(host, sandbox, sandboxName, { strict: true }),
   );
