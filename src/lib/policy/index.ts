@@ -52,7 +52,11 @@ import {
   mergeBaselineEntryIntoPolicy,
   removeBaselineEntryFromPolicy,
 } from "./baseline-exclusion";
-import { inspectGatewayPresetNames, inspectPresetContentGatewayState } from "./gateway-state";
+import {
+  inspectGatewayPresetNames,
+  inspectPresetContentGatewayState,
+  recordPolicyResult,
+} from "./gateway-state";
 import { reconcileTeamsOutlookLoginCredentialBinding } from "./microsoft-login-credential-binding";
 import {
   parseOpenShellPolicy,
@@ -84,6 +88,8 @@ import {
   prepareTrustedPrivatePolicyPresets,
   type TrustedPrivatePolicyPinCapability,
 } from "./trusted-private-endpoints";
+
+export { persistAppliedPolicySelection } from "./gateway-state";
 
 const PRESETS_DIR = path.join(ROOT, "nemoclaw-blueprint", "policies", "presets");
 
@@ -1131,7 +1137,14 @@ export async function setPolicyDocument(
     const concurrentRevision = observedVersion > originalVersion + 1;
 
     if (!concurrentRevision) {
-      if (requestedIsCurrent) return !recoveryOnly;
+      if (requestedIsCurrent) {
+        recordPolicyResult(
+          sandboxName,
+          recoveryOnly ? "failed" : "completed",
+          recoveryOnly ? "unchanged" : "applied",
+        );
+        return !recoveryOnly;
+      }
       if (outcome.kind === "ambiguous") {
         console.error(
           `  Could not confirm the policy update for sandbox '${sandboxName}': ${redact(outcome.detail)}. ` +
@@ -1382,9 +1395,19 @@ function classifyPresetEntries(currentPolicy: string, presetEntries: string): Pr
   }
 }
 
+/**
+ * Compare operator-owned policy documents. OpenShell `--base` readback can
+ * re-include `_provider_*` entries that `policy set` must never submit, so
+ * those keys are not part of a successful apply or remove result (#12048).
+ */
 function policyDocumentsMatch(left: string, right: string): boolean {
   try {
-    return isDeepStrictEqual(parseOpenShellPolicy(left).policy, parseOpenShellPolicy(right).policy);
+    const leftPolicy = parseOpenShellPolicy(left);
+    const rightPolicy = parseOpenShellPolicy(right);
+    return isDeepStrictEqual(
+      parseOpenShellPolicy(stripProviderComposedPolicies(leftPolicy.yamlBody)).policy,
+      parseOpenShellPolicy(stripProviderComposedPolicies(rightPolicy.yamlBody)).policy,
+    );
   } catch {
     return false;
   }
@@ -1883,6 +1906,7 @@ async function removePreset(
     policyDocumentsMatch(currentPolicy, mergePresetIntoPolicy(currentPolicy, presetEntries));
   if (supersededByPersonal) {
     console.log(`  Preset '${presetName}' is already absent from the live OpenShell policy.`);
+    recordPolicyResult(sandboxName, "no_change", "unchanged");
     return true;
   }
 
@@ -1913,6 +1937,7 @@ async function removePreset(
 
   if (updated === currentPolicy) {
     console.log(`  Preset '${presetName}' is already absent from the live OpenShell policy.`);
+    recordPolicyResult(sandboxName, "no_change", "unchanged");
     return true;
   }
 
@@ -2045,7 +2070,10 @@ async function excludeBaselineEntry(
       return false;
     }
     const live = inspectLiveBaselineEntry(currentPolicy, key);
-    if (live.state === "absent") return true;
+    if (live.state === "absent") {
+      recordPolicyResult(sandboxName, "no_change", "unchanged");
+      return true;
+    }
     if (live.state !== "present" || live.digest !== digest) {
       console.error(
         `  Baseline entry '${key}' changed after preview. Rerun the command to review its current scope; no policy changes were made.`,
@@ -2090,7 +2118,10 @@ async function restoreBaselineEntry(
       );
       return false;
     }
-    if (!entry) return true;
+    if (!entry) {
+      recordPolicyResult(sandboxName, "no_change", "unchanged");
+      return true;
+    }
     const operation = `restore baseline policy entry '${key}'`;
     const context = await inspectLivePolicyForMutation(sandboxName, operation, gatewayName);
     if (!context) return false;
@@ -2100,7 +2131,10 @@ async function restoreBaselineEntry(
       return false;
     }
     const live = inspectLiveBaselineEntry(currentPolicy, key);
-    if (live.state === "present" && live.digest === targetDigest) return true;
+    if (live.state === "present" && live.digest === targetDigest) {
+      recordPolicyResult(sandboxName, "no_change", "unchanged");
+      return true;
+    }
     if (live.state !== "absent") {
       console.error(
         `  Live baseline entry '${key}' differs from the current release baseline. Refusing to overwrite it.`,
@@ -2463,6 +2497,7 @@ async function applyPresetContent(
   }
 
   if (policyChanged) console.log(`  Applied preset: ${presetName}`);
+  else recordPolicyResult(sandboxName, "no_change", "unchanged");
   return true;
 }
 
