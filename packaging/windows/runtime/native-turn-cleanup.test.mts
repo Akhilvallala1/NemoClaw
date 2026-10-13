@@ -754,14 +754,21 @@ async function scenario(
       assertHeld: () => {},
     } as NativeRuntimeSession;
     const qualify = terminal ? qualifyNativeTerminalAgent : qualifyNativeOpenClawTurn;
-    const completion = assert.rejects(qualify(lease), (error: unknown) =>
-      fault === "existing"
+    const completion = assert.rejects(qualify(lease), (error: unknown) => {
+      if (fault === "private-retained") {
+        assert(error instanceof Error);
+        assert.match(error.message, /owned process did not close/u);
+        assert(error.cause instanceof Error);
+        assert.match(error.cause.message, /timed out/u);
+        return true;
+      }
+      return fault === "existing"
         ? error instanceof Error && /qualification roots? already exist/u.test(error.message)
         : privateFault
           ? error instanceof Error &&
             error.message.includes(fault === "private-failure" ? "exited 1" : "timed out")
-          : error === primary,
-    );
+          : error === primary;
+    });
     // Attach a handler while fake time advances; retain the assertion failure
     // for the awaited result so mocks are always restored by this scenario.
     void completion.catch(() => {});

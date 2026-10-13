@@ -908,6 +908,7 @@ async function runNativeConsoleAgentInternal(
         "Registering the native gateway",
         undefined,
         diagnostics,
+        gatewaySession.ownCommandProcess,
       );
       await run(
         openshell,
@@ -916,6 +917,7 @@ async function runNativeConsoleAgentInternal(
         "Selecting the native gateway",
         undefined,
         diagnostics,
+        gatewaySession.ownCommandProcess,
       );
       const environment = {
         ...worker.environment,
@@ -1137,6 +1139,7 @@ async function runNativeConsoleAgentInternal(
           "Creating the native console workload",
           undefined,
           diagnostics,
+          gatewaySession.ownCommandProcess,
         );
       } catch (error) {
         const bootstrap = await publishBootstrap(false);
@@ -1286,6 +1289,9 @@ async function runNativeConsoleAgentInternal(
         ["sandbox", "delete", sandboxName],
         cliEnvironment,
         "Deleting the native agent sandbox",
+        undefined,
+        undefined,
+        gatewaySession.ownCommandProcess,
       );
       await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
         sandboxName,

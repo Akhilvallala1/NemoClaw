@@ -140,6 +140,8 @@ export async function run(
   },
   ownProcess?: (child: ChildProcess) => void,
 ) {
+  if (typeof ownProcess !== "function")
+    throw new Error(`${label} requires an owner before starting a command`);
   console.log(`NEMOCLAW> ${label}`);
   const child = spawn(file, args, {
     env: environment,
@@ -147,41 +149,66 @@ export async function run(
     windowsHide: true,
   });
   return await new Promise<NativeCommandResult>((resolve, reject) => {
-    ownProcess?.(child);
     let stdout = "";
     let stderr = "";
-    let outputExceeded = false;
+    let failure: Error | undefined;
+    let stopTimer: ReturnType<typeof setTimeout> | undefined;
+    const failAndStop = (error: Error) => {
+      if (failure) return;
+      failure = error;
+      clearTimeout(timer);
+      stopTimer = setTimeout(() => {
+        reject(new Error(`${label} failed and its owned process did not close`, { cause: error }));
+      }, 5000);
+      try {
+        child.kill();
+      } catch {
+        // The registered owner retains this process if bounded shutdown fails.
+      }
+    };
     const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`${label} timed out`));
+      failAndStop(new Error(`${label} timed out`));
     }, timeout);
     child.stdout.on("data", (chunk) => {
-      diagnostics?.capture("cli.stdout", chunk);
-      if (outputExceeded) return;
+      if (failure) return;
+      try {
+        diagnostics?.capture("cli.stdout", chunk);
+      } catch (error) {
+        failAndStop(error instanceof Error ? error : new Error(`${label} diagnostics failed`));
+        return;
+      }
       const text = chunk.toString("utf8");
       if (stdout.length + text.length > 1024 * 1024) {
-        outputExceeded = true;
-        child.kill();
+        failAndStop(new Error(`${label} exceeded its diagnostic output limit`));
       } else stdout += text;
     });
     child.stderr.on("data", (chunk) => {
-      diagnostics?.capture("cli.stderr", chunk);
-      if (outputExceeded) return;
+      if (failure) return;
+      try {
+        diagnostics?.capture("cli.stderr", chunk);
+      } catch (error) {
+        failAndStop(error instanceof Error ? error : new Error(`${label} diagnostics failed`));
+        return;
+      }
       const text = chunk.toString("utf8");
       if (stderr.length + text.length > 1024 * 1024) {
-        outputExceeded = true;
-        child.kill();
+        failAndStop(new Error(`${label} exceeded its diagnostic output limit`));
       } else stderr += text;
     });
     child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+      if (child.pid) failAndStop(error);
+      else {
+        clearTimeout(timer);
+        clearTimeout(stopTimer);
+        reject(error);
+      }
     });
     child.once("close", (code) => {
       clearTimeout(timer);
+      clearTimeout(stopTimer);
       const result = { exitCode: code ?? 1, stdout, stderr };
-      if (outputExceeded) {
-        reject(new Error(`${label} exceeded its diagnostic output limit`));
+      if (failure) {
+        reject(failure);
         return;
       }
       if (result.exitCode !== 0) {
@@ -206,6 +233,11 @@ export async function run(
       }
       resolve(result);
     });
+    try {
+      ownProcess(child);
+    } catch (error) {
+      failAndStop(error instanceof Error ? error : new Error(`${label} ownership failed`));
+    }
   });
 }
 
@@ -499,6 +531,8 @@ async function main(runtimeLease: NativeRuntimeSession) {
                 allowlistedWindowsEnvironment(),
                 "Selecting the qualification network policy",
                 15_000,
+                undefined,
+                gatewaySession.ownCommandProcess,
               )
             ).stdout,
           ),
@@ -581,12 +615,18 @@ async function main(runtimeLease: NativeRuntimeSession) {
       ["gateway", "add", `https://127.0.0.1:${gatewayPort}`, "--local", "--name", gatewayName],
       cliEnvironment,
       "Registering qualification gateway",
+      undefined,
+      undefined,
+      gatewaySession.ownCommandProcess,
     );
     await run(
       openshell,
       ["gateway", "select", gatewayName],
       cliEnvironment,
       "Selecting qualification gateway",
+      undefined,
+      undefined,
+      gatewaySession.ownCommandProcess,
     );
     const sandboxEnvironment = {
       ...worker.environment,
@@ -679,6 +719,9 @@ async function main(runtimeLease: NativeRuntimeSession) {
       ["sandbox", "delete", sandboxName],
       cliEnvironment,
       "Deleting native MXC sandbox",
+      undefined,
+      undefined,
+      gatewaySession.ownCommandProcess,
     );
     await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
       sandboxName,
@@ -741,6 +784,8 @@ async function main(runtimeLease: NativeRuntimeSession) {
               cliEnvironment,
               "Failure cleanup sandbox delete",
               30_000,
+              undefined,
+              gatewaySession.ownCommandProcess,
             );
         },
       ],

@@ -338,6 +338,13 @@ export class NativeGatewaySession {
     };
   }
 
+  get ownCommandProcess(): (child: ChildProcess) => void {
+    if (this.disposed) fail("the gateway session is disposed");
+    return (child) => {
+      this.children.add(child);
+    };
+  }
+
   preflightConfiguration(file: string): void {
     if (this.disposed || this.gateway)
       fail("configuration validation must precede gateway startup");

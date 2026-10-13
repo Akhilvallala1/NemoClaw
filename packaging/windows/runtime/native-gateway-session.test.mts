@@ -13,10 +13,140 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { NativeGatewaySession } from "./native-gateway-session.mts";
 import { writeNativeGatewayConfig } from "./native-security.mts";
+import { run } from "./run-installed-native-turn.mts";
 
 const helper = process.env.NEMOCLAW_GATEWAY_TLS_CONTROL;
 const options = { skip: !helper || process.platform !== "win32", timeout: 30_000 };
 const template = '[openshell.drivers.mxc]\nwxc_exec_path = "fixture.exe"\n';
+
+test("gateway command refuses to spawn without a process owner", async (t) => {
+  t.mock.method(childProcess, "spawn", () => {
+    throw new Error("must not spawn");
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(run("fixture", [], {}, "owned command"), /requires an owner/u);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+for (const fault of [
+  "timeout",
+  "unconfirmed",
+  "overflow",
+  "owner",
+  "diagnostic",
+  "success",
+] as const) {
+  test(`gateway command keeps process custody through ${fault}`, async (t) => {
+    const primary = new Error("owned callback failure");
+    const owned: unknown[] = [];
+    let kills = 0;
+    const child = Object.assign(new EventEmitter(), {
+      pid: 987654,
+      exitCode: null as number | null,
+      signalCode: null,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: () => {
+        kills++;
+        return false;
+      },
+    });
+    t.mock.method(childProcess, "spawn", () => child);
+    t.mock.method(console, "log", () => {});
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    syncBuiltinESMExports();
+    let outcome: { error?: unknown; value?: unknown } | undefined;
+    try {
+      const completion = run(
+        "fixture",
+        [],
+        {},
+        "owned command",
+        100,
+        {
+          capture() {
+            if (fault === "diagnostic") throw primary;
+          },
+        },
+        (process) => {
+          owned.push(process);
+          if (fault === "owner") throw primary;
+        },
+      ).then(
+        (value) => {
+          outcome = { value };
+        },
+        (error) => {
+          outcome = { error };
+        },
+      );
+      assert.deepEqual(owned, [child]);
+      if (fault === "timeout" || fault === "unconfirmed") t.mock.timers.tick(100);
+      else if (fault === "overflow") child.stdout.emit("data", Buffer.alloc(1024 * 1024 + 1, 65));
+      else if (fault === "diagnostic") child.stdout.emit("data", Buffer.from("fixture"));
+      else if (fault === "success") child.stdout.emit("data", Buffer.from("completed"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(outcome, undefined, "Do not settle while the process is unconfirmed.");
+      if (fault === "unconfirmed") {
+        t.mock.timers.tick(5000);
+        await completion;
+        assert.match(String(outcome?.error), /owned process did not close/u);
+        assert.equal(child.exitCode, null);
+        assert.match(String((outcome?.error as Error).cause), /timed out/u);
+      } else {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+        await completion;
+        if (fault === "success")
+          assert.deepEqual(outcome?.value, { exitCode: 0, stdout: "completed", stderr: "" });
+        else if (fault === "owner" || fault === "diagnostic") assert.equal(outcome?.error, primary);
+        else
+          assert.match(
+            String(outcome?.error),
+            fault === "timeout" ? /timed out/u : /output limit/u,
+          );
+      }
+      assert.equal(kills, fault === "success" ? 0 : 1);
+    } finally {
+      t.mock.timers.reset();
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+}
+
+test("gateway command owner retains the session until its command exits", async (t) => {
+  const session = new NativeGatewaySession(
+    path.resolve("owned-install"),
+    path.resolve("owned-run"),
+  );
+  const child = Object.assign(new EventEmitter(), {
+    pid: 987654,
+    exitCode: null as number | null,
+    signalCode: null,
+    kill: () => false,
+  });
+  t.mock.method(fs, "existsSync", () => false);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    session.ownCommandProcess(child as unknown as childProcess.ChildProcess);
+    const disposal = assert.rejects(session.dispose(), /owned process did not stop/u);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(5000);
+    await disposal;
+    child.exitCode = 0;
+    await session.dispose();
+    assert.throws(() => session.ownCommandProcess, /disposed/u);
+  } finally {
+    t.mock.timers.reset();
+    t.mock.restoreAll();
+  }
+});
 
 test("gateway writer rejects authentication overrides before probing and writes owned paths", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-gateway-config-control-"));

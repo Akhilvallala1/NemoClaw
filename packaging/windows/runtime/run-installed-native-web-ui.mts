@@ -1358,6 +1358,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
                         "Selecting the qualification network policy",
                         15_000,
                         diagnostics,
+                        gatewaySession.ownCommandProcess,
                       )
                     ).stdout,
                   ),
@@ -1479,6 +1480,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         "Registering the native UI gateway",
         undefined,
         diagnostics,
+        gatewaySession.ownCommandProcess,
       );
       await run(
         openshell,
@@ -1487,6 +1489,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         "Selecting the native UI gateway",
         undefined,
         diagnostics,
+        gatewaySession.ownCommandProcess,
       );
       const sandboxEnvironment = {
         ...worker.environment,
