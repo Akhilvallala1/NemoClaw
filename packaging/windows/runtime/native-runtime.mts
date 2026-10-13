@@ -278,11 +278,16 @@ export function nativeHermesCompatibility(runtime: NativeRuntimeLaunchLease) {
 
 export function nativeRuntimeWorkerCommand(runtime: NativeRuntimeLaunchLease, workload: string) {
   runtime.assertHeld();
+  // OpenClaw imports dependencies through their held, sealed runtime paths.
+  // Avoid Node's ancestor metadata walk for those imports as well as the entry;
+  // this does not add filesystem capabilities or change the runtime lease.
+  if (runtime.purpose === "openclaw")
+    return [runtime.node, "--preserve-symlinks", "--preserve-symlinks-main", workload];
   // These bundled workers do not need Node to walk ungranted parent directories
   // to canonicalize their entry point. Keep filesystem policy and dependency
   // resolution unchanged; this option applies only to the main module.
   const command =
-    runtime.purpose === "hermes" || runtime.purpose === "openclaw"
+    runtime.purpose === "hermes"
       ? [runtime.node, "--preserve-symlinks-main", workload]
       : [runtime.node, workload];
   if (runtime.purpose !== "hermes") return command;

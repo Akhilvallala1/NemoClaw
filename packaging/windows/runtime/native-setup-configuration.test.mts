@@ -449,16 +449,18 @@ test("Hermes compatibility paths and prebuilt command bind the live sealed lease
   assert.throws(() => nativeRuntimeWorkerCommand(runtime, worker), /lease revoked/u);
 });
 
-test("sealed Node workers avoid main-entry parent traversal without changing dependency resolution", () => {
+test("sealed OpenClaw workers avoid entry and dependency ancestor traversal", () => {
   const runtime = heldHermesRuntime("openclaw");
   const worker = path.win32.join(runtime.runtimeRoot, "workers", "native-runtime.cjs");
   assert.deepEqual(nativeRuntimeWorkerCommand(runtime, worker), [
     runtime.node,
+    "--preserve-symlinks",
     "--preserve-symlinks-main",
     worker,
   ]);
   assert.deepEqual(nativeRuntimeWorkerCommand({ ...runtime, purpose: "openclaw" }, worker), [
     runtime.node,
+    "--preserve-symlinks",
     "--preserve-symlinks-main",
     worker,
   ]);

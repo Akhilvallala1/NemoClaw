@@ -9,6 +9,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildNativeWorkers } from "../../packaging/windows/distribution/build-native-workers.mts";
+import { nativeRuntimeWorkerCommand } from "../../packaging/windows/runtime/native-runtime.mts";
 import { nativeWorkerApiFixture } from "../helpers/native-worker-api-fixture.ts";
 
 const owner = path.resolve("packaging/windows/installer/prepare-finished-host.py");
@@ -59,7 +60,7 @@ it.each([
 export function registerPrebuiltPlugins() {}
 export function runOpenClaw(argv) {
   if (!process.execArgv.includes("--preserve-symlinks-main")) throw new Error("Worker entry traverses denied ancestors");
-  if (process.execArgv.includes("--preserve-symlinks")) throw new Error("Dependency resolution changed");
+  if (!process.execArgv.includes("--preserve-symlinks")) throw new Error("Worker dependencies traverse denied ancestors");
   process.stdout.write(argv[2] === "--version" ? ${JSON.stringify(version)} : JSON.stringify({payloads:[{text:"CHAT_OK"}]}));
 }
 `,
@@ -72,7 +73,11 @@ export function runOpenClaw(argv) {
       const result = path.join(root, "result.json");
       const invocation = spawnSync(
         process.execPath,
-        ["--preserve-symlinks-main", path.join(output, "native-runtime.cjs")],
+        [
+          "--preserve-symlinks",
+          "--preserve-symlinks-main",
+          path.join(output, "native-runtime.cjs"),
+        ],
         {
           env: {
             ...process.env,
@@ -104,6 +109,69 @@ export function runOpenClaw(argv) {
     }
   },
 );
+
+it("packaged OpenClaw workers load dependencies without canonicalizing ungranted ancestors", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-openclaw-resolver-"));
+  const entry = path.join(root, "app.cjs");
+  const output = path.join(root, "compiled");
+  try {
+    fs.writeFileSync(
+      entry,
+      `exports.runOpenClaw = argv => {
+  require("node:assert/strict").throws(() => require("node:fs").realpathSync(__filename), /ungranted ancestor/);
+  process.stdout.write(argv[2] === "--version" ? "2026.9.2" : JSON.stringify({payloads:[{text:"CHAT_OK"}]}));
+};`,
+    );
+    const mockPort = 20000 + (process.pid % 40000);
+    await buildNativeWorkers(nativeWorkerApiFixture(root, mockPort), output);
+    const worker = path.join(output, "openclaw-invoke.cjs");
+    // Model the denied lookup before the actual generated packaged API is loaded.
+    fs.writeFileSync(
+      worker,
+      `require("node:fs").realpathSync = () => { throw new Error("ungranted ancestor"); };\n` +
+        fs.readFileSync(worker, "utf8"),
+    );
+    const [node, ...args] = nativeRuntimeWorkerCommand(
+      {
+        purpose: "openclaw",
+        node: process.execPath,
+        runtimeRoot: output,
+        runtimeId: "a".repeat(64),
+        agentRoot: root,
+        assertHeld() {},
+      },
+      path.join(output, "native-runtime.cjs"),
+    );
+    const result = path.join(root, "result.json");
+    const invocation = spawnSync(node!, args, {
+      env: {
+        ...process.env,
+        NEMOCLAW_WORKER_ROOT: output,
+        NEMOCLAW_WORKER_MODE: "openclaw-turn",
+        NEMOCLAW_MXC_OPENCLAW_ENTRY: entry,
+        NEMOCLAW_MXC_HOME: path.join(root, "home"),
+        NEMOCLAW_MXC_RESULT: result,
+        NEMOCLAW_MXC_MOCK_PORT: String(mockPort),
+      },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(invocation.error).toBeUndefined();
+    expect(invocation.status, invocation.stderr + fs.readFileSync(result, "utf8")).toBe(0);
+    expect(JSON.parse(fs.readFileSync(result, "utf8"))).toEqual({
+      executionMode: "embedded-worker",
+      version: "2026.9.2",
+      versionExitCode: 0,
+      versionError: "",
+      chatExitCode: 0,
+      chatError: "",
+      exactReply: true,
+      reply: "CHAT_OK",
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it.each([
   { agent: "openclaw", lockFile: "app/windows-app-build.lock.json", linkedTools: ["typescript"] },
