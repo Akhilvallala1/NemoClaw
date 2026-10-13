@@ -7,7 +7,7 @@ Run agent sandboxes on an existing Kubernetes or OpenShift cluster.
 NemoClaw either installs a development OpenShell gateway in a namespace it creates, or uses a gateway you already run.
 The same agent images serve Docker, Podman, Kubernetes and OpenShift.
 
-The pinned Fabric reports agent health as unsupported, so apply stops at the agent's health check after creating every resource ([#12443](https://github.com/NVIDIA/NemoClaw/issues/12443)).
+The pinned Fabric reports agent health as unsupported, so apply stops at the agent's health check after creating every resource ([#13031](https://github.com/NVIDIA/NemoClaw/issues/13031)).
 The managed gateway's authentication is a development fixture, not a production identity service ([#12692](https://github.com/NVIDIA/NemoClaw/issues/12692)).
 OpenShift's security policy admitting these pods is untested; [current limits](limits.md#platforms-models-and-placement) lists what else is untested.
 
@@ -115,4 +115,5 @@ nemoclaw destroy --state-dir .local/kubernetes
 
 Destroy removes the sandboxes, the gateway release and the development issuer.
 It keeps the namespace, the credential key Secret and the gateway's persistent volumes, as described in [deletion and retention](state.md#deletion-and-retention).
+Removing them is not covered yet ([#12640](https://github.com/NVIDIA/NemoClaw/issues/12640)).
 If destroy fails or is interrupted while removing the gateway release, follow [Recover an Interrupted Helm Removal](usage.md#recover-an-interrupted-helm-removal).

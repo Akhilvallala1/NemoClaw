@@ -39,7 +39,7 @@ Other pages state a limit where it affects a procedure and link the same issue.
 
 | Limit | Issue |
 |---|---|
-| Real Fabric adapters report health as unsupported, so [apply fails at agent readiness](usage.md#fabric-health-during-apply) | [#12443](https://github.com/NVIDIA/NemoClaw/issues/12443) |
+| Real Fabric adapters report health as unsupported, so [apply fails at agent readiness](usage.md#fabric-health-during-apply) | [#13031](https://github.com/NVIDIA/NemoClaw/issues/13031) |
 | Managed llama.cpp, Model Router and Gemini | [#12035](https://github.com/NVIDIA/NemoClaw/issues/12035) |
 | Guides for named hosted providers such as NVIDIA, OpenAI, Anthropic, OpenRouter and Nous | [#12038](https://github.com/NVIDIA/NemoClaw/issues/12038) |
 | Managed NVIDIA NIM service | [#12649](https://github.com/NVIDIA/NemoClaw/issues/12649) |
@@ -71,7 +71,9 @@ Other pages state a limit where it affects a procedure and link the same issue.
 | Backup, restore, snapshots and transfer of native agent data | [#12639](https://github.com/NVIDIA/NemoClaw/issues/12639) |
 | File locations for harnesses other than OpenClaw, Hermes and Pi | [#12639](https://github.com/NVIDIA/NemoClaw/issues/12639) |
 | Moving data from the earlier product to v1 and back | [#12639](https://github.com/NVIDIA/NemoClaw/issues/12639) |
-| A purge command or verified procedure to remove retained resources | [#12640](https://github.com/NVIDIA/NemoClaw/issues/12640) |
+| A purge command | [#12640](https://github.com/NVIDIA/NemoClaw/issues/12640) |
+| Removing retained Podman, Kubernetes, and external-gateway workspace resources | [#12640](https://github.com/NVIDIA/NemoClaw/issues/12640) |
+| Verified removal of managed service volumes and of objects on SSH engines | [#12640](https://github.com/NVIDIA/NemoClaw/issues/12640) |
 
 ## Security
 

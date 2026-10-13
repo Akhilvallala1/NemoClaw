@@ -95,6 +95,36 @@ Examples use the SDK default image or an explicit image digest, plus deployment 
 Build/select your own matching images and replace those values before use.
 An accepted example is a configuration contract, not evidence that the combination completes live inference.
 
+## Set Container Limits and Update Policy
+
+Managed `kind: vllm` and `kind: ollama` services use `container` for CPU and system-memory limits on Docker.
+Set these fields under the service, alongside its model and serving settings:
+
+```yaml
+# Under spec.services.<name>:
+container:
+  cpuLimitMillis: 4000
+  memoryLimitGiB: 64
+updatePolicy: Preserve
+```
+
+`cpuLimitMillis: 4000` caps CPU use at four cores; `memoryLimitGiB` limits the container's system memory.
+These fields do not set the GPU budget: `memory.gpuMemoryGiB`, `memory.gpuMemoryUtilization`, and backend-specific cache settings retain their runtime meanings.
+The runtime's resident host-memory monitor reads `/proc`, not cgroup memory pressure, so the kernel can OOM-kill a container that reaches `memoryLimitGiB` before the monitor stops inference.
+Docker defaults to a 104 GiB memory limit and no CPU cap when these limits are omitted.
+Native managed inference on Podman remains unsupported; a Podman gateway can consume a service on an explicitly selected remote Docker engine through [SSH placement](remote-service.md).
+These shared fields do not change [platform qualification limits](limits.md#platforms-models-and-placement).
+
+The service-level `updatePolicy` defaults to `Preserve`.
+For Docker, this refuses an update that would replace a running managed model container.
+Changing the image, model, serving settings, `cpuLimitMillis`, or `memoryLimitGiB` replaces the container; declaring the omitted 104 GiB default as `memoryLimitGiB: 104` does not.
+Earlier bundles replaced a running Docker model container for image, model, and serving changes without a policy; to keep that behavior, for example when automation updates images, set `spec.services.<name>.updatePolicy: Recreate`.
+Set `updatePolicy: Recreate` only when accepting sequential replacement and possible downtime if the replacement cannot start.
+The opt-in persists for later updates until removed or changed to `Preserve`; changing only this policy does not restart the workload.
+Initial creation, unchanged apply, and recovery of missing or stopped Docker containers remain allowed after ownership checks.
+Retained model data and credentials remain bound to the deployment.
+This policy applies to managed vLLM and Ollama, not the Ollama proxy or gateway; see [change constraints](usage.md#choose-the-change-path).
+
 ## Choose the Request API
 
 Set `api` on the selected provider, whether inline or referenced, to the request API your endpoint accepts.
@@ -182,7 +212,7 @@ services:
       name: qwen3:0.6b
       digest: 7df6b6e09427a769808717c0a93cadc4ae99ed4eb8bf5ca557c90846becea435
     serving:
-      contextTokens: 8192
+      contextTokens: 32768
       maxSequences: 1
     memory:
       gpuMemoryGiB: 16
@@ -236,22 +266,44 @@ Live image builds, GPU inference, tools and agent replies with this adapter have
 
 Set `authentication: bearer` under `spec.services.<name>` to generate a private key for a managed vLLM service.
 Omission preserves the existing unauthenticated serving behavior.
-Build the [runtime image](build.md#build-a-runtime-image) from this revision and use its immutable digest; a container created from an incompatible image will not satisfy application readiness.
+Build the [runtime image](build.md#build-a-runtime-image) from this revision and use its immutable digest.
+Authenticated services require both `org.nemoclaw.inference.authentication=bearer-v1` and `org.nemoclaw.inference.routes=openai-v2`; image validation rejects other images before creating the runtime, including `openai-v1` images from earlier revisions, whose middleware passed every `/v1` path.
 Do not supply `inferenceProviders[].credential` for a managed service.
 
 The supervisor creates a mode-0600 key in `/credentials/inference-key` on a separate credential volume under its own writer lock and reuses it after restart.
-It passes the key only to the vLLM child process through `VLLM_API_KEY`, then verifies `/v1/models` using bearer authentication before reporting readiness.
+It passes the key only to the vLLM child process through `VLLM_API_KEY`, then verifies `/v1/models` through the route filter below, using bearer authentication, before reporting readiness.
 Recipe environment maps cannot set `VLLM_API_KEY`.
 The OpenShell provider reads the key through the verified runtime container identity and installs it in OpenShell's provider credential store.
 Agent requests use their OpenShell placeholder credential.
 YAML, plans, container launch settings, and OpenTofu state contain no generated key.
 The runtime's root user and Docker administrators can read the key and child environment.
-The private published HTTP endpoint provides bearer authentication without TLS.
+The key authenticates the `/v1` requests below and does not provide TLS.
+In bearer mode, the supervisor serves the published port with HTTP/1.1 and forwards only these requests to vLLM:
+
+- `GET /v1/models` and `POST` to `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/messages`, or `/v1/messages/count_tokens`, each of which requires the key.
+- `GET /health`, which is public.
+
+vLLM listens only on `127.0.0.1` inside the container, at the port after `serving.port`, or at 65534 when `serving.port` is 65535.
+The supervisor compares the method and the path exactly as sent, without decoding or normalizing the path.
+It forwards the query string and end-to-end headers, including `Authorization`, removes hop-by-hop headers such as `Connection`, and streams request and response bodies.
+Because vLLM's server trusts forwarding headers from loopback, the supervisor replaces `X-Forwarded-For` with the connecting address and removes `X-Forwarded-Proto`; vLLM's access log shows that address with port 0.
+Every other request returns HTTP 404 with `{"error":"Not found"}` before reaching vLLM, with or without the key, and the supervisor does not log it.
+This includes `POST /invocations`, `OPTIONS` requests, `HEAD /health`, dot-segment or percent-encoded spellings such as `/v1/../invocations` and `/v1/%6Dodels`, a trailing slash such as `/v1/models/`, absolute-form request targets, requests that offer a protocol upgrade, such as WebSocket or the h2c offer of `curl --http2`, and management routes that recipe `VLLM_*` variables can enable, such as `/v1/load_lora_adapter`.
+An allowed request returns HTTP 400 with `{"error":"Bad request"}` when its body cannot be read, such as invalid chunked framing, and HTTP 502 while vLLM is not accepting connections.
+A client must send its request headers within 30 seconds.
+A client that closes its sending side before the response arrives is treated as disconnected.
+The supervisor serves at most 256 connections at a time, or fewer when the container's maximum open-file limit is below 640; later connections wait to be accepted.
+If the route filter fails, the supervisor stops vLLM and reports the failure.
+This restriction closes an upstream gap: the [native vLLM authentication middleware](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/utils/server_utils.py) leaves `/invocations` unguarded, and an operator's test of an earlier image returned a chat completion through that route without a key.
+Omitting `authentication: bearer` leaves the upstream route behavior unchanged; vLLM then serves the published port itself.
+Keep the whole listener on a trusted private network, including when `authentication: bearer` is enabled.
+For Docker, restrict access through the host's network controls.
 
 Destroy removes the runtime and provider registration and retains the separate model and credential volumes.
 Recreation using the retained credential volume reuses the key.
 A missing key after initialization or invalid key metadata stops startup and retains storage for inspection.
 Retire model data and credentials separately; removing the model volume does not erase the credential.
+To retire both with the deployment, see [Remove Retained Resources](usage.md#remove-retained-resources).
 Changing an existing service to enable authentication follows the normal runtime replacement rules; YAML does not reconfigure a running server in place.
 
 ## Use External Ollama through a Managed Proxy
@@ -315,7 +367,7 @@ An explicit apply can reconcile an owned, stopped proxy after its external model
 A missing or insecure retained key stops startup; it is never regenerated beside initialized storage.
 Destroy removes the proxy and OpenShell registration and retains the credential volume; the external daemon and model remain untouched.
 Reapplying the original configuration reuses that retained key.
-Remove the retained credential volume explicitly when retiring the deployment.
+When retiring the deployment, remove the retained credential volume with [Remove Retained Resources](usage.md#remove-retained-resources).
 
 ## Tune OpenClaw's Primary Route
 
@@ -338,8 +390,36 @@ The selected adapter's model schema and implementation own the meanings, accepte
 These settings do not resize a managed inference server; configure that service's limits separately.
 The SDK does not infer native support from an adapter name or from accepting the YAML structure.
 
+The managed Ollama examples set both the service's `serving.contextTokens` and the route's `overrides.settings.model_metadata.contextWindow` to `32768`.
+That suits OpenClaw; [Hermes needs at least `64000`](#size-the-context-for-hermes).
+An operator-reported prompt used 19,947 tokens in one setup, before allowing space for a reply.
+Keep the two limits aligned and size the model, KV cache, and GPU memory for the selected context.
+
+For an OpenClaw route to managed vLLM or Ollama, plan and apply compare the smaller of the service context and the effective route context window with `20000` plus the effective reply allowance.
+At the pinned adapter revision, omitted route context defaults to `32768`; `overrides.settings.model_metadata.contextWindow` replaces that default.
+The reply allowance defaults to `4096`; `overrides.maxTokens` replaces that default, and `overrides.settings.model_metadata.maxTokens` takes precedence over both.
+A smaller available context produces a budget warning; explicit token metadata that cannot be assessed instead produces a warning without substituting defaults.
+The `20000`-token prompt allowance is an estimate from the report; longer prompts and conversations need more.
+Plan and apply also warn whenever the effective route context window exceeds the managed service's `serving.contextTokens`, even when the initial prompt and reply allowance fit.
+For example, a service context of `24576` with the default route window of `32768` can permit longer conversations to exceed the server limit.
+Set `overrides.settings.model_metadata.contextWindow` no higher than the service context, or increase the service context and size memory for it.
+This mismatch warning can appear alongside the budget warning, or alongside the cannot-assess warning when the route window is valid but the reply allowance is not.
+The advisories appear in text output and the JSON result's `warnings` field; they neither reject the configuration nor measure the current prompt or available memory.
+These budgets do not qualify a model, GPU, or deployment path.
+
 Pi's native model metadata likewise belongs in `overrides.settings.model_metadata`; see the [Pi example](../examples/fabric-pi.yaml).
 Nested null values remain intact in opaque native settings.
+
+## Size the Context for Hermes
+
+The pinned Hermes Agent requires a model context window of at least 64,000 tokens.
+It reads the window from the model server; route settings such as `overrides.settings.model_metadata` do not change it.
+For a Hermes route to managed vLLM or Ollama, set `serving.contextTokens` between `64000` and the schema maximum, `65536`, and choose a model that supports that context.
+The models in the managed Ollama examples and the [Spark vLLM example](../examples/spark/vllm.yaml), `qwen3:0.6b` and `Qwen/Qwen3-4B`, have 40,960-token native context windows and cannot serve Hermes.
+In one operator test, Hermes answered a request through cluster vLLM serving `Qwen/Qwen3-4B-Instruct-2507` with `serving.contextTokens: 65536`; that test does not qualify the model.
+
+Plan and apply warn when a Hermes route uses a managed vLLM or Ollama service whose `serving.contextTokens` is below `64000`; the warning does not reject the configuration.
+
 ## Authenticate Hermes through the Provider
 
 Declare an external HTTPS provider with a credential reference, then select it from the route and enable Hermes authentication:

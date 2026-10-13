@@ -8,10 +8,11 @@ use crate::{
 };
 use nemoclaw_sdk::{Error, OperationResult, Outcome};
 use std::{
+    collections::BTreeSet,
     io::IsTerminal,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -21,6 +22,7 @@ use std::{
 pub(crate) struct RenderContext {
     operation: &'static str,
     mutation_started: Arc<AtomicBool>,
+    warnings: Arc<Mutex<BTreeSet<String>>>,
     state_dir: PathBuf,
     input: Option<PathBuf>,
     verbose: bool,
@@ -42,6 +44,7 @@ impl RenderContext {
         Self {
             operation,
             mutation_started: Arc::new(AtomicBool::new(false)),
+            warnings: Arc::new(Mutex::new(BTreeSet::new())),
             input,
             state_dir: cli.state_dir.clone(),
             verbose: cli.verbose,
@@ -62,14 +65,40 @@ impl RenderContext {
         display: Arc<dyn Fn(nemoclaw_sdk::Progress) + Send + Sync>,
     ) -> Arc<dyn Fn(nemoclaw_sdk::Progress) + Send + Sync> {
         let mutation_started = self.mutation_started.clone();
+        let warnings = self.warnings.clone();
         Arc::new(move |event| {
             // Record synchronously even when progress rendering is disabled or
             // its display channel is closed. Later stages never reset this fact.
             if event == nemoclaw_sdk::Progress::MutationStarted {
                 mutation_started.store(true, Ordering::Relaxed);
             }
+            if let nemoclaw_sdk::Progress::Warning { message } = &event {
+                warnings
+                    .lock()
+                    .expect("warning collection")
+                    .insert(message.clone());
+            }
             display(event);
         })
+    }
+
+    fn warnings(&self) -> Vec<String> {
+        self.warnings
+            .lock()
+            .expect("warning collection")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    fn append_warnings(&self, output: &mut String) {
+        let warnings = self.warnings();
+        if !warnings.is_empty() {
+            output.push_str("\nWarnings:\n");
+            for warning in warnings {
+                output.push_str(&format!("  {}\n", terminal_text(&warning)));
+            }
+        }
     }
 
     pub(crate) fn header(&self) -> String {
@@ -95,9 +124,15 @@ pub(crate) fn render(
         CommandResult::Export(document) => Ok(document.yaml()?),
         CommandResult::Authored(path) => Ok(path.map(|path| format!("Authored desired state: {}\nRun nemoclaw plan with this file when you are ready to check deployment.\n", terminal_text(&path.display().to_string()))).unwrap_or_default()),
         CommandResult::Operation(result) => match format {
-            OutputFormat::Text => Ok(operation(&result, context)),
+            OutputFormat::Text => {
+                let mut output = operation(&result, context);
+                context.append_warnings(&mut output);
+                Ok(output)
+            },
             OutputFormat::Json => {
                 let mut value = serde_json::to_value(&result)?;
+                let warnings = context.warnings();
+                if !warnings.is_empty() { value["warnings"] = serde_json::json!(warnings); }
                 if result.outcome == Outcome::Planned {
                     value["complete"] = serde_json::Value::Bool(result.deferred.is_empty());
                 }
@@ -573,6 +608,10 @@ pub(crate) fn render_error(
         "stateDirectory": context.state_dir,
         "error": { "message": message },
     });
+    let warnings = context.warnings();
+    if !warnings.is_empty() {
+        details["warnings"] = serde_json::json!(warnings);
+    }
     if let Some(input) = &context.input {
         details["input"] = serde_json::json!(input);
     }
@@ -593,14 +632,17 @@ pub(crate) fn render_error(
     }
     let help = match sdk {
         Some(Error::SandboxChangeRefused { .. }) => Some(
-            "Keep this deployment's state. Use a separate deployment with a fresh UID and state directory; see docs/usage.md#choose-the-change-path. Export and destroy still use the retained configuration.",
+            "Keep this deployment's state. Use a separate deployment with a fresh UID and state directory; see docs/usage.md#choose-the-change-path. Export and destroy still use the retained configuration.".to_owned(),
         ),
         Some(Error::SandboxStartup { .. }) => Some(
-            "Inspect the sandbox with OpenShell using this deployment's gateway and workspace; collect gateway and supervisor logs before cleanup.",
+            "Inspect the sandbox with OpenShell using this deployment's gateway and workspace; collect gateway and supervisor logs before cleanup.".to_owned(),
         ),
+        Some(Error::DockerModelUpdateRefused { service }) => Some(format!(
+            "To replace the running model container, set spec.services.{service}.updatePolicy: Recreate and apply again; the model is unavailable until the replacement starts. See docs/inference.md#set-container-limits-and-update-policy."
+        )),
         _ => None,
     };
-    if let Some(help) = help {
+    if let Some(help) = &help {
         details["help"] = serde_json::json!(help);
     }
     match format {
@@ -637,8 +679,9 @@ pub(crate) fn render_error(
                 output.push_str(&format!("\n{remaining}\n"));
             }
             if let Some(help) = help {
-                output.push_str(&format!("\n{help}\n"));
+                output.push_str(&format!("\n{}\n", terminal_text(&help)));
             }
+            context.append_warnings(&mut output);
             output
         }
     }
@@ -658,6 +701,49 @@ mod tests {
             &RenderContext::new(&cli),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn warnings_survive_hidden_progress_and_successful_or_failed_json_output() {
+        let message = "Service qwen relies on NetworkPolicy enforcement.\u{1b}[2J";
+        for command in ["plan", "apply"] {
+            let cli = Cli::try_parse_from(["nemoclaw", "--progress", "off", command, "model.yaml"])
+                .unwrap();
+            let context = RenderContext::new(&cli);
+            let progress = context.progress(Arc::new(|_| {}));
+            progress(nemoclaw_sdk::Progress::Warning {
+                message: message.into(),
+            });
+            progress(nemoclaw_sdk::Progress::Warning {
+                message: message.into(),
+            });
+            let result: OperationResult = serde_json::from_value(json!({"outcome":if command == "plan" {"planned"} else {"succeeded"}, "changes":[]})).unwrap();
+            let text = super::render(
+                CommandResult::Operation(Box::new(result.clone())),
+                OutputFormat::Text,
+                &context,
+            )
+            .unwrap();
+            assert!(text.contains("NetworkPolicy"), "{text}");
+            assert!(!text.contains('\u{1b}'));
+            let machine: Value = serde_json::from_str(
+                &super::render(
+                    CommandResult::Operation(Box::new(result)),
+                    OutputFormat::Json,
+                    &context,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(machine["warnings"], json!([message]));
+            let error = Error::Bundle("bundle unavailable");
+            let failed = render_error(&error, OutputFormat::Text, &context);
+            assert!(failed.contains("NetworkPolicy"));
+            assert!(!failed.contains('\u{1b}'));
+            let failed: Value =
+                serde_json::from_str(&render_error(&error, OutputFormat::Json, &context)).unwrap();
+            assert_eq!(failed["warnings"], json!([message]));
+        }
     }
 
     #[test]
@@ -1014,6 +1100,28 @@ mod tests {
                 .unwrap()
                 .contains("docs/usage.md#choose-the-change-path")
         );
+    }
+
+    #[test]
+    fn docker_model_refusal_names_the_service_update_policy_field() {
+        for command in ["plan", "apply"] {
+            let cli = Cli::try_parse_from(["nemoclaw", command, "spark.yaml"]).unwrap();
+            let context = RenderContext::new(&cli);
+            let error = Error::DockerModelUpdateRefused {
+                service: "qwen".into(),
+            };
+            let json: Value =
+                serde_json::from_str(&render_error(&error, OutputFormat::Json, &context)).unwrap();
+            let help = json["help"].as_str().unwrap();
+            for expected in [
+                "spec.services.qwen.updatePolicy: Recreate",
+                "docs/inference.md#set-container-limits-and-update-policy",
+            ] {
+                assert!(help.contains(expected), "missing {expected}: {help}");
+            }
+            let text = render_error(&error, OutputFormat::Text, &context);
+            assert!(text.contains(help), "{text}");
+        }
     }
 
     #[test]

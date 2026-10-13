@@ -28,7 +28,7 @@ The output defaults to `deployment.yaml`; onboarding never overwrites an existin
 It requires a terminal and does not create deployment state or apply resources.
 A verified bundle enables read-only provider discovery; without one, authoring remains available with the target marked unverified.
 Known engine incompatibility or conflicting image platform, manifest digest, or Fabric adapter requirements blocks onboarding review and saving.
-The [onboarding guide](../../examples/onboarding-tui/README.md) describes adaptive questions, supported inputs, and target checks.
+The [onboarding guide](../../crates/nemoclaw-onboarding/README.md) describes adaptive questions, supported inputs, and target checks.
 
 Plan and apply derive credential requirements from the parsed document.
 They use a matching nonempty environment variable first and prompt only for unresolved references.
@@ -107,6 +107,7 @@ A nonempty `NO_COLOR` disables styling while preserving inline progress.
 Redirected streams and JSON/YAML results have no added styling; `--progress plain` also disables styling and the wordmark.
 Plain output reports stage changes and throttled waiting updates without cursor movement; use `--progress plain` for a terminal transcript or accessibility.
 Use `--progress off` to suppress progress while preserving results and errors.
+Warnings remain in final text and JSON output even when progress is off or the operation fails.
 Redirected stderr uses plain progress by default, so scripts requiring a quiet stream should explicitly select `off`.
 
 Resource operations come from OpenTofu's machine-readable events.
@@ -117,12 +118,13 @@ Default progress omits known implementation steps; unrecognized resources and er
 Verbose output adds implementation steps, internal addresses, timings, and outcomes.
 Progress is best-effort and never determines the operation's success.
 
-The CLI preserves the [SDK result fields](../../crates/nemoclaw-sdk/src/deployment/mod.rs) and adds plan completeness for scripts:
+The CLI preserves the [SDK result fields](../../crates/nemoclaw-sdk/src/deployment/mod.rs) and adds plan completeness and collected warnings for scripts:
 
 | Field | Meaning |
 |---|---|
 | `outcome` | `planned`, `succeeded`, or `destroyed` |
 | `complete` | Whether a planned result has no deferred work; inspect this alongside the exit code |
+| `warnings` | Operator-action messages collected during the operation; also present on failures, omitted when empty; does not change `complete` |
 | `changes` | Resource addresses and planned/applied action lists; an empty list does not mean apply skipped readiness checks |
 | `connection` | Plan/apply gateway endpoint and UID-derived workspace selectors; does not establish access or configure OpenShell CLI credentials |
 | `deferred` | Unresolved planning prerequisites or resource stages; omitted when empty |
