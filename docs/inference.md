@@ -256,11 +256,13 @@ In bearer mode, the supervisor serves the published port with HTTP/1.1 and forwa
 vLLM listens only on `127.0.0.1` inside the container, at the port after `serving.port`, or at 65534 when `serving.port` is 65535.
 The supervisor compares the method and the path exactly as sent, without decoding or normalizing the path.
 It forwards the query string and end-to-end headers, including `Authorization`, removes hop-by-hop headers such as `Connection`, and streams request and response bodies.
-Because vLLM's server trusts forwarding headers from loopback, the supervisor replaces `X-Forwarded-For` with the connecting address and removes `X-Forwarded-Proto`.
-Every other request returns HTTP 404 with `{"error":"Not found"}` before reaching vLLM, with or without the key.
-This includes `POST /invocations`, `OPTIONS` requests, `HEAD /health`, other spellings of an allowed path such as `/v1/../invocations` or `/v1/models/`, absolute-form request targets, protocol upgrades such as WebSockets, and management routes that recipe `VLLM_*` variables can enable, such as `/v1/load_lora_adapter`.
-An allowed request returns HTTP 502 while vLLM is not accepting connections.
+Because vLLM's server trusts forwarding headers from loopback, the supervisor replaces `X-Forwarded-For` with the connecting address and removes `X-Forwarded-Proto`; vLLM's access log shows that address with port 0.
+Every other request returns HTTP 404 with `{"error":"Not found"}` before reaching vLLM, with or without the key, and the supervisor does not log it.
+This includes `POST /invocations`, `OPTIONS` requests, `HEAD /health`, dot-segment or percent-encoded spellings such as `/v1/../invocations` and `/v1/%6Dodels`, a trailing slash such as `/v1/models/`, absolute-form request targets, requests that offer a protocol upgrade, such as WebSocket or the h2c offer of `curl --http2`, and management routes that recipe `VLLM_*` variables can enable, such as `/v1/load_lora_adapter`.
+An allowed request returns HTTP 400 with `{"error":"Bad request"}` when its body cannot be read, such as invalid chunked framing, and HTTP 502 while vLLM is not accepting connections.
 A client must send its request headers within 30 seconds.
+A client that closes its sending side before the response arrives is treated as disconnected.
+The supervisor serves at most 256 connections at a time, or fewer when the container's maximum open-file limit is below 640; later connections wait to be accepted.
 If the route filter fails, the supervisor stops vLLM and reports the failure.
 This restriction closes an upstream gap: the [native vLLM authentication middleware](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/utils/server_utils.py) leaves `/invocations` unguarded, and an operator's test of an earlier image returned a chat completion through that route without a key.
 Omitting `authentication: bearer` leaves the upstream route behavior unchanged; vLLM then serves the published port itself.

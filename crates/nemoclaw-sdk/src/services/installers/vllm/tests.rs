@@ -161,7 +161,7 @@ fn every_runtime_contract_setting_has_an_opentofu_attribute() {
 }
 
 #[test]
-fn bearer_runtime_launch_restricts_routes_without_changing_unauthenticated_services() {
+fn bearer_vllm_listens_on_loopback_beside_the_published_port_with_otherwise_unchanged_arguments() {
     let after = |arguments: &[String], flag: &str| {
         arguments
             .iter()

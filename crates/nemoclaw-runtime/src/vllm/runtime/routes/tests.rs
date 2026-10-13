@@ -55,7 +55,12 @@ impl Upstream {
                     let recorded = recorded.clone();
                     async move {
                         let (parts, body) = request.into_parts();
-                        let body = body.collect().await.unwrap().to_bytes().to_vec();
+                        // A request whose body the filter could not forward is
+                        // incomplete and not recorded.
+                        let Ok(body) = body.collect().await else {
+                            return Ok(Response::new(Full::new(Bytes::new())));
+                        };
+                        let body = body.to_bytes().to_vec();
                         recorded.lock().unwrap().push(Seen {
                             method: parts.method.to_string(),
                             target: parts.uri.to_string(),
@@ -99,8 +104,19 @@ impl Upstream {
 async fn filter(backend: SocketAddr, header_timeout: Duration) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    tokio::spawn(serve(listener, backend, header_timeout));
+    tokio::spawn(serve(listener, backend, header_timeout, CONNECTIONS));
     address
+}
+
+/// Open a connection, have one request served on it, and keep it open, idle.
+async fn keep_alive(address: SocketAddr) -> TcpStream {
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .await
+        .unwrap();
+    read_response(&mut stream, r#"{"ok":true}"#).await;
+    stream
 }
 
 /// Write raw bytes on a new connection and read until the filter closes it.
@@ -248,9 +264,9 @@ async fn requests_outside_the_inference_routes_get_not_found_without_reaching_vl
     let address = filter(upstream.address, HEADER_TIMEOUT).await;
     let absolute = format!("http://{address}/invocations");
     let absolute_allowed = format!("http://{address}/v1/models");
-    // The probes of the live X1 review: unguarded and management routes,
-    // methods outside the allowlist, and spellings that a normalizing proxy or
-    // vLLM's router could resolve to another route.
+    // Unguarded and management routes, methods outside the allowlist, and
+    // spellings that a normalizing proxy or vLLM's router could resolve to
+    // another route.
     for (method, target) in [
         ("POST", "/invocations"),
         ("POST", "/tokenize"),
@@ -492,6 +508,33 @@ async fn unreachable_vllm_returns_bad_gateway() {
 }
 
 #[tokio::test]
+async fn a_request_body_that_cannot_be_read_gets_bad_request() {
+    let upstream = Upstream::start().await;
+    let address = filter(upstream.address, HEADER_TIMEOUT).await;
+    // A chunk size that is not hexadecimal, and one that overflows.
+    for chunks in [
+        "zz\r\nabc\r\n0\r\n\r\n",
+        "10000000000000003\r\nabc\r\n0\r\n\r\n",
+    ] {
+        let response = exchange(
+            address,
+            &format!("POST /v1/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: {KEY}\r\nTransfer-Encoding: chunked\r\n\r\n{chunks}"),
+        )
+        .await;
+        assert_eq!(statuses(&response), ["400"], "{chunks:?}: {response}");
+        assert!(
+            response.contains("content-type: application/json\r\n"),
+            "{response}"
+        );
+        assert!(
+            response.ends_with(r#"{"error":"Bad request"}"#),
+            "{response}"
+        );
+    }
+    assert!(upstream.requests().is_empty());
+}
+
+#[tokio::test]
 async fn pipelined_requests_on_one_connection_are_each_filtered() {
     let upstream = Upstream::start().await;
     let address = filter(upstream.address, HEADER_TIMEOUT).await;
@@ -589,12 +632,78 @@ async fn incomplete_request_headers_time_out() {
 }
 
 #[tokio::test]
+async fn connections_beyond_the_limit_wait_until_a_served_one_closes() {
+    let upstream = Upstream::start().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(serve(listener, upstream.address, HEADER_TIMEOUT, 2));
+    let mut served = vec![keep_alive(address).await, keep_alive(address).await];
+    let mut waiting = TcpStream::connect(address).await.unwrap();
+    waiting
+        .write_all(request("GET", "/health").as_bytes())
+        .await
+        .unwrap();
+    let mut first = [0; 1];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), waiting.read(&mut first))
+            .await
+            .is_err(),
+        "the filter served a connection beyond its limit"
+    );
+    drop(served.pop());
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), waiting.read_to_end(&mut response))
+        .await
+        .expect("the waiting connection is served once another closes")
+        .unwrap();
+    assert_eq!(statuses(&String::from_utf8(response).unwrap()), ["200"]);
+    assert_eq!(upstream.connections.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn the_filter_raises_the_open_file_limit_and_leaves_descriptors_for_the_supervisor() {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let original = getrlimit(Resource::Nofile);
+    // Container runtimes commonly start processes with a soft limit of 1024.
+    let soft = original.maximum.map_or(1024, |hard| hard.min(1024));
+    setrlimit(
+        Resource::Nofile,
+        Rlimit {
+            current: Some(soft),
+            ..original
+        },
+    )
+    .unwrap();
+    let served = connections();
+    let raised = getrlimit(Resource::Nofile);
+    setrlimit(Resource::Nofile, original).unwrap();
+    assert_eq!(raised.current, original.maximum);
+    assert_eq!(served, capacity(original.maximum.unwrap_or(u64::MAX)));
+    assert_eq!(capacity(1024), CONNECTIONS);
+    // Each connection holds the client's socket and one to vLLM. As many as
+    // fit beside the reserve are served, up to the cap, and at least one.
+    for descriptors in [0, 129, 130, 131, 640, 641, 1024, 1 << 20, u64::MAX] {
+        let served = capacity(descriptors) as u64;
+        assert!((1..=CONNECTIONS as u64).contains(&served), "{descriptors}");
+        if descriptors >= RESERVED_DESCRIPTORS + 2 {
+            assert!(
+                2 * served + RESERVED_DESCRIPTORS <= descriptors,
+                "{descriptors}"
+            );
+        }
+        assert!(
+            served == CONNECTIONS as u64 || 2 * (served + 1) + RESERVED_DESCRIPTORS > descriptors,
+            "{descriptors}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn binding_an_occupied_published_port_fails() {
     let occupied = TcpListener::bind("0.0.0.0:0").await.unwrap();
-    let port = occupied.local_addr().unwrap().port();
-    assert!(bind(port).await.is_err());
-    drop(occupied);
-    let listener = bind(port).await.unwrap();
+    assert!(bind(occupied.local_addr().unwrap().port()).await.is_err());
+    // A released port may go to another test at once, so check a fresh one.
+    let listener = bind(0).await.unwrap();
     assert!(listener.local_addr().unwrap().ip().is_unspecified());
 }
 
@@ -650,13 +759,13 @@ async fn stopping_supervision_stops_the_filter() {
     let upstream = Upstream::start().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let filter = tokio::spawn(serve(listener, upstream.address, HEADER_TIMEOUT));
-    // A served keep-alive connection stays open, idle, until the filter stops.
-    let mut idle = TcpStream::connect(address).await.unwrap();
-    idle.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        .await
-        .unwrap();
-    read_response(&mut idle, r#"{"ok":true}"#).await;
+    let filter = tokio::spawn(serve(listener, upstream.address, HEADER_TIMEOUT, 1));
+    // A served keep-alive connection stays open, idle, until the filter stops,
+    // and holds the only slot, so the next connection waits in the listener's
+    // backlog. Closing the listener resets it; a released port could be
+    // reused by another test, so the test does not connect to it again.
+    let mut idle = keep_alive(address).await;
+    let mut queued = TcpStream::connect(address).await.unwrap();
     let mut child = sleeper();
     let (_samples_tx, samples) = tokio::sync::mpsc::channel(1);
     let (_ready_tx, ready) = tokio::sync::mpsc::channel(1);
@@ -681,9 +790,11 @@ async fn stopping_supervision_stops_the_filter() {
             .to_string()
             .contains("stopped by operator")
     );
-    assert!(TcpStream::connect(address).await.is_err());
     let mut rest = Vec::new();
     let _ = tokio::time::timeout(Duration::from_secs(3), idle.read_to_end(&mut rest))
         .await
         .expect("the filter closes the connections it accepted");
+    let _ = tokio::time::timeout(Duration::from_secs(3), queued.read_to_end(&mut rest))
+        .await
+        .expect("the filter closes its listener");
 }

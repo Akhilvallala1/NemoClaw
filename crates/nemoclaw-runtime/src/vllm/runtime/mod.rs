@@ -133,7 +133,12 @@ async fn run_owned(
     };
     let result = match filter {
         Some((listener, vllm)) => {
-            let filter = tokio::spawn(routes::serve(listener, vllm, routes::HEADER_TIMEOUT));
+            let filter = tokio::spawn(routes::serve(
+                listener,
+                vllm,
+                routes::HEADER_TIMEOUT,
+                routes::connections(),
+            ));
             routes::supervise(policy, child.as_mut(), monitors, cancel, filter).await
         }
         None => supervisor::supervise(policy, child.as_mut(), monitors, cancel).await,

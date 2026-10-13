@@ -24,15 +24,51 @@ use process_wrap::tokio::ChildWrapper;
 use std::{
     convert::Infallible,
     net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
     net::{TcpListener, TcpStream},
+    sync::Semaphore,
     task::{JoinHandle, JoinSet},
 };
 
 /// A client must send a complete request head within this time.
 pub(super) const HEADER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Client connections the filter serves at once, far more than the sequences
+/// vLLM runs concurrently; later clients wait in the listen backlog.
+const CONNECTIONS: usize = 256;
+
+/// Descriptors kept for the supervisor itself, which must keep sampling
+/// memory, reporting status and probing readiness however many clients
+/// connect. Running out stops vLLM.
+const RESERVED_DESCRIPTORS: u64 = 128;
+
+/// Raise the supervisor's open-file limit to its maximum, as vLLM raises its
+/// own, and return how many connections the filter can serve. Call it after
+/// vLLM starts, so vLLM inherits the container's limit unchanged.
+pub(super) fn connections() -> usize {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let limit = getrlimit(Resource::Nofile);
+    let _ = setrlimit(
+        Resource::Nofile,
+        Rlimit {
+            current: limit.maximum,
+            ..limit
+        },
+    );
+    capacity(getrlimit(Resource::Nofile).current.unwrap_or(u64::MAX))
+}
+
+/// The connections that fit beside the reserve, up to the cap. Each holds two
+/// descriptors: the client's socket and the one to vLLM.
+fn capacity(descriptors: u64) -> usize {
+    let fit = descriptors.saturating_sub(RESERVED_DESCRIPTORS) / 2;
+    usize::try_from(fit)
+        .unwrap_or(usize::MAX)
+        .clamp(1, CONNECTIONS)
+}
 
 /// Model listing and the request endpoints of the Chat Completions,
 /// Completions, Responses, and Anthropic Messages APIs, each of which requires
@@ -138,8 +174,18 @@ async fn forward(
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(sender.send_request(upstream).await?)
     }
     .await;
-    let Ok(response) = response else {
-        return reply(StatusCode::BAD_GATEWAY, r#"{"error":"Bad gateway"}"#);
+    let response = match response {
+        Ok(response) => response,
+        // hyper reports a client body that cannot be read, such as one with
+        // invalid chunked framing, as a user error of the forwarded request.
+        Err(error)
+            if error
+                .downcast_ref::<hyper::Error>()
+                .is_some_and(hyper::Error::is_user) =>
+        {
+            return reply(StatusCode::BAD_REQUEST, r#"{"error":"Bad request"}"#);
+        }
+        Err(_) => return reply(StatusCode::BAD_GATEWAY, r#"{"error":"Bad gateway"}"#),
     };
     let (parts, body) = response.into_parts();
     let mut response = Response::new(Either::Left(body));
@@ -159,20 +205,29 @@ pub(super) async fn bind(port: u16) -> Result<TcpListener, Error> {
 }
 
 /// Serve HTTP/1.1 until dropped, which closes the listener and every accepted
-/// connection. Accept failures, such as descriptor exhaustion, are retried,
+/// connection. At most `connections` are served at once; later clients wait
+/// in the listen backlog, where they hold none of the supervisor's
+/// descriptors. Accept failures, such as descriptor exhaustion, are retried,
 /// so this returns only by panicking.
 pub(super) async fn serve(
     listener: TcpListener,
     backend: SocketAddr,
     header_timeout: Duration,
+    connections: usize,
 ) -> Infallible {
     let mut builder = http1::Builder::new();
     builder
         .timer(TokioTimer::new())
         .header_read_timeout(header_timeout);
+    let slots = Arc::new(Semaphore::new(connections));
     let mut connections = JoinSet::new();
     loop {
         while connections.try_join_next().is_some() {}
+        let slot = slots
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the filter never closes its connection slots");
         let Ok((stream, client)) = listener.accept().await else {
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
@@ -187,6 +242,7 @@ pub(super) async fn serve(
         );
         connections.spawn(async move {
             let _ = connection.await;
+            drop(slot);
         });
     }
 }
