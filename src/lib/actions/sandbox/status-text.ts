@@ -25,6 +25,7 @@ import {
   isInferenceHealthFailing,
   normalizeSandboxStatusHostMounts,
   resolveSandboxStatusDcodeAutoApprovalMode,
+  resolveSandboxStatusSessionGatewayName,
   type SandboxStatusAgentInfo,
   type SandboxStatusRouteDrift,
   type SandboxStatusSnapshot,
@@ -214,10 +215,11 @@ function printAgentHarness(context: SandboxStatusTextContext): number | null {
   return printTerminalHarness(context);
 }
 
-function printActiveSessions(sandboxName: string, gatewayName?: string | null): void {
+function printActiveSessions(sandboxName: string, sandbox: SandboxEntry): void {
   try {
     const openshell = resolveOpenshell();
     if (!openshell) return;
+    const gatewayName = resolveSandboxStatusSessionGatewayName(sandbox);
     const sessionResult = getActiveSandboxSessions(
       sandboxName,
       createSessionDeps(openshell),
@@ -358,7 +360,7 @@ export async function printSandboxDetails(
     `    Policies: ${livePolicies === null ? "unavailable" : livePolicies.join(", ") || "none"}`,
   );
   const agentExitCode = printAgentHarness(context);
-  printActiveSessions(sandboxName, sb.gatewayName);
+  printActiveSessions(sandboxName, sb);
   await printAgentVersion(context, sb);
   return { exitCode: inferenceExitCode ?? agentExitCode };
 }

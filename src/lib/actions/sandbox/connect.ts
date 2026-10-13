@@ -3218,11 +3218,13 @@ async function prepareConnectSandboxWithinLifecycleFence(
     request: {
       kind: "connect",
       sandboxName,
-      target: portableAuthority
-        ? namedOpenShellGateway(portableAuthority.gatewayName)
-        : sb
-          ? namedOpenShellGateway(getPersistedSandboxTargetGatewayName(sb))
-          : { kind: "selected" },
+      target: namedOpenShellGateway(
+        portableAuthority
+          ? portableAuthority.gatewayName
+          : sb
+            ? getPersistedSandboxTargetGatewayName(sb)
+            : getSandboxTargetGatewayName(sandboxName),
+      ),
     },
   };
 }

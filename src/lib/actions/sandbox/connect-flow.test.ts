@@ -112,6 +112,18 @@ describe("connectSandbox flow", () => {
     delete require.cache[requireDist.resolve(connectModulePath)];
   });
 
+  it("explicitly targets the selected gateway when connecting without a persisted row", async () => {
+    const harness = createConnectHarness({ registryEntries: [] });
+
+    await expect(harness.connectSandbox("alpha")).rejects.toThrow("process.exit(0)");
+
+    expect(harness.startSandboxSessionSpy).toHaveBeenCalledWith({
+      kind: "connect",
+      sandboxName: "alpha",
+      target: { kind: "named", gatewayName: "nemoclaw" },
+    });
+  });
+
   it("runs readiness checks, recovery probes, auto-pair approval, and opens the OpenShell shell", async () => {
     const harness = createConnectHarness();
 

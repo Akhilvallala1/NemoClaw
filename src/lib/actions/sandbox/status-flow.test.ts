@@ -444,6 +444,20 @@ describe("showSandboxStatus flow", () => {
     expect(output).not.toMatch(/^\s*Connected:/m);
   });
 
+  it("uses a port-only persisted gateway binding for active-session status", async () => {
+    const harness = createStatusFlowHarness({
+      sandboxEntry: { gatewayName: undefined, gatewayPort: 8091 },
+    });
+
+    await expect(harness.showSandboxStatus("alpha")).resolves.toBeUndefined();
+
+    expect(harness.getActiveSandboxSessionsSpy).toHaveBeenCalledWith(
+      "alpha",
+      expect.any(Object),
+      "nemoclaw-8091",
+    );
+  });
+
   it("reports durable read-only host directory exposure", async () => {
     const source = fs.mkdtempSync(path.join(process.cwd(), ".status-text-host-mount-test-"));
     try {
