@@ -589,6 +589,7 @@ async function main(runtimeLease: NativeRuntimeSession) {
         "--port",
         String(gatewayPort),
         "--enable-mtls-auth",
+        "true",
         "--db-url",
         "sqlite::memory:",
         "--log-level",

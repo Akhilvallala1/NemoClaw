@@ -1426,6 +1426,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           "--port",
           String(openShellPort),
           "--enable-mtls-auth",
+          "true",
           "--db-url",
           "sqlite::memory:",
           "--log-level",

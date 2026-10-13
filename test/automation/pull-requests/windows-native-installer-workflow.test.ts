@@ -1045,6 +1045,56 @@ it.each(proofCases)("checks downloaded candidate migration proof: $name", (scena
   }
 });
 
+it.skipIf(skipEvidenceProcesses).each([
+  { exitCode: 0, summary: "ok. 18 passed; 0 failed; 0 ignored;", rejected: false },
+  { exitCode: 1, summary: "ok. 18 passed; 0 failed; 0 ignored;", rejected: true },
+  { exitCode: 0, summary: "ok. 15 passed; 0 failed; 0 ignored;", rejected: true },
+  { exitCode: 0, summary: "ok. 17 passed; 0 failed; 1 ignored;", rejected: true },
+  { exitCode: 0, summary: "FAILED. 17 passed; 1 failed; 0 ignored;", rejected: true },
+  { exitCode: 0, summary: "ok. 180 passed; 0 failed; 0 ignored;", rejected: true },
+  { exitCode: 0, summary: "", rejected: true },
+])("checks the state ownership result: $exitCode / $summary", (scenario) => {
+  const root = mkdtempSync(join(tmpdir(), "windows-state-result-"));
+  const script = join(root, "result-controls.ps1");
+  const run = step(
+    sources().workflow.jobs["windows-runtime-controls"],
+    "Exercise shared configuration and per-agent state ownership",
+  ).run!;
+  try {
+    mkdirSync(join(root, "windows-runtime-controls"));
+    writeFileSync(
+      script,
+      `
+$ErrorActionPreference = 'Stop'
+function rustup {
+  $global:LASTEXITCODE = ${scenario.exitCode}
+  Write-Output 'test result: ${scenario.summary}'
+}
+$rejected = $false
+try {
+  & {
+${run}
+  } | Out-Null
+} catch { $rejected = $true }
+if ($rejected -ne $${scenario.rejected}) { throw 'State ownership result was misclassified.' }
+`,
+    );
+    const result = spawnSync(
+      evidencePowerShell,
+      ["-NoProfile", "-NonInteractive", "-File", script],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30000,
+        env: { ...process.env, RUNNER_TEMP: root, GITHUB_WORKSPACE: repoRoot },
+      },
+    );
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it.skipIf(skipEvidenceProcesses)(
   "accepts only a complete successful MSI Python test result",
   () => {

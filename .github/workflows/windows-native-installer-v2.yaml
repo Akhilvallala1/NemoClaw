@@ -2670,7 +2670,7 @@ jobs:
             $result = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           $text = [string](Get-Content -LiteralPath $log -Raw)
-          if ($result -ne 0 -or $text -notmatch '(?m)^test result: ok\. 15 passed; 0 failed; 0 ignored;') {
+          if ($result -ne 0 -or $text -notmatch '(?m)^test result: ok\. 18 passed; 0 failed; 0 ignored;') {
             throw 'The shared configuration and per-agent state ownership controls did not all pass.'
           }
 

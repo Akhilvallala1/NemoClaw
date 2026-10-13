@@ -868,6 +868,7 @@ async function runNativeConsoleAgentInternal(
         "--port",
         String(gatewayPort),
         "--enable-mtls-auth",
+        "true",
         "--db-url",
         "sqlite::memory:",
         "--log-level",

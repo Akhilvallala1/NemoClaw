@@ -9,6 +9,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildNativeWorkers } from "../../packaging/windows/distribution/build-native-workers.mts";
+import { nativeWorkerApiFixture } from "../helpers/native-worker-api-fixture.ts";
 
 const owner = path.resolve("packaging/windows/installer/prepare-finished-host.py");
 const sourceLock = JSON.parse(
@@ -47,7 +48,7 @@ it.each([
   { version: "2026.9.2", exitCode: 0 },
   { version: "2026.7.1", exitCode: 1 },
 ])(
-  "compiled OpenClaw $version uses its linked API and exits $exitCode",
+  "compiled OpenClaw API fixture $version uses its linked API and exits $exitCode",
   async ({ version, exitCode }) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-openclaw-worker-"));
     const fixture = path.join(root, "api.mjs");
@@ -64,7 +65,9 @@ export function runOpenClaw(argv) {
 `,
     );
     try {
-      await buildNativeWorkers(path.resolve("packaging/windows/runtime"), output, fixture);
+      const mockPort = 20000 + (process.pid % 40000);
+      const runtime = nativeWorkerApiFixture(root, mockPort);
+      await buildNativeWorkers(runtime, output, fixture);
       fs.unlinkSync(fixture);
       const result = path.join(root, "result.json");
       const invocation = spawnSync(
@@ -78,7 +81,7 @@ export function runOpenClaw(argv) {
             NEMOCLAW_MXC_OPENCLAW_ENTRY: path.join(root, "absent-installed-entry.cjs"),
             NEMOCLAW_MXC_HOME: path.join(root, "home"),
             NEMOCLAW_MXC_RESULT: result,
-            NEMOCLAW_MXC_MOCK_PORT: "0",
+            NEMOCLAW_MXC_MOCK_PORT: String(mockPort),
           },
           encoding: "utf8",
           timeout: 30_000,
