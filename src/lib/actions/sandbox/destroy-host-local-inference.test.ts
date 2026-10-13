@@ -388,6 +388,31 @@ describe("sandbox destroy host-local inference transaction", () => {
     );
   });
 
+  it("scopes pending-create cleanup and convergence to its recorded gateway", async () => {
+    const runtimeProvider = provider();
+    const entry = sandbox("alpha", receipt(), {
+      pendingCreateIdentity: pendingCreateIdentity({ gatewayName: "gateway-other" }),
+    });
+    const { result, runOpenshell } = await runDestroy(runtimeProvider, {
+      entry,
+      inspectSandboxIdentityFingerprint: () => SANDBOX_FINGERPRINT,
+    });
+
+    expect(result).toMatchObject({ ok: true, alreadyGone: true });
+    expect(runOpenshell).toHaveBeenCalledWith(
+      expect.arrayContaining(["sandbox", "exec", "-g", "gateway-other", "--name", "alpha"]),
+      expect.any(Object),
+    );
+    expect(runOpenshell).toHaveBeenCalledWith(
+      ["sandbox", "delete", "-g", "gateway-other", "alpha"],
+      expect.objectContaining({ ignoreError: true }),
+    );
+    expect(runOpenshell).toHaveBeenCalledWith(
+      ["sandbox", "get", "-g", "gateway-other", "alpha"],
+      expect.any(Object),
+    );
+  });
+
   it("preserves a pending create when its checkpoint changes during identity inspection", async () => {
     const runtimeProvider = provider();
     const entry = sandbox("alpha", receipt(), {

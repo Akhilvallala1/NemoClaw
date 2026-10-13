@@ -731,9 +731,13 @@ export async function executeSandboxDestroy({
       };
     }
     destroyRuntimeSelection = mcpPreparation.runtimeSelection;
+    const effectiveDeleteGatewayName =
+      pendingCreateIdentity?.gatewayName ??
+      destroyRuntimeSelection?.gatewayName ??
+      deleteGatewayName;
     const selectedRunOpenshell = createGatewayScopedDestroyRunner(
       runOpenshell,
-      deleteGatewayName,
+      effectiveDeleteGatewayName,
       destroyRuntimeSelection,
     );
     // Prepared-only/incomplete adds have no external resources and are safely
@@ -910,10 +914,6 @@ export async function executeSandboxDestroy({
         mcpRecoveryFailure,
       };
     }
-    const effectiveDeleteGatewayName =
-      pendingCreateIdentity?.gatewayName ??
-      destroyRuntimeSelection?.gatewayName ??
-      deleteGatewayName;
     // A successful preflight absence is already the required OpenShell
     // lifecycle proof. Do not issue a later mutable-name delete that could
     // target a same-name replacement created after that observation.
