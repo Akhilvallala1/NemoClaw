@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Ollama installer implementation.
-use crate::config::ComputeDriver;
+use super::docker;
 mod config;
 pub use config::{
     ExternalOllama, ExternalOllamaModel, ManagedOllama, OllamaMemory, OllamaModel, OllamaProxy,
@@ -11,10 +11,10 @@ mod proxy_container;
 pub use proxy_container::{ProxySettings, ProxySpec};
 pub mod proxy;
 
-use crate::managed::{Process, Spec, Storage};
+use crate::managed::{Process, Spec};
 use crate::{
     Error,
-    compile::{Generations, Target},
+    compile::Generations,
     config::Document,
     services::contract::{InstallPlan, Installer, RemovePlan},
 };
@@ -151,16 +151,12 @@ pub fn configured_service(spec: &Spec) -> Result<nemoclaw_runtime::ollama::Manag
     }
 }
 
-fn managed_targets(
+fn specification(
     document: &Document,
     name: &str,
     service: &ManagedOllama,
     generations: &Generations,
-) -> Result<Vec<Target>, Error> {
-    let generation = generations
-        .get(SERVICE_KIND)
-        .filter(|value| !value.is_empty())
-        .ok_or(Error::State("missing Ollama service generation"))?;
+) -> Result<Spec, Error> {
     let runtime = nemoclaw_runtime::RuntimeSpec::Ollama(Box::new(service.runtime_settings()));
     let placed = crate::services::placement::ResolvedPlacement::resolve(
         service.published_placement()?,
@@ -200,43 +196,20 @@ fn managed_targets(
             .is_some_and(|container| container.ipc == super::vllm::ServiceIpc::Host),
         memory_bytes: 104 * nemoclaw_runtime::hardware::GIB,
         gpu: true,
+        ..Process::default()
     };
-    let spec = Spec {
-        layout: 0,
-        compute_driver: ComputeDriver::Docker,
-        kind: SERVICE_KIND.into(),
-        name: format!("{}-ollama-{name}", document.workspace()),
-        owner: document.metadata.uid.clone(),
-        generation: generation.clone(),
-        gateway: if placed.explicit {
+    docker::specification(
+        document,
+        generations,
+        SERVICE_KIND,
+        format!("{}-ollama-{name}", document.workspace()),
+        if placed.explicit {
             Default::default()
         } else {
             document.spec.gateway.managed()?.runtime_settings()
         },
-        process: Some(process),
-    };
-    let storage = Storage {
-        name: format!("{}-data", spec.name),
-        owner: spec.owner.clone(),
-        generation: spec.generation.clone(),
-        engine: spec.engine().into(),
-    };
-    let mut values = crate::backend::Row::from([("spec".into(), spec.json()?)]);
-    if let Some(policy) = service.image_pull_policy {
-        values.insert("image_pull_policy".into(), policy.as_str().into());
-    }
-    Ok(vec![
-        Target {
-            kind: STORAGE_KIND.into(),
-            address: address(STORAGE_KIND, name),
-            values: storage.row()?,
-        },
-        Target {
-            kind: SERVICE_KIND.into(),
-            address: address(SERVICE_KIND, name),
-            values,
-        },
-    ])
+        process,
+    )
 }
 
 impl Installer for ManagedOllama {
@@ -246,15 +219,21 @@ impl Installer for ManagedOllama {
         name: &str,
         generations: &Generations,
     ) -> Result<InstallPlan, Error> {
-        let service = address(SERVICE_KIND, name);
-        let mut dependencies = vec![address(STORAGE_KIND, name)];
+        let mut prerequisites = Vec::new();
         if document.spec.gateway.as_managed().is_some() && self.placement.is_none() {
-            dependencies.insert(0, "nemoclaw_managed_gateway.runtime".into());
+            prerequisites.push("nemoclaw_managed_gateway.runtime".into());
         }
-        Ok(InstallPlan {
-            targets: managed_targets(document, name, self, generations)?,
-            dependencies: BTreeMap::from([(service, dependencies)]),
-        })
+        docker::install(
+            specification(document, name, self, generations)?,
+            name,
+            STORAGE_KIND,
+            self.image_pull_policy,
+            Default::default(),
+            InstallPlan {
+                targets: Vec::new(),
+                dependencies: BTreeMap::from([(address(SERVICE_KIND, name), prerequisites)]),
+            },
+        )
     }
 
     fn remove(

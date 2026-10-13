@@ -86,11 +86,12 @@ Destroy does not run readiness checks.
 The provider requests `check --ready` through OpenShell.
 The pinned Fabric has no health API, so the bridge returns unsupported with its host snapshot and no health report.
 The SDK records `supported: false`, `report: null`, and `reason_code: fabric_health_unsupported`.
-**Apply fails its health check at this pin**, including on unchanged applies, while preserving completed resource changes, state, and agent files.
+Apply fails its health check at this pin, including on unchanged applies, while preserving completed resource changes, state, and agent files.
 A reachable bridge or remembered runtime handle does not establish agent health.
 Real adapters report health as unsupported until Fabric's health API is pinned ([#12443](https://github.com/NVIDIA/NemoClaw/issues/12443)).
 
-Use an [agent image built from this revision](build.md#build-agent-images); an image without matching bridge metadata leaves compatibility unknown.
+Use an [agent image built from this revision](build.md#build-agent-images); an older image missing the matching bridge metadata or stdin input support leaves compatibility unknown.
+Such an image rejects configuration from this provider before changing its runtime.
 Image changes require the [separate-deployment path](#choose-the-change-path); keep existing deployments' original bundles and state.
 
 Unexpected health reports, transport failures, and malformed responses fail apply and retain resources.
@@ -99,10 +100,23 @@ Keep state, diagnose the failure, and reapply after recovery.
 
 ## Configuration and Credentials
 
+### Run an Application Container
+
+Declare a `kind: container` service with an immutable image, Linux architecture, literal environment settings, and an owned data directory below `/var/lib`.
+The image owns startup and its Docker HEALTHCHECK; NemoClaw observes health within the configured startup timeout.
+Placement inherits a managed local Docker gateway or explicitly selects a local Docker engine and private network.
+Optional publication binds an unprivileged TCP port to loopback or a private IPv4 address; `dependsOn` orders declared services without injecting settings.
+Application storage is disposable: destroy removes the owned data volume.
+The [basic parser fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container.yaml) demonstrates these fields with invented pins and endpoints; it does not qualify an image for live use.
+
+### Supply Credential References
+
 Use [definitions and references](configuration-references.md) to choose shared or inline configuration.
 Use the [field reference](reference/configuration.md) for names, defaults, and validation rules.
 
-Unknown fields, duplicate keys, inline secrets, and unsupported combinations are rejected; images require immutable SHA-256 references.
+Unknown fields, duplicate keys, and unsupported combinations are rejected; images require immutable SHA-256 references.
+Container `environment` values are literal settings retained in configuration and state.
+Keep credentials out of literal settings; validation cannot identify a secret pasted into a literal value.
 Gateway and inference ownership are independent of the harness, but inference must support the harness's request API.
 See [managed models](models.md), [Ollama](inference.md#run-managed-ollama), or [external Ollama with a managed proxy](inference.md#use-external-ollama-through-a-managed-proxy) for service configuration.
 
@@ -127,11 +141,12 @@ See [sandbox policy configuration](sandbox-network.md) for changes and [security
 ## Control Container Image Downloads
 
 Set `imagePullPolicy` beside `image` under `spec.gateway` or `spec.services.<name>`.
-The service setting applies to `kind: vllm`, `ollama`, and `ollamaProxy`.
-The setting controls image acquisition on that container's engine, including an SSH Docker engine selected by the service's `placement.engine`.
+The service setting applies to `kind: vllm`, `ollama`, `ollamaProxy`, and `container`.
+The setting controls image acquisition on that container's engine.
+Application containers use a local Unix Docker socket; inference services also support an SSH Docker engine selected by `placement.engine`.
 Images still require immutable SHA-256 references.
 
-| Policy | Managed inference and proxy images |
+| Policy | Managed service images |
 |---|---|
 | `IfNotPresent` (default) | The Docker provider ensures the pinned image is available and pulls it when absent |
 | `Never` | The Docker provider reads the local image; a missing image fails that observation |

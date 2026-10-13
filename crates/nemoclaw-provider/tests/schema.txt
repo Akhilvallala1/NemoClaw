@@ -223,6 +223,7 @@ data nemoclaw_ollama_runtime (version 0)
 data nemoclaw_runtime_image (version 0)
   allow_missing: bool, optional
   architecture: string, required
+  contract: string, optional
   engine: string, required
   image: string, required
   image_id: string, optional

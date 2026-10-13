@@ -13,11 +13,11 @@ pub mod installers;
 pub mod placement;
 mod readiness;
 mod registry;
-pub(crate) use readiness::configure_proxy_readiness;
+pub(crate) use readiness::configure_readiness;
 mod validation;
 pub use validation::validate_resource_spec;
 
-pub(crate) use contract::InstallStage;
+pub(crate) use contract::{InstallStage, literal};
 pub use installers::ollama::{
     ExternalOllama, ExternalOllamaModel, ManagedOllama, OllamaMemory, OllamaModel, OllamaProxy,
     OllamaServing,
