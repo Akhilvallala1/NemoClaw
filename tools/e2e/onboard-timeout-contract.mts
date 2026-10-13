@@ -27,6 +27,11 @@ export const DCODE_INVALID_CREDENTIAL_LIFECYCLE_BUDGET_MS = 20 * MINUTE_MS;
 export const ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS = 40 * MINUTE_MS;
 export const ONBOARD_NO_RECREATE_COMMAND_TIMEOUT_MS = 15 * MINUTE_MS;
 
+// A custom provider switch also restarts the managed gateway. Allow time for
+// credential projection, the native restart, and the subsequent readiness and
+// 25-second settle checks before the harness terminates the CLI.
+export const CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS = 5 * MINUTE_MS;
+
 export const ONBOARD_SINGLE_FINAL_HANDOFF_TEST_TIMEOUT_MS =
   ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS + ONBOARD_TEST_HEADROOM_MS;
 export const ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES = 75;

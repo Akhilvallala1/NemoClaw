@@ -20,6 +20,7 @@ import { captureSandboxFailureDiagnostics } from "../fixtures/sandbox-failure-di
 import {
   ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS,
   CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS,
+  CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS,
 } from "../../../tools/e2e/onboard-timeout-contract.mts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import { resultText, shellQuote } from "../fixtures/clients/command.ts";
@@ -416,7 +417,7 @@ test(
         env: { ...buildAvailabilityProbeEnv(), COMPATIBLE_API_KEY: apiKey },
         progress,
         redactionValues: [apiKey],
-        timeoutMs: 60_000,
+        timeoutMs: CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS,
       },
     );
     expect(
@@ -903,7 +904,7 @@ test(
         env: { ...buildAvailabilityProbeEnv(), COMPATIBLE_API_KEY: apiKey },
         progress,
         redactionValues: [apiKey],
-        timeoutMs: 60_000,
+        timeoutMs: CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS,
       },
     );
     await captureSandboxFailureDiagnostics(host, httpSwitch, {

@@ -7,6 +7,7 @@ import { getDockerGpuSupervisorReconnectTimeoutSecs } from "../../../src/lib/onb
 import {
   CONFIG_EXPORT_COMMAND_TIMEOUT_MS,
   CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS,
+  CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS,
   CUSTOM_HOSTED_LIFECYCLE_OPERATION_BUDGET_MS,
   CUSTOM_HOSTED_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
   INFERENCE_ROUTING_BASE_TARGET_TIMEOUT_MINUTES,
@@ -65,12 +66,20 @@ describe("onboard final-handoff timeout contract", () => {
     const routeAndPeerChats = 120_000 + 5 * 90_000;
     const denialAndRevocation = 30_000 + 90_000 + 30_000 + 90_000 + 30_000;
     const dnsAndRedirect = 3 * 60_000 + 90_000 + 90_000;
-    const directHttp = 2 * 30_000 + 60_000 + 30_000 + 90_000;
+    const directHttp =
+      2 * 30_000 + CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS + 30_000 + 90_000;
     const nativeAnthropic = adminApproval + 30_000 + 240_000 + 210_000 + 30_000;
     const nativeHermes = 120_000 + 240_000 + 30_000 + 180_000 + 210_000 + 30_000;
     const nativeDeepAgents = 180_000 + 210_000 + 30_000;
     const selectionAndDeletion =
-      60_000 + 30_000 + 30_000 + 120_000 + 30_000 + 30_000 + 210_000 + 2 * 30_000;
+      CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS +
+      30_000 +
+      30_000 +
+      120_000 +
+      30_000 +
+      30_000 +
+      210_000 +
+      2 * 30_000;
     const fixturePreparation = 2 * MINUTE_MS;
     expect(CUSTOM_HOSTED_LIFECYCLE_OPERATION_BUDGET_MS).toBeGreaterThanOrEqual(
       preparation +
