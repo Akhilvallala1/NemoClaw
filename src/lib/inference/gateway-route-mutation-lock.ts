@@ -12,6 +12,7 @@ import {
 import { resolveSharedLocalAdapterStateRoot } from "./local-adapter-lifecycle";
 
 const GATEWAY_ROUTE_LOCK_PREFIX = "gateway-route:";
+const ACTIVE_GATEWAY_SELECTION_LOCK_NAME = "gateway-selection:global";
 const MODEL_ROUTER_PORT_LOCK_PREFIX = "model-router-port:";
 
 export function resolveCurrentUserModelRouterLockStateDir(homeDir: string = os.homedir()): string {
@@ -27,6 +28,21 @@ export function resolveModelRouterPortLifecycleLockOptions(
     ...options,
     stateDir: options.stateDir ?? resolveCurrentUserModelRouterLockStateDir(homeDir),
   };
+}
+
+/** Serialize transactions that temporarily mutate OpenShell's process-wide active gateway. */
+export function withOpenShellActiveGatewaySelectionLock<T>(
+  operation: () => Promise<T> | T,
+  options: McpLifecycleLockOptions = {},
+): Promise<T> {
+  const stateDir =
+    options.stateDir ??
+    process.env.NEMOCLAW_TEST_STATE_DIR ??
+    resolveCurrentUserModelRouterLockStateDir();
+  return withMcpLifecycleLock(ACTIVE_GATEWAY_SELECTION_LOCK_NAME, operation, {
+    ...options,
+    stateDir,
+  });
 }
 
 /**

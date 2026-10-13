@@ -18,6 +18,7 @@ import {
   resolveGatewayStateDirForPort,
 } from "../../onboard/gateway-binding";
 import { type GatewayOwner, isExternallySupervised } from "../../onboard/gateway-ownership";
+import { withOpenShellActiveGatewaySelectionLock } from "../../inference/gateway-route-mutation-lock";
 import {
   GatewayAuthorityError,
   type GatewayTeardownAuthorityResolver,
@@ -59,77 +60,81 @@ export async function destroyWithActiveGatewayRestored<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   // A frozen runtime selection scopes every OpenShell child without changing
-  // the CLI's persisted gateway. Otherwise, `gateway select` is global state.
+  // the CLI's persisted gateway. Otherwise, `gateway select` is global state,
+  // so serialize destroy transactions across sandboxes and processes.
   if (hasRuntimeSelection) return operation();
 
-  const { runOpenshell } =
-    require("../../adapters/openshell/runtime") as typeof import("../../adapters/openshell/runtime");
-  const lifecycle = createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway(runOpenshell);
-  const request = { target: { kind: "named" as const, gatewayName } };
-  const before = await lifecycle.listGateways(request);
-  if (!before.ok) {
-    throw new Error(
-      `Could not preserve the active OpenShell gateway before destroying '${sandboxName}': ${before.error.message}`,
-    );
-  }
-  const priorActiveGateway = before.activeGateway;
-  if (priorActiveGateway === undefined) {
-    throw new Error(
-      `Could not preserve the active OpenShell gateway before destroying '${sandboxName}': the gateway registry did not report its active selection.`,
-    );
-  }
-  const priorEnvironmentGateway = process.env.OPENSHELL_GATEWAY;
-  let operationFailed = false;
-  try {
-    return await operation();
-  } catch (error) {
-    operationFailed = true;
-    throw error;
-  } finally {
-    try {
-      if (priorActiveGateway !== null && priorActiveGateway !== gatewayName) {
-        const current = await lifecycle.listGateways(request);
-        const priorGatewayRegistered = current.ok && current.names.includes(priorActiveGateway);
-        let restorationError: string | null = null;
-        if (!current.ok) {
-          restorationError = `the gateway registry could not be re-read: ${current.error.message}`;
-        } else if (!current.names.includes(priorActiveGateway)) {
-          restorationError = `the previously active gateway is no longer registered`;
-        } else if (current.activeGateway === undefined) {
-          restorationError = `the gateway registry did not report its active selection`;
-        } else if (current.activeGateway === priorActiveGateway) {
-          // Another actor already restored the original selection.
-        } else if (
-          current.activeGateway === gatewayName ||
-          (current.activeGateway === null && !current.names.includes(gatewayName))
-        ) {
-          const restored = await lifecycle.selectGateway({
-            target: { kind: "named", gatewayName: priorActiveGateway },
-          });
-          if (!restored.ok) restorationError = restored.error.message;
-        } else if (current.activeGateway === null) {
-          restorationError = `there is no active gateway while the temporary target remains registered`;
-        } else {
-          // A distinct active gateway may have been selected concurrently. Never overwrite it.
-        }
-        if (restorationError) {
-          const recovery = !current.ok
-            ? `Check OpenShell connectivity, then run 'openshell gateway list' and select a registered gateway.`
-            : !priorGatewayRegistered
-              ? `List registered gateways with 'openshell gateway list' and select a surviving gateway.`
-              : `Restore it manually with 'openshell gateway select ${priorActiveGateway}'.`;
-          const message =
-            `Sandbox '${sandboxName}' operation finished, but the previously active gateway ` +
-            `'${priorActiveGateway}' could not be restored: ${restorationError}. ${recovery}`;
-          if (operationFailed) console.error(`  ${message}`);
-          else throw new Error(message);
-        }
-      }
-    } finally {
-      if (priorEnvironmentGateway === undefined) delete process.env.OPENSHELL_GATEWAY;
-      else process.env.OPENSHELL_GATEWAY = priorEnvironmentGateway;
+  return withOpenShellActiveGatewaySelectionLock(async () => {
+    const { runOpenshell } =
+      require("../../adapters/openshell/runtime") as typeof import("../../adapters/openshell/runtime");
+    const lifecycle =
+      createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway(runOpenshell);
+    const request = { target: { kind: "named" as const, gatewayName } };
+    const before = await lifecycle.listGateways(request);
+    if (!before.ok) {
+      throw new Error(
+        `Could not preserve the active OpenShell gateway before destroying '${sandboxName}': ${before.error.message}`,
+      );
     }
-  }
+    const priorActiveGateway = before.activeGateway;
+    if (priorActiveGateway === undefined) {
+      throw new Error(
+        `Could not preserve the active OpenShell gateway before destroying '${sandboxName}': the gateway registry did not report its active selection.`,
+      );
+    }
+    const priorEnvironmentGateway = process.env.OPENSHELL_GATEWAY;
+    let operationFailed = false;
+    try {
+      return await operation();
+    } catch (error) {
+      operationFailed = true;
+      throw error;
+    } finally {
+      try {
+        if (priorActiveGateway !== null && priorActiveGateway !== gatewayName) {
+          const current = await lifecycle.listGateways(request);
+          const priorGatewayRegistered = current.ok && current.names.includes(priorActiveGateway);
+          let restorationError: string | null = null;
+          if (!current.ok) {
+            restorationError = `the gateway registry could not be re-read: ${current.error.message}`;
+          } else if (!current.names.includes(priorActiveGateway)) {
+            restorationError = `the previously active gateway is no longer registered`;
+          } else if (current.activeGateway === undefined) {
+            restorationError = `the gateway registry did not report its active selection`;
+          } else if (current.activeGateway === priorActiveGateway) {
+            // Another actor already restored the original selection.
+          } else if (
+            current.activeGateway === gatewayName ||
+            (current.activeGateway === null && !current.names.includes(gatewayName))
+          ) {
+            const restored = await lifecycle.selectGateway({
+              target: { kind: "named", gatewayName: priorActiveGateway },
+            });
+            if (!restored.ok) restorationError = restored.error.message;
+          } else if (current.activeGateway === null) {
+            restorationError = `there is no active gateway while the temporary target remains registered`;
+          } else {
+            // A distinct active gateway may have been selected concurrently. Never overwrite it.
+          }
+          if (restorationError) {
+            const recovery = !current.ok
+              ? `Check OpenShell connectivity, then run 'openshell gateway list' and select a registered gateway.`
+              : !priorGatewayRegistered
+                ? `List registered gateways with 'openshell gateway list' and select a surviving gateway.`
+                : `Restore it manually with 'openshell gateway select ${priorActiveGateway}'.`;
+            const message =
+              `Sandbox '${sandboxName}' operation finished, but the previously active gateway ` +
+              `'${priorActiveGateway}' could not be restored: ${restorationError}. ${recovery}`;
+            if (operationFailed) console.error(`  ${message}`);
+            else throw new Error(message);
+          }
+        }
+      } finally {
+        if (priorEnvironmentGateway === undefined) delete process.env.OPENSHELL_GATEWAY;
+        else process.env.OPENSHELL_GATEWAY = priorEnvironmentGateway;
+      }
+    }
+  });
 }
 
 export interface CleanupGatewayDeps {
