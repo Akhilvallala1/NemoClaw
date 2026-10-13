@@ -52,6 +52,7 @@ import {
   redactedResultText,
   requireLivePrerequisites,
   runNemoclawCli,
+  sandboxGatewayEnv,
 } from "./inference-routing-helpers.ts";
 import { startPublicMcpHttpsTunnel } from "./mcp-bridge-servers.ts";
 
@@ -636,6 +637,7 @@ test(
       getSandbox(peerName)?.nativeCustomProviderAttachment,
       peerName,
     )!;
+    const peerGatewayEnv = sandboxGatewayEnv(peerName);
     expect(peerReceipt.providerId).not.toBe(receipt.providerId);
     await expectOpenAiChatThroughSandbox(
       sandbox,
@@ -927,6 +929,7 @@ test(
     )!;
     const httpConfig = await sandbox.exec(peerName, ["cat", "/sandbox/.openclaw/openclaw.json"], {
       artifactName: "tc-inf-11-direct-http-native-agent-config",
+      env: peerGatewayEnv,
       timeoutMs: 30_000,
     });
     expect(httpConfig.exitCode, resultText(httpConfig)).toBe(0);
@@ -966,7 +969,7 @@ test(
       ],
       {
         artifactName: "tc-inf-11-responses-fresh-agent-after-start",
-        env: buildAvailabilityProbeEnv(),
+        env: peerGatewayEnv,
         redactionValues: [apiKey],
         timeoutMs: 240_000,
       },
@@ -994,7 +997,7 @@ test(
       ["provider", "get", peerReceipt.providerName],
       {
         artifactName: "tc-inf-11-peer-https-provider-absent-after-destroy",
-        env: buildAvailabilityProbeEnv(),
+        env: peerGatewayEnv,
         timeoutMs: 30_000,
       },
     );
@@ -1006,7 +1009,7 @@ test(
       ["provider", "get", httpReceipt.providerName],
       {
         artifactName: "tc-inf-11-peer-http-provider-absent-after-destroy",
-        env: buildAvailabilityProbeEnv(),
+        env: peerGatewayEnv,
         timeoutMs: 30_000,
       },
     );

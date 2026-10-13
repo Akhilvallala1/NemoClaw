@@ -83,6 +83,12 @@ function inferenceSandboxName(prefix: string): string {
   return name;
 }
 
+function sandboxGatewayEnv(sandboxName: string): NodeJS.ProcessEnv {
+  const env = buildAvailabilityProbeEnv();
+  const registered = getSandbox(sandboxName);
+  return registered ? { ...env, OPENSHELL_GATEWAY: resolveSandboxGatewayName(registered) } : env;
+}
+
 function onboardEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     ...buildAvailabilityProbeEnv(),
@@ -378,7 +384,7 @@ async function expectOpenAiChatThroughSandbox(
         ],
     {
       artifactName,
-      env: buildAvailabilityProbeEnv(),
+      env: sandboxGatewayEnv(sandboxName),
       redactionValues: [...redactionValues],
       timeoutMs: 90_000,
     },
@@ -501,6 +507,7 @@ export {
   runNemoclawCli,
   runOpenShell,
   runRawCommand,
+  sandboxGatewayEnv,
   skipLive,
   TRANSPORT_CLASSIFICATION_PATTERN,
 };
