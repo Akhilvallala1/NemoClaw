@@ -68,7 +68,6 @@ export function bindHermesPortableOnboardingLifecycleLock(
   return async <R>(sandboxName: string, operation: () => Promise<R>): Promise<R> =>
     await withMcpLifecycleLock(sandboxName, operation, portableLifecycleLockOptions(env));
 }
-
 import {
   assertCurrentHermesPortableContainer,
   enrollHermesPortableContainer,
