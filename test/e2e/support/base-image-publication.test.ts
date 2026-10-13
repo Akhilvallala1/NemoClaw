@@ -31,6 +31,8 @@ const EXPECTED_SHA = "a".repeat(40);
 const DESCENDANT_SHA = "b".repeat(40);
 const RELEVANT_SHA = "c".repeat(40);
 const STALE_SHA = "d".repeat(40);
+const DCODE_RUNTIME_IDENTITY = "src/lib/agent/deep-agents-code-runtime-identity.json";
+const PI_NATIVE_CONSUMER = "test/agents/openclaw/runtime/pi-native-consumer.mts";
 const RUN_ID = 29891942278;
 const WORKFLOW_ID = 251475843;
 const RUN_URL_ROOT = "https://github.com/NVIDIA/NemoClaw/actions/runs";
@@ -187,11 +189,9 @@ describe("base-image publication evidence", () => {
   it.each([
     ["src/lib/adapters/container-engine.ts", "src/lib/adapters/container-engine.ts"],
     ["src/lib/adapters/podman/**", "src/lib/adapters/podman/index.ts"],
+    [DCODE_RUNTIME_IDENTITY, DCODE_RUNTIME_IDENTITY],
     ["test/e2e/fixtures/docker-build-guard.ts", "test/e2e/fixtures/docker-build-guard.ts"],
-    [
-      "test/agents/openclaw/runtime/pi-native-consumer.mts",
-      "test/agents/openclaw/runtime/pi-native-consumer.mts",
-    ],
+    [PI_NATIVE_CONSUMER, PI_NATIVE_CONSUMER],
   ])("publishes after managed-image input %s changes", (publisherPath, changedPath) => {
     const reviewedPaths = parseBaseImagePushPaths(BASE_IMAGE_WORKFLOW_SOURCE);
 
