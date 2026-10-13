@@ -10,11 +10,11 @@ metadata:
 spec:
   gateway:
     management: external
-    # Replace with the Docker or Podman engine holding the sandbox image.
-    engine: unix:///var/run/docker.sock
-    runtime:
-      provider: docker
     endpoint: http://127.0.0.1:17671
+    target:
+      docker:
+        # Replace with the engine holding the sandbox image; for a Podman gateway, use the podman key.
+        engine: unix:///var/run/docker.sock
   inferenceProviders:
     - name: local
       provider: openai

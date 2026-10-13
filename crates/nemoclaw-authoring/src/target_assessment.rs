@@ -3,7 +3,7 @@
 
 use crate::{Diagnostics, diagnostics::diagnostic};
 use nemoclaw_sdk::{
-    config::{Document, Gateway},
+    config::Document,
     discovery::{DiscoveryObservations, DiscoveryQuery, ObservationStatus, plan_queries},
     fabric_capabilities::Support,
 };
@@ -23,9 +23,10 @@ pub enum CompatibilityStatus {
     Conflict,
 }
 
-/// Compatibility applies to the packaged adapter and, for managed gateways,
-/// the selected execution engine. External image stores do not establish the
-/// gateway's platform, deployment readiness, or successful inference.
+/// Compatibility applies to the packaged adapter and, for managed Docker and
+/// Podman gateways, the selected execution engine. External image stores do
+/// not establish the gateway's platform, deployment readiness, or successful
+/// inference.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveryAssessment {
     pub status: CompatibilityStatus,
@@ -41,10 +42,7 @@ pub(crate) fn target_of(document: &Document) -> Result<Target, Diagnostics> {
         ));
     };
     Ok(Target {
-        engine: match &document.spec.gateway {
-            Gateway::Managed(gateway) => gateway.engine.clone(),
-            Gateway::External(gateway) => gateway.engine.clone(),
-        },
+        engine: document.spec.gateway.image_engine().to_owned(),
         managed_gateway: document.spec.gateway.as_managed().is_some(),
     })
 }
@@ -72,13 +70,19 @@ pub fn assess_target(
     }
     let mut reasons = Vec::new();
     let mut conflict = false;
-    // An external gateway's engine only supplies image metadata. Do not
-    // infer its execution platform or prerequisites from that image store.
-    let engine_available = if !key.managed_gateway {
+    let driver = document.spec.gateway.compute_driver();
+    // A cluster has no engine: image metadata bundles replace inspection, and
+    // operations check the cluster's prerequisites. An external gateway's
+    // engine only supplies image metadata. Do not infer its execution
+    // platform or prerequisites from that image store.
+    let engine_available = if driver.is_kubernetes() {
+        true
+    } else if !key.managed_gateway {
         if key.engine.is_empty() {
-            reasons.push(
-                "Set spec.gateway.engine to inspect the external gateway's sandbox image.".into(),
-            );
+            reasons.push(format!(
+                "Set spec.gateway.target.{}.engine to inspect the external gateway's sandbox image.",
+                driver.as_str()
+            ));
             false
         } else {
             true

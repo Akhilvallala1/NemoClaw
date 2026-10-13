@@ -24,7 +24,7 @@ nemoclaw onboard examples/onboarding/openclaw.yaml --output my-deployment.yaml
 
 Omit the template to use the built-in defaults.
 Those defaults come from the example YAML template.
-The journey definition asks for deployment name, harness, runtime, inference preset, API, and model, then covers applicable Fabric and deployment settings.
+The journey definition asks for deployment name, harness, gateway target, inference preset, API, and model, then covers applicable Fabric and deployment settings.
 The template's choices are preselected; Enter accepts an answer.
 The authoring resolver recomputes applicable questions after each answer and follows the definition's order for explicitly asked fields.
 You can go back to change an answer.
@@ -65,9 +65,9 @@ Loading a template preserves its deployment fields, references, and native setti
 
 ## Target checks
 
-For a managed gateway, Podman requires a supported local rootless Linux target. The questionnaire records the selected runtime without treating the author's workstation as that target.
+For a managed gateway, the `podman` gateway target key requires a supported local rootless Linux host. The questionnaire records the selected gateway target key without treating the author's workstation as that host.
 When a verified bundle supplies target observations, a confirmed compatibility conflict blocks saving through the authoring resolver. Missing or unknown observations remain unverified; review the target requirements before applying the saved desired state.
-An external gateway runs on its own host, and the questionnaire preserves its selected runtime.
+An external gateway runs on its own host, and the questionnaire preserves its selected gateway target key.
 The preset does not configure Podman Machine or a remote Linux host.
 
 The CLI reads the target while you answer:
@@ -79,10 +79,10 @@ nemoclaw onboard examples/onboarding/openclaw.yaml --output my-deployment.yaml
 Onboarding reads the selected Fabric image and the inference model catalog through the same functions the provider's plan data sources use; it needs no bundle and starts no OpenTofu process.
 For a managed gateway, it also checks engine prerequisites and reads hardware advertisements.
 Hardware observations do not affect questions or readiness yet.
-For an external gateway, set `spec.gateway.engine` in the template to the engine containing the selected immutable sandbox image.
+For an external Docker or Podman gateway, set `engine` under `spec.gateway.target.docker` or `spec.gateway.target.podman` in the template to the engine containing the selected immutable sandbox image.
 Onboarding uses that engine only to inspect the image; the image store's compute driver and hardware do not describe the external gateway.
 Observations for a different engine or image are ignored.
-Omitting `spec.gateway.engine` leaves image discovery unverified and does not select a local socket; the saved deployment still needs it before planning.
+Omitting that engine leaves image discovery unverified and does not select a local socket; the saved deployment still needs it before planning.
 Image compatibility does not verify the external gateway's execution platform or readiness.
 Independent reads run concurrently, and duplicate requests are read once.
 It reads the model catalog when a model question opens for a new endpoint request.
@@ -162,7 +162,7 @@ Plan and apply perform the deployment's resource, capacity, ownership, and readi
 
 The questionnaire also offers:
 
-- Docker and rootless Podman runtimes
+- Docker and rootless Podman gateway targets
 - NVIDIA Endpoints, OpenRouter, OpenAI, Anthropic, Google Gemini, Nous Research, and custom OpenAI- or Anthropic-compatible endpoints
 - Provider transport APIs, model suggestions, and manual model identifiers
 

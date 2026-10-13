@@ -122,11 +122,13 @@ mod tests {
         let document =
             Document::parse(include_bytes!("../../../examples/openclaw-dashboard.yaml").as_slice())
                 .unwrap();
-        let nemoclaw_sdk::config::Gateway::External(gateway) = &document.spec.gateway else {
-            panic!("the walkthrough uses an operator-owned gateway");
-        };
         assert!(
-            !gateway.engine.is_empty(),
+            document.spec.gateway.as_managed().is_none(),
+            "the walkthrough uses an operator-owned gateway"
+        );
+        let engine = document.spec.gateway.image_engine();
+        assert!(
+            !engine.is_empty(),
             "supply the engine holding the sandbox image"
         );
         let queries = plan_queries(&document).unwrap();
@@ -138,7 +140,7 @@ mod tests {
             })
             .collect();
         assert_eq!(images.len(), document.spec.sandboxes.len());
-        assert!(images.iter().all(|engine| *engine == &gateway.engine));
+        assert!(images.iter().all(|image_engine| *image_engine == engine));
     }
 
     #[test]

@@ -258,7 +258,7 @@ Changing an existing service to enable authentication follows the normal runtime
 ## Use External Ollama through a Managed Proxy
 
 Run the proxy on the same Linux Docker host as the existing Ollama daemon and installed model.
-With a managed Docker gateway, the proxy inherits `gateway.engine`.
+With a managed Docker gateway, the proxy inherits `spec.gateway.target.docker.engine`.
 With an external gateway, declare the proxy service's `engine` as an explicit local Docker Unix socket and make its published endpoint reachable from OpenShell.
 Ollama must listen only on a loopback address.
 NemoClaw observes its model inventory and never installs, stops, or deletes the daemon or model.

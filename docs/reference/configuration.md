@@ -19,7 +19,7 @@ Empty or zero selects a default only where stated.
 
 - Document::parse rejects YAML aliases, anchors, merge keys, all explicit tags (including core tags such as !!binary), duplicate keys, multiple documents, and input larger than 1 MiB. It applies the compiled input schema before defaulting; Document::validate applies the normalized schema and semantic checks, including for directly constructed Rust values.
 - The parser checks endpoint transport and address policy, managed gateway port bounds, canonical private IPv4 /24 networks, local engine socket syntax, and publication address/port/network agreement.
-- Managed Kubernetes requires explicit kubeconfig environment, context, namespace, and development authentication profile; Agent Sandbox and one default StorageClass must already be installed. Its HTTPS endpoint is exactly 127.0.0.1 with an explicit port from 1 through 65535 and no path. Local engine fields and managed inference services are excluded; gateway.runtime.provider is kubernetes or openshift. OpenShift uses the upstream Kubernetes driver and requires platform-owned OpenShift security prerequisites. Cluster identity, ownership, prerequisite compatibility, and credential files are checked during operations.
+- A managed Kubernetes target requires explicit kubeconfig environment, context, namespace, and development authentication profile; Agent Sandbox and one default StorageClass must already be installed. Its HTTPS endpoint is exactly 127.0.0.1 with an explicit port from 1 through 65535 and no path. A Kubernetes target, managed or external, excludes managed inference services. The openshift distribution uses the upstream Kubernetes driver and requires platform-owned OpenShift security prerequisites. Cluster identity, ownership, prerequisite compatibility, and credential files are checked during operations.
 - Explicit sandbox policies are also checked by the pinned OpenShell policy parser and validator, including protocol-specific rule semantics, process identities, filesystem paths, and destination address restrictions.
 - Explicit filesystem grants must permit reads of the packaged Fabric runtime and NemoClaw bridge directories; parent and read-write grants count. This parser check does not inspect images, resolve symlinks, or establish runtime permissions.
 - The schema requires an explicit default for multiple model choices. Rust checks unique route names, that the default names a route, and that native model and tool fields have valid structural shapes. Fabric validates adapter-specific combinations.
@@ -209,6 +209,33 @@ Paths:
 |---|---|---|---|---|
 | `explicit` | [ExplicitPolicy](#explicitpolicy) | Yes | — | Complete sandbox policy in OpenShell YAML field names. |
 
+## ExternalEngine
+
+Engine holding sandbox images for an existing Docker or Podman gateway.
+
+Guide: [Gateway target](../usage.md#choose-the-gateway-target).
+
+Paths:
+
+- `spec.gateway.target.docker`
+- `spec.gateway.target.podman`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `engine` | string | No | — | Engine containing the sandbox images, used only for image metadata inspection. Required for deployment planning; omission permits retained-state teardown. |
+
+## ExternalKubernetes
+
+An existing Kubernetes or OpenShift gateway takes no target settings; sandbox image metadata replaces engine inspection.
+
+Guide: [Gateway target](../usage.md#choose-the-gateway-target).
+
+Paths:
+
+- `spec.gateway.target.kubernetes`
+
+Accepted input: object.
+
 ## ExternalOllama
 
 External Ollama daemon observed by the managed proxy installer.
@@ -239,6 +266,45 @@ Paths:
 | `digest` | string | Yes | — | Lowercase 64-character model digest reported by Ollama's /api/tags API. Constraints: pattern `^[a-f0-9]{64}$`. |
 | `name` | string | Yes | — | Installed Ollama model name including its tag. Constraints: pattern `^[a-z0-9][a-z0-9._-]*:[a-z0-9][a-z0-9._-]*$`. |
 
+## ExternalTarget
+
+Exactly one target key: docker, podman, or kubernetes.
+
+Guide: [Gateway target](../usage.md#choose-the-gateway-target).
+
+Paths:
+
+- `spec.gateway.target`
+
+Accepted input: object.
+
+### Alternative 1
+
+The existing gateway runs sandboxes on Docker.
+
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `docker` | [ExternalEngine](#externalengine) | Yes | — | The existing gateway runs sandboxes on Docker. |
+
+### Alternative 2
+
+The existing gateway runs sandboxes on Podman.
+
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `podman` | [ExternalEngine](#externalengine) | Yes | — | The existing gateway runs sandboxes on Podman. |
+
+### Alternative 3
+
+The existing gateway runs sandboxes on Kubernetes, including OpenShift. Sandboxes need explicit images with metadata, and managed inference services are excluded.
+
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `kubernetes` | [ExternalKubernetes](#externalkubernetes) | Yes | — | The existing gateway runs sandboxes on Kubernetes, including OpenShift. Sandboxes need explicit images with metadata, and managed inference services are excluded. |
+
 ## File
 
 One immutable file in a model snapshot.
@@ -263,7 +329,7 @@ Guide: [Configuration and credentials](../usage.md#configuration-and-credentials
 
 Paths:
 
-- `spec.gateway.kubernetes.kubeconfig`
+- `spec.gateway.target.kubernetes.kubeconfig`
 - `spec.gateway.tls.ca`
 - `spec.gateway.tls.certificate`
 - `spec.gateway.tls.key`
@@ -288,19 +354,12 @@ Accepted input: object.
 ### Alternative 1
 
 A gateway installed and managed by this deployment.
-Managed Podman targets local rootless Linux; rootful, remote, and other platforms are unqualified.
 
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `endpoint` | string | No | `"http://127.0.0.1:17681"` | Local engine gateways use an HTTP origin with an unprivileged loopback port. Kubernetes requires `https://127.0.0.1:PORT` with an explicit nonzero port and no trailing slash; commands forward that local port to the owned gateway. Without kubernetes, omitted or empty selects the local HTTP endpoint. Kubernetes requires an explicit HTTPS loopback endpoint and port. |
-| `engine` | string | No | `"unix:///var/run/docker.sock"` | Managed local gateway Unix engine socket; Podman requires its API service socket. Excluded by kubernetes. With runtime.provider docker, omitted or empty selects Docker's default socket. Podman requires its API service socket. Excluded by kubernetes. |
-| `image` | string | No | `"ghcr.io/nvidia/openshell/gateway@sha256:ea14aa4db0980fab4769fb6b5509ac42ae3dc8495e645b1ba1fe1ada49892fa6"` | Managed local gateway image pinned by the SDK. Excluded by kubernetes, whose component images are also SDK-pinned. Without kubernetes, omitted or empty selects the SDK default. Excluded by kubernetes. |
-| `imagePullPolicy` | [ImagePullPolicy](#imagepullpolicy) | No | — | Image acquisition before local container creation. Docker accepts IfNotPresent (the default) or Never; Podman also accepts Always before creation or restart. Excluded by kubernetes. |
-| `kubernetes` | [ManagedKubernetes](#managedkubernetes) | No | — | Explicit Kubernetes provisioning target. Excludes local engine, image, imagePullPolicy, and networkCIDR settings and requires Kubernetes sandboxes without managed inference services. |
 | `management` | string | Yes | — | Whether this deployment manages the gateway. Constraints: `"managed"`. |
-| `networkCIDR` | string | No | — | Canonical private IPv4 /24 for a managed local gateway. Excluded by kubernetes. Without kubernetes, omitted or empty selects 172.30.N.0/24, where N is the first byte of SHA-256(metadata.uid). Excluded by kubernetes. |
-| `runtime` | [Runtime](#runtime) | No | — | Compute driver the gateway runs every sandbox with; omission selects Docker. |
+| `target` | [ManagedTarget](#managedtarget) | No | `{"docker":{}}` | Where the gateway runs. The key selects the compute driver for every sandbox; omission selects a local Docker engine. |
 
 ### Alternative 2
 
@@ -311,9 +370,8 @@ An existing gateway managed outside this deployment.
 |---|---|---|---|---|
 | `credential` | [SecretRef](#secretref) | No | — | Optional bearer credential reference for an external HTTPS gateway. |
 | `endpoint` | string | Yes | — | Gateway HTTP(S) origin, without a path. Constraints: pattern `^https?://`. |
-| `engine` | string | No | — | Engine containing Docker or Podman sandbox images, used only for image metadata inspection. Required for their deployment planning; omission permits retained-state teardown. Kubernetes and OpenShift use image.metadata instead. |
 | `management` | string | Yes | — | Whether this deployment manages the gateway. Constraints: `"external"`. |
-| `runtime` | [Runtime](#runtime) | No | — | Compute driver the existing gateway runs; omission selects Docker. Planning checks it against the driver the gateway reports. |
+| `target` | [ExternalTarget](#externaltarget) | No | `{"docker":{}}` | The key selects the compute driver that runs every sandbox; omission selects Docker. Planning checks it against the driver the gateway reports. |
 | `tls` | [TLS](#tls) | No | — | Optional mutual TLS references for an external HTTPS gateway. |
 
 ## HardwareProfile
@@ -361,8 +419,8 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `metadata` | [FileRef](#fileref) | No | — | Environment reference to the absolute path of a local OCI metadata bundle for `ref`; required for Kubernetes and OpenShift, where no local engine can be inspected. Destroy does not read it. Its index, manifest, configuration, and Fabric catalog are verified against `ref` before use. The bundle holds no image layers or credentials. Docker and Podman inspect their engine instead. |
-| `ref` | string | For Kubernetes sandboxes | — | Immutable image reference. Kubernetes and OpenShift require an explicit nonempty reference. For other drivers, omitted or empty selects the generic SDK agent image pin; verify that it contains the selected Fabric adapter. Constraints: `""` or pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. Kubernetes and OpenShift require an explicit immutable image reference. For other drivers, omitted or empty selects the generic SDK agent image pin; verify that it contains the selected Fabric adapter. |
+| `metadata` | [FileRef](#fileref) | With a Kubernetes target | — | Environment reference to the absolute path of a local OCI metadata bundle for `ref`. A Kubernetes target requires it because no local engine can be inspected; Docker and Podman targets inspect their engine instead and reject it. Destroy does not read it. Its index, manifest, configuration, and Fabric catalog are verified against `ref` before use. The bundle holds no image layers or credentials. |
+| `ref` | string | With a Kubernetes target | — | Immutable image reference pinned by digest. Constraints: `""` or pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. A Kubernetes target requires an explicit immutable image reference. For Docker and Podman targets, omitted or empty selects the generic SDK agent image pin; verify that it contains the selected Fabric adapter. |
 
 ## ImagePullPolicy
 
@@ -372,7 +430,7 @@ Guide: [Container image downloads](../usage.md#control-container-image-downloads
 
 Paths:
 
-- `spec.gateway.imagePullPolicy`
+- `spec.gateway.target.podman.imagePullPolicy`
 - `spec.services.{key}.imagePullPolicy`
 
 Accepted input: string.
@@ -493,29 +551,104 @@ Guide: [Configuration and credentials](../usage.md#configuration-and-credentials
 
 Paths:
 
-- `spec.gateway.kubernetes.authentication`
+- `spec.gateway.target.kubernetes.authentication`
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
 | `profile` | string | Yes | — | Development generates the scoped local authentication fixture. Existing production issuers use gateway.management: external. Constraints: `"development"`. |
 
-## ManagedKubernetes
+## ManagedDocker
 
-Explicit existing-cluster target for a managed development gateway. The SDK does not create a cluster or select an ambient context, and installs nothing cluster-wide: Agent Sandbox and a default StorageClass must already exist. `runtime.provider: openshift` selects the OpenShift profile.
+Local Docker engine settings for a managed gateway.
 
-Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+Guide: [Gateway target](../usage.md#choose-the-gateway-target).
 
 Paths:
 
-- `spec.gateway.kubernetes`
+- `spec.gateway.target.docker`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `endpoint` | string | No | `"http://127.0.0.1:17681"` | Gateway HTTP origin with the 127.0.0.1 loopback address and an unprivileged port. Constraints: `""` or pattern `^http://127\.0\.0\.1:[0-9]+/?$`. Omitted or empty selects the default. |
+| `engine` | string | No | `"unix:///var/run/docker.sock"` | Docker engine Unix socket. Constraints: `""` or pattern `^unix:///`. Omitted or empty selects the default. |
+| `imagePullPolicy` | string | No | `"IfNotPresent"` | Gateway image acquisition before container creation: IfNotPresent (the default) or Never. Constraints: `"IfNotPresent"` or `"Never"`. |
+| `networkCidr` | string | No | — | Canonical private IPv4 /24 for the gateway network. Constraints: `""` or pattern `/24$`. Omitted or empty selects 172.30.N.0/24, where N is the first byte of SHA-256(metadata.uid). |
+
+## ManagedKubernetes
+
+Explicit existing-cluster target for a managed development gateway. The SDK does not create a cluster or select an ambient context, and installs nothing cluster-wide: Agent Sandbox and a default StorageClass must already exist.
+
+Guide: [Gateway target](../usage.md#choose-the-gateway-target).
+
+Paths:
+
+- `spec.gateway.target.kubernetes`
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
 | `authentication` | [KubernetesAuthentication](#kubernetesauthentication) | Yes | — | Explicit generated development authentication profile; this is not a production identity service. |
 | `context` | string | Yes | — | Exact kubeconfig context used for every cluster operation. Constraints: pattern `^[^\x00-\x20\x7f]+$(?![\s\S])`; minimum characters 1; maximum characters 253. |
+| `distribution` | string | No | `"kubernetes"` | Cluster distribution. `openshift` makes the SDK wait up to 30 seconds for OpenShift to assign the namespace its SCC UID range, read the first UID and the first supplemental group (the UID when no supplemental groups are assigned), record that namespace identity, pass it to the gateway chart as security-context values, and bind the `openshift` compute driver. Sandboxes use the upstream Kubernetes driver either way. Constraints: `"kubernetes"` or `"openshift"`. |
+| `endpoint` | string | Yes | — | Local HTTPS origin `https://127.0.0.1:PORT` with an explicit nonzero port and no trailing slash. Commands forward that local port to the owned gateway. Constraints: pattern `^https://127\.0\.0\.1:(?:[1-9][0-9]{0,3}\|[1-5][0-9]{4}\|6[0-4][0-9]{3}\|65[0-4][0-9]{2}\|655[0-2][0-9]\|6553[0-5])$(?![\s\S])`. |
 | `environment` | array of string | No | — | Caller environment variables that the kubeconfig's exec credential plugin needs, such as `AWS_PROFILE` for an EKS cluster. Cluster operations receive only platform variables and these; they are resolved like credential references and never written to configuration or state. Constraints: maximum items 32; items: pattern `^[A-Z_][A-Z0-9_]{0,127}$`. |
 | `kubeconfig` | [FileRef](#fileref) | Yes | — | Environment reference whose value is the local kubeconfig file path. The file and its credentials remain outside configuration and exported state. Process, loader, trust, proxy, cluster, Python, Helm, OpenTofu, and SDK control variable names are reserved. |
 | `namespace` | string | Yes | — | Namespace for this deployment's gateway and generated development authentication resources. Constraints: pattern `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$(?![\s\S])`; minimum characters 1; maximum characters 63. |
+
+## ManagedPodman
+
+Local rootless Linux Podman engine settings for a managed gateway.
+
+Guide: [Gateway target](../usage.md#choose-the-gateway-target).
+
+Paths:
+
+- `spec.gateway.target.podman`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `endpoint` | string | No | `"http://127.0.0.1:17681"` | Gateway HTTP origin with the 127.0.0.1 loopback address and an unprivileged port. Constraints: `""` or pattern `^http://127\.0\.0\.1:[0-9]+/?$`. Omitted or empty selects the default. |
+| `engine` | string | Yes | — | Podman API service Unix socket. It depends on the host user, so it has no default. Constraints: pattern `^unix:///`; minimum characters 1. |
+| `imagePullPolicy` | [ImagePullPolicy](#imagepullpolicy) | No | `"IfNotPresent"` | Gateway image acquisition: Always before creation or restart, IfNotPresent (the default), or Never. |
+| `networkCidr` | string | No | — | Canonical private IPv4 /24 for the gateway network. Constraints: `""` or pattern `/24$`. Omitted or empty selects 172.30.N.0/24, where N is the first byte of SHA-256(metadata.uid). |
+
+## ManagedTarget
+
+Exactly one target key: docker, podman, or kubernetes.
+
+Guide: [Gateway target](../usage.md#choose-the-gateway-target).
+
+Paths:
+
+- `spec.gateway.target`
+
+Accepted input: object.
+
+### Alternative 1
+
+Install the gateway on a local Docker engine.
+
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `docker` | [ManagedDocker](#manageddocker) | Yes | — | Install the gateway on a local Docker engine. |
+
+### Alternative 2
+
+Install the gateway on a local rootless Linux Podman engine. Rootful, remote, and other platforms are unqualified.
+
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `podman` | [ManagedPodman](#managedpodman) | Yes | — | Install the gateway on a local rootless Linux Podman engine. Rootful, remote, and other platforms are unqualified. |
+
+### Alternative 3
+
+Install the gateway in an explicit existing Kubernetes cluster. Sandboxes need explicit images with metadata, and managed inference services are excluded.
+
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `kubernetes` | [ManagedKubernetes](#managedkubernetes) | Yes | — | Install the gateway in an explicit existing Kubernetes cluster. Sandboxes need explicit images with metadata, and managed inference services are excluded. |
 
 ## Manifest
 
@@ -921,20 +1054,6 @@ Paths:
 | `provider` | [InferenceProvider](#inferenceprovider) | No | — | Inline inference definition owned by this route. Excludes providerRef and must not shadow an enclosing definition. |
 | `providerRef` | string | No | — | Name of an enclosing inference provider. Exactly one of providerRef or provider is required. Constraints: pattern `^[a-z][a-z0-9-]{0,39}$`. |
 
-## Runtime
-
-The compute driver an OpenShell gateway runs sandboxes with. One gateway runs one driver.
-
-Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
-
-Paths:
-
-- `spec.gateway.runtime`
-
-| Field | Input type | Required | Default | Description and constraints |
-|---|---|---|---|---|
-| `provider` | string | No | `"docker"` | Docker, Podman, Kubernetes, or OpenShift profile. Kubernetes and OpenShift require an external gateway or an explicit managed cluster target, and external inference endpoints. OpenShift uses the upstream Kubernetes driver with namespace-assigned identities. A managed service with Podman requires explicit service placement. Constraints: `"docker"` or `"podman"` or `"kubernetes"` or `"openshift"`. |
-
 ## Sandbox
 
 The gateway owns sandbox creation and dependency placement.
@@ -951,7 +1070,7 @@ Paths:
 | `harness` | [Harness](#harness) | No | — | Inline harness configuration. Exactly one of harness or harnessRef is required. The sandbox agent uses this harness implementation. |
 | `harnessRef` | string | No | — | Name of a visible harness configuration. Excludes inline harness. Constraints: pattern `^[a-z][a-z0-9-]{0,39}$`. |
 | `harnesses` | map of [Harness](#harness) | No | — | Named harness configurations available through harnessRef. Selecting a definition reuses configuration; runtime processes belong to each sandbox. Constraints: keys: pattern `^[a-z][a-z0-9-]{0,39}$`. |
-| `image` | [Image](#image) | For Kubernetes sandboxes | — | Kubernetes requires an explicit immutable agent image compatible with the gateway's runtime user and group IDs. For other drivers, omission selects the generic SDK agent image pin; verify that it contains the selected Fabric adapter. |
+| `image` | [Image](#image) | With a Kubernetes target | — | Agent image compatible with the gateway's runtime user and group IDs. A Kubernetes target requires an explicit `ref` and `metadata`; Docker and Podman targets may omit it and use the generic SDK agent image pin. |
 | `inferenceProviders` | array of [InferenceProvider](#inferenceprovider) | No | — | Named inference definitions visible to this sandbox's routes. Names must not shadow deployment definitions. |
 | `inferences` | map of [Inference](#inference) | No | — | Named inference configurations available through inferenceRef. Definitions resolve providers in their own scope and create no resources until selected. Constraints: keys: pattern `^[a-z][a-z0-9-]{0,39}$`. |
 | `integrations` | map of [Integration](#integration) | No | — | Named integration definitions selected by this sandbox's agent through integrationRefs. Names must not collide with deployment definitions. Constraints: keys: pattern `^[a-z][a-z0-9-]{0,39}$`. |

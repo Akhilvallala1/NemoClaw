@@ -82,7 +82,11 @@ fn section(
     for path in paths {
         writeln!(output, "- `{path}`").unwrap();
     }
-    if schema.get("properties").is_none() {
+    // A closed object without fields declares empty properties.
+    if schema["properties"]
+        .as_object()
+        .is_none_or(serde_json::Map::is_empty)
+    {
         writeln!(output, "\nAccepted input: {}.\n", input_type(schema)).unwrap();
         let choices = constraints(schema);
         if !choices.is_empty() {
@@ -248,6 +252,10 @@ fn guide(name: &str) -> &'static str {
         "Integration" | "WebSearch" | "SearchProvider" | "Agent" | "AgentExecution"
         | "AgentObservability" | "OtlpTracing" | "RelayTracing" | "AgentTools" | "AllowedTool"
         | "ToolDisclosure" => "[Agent runtimes](../agents.md)",
+        "ManagedTarget" | "ManagedDocker" | "ManagedPodman" | "ManagedKubernetes"
+        | "ExternalTarget" | "ExternalEngine" | "ExternalKubernetes" => {
+            "[Gateway target](../usage.md#choose-the-gateway-target)"
+        }
         "ImagePullPolicy" => {
             "[Container image downloads](../usage.md#control-container-image-downloads)"
         }
@@ -445,6 +453,19 @@ mod tests {
             "string"
         );
         assert!(constraints(&json!({"oneOf":[{"type":"object"},{"type":"array"}]})).is_empty());
+    }
+
+    #[test]
+    fn an_object_without_fields_renders_its_input_type_instead_of_an_empty_table() {
+        let input = schema(
+            json!({"settings":{"description":"No settings.", "$ref":"#/$defs/Empty"}}),
+            json!({"Empty":{"description":"Takes no fields.", "type":"object",
+                "properties":{}, "additionalProperties":false}}),
+        );
+        let markdown = render_reference(&input).unwrap();
+        let section = &markdown[markdown.find("## Empty").unwrap()..];
+        assert!(section.contains("Accepted input: object."), "{section}");
+        assert!(!section.contains("| Field |"), "{section}");
     }
 
     #[test]

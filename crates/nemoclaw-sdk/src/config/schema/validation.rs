@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Shared structural contract for authored input and normalized SDK values.
-use crate::config::{API_VERSION, DEFAULT_AGENT_IMAGE, DEFAULT_GATEWAY_IMAGE, constraints as c};
+use crate::config::{API_VERSION, DEFAULT_AGENT_IMAGE, constraints as c};
 use serde_json::{Value, json};
 
 pub(crate) use nemoclaw_runtime::schema::{at, forbid, property};
@@ -171,12 +171,7 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
         .unwrap()
         .remove("default");
     defs["Image"]["properties"]["ref"]["x-nemoclaw-default-rule"] = json!(
-        "Kubernetes and OpenShift require an explicit immutable image reference. For other drivers, omitted or empty selects the generic SDK agent image pin; verify that it contains the selected Fabric adapter."
-    );
-    property(
-        &mut defs["Runtime"],
-        "provider",
-        json!({"default": super::super::ComputeDriver::default()}),
+        "A Kubernetes target requires an explicit immutable image reference. For Docker and Podman targets, omitted or empty selects the generic SDK agent image pin; verify that it contains the selected Fabric adapter."
     );
     optional_string(
         &mut defs["Network"],
@@ -243,91 +238,7 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
         json!({"pattern": c::MODEL}),
     );
 
-    for gateway in defs["Gateway"]["oneOf"]
-        .as_array_mut()
-        .expect("gateway variants")
-    {
-        property(
-            gateway,
-            "management",
-            json!({"description": "Whether this deployment manages the gateway."}),
-        );
-        if gateway["properties"]["management"]["const"] == "managed" {
-            let mut local = json!({"properties": {}, "required": []});
-            for (field, rule) in [
-                (
-                    "endpoint",
-                    json!({"anyOf": [{"const": ""}, {"pattern": "^http://127\\.0\\.0\\.1:[0-9]+/?$"}], "default": c::GATEWAY_ENDPOINT}),
-                ),
-                (
-                    "engine",
-                    // Docker's socket is the default for a Docker runtime only;
-                    // the Podman rule below requires an explicit socket.
-                    json!({"anyOf": [{"const":""},{"pattern":"^unix:///"}], "default": c::GATEWAY_ENGINE}),
-                ),
-                (
-                    "image",
-                    json!({"enum": ["", DEFAULT_GATEWAY_IMAGE], "default": DEFAULT_GATEWAY_IMAGE}),
-                ),
-                (
-                    "networkCIDR",
-                    json!({"anyOf": [{"const": ""}, {"pattern": "/24$"}], "x-nemoclaw-default-rule": "Omitted or empty selects 172.30.N.0/24, where N is the first byte of SHA-256(metadata.uid)."}),
-                ),
-            ] {
-                let mut rule = rule;
-                if normalized {
-                    local["required"].as_array_mut().unwrap().push(json!(field));
-                    if let Some(choices) = rule.get_mut("anyOf").and_then(Value::as_array_mut) {
-                        choices.retain(|choice| choice.get("const") != Some(&json!("")));
-                    }
-                    if field == "image" {
-                        rule["enum"] = json!([DEFAULT_GATEWAY_IMAGE]);
-                    }
-                }
-                // A default only annotates; the Kubernetes branch still
-                // excludes these fields. Editors and onboarding read a field's
-                // default from its own schema, not from a conditional branch.
-                if let Some(default) = rule.get("default").cloned() {
-                    property(gateway, field, json!({"default": default}));
-                }
-                local["properties"][field] = rule;
-                property(
-                    gateway,
-                    field,
-                    json!({"x-nemoclaw-default-rule": if field == "endpoint" {
-                        "Without kubernetes, omitted or empty selects the local HTTP endpoint. Kubernetes requires an explicit HTTPS loopback endpoint and port."
-                    } else if field == "networkCIDR" {
-                        "Without kubernetes, omitted or empty selects 172.30.N.0/24, where N is the first byte of SHA-256(metadata.uid). Excluded by kubernetes."
-                    } else if field == "engine" {
-                        "With runtime.provider docker, omitted or empty selects Docker's default socket. Podman requires its API service socket. Excluded by kubernetes."
-                    } else {
-                        "Without kubernetes, omitted or empty selects the SDK default. Excluded by kubernetes."
-                    }}),
-                );
-            }
-            gateway["if"] = json!({"required": ["kubernetes"]});
-            gateway["then"] = json!({
-                "required": ["endpoint"],
-                "properties": {"endpoint": {"pattern": c::KUBERNETES_GATEWAY_ENDPOINT}},
-                "allOf": [forbid(&["engine", "image", "imagePullPolicy", "networkCIDR"])],
-                "x-nemoclaw-error": "managed Kubernetes requires an explicit HTTPS 127.0.0.1 endpoint with a nonzero port and excludes local engine settings"
-            });
-            gateway["else"] = local;
-            // Podman's socket depends on the host user, so it has no default.
-            gateway["allOf"] = json!([{
-                "if": at("runtime/provider", json!({"const":"podman"}), true),
-                "then": {
-                    "required": ["engine"],
-                    "properties": {"engine": {"minLength": 1}},
-                    "x-nemoclaw-error": "Podman requires spec.gateway.engine to name its local API service socket."
-                }
-            }]);
-        } else {
-            property(gateway, "endpoint", json!({"pattern": "^https?://"}));
-            gateway["if"] = at("endpoint", json!({"pattern": "^http:"}), true);
-            gateway["then"] = forbid(&["credential", "tls"]);
-        }
-    }
+    constrain_gateway(defs, normalized);
 
     let provider = &mut defs["InferenceProvider"];
     property(provider, "serviceRef", json!({"pattern": c::SLUG}));
@@ -346,42 +257,39 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
     defs["AgentExecution"]["minProperties"] = json!(1);
     crate::services::constrain_schema(defs, normalized);
 
-    root["allOf"] = json!([{
-        "if": {"not": at("spec/gateway/runtime/provider", json!({"const":"podman"}), true)},
-        "then": at("spec/gateway/imagePullPolicy", json!({"enum":["IfNotPresent", "Never"]}), false)
-    }]);
-    root["allOf"].as_array_mut().unwrap().push(json!({
-        "if": at("spec/gateway/management", json!({"const":"managed"}), true),
-        "then": {
-            "if": at("spec/gateway", json!({"required":["kubernetes"]}), true),
-            "then": at("spec/gateway/runtime/provider", json!({"enum":["kubernetes", "openshift"]}), true),
-            "else": at("spec/gateway/runtime/provider", json!({"enum":["docker", "podman"]}), false)
-        }
-    }));
     // Cluster sandboxes need an explicit image, since no local engine supplies
     // a default; image metadata stands in for engine inspection only there.
-    root["allOf"].as_array_mut().unwrap().push(json!({
-        "if": at("spec/gateway/runtime/provider", json!({"enum":["kubernetes", "openshift"]}), true),
-        "then": at("spec/sandboxes/[]/image", json!({"required": ["ref", "metadata"], "properties": {"ref": {"pattern": c::IMAGE}}}), true),
-        "else": at("spec/sandboxes/[]/image", forbid(&["metadata"]), false)
-    }));
-    root["allOf"].as_array_mut().unwrap().push(json!({
-        "if": at("spec/gateway/runtime/provider", json!({"enum":["kubernetes", "openshift"]}), true),
-        "then": {
-            "allOf": [
-                {"anyOf": [
-                    at("spec/gateway/management", json!({"const":"external"}), true),
-                    at("spec/gateway", json!({"required":["management","kubernetes"], "properties":{"management":{"const":"managed"}}}), true)
-                ]},
-                at("spec/services", json!({"maxProperties":0}), false)
-            ],
-            "x-nemoclaw-error": "Kubernetes requires an external gateway or an explicit managed Kubernetes target, and external inference endpoints; managed services are not supported"
+    let cluster = at(
+        "spec/gateway/target",
+        json!({"required": ["kubernetes"]}),
+        true,
+    );
+    let mut explicit = at(
+        "spec/sandboxes/[]/image",
+        json!({"required": ["ref", "metadata"], "properties": {"ref": {"pattern": c::IMAGE}}}),
+        true,
+    );
+    explicit["x-nemoclaw-error"] = json!(
+        "a Kubernetes target requires each sandbox image.ref pinned by digest and image.metadata"
+    );
+    let mut inspected = at("spec/sandboxes/[]/image", forbid(&["metadata"]), false);
+    inspected["x-nemoclaw-error"] = json!(
+        "image.metadata is available only for a spec.gateway.target.kubernetes gateway; Docker and Podman use engine image inspection"
+    );
+    root["allOf"] = json!([
+        {"if": cluster.clone(), "then": explicit, "else": inspected},
+        {
+            "if": cluster,
+            "then": {
+                "allOf": [at("spec/services", json!({"maxProperties": 0}), false)],
+                "x-nemoclaw-error": "a Kubernetes target requires external inference endpoints; managed services are not supported"
+            }
         }
-    }));
+    ]);
     root["x-nemoclaw-parser-checks"] = json!([
         "Document::parse rejects YAML aliases, anchors, merge keys, all explicit tags (including core tags such as !!binary), duplicate keys, multiple documents, and input larger than 1 MiB. It applies the compiled input schema before defaulting; Document::validate applies the normalized schema and semantic checks, including for directly constructed Rust values.",
         "The parser checks endpoint transport and address policy, managed gateway port bounds, canonical private IPv4 /24 networks, local engine socket syntax, and publication address/port/network agreement.",
-        "Managed Kubernetes requires explicit kubeconfig environment, context, namespace, and development authentication profile; Agent Sandbox and one default StorageClass must already be installed. Its HTTPS endpoint is exactly 127.0.0.1 with an explicit port from 1 through 65535 and no path. Local engine fields and managed inference services are excluded; gateway.runtime.provider is kubernetes or openshift. OpenShift uses the upstream Kubernetes driver and requires platform-owned OpenShift security prerequisites. Cluster identity, ownership, prerequisite compatibility, and credential files are checked during operations.",
+        "A managed Kubernetes target requires explicit kubeconfig environment, context, namespace, and development authentication profile; Agent Sandbox and one default StorageClass must already be installed. Its HTTPS endpoint is exactly 127.0.0.1 with an explicit port from 1 through 65535 and no path. A Kubernetes target, managed or external, excludes managed inference services. The openshift distribution uses the upstream Kubernetes driver and requires platform-owned OpenShift security prerequisites. Cluster identity, ownership, prerequisite compatibility, and credential files are checked during operations.",
         "Explicit sandbox policies are also checked by the pinned OpenShell policy parser and validator, including protocol-specific rule semantics, process identities, filesystem paths, and destination address restrictions.",
         "Explicit filesystem grants must permit reads of the packaged Fabric runtime and NemoClaw bridge directories; parent and read-write grants count. This parser check does not inspect images, resolve symlinks, or establish runtime permissions.",
         "The schema requires an explicit default for multiple model choices. Rust checks unique route names, that the default names a route, and that native model and tool fields have valid structural shapes. Fabric validates adapter-specific combinations.",
@@ -393,4 +301,152 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
         "The parser checks memory threshold ordering and GPU/KV budget relationships; recipe path safety, byte-length limits, environment-map conflicts, snapshot file uniqueness, directory conflicts, and total-size overflow.",
         "Schema validation does not observe hardware, image labels, model weights, credentials, ownership, connectivity, or inference readiness. Those checks run during the relevant SDK operation."
     ]);
+}
+
+/// Gateway variants and their targets. Each target is its own definition, so
+/// it states only its own defaults, required fields, and pull policies.
+fn constrain_gateway(defs: &mut serde_json::Map<String, Value>, normalized: bool) {
+    // Earlier documents named these fields directly on the gateway; a
+    // diagnostic names the replacement instead of only rejecting the field.
+    let runtime = "spec.gateway.runtime is replaced by the key under spec.gateway.target: docker, podman, or kubernetes";
+    let engine = "spec.gateway.engine moved to spec.gateway.target.docker.engine or spec.gateway.target.podman.engine";
+    for gateway in defs["Gateway"]["oneOf"]
+        .as_array_mut()
+        .expect("gateway variants")
+    {
+        property(
+            gateway,
+            "management",
+            json!({"description": "Whether this deployment manages the gateway."}),
+        );
+        if normalized {
+            gateway["required"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("target"));
+        }
+        let managed = gateway["properties"]["management"]["const"] == "managed";
+        if !normalized {
+            let target = if managed {
+                json!(super::super::ManagedTarget::default())
+            } else {
+                json!(super::super::ExternalTarget::default())
+            };
+            property(gateway, "target", json!({"default": target}));
+        }
+        if managed {
+            gateway["x-nemoclaw-removed-fields"] = json!({
+                "runtime": runtime,
+                "endpoint": "spec.gateway.endpoint of a managed gateway moved to the endpoint of its spec.gateway.target key",
+                "engine": engine,
+                "image": "spec.gateway.image is removed because the SDK pins the gateway image",
+                "imagePullPolicy": "spec.gateway.imagePullPolicy moved to spec.gateway.target.docker or spec.gateway.target.podman",
+                "networkCIDR": "spec.gateway.networkCIDR moved to networkCidr under spec.gateway.target.docker or spec.gateway.target.podman",
+                "kubernetes": "spec.gateway.kubernetes moved to spec.gateway.target.kubernetes"
+            });
+        } else {
+            gateway["x-nemoclaw-removed-fields"] = json!({"runtime": runtime, "engine": engine});
+            property(gateway, "endpoint", json!({"pattern": "^https?://"}));
+            gateway["if"] = at("endpoint", json!({"pattern": "^http:"}), true);
+            gateway["then"] = forbid(&["credential", "tls"]);
+        }
+    }
+    // The generated reference describes each target key by its variant.
+    for name in ["ManagedTarget", "ExternalTarget"] {
+        for variant in defs[name]["oneOf"].as_array_mut().expect("target variants") {
+            let key = variant["required"][0]
+                .as_str()
+                .expect("single-key target variant")
+                .to_owned();
+            let description = variant["description"].clone();
+            property(variant, &key, json!({"description": description}));
+        }
+    }
+    let endpoint = json!({"pattern": "^http://127\\.0\\.0\\.1:[0-9]+/?$"});
+    let network = json!({"pattern": "/24$"});
+    for (name, key) in [("ManagedDocker", "docker"), ("ManagedPodman", "podman")] {
+        let target = &mut defs[name];
+        optional_string(
+            target,
+            "endpoint",
+            c::GATEWAY_ENDPOINT,
+            &endpoint,
+            normalized,
+        );
+        property(
+            target,
+            "endpoint",
+            json!({"x-nemoclaw-error": "a Docker or Podman gateway endpoint is http://127.0.0.1:PORT with an unprivileged port"}),
+        );
+        optional_string(target, "networkCidr", "", &network, normalized);
+        let cidr = target["properties"]["networkCidr"].as_object_mut().unwrap();
+        cidr.remove("default");
+        cidr.insert(
+            "x-nemoclaw-default-rule".into(),
+            json!("Omitted or empty selects 172.30.N.0/24, where N is the first byte of SHA-256(metadata.uid)."),
+        );
+        cidr.insert(
+            "x-nemoclaw-error".into(),
+            json!("networkCidr must be a canonical private IPv4 /24"),
+        );
+        property(
+            target,
+            "imagePullPolicy",
+            json!({"default": super::super::ImagePullPolicy::default()}),
+        );
+        target["x-nemoclaw-removed-fields"] = json!({
+            "image": format!("spec.gateway.target.{key} takes no image because the SDK pins the gateway image"),
+            "networkCIDR": format!("spec.gateway.target.{key} spells networkCIDR as networkCidr")
+        });
+    }
+    optional_string(
+        &mut defs["ManagedDocker"],
+        "engine",
+        c::GATEWAY_ENGINE,
+        &json!({"pattern": "^unix:///"}),
+        normalized,
+    );
+    // Docker accepts two of the engine policies. Its own choices, rather than
+    // the shared definition, let editors offer only those.
+    let choices = defs["ImagePullPolicy"]["oneOf"]
+        .as_array()
+        .expect("pull policy choices")
+        .iter()
+        .filter(|choice| choice["const"] != "Always")
+        .cloned()
+        .collect::<Vec<_>>();
+    let policy = defs["ManagedDocker"]["properties"]["imagePullPolicy"]
+        .as_object_mut()
+        .unwrap();
+    policy.remove("$ref");
+    policy.insert("oneOf".into(), json!(choices));
+    property(
+        &mut defs["ManagedPodman"],
+        "engine",
+        json!({
+            "minLength": 1,
+            "pattern": "^unix:///",
+            "x-nemoclaw-error": "Podman requires spec.gateway.target.podman.engine to name its local API service socket"
+        }),
+    );
+    property(
+        &mut defs["ManagedKubernetes"],
+        "endpoint",
+        json!({
+            "pattern": c::KUBERNETES_GATEWAY_ENDPOINT,
+            "x-nemoclaw-error": "managed Kubernetes requires an explicit HTTPS 127.0.0.1 endpoint with a nonzero port and no path"
+        }),
+    );
+    property(
+        &mut defs["ManagedKubernetes"],
+        "distribution",
+        json!({"default": super::super::KubernetesDistribution::default()}),
+    );
+    // Declared, empty properties make an unknown field an additional property,
+    // which the removed-field hint can name.
+    let existing = &mut defs["ExternalKubernetes"];
+    existing["properties"] = json!({});
+    existing["x-nemoclaw-removed-fields"] = json!({
+        "distribution": "distribution applies only to a managed gateway's spec.gateway.target.kubernetes; an existing gateway reports only the kubernetes driver"
+    });
 }

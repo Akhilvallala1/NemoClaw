@@ -82,8 +82,8 @@ impl ResolvedPlacement {
                 let gateway = gateway.managed()?;
                 let bind_address = gateway.bridge()?;
                 Self {
-                    engine: gateway.engine.clone(),
-                    network_cidr: gateway.network_cidr.clone(),
+                    engine: gateway.engine.into(),
+                    network_cidr: gateway.network_cidr.into(),
                     endpoint: format!("http://{bind_address}:{port}/v1"),
                     bind_address,
                     explicit: false,
@@ -147,13 +147,15 @@ impl ServicePublication {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Gateway, ManagedGateway};
+    use crate::config::{Gateway, ManagedDocker, ManagedGateway, ManagedTarget};
 
     fn gateway() -> Gateway {
         Gateway::Managed(ManagedGateway {
-            engine: "unix:///var/run/docker.sock".into(),
-            network_cidr: "10.20.0.0/24".into(),
-            ..Default::default()
+            target: ManagedTarget::Docker(ManagedDocker {
+                engine: "unix:///var/run/docker.sock".into(),
+                network_cidr: "10.20.0.0/24".into(),
+                ..Default::default()
+            }),
         })
     }
 

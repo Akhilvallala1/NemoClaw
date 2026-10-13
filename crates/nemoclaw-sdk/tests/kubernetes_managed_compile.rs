@@ -12,13 +12,13 @@ fn document() -> Document {
         Document::parse(include_bytes!("fixtures/config/local.yaml").as_slice()).unwrap();
     let mut value = serde_json::to_value(original).unwrap();
     value["spec"]["gateway"] = json!({
-        "management": "managed", "endpoint": "https://127.0.0.1:17671",
-        "kubernetes": {
+        "management": "managed",
+        "target": {"kubernetes": {
+            "endpoint": "https://127.0.0.1:17671",
             "kubeconfig": {"env":"TEST_KUBECONFIG"}, "context":"test-cluster", "namespace":"test-agents",
             "authentication":{"profile":"development"}
-        }
+        }}
     });
-    value["spec"]["gateway"]["runtime"] = json!({"provider": "kubernetes"});
     value["spec"]["sandboxes"][0]["image"]["metadata"] = json!({"env":"TEST_IMAGE_METADATA"});
     Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
 }
@@ -120,7 +120,7 @@ fn openshift_chart_values_wait_for_the_observed_namespace_identity() {
     );
 
     let mut value = serde_json::to_value(document()).unwrap();
-    value["spec"]["gateway"]["runtime"]["provider"] = json!("openshift");
+    value["spec"]["gateway"]["target"]["kubernetes"]["distribution"] = json!("openshift");
     let document = Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
     let openshift = compile_runtime(&document, &generations, "0.1.0").unwrap();
     let values = &openshift["resource"]["helm_release"]["gateway"]["values"];
@@ -269,8 +269,8 @@ fn managed_kubernetes_discovery_never_uses_a_local_container_engine() {
 fn kubernetes_attributes_reproduce_each_resource_specification() {
     use nemoclaw_sdk::kubernetes::{AUTH_KIND, GATEWAY_KIND, STORAGE_KIND, Spec};
     let mut value = serde_json::to_value(document()).unwrap();
-    value["spec"]["gateway"]["kubernetes"]["environment"] = json!(["AWS_PROFILE"]);
-    value["spec"]["gateway"]["runtime"]["provider"] = json!("openshift");
+    value["spec"]["gateway"]["target"]["kubernetes"]["environment"] = json!(["AWS_PROFILE"]);
+    value["spec"]["gateway"]["target"]["kubernetes"]["distribution"] = json!("openshift");
     let generations = [
         "workspace",
         "provider",
@@ -295,14 +295,8 @@ fn kubernetes_attributes_reproduce_each_resource_specification() {
             let kubernetes = spec.settings.kubernetes.as_ref().unwrap();
             assert_eq!(kubernetes.context, "test-cluster");
             assert_eq!(
-                document
-                    .spec
-                    .gateway
-                    .as_managed()
-                    .unwrap()
-                    .kubernetes
-                    .as_ref(),
-                Some(kubernetes)
+                document.spec.gateway.as_managed(),
+                Some(&spec.settings.authored().unwrap())
             );
             assert!(matches!(
                 target.kind.as_str(),

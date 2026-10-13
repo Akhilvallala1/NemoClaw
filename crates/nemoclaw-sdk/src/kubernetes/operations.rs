@@ -55,7 +55,7 @@ impl Operations {
     fn target<'a>(
         &self,
         spec: &'a Spec,
-    ) -> Result<&'a crate::config::ManagedKubernetes, ObservationError> {
+    ) -> Result<&'a crate::managed::KubernetesSettings, ObservationError> {
         spec.settings
             .kubernetes
             .as_ref()

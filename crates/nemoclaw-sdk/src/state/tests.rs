@@ -391,12 +391,12 @@ fn a_kubernetes_records_generations_reload_and_stay_stable() {
     )
     .unwrap();
     value["spec"]["gateway"] = serde_json::json!({
-        "management": "managed", "runtime": {"provider": "kubernetes"},
-        "endpoint": "https://127.0.0.1:17671",
-        "kubernetes": {
+        "management": "managed",
+        "target": {"kubernetes": {
+            "endpoint": "https://127.0.0.1:17671",
             "kubeconfig": {"env": "TEST_KUBECONFIG"}, "context": "test-cluster",
             "namespace": "test-agents", "authentication": {"profile": "development"}
-        }
+        }}
     });
     value["spec"]["sandboxes"][0]["image"]["metadata"] =
         serde_json::json!({"env": "TEST_IMAGE_METADATA"});

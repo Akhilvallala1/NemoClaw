@@ -53,12 +53,45 @@ Every declared service is installed and checked, even without an inference consu
 Services run on the gateway's Docker engine by default, or on another host through [SSH placement](remote-service.md).
 See [service constraints](inference.md#combine-local-and-hosted-providers) for multiple Ollama/vLLM services and [models](models.md) for hardware contracts and optional [recipes](recipes.md).
 
+## Choose the Gateway Target
+
+`spec.gateway.target` holds exactly one key, `docker`, `podman`, or `kubernetes`, which selects the compute driver for every sandbox.
+Omitting `target` selects `docker`.
+
+For a managed gateway, the key holds the gateway's settings:
+
+```yaml
+gateway:
+  management: managed
+  target:
+    docker:
+      endpoint: http://127.0.0.1:17681
+      engine: unix:///var/run/docker.sock
+      networkCidr: 172.30.7.0/24
+```
+
+- `docker` and `podman` take a loopback HTTP `endpoint`, the local `engine` socket, `imagePullPolicy`, and `networkCidr`; all are optional except Podman's `engine`.
+- `kubernetes` takes a loopback HTTPS `endpoint`, the cluster settings, and an optional `distribution`; see [Deploy to Kubernetes or OpenShift](kubernetes.md).
+
+For an external gateway, `endpoint`, `credential`, and `tls` stay beside `target`, and the key names the compute driver that gateway runs.
+Under `docker` or `podman`, `engine` names the engine holding the sandbox images, which NemoClaw only inspects; `kubernetes` takes no settings.
+Plan checks the key against the driver the gateway reports and stops on a mismatch.
+
+An existing deployment cannot move to another target.
+For a managed gateway, deployment state binds the target key and every setting under it except `imagePullPolicy`: the endpoint, engine, `networkCidr`, distribution, and cluster settings.
+For an external gateway, it binds `endpoint`.
+To change a bound setting, create a separate deployment with a fresh `metadata.uid` and state directory.
+To re-author a document for another target, fill in the new key's required fields; for `kubernetes`, give each sandbox an explicit `image.ref` and `image.metadata` and replace `spec.services` with external inference endpoints; for `docker` or `podman`, remove `image.metadata`.
+
+The SDK pins the gateway image, and the document does not name it.
+A Docker or Podman gateway stays bound to the image pin of the bundle that created it, and a managed Kubernetes gateway to that bundle's gateway chart pin: keep operating it with that bundle, or create a separate deployment to use a bundle with a different pin.
+
 ## Use a Managed Podman Gateway
 
 Use a local rootless Linux Podman engine through its Unix API socket.
 Rootful operation, remote Podman engines, and other operating systems are untested ([#12641](https://github.com/NVIDIA/NemoClaw/issues/12641)).
 
-Set `gateway.runtime.provider: podman` and set `gateway.engine` to the local Podman API service's Unix socket.
+Set `spec.gateway.target.podman.engine` to the local Podman API service's Unix socket.
 See [the Podman example](../examples/managed-podman.yaml).
 The API service is an operator prerequisite; NemoClaw manages its gateway, network, and credential storage through that service.
 Load the harness image into the selected Podman image store and use the digest reported there.
@@ -67,7 +100,6 @@ Rootless operation requires an API that reports `pasta` networking, as required 
 Older APIs that omit this information fail during plan.
 The host must have a private IPv4 address on its default-route interface.
 OpenShell uses that address for sandbox-only callbacks while keeping its user API on loopback.
-Every managed gateway uses one compute driver; use separate deployments to select different drivers.
 Managed vLLM with Podman sandboxes still requires explicit SSH Docker placement and publication.
 
 Podman's changing compatibility `/info.ID` is not a durable identity.
@@ -127,7 +159,7 @@ See [sandbox policy configuration](sandbox-network.md) for changes and [security
 
 ## Control Container Image Downloads
 
-Set `imagePullPolicy` beside `image` under `spec.gateway` or `spec.services.<name>`.
+Set `imagePullPolicy` under `spec.gateway.target.docker` or `spec.gateway.target.podman`, or beside `image` under `spec.services.<name>`.
 The service setting applies to `kind: vllm`, `ollama`, and `ollamaProxy`.
 The setting controls image acquisition on that container's engine, including an SSH Docker engine selected by the service's `placement.engine`.
 Images still require immutable SHA-256 references.
@@ -225,7 +257,7 @@ Use separate deployments when you need independent teardown.
 | Harness adapter, sandbox image, agent identity, or provider attachments | Changes the immutable sandbox specification; apply refuses replacement; use a separate deployment with a fresh UID and state |
 | Sandbox network policy | Changes the sandbox specification; follow [policy change constraints](sandbox-network.md) and use a separate deployment when replacement is required |
 | Managed inference or proxy image or serving specification | Docker-provider reconciliation may replace the container while retaining its independently bound storage; review the plan and [model constraints](models.md) |
-| Deployment UID, established gateway endpoint, or bound credential/gateway engine | Cannot retarget the existing state; create a separate deployment |
+| Deployment UID, [bound gateway settings](#choose-the-gateway-target), or bound credentials | Cannot retarget the existing state; create a separate deployment |
 | Remove an unused inference provider definition | Changes the desired document only; the SDK creates registrations for selected definitions, so unused definitions have no resources to delete |
 | Remove a sandbox, retained storage, or a protected gateway binding | Apply refuses removal; assess a separate deployment and explicit retirement of the original |
 | Change a credential value behind the same environment reference | Unchanged apply does not detect rotation; see [credential lifecycle](security.md#credentials-and-authentication) |
@@ -436,7 +468,7 @@ It does not revoke upstream keys or remove images, external gateways, or engines
 
 Finish destroy first: `nemoclaw plan --destroy --state-dir .local/deployment` must print `No resource changes planned.`, then the entries to remove under `Retained resources:`.
 The commands select objects by UID alone, so confirm that no other deployment, including one copied from the same example, uses this `metadata.uid`.
-Run the commands with Docker access to each engine the deployment selects: the managed gateway's `spec.gateway.engine`, each service's `placement.engine`, and each Ollama proxy's `engine`.
+Run the commands with Docker access to each engine the deployment selects: the managed gateway's `spec.gateway.target.docker.engine`, each service's `placement.engine`, and each Ollama proxy's `engine`.
 For SSH placement, connect to that host using the already configured SSH identity; do not substitute the client's local Docker daemon.
 From any directory, set `deployment_engine` to one of those engines and `deployment_uid` to the UID, then list the deployment's objects:
 

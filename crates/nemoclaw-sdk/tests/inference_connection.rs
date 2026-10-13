@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-use nemoclaw_sdk::config::ComputeDriver;
-use nemoclaw_sdk::config::{Document, SecretRef};
+use nemoclaw_sdk::config::{
+    Document, ExternalEngine, ExternalTarget, Gateway, ManagedDocker, ManagedGateway,
+    ManagedTarget, SecretRef,
+};
 
 #[test]
 fn missing_inference_provider_does_not_panic() {
@@ -14,14 +16,15 @@ fn missing_inference_provider_does_not_panic() {
 
 #[test]
 fn bridge_resolution_rejects_malformed_networks_and_overflow() {
-    let mut gateway = nemoclaw_sdk::config::ManagedGateway {
-        network_cidr: "10.0.0.0/24".into(),
-        ..Default::default()
+    let gateway = |network: &str| ManagedGateway {
+        target: ManagedTarget::Docker(ManagedDocker {
+            network_cidr: network.into(),
+            ..Default::default()
+        }),
     };
-    assert_eq!(gateway.bridge().unwrap(), "10.0.0.1");
+    assert_eq!(gateway("10.0.0.0/24").bridge().unwrap(), "10.0.0.1");
     for network in ["invalid", "::/64", "255.255.255.255/32"] {
-        gateway.network_cidr = network.into();
-        assert!(gateway.bridge().is_err(), "{network}");
+        assert!(gateway(network).bridge().is_err(), "{network}");
     }
 }
 
@@ -38,7 +41,10 @@ fn inference_connection_is_resolved_independently_of_the_sandbox_engine() {
         env: "MODEL_TOKEN".into(),
     });
     let first = remote.inference_connection().unwrap();
-    remote.spec.gateway.runtime_mut().provider = ComputeDriver::Podman;
+    let Gateway::External(gateway) = &mut remote.spec.gateway else {
+        panic!("expected an external gateway")
+    };
+    gateway.target = ExternalTarget::Podman(ExternalEngine::default());
     remote.validate().unwrap();
     assert_eq!(remote.inference_connection().unwrap(), first);
     assert_eq!(first.endpoint, "https://inference.example.test:9443/v1");

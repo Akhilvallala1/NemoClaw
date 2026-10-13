@@ -14,20 +14,20 @@ impl JourneyState {
         observations: &DiscoveryObservations,
     ) -> Result<JourneyResolution, Diagnostics> {
         let mut resolution = self.resolve(capabilities)?;
-        // A host that can run only one local runtime makes it the suggestion,
+        // A host that can run only one local target makes it the suggestion,
         // even over a supplied value; the user still decides.
         let answered = self.answered_engines.as_deref().unwrap_or_default();
-        let mut runtimes: Vec<&str> = Vec::new();
+        let mut targets: Vec<&str> = Vec::new();
         for engine in answered {
-            if !runtimes.contains(&engine.compute_driver.as_str()) {
-                runtimes.push(engine.compute_driver.as_str());
+            if !targets.contains(&engine.compute_driver.as_str()) {
+                targets.push(engine.compute_driver.as_str());
             }
         }
-        if let [only] = runtimes.as_slice()
+        if let [only] = targets.as_slice()
             && let Some(question) = resolution
                 .questions
                 .iter_mut()
-                .find(|question| question.id == RUNTIME_PROVIDER)
+                .find(|question| question.id == GATEWAY_TARGET)
         {
             question.suggestion = Some(Value::String((*only).into()));
         }
@@ -36,20 +36,21 @@ impl JourneyState {
         {
             resolution.target_assessment = Some(crate::assess_target(document, observations)?);
         }
-        // Without an engine for its runtime, a managed gateway falls back to the
-        // SDK's default socket, whose read reports a mismatch rather than the
-        // cause. That default is Docker's socket, so it is not offered as the
-        // engine either: accepting it would author a socket no engine answered on.
-        if let Some(runtime) = self.runtime_without_local_engine() {
+        // Without an engine for its target, a managed gateway reports that cause
+        // first. Only a Docker target has a default engine, Docker's standard
+        // socket, and its read would report a mismatch rather than the cause.
+        // That default is not offered as the engine either: accepting it would
+        // author a socket no engine answered on.
+        if let Some((target, engine)) = self.target_without_local_engine() {
             if let Some(question) = resolution
                 .questions
                 .iter_mut()
-                .find(|question| question.id == GATEWAY_ENGINE_PATH)
+                .find(|question| question.id == engine)
             {
                 question.suggestion = None;
             }
             let reason = format!(
-                "No {runtime} engine answered on this machine. Start it, or set spec.gateway.engine to its socket."
+                "No {target} engine answered on this machine. Start it, or set spec.gateway.target.{target}.engine to its socket."
             );
             // Podman has no default engine, so its document stays incomplete
             // and no target was assessed; the cause is still the first thing
@@ -131,24 +132,17 @@ impl JourneyState {
         Ok(resolution)
     }
 
-    /// The chosen runtime of a managed gateway without an authored engine, when
-    /// this machine was asked and no engine answered for that runtime.
-    fn runtime_without_local_engine(&self) -> Option<&str> {
+    /// The chosen local target of a managed gateway without an authored
+    /// engine, and that engine's pointer, when this machine was asked and no
+    /// engine answered for that target.
+    fn target_without_local_engine(&self) -> Option<(String, String)> {
         let answered = self.answered_engines.as_deref()?;
-        let values = &self.authored.values;
-        if values
-            .pointer("/spec/gateway/management")
-            .and_then(Value::as_str)
-            != Some("managed")
-            || values.pointer(GATEWAY_ENGINE_PATH).is_some()
-        {
-            return None;
-        }
-        let runtime = values.pointer(RUNTIME_PROVIDER).and_then(Value::as_str)?;
-        (!answered
-            .iter()
-            .any(|engine| engine.compute_driver.as_str() == runtime))
-        .then_some(runtime)
+        let (target, engine) = managed_target_engine(&self.authored.values)?;
+        (self.authored.values.pointer(&engine).is_none()
+            && !answered
+                .iter()
+                .any(|observed| observed.compute_driver.as_str() == target))
+        .then_some((target, engine))
     }
 
     /// Accept remaining suggestions as one explicit, fact-gated action.

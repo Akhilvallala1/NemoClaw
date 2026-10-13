@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 
 use crate::fingerprint::sha256;
-use nemoclaw_sdk::config::schema::{input_schema, select_variant};
+use nemoclaw_sdk::config::schema::{input_schema, select_variant, variant_keys};
 use nemoclaw_sdk::json_schema::schema_accepts;
 use serde_json::{Value, json};
 
@@ -155,6 +155,12 @@ fn field_schema_in(root: &Value, values: &Value, path: &str) -> Option<(Value, b
         current_path.push_str(part);
     }
     let mut field = follow_ref(root, node)?.clone();
+    // A default beside a reference belongs to this use of the definition.
+    if let Some(default) = node.get("default")
+        && let Some(object) = field.as_object_mut()
+    {
+        object.insert("default".into(), default.clone());
+    }
     attach_definitions(root, &mut field);
     Some((field, required))
 }
@@ -316,6 +322,29 @@ pub(crate) fn sdk_selected_branch<'a>(schema: &'a Value, supplied: &Value) -> Op
     })
 }
 
+/// The keys of an externally tagged union, in schema order: every `oneOf`
+/// branch is an object that SDK diagnostics select by its one required key.
+pub(crate) fn sdk_variant_keys(schema: &Value) -> Option<Vec<String>> {
+    let branches = schema.get("oneOf")?.as_array()?;
+    Some(
+        variant_keys(branches)?
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// The key of an externally tagged union that a supplied object names, when
+/// it names exactly one of the union's keys and nothing else.
+pub(crate) fn sdk_variant_key(schema: &Value, supplied: &Value) -> Option<String> {
+    let [key] = supplied.as_object()?.keys().collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    sdk_variant_keys(schema)?
+        .into_iter()
+        .find(|known| known == key)
+}
+
 /// Finite values advertised by a field schema. Free input remains possible
 /// when this list is empty or the question kind explicitly allows it.
 pub(crate) fn finite_choices(schema: &Value) -> Vec<Value> {
@@ -404,5 +433,39 @@ mod tests {
         // Another variant's fields do not apply while the input names this one.
         let values = json!({"target": {"docker": {}}});
         assert!(field_schema_in(&root, &values, "/target/podman/engine").is_none());
+    }
+
+    #[test]
+    fn only_a_union_of_single_key_objects_offers_its_keys() {
+        let keyed_union = json!({"oneOf": [
+            keyed("docker", json!({"type": "object"})),
+            keyed("podman", json!({"type": "object"})),
+        ]});
+        assert_eq!(
+            sdk_variant_keys(&keyed_union),
+            Some(vec!["docker".to_owned(), "podman".to_owned()])
+        );
+        assert_eq!(
+            sdk_variant_key(&keyed_union, &json!({"podman": {"engine": "x"}})),
+            Some("podman".to_owned())
+        );
+        for supplied in [
+            json!({}),
+            json!({"dockr": {}}),
+            json!({"docker": {}, "podman": {}}),
+        ] {
+            assert_eq!(sdk_variant_key(&keyed_union, &supplied), None, "{supplied}");
+        }
+        // A constant discriminator and open objects are not keyed unions.
+        let tagged = json!({"oneOf": [
+            {"properties": {"kind": {"const": "a"}}, "required": ["kind"]},
+            {"properties": {"kind": {"const": "b"}}, "required": ["kind"]},
+        ]});
+        let open = json!({"oneOf": [
+            {"properties": {"a": {}}, "required": ["a"]},
+            {"properties": {"b": {}}, "required": ["b"]},
+        ]});
+        assert_eq!(sdk_variant_keys(&tagged), None);
+        assert_eq!(sdk_variant_keys(&open), None);
     }
 }

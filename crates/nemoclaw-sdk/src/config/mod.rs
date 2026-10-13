@@ -191,28 +191,33 @@ impl Document {
         names
     }
     pub fn defaults(&mut self) {
-        let gateway = &mut self.spec.gateway;
-        if let Gateway::Managed(gateway) = gateway
-            && gateway.kubernetes.is_none()
-        {
-            default_string(&mut gateway.endpoint, constraints::GATEWAY_ENDPOINT);
-            if gateway.runtime.provider == ComputeDriver::Docker {
-                default_string(&mut gateway.engine, constraints::GATEWAY_ENGINE);
+        let network = format!(
+            "172.30.{}.0/24",
+            Sha256::digest(self.metadata.uid.as_bytes())[0]
+        );
+        // A cluster target names everything itself. Podman's socket depends on
+        // the host user, so only Docker's engine has a default.
+        let local = match &mut self.spec.gateway {
+            Gateway::Managed(ManagedGateway {
+                target: ManagedTarget::Docker(docker),
+            }) => {
+                default_string(&mut docker.engine, constraints::GATEWAY_ENGINE);
+                Some((&mut docker.endpoint, &mut docker.network_cidr))
             }
-            default_string(&mut gateway.image, DEFAULT_GATEWAY_IMAGE);
-            default_string(
-                &mut gateway.network_cidr,
-                &format!(
-                    "172.30.{}.0/24",
-                    Sha256::digest(self.metadata.uid.as_bytes())[0]
-                ),
-            );
+            Gateway::Managed(ManagedGateway {
+                target: ManagedTarget::Podman(podman),
+            }) => Some((&mut podman.endpoint, &mut podman.network_cidr)),
+            _ => None,
+        };
+        if let Some((endpoint, network_cidr)) = local {
+            default_string(endpoint, constraints::GATEWAY_ENDPOINT);
+            default_string(network_cidr, &network);
         }
         for service in self.spec.services.values_mut() {
             crate::services::defaults(service);
         }
         // Cluster sandboxes have no engine-supplied default image.
-        if !self.spec.gateway.runtime().provider.is_kubernetes() {
+        if !self.spec.gateway.compute_driver().is_kubernetes() {
             for sandbox in &mut self.spec.sandboxes {
                 default_string(&mut sandbox.image.ref_, DEFAULT_AGENT_IMAGE);
             }
@@ -255,23 +260,57 @@ fn network_address(
     Ok(std::net::Ipv4Addr::from(address).to_string())
 }
 impl ManagedGateway {
-    pub(crate) fn runtime_settings(&self) -> Self {
-        let mut settings = self.clone();
-        // Acquisition policy is a mutable provider attribute, not container identity.
-        settings.image_pull_policy = None;
-        settings
+    /// Settings of a gateway on a local Docker or Podman engine; `None` for a
+    /// Kubernetes target.
+    pub fn local(&self) -> Option<LocalGateway<'_>> {
+        match &self.target {
+            ManagedTarget::Docker(docker) => Some(LocalGateway {
+                compute_driver: ComputeDriver::Docker,
+                endpoint: &docker.endpoint,
+                engine: &docker.engine,
+                image_pull_policy: docker.image_pull_policy,
+                network_cidr: &docker.network_cidr,
+            }),
+            ManagedTarget::Podman(podman) => Some(LocalGateway {
+                compute_driver: ComputeDriver::Podman,
+                endpoint: &podman.endpoint,
+                engine: &podman.engine,
+                image_pull_policy: podman.image_pull_policy,
+                network_cidr: &podman.network_cidr,
+            }),
+            ManagedTarget::Kubernetes(_) => None,
+        }
     }
+    /// Resolve the first address after the configured network address.
+    ///
+    /// # Errors
+    /// Returns an error for Kubernetes targets, malformed IPv4 CIDRs, or an
+    /// address overflow.
+    pub fn bridge(&self) -> Result<String, ConfigError> {
+        self.local()
+            .ok_or(ConfigError::new(
+                "Kubernetes gateways have no local engine bridge",
+            ))?
+            .bridge()
+    }
+}
+
+/// Borrowed settings of a managed gateway on a local Docker or Podman engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalGateway<'a> {
+    pub compute_driver: ComputeDriver,
+    pub endpoint: &'a str,
+    pub engine: &'a str,
+    pub image_pull_policy: Option<ImagePullPolicy>,
+    pub network_cidr: &'a str,
+}
+impl LocalGateway<'_> {
     /// Resolve the first address after the configured network address.
     ///
     /// # Errors
     /// Returns an error for malformed IPv4 CIDRs or an address overflow.
     pub fn bridge(&self) -> Result<String, ConfigError> {
-        if self.kubernetes.is_some() {
-            return Err(ConfigError::new(
-                "Kubernetes gateways have no local engine bridge",
-            ));
-        }
-        bridge_address(&self.network_cidr)
+        bridge_address(self.network_cidr)
     }
 }
 fn hex(bytes: &[u8]) -> String {
@@ -279,31 +318,46 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 impl Gateway {
-    /// The compute driver this gateway runs every sandbox with.
-    pub fn runtime(&self) -> &Runtime {
+    /// The compute driver this gateway runs every sandbox with. A managed
+    /// OpenShift distribution binds the OpenShift profile; an external gateway
+    /// reports only the upstream Kubernetes driver.
+    pub fn compute_driver(&self) -> ComputeDriver {
         match self {
-            Self::Managed(gateway) => &gateway.runtime,
-            Self::External(gateway) => &gateway.runtime,
-        }
-    }
-    /// The compute driver setting, for changing it.
-    pub fn runtime_mut(&mut self) -> &mut Runtime {
-        match self {
-            Self::Managed(gateway) => &mut gateway.runtime,
-            Self::External(gateway) => &mut gateway.runtime,
+            Self::Managed(gateway) => match &gateway.target {
+                ManagedTarget::Docker(_) => ComputeDriver::Docker,
+                ManagedTarget::Podman(_) => ComputeDriver::Podman,
+                ManagedTarget::Kubernetes(cluster) => match cluster.distribution {
+                    KubernetesDistribution::Kubernetes => ComputeDriver::Kubernetes,
+                    KubernetesDistribution::OpenShift => ComputeDriver::OpenShift,
+                },
+            },
+            Self::External(gateway) => match gateway.target {
+                ExternalTarget::Docker(_) => ComputeDriver::Docker,
+                ExternalTarget::Podman(_) => ComputeDriver::Podman,
+                ExternalTarget::Kubernetes(_) => ComputeDriver::Kubernetes,
+            },
         }
     }
     /// The endpoint used to connect to either gateway configuration.
     pub fn endpoint(&self) -> &str {
         match self {
-            Self::Managed(gateway) => &gateway.endpoint,
+            Self::Managed(gateway) => match &gateway.target {
+                ManagedTarget::Docker(docker) => &docker.endpoint,
+                ManagedTarget::Podman(podman) => &podman.endpoint,
+                ManagedTarget::Kubernetes(cluster) => &cluster.endpoint,
+            },
             Self::External(gateway) => &gateway.endpoint,
         }
     }
-    /// Change the connection endpoint without changing gateway management.
+    /// Change the connection endpoint without changing gateway management or
+    /// target.
     pub fn endpoint_mut(&mut self) -> &mut String {
         match self {
-            Self::Managed(gateway) => &mut gateway.endpoint,
+            Self::Managed(gateway) => match &mut gateway.target {
+                ManagedTarget::Docker(docker) => &mut docker.endpoint,
+                ManagedTarget::Podman(podman) => &mut podman.endpoint,
+                ManagedTarget::Kubernetes(cluster) => &mut cluster.endpoint,
+            },
             Self::External(gateway) => &mut gateway.endpoint,
         }
     }
@@ -316,13 +370,14 @@ impl Gateway {
     }
     /// Explicit existing-cluster settings for a managed Kubernetes gateway.
     pub fn as_kubernetes(&self) -> Option<&ManagedKubernetes> {
-        self.as_managed()
-            .and_then(|gateway| gateway.kubernetes.as_ref())
+        match &self.as_managed()?.target {
+            ManagedTarget::Kubernetes(cluster) => Some(cluster),
+            ManagedTarget::Docker(_) | ManagedTarget::Podman(_) => None,
+        }
     }
     /// Local Docker or Podman installation settings; excludes Kubernetes targets.
-    pub fn as_local_managed(&self) -> Option<&ManagedGateway> {
-        self.as_managed()
-            .filter(|gateway| gateway.kubernetes.is_none())
+    pub fn as_local_managed(&self) -> Option<LocalGateway<'_>> {
+        self.as_managed()?.local()
     }
     /// Mutable installation settings, when this deployment manages the gateway.
     pub fn as_managed_mut(&mut self) -> Option<&mut ManagedGateway> {
@@ -331,10 +386,22 @@ impl Gateway {
             Self::External(_) => None,
         }
     }
-    pub(crate) fn managed(&self) -> Result<&ManagedGateway, ConfigError> {
+    pub(crate) fn managed(&self) -> Result<LocalGateway<'_>, ConfigError> {
         self.as_local_managed().ok_or(ConfigError::new(
             "operation requires a managed local gateway",
         ))
+    }
+    /// The engine holding sandbox images: a local managed gateway's engine or
+    /// the engine named by an external Docker or Podman target. Empty for
+    /// Kubernetes, where image metadata bundles replace engine inspection.
+    pub fn image_engine(&self) -> &str {
+        match self {
+            Self::Managed(gateway) => gateway.local().map_or("", |local| local.engine),
+            Self::External(gateway) => match &gateway.target {
+                ExternalTarget::Docker(target) | ExternalTarget::Podman(target) => &target.engine,
+                ExternalTarget::Kubernetes(_) => "",
+            },
+        }
     }
     pub fn credential(&self) -> Option<&SecretRef> {
         match self {

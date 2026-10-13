@@ -102,7 +102,8 @@ The private `QuestionTarget` carries that operation and its owner when the quest
 
 | Answer target | Effect |
 | --- | --- |
-| SDK field | Write or remove a field under the active SDK schema; apply dependency behavior for API, endpoint, runtime, or gateway roles. |
+| SDK field | Write or remove a field under the active SDK schema; apply dependency behavior for API, endpoint, gateway management, or gateway engine roles. |
+| Variant key | Select the one key of an externally tagged union, such as `docker`, `podman`, or `kubernetes` at `/spec/gateway/target`; keep the previous key's settings that the new key accepts. |
 | Harness | Select an adapter and preserve inactive adapter settings for a later switch back. |
 | Adapter, workflow, or model setting | Edit the active native owner using its Fabric field schema. Model settings belong to the selected route. |
 | Structural form | Choose an exclusive representation, such as inline harness or `harnessRef`, before its required fields can be filled. |
@@ -151,8 +152,8 @@ A read that could not be made is recorded as an unknown observation with its rea
 They are the SDK's `plan_queries`, the list a plan compiles into its discovery data sources, so onboarding and planning cannot ask different questions, plus the credential checks.
 Three exclusions are deliberate and tested: only the selected route's inference catalog is read, onboarding reads no hardware for a managed service's engine, and it makes no image read for an external gateway without an engine.
 `JourneyState::use_local_engines` keeps the candidate engines this machine has that answered; the caller supplies the candidates, so authoring holds no socket paths.
-A runtime they offer becomes the suggestion when it is the only one, and choosing a runtime targets the managed gateway at the engine that answered for it.
-A runtime no engine answered for gets no engine, and the target assessment's first reason says so unless an engine is authored.
+A target key they offer becomes the suggestion when it is the only one, and choosing `docker` or `podman` sets the managed gateway's engine under that key to the engine that answered for it.
+A target no engine answered for gets no engine, and the target assessment's first reason says so unless an engine is authored.
 Hosts are built from the engines they named and what each answered, and one recorded host in `tests/fixtures/observations` pins the replay format.
 Hardware and gateway observations do not affect questions or readiness yet.
 `resolve_with_observations` supplements current model suggestions with the matching inference observation and assesses target compatibility with `assess_target`.

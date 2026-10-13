@@ -207,11 +207,12 @@ fn document() -> Document {
     .unwrap();
     let mut value = serde_json::to_value(original).unwrap();
     value["spec"]["gateway"] = json!({
-        "management":"managed", "runtime":{"provider":"kubernetes"}, "endpoint":"https://127.0.0.1:17671",
-        "kubernetes": {
+        "management":"managed",
+        "target": {"kubernetes": {
+            "endpoint":"https://127.0.0.1:17671",
             "kubeconfig":{"env":"TEST_KUBECONFIG"}, "context":"test-cluster", "namespace":"test-agents",
             "authentication":{"profile":"development"}
-        }
+        }}
     });
     value["spec"]["sandboxes"][0]["image"]["metadata"] = json!({"env":"TEST_IMAGE_METADATA"});
     Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()

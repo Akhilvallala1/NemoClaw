@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 use nemoclaw_sdk::config::{HarnessKind, InferenceProviderKind};
 
-use nemoclaw_sdk::config::{Document, ServiceDefinition, validate_endpoint};
+use nemoclaw_sdk::config::{
+    Document, ManagedDocker, ManagedTarget, ServiceDefinition, validate_endpoint,
+};
 use serde_json::Value;
 
 #[test]
@@ -50,7 +52,7 @@ fn unsafe_yaml_and_secret_values_are_rejected_without_echoing_input() {
             "model: qwen3.5:0.8b",
             "model: '${file(\"secret-do-not-print\")}'",
         ),
-        ("provider: docker", "provider: unsupported"),
+        ("docker: {}", "unsupported: {}"),
         ("kind: nvidia.fabric.openclaw", "kind: ' '"),
     ];
     for (from, to) in changes {
@@ -90,28 +92,24 @@ fn managed_defaults_and_safety_bounds_match_the_qualified_recipe() {
         Document::parse(include_str!("fixtures/config/spark.yaml").as_bytes()).unwrap();
     original.spec.sandboxes[0].image.ref_ = nemoclaw_sdk::config::DEFAULT_AGENT_IMAGE.into();
     let mut defaulted = original.clone();
-    defaulted.spec.gateway.endpoint_mut().clear();
-    defaulted
+    let network_cidr = original
         .spec
         .gateway
-        .as_managed_mut()
+        .as_local_managed()
         .unwrap()
-        .engine
-        .clear();
-    defaulted
-        .spec
-        .gateway
-        .as_managed_mut()
-        .unwrap()
-        .image
-        .clear();
+        .network_cidr
+        .to_owned();
+    defaulted.spec.gateway.as_managed_mut().unwrap().target =
+        ManagedTarget::Docker(ManagedDocker {
+            network_cidr,
+            ..Default::default()
+        });
     let ServiceDefinition::Vllm(service) = defaulted.spec.services.get_mut("qwen").unwrap() else {
         panic!("expected vLLM service");
     };
     service.serving = Default::default();
     service.memory = Default::default();
     defaulted.spec.sandboxes[0].image.ref_.clear();
-    *defaulted.spec.gateway.runtime_mut() = Default::default();
     defaulted.spec.sandboxes[0].network.policy = Default::default();
     defaulted.defaults();
     assert_eq!(defaulted, original);
@@ -388,11 +386,8 @@ fn harness_selection_does_not_determine_service_ownership() {
 #[test]
 fn external_gateways_reject_installation_fields_even_when_empty() {
     let base = include_str!("fixtures/config/local.yaml");
-    for field in ["image", "networkCIDR"] {
-        let input = base.replace(
-            "management: external",
-            &format!("management: external\n    {field}: \"\""),
-        );
+    for field in ["image", "networkCidr"] {
+        let input = base.replace("docker: {}", &format!("docker:\n        {field}: \"\""));
         assert!(
             Document::parse(input.as_bytes()).is_err(),
             "external gateway accepted {field}"

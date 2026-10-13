@@ -218,65 +218,120 @@ impl AuthoredValues {
     }
 
     /// Remove sibling fields that the SDK schema defined before a write but no
-    /// longer defines, such as fields of the previous gateway form.
+    /// longer defines, such as fields of the previous gateway form. Objects
+    /// that both forms define lose the nested fields only the previous one did,
+    /// such as a managed target's network under an external gateway.
     pub(super) fn remove_inactive_siblings(&mut self, pointer: &str, before: &Value) {
         let Some((parent, _)) = pointer.rsplit_once('/') else {
             return;
         };
-        let Some(siblings) = self.values.pointer(parent).and_then(Value::as_object) else {
+        self.remove_inactive_fields(parent, pointer, before, 0);
+    }
+
+    fn remove_inactive_fields(
+        &mut self,
+        parent: &str,
+        written: &str,
+        before: &Value,
+        depth: usize,
+    ) {
+        let Some(fields) = self.values.pointer(parent).and_then(Value::as_object) else {
             return;
         };
-        let inactive = siblings
-            .keys()
-            .filter(|key| {
-                let field = format!("{parent}/{}", escape_pointer(key));
-                field != pointer
-                    && sdk_field_schema_for(before, &field).is_some()
-                    && sdk_field_schema_for(&self.values, &field).is_none()
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if let Some(siblings) = self
+        let mut inactive = Vec::new();
+        let mut active_objects = Vec::new();
+        for (key, value) in fields {
+            let field = format!("{parent}/{}", escape_pointer(key));
+            if field == written || sdk_field_schema_for(before, &field).is_none() {
+                continue;
+            }
+            if sdk_field_schema_for(&self.values, &field).is_none() {
+                inactive.push(key.clone());
+            } else if value.is_object() && depth < 16 {
+                active_objects.push(field);
+            }
+        }
+        if let Some(fields) = self
             .values
             .pointer_mut(parent)
             .and_then(Value::as_object_mut)
         {
             for key in inactive {
-                siblings.remove(&key);
+                fields.remove(&key);
             }
+        }
+        for object in active_objects {
+            self.remove_inactive_fields(&object, written, before, depth + 1);
         }
     }
 
-    /// Target a managed gateway at the local engine that answered for the
-    /// chosen runtime. Without one, a generated engine is withdrawn rather
-    /// than left pointing at another runtime's engine.
-    pub(super) fn sync_gateway_engine_for_runtime(
+    /// Select `key` of the externally tagged union at `pointer`, or omit the
+    /// union. Settings of the previous key carry over when the new key's
+    /// schema defines and accepts them, such as the engine field both targets
+    /// define.
+    pub(super) fn put_variant_key(
+        &mut self,
+        pointer: &str,
+        key: Option<&str>,
+    ) -> Result<(), Diagnostics> {
+        let Some(key) = key else {
+            return self.put_sdk_field(pointer, None);
+        };
+        let previous = self
+            .values
+            .pointer(pointer)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if previous.len() == 1 && previous.get(key).is_some_and(Value::is_object) {
+            return Ok(());
+        }
+        let settings = previous
+            .get(key)
+            .or_else(|| {
+                (previous.len() == 1)
+                    .then(|| previous.values().next())
+                    .flatten()
+            })
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        self.put_sdk_field(pointer, Some(serde_json::json!({ key: {} })))?;
+        let selected = format!("{pointer}/{}", escape_pointer(key));
+        let carried = settings
+            .into_iter()
+            .filter(|(name, value)| {
+                sdk_field_schema_for(
+                    &self.values,
+                    &format!("{selected}/{}", escape_pointer(name)),
+                )
+                .is_some_and(|(schema, _)| schema_accepts(&schema, value) == Some(true))
+            })
+            .collect::<Map<_, _>>();
+        self.put_sdk_field(&selected, Some(Value::Object(carried)))
+    }
+
+    /// Point a managed gateway's target at the local engine that answered for
+    /// it. Without one, a generated engine is withdrawn rather than left
+    /// pointing at another target's engine.
+    pub(super) fn sync_gateway_engine_for_target(
         &mut self,
         answered_engines: &[DiscoveryRequest],
     ) -> Result<(), Diagnostics> {
-        if self
-            .values
-            .pointer("/spec/gateway/management")
-            .and_then(Value::as_str)
-            != Some("managed")
-        {
+        let Some((target, path)) = managed_target_engine(&self.values) else {
+            return Ok(());
+        };
+        if self.values.pointer(&path).is_some() && !self.generated_gateway_engine {
             return Ok(());
         }
-        if self.values.pointer(GATEWAY_ENGINE_PATH).is_some() && !self.generated_gateway_engine {
-            return Ok(());
-        }
-        let runtime = self
-            .values
-            .pointer(RUNTIME_PROVIDER)
-            .and_then(Value::as_str);
         let engine = answered_engines
             .iter()
-            .find(|request| Some(request.compute_driver.as_str()) == runtime)
+            .find(|request| request.compute_driver.as_str() == target)
             .map(|request| Value::String(request.engine.clone()));
         if engine.is_none() && !self.generated_gateway_engine {
             return Ok(());
         }
         self.generated_gateway_engine = engine.is_some();
-        self.put_sdk_field(GATEWAY_ENGINE_PATH, engine)
+        self.put_sdk_field(&path, engine)
     }
 }

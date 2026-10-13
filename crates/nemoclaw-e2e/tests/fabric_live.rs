@@ -275,7 +275,7 @@ async fn dependency_upgrade_survives_apply_process_exit() {
     )
     .unwrap();
     client
-        .verify_gateway(document.spec.gateway.runtime().provider)
+        .verify_gateway(document.spec.gateway.compute_driver())
         .await
         .unwrap();
     let (before, binding) = bindings(&directory);

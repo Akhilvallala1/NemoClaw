@@ -119,7 +119,8 @@ mod tests {
                 .unwrap();
         let mut value = serde_json::to_value(document).unwrap();
         value["spec"]["services"]["qwen"]["authentication"] = json!("bearer");
-        value["spec"]["gateway"]["engine"] = json!("unix:///tmp/${engine}%{literal}.sock");
+        value["spec"]["gateway"]["target"]["docker"]["engine"] =
+            json!("unix:///tmp/${engine}%{literal}.sock");
         let document = Document::parse(value.to_string().as_bytes()).unwrap();
         let generations = [
             "workspace",

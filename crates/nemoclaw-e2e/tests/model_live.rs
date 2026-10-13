@@ -112,7 +112,15 @@ async fn exercise(fresh: bool) {
     );
     // The service runs on its explicit placement, or on the managed gateway's engine.
     let endpoint = desired.placement.as_ref().map_or_else(
-        || document.spec.gateway.as_managed().unwrap().engine.clone(),
+        || {
+            document
+                .spec
+                .gateway
+                .as_local_managed()
+                .unwrap()
+                .engine
+                .to_owned()
+        },
         |placement| placement.engine.clone(),
     );
     let engine = Engine::connect(&endpoint).unwrap();

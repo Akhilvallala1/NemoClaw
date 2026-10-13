@@ -59,7 +59,7 @@ Confirmed authentication cleanup prevents restoration after successful release r
 The [Helm removal recovery procedure](../usage.md#recover-an-interrupted-helm-removal) describes the required retained evidence and retry command.
 Issuer private material stays outside Helm values and OpenTofu state.
 The provider receives the explicit kubeconfig and context; ambient Helm and Kubernetes provider settings are excluded.
-OpenTofu and its providers inherit only platform variables, so a kubeconfig exec plugin gets the caller variables listed in `gateway.kubernetes.environment` and nothing else.
+OpenTofu and its providers inherit only platform variables, so a kubeconfig exec plugin gets the caller variables listed in `spec.gateway.target.kubernetes.environment` and nothing else.
 
 ## OpenShell SDK Boundary
 

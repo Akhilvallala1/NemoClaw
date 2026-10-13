@@ -193,8 +193,8 @@ fn remote_service_is_independent_of_the_external_sandbox_gateway() {
     let document =
         Document::parse(include_bytes!("fixtures/config/spark.yaml").as_slice()).unwrap();
     let mut value = serde_json::to_value(document).unwrap();
-    value["spec"]["gateway"] = json!({"management":"external","endpoint":"http://127.0.0.1:17670"});
-    value["spec"]["gateway"]["runtime"]["provider"] = json!("podman");
+    value["spec"]["gateway"] = json!({"management":"external","endpoint":"http://127.0.0.1:17670",
+        "target":{"podman":{}}});
     value["spec"]["services"]["qwen"]["placement"] =
         json!({"engine":"ssh://operator@gpu-box","networkCidr":"172.30.119.0/24"});
     value["spec"]["services"]["qwen"]["publication"] =

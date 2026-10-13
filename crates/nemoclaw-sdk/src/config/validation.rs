@@ -24,10 +24,23 @@ impl Document {
         if let Gateway::Managed(gateway) = gateway {
             gateway.validate_managed()?;
         }
-        if let Gateway::External(gateway) = gateway
-            && !gateway.engine.is_empty()
-        {
-            super::validate_engine_endpoint(&gateway.engine)?;
+        if let Gateway::External(external) = gateway {
+            let image_store = match &external.target {
+                ExternalTarget::Docker(target) => Some((
+                    &target.engine,
+                    "spec.gateway.target.docker.engine must be a unix:/// socket or ssh://[user@]host[:port] without a password, path, or options",
+                )),
+                ExternalTarget::Podman(target) => Some((
+                    &target.engine,
+                    "spec.gateway.target.podman.engine must be a unix:/// socket or ssh://[user@]host[:port] without a password, path, or options",
+                )),
+                ExternalTarget::Kubernetes(_) => None,
+            };
+            if let Some((engine, rule)) = image_store
+                && !engine.is_empty()
+            {
+                super::validate_engine_endpoint(engine).map_err(|_| ConfigError::new(rule))?;
+            }
         }
         validate_endpoint(gateway.endpoint(), true)?;
         self.validate_harness_references()?;
@@ -40,9 +53,9 @@ impl Document {
         let mut sandbox_names = std::collections::BTreeSet::new();
         for sandbox in &self.spec.sandboxes {
             require(
-                self.spec.gateway.runtime().provider.is_kubernetes()
+                self.spec.gateway.compute_driver().is_kubernetes()
                     || sandbox.image.metadata.is_none(),
-                "image.metadata is available only for Kubernetes and OpenShift; Docker and Podman use engine image inspection",
+                "image.metadata is available only for a spec.gateway.target.kubernetes gateway; Docker and Podman use engine image inspection",
             )?;
             if let Some(metadata) = &sandbox.image.metadata {
                 schema::validate_definition("FileRef", metadata)?;
@@ -88,7 +101,7 @@ impl Document {
                 crate::services::validate_route(
                     self,
                     provider,
-                    self.spec.gateway.runtime().provider,
+                    self.spec.gateway.compute_driver(),
                     &route.overrides.model,
                 )?;
             }
@@ -99,10 +112,13 @@ impl Document {
 impl super::ManagedGateway {
     pub fn validate_managed(&self) -> Result<(), ConfigError> {
         schema::validate_definition("Gateway", &Gateway::Managed(self.clone()))?;
-        if self.kubernetes.is_some() {
-            return validate_endpoint(&self.endpoint, true);
+        if let super::ManagedTarget::Kubernetes(cluster) = &self.target {
+            return validate_endpoint(&cluster.endpoint, true);
         }
-        let authority = self
+        let local = self
+            .local()
+            .expect("Docker and Podman targets run on a local engine");
+        let authority = local
             .endpoint
             .strip_prefix("http://")
             .unwrap_or("")
@@ -112,10 +128,10 @@ impl super::ManagedGateway {
         let bind = authority.parse::<SocketAddr>().ok();
         require(
             bind.is_some_and(|a| a.port() >= 1024)
-                && crate::config::validate_engine_endpoint(&self.engine).is_ok(),
-            "managed gateway requires pinned image, a local engine socket, and unprivileged loopback HTTP port without credentials",
+                && crate::config::validate_engine_endpoint(local.engine).is_ok(),
+            "managed gateway requires a local engine socket and unprivileged loopback HTTP port without credentials",
         )?;
-        let net = self.network_cidr.parse::<ipnet::Ipv4Net>().ok();
+        let net = local.network_cidr.parse::<ipnet::Ipv4Net>().ok();
         require(
             net.is_some_and(|n| {
                 n.addr().is_private() && n.prefix_len() == 24 && n.addr() == n.network()

@@ -234,7 +234,7 @@ impl Scenario {
         ))
         .unwrap();
         value["metadata"]["uid"] = json!(self.uid);
-        value["spec"]["gateway"] = json!({"management":"external","endpoint":self.gateway.endpoint,"engine":self._metadata.endpoint});
+        value["spec"]["gateway"] = json!({"management":"external","endpoint":self.gateway.endpoint,"target":{"docker":{"engine":self._metadata.endpoint}}});
         value["spec"]["inferenceProviders"] = json!([{"name":"local","provider":"openai","api":"openai-completions","serviceRef":"shared"}]);
         value["spec"]["services"] = json!({"shared":{"kind":"ollamaProxy","engine":"unix:///var/run/docker.sock","image":self.proxy_image,"imagePullPolicy":"Never","endpoint":self.endpoint,"upstream":{"endpoint":self.upstream,"model":{"name":"llama3:fixture","digest":"a".repeat(64)}}}});
         let mut sandbox = value["spec"]["sandboxes"][0].clone();

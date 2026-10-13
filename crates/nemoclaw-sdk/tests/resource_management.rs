@@ -28,13 +28,13 @@ fn ownership_follows_configuration_instead_of_optional_annotations() {
         ),
         (
             include_str!("../../../examples/managed-ollama-gpu.yaml"),
-            "/spec/gateway",
+            "/spec/gateway/target/docker",
             "network",
             json!({"management":"managed"}),
         ),
         (
             include_str!("../../../examples/managed-ollama-gpu.yaml"),
-            "/spec/gateway",
+            "/spec/gateway/target/docker",
             "storage",
             json!({"management":"managed"}),
         ),

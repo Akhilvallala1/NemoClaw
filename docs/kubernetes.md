@@ -17,7 +17,7 @@ OpenShift's security policy admitting these pods is untested; [current limits](l
   The bundle includes the Helm provider that installs the gateway; no Helm CLI is needed.
 - **Cluster access:** a kubeconfig file and an exact context that can create a namespace and, inside it, Secrets, ConfigMaps, Services, Deployments, StatefulSets and NetworkPolicies.
   The SDK reads the cluster's CustomResourceDefinitions, StorageClasses and namespaces.
-  If the kubeconfig runs an exec plugin that needs your environment, such as `aws` for EKS, list those variables in `gateway.kubernetes.environment`, for example `[AWS_PROFILE, AWS_REGION]`.
+  If the kubeconfig runs an exec plugin that needs your environment, such as `aws` for EKS, list those variables in `spec.gateway.target.kubernetes.environment`, for example `[AWS_PROFILE, AWS_REGION]`.
   OpenTofu and its providers receive only platform variables such as `PATH` and `HOME`, plus the ones you list.
 - **Cluster setup, done by the platform operator:**
   - [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox), with its controller running in `agent-sandbox-system`; CI tests version 0.5.0.
@@ -49,25 +49,26 @@ The SDK creates the namespace and a credential key, starts a development token i
 Start from [the Kubernetes example](../examples/kubernetes/managed-development.yaml) and set:
 
 - `metadata.uid` to a new UUID.
-- `gateway.kubernetes.kubeconfig` to the environment variable holding the kubeconfig path, and `context` to the exact context.
-- `gateway.kubernetes.namespace` to a namespace that does not exist yet; NemoClaw does not take over an existing one.
-- `gateway.endpoint` to `https://127.0.0.1:` and a free local port for the port forward.
+- Under `spec.gateway.target.kubernetes`, `kubeconfig` to the environment variable holding the kubeconfig path, and `context` to the exact context.
+- `namespace` to a namespace that does not exist yet; NemoClaw does not take over an existing one.
+- `endpoint` to `https://127.0.0.1:` and a free local port for the port forward.
 - Each sandbox's `image.ref` and `image.metadata`.
 
 ```yaml
 spec:
   gateway:
     management: managed
-    runtime:
-      provider: kubernetes
-    endpoint: https://127.0.0.1:17671
-    kubernetes:
-      kubeconfig: {env: NEMOCLAW_CLUSTER_KUBECONFIG}
-      context: my-cluster
-      namespace: nemoclaw-development
-      authentication:
-        profile: development
+    target:
+      kubernetes:
+        endpoint: https://127.0.0.1:17671
+        kubeconfig: {env: NEMOCLAW_CLUSTER_KUBECONFIG}
+        context: my-cluster
+        namespace: nemoclaw-development
+        authentication:
+          profile: development
 ```
+
+Deployment state binds every setting under `spec.gateway.target`; to change one, create a separate deployment, as described in [Choose the Gateway Target](usage.md#choose-the-gateway-target).
 
 From the directory holding `deployment.yaml`, preview the deployment, then apply it:
 
@@ -85,21 +86,24 @@ Keep the state directory: it holds the cluster ownership receipt and the develop
 
 ## Deploy to OpenShift
 
-Set `gateway.runtime.provider: openshift`; everything else matches the managed Kubernetes deployment above.
+Set `distribution: openshift` under `spec.gateway.target.kubernetes`; everything else matches the managed Kubernetes deployment above.
 Start from [the OpenShift example](../examples/openshift/managed-development.yaml).
 
-OpenShift assigns each namespace a UID and group range and admits only those identities.
-After creating the namespace, the SDK waits up to 30 seconds for OpenShift to record that range, then runs the gateway as its first UID and group.
+OpenShift's security context constraints (SCC) assign each namespace a UID range and supplemental groups, and admit only those identities.
+After creating the namespace, the SDK waits up to 30 seconds for OpenShift to record the UID range, then passes the first UID and a group to the gateway chart as security-context values: the first supplemental group, or the UID when the namespace has no supplemental groups.
 OpenShell runs each sandbox as the same UID.
 If the range never appears, apply stops before installing the gateway with `OpenShift did not assign the namespace a UID range`; check that the context points at an OpenShift cluster.
 
 The SDK records the range in its receipt, and a later apply refuses a namespace whose range has changed.
+The distribution also binds the gateway's compute driver as `openshift`; OpenShell still runs sandboxes with its upstream Kubernetes driver, and nothing else differs from the `kubernetes` distribution.
 The agent images need no OpenShift variant: any UID can read their workspace seed.
 
 ## Use an Existing Gateway
 
-To use an OpenShell gateway someone else runs on the cluster, set `gateway.management: external` with `runtime.provider` set to `kubernetes` or `openshift`.
-Give its endpoint, credential and TLS material as environment references, as in [the external gateway example](../examples/kubernetes/external-gateway.yaml).
+To use an OpenShell gateway someone else runs on the cluster, set `gateway.management: external` and `target: {kubernetes: {}}`.
+An external target takes no `distribution`, also for OpenShift: the gateway reports only the `kubernetes` driver, so a distribution could not be checked.
+Plan still checks the target key against that report.
+Give the gateway's endpoint, credential and TLS material as environment references, as in [the external gateway example](../examples/kubernetes/external-gateway.yaml).
 NemoClaw then manages only the sandboxes; it neither installs nor removes the gateway.
 Sandboxes still need `image.metadata`.
 

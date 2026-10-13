@@ -60,7 +60,7 @@ async fn managed_gateway_plan_apply_noop_destroy_and_recovery_use_real_opentofu(
     let deployment = Deployment::new(&directory, &path("NEMOCLAW_TEST_BUNDLE"));
     let cancel = CancellationToken::new();
     let engine = nemoclaw_provider::docker::Engine::connect(
-        &document.spec.gateway.as_managed().unwrap().engine,
+        document.spec.gateway.as_local_managed().unwrap().engine,
     )
     .unwrap();
     let name = format!("{}-gateway", document.workspace());
@@ -101,7 +101,7 @@ async fn managed_gateway_plan_apply_noop_destroy_and_recovery_use_real_opentofu(
         .expect("runtime apply must record provider-owned readiness")
         .clone();
     assert_eq!(readiness["instances"][0]["attributes"]["compatible"], true);
-    let docker = document.spec.gateway.runtime().provider == ComputeDriver::Docker;
+    let docker = document.spec.gateway.compute_driver() == ComputeDriver::Docker;
     let compute = if docker {
         "docker_container.managed_gateway_runtime"
     } else {

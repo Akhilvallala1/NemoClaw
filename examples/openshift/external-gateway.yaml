@@ -14,14 +14,15 @@ spec:
   # Supply the existing OpenShift cluster's OpenShell gateway.
   gateway:
     management: external
-    runtime:
-      provider: openshift
     endpoint: https://openshell.example.com
     credential: {env: GATEWAY_TOKEN}
     tls:
       ca: {env: GATEWAY_CA}
       certificate: {env: GATEWAY_CERT}
       key: {env: GATEWAY_KEY}
+    target:
+      # OpenShift gateways report the upstream Kubernetes driver.
+      kubernetes: {}
   inferenceProviders:
     - name: inference
       provider: openai

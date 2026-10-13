@@ -3,7 +3,7 @@
 
 use nemoclaw_sdk::{
     compile::{Generations, Target},
-    config::Document,
+    config::{Document, ExternalTarget},
     image_runtime::RuntimeBinding,
 };
 
@@ -113,6 +113,10 @@ pub async fn engine(document: &mut Document) -> transport::Fixture {
     let nemoclaw_sdk::config::Gateway::External(gateway) = &mut document.spec.gateway else {
         panic!("fixture requires an external gateway")
     };
-    gateway.engine = fixture.endpoint.clone();
+    let (ExternalTarget::Docker(target) | ExternalTarget::Podman(target)) = &mut gateway.target
+    else {
+        panic!("fixture requires a Docker or Podman gateway target")
+    };
+    target.engine = fixture.endpoint.clone();
     fixture
 }

@@ -588,7 +588,7 @@ fn tui_preserves_podman_as_an_authored_target_choice() {
         if wizard
             .question()
             .unwrap()
-            .is_some_and(|question| question.id() == "/spec/gateway/runtime/provider")
+            .is_some_and(|question| question.id() == "/spec/gateway/target")
         {
             break;
         }
@@ -605,7 +605,7 @@ fn tui_preserves_podman_as_an_authored_target_choice() {
     assert!(wizard.error.is_none());
     assert_eq!(
         wizard.state().values().pointer(question.id()),
-        Some(&serde_json::json!("podman"))
+        Some(&serde_json::json!({"podman": {}}))
     );
 }
 
@@ -618,7 +618,7 @@ struct RecordedHost {
 }
 
 #[tokio::test]
-async fn enter_accepts_the_runtime_this_machine_can_run_and_targets_its_engine() {
+async fn enter_accepts_the_target_this_machine_can_run_and_uses_its_engine() {
     let capabilities = Capabilities::available();
     let state = load_journey(Source::Defaults, &capabilities).unwrap();
     // Only Podman answered when this machine was read, but the template says Docker.
@@ -653,7 +653,7 @@ async fn enter_accepts_the_runtime_this_machine_can_run_and_targets_its_engine()
         if wizard
             .question()
             .unwrap()
-            .is_some_and(|question| question.id() == "/spec/gateway/runtime/provider")
+            .is_some_and(|question| question.id() == "/spec/gateway/target")
         {
             break;
         }
@@ -662,15 +662,8 @@ async fn enter_accepts_the_runtime_this_machine_can_run_and_targets_its_engine()
     wizard.advance();
     assert!(wizard.error.is_none(), "{:?}", wizard.error);
     assert_eq!(
-        wizard
-            .state()
-            .values()
-            .pointer("/spec/gateway/runtime/provider"),
-        Some(&serde_json::json!("podman"))
-    );
-    assert_eq!(
-        wizard.state().values().pointer("/spec/gateway/engine"),
-        Some(&serde_json::json!(podman))
+        wizard.state().values().pointer("/spec/gateway/target"),
+        Some(&serde_json::json!({"podman": {"engine": podman}}))
     );
 }
 

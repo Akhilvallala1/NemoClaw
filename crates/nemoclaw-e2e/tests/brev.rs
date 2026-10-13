@@ -341,7 +341,7 @@ async fn bare_brev_hosted_openclaw_lifecycle() {
     let document = Document::parse(fs::File::open(&config).unwrap()).unwrap();
     assert!(matches!(document.spec.gateway, Gateway::Managed(_)));
     assert_eq!(
-        document.spec.gateway.runtime().provider,
+        document.spec.gateway.compute_driver(),
         ComputeDriver::Docker
     );
     assert_eq!(
@@ -428,7 +428,7 @@ async fn bare_brev_hosted_openclaw_lifecycle() {
     )
     .unwrap();
     client
-        .verify_gateway(document.spec.gateway.runtime().provider)
+        .verify_gateway(document.spec.gateway.compute_driver())
         .await
         .unwrap();
     let (before, binding) = bindings(&directory);

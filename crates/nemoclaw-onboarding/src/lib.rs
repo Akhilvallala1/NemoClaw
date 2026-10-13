@@ -72,7 +72,7 @@ fn load_journey(
         .ask([
             "/metadata/name",
             "/spec/sandboxes/0/harness/kind",
-            "/spec/gateway/runtime/provider",
+            "/spec/gateway/target",
             "inference:preset",
         ])
         .ask([JourneyScope::InferenceApi])
@@ -120,11 +120,7 @@ mod tests {
         let resolution = journey.resolve(&capabilities).unwrap();
         assert!(resolution.question("/metadata/name").is_some());
         assert!(resolution.question("inference:preset").is_some());
-        assert!(
-            resolution
-                .question("/spec/gateway/runtime/provider")
-                .is_some()
-        );
+        assert!(resolution.question("/spec/gateway/target").is_some());
     }
 
     #[test]

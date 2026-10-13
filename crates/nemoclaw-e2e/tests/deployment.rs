@@ -258,9 +258,9 @@ async fn gateway_change_between_plan_and_apply_preserves_resources_and_allows_te
         "{error}"
     );
     assert!(
-        error.to_string().contains(
-            "gateway compute driver is podman, but spec.gateway.runtime.provider is docker"
-        ),
+        error
+            .to_string()
+            .contains("gateway compute driver is podman, but spec.gateway.target selects docker"),
         "{error}"
     );
     assert_eq!(fixture.state.lock().unwrap().effects, effects);

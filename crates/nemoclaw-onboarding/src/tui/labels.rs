@@ -21,7 +21,8 @@ struct QuestionText {
 }
 
 /// Friendly text for questions and choices from `text.json`, keyed by
-/// question ID with `*` standing for array indices and adapter IDs. Entries
+/// question ID with `*` standing for array indices, service names, gateway
+/// target keys, and adapter IDs. Entries
 /// override the titles and descriptions advertised by the SDK and Fabric
 /// schemas. Describe Fabric adapter and model settings in the Fabric adapter
 /// descriptors instead, so every client receives the same text.
@@ -33,7 +34,8 @@ fn text() -> &'static Text {
 }
 
 /// Map keys for a question ID, most specific first: the ID itself, then with
-/// array indices and service names replaced by `*`, then also the adapter ID.
+/// array indices, service names, and gateway target keys replaced by `*`, then
+/// also the adapter ID.
 fn keys(id: &str) -> [String; 3] {
     let parts = id.split('/').collect::<Vec<_>>();
     let indices = parts
@@ -41,7 +43,11 @@ fn keys(id: &str) -> [String; 3] {
         .enumerate()
         .map(|(index, part)| {
             let service = index > 0 && parts[index - 1] == "services";
-            if service || (!part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())) {
+            let target = index > 1 && parts[index - 2..index] == ["gateway", "target"];
+            if service
+                || target
+                || (!part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+            {
                 "*"
             } else {
                 part
@@ -180,7 +186,7 @@ fn acronyms(text: &str) -> String {
         .join(" ")
 }
 
-/// `timeout_seconds` and `networkCIDR` become "Timeout seconds" and "Network CIDR".
+/// `timeout_seconds` and `networkCidr` become "Timeout seconds" and "Network CIDR".
 fn words(part: &str) -> String {
     let mut text = String::new();
     let mut previous_lower = false;
@@ -245,6 +251,12 @@ mod tests {
             "/spec/services/*/serving/port"
         );
         assert_eq!(
+            keys("/spec/gateway/target/podman/engine")[1],
+            "/spec/gateway/target/*/engine"
+        );
+        // The target key question itself names no key.
+        assert_eq!(keys("/spec/gateway/target")[1], "/spec/gateway/target");
+        assert_eq!(
             keys("adapter:nvidia.fabric.openclaw:/native_config/cron")[2],
             "adapter:*:/native_config/cron"
         );
@@ -260,8 +272,8 @@ mod tests {
         assert_eq!(readable("adapter:x:/base_url"), "Base URL");
         assert_eq!(readable("adapter:x:/cli"), "CLI");
         assert_eq!(
-            readable("/spec/gateway/networkCIDR"),
-            "Gateway: network CIDR"
+            readable("/spec/gateway/target/docker/networkCidr"),
+            "Docker: network CIDR"
         );
     }
 }

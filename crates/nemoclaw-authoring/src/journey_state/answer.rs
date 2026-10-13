@@ -104,6 +104,16 @@ impl JourneyState {
                     .selected_forms
                     .insert(path.into(), selected);
             }
+            QuestionTarget::VariantKey { path } => {
+                candidate
+                    .authored
+                    .put_variant_key(path, value.as_ref().and_then(Value::as_str))?;
+                if path == GATEWAY_TARGET {
+                    candidate.authored.sync_gateway_engine_for_target(
+                        candidate.answered_engines.as_deref().unwrap_or_default(),
+                    )?;
+                }
+            }
             QuestionTarget::RouteSelection { routes } => {
                 let name = value
                     .as_ref()
@@ -171,11 +181,8 @@ impl JourneyState {
                 if *role == SdkFieldRole::GatewayEngine {
                     candidate.authored.generated_gateway_engine = false;
                 }
-                if matches!(
-                    role,
-                    SdkFieldRole::RuntimeProvider | SdkFieldRole::GatewayManagement
-                ) {
-                    candidate.authored.sync_gateway_engine_for_runtime(
+                if *role == SdkFieldRole::GatewayManagement {
+                    candidate.authored.sync_gateway_engine_for_target(
                         candidate.answered_engines.as_deref().unwrap_or_default(),
                     )?;
                 }
@@ -293,6 +300,20 @@ impl JourneyState {
                     .put_sdk_field(&format!("{path}/{}", escape_pointer(&selected)), None)?;
                 Some(Value::String(selected))
             }
+            QuestionTarget::VariantKey { path } => {
+                let Some((schema, _)) = sdk_field_schema_for(&self.authored.values, path) else {
+                    return Err(diagnostic(
+                        "journey",
+                        "This question is no longer applicable.",
+                    ));
+                };
+                previous
+                    .authored
+                    .values
+                    .pointer(path)
+                    .and_then(|supplied| sdk_variant_key(&schema, supplied))
+                    .map(Value::String)
+            }
             QuestionTarget::WorkflowSetting { .. } => {
                 previous.definition.ask.insert(id.into());
                 native_value(
@@ -330,14 +351,22 @@ impl JourneyState {
             }
         };
         let mut question = previous.resolve(capabilities)?.question(id).cloned();
-        if question.is_none()
-            && let QuestionTarget::SdkField { path, .. } = &target
-        {
+        if question.is_none() {
             // An implicit missing-field question disappears after its first
             // answer. Recreate the gap in this temporary copy to recover its
-            // current schema without changing the accepted document.
-            previous.authored.put_sdk_field(path, None)?;
-            question = previous.resolve(capabilities)?.question(id).cloned();
+            // current schema without changing the accepted document; a union
+            // that names no key is the gap of a key question.
+            let gap = match &target {
+                QuestionTarget::SdkField { path, .. } => Some((path, None)),
+                QuestionTarget::VariantKey { path } => {
+                    Some((path, Some(Value::Object(Map::new()))))
+                }
+                _ => None,
+            };
+            if let Some((path, value)) = gap {
+                previous.authored.put_sdk_field(path, value)?;
+                question = previous.resolve(capabilities)?.question(id).cloned();
+            }
         }
         let mut question = question
             .ok_or_else(|| diagnostic("journey", "This question is no longer applicable."))?;

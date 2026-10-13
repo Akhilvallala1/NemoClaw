@@ -363,11 +363,11 @@ metadata:
 spec:
   gateway:
     management: managed
-    runtime:
-      provider: docker
-    engine: unix:///var/run/docker.sock
-    endpoint: http://127.0.0.1:18080
-    networkCIDR: 10.231.200.0/24
+    target:
+      docker:
+        engine: unix:///var/run/docker.sock
+        endpoint: http://127.0.0.1:18080
+        networkCidr: 10.231.200.0/24
   inferenceProviders:
     - name: hosted
       provider: openai

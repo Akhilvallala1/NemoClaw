@@ -74,7 +74,8 @@ fn unconsumed_local_services_cannot_inherit_a_podman_engine() {
             "endpoint".into(),
             serde_json::json!("https://inference.example/v1"),
         );
-        value["spec"]["gateway"]["runtime"]["provider"] = serde_json::json!("podman");
+        let docker = value["spec"]["gateway"]["target"]["docker"].take();
+        value["spec"]["gateway"]["target"] = serde_json::json!({"podman": docker});
         assert!(Document::parse(value.to_string().as_bytes()).is_err());
     }
 }

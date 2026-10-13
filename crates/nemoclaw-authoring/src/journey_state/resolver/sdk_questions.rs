@@ -69,25 +69,40 @@ impl QuestionResolver<'_> {
             else {
                 continue;
             };
-            let schema = policy.sdk_schema(field, schema);
-            let value = self.authored.values.pointer(field);
-            let valid = value.is_some_and(|value| schema_accepts(&schema, value) == Some(true));
-            if value.is_none() || !valid || !self.decisions.accepted.contains(field) {
+            let supplied = self.authored.values.pointer(field);
+            let (target, schema, value) = match variant_key_field(&schema, supplied) {
+                Some((schema, key)) => (
+                    QuestionTarget::VariantKey {
+                        path: field.clone(),
+                    },
+                    schema,
+                    key,
+                ),
+                None => (
+                    QuestionTarget::sdk(field.clone()),
+                    policy.sdk_schema(field, schema),
+                    supplied.cloned(),
+                ),
+            };
+            let valid = value
+                .as_ref()
+                .is_some_and(|value| schema_accepts(&schema, value) == Some(true));
+            if supplied.is_none() || !valid || !self.decisions.accepted.contains(field) {
                 questions.push(JourneyQuestion {
-                    target: QuestionTarget::sdk(field.clone()),
+                    target,
                     kind: JourneyQuestionKind::Field,
                     reopened_because: None,
                     id: field.clone(),
-                    reason: if value.is_some() && !valid {
+                    reason: if supplied.is_some() && !valid {
                         JourneyQuestionReason::InvalidSupplied
-                    } else if value.is_none() {
+                    } else if supplied.is_none() {
                         JourneyQuestionReason::Missing
                     } else {
                         JourneyQuestionReason::ExplicitAsk
                     },
                     required,
                     choices: finite_choices(&schema),
-                    suggestion: value.cloned().or_else(|| schema.get("default").cloned()),
+                    suggestion: value.or_else(|| schema.get("default").cloned()),
                     schema,
                     title: None,
                     description: None,
@@ -120,6 +135,30 @@ impl QuestionResolver<'_> {
             else {
                 continue;
             };
+            if let Some((schema, key)) = variant_key_field(&schema, supplied) {
+                if self.authored.values.pointer(parent).is_some() {
+                    questions.push(JourneyQuestion {
+                        target: QuestionTarget::VariantKey {
+                            path: issue.path().into(),
+                        },
+                        kind: JourneyQuestionKind::Field,
+                        reopened_because: None,
+                        id: issue.path().into(),
+                        reason: if supplied.is_some() {
+                            JourneyQuestionReason::InvalidSupplied
+                        } else {
+                            JourneyQuestionReason::Missing
+                        },
+                        required: required || issue.kind() == PartialIssueKind::Missing,
+                        choices: finite_choices(&schema),
+                        suggestion: key,
+                        schema,
+                        title: None,
+                        description: None,
+                    });
+                }
+                continue;
+            }
             if issue.kind() == PartialIssueKind::Deferred
                 && sdk_discriminator(&schema).is_none()
                 && sdk_exclusive_required_fields(&schema).is_none()
@@ -161,4 +200,20 @@ impl QuestionResolver<'_> {
             });
         }
     }
+}
+
+/// An externally tagged union is asked as the choice of its key: the question
+/// offers the SDK's keys, and its value is the key that the supplied object
+/// names or, when nothing is supplied, the key that the union's default names.
+fn variant_key_field(schema: &Value, supplied: Option<&Value>) -> Option<(Value, Option<Value>)> {
+    let keys = sdk_variant_keys(schema)?;
+    let key = supplied
+        .or_else(|| schema.get("default"))
+        .and_then(|value| sdk_variant_key(schema, value))
+        .map(Value::String);
+    let mut field = serde_json::json!({"type": "string", "enum": keys});
+    if let Some(description) = schema.get("description") {
+        field["description"] = description.clone();
+    }
+    Some((field, key))
 }

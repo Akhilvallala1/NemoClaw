@@ -7,16 +7,20 @@
     "/spec/gateway/endpoint": {
       "title": "Gateway endpoint"
     },
-    "/spec/gateway/engine": {
-      "title": "Gateway engine socket"
-    },
-    "/spec/gateway/image": {
-      "title": "Gateway image"
-    },
     "/spec/gateway/management": {
       "title": "How should NemoClaw reach its gateway?"
     },
-    "/spec/gateway/networkCIDR": {
+    "/spec/gateway/target": {
+      "title": "Where should the sandbox run?",
+      "description": "The key selects where sandboxes run: a local Docker or Podman engine, or a Kubernetes cluster."
+    },
+    "/spec/gateway/target/*/endpoint": {
+      "title": "Gateway endpoint"
+    },
+    "/spec/gateway/target/*/engine": {
+      "title": "Gateway engine socket"
+    },
+    "/spec/gateway/target/*/networkCidr": {
       "title": "Gateway network (CIDR)"
     },
     "/spec/inferenceProviders/*/api": {
@@ -60,10 +64,6 @@
     },
     "/spec/sandboxes/*/network/tier": {
       "title": "Network tier"
-    },
-    "/spec/gateway/runtime/provider": {
-      "title": "Where should the sandbox run?",
-      "description": "The runtime owns the gateway and local sandbox resources."
     },
     "/spec/services/*/authentication": {
       "title": "Service authentication"
@@ -274,6 +274,11 @@
       "managed": "Install and manage a local gateway",
       "external": "Connect to an existing gateway"
     },
+    "/spec/gateway/target": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "kubernetes": "Kubernetes"
+    },
     "/spec/inferenceProviders/*/api": {
       "openai-completions": "OpenAI chat completions",
       "openai-responses": "OpenAI Responses",
@@ -297,10 +302,6 @@
     },
     "/spec/sandboxes/*/network/tier": {
       "isolated": "Isolated"
-    },
-    "/spec/gateway/runtime/provider": {
-      "docker": "Docker",
-      "podman": "Podman"
     },
     "/spec/services/*/authentication": {
       "bearer": "Bearer token"

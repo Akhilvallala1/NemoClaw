@@ -197,10 +197,11 @@ impl ServiceDefinition {
 
     fn validate_installation(&self, document: &Document) -> Result<(), ConfigError> {
         let gateway = &document.spec.gateway;
-        let local_docker = gateway.as_managed().is_some_and(|gateway| {
-            gateway.engine.starts_with("unix:///")
-                && crate::config::validate_engine_endpoint(&gateway.engine).is_ok()
-        }) && gateway.runtime().provider == ComputeDriver::Docker;
+        let local_docker = gateway.as_local_managed().is_some_and(|gateway| {
+            gateway.compute_driver == ComputeDriver::Docker
+                && gateway.engine.starts_with("unix:///")
+                && crate::config::validate_engine_endpoint(gateway.engine).is_ok()
+        });
         let (placement, package) = match self {
             Self::Ollama(service) => (service.published_placement()?, "Ollama"),
             Self::Vllm(service) => (service.published_placement()?, "vLLM"),
@@ -365,8 +366,8 @@ pub(crate) fn discovery_engines(document: &Document) -> Result<BTreeSet<String>,
                     document
                         .spec
                         .gateway
-                        .as_managed()
-                        .map(|gateway| gateway.engine.clone())
+                        .as_local_managed()
+                        .map(|gateway| gateway.engine.to_owned())
                 })
                 .ok_or(ConfigError::new("service engine is not configured"))
         })
@@ -478,8 +479,8 @@ pub(crate) fn validate(document: &Document) -> Result<(), ConfigError> {
     let gateway = &document.spec.gateway;
     let mut publications = BTreeSet::new();
     let mut networks = BTreeMap::new();
-    if let Gateway::Managed(gateway) = gateway {
-        networks.insert(gateway.engine.clone(), gateway.network_cidr.clone());
+    if let Some(gateway) = gateway.as_local_managed() {
+        networks.insert(gateway.engine.to_owned(), gateway.network_cidr.to_owned());
     }
     for definition in document.spec.services.values() {
         let Some(allocation) = definition.allocation(gateway)? else {

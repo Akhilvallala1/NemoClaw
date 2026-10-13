@@ -315,7 +315,7 @@ Catalog identifiers are not restricted to a compiled SDK list.
 The runtime consumes the same canonical public configuration through Fabric; see [discovered harness configuration](sdk.md#configure-a-discovered-fabric-harness).
 
 Generated graphs observe each sandbox image independently of resource creation or image acquisition.
-Managed gateways use their configured engine; external gateways require `spec.gateway.engine` for image inspection and do not run managed-gateway prerequisite checks.
+Managed gateways use their configured engine; external Docker and Podman gateways require `engine` under their `spec.gateway.target` key for image inspection and do not run managed-gateway prerequisite checks.
 With `config_json`, image discovery also returns `runtime_json`, the selected adapter and advertised runtime layout, and `binaries_json`, its resolved executable list.
 The sandbox consumes `runtime_json`; its `policy` block retains authored policy and managed endpoint inputs, resolved against that layout before creation.
 Provider profiles require a nonempty `binaries` list, which graphs decode from `binaries_json`; search registrations retain their scoped `profile_name`.

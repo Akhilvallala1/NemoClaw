@@ -7,7 +7,7 @@ use nemoclaw_authoring::{
 };
 use nemoclaw_sdk::discovery::DiscoveryObservations;
 use nemoclaw_sdk::{
-    config::{ComputeDriver, Document, Gateway},
+    config::{Document, ManagedGateway, ManagedPodman, ManagedTarget},
     discovery::{
         DiscoveryObservation, DiscoveryQuery, DiscoveryRequest, EngineObservation,
         FabricObservation, ObservationStatus,
@@ -243,10 +243,13 @@ fn editing_the_target_leaves_only_the_edited_observation_unfound() {
             before: document(),
             engine_observed: true,
             change: |document| {
-                let Gateway::Managed(gateway) = &mut document.spec.gateway else {
-                    panic!("the example uses a managed gateway")
+                let Some(ManagedGateway {
+                    target: ManagedTarget::Docker(docker),
+                }) = document.spec.gateway.as_managed_mut()
+                else {
+                    panic!("the example uses a managed Docker gateway")
                 };
-                gateway.engine = "unix:///another-target.sock".into();
+                docker.engine = "unix:///another-target.sock".into();
             },
             engine_unobserved: true,
             // The image is read from the gateway's engine.
@@ -268,7 +271,19 @@ fn editing_the_target_leaves_only_the_edited_observation_unfound() {
             before: document(),
             engine_observed: true,
             change: |document| {
-                document.spec.gateway.runtime_mut().provider = ComputeDriver::Podman;
+                let Some(ManagedGateway { target }) = document.spec.gateway.as_managed_mut() else {
+                    panic!("the example uses a managed gateway")
+                };
+                let ManagedTarget::Docker(docker) = target.clone() else {
+                    panic!("the example uses a Docker target")
+                };
+                // Only the target's driver changes; its engine and settings stay.
+                *target = ManagedTarget::Podman(ManagedPodman {
+                    endpoint: docker.endpoint,
+                    engine: docker.engine,
+                    image_pull_policy: docker.image_pull_policy,
+                    network_cidr: docker.network_cidr,
+                });
             },
             engine_unobserved: true,
             // The image is read through the same driver.
@@ -365,14 +380,13 @@ fn renaming_the_target_keeps_it_compatible() {
 
 fn external_document(engine: &str) -> Document {
     let mut document = document();
+    // The image store need not run the gateway's selected compute driver.
     document.spec.gateway = serde_json::from_value(serde_json::json!({
         "management": "external",
         "endpoint": "https://gateway.example:8080",
-        "engine": engine,
+        "target": {"podman": {"engine": engine}},
     }))
     .unwrap();
-    // The image store need not run the gateway's selected compute driver.
-    document.spec.gateway.runtime_mut().provider = ComputeDriver::Podman;
     document
 }
 
@@ -404,5 +418,59 @@ fn external_gateway_without_an_image_engine_stays_unverified_and_names_the_missi
     let document = external_document("");
     let assessment = assess_target(&document, &DiscoveryObservations::new()).unwrap();
     assert_eq!(assessment.status, CompatibilityStatus::Unverified);
-    assert_says(&assessment, "spec.gateway.engine");
+    assert!(
+        assessment.reasons.contains(
+            &"Set spec.gateway.target.podman.engine to inspect the external gateway's sandbox image."
+                .to_owned()
+        ),
+        "{:?}",
+        assessment.reasons
+    );
+}
+
+/// `document` on a Kubernetes target, managed or external, whose sandbox
+/// image names its metadata bundle.
+fn cluster_document(management: &str) -> Document {
+    let mut value = serde_json::to_value(document()).unwrap();
+    value["spec"]["gateway"] = if management == "managed" {
+        serde_json::json!({"management": "managed", "target": {"kubernetes": {
+            "endpoint": "https://127.0.0.1:17671",
+            "kubeconfig": {"env": "CLUSTER_KUBECONFIG"},
+            "context": "explicit-context",
+            "namespace": "agents",
+            "authentication": {"profile": "development"}
+        }}})
+    } else {
+        serde_json::json!({
+            "management": "external",
+            "endpoint": "https://gateway.example:8080",
+            "target": {"kubernetes": {}}
+        })
+    };
+    value["spec"]["sandboxes"][0]["image"]["metadata"] =
+        serde_json::json!({"env": "IMAGE_METADATA"});
+    Document::parse(value.to_string().as_bytes()).unwrap()
+}
+
+#[test]
+fn a_kubernetes_target_with_supported_image_metadata_is_compatible_without_an_engine() {
+    for management in ["external", "managed"] {
+        let document = cluster_document(management);
+        let observed = Observed {
+            engine: None,
+            fabric: Some(crate::support::installed_image(&document)),
+        };
+        let assessment = observed.assess(&document);
+        assert_eq!(
+            assessment.status,
+            CompatibilityStatus::Compatible,
+            "{management}: {:?}",
+            assessment.reasons
+        );
+        assert!(
+            assessment.reasons.is_empty(),
+            "{management}: {:?}",
+            assessment.reasons
+        );
+    }
 }

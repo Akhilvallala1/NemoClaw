@@ -211,14 +211,17 @@ fn managed_podman_with_an_explicit_gateway_port_should_work() {
     let desired = normalized(&document);
     assert_eq!(desired["spec"]["gateway"]["management"], "managed");
     assert_eq!(
-        desired["spec"]["gateway"]["engine"],
+        desired["spec"]["gateway"]["target"]["podman"]["engine"],
         "unix:///run/user/1000/podman/podman.sock"
     );
     assert_eq!(
-        desired["spec"]["gateway"]["endpoint"],
+        desired["spec"]["gateway"]["target"]["podman"]["endpoint"],
         "http://127.0.0.1:17891"
     );
-    assert_eq!(desired["spec"]["gateway"]["runtime"]["provider"], "podman");
+    assert_eq!(
+        document.spec.gateway.compute_driver(),
+        nemoclaw_sdk::config::ComputeDriver::Podman
+    );
 }
 
 #[test]
@@ -478,13 +481,13 @@ impl DesiredState {
     }
 
     fn sandbox_gpu(mut self) -> Self {
-        self.value["spec"]["gateway"]["runtime"]["gpu"] =
+        self.value["spec"]["gateway"]["target"]["docker"]["gpu"] =
             json!({"required": true, "device": "nvidia.com/gpu=0"});
         self
     }
 
     fn host_mount(mut self) -> Self {
-        self.value["spec"]["gateway"]["runtime"]["hostMounts"] = json!([{
+        self.value["spec"]["gateway"]["target"]["docker"]["hostMounts"] = json!([{
             "source": "/home/user/project",
             "target": "/sandbox/project",
             "readOnly": true
@@ -535,7 +538,10 @@ impl DesiredState {
     }
 
     fn gateway_endpoint(mut self, endpoint: &str) -> Self {
-        self.value["spec"]["gateway"]["endpoint"] = json!(endpoint);
+        let target = self.value["spec"]["gateway"]["target"]
+            .as_object_mut()
+            .unwrap();
+        target.values_mut().next().unwrap()["endpoint"] = json!(endpoint);
         self
     }
 

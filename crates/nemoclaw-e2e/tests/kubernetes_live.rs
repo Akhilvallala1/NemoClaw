@@ -14,7 +14,10 @@ use nemoclaw_sdk::{
     ObservationError,
     bundle::Bundle,
     compile::{Generations, compile_runtime, compile_teardown, runtime_targets},
-    config::{ComputeDriver, Document, ExternalGateway, FileRef, Gateway, SecretRef, TLS},
+    config::{
+        ComputeDriver, Document, ExternalGateway, ExternalKubernetes, ExternalTarget, FileRef,
+        Gateway, SecretRef, TLS,
+    },
     kubernetes::{
         CA_ENV, CERT_ENV, ClusterTarget, GATEWAY_KIND, KEY_ENV, STATE_ENV, STORAGE_KIND, Spec,
         TOKEN_ENV, connect, operations::Operations, server,
@@ -280,7 +283,7 @@ async fn authenticated_gateway(operations: &Operations, spec: &Spec) {
             certificate: file(CERT_ENV),
             key: file(KEY_ENV),
         }),
-        ..Default::default()
+        target: ExternalTarget::Kubernetes(ExternalKubernetes {}),
     });
     let client = OpenShell::connect(
         &gateway.connection(),
@@ -350,13 +353,13 @@ async fn the_gateway_installs_authenticates_and_is_removed_keeping_storage() {
     let mut value = serde_json::to_value(original).unwrap();
     value["metadata"]["uid"] = json!(owner);
     value["spec"]["gateway"] = json!({
-        "management": "managed", "runtime": {"provider": "kubernetes"},
-        "endpoint": format!("https://127.0.0.1:{port}"),
-        "kubernetes": {
+        "management": "managed",
+        "target": {"kubernetes": {
+            "endpoint": format!("https://127.0.0.1:{port}"),
             "kubeconfig": {"env": "NEMOCLAW_TEST_KUBECONFIG"},
             "context": target.context, "namespace": namespace,
             "authentication": {"profile": "development"}
-        }
+        }}
     });
     value["spec"]["sandboxes"][0]["image"]["metadata"] = json!({"env": "TEST_IMAGE_METADATA"});
     let document = Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
@@ -489,7 +492,7 @@ async fn the_gateway_installs_authenticates_and_is_removed_keeping_storage() {
 /// - `NEMOCLAW_TEST_AGENT_IMAGE`: the agent image by digest, loaded into kind
 /// - `NEMOCLAW_TEST_AGENT_HARNESS`: its Fabric adapter
 /// - `NEMOCLAW_TEST_AGENT_METADATA`: its metadata bundle
-async fn deploy_to_the_health_check(provider: &str, while_applying: impl AsyncFnOnce(&str)) {
+async fn deploy_to_the_health_check(distribution: &str, while_applying: impl AsyncFnOnce(&str)) {
     use nemoclaw_sdk::{CancellationToken, Deployment, Error, config::Document};
     let mut uid = [0u8; 16];
     getrandom::fill(&mut uid).unwrap();
@@ -519,14 +522,14 @@ metadata:
 spec:
   gateway:
     management: managed
-    runtime:
-      provider: {provider}
-    endpoint: https://127.0.0.1:{port}
-    kubernetes:
-      kubeconfig: {{env: NEMOCLAW_TEST_KUBECONFIG}}
-      context: {context}
-      namespace: {namespace}
-      authentication: {{profile: development}}
+    target:
+      kubernetes:
+        distribution: {distribution}
+        endpoint: https://127.0.0.1:{port}
+        kubeconfig: {{env: NEMOCLAW_TEST_KUBECONFIG}}
+        context: {context}
+        namespace: {namespace}
+        authentication: {{profile: development}}
   inferenceProviders:
     - name: hosted
       provider: openai

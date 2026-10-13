@@ -7,20 +7,34 @@ use nemoclaw_sdk::{
 };
 use serde_json::{Value, json};
 
-fn input(managed: bool) -> Value {
+fn cluster(distribution: Option<&str>) -> Value {
     let original =
         Document::parse(include_bytes!("fixtures/config/local.yaml").as_slice()).unwrap();
     let mut input = serde_json::to_value(original).unwrap();
-    input["spec"]["gateway"]["runtime"] = json!({"provider": "openshift"});
+    let mut target = json!({
+        "endpoint": "https://127.0.0.1:17671",
+        "kubeconfig": {"env": "TEST_OPENSHIFT_CONFIG"},
+        "context": "explicit-openshift",
+        "namespace": "owned-agents",
+        "authentication": {"profile": "development"}
+    });
+    if let Some(distribution) = distribution {
+        target["distribution"] = json!(distribution);
+    }
+    input["spec"]["gateway"] = json!({"management": "managed", "target": {"kubernetes": target}});
     input["spec"]["sandboxes"][0]["image"]["metadata"] = json!({"env":"TEST_IMAGE_METADATA"});
-    if managed {
+    input
+}
+
+/// An OpenShift deployment: a managed gateway on the openshift distribution,
+/// or an existing gateway, which reports the upstream Kubernetes driver.
+fn input(managed: bool) -> Value {
+    let mut input = cluster(Some("openshift"));
+    if !managed {
         input["spec"]["gateway"] = json!({
-            "management": "managed", "runtime": {"provider": "openshift"}, "endpoint": "https://127.0.0.1:17671",
-            "kubernetes": {
-                "kubeconfig":{"env":"TEST_OPENSHIFT_CONFIG"},
-                "context":"explicit-openshift", "namespace":"owned-agents",
-                "authentication":{"profile":"development"}
-            }
+            "management": "external",
+            "endpoint": "http://127.0.0.1:17671",
+            "target": {"kubernetes": {}}
         });
     }
     input
@@ -34,14 +48,14 @@ fn openshift_preserves_authored_profile_and_uses_the_upstream_kubernetes_driver(
     );
     assert!(ComputeDriver::OpenShift.is_kubernetes());
     assert!(!ComputeDriver::Docker.is_kubernetes());
-    for managed in [false, true] {
+    for (managed, driver) in [
+        (false, ComputeDriver::Kubernetes),
+        (true, ComputeDriver::OpenShift),
+    ] {
         let input = input(managed);
         assert!(jsonschema::is_valid(&schema::input_schema(), &input));
         let document = Document::parse(input.to_string().as_bytes()).unwrap();
-        assert_eq!(
-            document.spec.gateway.runtime().provider,
-            ComputeDriver::OpenShift
-        );
+        assert_eq!(document.spec.gateway.compute_driver(), driver);
         let exported = document.yaml().unwrap();
         let imported = Document::parse(exported.as_bytes()).unwrap();
         assert_eq!(imported, document);
@@ -51,26 +65,6 @@ fn openshift_preserves_authored_profile_and_uses_the_upstream_kubernetes_driver(
             assert!(document.spec.gateway.as_kubernetes().is_some());
             assert!(document.spec.gateway.as_local_managed().is_none());
         }
-    }
-}
-
-#[test]
-fn the_runtime_alone_selects_openshift() {
-    let schema = schema::input_schema();
-    // The Kubernetes target has no separate platform field to disagree with.
-    let mut value = input(true);
-    value["spec"]["gateway"]["kubernetes"]["distribution"] = json!("openshift");
-    assert!(!jsonschema::is_valid(&schema, &value));
-    assert!(Document::parse(value.to_string().as_bytes()).is_err());
-    // A managed cluster target accepts only the two cluster runtimes.
-    for provider in ["docker", "podman"] {
-        let mut value = input(true);
-        value["spec"]["gateway"]["runtime"]["provider"] = json!(provider);
-        assert!(!jsonschema::is_valid(&schema, &value), "{provider}");
-        assert!(
-            Document::parse(value.to_string().as_bytes()).is_err(),
-            "{provider}"
-        );
     }
 }
 
@@ -92,6 +86,88 @@ fn openshift_never_defaults_an_image_or_uses_a_local_managed_gateway() {
     let mut value = input(false);
     value["spec"]["gateway"] = json!({"management":"managed"});
     assert!(Document::parse(value.to_string().as_bytes()).is_err());
+}
+
+#[test]
+fn the_openshift_distribution_binds_its_driver_and_namespace_identity() {
+    let generations = [
+        "workspace",
+        "provider",
+        "sandbox",
+        "kubernetes_gateway",
+        "kubernetes_storage",
+    ]
+    .map(|kind| (kind.into(), "a".repeat(32)))
+    .into();
+    let identity = "${nemoclaw_kubernetes_auth.runtime.gateway_values}";
+    for (distribution, driver) in [
+        (None, "kubernetes"),
+        (Some("kubernetes"), "kubernetes"),
+        (Some("openshift"), "openshift"),
+    ] {
+        let input = cluster(distribution);
+        assert!(jsonschema::is_valid(&schema::input_schema(), &input));
+        let document = Document::parse(input.to_string().as_bytes()).unwrap();
+        let targets = runtime_targets(&document, &generations).unwrap();
+        for target in targets
+            .iter()
+            .filter(|target| target.kind != "helm_release")
+        {
+            assert_eq!(target.values["compute_driver"], driver, "{}", target.kind);
+        }
+        let platform = compile_runtime(&document, &generations, "0.1.0").unwrap();
+        let values = platform["resource"]["helm_release"]["gateway"]["values"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            values.iter().any(|value| value == identity),
+            driver == "openshift",
+            "{distribution:?}"
+        );
+        let exported = Document::parse(document.yaml().unwrap().as_bytes()).unwrap();
+        assert_eq!(exported, document);
+    }
+}
+
+#[test]
+fn only_a_managed_kubernetes_target_names_a_distribution() {
+    // An existing gateway reports only the upstream Kubernetes driver, so a
+    // distribution could not be checked against it.
+    let mut input = cluster(None);
+    input["spec"]["gateway"] = json!({
+        "management": "external",
+        "endpoint": "https://openshell.example.com",
+        "target": {"kubernetes": {}}
+    });
+    assert!(jsonschema::is_valid(&schema::input_schema(), &input));
+    Document::parse(input.to_string().as_bytes()).unwrap();
+    input["spec"]["gateway"]["target"]["kubernetes"]["distribution"] = json!("openshift");
+    assert!(!jsonschema::is_valid(&schema::input_schema(), &input));
+    let error = Document::parse(input.to_string().as_bytes())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.starts_with("configuration violates schema at spec.gateway.target.kubernetes (line")
+            && error.ends_with(
+                "): distribution applies only to a managed gateway's spec.gateway.target.kubernetes; an existing gateway reports only the kubernetes driver"
+            ),
+        "{error}"
+    );
+    // Any other field is unknown there.
+    input["spec"]["gateway"]["target"]["kubernetes"] = json!({"namespace": "agents"});
+    let error = Document::parse(input.to_string().as_bytes())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.starts_with("configuration violates schema at spec.gateway.target.kubernetes (line")
+            && error.ends_with("): unknown fields are not allowed"),
+        "{error}"
+    );
+    for distribution in ["", "OpenShift", "eks"] {
+        let input = cluster(Some(distribution));
+        assert!(!jsonschema::is_valid(&schema::input_schema(), &input));
+        assert!(Document::parse(input.to_string().as_bytes()).is_err());
+    }
 }
 
 #[test]

@@ -663,14 +663,15 @@ mod tests {
         let mut document =
             Document::parse(include_bytes!("../tests/fixtures/config/local.yaml").as_slice())
                 .unwrap();
-        document.spec.gateway = source.spec.gateway;
-        document
-            .spec
-            .gateway
-            .as_managed_mut()
-            .unwrap()
-            .image_pull_policy = Some(ImagePullPolicy::Always);
-        document.spec.gateway.runtime_mut().provider = ComputeDriver::Podman;
+        let local = source.spec.gateway.as_local_managed().unwrap();
+        document.spec.gateway = crate::config::Gateway::Managed(crate::config::ManagedGateway {
+            target: crate::config::ManagedTarget::Podman(crate::config::ManagedPodman {
+                endpoint: local.endpoint.into(),
+                engine: local.engine.into(),
+                image_pull_policy: Some(ImagePullPolicy::Always),
+                network_cidr: local.network_cidr.into(),
+            }),
+        });
         let generations = crate::state::Record::new(document.clone())
             .unwrap()
             .generations;

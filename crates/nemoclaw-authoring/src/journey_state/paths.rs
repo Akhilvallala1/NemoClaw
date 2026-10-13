@@ -55,6 +55,28 @@ pub(super) fn settings_path(values: &Value) -> Option<String> {
     harness_path(values).map(|path| format!("{path}/settings"))
 }
 
+/// The managed gateway's target key and the pointer to its engine, when the
+/// selected target runs on a local engine. A cluster target has no engine.
+pub(super) fn managed_target_engine(values: &Value) -> Option<(String, String)> {
+    if values
+        .pointer("/spec/gateway/management")
+        .and_then(Value::as_str)
+        != Some("managed")
+    {
+        return None;
+    }
+    let [key] = values
+        .pointer(GATEWAY_TARGET)?
+        .as_object()?
+        .keys()
+        .collect::<Vec<_>>()[..]
+    else {
+        return None;
+    };
+    let engine = format!("{GATEWAY_TARGET}/{}/engine", escape_pointer(key));
+    sdk_field_schema_for(values, &engine).map(|_| (key.clone(), engine))
+}
+
 pub(super) fn escape_pointer(segment: &str) -> String {
     segment.replace('~', "~0").replace('/', "~1")
 }

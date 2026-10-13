@@ -24,9 +24,8 @@ fn input() -> Value {
 #[test]
 fn explicit_proxy_engine_works_with_an_external_gateway() {
     let mut value = input();
-    value["spec"]["gateway"] =
-        json!({"management":"external", "endpoint":"http://127.0.0.1:17671"});
-    value["spec"]["gateway"]["runtime"]["provider"] = json!("podman");
+    value["spec"]["gateway"] = json!({"management":"external", "endpoint":"http://127.0.0.1:17671",
+        "target":{"podman":{}}});
     value["spec"]["services"]["ollama-auth"]["engine"] = json!("unix:///tmp/proxy-engine.sock");
     let document = Document::parse(value.to_string().as_bytes()).unwrap();
     assert!(
@@ -387,7 +386,7 @@ fn named_proxies_have_distinct_containers_storage_and_credentials() {
 #[test]
 fn proxy_requires_a_managed_docker_gateway_and_uses_its_engine() {
     let mut value = input();
-    value["spec"]["gateway"]["engine"] = json!("unix:///tmp/proxy-engine.sock");
+    value["spec"]["gateway"]["target"]["docker"]["engine"] = json!("unix:///tmp/proxy-engine.sock");
     let document = Document::parse(value.to_string().as_bytes()).unwrap();
     let generations = ["workspace", "provider", "sandbox", "ollama_proxy"]
         .map(|kind| (kind.into(), "a".repeat(32)))
@@ -415,7 +414,8 @@ fn proxy_requires_a_managed_docker_gateway_and_uses_its_engine() {
             .to_string()
             .contains("managed local Docker gateway")
     );
-    value["spec"]["gateway"]["runtime"]["provider"] = json!("podman");
+    let docker = value["spec"]["gateway"]["target"]["docker"].take();
+    value["spec"]["gateway"]["target"] = json!({"podman": docker});
     assert!(
         Document::parse(value.to_string().as_bytes())
             .unwrap_err()

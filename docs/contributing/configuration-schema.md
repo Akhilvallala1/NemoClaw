@@ -88,6 +88,8 @@ For a semantic check outside the schema, document the distinction in the generat
 Schema diagnostics identify document fields, array indices, and constraints without echoing rejected values or unknown properties.
 Valid names in the declared service, harness, inference, and integration collections identify the failing definition; other map keys appear as `[entry]`.
 Parsing a document also reports the source line and column for schema failures and YAML syntax errors.
+When a field moves or is removed, map its old name to a message naming the replacement in the rejecting object's `x-nemoclaw-removed-fields` annotation; the diagnostic then reports the messages of all such fields in the input instead of an unknown field.
+The `spec.gateway` variants list the fields that moved into `spec.gateway.target`; the reference generator does not render this annotation.
 The parser rejects all explicit YAML tags, including core tags such as `!!binary` and `!!str`; quoted strings containing tag text remain strings.
 The reference generator renders presence-conditioned scalar bounds beside the containing field table, including the conditional `kvCacheGiB` limits.
 Keep other conditional behavior in the owning Rust field descriptions when the generator cannot express its schema shape.

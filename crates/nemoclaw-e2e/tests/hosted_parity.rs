@@ -3,7 +3,9 @@
 
 //! Historical intent and deployment lifecycle parity; native inference is not qualified here.
 
-use nemoclaw_sdk::config::{ComputeDriver, Document, Gateway, HarnessKind, InferenceProviderKind};
+use nemoclaw_sdk::config::{
+    ComputeDriver, DEFAULT_GATEWAY_IMAGE, Document, Gateway, HarnessKind, InferenceProviderKind,
+};
 use serde_json::json;
 
 // This scenario compares separately authored current intent with a test-only
@@ -13,6 +15,19 @@ fn authored_document(raw: &[u8], current: &[u8]) -> Document {
         Document::parse(current).expect("authored v1 input must use current agent syntax");
     let mut projected: serde_json::Value =
         serde_saphyr::from_str(std::str::from_utf8(raw).unwrap()).unwrap();
+    // v0 named the compute driver beside the managed endpoint; current intent
+    // keys the endpoint by the target the gateway runs on.
+    let gateway = projected["spec"]["gateway"].as_object_mut().unwrap();
+    let runtime = gateway
+        .remove("runtime")
+        .expect("raw v0 export requires its historical gateway runtime");
+    let endpoint = gateway
+        .remove("endpoint")
+        .expect("raw v0 export requires its managed gateway endpoint");
+    assert_eq!(gateway["management"], "managed");
+    assert_eq!(gateway.len(), 1, "unexpected historical gateway field");
+    let target = runtime["provider"].as_str().unwrap();
+    gateway.insert("target".into(), json!({target: {"endpoint": endpoint}}));
     let sandboxes = projected["spec"]["sandboxes"].as_array_mut().unwrap();
     assert_eq!(sandboxes.len(), 1, "hosted parity requires one sandbox");
     let sandbox = sandboxes[0].as_object_mut().unwrap();
@@ -93,9 +108,15 @@ fn live_inputs_preserve_raw_export_and_require_matching_authored_intent() {
 fn assert_hosted_document(document: &Document, harness: HarnessKind, runtime_root: &str) {
     let gateway = &document.spec.gateway;
     assert!(matches!(gateway, Gateway::Managed(_)));
-    let gateway = gateway.as_managed().unwrap();
+    let gateway = gateway.as_local_managed().unwrap();
     assert_eq!(gateway.engine, "unix:///var/run/docker.sock");
-    assert_eq!(gateway.image, nemoclaw_sdk::config::DEFAULT_GATEWAY_IMAGE);
+    // The SDK binds its pinned gateway image when compiling; intent never names it.
+    let generations = ["workspace", "provider", "sandbox", "managed_gateway"]
+        .map(|kind| (kind.into(), "a".repeat(32)))
+        .into();
+    let runtime = nemoclaw_sdk::compile::compile_runtime(document, &generations, "0.1.0").unwrap();
+    assert!(runtime.to_string().contains(DEFAULT_GATEWAY_IMAGE));
+    assert!(!document.yaml().unwrap().contains(DEFAULT_GATEWAY_IMAGE));
 
     let provider = &document.spec.inference_providers[0];
     assert_eq!(provider.name, "hosted-nvidia-prod");
@@ -111,7 +132,7 @@ fn assert_hosted_document(document: &Document, harness: HarnessKind, runtime_roo
     assert!(sandbox.image.ref_.contains("@sha256:"));
     assert_eq!(sandbox.image.ref_.rsplit(':').next().unwrap().len(), 64);
     assert_eq!(
-        document.spec.gateway.runtime().provider,
+        document.spec.gateway.compute_driver(),
         ComputeDriver::Docker
     );
     let nemoclaw_sdk::config::NetworkPolicy::Explicit(explicit) = &sandbox.network.policy else {

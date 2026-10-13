@@ -47,7 +47,7 @@ fn agrees_at(
 fn image_pull_policy_accepts_only_supported_values_on_managed_containers() {
     let validator = jsonschema::validator_for(&input_schema()).unwrap();
     for (file, path) in [
-        ("spark/spark-inline.yaml", "/spec/gateway"),
+        ("spark/spark-inline.yaml", "/spec/gateway/target/docker"),
         ("spark/spark-inline.yaml", "/spec/services/qwen"),
         ("managed-ollama.yaml", "/spec/services/ollama-server"),
     ] {
@@ -122,6 +122,8 @@ fn input_schema_rejects_missing_required_fields_and_structural_nulls() {
     for (parent, key) in [
         ("/spec/gateway", "credential"),
         ("/spec/gateway", "tls"),
+        ("/spec/gateway", "target"),
+        ("/spec/gateway/target", "docker"),
         ("/spec/inferenceProviders/0", "serviceRef"),
         ("/spec", "services"),
     ] {
@@ -135,8 +137,8 @@ fn input_schema_rejects_missing_required_fields_and_structural_nulls() {
 fn input_schema_preserves_defaults_strict_objects_and_opaque_pi_metadata() {
     let validator = jsonschema::validator_for(&input_schema()).unwrap();
     let mut value = input("spark/spark-inline.yaml");
-    for key in ["endpoint", "engine", "image", "networkCIDR"] {
-        value["spec"]["gateway"]
+    for key in ["endpoint", "engine", "networkCidr"] {
+        value["spec"]["gateway"]["target"]["docker"]
             .as_object_mut()
             .unwrap()
             .remove(key);
@@ -196,7 +198,7 @@ fn schema_and_parser_enforce_choices_bounds_and_conditional_forms() {
         ),
         (
             "local.yaml",
-            "/spec/gateway/engine",
+            "/spec/gateway/target/docker/engine",
             json!("unix:///var/run/docker.sock"),
             true,
         ),
@@ -208,14 +210,20 @@ fn schema_and_parser_enforce_choices_bounds_and_conditional_forms() {
         ),
         (
             "local.yaml",
-            "/spec/gateway/runtime/provider",
-            json!("podman"),
+            "/spec/gateway/target",
+            json!({"podman": {}}),
             true,
         ),
         (
             "local.yaml",
-            "/spec/gateway/runtime/provider",
-            json!("future"),
+            "/spec/gateway/target",
+            json!({"future": {}}),
+            false,
+        ),
+        (
+            "local.yaml",
+            "/spec/gateway/target",
+            json!({"docker": {}, "podman": {}}),
             false,
         ),
         (
@@ -397,8 +405,8 @@ fn documented_parser_checks_remain_required_after_schema_validation() {
         ),
         (
             "spark/vllm.yaml",
-            "/spec/gateway/runtime/provider",
-            json!("podman"),
+            "/spec/gateway/target",
+            json!({"podman": {"engine": "unix:///run/user/1000/podman/podman.sock"}}),
         ),
     ] {
         let mut value = input(file);
@@ -450,7 +458,7 @@ fn gateway_variants_reject_fields_owned_by_the_other_mode() {
     let validator = jsonschema::validator_for(&input_schema()).unwrap();
     for (field, value) in [
         ("image", json!("")),
-        ("networkCIDR", json!("")),
+        ("networkCidr", json!("")),
         ("imagePullPolicy", json!("Never")),
     ] {
         let mut external = input("local.yaml");
@@ -479,46 +487,6 @@ fn a_sandbox_cannot_choose_a_runtime_apart_from_its_gateway() {
 }
 
 #[test]
-fn managed_podman_requires_an_explicit_engine() {
-    let validator = jsonschema::validator_for(&input_schema()).unwrap();
-    let mut value = input("managed-podman.yaml");
-    value["spec"]["gateway"]
-        .as_object_mut()
-        .unwrap()
-        .remove("engine");
-    agrees(&validator, &value, false);
-    let error = Document::parse(value.to_string().as_bytes())
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("Podman requires spec.gateway.engine"),
-        "{error}"
-    );
-    let mut document: Document = serde_json::from_value(value.clone()).unwrap();
-    document.defaults();
-    assert!(
-        document
-            .spec
-            .gateway
-            .as_managed()
-            .unwrap()
-            .engine
-            .is_empty()
-    );
-
-    value["spec"]["gateway"]["engine"] = json!("");
-    agrees(&validator, &value, false);
-    let error = Document::parse(value.to_string().as_bytes())
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("schema at spec.gateway.engine (line")
-            && error.contains("Podman requires spec.gateway.engine"),
-        "{error}"
-    );
-}
-
-#[test]
 fn schema_errors_identify_the_contract_without_echoing_input_values_or_map_keys() {
     let mut value = input("fabric-openclaw.yaml");
     value["spec"]["harnesses"] = json!({"SECRET-MAP-KEY": {
@@ -529,6 +497,391 @@ fn schema_errors_identify_the_contract_without_echoing_input_values_or_map_keys(
         .to_string();
     assert!(error.contains("schema"), "{error}");
     assert!(!error.contains("SECRET-MAP-KEY"), "{error}");
+}
+
+/// The minimal external example with `gateway` in place of its own.
+fn with_gateway(gateway: Value) -> Value {
+    let mut value = input("local.yaml");
+    value["spec"]["gateway"] = gateway;
+    value
+}
+
+fn managed(target: Value) -> Value {
+    with_gateway(json!({"management": "managed", "target": target}))
+}
+
+fn cluster_target() -> Value {
+    json!({
+        "endpoint": "https://127.0.0.1:17671",
+        "kubeconfig": {"env": "CLUSTER_KUBECONFIG"},
+        "context": "explicit-context",
+        "namespace": "owned-gateway",
+        "authentication": {"profile": "development"}
+    })
+}
+
+/// A managed Kubernetes document; cluster sandboxes name an explicit image
+/// and its metadata bundle.
+fn cluster_document() -> Value {
+    let mut value = managed(json!({"kubernetes": cluster_target()}));
+    value["spec"]["sandboxes"][0]["image"] = json!({
+        "ref": format!("registry.example/agent@sha256:{}", "a".repeat(64)),
+        "metadata": {"env": "TEST_IMAGE_METADATA"}
+    });
+    value
+}
+
+#[test]
+fn each_managed_target_validates_and_receives_only_its_own_defaults() {
+    use sha2::Digest;
+    let validator = jsonschema::validator_for(&input_schema()).unwrap();
+    let uid = input("local.yaml")["metadata"]["uid"].clone();
+    let network = format!(
+        "172.30.{}.0/24",
+        sha2::Sha256::digest(uid.as_str().unwrap().as_bytes())[0]
+    );
+    let podman = "unix:///run/user/1000/podman/podman.sock";
+    let docker = json!({"docker": {
+        "endpoint": "http://127.0.0.1:17681",
+        "engine": "unix:///var/run/docker.sock",
+        "networkCidr": network
+    }});
+    for (value, expected) in [
+        (
+            with_gateway(json!({"management": "managed"})),
+            docker.clone(),
+        ),
+        (managed(json!({"docker": {}})), docker),
+        (
+            managed(json!({"podman": {"engine": podman}})),
+            json!({"podman": {
+                "endpoint": "http://127.0.0.1:17681",
+                "engine": podman,
+                "networkCidr": network
+            }}),
+        ),
+    ] {
+        agrees(&validator, &value, true);
+        let document = Document::parse(value.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&document).unwrap()["spec"]["gateway"],
+            json!({"management": "managed", "target": expected})
+        );
+    }
+    // A cluster target names everything itself; only its distribution has a default.
+    let value = cluster_document();
+    agrees(&validator, &value, true);
+    let document = Document::parse(value.to_string().as_bytes()).unwrap();
+    let mut expected = cluster_target();
+    expected["distribution"] = json!("kubernetes");
+    assert_eq!(
+        serde_json::to_value(&document).unwrap()["spec"]["gateway"],
+        json!({"management": "managed", "target": {"kubernetes": expected}})
+    );
+}
+
+#[test]
+fn gateway_fields_at_their_earlier_locations_are_rejected() {
+    let validator = jsonschema::validator_for(&input_schema()).unwrap();
+    let docker = managed(json!({"docker": {}}));
+    agrees(&validator, &docker, true);
+    for (field, value) in [
+        ("runtime", json!({"provider": "docker"})),
+        ("endpoint", json!("http://127.0.0.1:17681")),
+        ("engine", json!("unix:///var/run/docker.sock")),
+        ("image", json!(nemoclaw_sdk::config::DEFAULT_GATEWAY_IMAGE)),
+        ("imagePullPolicy", json!("Never")),
+        ("networkCIDR", json!("172.30.1.0/24")),
+        ("kubernetes", cluster_target()),
+    ] {
+        let mut moved = docker.clone();
+        moved["spec"]["gateway"][field] = value;
+        agrees_at(&validator, &moved, false, "managed", field);
+    }
+    for (field, value) in [
+        ("networkCIDR", json!("172.30.1.0/24")),
+        ("image", json!(nemoclaw_sdk::config::DEFAULT_GATEWAY_IMAGE)),
+        ("runtime", json!({"provider": "docker"})),
+    ] {
+        let mut moved = docker.clone();
+        moved["spec"]["gateway"]["target"]["docker"][field] = value;
+        agrees_at(&validator, &moved, false, "target", field);
+    }
+    let external = with_gateway(json!({
+        "management": "external",
+        "endpoint": "http://127.0.0.1:17671",
+        "target": {"docker": {"engine": "unix:///var/run/docker.sock"}}
+    }));
+    agrees(&validator, &external, true);
+    for (field, value) in [
+        ("runtime", json!({"provider": "docker"})),
+        ("engine", json!("unix:///var/run/docker.sock")),
+    ] {
+        let mut moved = external.clone();
+        moved["spec"]["gateway"][field] = value;
+        agrees_at(&validator, &moved, false, "external", field);
+    }
+}
+
+/// The parser's schema diagnostic for `value` as `path: constraint`, without
+/// its source position.
+fn schema_diagnostic(value: &Value) -> String {
+    let error = Document::parse(value.to_string().as_bytes())
+        .unwrap_err()
+        .to_string();
+    let (path, constraint) = error
+        .strip_prefix("configuration violates schema at ")
+        .and_then(|rest| rest.split_once(" (line "))
+        .and_then(|(path, rest)| Some((path, rest.split_once("): ")?.1)))
+        .unwrap_or_else(|| panic!("not a positioned schema diagnostic: {error}"));
+    format!("{path}: {constraint}")
+}
+
+#[test]
+fn an_earlier_gateway_shape_names_the_field_that_moved() {
+    let runtime = "spec.gateway.runtime is replaced by the key under spec.gateway.target: docker, podman, or kubernetes";
+    let engine = "spec.gateway.engine moved to spec.gateway.target.docker.engine or spec.gateway.target.podman.engine";
+    let image = "spec.gateway.image is removed because the SDK pins the gateway image";
+    let network = "spec.gateway.networkCIDR moved to networkCidr under spec.gateway.target.docker or spec.gateway.target.podman";
+    let external = |field: &str, value: Value| {
+        let mut gateway = json!({"management": "external", "endpoint": "http://127.0.0.1:17671"});
+        gateway[field] = value;
+        with_gateway(gateway)
+    };
+    let managed =
+        |field: &str, value: Value| with_gateway(json!({"management": "managed", field: value}));
+    for (value, message) in [
+        (managed("runtime", json!({"provider": "podman"})), runtime),
+        (
+            managed("endpoint", json!("http://127.0.0.1:17681")),
+            "spec.gateway.endpoint of a managed gateway moved to the endpoint of its spec.gateway.target key",
+        ),
+        (
+            managed("engine", json!("unix:///var/run/docker.sock")),
+            engine,
+        ),
+        (
+            managed("imagePullPolicy", json!("Never")),
+            "spec.gateway.imagePullPolicy moved to spec.gateway.target.docker or spec.gateway.target.podman",
+        ),
+        (managed("networkCIDR", json!("172.30.1.0/24")), network),
+        (
+            managed("kubernetes", cluster_target()),
+            "spec.gateway.kubernetes moved to spec.gateway.target.kubernetes",
+        ),
+        (
+            managed("image", json!(nemoclaw_sdk::config::DEFAULT_GATEWAY_IMAGE)),
+            image,
+        ),
+        (external("runtime", json!({"provider": "docker"})), runtime),
+        (
+            external("engine", json!("unix:///var/run/docker.sock")),
+            engine,
+        ),
+    ] {
+        assert_eq!(
+            schema_diagnostic(&value),
+            format!("spec.gateway: {message}")
+        );
+    }
+    // An earlier document gets every hint at once, starting with the runtime
+    // that chose where the other fields now live.
+    let earlier = with_gateway(json!({
+        "management": "managed",
+        "networkCIDR": "172.30.1.0/24",
+        "image": nemoclaw_sdk::config::DEFAULT_GATEWAY_IMAGE,
+        "engine": "unix:///var/run/docker.sock",
+        "runtime": {"provider": "docker"}
+    }));
+    assert_eq!(
+        schema_diagnostic(&earlier),
+        format!("spec.gateway: {runtime}; {engine}; {image}; {network}")
+    );
+    // The same earlier fields moved into a target name their replacement there.
+    for target in ["docker", "podman"] {
+        let value = managed(
+            "target",
+            json!({target: {
+                "engine": "unix:///run/user/1000/podman/podman.sock",
+                "networkCIDR": "172.30.1.0/24",
+                "image": nemoclaw_sdk::config::DEFAULT_GATEWAY_IMAGE
+            }}),
+        );
+        assert_eq!(
+            schema_diagnostic(&value),
+            format!(
+                "spec.gateway.target.{target}: spec.gateway.target.{target} takes no image because the SDK pins the gateway image; spec.gateway.target.{target} spells networkCIDR as networkCidr"
+            )
+        );
+    }
+}
+
+#[test]
+fn a_string_choice_error_lists_its_allowed_values() {
+    let pull = managed(json!({"podman": {
+        "engine": "unix:///run/user/1000/podman/podman.sock",
+        "imagePullPolicy": "Bogus"
+    }}));
+    let mut distribution = cluster_document();
+    distribution["spec"]["gateway"]["target"]["kubernetes"]["distribution"] = json!("OpenShift");
+    let mut profile = cluster_document();
+    profile["spec"]["gateway"]["target"]["kubernetes"]["authentication"]["profile"] =
+        json!("production");
+    for (value, expected) in [
+        (
+            pull,
+            r#"spec.gateway.target.podman.imagePullPolicy: must be "Always" or "IfNotPresent" or "Never""#,
+        ),
+        (
+            distribution,
+            r#"spec.gateway.target.kubernetes.distribution: must be "kubernetes" or "openshift""#,
+        ),
+        (
+            profile,
+            r#"spec.gateway.target.kubernetes.authentication.profile: must be "development""#,
+        ),
+    ] {
+        assert_eq!(schema_diagnostic(&value), expected);
+    }
+}
+
+#[test]
+fn a_local_target_endpoint_or_network_error_states_its_rule() {
+    let endpoint =
+        "a Docker or Podman gateway endpoint is http://127.0.0.1:PORT with an unprivileged port";
+    let network = "networkCidr must be a canonical private IPv4 /24";
+    for target in ["docker", "podman"] {
+        for (field, value, rule) in [
+            ("endpoint", "https://127.0.0.1:17681", endpoint),
+            ("endpoint", "http://localhost:17681", endpoint),
+            ("networkCidr", "10.0.0.0/16", network),
+        ] {
+            let mut settings = json!({field: value});
+            if target == "podman" {
+                settings["engine"] = json!("unix:///run/user/1000/podman/podman.sock");
+            }
+            assert_eq!(
+                schema_diagnostic(&managed(json!({target: settings}))),
+                format!("spec.gateway.target.{target}.{field}: {rule}")
+            );
+        }
+    }
+}
+
+#[test]
+fn an_external_image_engine_error_names_its_target_field() {
+    for target in ["docker", "podman"] {
+        for engine in ["tcp://127.0.0.1:2375", "ssh://user:secret@host"] {
+            let value = with_gateway(json!({
+                "management": "external",
+                "endpoint": "http://127.0.0.1:17671",
+                "target": {target: {"engine": engine}}
+            }));
+            let error = Document::parse(value.to_string().as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "spec.gateway.target.{target}.engine must be a unix:/// socket or ssh://[user@]host[:port] without a password, path, or options"
+                )
+            );
+        }
+    }
+}
+
+#[test]
+fn a_podman_target_requires_its_engine() {
+    let validator = jsonschema::validator_for(&input_schema()).unwrap();
+    let podman = |settings: Value| managed(json!({"podman": settings}));
+    agrees(
+        &validator,
+        &podman(json!({"engine": "unix:///run/user/1000/podman/podman.sock"})),
+        true,
+    );
+    let rule =
+        "Podman requires spec.gateway.target.podman.engine to name its local API service socket";
+    for (settings, path) in [
+        (json!({}), "spec.gateway.target.podman"),
+        (json!({"engine": ""}), "spec.gateway.target.podman.engine"),
+    ] {
+        let value = podman(settings);
+        agrees(&validator, &value, false);
+        let error = Document::parse(value.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!("schema at {path} (line")) && error.contains(rule),
+            "{error}"
+        );
+    }
+    // The socket depends on the host user, so defaults never choose one.
+    let mut document: Document = serde_json::from_value(podman(json!({"engine": ""}))).unwrap();
+    document.defaults();
+    assert_eq!(
+        serde_json::to_value(&document).unwrap()["spec"]["gateway"]["target"]["podman"]["engine"],
+        ""
+    );
+    assert!(document.validate().is_err());
+}
+
+#[test]
+fn image_pull_policy_follows_the_target_engine() {
+    let validator = jsonschema::validator_for(&input_schema()).unwrap();
+    for (target, supported) in [
+        ("docker", &["IfNotPresent", "Never"][..]),
+        ("podman", &["Always", "IfNotPresent", "Never"][..]),
+    ] {
+        for policy in ["Always", "IfNotPresent", "Never", "always", ""] {
+            let mut settings = json!({"imagePullPolicy": policy});
+            if target == "podman" {
+                settings["engine"] = json!("unix:///run/user/1000/podman/podman.sock");
+            }
+            let value = managed(json!({target: settings}));
+            let accepted = supported.contains(&policy);
+            agrees_at(&validator, &value, accepted, target, policy);
+            if !accepted {
+                continue;
+            }
+            let document = Document::parse(value.to_string().as_bytes()).unwrap();
+            assert_eq!(
+                Document::parse(document.yaml().unwrap().as_bytes()).unwrap(),
+                document
+            );
+            assert_eq!(
+                serde_json::to_value(&document).unwrap()["spec"]["gateway"]["target"][target]["imagePullPolicy"],
+                policy
+            );
+        }
+    }
+    assert_eq!(
+        schema_diagnostic(&managed(json!({"docker": {"imagePullPolicy": "Always"}}))),
+        r#"spec.gateway.target.docker.imagePullPolicy: must be "IfNotPresent" or "Never""#
+    );
+    let mut cluster = cluster_document();
+    agrees(&validator, &cluster, true);
+    cluster["spec"]["gateway"]["target"]["kubernetes"]["imagePullPolicy"] = json!("Never");
+    agrees(&validator, &cluster, false);
+}
+
+#[test]
+fn defaulted_and_exported_documents_carry_no_gateway_image() {
+    use nemoclaw_sdk::config::DEFAULT_GATEWAY_IMAGE;
+    assert!(!input_schema().to_string().contains(DEFAULT_GATEWAY_IMAGE));
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    for path in examples::yaml_files(&directory) {
+        let document = Document::parse(std::fs::read(&path).unwrap().as_slice()).unwrap();
+        for text in [
+            serde_json::to_string(&document).unwrap(),
+            document.yaml().unwrap(),
+        ] {
+            assert!(
+                !text.contains(DEFAULT_GATEWAY_IMAGE) && !text.contains("openshell/gateway@"),
+                "{}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]

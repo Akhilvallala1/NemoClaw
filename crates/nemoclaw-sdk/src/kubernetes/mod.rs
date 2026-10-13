@@ -16,7 +16,7 @@ pub mod operations;
 pub mod receipt;
 pub mod storage;
 
-use crate::{Error, ObservationError, config::ManagedGateway};
+use crate::{Error, ObservationError, managed::GatewaySettings};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -44,7 +44,7 @@ pub struct Spec {
     pub name: String,
     pub owner: String,
     pub generation: String,
-    pub settings: ManagedGateway,
+    pub settings: GatewaySettings,
 }
 
 impl Spec {
@@ -164,10 +164,10 @@ impl Spec {
             name: get("name")?,
             owner: get("owner")?,
             generation: get("generation")?,
-            settings: ManagedGateway {
-                runtime: crate::config::Runtime { provider },
+            settings: GatewaySettings {
+                runtime: crate::managed::GatewayRuntime { provider },
                 endpoint: get("endpoint")?,
-                kubernetes: Some(crate::config::ManagedKubernetes {
+                kubernetes: Some(crate::managed::KubernetesSettings {
                     kubeconfig: crate::config::FileRef {
                         env: get("kubeconfig_env")?,
                     },
@@ -254,7 +254,7 @@ pub(crate) fn kubeconfig_path(value: &str) -> Result<PathBuf, ObservationError> 
 
 /// Connect to the target's context. The kubeconfig's exec credential plugins
 /// run as written, with this process's environment: the caller's in the SDK,
-/// and the platform variables plus `gateway.kubernetes.environment` inside
+/// and the platform variables plus `gateway.target.kubernetes.environment` inside
 /// OpenTofu's providers.
 pub async fn connect(target: &ClusterTarget) -> Result<kube::Client, ObservationError> {
     let kubeconfig =
@@ -286,9 +286,10 @@ pub async fn connection(
         .gateway
         .as_managed()
         .ok_or(ObservationError::Query)?;
-    let target = settings
-        .kubernetes
-        .as_ref()
+    let target = document
+        .spec
+        .gateway
+        .as_kubernetes()
         .ok_or(ObservationError::Query)?;
     let spec = Spec {
         layout: 1,
@@ -299,7 +300,7 @@ pub async fn connection(
             .get(GATEWAY_KIND)
             .ok_or(ObservationError::Incomplete)?
             .clone(),
-        settings: settings.clone(),
+        settings: settings.runtime_settings(),
     };
     spec.validate()?;
     let cluster = ClusterTarget {

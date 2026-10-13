@@ -46,7 +46,7 @@ fn gateway_capabilities_gate_deployment_and_follow_bootstrap_reconciliation() {
 fn image_pull_policy_reaches_the_engine_without_changing_runtime_identity() {
     use nemoclaw_sdk::{
         compile::{compile_runtime, runtime_targets},
-        config::ImagePullPolicy,
+        config::{ImagePullPolicy, ManagedGateway, ManagedTarget},
     };
     let generations = [
         ("workspace", "workspace-generation"),
@@ -62,12 +62,13 @@ fn image_pull_policy_reaches_the_engine_without_changing_runtime_identity() {
     let mut document =
         Document::parse(include_str!("fixtures/config/spark.yaml").as_bytes()).unwrap();
     let before = compile_runtime(&document, &generations, "0.1.0").unwrap();
-    document
-        .spec
-        .gateway
-        .as_managed_mut()
-        .unwrap()
-        .image_pull_policy = Some(ImagePullPolicy::IfNotPresent);
+    let Some(ManagedGateway {
+        target: ManagedTarget::Docker(docker),
+    }) = document.spec.gateway.as_managed_mut()
+    else {
+        panic!("expected a managed Docker gateway")
+    };
+    docker.image_pull_policy = Some(ImagePullPolicy::IfNotPresent);
     let nemoclaw_sdk::services::ServiceDefinition::Vllm(service) =
         document.spec.services.values_mut().next().unwrap()
     else {
@@ -259,10 +260,7 @@ fn managed_plans_query_selected_engine_and_image_without_probe_resources() {
         nemoclaw_sdk::compile::compile_runtime(&document, &generations, "0.1.0").unwrap(),
     ] {
         let engine = &graph["data"]["nemoclaw_engine_capabilities"]["current"];
-        assert_eq!(
-            engine["engine"],
-            document.spec.gateway.as_managed().unwrap().engine
-        );
+        assert_eq!(engine["engine"], document.spec.gateway.image_engine());
         assert_eq!(engine["compute_driver"], "docker");
         assert!(
             engine.get("depends_on").is_none(),

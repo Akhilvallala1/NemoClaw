@@ -56,15 +56,13 @@ fn interrupted_kubernetes_platform_apply_cannot_move_to_another_namespace() {
     record.begin_runtime_apply(&document);
     assert!(record.validate_pending_intent(&document).is_ok());
     let mut changed = document.clone();
-    changed
-        .spec
-        .gateway
-        .as_managed_mut()
-        .unwrap()
-        .kubernetes
-        .as_mut()
-        .unwrap()
-        .namespace = "another-target".into();
+    let Some(crate::config::ManagedGateway {
+        target: crate::config::ManagedTarget::Kubernetes(cluster),
+    }) = changed.spec.gateway.as_managed_mut()
+    else {
+        panic!("managed Kubernetes example");
+    };
+    cluster.namespace = "another-target".into();
     assert!(record.validate_pending_intent(&changed).is_err());
 }
 

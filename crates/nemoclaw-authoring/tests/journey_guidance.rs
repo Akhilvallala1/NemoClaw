@@ -133,7 +133,9 @@ fn every_advertised_harness_keeps_provider_protocol_choices() {
 fn changing_a_model_preserves_an_explicit_target_engine() {
     let capabilities = Capabilities::available();
     let mut values = supplied();
-    values["spec"]["gateway"]["engine"] = json!("unix:///tmp/owned-discovery-fixture.sock");
+    let engine = "/spec/gateway/target/docker/engine";
+    values["spec"]["gateway"]["target"]["docker"]["engine"] =
+        json!("unix:///tmp/owned-discovery-fixture.sock");
     let mut state = journey(values, &capabilities);
     state
         .answer(
@@ -147,7 +149,7 @@ fn changing_a_model_preserves_an_explicit_target_engine() {
         .answer(&capabilities, model, Some(json!("updated-model")))
         .unwrap();
     assert_eq!(
-        state.values().pointer("/spec/gateway/engine"),
+        state.values().pointer(engine),
         Some(&json!("unix:///tmp/owned-discovery-fixture.sock"))
     );
 }
@@ -299,7 +301,11 @@ fn missing_adapter_schema_keeps_independent_deployment_questions_available() {
         .unwrap();
 
     let resolution = state.resolve(&capabilities).unwrap();
-    assert!(resolution.question("/spec/gateway/image").is_some());
+    assert!(
+        resolution
+            .question("/spec/gateway/target/docker/engine")
+            .is_some()
+    );
     assert!(
         resolution
             .unverified()

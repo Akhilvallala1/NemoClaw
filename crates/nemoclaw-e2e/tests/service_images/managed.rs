@@ -257,7 +257,7 @@ impl ManagedService {
         );
         assert_ne!(
             service["placement"]["engine"],
-            document["spec"]["gateway"]["engine"]
+            document["spec"]["gateway"]["target"]["docker"]["engine"]
         );
         let remote = self.engine();
         let ports = remote["container"]["HostConfig"]["PortBindings"]

@@ -12,7 +12,7 @@
             },
             {
               "condition": "${self.runtime_json != \"\"}",
-              "error_message": "sandbox/assistant: image runtime metadata is unavailable. Set spec.gateway.engine to the sandbox image engine, load an image built with its runtime manifest, and use its immutable digest. Resources retained."
+              "error_message": "sandbox/assistant: image runtime metadata is unavailable. Set the engine of spec.gateway.target.docker or spec.gateway.target.podman to the sandbox image engine, load an image built with its runtime manifest, and use its immutable digest. Resources retained."
             }
           ]
         },

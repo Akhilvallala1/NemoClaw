@@ -14,14 +14,14 @@ spec:
   # Supply the existing Kubernetes cluster's OpenShell gateway.
   gateway:
     management: external
-    runtime:
-      provider: kubernetes
     endpoint: https://openshell.example.com
     credential: {env: GATEWAY_TOKEN}
     tls:
       ca: {env: GATEWAY_CA}
       certificate: {env: GATEWAY_CERT}
       key: {env: GATEWAY_KEY}
+    target:
+      kubernetes: {}
   inferenceProviders:
     - name: inference
       provider: openai

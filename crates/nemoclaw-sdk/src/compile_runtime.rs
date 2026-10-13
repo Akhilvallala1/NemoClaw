@@ -31,10 +31,10 @@ fn runtime_targets_with_plans(
     if !document.has_runtime() {
         return Ok(Vec::new());
     }
-    if document.spec.gateway.as_kubernetes().is_some() {
-        let settings = document.spec.gateway.as_managed().ok_or(Error::State(
-            "managed Kubernetes gateway settings are missing",
-        ))?;
+    if let Some(managed) = document.spec.gateway.as_managed()
+        && let Some(cluster) = document.spec.gateway.as_kubernetes()
+    {
+        let settings = managed.runtime_settings();
         let mut targets = [
             crate::kubernetes::STORAGE_KIND,
             crate::kubernetes::AUTH_KIND,
@@ -65,28 +65,26 @@ fn runtime_targets_with_plans(
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-        let namespace = &settings
-            .kubernetes
-            .as_ref()
-            .expect("Kubernetes settings")
-            .namespace;
         targets.push(Target {
             kind: "helm_release".into(),
             address: crate::kubernetes::gateway::ADDRESS.into(),
             values: Row::from([
                 ("name".into(), format!("{}-gateway", document.workspace())),
-                ("namespace".into(), namespace.clone()),
+                ("namespace".into(), cluster.namespace.clone()),
                 ("chart".into(), crate::kubernetes::gateway::CHART.into()),
             ]),
         });
         return Ok(targets);
     }
-    let Some(settings) = document.spec.gateway.as_managed() else {
+    let (Some(settings), Some(local)) = (
+        document.spec.gateway.as_managed(),
+        document.spec.gateway.as_local_managed(),
+    ) else {
         return Ok(service_plans.targets().cloned().collect());
     };
     let gateway = Spec {
         layout: 2,
-        compute_driver: document.spec.gateway.runtime().provider,
+        compute_driver: local.compute_driver,
         kind: GATEWAY_KIND.into(),
         name: format!("{}-gateway", document.workspace()),
         owner: document.metadata.uid.clone(),
@@ -99,7 +97,7 @@ fn runtime_targets_with_plans(
     let target = |kind: &str, spec: &Spec| -> Result<Target, Error> {
         let mut values = spec.gateway_row(kind)?;
         if (kind != GATEWAY_STORAGE_KIND || storage.layout == 0)
-            && let Some(policy) = settings.image_pull_policy
+            && let Some(policy) = local.image_pull_policy
         {
             values.insert("image_pull_policy".into(), policy.as_str().into());
         }
@@ -235,7 +233,7 @@ pub(crate) fn compiled_runtime(
     let (mut graph, targets) = runtime_graph(document, generations, version)?;
     crate::docker_compute::configure(&mut graph, &targets)?;
     if let Some(gateway) = targets.iter().find(|target| target.kind == GATEWAY_KIND)
-        && document.spec.gateway.runtime().provider == ComputeDriver::Docker
+        && document.spec.gateway.compute_driver() == ComputeDriver::Docker
     {
         // The process must serve its API before the authenticated capability
         // read; its readiness fails quickly when the container stops.

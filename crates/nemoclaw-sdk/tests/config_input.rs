@@ -63,8 +63,8 @@ fn application_references_do_not_enable_yaml_anchors_aliases_or_merges() {
 #[test]
 fn omitted_empty_and_zero_values_produce_the_same_defaults() {
     let mut omitted = input("spark/spark-inline.yaml");
-    for key in ["endpoint", "engine", "image", "networkCIDR"] {
-        omitted["spec"]["gateway"]
+    for key in ["endpoint", "engine", "networkCidr"] {
+        omitted["spec"]["gateway"]["target"]["docker"]
             .as_object_mut()
             .unwrap()
             .remove(key);
@@ -83,11 +83,10 @@ fn omitted_empty_and_zero_values_produce_the_same_defaults() {
     }
     let expected = parse(&omitted).unwrap();
     let mut explicit = omitted.clone();
-    for key in ["endpoint", "engine", "image", "networkCIDR"] {
-        explicit["spec"]["gateway"][key] = json!("");
+    for key in ["endpoint", "engine", "networkCidr"] {
+        explicit["spec"]["gateway"]["target"]["docker"][key] = json!("");
     }
     explicit["spec"]["sandboxes"][0]["image"] = json!({"ref": ""});
-    explicit["spec"]["gateway"]["runtime"] = json!({"provider": "docker"});
     explicit["spec"]["sandboxes"][0]["network"] = json!({"tier": ""});
     explicit["spec"]["services"]["qwen"]["serving"] = json!({
         "port": 0, "contextTokens": 0, "maxSequences": 0, "batchTokens": 0,
@@ -102,11 +101,38 @@ fn omitted_empty_and_zero_values_produce_the_same_defaults() {
     assert_eq!(parse(&explicit).unwrap(), expected);
     assert_eq!(parse(&explicit).unwrap().digest(), expected.digest());
     for path in [
-        "/spec/gateway/endpoint",
+        "/spec/gateway/target/docker/endpoint",
         "/spec/sandboxes/0/image",
         "/spec/services/qwen/serving/port",
     ] {
         let mut invalid = explicit.clone();
+        *invalid.pointer_mut(path).unwrap() = Value::Null;
+        assert!(parse(&invalid).is_err(), "{path}");
+    }
+}
+
+#[test]
+fn an_omitted_empty_or_unset_local_target_produces_the_same_defaults() {
+    let mut omitted = input("local.yaml");
+    omitted["spec"]["gateway"] = json!({"management": "managed"});
+    let expected = parse(&omitted).unwrap();
+    for target in [
+        json!({"docker": {}}),
+        json!({"docker": {"endpoint": "", "engine": "", "networkCidr": ""}}),
+    ] {
+        let mut explicit = omitted.clone();
+        explicit["spec"]["gateway"]["target"] = target;
+        let document = parse(&explicit).unwrap();
+        assert_eq!(document, expected);
+        assert_eq!(document.digest(), expected.digest());
+    }
+    for path in [
+        "/spec/gateway/target",
+        "/spec/gateway/target/docker",
+        "/spec/gateway/target/docker/endpoint",
+    ] {
+        let mut invalid = omitted.clone();
+        invalid["spec"]["gateway"]["target"] = json!({"docker": {"endpoint": ""}});
         *invalid.pointer_mut(path).unwrap() = Value::Null;
         assert!(parse(&invalid).is_err(), "{path}");
     }

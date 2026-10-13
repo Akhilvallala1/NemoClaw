@@ -25,15 +25,15 @@ use crate::{
     },
     sdk_schema::{
         finite_choices, sdk_discriminator, sdk_exclusive_required_fields, sdk_field_possible,
-        sdk_field_schema, sdk_field_schema_for, sdk_selected_branch,
+        sdk_field_schema, sdk_field_schema_for, sdk_selected_branch, sdk_variant_key,
+        sdk_variant_keys,
     },
     settings::SettingQuestion,
 };
 
 const ROUTE_SELECTION: &str = "route:selection";
 const ROUTES: &str = "/spec/sandboxes/0/agent/inference/routes";
-const RUNTIME_PROVIDER: &str = "/spec/gateway/runtime/provider";
-const GATEWAY_ENGINE_PATH: &str = "/spec/gateway/engine";
+const GATEWAY_TARGET: &str = "/spec/gateway/target";
 
 /// Why an applicable decision is still open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,13 +52,16 @@ pub enum JourneyQuestionKind {
 }
 
 /// The operation represented by a question. IDs remain stable UI keys; this
-/// target carries the meaning needed to apply and record an answer.
+/// target carries the meaning needed to apply and record an answer. A
+/// `VariantKey` answer selects the key of an externally tagged union, such as
+/// the gateway target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum QuestionTarget {
     DeploymentName,
     Harness,
     SdkField { path: String, role: SdkFieldRole },
     StructuralForm { path: String },
+    VariantKey { path: String },
     RouteSelection { routes: Vec<(String, usize)> },
     InferencePreset { route: usize },
     AdapterSetting { adapter: String, pointer: String },
@@ -71,7 +74,6 @@ enum SdkFieldRole {
     Plain,
     ProviderApi,
     ProviderEndpoint,
-    RuntimeProvider,
     GatewayManagement,
     GatewayEngine,
 }
@@ -96,11 +98,14 @@ impl QuestionTarget {
             && segments[1] == "spec"
             && segments[2] == "inferenceProviders"
             && segments[3].parse::<usize>().is_ok();
-        let role = if path == RUNTIME_PROVIDER {
-            SdkFieldRole::RuntimeProvider
-        } else if path == "/spec/gateway/management" {
+        let target_field = path
+            .strip_prefix(GATEWAY_TARGET)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(_, field)| field);
+        let role = if path == "/spec/gateway/management" {
             SdkFieldRole::GatewayManagement
-        } else if path == GATEWAY_ENGINE_PATH {
+        } else if target_field == Some("engine") {
             SdkFieldRole::GatewayEngine
         } else if provider_field && segments[4] == "api" {
             SdkFieldRole::ProviderApi
@@ -285,9 +290,9 @@ impl JourneyState {
     }
 
     /// Keep the `candidates` this machine has that `observations` show as
-    /// available. A runtime they offer becomes the suggestion when it is the
-    /// only one, and choosing a runtime targets the engine that answered for it.
-    /// A managed gateway's runtime that none answered for is reported first.
+    /// available. A gateway target they offer becomes the suggestion when it is
+    /// the only one, and choosing a target uses the engine that answered for it.
+    /// A managed gateway's target that none answered for is reported first.
     pub fn use_local_engines(
         &mut self,
         candidates: &[DiscoveryRequest],
@@ -346,6 +351,6 @@ use authored_values::AuthoredValues;
 use decision_record::DecisionRecord;
 use journey_position::JourneyPosition;
 use paths::{
-    escape_pointer, harness_kind, harness_path, native_value, routes_path, scalar_question,
-    settings_path,
+    escape_pointer, harness_kind, harness_path, managed_target_engine, native_value, routes_path,
+    scalar_question, settings_path,
 };

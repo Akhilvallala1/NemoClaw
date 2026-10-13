@@ -115,7 +115,7 @@ async fn the_dummy_agent_completes_a_managed_docker_lifecycle() {
     let document = Document::parse(fs::File::open(&config).unwrap()).unwrap();
     assert!(matches!(document.spec.gateway, Gateway::Managed(_)));
     assert_eq!(
-        document.spec.gateway.runtime().provider,
+        document.spec.gateway.compute_driver(),
         ComputeDriver::Docker
     );
     let sandbox = &document.spec.sandboxes[0];
@@ -131,10 +131,13 @@ async fn the_dummy_agent_completes_a_managed_docker_lifecycle() {
         .expect("the document sets harness.settings.reply")
         .to_owned();
     let resource = format!("openshell_sandbox.{}", sandbox.name);
-    let Gateway::Managed(gateway) = &document.spec.gateway else {
-        unreachable!()
-    };
-    let engine = gateway.engine.clone();
+    let engine = document
+        .spec
+        .gateway
+        .as_local_managed()
+        .expect("the dummy document uses a local managed gateway")
+        .engine
+        .to_owned();
     let state = KeepOnFailure(Some(tempfile::tempdir().unwrap()));
     let state_path = state.0.as_ref().unwrap().path().to_owned();
     let deployment = Deployment::new(&state_path, &bundle);

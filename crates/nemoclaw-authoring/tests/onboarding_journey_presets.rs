@@ -168,13 +168,13 @@ fn custom_endpoint_questions_stay_user_facing_without_internal_provider_names() 
 }
 
 #[test]
-fn switching_runtime_preserves_the_selected_model() {
+fn switching_the_target_preserves_the_selected_model() {
     let capabilities = Capabilities::available();
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     let mut state = JourneyDefinition::new("runtime", base)
-        .ask(["/spec/gateway/runtime/provider"])
+        .ask(["/spec/gateway/target"])
         .start(&capabilities)
         .unwrap();
     let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
@@ -185,15 +185,11 @@ fn switching_runtime_preserves_the_selected_model() {
         &[(podman, nemoclaw_sdk::config::ComputeDriver::Podman)],
     );
     state
-        .answer(
-            &capabilities,
-            "/spec/gateway/runtime/provider",
-            Some(json!("podman")),
-        )
+        .answer(&capabilities, "/spec/gateway/target", Some(json!("podman")))
         .unwrap();
     assert_eq!(state.values().pointer(model), Some(&before));
     assert_eq!(
-        state.values().pointer("/spec/gateway/engine"),
+        state.values().pointer("/spec/gateway/target/podman/engine"),
         Some(&json!(podman))
     );
 }

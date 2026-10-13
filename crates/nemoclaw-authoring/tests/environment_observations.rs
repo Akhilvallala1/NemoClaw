@@ -24,7 +24,7 @@ struct RecordedHost {
     observations: DiscoveryObservations,
 }
 
-const RUNTIME: &str = "/spec/gateway/runtime/provider";
+const TARGET: &str = "/spec/gateway/target";
 
 const PODMAN_ONLY: &str = include_str!("fixtures/observations/podman-only.json");
 
@@ -65,32 +65,32 @@ fn host(docker: ObservationStatus, podman: ObservationStatus) -> RecordedHost {
     }
 }
 
-/// The runtime the journey suggests for a template that names `template`, once
+/// The target the journey suggests for a template that names `template`, once
 /// the environment queries have been answered by `host`.
-fn suggested_runtime(host: &RecordedHost, template: &str) -> Option<Value> {
+fn suggested_target(host: &RecordedHost, template: &str) -> Option<Value> {
     let capabilities = Capabilities::available();
     let yaml =
         String::from_utf8(include_bytes!("../../../examples/onboarding/openclaw.yaml").to_vec())
             .unwrap();
-    // The example names its runtime exactly once.
-    let yaml = yaml.replace("provider: docker", &format!("provider: {template}"));
+    // The example names its target exactly once.
+    let yaml = yaml.replace("docker: {}", &format!("{template}: {{}}"));
     let base = PartialDocument::from_yaml(yaml.as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("runtime", base)
-        .ask([RUNTIME])
+        .ask([TARGET])
         .start(&capabilities)
         .unwrap();
     state.use_local_engines(&host.candidates, &host.observations);
     state
         .resolve_with_observations(&capabilities, &host.observations)
         .unwrap()
-        .question(RUNTIME)
+        .question(TARGET)
         .unwrap()
         .suggestion()
         .cloned()
 }
 
 #[test]
-fn the_suggested_runtime_is_the_only_engine_that_answered_else_the_templates() {
+fn the_suggested_target_is_the_only_engine_that_answered_else_the_templates() {
     use ObservationStatus::{Available, Unavailable};
     // (host, docker's answer, podman's answer, template, expected suggestion)
     let rows = [
@@ -105,7 +105,7 @@ fn the_suggested_runtime_is_the_only_engine_that_answered_else_the_templates() {
     ];
     for (name, docker, podman, template, expected) in rows {
         assert_eq!(
-            suggested_runtime(&host(docker, podman), template),
+            suggested_target(&host(docker, podman), template),
             Some(json!(expected)),
             "{name} with a {template} template"
         );
@@ -115,21 +115,18 @@ fn the_suggested_runtime_is_the_only_engine_that_answered_else_the_templates() {
 #[test]
 fn a_recorded_host_with_only_podman_overrides_a_docker_template() {
     let recorded = serde_json::from_str::<RecordedHost>(PODMAN_ONLY).unwrap();
-    assert_eq!(
-        suggested_runtime(&recorded, "docker"),
-        Some(json!("podman"))
-    );
+    assert_eq!(suggested_target(&recorded, "docker"), Some(json!("podman")));
 }
 
 #[test]
-fn a_host_that_named_no_engines_keeps_the_templates_runtime() {
+fn a_host_that_named_no_engines_keeps_the_templates_target() {
     let nothing = RecordedHost {
         candidates: Vec::new(),
         observations: DiscoveryObservations::new(),
     };
     for template in ["docker", "podman"] {
         assert_eq!(
-            suggested_runtime(&nothing, template),
+            suggested_target(&nothing, template),
             Some(json!(template)),
             "{template} template"
         );

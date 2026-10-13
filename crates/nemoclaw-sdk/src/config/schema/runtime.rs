@@ -81,7 +81,18 @@ fn diagnostic(
         return diagnostic(error, root, schema, source, &variant);
     }
     let keyed = union.and_then(|(variants, _)| variant_keys(variants));
-    let constraint = if let Some(mut keys) = keyed {
+    // A union of constants or bounds, such as a string choice, lists them.
+    let scalar_choices = || {
+        let (variants, _) = union?;
+        let alternatives = variants
+            .iter()
+            .map(scalar_constraint)
+            .collect::<Option<Vec<_>>>()?;
+        Some(format!("must be {}", alternatives.join(" or ")))
+    };
+    let constraint = if let Some(message) = removed_fields(schema, error) {
+        message
+    } else if let Some(mut keys) = keyed {
         // The input named no single variant: list the declared keys, never the
         // input's, unless the union carries its own message. An enclosing
         // rule's message describes a different constraint.
@@ -115,17 +126,16 @@ fn diagnostic(
                     .collect::<Vec<_>>()
                     .join(" or ")
             ),
-            Kind::AnyOf { .. } => union
-                .and_then(|(variants, _)| {
-                    variants
-                        .iter()
-                        .map(scalar_constraint)
-                        .collect::<Option<Vec<_>>>()
-                })
-                .map(|alternatives| format!("must be {}", alternatives.join(" or ")))
+            Kind::AnyOf { .. } => scalar_choices()
                 .unwrap_or_else(|| "must match an allowed combination of fields".into()),
-            Kind::OneOfNotValid { .. } => "must match one allowed object shape".into(),
-            Kind::AdditionalProperties { .. } => "unknown fields are not allowed".into(),
+            Kind::OneOfNotValid { .. } => {
+                scalar_choices().unwrap_or_else(|| "must match one allowed object shape".into())
+            }
+            // A closed object without declared properties reports any field
+            // as a false schema.
+            Kind::AdditionalProperties { .. } | Kind::FalseSchema => {
+                "unknown fields are not allowed".into()
+            }
             _ => error.kind().keyword().to_owned(),
         }
     };
@@ -178,6 +188,39 @@ fn annotation<'s>(
         current = parent;
     }
     None
+}
+
+/// The replacements for fields an earlier document shape accepted, when the
+/// rejecting object lists them under `x-nemoclaw-removed-fields`, so an
+/// earlier document gets every hint at once. `runtime` leads, since it chose
+/// where the other fields now live; the rest follow the annotation's order.
+/// Only the schema's text is rendered, never arbitrary input keys.
+fn removed_fields(schema: &Value, error: &jsonschema::ValidationError<'_>) -> Option<String> {
+    use jsonschema::error::ValidationErrorKind as Kind;
+    let Kind::AdditionalProperties { unexpected } = error.kind() else {
+        return None;
+    };
+    let object = error
+        .schema_path()
+        .as_str()
+        .strip_suffix("/additionalProperties")?;
+    let removed = schema
+        .pointer(object)?
+        .get("x-nemoclaw-removed-fields")?
+        .as_object()?;
+    let mut matched = removed
+        .iter()
+        .filter(|(field, _)| unexpected.contains(field))
+        .filter_map(|(field, message)| Some((field.as_str(), message.as_str()?)))
+        .collect::<Vec<_>>();
+    matched.sort_by_key(|(field, _)| *field != "runtime");
+    (!matched.is_empty()).then(|| {
+        matched
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
 }
 
 fn scalar_constraint(schema: &Value) -> Option<String> {
@@ -410,32 +453,32 @@ mod tests {
     #[test]
     fn an_inline_single_key_union_without_one_known_key_ignores_annotated_ancestors() {
         let union = |annotation: Option<&str>| {
-            let mut runtime = json!({"oneOf": [
+            let mut target = json!({"oneOf": [
                 keyed("docker", json!({"type": "object"})),
                 keyed("podman", json!({"type": "object"})),
             ]});
             if let Some(annotation) = annotation {
-                runtime["x-nemoclaw-error"] = json!(annotation);
+                target["x-nemoclaw-error"] = json!(annotation);
             }
             json!({
                 "type": "object",
                 "properties": {"gateway": {
                     "type": "object",
-                    "properties": {"runtime": runtime},
+                    "properties": {"target": target},
                     "x-nemoclaw-error": "the gateway must name an endpoint"
                 }}
             })
         };
-        for runtime in [json!({"dokcer": {}}), json!({})] {
-            let instance = json!({"gateway": {"runtime": runtime}});
+        for target in [json!({"dokcer": {}}), json!({})] {
+            let instance = json!({"gateway": {"target": target}});
             assert_eq!(
                 message(&union(None), instance.clone()),
-                "configuration violates schema at gateway.runtime: must contain exactly one of: docker, podman",
+                "configuration violates schema at gateway.target: must contain exactly one of: docker, podman",
                 "{instance}"
             );
             assert_eq!(
-                message(&union(Some("the gateway names one runtime")), instance),
-                "configuration violates schema at gateway.runtime: the gateway names one runtime"
+                message(&union(Some("the gateway names one target")), instance),
+                "configuration violates schema at gateway.target: the gateway names one target"
             );
         }
     }
@@ -481,6 +524,18 @@ mod tests {
                 format!("configuration violates schema at {path}: {expected}")
             );
         }
+    }
+
+    #[test]
+    fn a_field_that_no_schema_allows_is_unknown() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"gateway": {"type": "object", "properties": {"target": false}}}
+        });
+        assert_eq!(
+            message(&schema, json!({"gateway": {"target": {}}})),
+            "configuration violates schema at gateway.target: unknown fields are not allowed"
+        );
     }
 
     #[test]

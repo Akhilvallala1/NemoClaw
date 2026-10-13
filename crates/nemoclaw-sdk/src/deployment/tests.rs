@@ -11,11 +11,12 @@ pub(super) fn kubernetes_context() -> (Document, crate::compile::Generations) {
             .unwrap();
     let mut value = serde_json::to_value(original).unwrap();
     value["spec"]["gateway"] = json!({
-        "management":"managed", "runtime":{"provider":"kubernetes"}, "endpoint":"https://127.0.0.1:17671",
-        "kubernetes": {
+        "management":"managed",
+        "target": {"kubernetes": {
+            "endpoint":"https://127.0.0.1:17671",
             "kubeconfig":{"env":"TEST_KUBECONFIG"}, "context":"test-cluster", "namespace":"test-agents",
             "authentication":{"profile":"development"}
-        }
+        }}
     });
     value["spec"]["sandboxes"][0]["image"]["metadata"] = json!({"env":"TEST_IMAGE_METADATA"});
     let document = Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
@@ -39,7 +40,7 @@ fn a_kubernetes_targets_listed_variables_reach_its_providers() {
     }
     let (document, _) = kubernetes_context();
     let mut value = serde_json::to_value(&document).unwrap();
-    value["spec"]["gateway"]["kubernetes"]["environment"] = json!(["AWS_PROFILE"]);
+    value["spec"]["gateway"]["target"]["kubernetes"]["environment"] = json!(["AWS_PROFILE"]);
     let document = Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
     let temporary = tempfile::tempdir().unwrap();
     let deployment = Deployment::new(temporary.path(), Path::new("unused-bundle"))
@@ -49,7 +50,8 @@ fn a_kubernetes_targets_listed_variables_reach_its_providers() {
         .unwrap();
     assert_eq!(environment["AWS_PROFILE"], "cluster-admin");
 
-    value["spec"]["gateway"]["kubernetes"]["environment"] = json!(["AWS_PROFILE", "AWS_REGION"]);
+    value["spec"]["gateway"]["target"]["kubernetes"]["environment"] =
+        json!(["AWS_PROFILE", "AWS_REGION"]);
     let unset = Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
     assert!(
         deployment
@@ -926,8 +928,10 @@ async fn changing_gateway_management_at_the_same_endpoint_preserves_saved_state(
         Document::parse(include_str!("../../tests/fixtures/config/local.yaml").as_bytes()).unwrap();
     let mut managed = external.clone();
     managed.spec.gateway = Gateway::Managed(crate::config::ManagedGateway {
-        endpoint: external.spec.gateway.endpoint().into(),
-        ..Default::default()
+        target: crate::config::ManagedTarget::Docker(crate::config::ManagedDocker {
+            endpoint: external.spec.gateway.endpoint().into(),
+            ..Default::default()
+        }),
     });
     managed.defaults();
     managed.validate().unwrap();

@@ -162,10 +162,10 @@ pub(crate) fn populate(graph: &mut Value, document: &Document) -> Result<(), Con
                         "error_message": rejection
                     }, {
                         "condition": "${self.runtime_json != \"\"}",
-                        "error_message": if metadata_env.is_some() || document.spec.gateway.runtime().provider.is_kubernetes() {
+                        "error_message": if metadata_env.is_some() || document.spec.gateway.compute_driver().is_kubernetes() {
                             format!("sandbox/{}: image runtime metadata is unavailable. Set image.metadata.env to an absolute metadata bundle path and verify that it matches the immutable image digest. Resources retained.", sandbox.name)
                         } else {
-                            format!("sandbox/{}: image runtime metadata is unavailable. Set spec.gateway.engine to the sandbox image engine, load an image built with its runtime manifest, and use its immutable digest. Resources retained.", sandbox.name)
+                            format!("sandbox/{}: image runtime metadata is unavailable. Set the engine of spec.gateway.target.docker or spec.gateway.target.podman to the sandbox image engine, load an image built with its runtime manifest, and use its immutable digest. Resources retained.", sandbox.name)
                         }
                     }] });
                 })?;
