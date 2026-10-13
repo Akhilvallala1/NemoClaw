@@ -86,6 +86,70 @@ fn container_generations() -> Generations {
 }
 
 #[test]
+fn image_owned_launch_is_independent_of_service_kind_and_keeps_application_policy() {
+    let mut value = managed_ollama_service();
+    value["spec"]["services"]["voice"] = container_service();
+    let document = Document::parse(value.to_string().as_bytes()).unwrap();
+    let targets = nemoclaw_sdk::compile::targets(&document, &container_generations()).unwrap();
+    let target = targets
+        .iter()
+        .find(|t| t.kind == "container_service")
+        .unwrap();
+    let mut spec: nemoclaw_sdk::managed::Spec =
+        serde_json::from_str(&target.values["spec"]).unwrap();
+    let original = spec.container("/data").unwrap();
+    spec.kind = "custom_service".into();
+    let launch = spec.container("/data").unwrap();
+    assert_eq!(launch.user, original.user);
+    assert_eq!(launch.env, original.env);
+    assert_eq!(launch.entrypoint, original.entrypoint);
+    assert_eq!(launch.cmd, original.cmd);
+    spec.kind = "container_service".into();
+    spec.process.as_mut().unwrap().memory_bytes = 1;
+    assert!(
+        nemoclaw_sdk::services::validate_resource_spec(
+            &spec.kind,
+            &serde_json::to_string(&spec).unwrap()
+        )
+        .is_err()
+    );
+    spec.process.as_mut().unwrap().memory_bytes = 1 << 30;
+    spec.process
+        .as_mut()
+        .unwrap()
+        .image_owned
+        .as_mut()
+        .unwrap()
+        .user = "0:0".into();
+    spec.validate().unwrap();
+    assert!(
+        nemoclaw_sdk::services::validate_resource_spec(
+            &spec.kind,
+            &serde_json::to_string(&spec).unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn application_identity_uses_launch_settings_without_unrelated_gateway_settings() {
+    let application = |value: &Value| {
+        let document = Document::parse(value.to_string().as_bytes()).unwrap();
+        compile(&document, &container_generations(), "0.1.0").unwrap()["resource"]["docker_container"]
+            ["container_service_voice"]
+            .clone()
+    };
+    let mut value = managed_ollama_service();
+    value["spec"]["services"]["voice"] = container_service();
+    let original = application(&value);
+    value["spec"]["gateway"]["endpoint"] = json!("http://127.0.0.1:18892");
+    assert_eq!(application(&value), original);
+    value["spec"]["services"]["voice"]["environment"] = json!({"LOG_LEVEL":"debug"});
+    assert_ne!(application(&value)["labels"], original["labels"]);
+    assert_eq!(application(&value)["mounts"], original["mounts"]);
+}
+
+#[test]
 fn container_service_uses_shared_compute_without_an_inference_consumer() {
     let mut value = managed_ollama_service();
     value["spec"]["services"]["voice"] = container_service();
@@ -263,10 +327,8 @@ fn container_explicit_placement_does_not_adopt_the_gateway_network() {
 
 #[test]
 fn container_placement_uses_the_gateway_runtime_not_a_sandbox_override() {
-    let mut value: Value = serde_saphyr::from_str(include_str!(
-        "fixtures/config/container-agent-connection.yaml"
-    ))
-    .unwrap();
+    let mut value: Value =
+        serde_saphyr::from_str(include_str!("fixtures/config/container.yaml")).unwrap();
     value["spec"]["gateway"]["management"] = json!("managed");
     value["spec"]["gateway"]
         .as_object_mut()

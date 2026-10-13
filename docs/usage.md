@@ -100,6 +100,15 @@ Keep state, diagnose the failure, and reapply after recovery.
 
 ## Configuration and Credentials
 
+### Run an Application Container
+
+Declare a `kind: container` service with an immutable image, Linux architecture, literal environment settings, and an owned data directory below `/var/lib`.
+The image owns startup and its Docker HEALTHCHECK; NemoClaw observes health within the configured startup timeout.
+Placement inherits a managed local Docker gateway or explicitly selects a local Docker engine and private network.
+Optional publication binds an unprivileged TCP port to loopback or a private IPv4 address; `dependsOn` orders declared services without injecting settings.
+Application storage is disposable: destroy removes the owned data volume.
+The [basic parser fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container.yaml) demonstrates these fields with invented pins and endpoints; it does not qualify an image for live use.
+
 ### Connect a Local Development Container to the Managed Gateway
 
 For an isolated local test, explicitly select `authentication.mode: none`, `refreshMode: none`, and `tls.trust: none` under the container's `agentConnections` entry.

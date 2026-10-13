@@ -236,10 +236,7 @@ mod container_tests {
 
     fn application() -> (Spec, serde_json::Value) {
         let document = nemoclaw_sdk::config::Document::parse(
-            include_bytes!(
-                "../../../nemoclaw-sdk/tests/fixtures/config/container-agent-connection.yaml"
-            )
-            .as_slice(),
+            include_bytes!("../../../nemoclaw-sdk/tests/fixtures/config/container.yaml").as_slice(),
         )
         .unwrap();
         let generations = ["workspace", "provider", "sandbox", "container_service"]
