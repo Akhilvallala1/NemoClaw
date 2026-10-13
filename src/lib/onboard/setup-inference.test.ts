@@ -109,22 +109,23 @@ function releaseToNvidia(previous: OllamaModelHolder, deps: SetupInferenceDeps):
 }
 
 describe("releaseSupersededOllamaModel", () => {
-  it("unloads a superseded model when matching registry rows are not live", () => {
-    const staleReservation = {
-      name: "incomplete-reservation",
+  it("preserves the host target for a stopped peer after releasing its model", () => {
+    const stoppedPeer = {
+      name: "stopped-peer",
       provider: "ollama-local",
       model: "qwen2.5:1.5b",
-      endpointUrl: null,
-      gatewayName: "stale-peer-gateway",
+      endpointUrl: "http://127.0.0.1:11434",
+      gatewayName: "nemoclaw-32678",
+      gatewayPort: 32678,
     } as unknown as SandboxEntry;
-    const harness = createOllamaCleanupHarness({ peers: [staleReservation] });
+    const harness = createOllamaCleanupHarness({ peers: [stoppedPeer] });
 
     releaseToNvidia(previousLocalOllamaRoute, harness.deps);
 
     expect(harness.discoverActiveOllamaSandboxNames).toHaveBeenCalledOnce();
     expect(harness.unloadOllamaModels).toHaveBeenCalledExactlyOnceWith(["qwen2.5:1.5b"]);
     expect(harness.localInference.clearPersistedOllamaHostIfUnused).toHaveBeenCalledExactlyOnceWith(
-      [],
+      [stoppedPeer],
     );
   });
 

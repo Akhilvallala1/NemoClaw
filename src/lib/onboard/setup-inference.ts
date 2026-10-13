@@ -714,8 +714,8 @@ export function releaseSupersededOllamaModel(
               isLocalOllamaRouteOwner(peer, selectedHost),
           );
           if (activeOllamaPeerRoutes.length === 0) {
-            // The live-probed route set is empty; the helper retains its own guard.
-            deps.localInference.clearPersistedOllamaHostIfUnused?.(activeOllamaPeerRoutes);
+            // Stopped registry owners still need the shared host target if they restart.
+            deps.localInference.clearPersistedOllamaHostIfUnused?.(ollamaRouteCandidates);
           }
         }
       }
