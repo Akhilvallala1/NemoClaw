@@ -8,6 +8,7 @@ import { EXPORTED_VLLM_PROFILE_ID } from "../../../src/lib/config/model.ts";
 import type { V1Alpha1OllamaProxyService } from "../../../src/lib/config/v1alpha1-export.ts";
 import { cleanupLocalModelRuntimes } from "../../../src/lib/inference/local-model-profile/cleanup.ts";
 import { HOST_LOCAL_VLLM_CONTAINER_NAME } from "../../../src/lib/inference/serving/vllm-host-local-lifecycle.ts";
+import { NATIVE_LOCAL_AUTH_HEADER_SCRIPT } from "../../../src/lib/inference/native-local/agent-config.ts";
 import { loadManagedVllmApiKey } from "../../../src/lib/inference/vllm-api-key.ts";
 import { execTimeout, testTimeout } from "../../helpers/timeouts.ts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
@@ -236,7 +237,7 @@ test(
     const chat = await sandbox.execShell(
       SANDBOX_NAME,
       trustedSandboxShellScript(
-        `curl -sS --max-time 120 http://host.openshell.internal:${PROXY_PORT}/v1/chat/completions -H 'Authorization: Bearer openshell:resolve:env:NEMOCLAW_LOCAL_INFERENCE_TOKEN' -H 'Content-Type: application/json' --data '${JSON.stringify(
+        `${NATIVE_LOCAL_AUTH_HEADER_SCRIPT}; curl -sS --max-time 120 http://host.openshell.internal:${PROXY_PORT}/v1/chat/completions -H "$AUTH_HEADER" -H 'Content-Type: application/json' --data '${JSON.stringify(
           {
             model,
             messages: [{ role: "user", content: "Reply with exactly one word: PONG" }],

@@ -46,6 +46,7 @@ import {
 } from "./onboard/custom-openclaw-runtime-diagnosis";
 import { GATEWAY_PORT, resolveGatewayLogPathForPort } from "./onboard/gateway/state-dir";
 import { getMessagingProviderNamesForChannel } from "./onboard/messaging-reuse";
+import { HOST_LOCAL_INFERENCE_APPLICATION_BASE_URL } from "./onboard/runtime-provider/host-local-inference-routing";
 
 export { shouldDiagnoseCustomOpenClawRuntime } from "./onboard/custom-openclaw-runtime-diagnosis";
 
@@ -414,6 +415,11 @@ function matchesNativeLocalVerificationRoute(
   )
     return false;
   if (context.endpointUrl === undefined) return true;
+  if (
+    context.nativeLocalExpected &&
+    context.endpointUrl === HOST_LOCAL_INFERENCE_APPLICATION_BASE_URL
+  )
+    return true;
   const selected = normalizeNativeLocalBinding({ ...attachment, endpointUrl: context.endpointUrl });
   return selected?.endpointUrl === attachment.endpointUrl;
 }
