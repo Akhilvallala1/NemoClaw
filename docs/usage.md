@@ -82,7 +82,14 @@ An existing deployment cannot move to another target.
 For a managed gateway, deployment state binds the target key and every setting under it except `imagePullPolicy`: the endpoint, engine, `networkCidr`, distribution, and cluster settings.
 For an external gateway, it binds `endpoint`.
 To change a bound setting, create a separate deployment with a fresh `metadata.uid` and state directory.
-To re-author a document for another target, fill in the new key's required fields; for `kubernetes`, give each sandbox an explicit `image.ref` and `image.metadata` and replace `spec.services` with external inference endpoints; for `docker` or `podman`, remove `image.metadata`.
+
+To move a document to another target, rewrite `spec.gateway` for that target, make the edits below, and apply the result as a separate deployment:
+
+| New target | Edits |
+| --- | --- |
+| `kubernetes`, managed or external | Give each sandbox an explicit `image.ref` and an `image.metadata` bundle ([Prepare Agent Images](kubernetes.md#prepare-agent-images)). Remove `spec.services`, and replace each `serviceRef` with an inference `endpoint` reachable from the cluster. |
+| `docker` or `podman`, managed or external | Remove each sandbox's `image.metadata`; the engine inspects the image instead. |
+| Managed `podman`, external `docker`, or external `podman` | Also give each `ollama` and `vllm` service explicit `placement` and `publication` ([SSH placement](remote-service.md)) and each `ollamaProxy` service an explicit `engine`, since only a managed `docker` gateway runs services on its own engine. |
 
 The SDK pins the gateway image, and the document does not name it.
 A Docker or Podman gateway stays bound to the image pin of the bundle that created it, and a managed Kubernetes gateway to that bundle's gateway chart pin: keep operating it with that bundle, or create a separate deployment to use a bundle with a different pin.

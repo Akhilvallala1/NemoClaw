@@ -157,6 +157,8 @@ mod reference_diagnostics;
 mod refresh;
 #[path = "resource_management.rs"]
 mod resource_management;
+#[path = "retargeting.rs"]
+mod retargeting;
 #[path = "runtime_boundaries.rs"]
 mod runtime_boundaries;
 #[path = "runtime_compile.rs"]
