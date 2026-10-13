@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import net, { type Socket } from "node:net";
+import { nativeLocalPipeName } from "./native-local-pipe.mts";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RelayMeasurements } from "./native-broker-relay-protocol.mts";
@@ -98,12 +99,14 @@ export async function startNativeUiTunnel({
   relayRoot,
   relayToken,
   uiPort,
+  pipe = false,
   signal,
   measurements,
 }: {
   relayRoot: string;
   relayToken: string;
   uiPort: number;
+  pipe?: boolean;
   signal?: AbortSignal;
   measurements?: RelayMeasurements;
 }): Promise<void> {
@@ -116,6 +119,7 @@ export async function startNativeUiTunnel({
   )
     throw new Error("The contained native UI tunnel identity is invalid.");
   signal?.throwIfAborted();
+  const target = pipe ? { path: nativeLocalPipeName(uiPort) } : { host: "127.0.0.1", port: uiPort };
   const shutdownRequested = () =>
     readNativeUiTunnelMarker(join(relayRoot, "shutdown"), measurements) === relayToken;
   const waitForUi = async () => {
@@ -124,7 +128,7 @@ export async function startNativeUiTunnel({
       signal?.throwIfAborted();
       if (shutdownRequested()) return false;
       const connected = await new Promise<boolean>((resolvePromise, reject) => {
-        const socket = net.createConnection({ host: "127.0.0.1", port: uiPort, signal });
+        const socket = net.createConnection({ ...target, signal });
         socket.once("connect", () => {
           socket.destroy();
           resolvePromise(true);
@@ -266,7 +270,7 @@ export async function startNativeUiTunnel({
           if (readNativeUiTunnelMarker(open, measurements) !== relayToken) continue;
           if (streams.size >= MAX_ACTIVE_STREAMS)
             throw new Error("The native UI relay active-stream limit was exceeded.");
-          const socket = net.createConnection({ host: "127.0.0.1", port: uiPort });
+          const socket = net.createConnection(target);
           const state = {
             root: streamRoot,
             sequence: 0,

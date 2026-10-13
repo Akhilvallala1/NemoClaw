@@ -474,6 +474,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The locked OpenClaw dependency materialization controls failed.' }
           & python -m unittest discover -s "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer" -p 'test_prepare_finished_host.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'The native host inventory and license controls failed.' }
+          & python -m unittest discover -s "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer" -p 'test_openshell_source.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'The locked OpenShell source controls failed.' }
       - name: Check out the pinned OpenShell host source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -494,6 +496,10 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $revision -cne '901338dbd334feeb1436f4cb41533f6d592d3595') { throw 'Unexpected OpenShell source.' }
           $status = & git status --porcelain
           if ($LASTEXITCODE -ne 0 -or $status) { throw 'The OpenShell checkout is not clean.' }
+          $sourceHelper = "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\openshell_source.py"
+          $sourceJson = & python $sourceHelper apply $PWD.Path
+          if ($LASTEXITCODE -ne 0) { throw 'The locked OpenShell derivative could not be applied.' }
+          $sourceIdentity = $sourceJson | ConvertFrom-Json
           $env:CARGO_TARGET_DIR = "$work\openshell-target"
           if (Test-Path -LiteralPath $env:CARGO_TARGET_DIR) { throw 'OpenShell must build into a fresh target directory.' }
           # Load the pinned build helpers without running their unlocked build action.
@@ -509,10 +515,10 @@ jobs:
           Stage-Z3Runtime 'aarch64-pc-windows-msvc'
           Assert-NativeTestTarget 'aarch64-pc-windows-msvc'
           Invoke-VsCargo -RustTarget 'aarch64-pc-windows-msvc' `
-            -CargoArgs 'cargo test --locked --release --target aarch64-pc-windows-msvc -p openshell-driver-mxc --lib -- --test-threads=1' `
+            -CargoArgs 'cargo test --locked --release --target aarch64-pc-windows-msvc -p openshell-driver-mxc -p openshell-mxc-boundary --lib -- --test-threads=1' `
             -LogName 'mxc-driver-tests.log'
-          $status = & git status --porcelain
-          if ($LASTEXITCODE -ne 0 -or $status) { throw 'OpenShell source changed during the build.' }
+          & python $sourceHelper verify $PWD.Path
+          if ($LASTEXITCODE -ne 0) { throw 'OpenShell source changed during the build.' }
           $afterRevision = (& git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $afterRevision -cne $revision) { throw 'OpenShell revision changed during the build.' }
           $output = "$work\openshell-binaries"
@@ -530,7 +536,8 @@ jobs:
             classification = 'ci-built-openshell-host-binaries'
             requestedSourceRevision = $env:GITHUB_SHA
             openshellRevision = $revision
-            derivativePatchSha256 = $null
+            derivativePatchSha256 = $sourceIdentity.patchSha256
+            sourceTree = $sourceIdentity.patchedTree
             sourceUnchanged = $true
             rustToolchain = $env:RUSTUP_TOOLCHAIN
             rustTarget = 'aarch64-pc-windows-msvc'

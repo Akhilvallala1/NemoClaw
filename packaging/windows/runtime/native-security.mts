@@ -20,6 +20,7 @@ export type NativeCredentialIdentity = { agent: string; inference: string; endpo
 export type NativeGatewayNetwork =
   | { kind: "deny" }
   | { kind: "personal" }
+  | { kind: "supervised" }
   | { kind: "loopback"; ports: readonly number[] };
 export type NativeGatewayOptions = { network?: NativeGatewayNetwork; hostConsole?: boolean };
 
@@ -429,12 +430,18 @@ function nativeGatewayProfile(options: NativeGatewayOptions): string[] {
     !network ||
     typeof network !== "object" ||
     Array.isArray(network) ||
-    !["deny", "personal", "loopback"].includes(network.kind) ||
+    !["deny", "personal", "loopback", "supervised"].includes(network.kind) ||
     Object.keys(network).some(
       (key) => key !== "kind" && !(network.kind === "loopback" && key === "ports"),
     )
   )
     fail("the gateway profile network is invalid");
+  if (network.kind === "supervised") {
+    if (options.hostConsole) fail("the supervised gateway profile cannot grant the host console");
+    // Current OpenShell selects its governed proxy; local services use declared
+    // per-sandbox pipes. Legacy direct-network fields are not in this schema.
+    return ["pc_allow_local_network = false"];
+  }
   const ports = network.kind === "loopback" ? validatedLoopbackPorts(network.ports) : [];
   const personal = network.kind === "personal";
   // Each launcher owns a private gateway. Profiles never enter per-sandbox driver_config.

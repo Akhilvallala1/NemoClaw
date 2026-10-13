@@ -3,6 +3,7 @@
 
 import { randomBytes } from "node:crypto";
 import net, { type Socket } from "node:net";
+import { nativeLocalPipeName } from "./native-local-pipe.mts";
 
 export const BROKER_CONNECTION_LIMIT = 32;
 export const BROKER_FRAME_BYTES = 64 * 1024;
@@ -203,14 +204,14 @@ function decode(bytes: Buffer, generation: string, kind: Marker["kind"]): Marker
 }
 const frame = (side: Side, sequence: number) => `${side}-${String(sequence).padStart(10, "0")}.bin`;
 const control = (side: Side) => frame(side, 0);
-const delay = (signal: AbortSignal) =>
+const delay = (signal: AbortSignal, milliseconds: number) =>
   new Promise<void>((resolve) => {
     const finish = () => {
       clearTimeout(timer);
       signal.removeEventListener("abort", finish);
       resolve();
     };
-    const timer = setTimeout(finish, 10);
+    const timer = setTimeout(finish, milliseconds);
     signal.addEventListener("abort", finish, { once: true });
     if (signal.aborted) finish();
   });
@@ -221,12 +222,18 @@ export async function createBrokerRelayPeer(options: {
   slots: string[];
   side: Side;
   brokerPort?: number;
+  sandboxPipePort?: number;
   signal?: AbortSignal;
   measurements?: RelayMeasurements;
 }) {
   if (options.signal?.aborted)
     throw new Error("The native broker transport was stopped before startup.");
   const { token, slots, side, measurements } = options;
+  if (options.sandboxPipePort !== undefined && side !== "sandbox") invalid();
+  const socketPath =
+    options.sandboxPipePort === undefined
+      ? undefined
+      : nativeLocalPipeName(options.sandboxPipePort);
   const files = measureRelayFiles(options.files, measurements);
   if (!/^[A-Za-z0-9_-]{32,128}$/u.test(token)) invalid();
   if (
@@ -612,11 +619,13 @@ export async function createBrokerRelayPeer(options: {
         };
         controller.signal.addEventListener("abort", aborted, { once: true });
         server!.once("error", rejected);
-        server!.listen(0, "127.0.0.1", () => {
+        const listening = () => {
           cleanup();
           if (stopped) aborted();
           else resolve();
-        });
+        };
+        if (socketPath) server!.listen({ path: socketPath }, listening);
+        else server!.listen(0, "127.0.0.1", listening);
         if (controller.signal.aborted) aborted();
       });
     }
@@ -632,7 +641,8 @@ export async function createBrokerRelayPeer(options: {
           if (started !== undefined)
             measurements!.finish("poll", started, succeeded ? "success" : "failure");
         }
-        if (!stopped) await delay(controller.signal);
+        // Idle scans touch every slot; avoid competing with agent startup I/O.
+        if (!stopped) await delay(controller.signal, states.size === 0 ? 100 : 10);
       }
     })().catch(fail);
   } catch (error) {
@@ -644,7 +654,7 @@ export async function createBrokerRelayPeer(options: {
   const address = server?.address();
   return {
     host: "127.0.0.1" as const,
-    port: address && typeof address === "object" ? address.port : null,
+    port: options.sandboxPipePort ?? (address && typeof address === "object" ? address.port : null),
     failure: failed,
     diagnostics() {
       return {

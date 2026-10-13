@@ -11,6 +11,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildNativeWorkers } from "../../packaging/windows/distribution/build-native-workers.mts";
 
 const owner = path.resolve("packaging/windows/installer/prepare-finished-host.py");
+const sourceLock = JSON.parse(
+  fs.readFileSync(path.resolve("packaging/windows/openshell-native-transport.lock.json"), "utf8"),
+) as { baseRevision: string; patchedTree: string; patchSha256: string };
 const python = process.platform === "win32" ? "python" : "python3";
 const hash = (value: Buffer | string) => createHash("sha256").update(value).digest("hex");
 const names = [
@@ -212,8 +215,9 @@ describe("current OpenShell installer build evidence", () => {
       schemaVersion: 1,
       classification: "ci-built-openshell-host-binaries",
       requestedSourceRevision: "a".repeat(40),
-      openshellRevision: "901338dbd334feeb1436f4cb41533f6d592d3595",
-      derivativePatchSha256: null,
+      openshellRevision: sourceLock.baseRevision,
+      derivativePatchSha256: sourceLock.patchSha256,
+      sourceTree: sourceLock.patchedTree,
       sourceUnchanged: true,
       rustToolchain: "1.95.0-aarch64-pc-windows-msvc",
       rustTarget: "aarch64-pc-windows-msvc",
@@ -247,6 +251,9 @@ describe("current OpenShell installer build evidence", () => {
     ["requestedSourceRevision", "b".repeat(40)],
     ["openshellRevision", "b".repeat(40)],
     ["derivativePatchSha256", "b".repeat(64)],
+    ["derivativePatchSha256", null],
+    ["sourceTree", "b".repeat(40)],
+    ["sourceTree", undefined],
     ["sourceUnchanged", false],
     ["workflowRunId", "122"],
     ["workflowRunAttempt", "2"],

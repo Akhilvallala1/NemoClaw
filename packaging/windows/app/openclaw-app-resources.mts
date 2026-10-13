@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import type { Plugin, TransformOptions, TransformResult } from "esbuild";
 import type ts from "typescript";
 import { compilePrivateDirectoryRuntime } from "./sqlite-private-directory-build.mts";
+import { compileNativePipeTransport } from "./native-pipe-transport-build.mts";
 
 type Syntax = typeof ts;
 type Transformer = {
@@ -409,9 +410,18 @@ Object.defineProperty(globalThis,Symbol.for("nemoclaw.compiled-openclaw.plugins.
 function __nemoModuleFilenameFor(relative){return require("node:path").join(__nemoAssetDir,relative);}
 function __nemoModuleDirnameFor(relative){return require("node:path").dirname(__nemoModuleFilenameFor(relative));}
 function __nemoModuleUrlFor(relative){return require("node:url").pathToFileURL(__nemoModuleFilenameFor(relative)).href;}`;
-  return { entries, prelude, plugin: compiledModuleLocationPlugin(source, compiler), banner };
+  return {
+    entries,
+    prelude,
+    plugin: compiledModuleLocationPlugin(source, compiler, syntax),
+    banner,
+  };
 }
-export function compiledModuleLocationPlugin(source: string, compiler: Transformer): Plugin {
+export function compiledModuleLocationPlugin(
+  source: string,
+  compiler: Transformer,
+  syntax?: Syntax,
+): Plugin {
   // Preserve each original module's resource location while compiling its code into one graph.
   // This includes bundled dependencies, not just core/plugin files: their native
   // createRequire(import.meta.url) calls need the same sealed package locations.
@@ -436,7 +446,10 @@ export function compiledModuleLocationPlugin(source: string, compiler: Transform
               adaptationPath,
               compileAsyncProcessEntry(
                 adaptationPath,
-                compilePrivateDirectoryRuntime(adaptationPath, original),
+                compilePrivateDirectoryRuntime(
+                  adaptationPath,
+                  compileNativePipeTransport(adaptationPath, original, syntax),
+                ),
               ),
             ),
           ),

@@ -5,6 +5,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,11 @@ MXC_FILES = ("wxc-exec.exe", "wxc-host-prep.exe")
 MXC_LICENSE_SHA256 = "d9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb"
 NODE_SHA256 = "97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878"
 OPENSHELL_SOURCE = "901338dbd334feeb1436f4cb41533f6d592d3595"
+_SOURCE_SPEC = importlib.util.spec_from_file_location(
+    "openshell_source", Path(__file__).with_name("openshell_source.py")
+)
+_SOURCE_MODULE = importlib.util.module_from_spec(_SOURCE_SPEC)
+_SOURCE_SPEC.loader.exec_module(_SOURCE_MODULE)
 OPENSHELL_FILES = (
     "openshell.exe",
     "openshell-gateway.exe",
@@ -68,14 +74,16 @@ def openshell_build_files(build):
 
 
 def verify_openshell_build(native, expected, run_id, run_attempt):
+    identity = _SOURCE_MODULE.load_lock()
     build = json.loads((native / "openshell-build.json").read_text(encoding="utf-8"))
     if (
         build.get("schemaVersion") != 1
         or build.get("classification") != "ci-built-openshell-host-binaries"
         or build.get("requestedSourceRevision") != expected
         or build.get("openshellRevision") != OPENSHELL_SOURCE
-        or "derivativePatchSha256" not in build
-        or build["derivativePatchSha256"] is not None
+        or identity["baseRevision"] != OPENSHELL_SOURCE
+        or build.get("derivativePatchSha256") != identity["patchSha256"]
+        or build.get("sourceTree") != identity["patchedTree"]
         or build.get("sourceUnchanged") is not True
         or build.get("rustToolchain") != "1.95.0-aarch64-pc-windows-msvc"
         or build.get("rustTarget") != "aarch64-pc-windows-msvc"

@@ -58,7 +58,6 @@ import type { NativeInferenceProgress } from "./native-inference-manifest.mts";
 
 import {
   NATIVE_NODE_UI_POLICY,
-  nativeQualificationLoopbackConfig,
   readOpenedRegularFile,
   writeNativeGatewayConfig,
 } from "./native-security.mts";
@@ -141,6 +140,7 @@ export function gatewaySource() {
   return String.raw`import fs, { mkdirSync, writeFileSync } from "node:fs";
 import { startNativeUiTunnel } from "./native-ui-tunnel.mts";
 import { startNativeBrokerTunnel } from "./native-broker-tunnel.mts";
+import { nativeLocalPipeName, readNativeBrokerBootstrap } from "./native-local-pipe.mts";
 import { createServer } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import { join, resolve } from "node:path";
@@ -199,6 +199,11 @@ const configured = required("NEMOCLAW_NATIVE_SERVICES") === "1";
 const relayRoot = required("NEMOCLAW_MXC_RELAY_ROOT");
 const relayToken = required("NEMOCLAW_MXC_RELAY_TOKEN");
 const uiPort = Number(required("NEMOCLAW_MXC_UI_PORT"));
+const modelPort = Number(required("NEMOCLAW_MXC_MODEL_PORT"));
+Object.assign(process.env, {
+  NEMOCLAW_MXC_GATEWAY_PIPE_PORT: String(uiPort),
+  NEMOCLAW_MXC_BROKER_PIPE_PORT: String(modelPort),
+});
 let brokerTunnel = null;
 let agentFailed = false;
 const stopOwnedGateway = createNativeOpenClawShutdown();
@@ -207,9 +212,9 @@ if (configured) {
   brokerTunnel = await startNativeBrokerTunnel({
     relayRoot: required("NEMOCLAW_MXC_BROKER_RELAY_ROOT"),
     relayToken: required("NEMOCLAW_MXC_BROKER_RELAY_TOKEN"),
+    sandboxPipePort: modelPort,
   });
 }
-const modelPort = brokerTunnel?.port ?? Number(required("NEMOCLAW_MXC_MODEL_PORT"));
 const sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 const readBody = async (request) => {
   const chunks = [];
@@ -273,7 +278,7 @@ const mock = qualification && brokerTunnel === null ? createServer(async (reques
 }) : null;
 if (mock !== null) await new Promise((resolve, reject) => {
   mock.once("error", reject);
-  mock.listen(modelPort, "127.0.0.1", resolve);
+  mock.listen({ path: nativeLocalPipeName(modelPort) }, resolve);
 });
 const configDirectory = join(home, ".openclaw");
 mkdirSync(configDirectory, { recursive: true });
@@ -335,11 +340,7 @@ fs.realpathSync = patchedRealpathSync;
 syncBuiltinESMExports();
 let serviceConfiguration = {};
 if (configured) {
-  const response = await fetch("http://127.0.0.1:" + modelPort + "/native/bootstrap", {
-    method: "POST", headers: { authorization: "Bearer " + modelToken }, signal: AbortSignal.timeout(15000),
-  });
-  if (!response.ok) throw new Error("NemoClaw could not supply the selected optional services.");
-  const services = await response.json();
+  const services = await readNativeBrokerBootstrap(modelPort, modelToken);
   Object.assign(process.env, services.environment);
   serviceConfiguration = services.openclaw;
   const prebuiltPlugins = ["brave", "discord", "slack", "tavily"].filter(id => serviceConfiguration.plugins?.entries?.[id]?.enabled === true);
@@ -377,7 +378,7 @@ Object.assign(process.env, {
 // before CLI/loader initialization. No plugin installer or package manager runs.
 process.argv = [process.execPath, launcher, "gateway", "run", "--allow-unconfigured", "--port", String(uiPort), "--bind", "loopback", "--auth", "none"];
 await registerPackagedOpenClawPlugins(serviceConfiguration);
-const fileTunnelTask = startNativeUiTunnel({ relayRoot, relayToken, uiPort });
+const fileTunnelTask = startNativeUiTunnel({ relayRoot, relayToken, uiPort, pipe: true });
 void fileTunnelTask.catch(() => {});
 // The gateway import can remain pending for its entire server lifetime. A
 // host Stop must independently reach its graceful handler, without waiting
@@ -1338,33 +1339,13 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       diagnostics.secret(runRoot, shareRoot, runtimeRoot);
       const openShellPort = await freePort();
       const uiPort = await freePort();
-      const modelPort = inferenceBroker === null ? await freePort() : null;
+      const modelPort = uiPort === 65535 ? 1 : uiPort + 1;
       gatewaySession = new NativeGatewaySession(installRoot, runRoot);
       const gatewayConfig = await writeNativeGatewayConfig(
         installRoot,
         runRoot,
         undefined,
-        async () => ({
-          network:
-            configuredIdentity !== null
-              ? { kind: "personal" }
-              : nativeQualificationLoopbackConfig(
-                  JSON.parse(
-                    (
-                      await run(
-                        path.join(installRoot, "mxc", "wxc-exec.exe"),
-                        ["--probe"],
-                        allowlistedWindowsEnvironment(),
-                        "Selecting the qualification network policy",
-                        15_000,
-                        diagnostics,
-                        gatewaySession.ownCommandProcess,
-                      )
-                    ).stdout,
-                  ),
-                  [uiPort, modelPort ?? fail("Qualification mock model port is unavailable")],
-                ),
-        }),
+        { network: { kind: "supervised" } },
         gatewaySession,
       );
       if (inferenceBroker) {
@@ -1496,8 +1477,9 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         LOCALAPPDATA: home,
         NEMOCLAW_MXC_HOME: home,
         NEMOCLAW_MXC_MODEL_ID: modelId,
+        NEMOCLAW_MXC_MODEL_PORT: String(modelPort),
         ...(brokerRelay === null
-          ? { NEMOCLAW_MXC_MODEL_PORT: String(modelPort) }
+          ? {}
           : {
               NEMOCLAW_MXC_BROKER_RELAY_ROOT: brokerRelayRoot,
               NEMOCLAW_MXC_BROKER_RELAY_TOKEN: brokerRelayToken,
@@ -1535,12 +1517,14 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           mxc: {
             command: nativeRuntimeWorkerCommand(runtimeLease, gatewayScript),
             cwd: shareRoot,
+            loopback_pipe_ports: [uiPort],
           },
         }),
         "--no-tty",
       ];
       for (const [name, value] of Object.entries(sandboxEnvironment))
         createArgs.push("--env", `${name}=${value}`);
+      createArgs.push("--detach", "--", ...nativeRuntimeWorkerCommand(runtimeLease, gatewayScript));
       webSession?.progress("sandbox");
       console.log("WEB UI> Creating the native MXC OpenClaw Control UI sandbox");
       diagnostics.stage("sandbox");

@@ -19,6 +19,21 @@ const template =
 const render = (options: NativeGatewayOptions = {}) =>
   renderNativeGatewayConfig(template, "C:\\NemoClaw", undefined, options);
 
+test("supervised OpenClaw configuration uses the current driver schema without direct network grants", () => {
+  const rendered = render({ network: { kind: "supervised" } });
+  assert.match(rendered, /pc_allow_local_network = false\n/u);
+  for (const unsupported of ["pc_network_allow", "pc_host_console", "pc_loopback_ports"])
+    assert(!rendered.includes(unsupported));
+  assert.throws(
+    () => render({ network: { kind: "supervised" }, hostConsole: true }),
+    /cannot grant the host console/u,
+  );
+  assert.throws(
+    () => render({ network: { kind: "supervised", ports: [80] } } as NativeGatewayOptions),
+    /profile network/u,
+  );
+});
+
 test("gateway profiles keep qualification networking separate from Personal preview", () => {
   const denied = render();
   assert.match(

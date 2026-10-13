@@ -19,11 +19,24 @@ The finished-host build now pins OpenShell
 `901338dbd334feeb1436f4cb41533f6d592d3595` and source-built MXC
 `7cd00d1ee6af9208322c924ef64e5113f6704639`. These source revisions were used
 by the separate Windows-tip OpenClaw qualification. The build does not import
-that qualification as installer evidence. It builds both projects in fresh
-target directories, checks their unchanged source, and records same-run hashes.
+that qualification as installer evidence. OpenShell also applies
+`openshell-native-transport.patch`, bound to its SHA-256 and complete resulting
+Git tree in `openshell-native-transport.lock.json`. The build requires a clean
+pinned base, verifies the patched tree before and after compilation, and rejects
+unexpected staged, unstaged or untracked source. MXC retains its unchanged-source
+requirement. Both projects use fresh target directories and record same-run hashes.
 The OpenShell inventory includes the CLI, gateway, supervisor, Windows sandbox
 executable, and `libz3.dll`. This Windows sandbox executable implements the
 OpenShell sandbox protocol; it is not Microsoft's Windows Sandbox backend.
+
+The OpenClaw web worker uses fixed sandbox-local named pipes for its gateway and
+inference broker. The OpenShell derivative carries supervisor control over
+inherited standard I/O and forwards declared logical ports to those local pipes,
+without adding a broad host-loopback grant. The patch includes the dependent
+forwarding and lifecycle repairs in the tested source tree. Host admission now
+requires both its patch digest and source-tree identity; the old unpatched receipt
+is not accepted. Local real-provider, restart and web-worker evidence does not
+qualify a newly built installer or establish outer-network-fence enforcement.
 
 The launcher migration is not complete. The older launcher behavior below
 still depends on settings absent from the pinned OpenShell source. Do not

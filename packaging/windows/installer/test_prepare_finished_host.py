@@ -46,7 +46,8 @@ class NativeHostInputs(unittest.TestCase):
             "classification": "ci-built-openshell-host-binaries",
             "requestedSourceRevision": "a" * 40,
             "openshellRevision": MODULE.OPENSHELL_SOURCE,
-            "derivativePatchSha256": None,
+            "derivativePatchSha256": MODULE._SOURCE_MODULE.load_lock()["patchSha256"],
+            "sourceTree": MODULE._SOURCE_MODULE.load_lock()["patchedTree"],
             "sourceUnchanged": True,
             "rustToolchain": "1.95.0-aarch64-pc-windows-msvc",
             "rustTarget": "aarch64-pc-windows-msvc",
@@ -73,6 +74,7 @@ class NativeHostInputs(unittest.TestCase):
                 "requestedSourceRevision": "b" * 40,
                 "openshellRevision": "b" * 40,
                 "derivativePatchSha256": "0" * 64,
+                "sourceTree": "0" * 40,
                 "sourceUnchanged": False,
                 "rustToolchain": "stable",
                 "rustTarget": "x86_64-pc-windows-msvc",
@@ -93,6 +95,10 @@ class NativeHostInputs(unittest.TestCase):
             for run_id, attempt in (("", "2"), ("1234", "")):
                 with self.assertRaisesRegex(ValueError, "same-run ARM64"):
                     self.verify_build(native, source, build, run_id, attempt)
+            changed = copy.deepcopy(build)
+            changed["derivativePatchSha256"] = None
+            with self.assertRaisesRegex(ValueError, "same-run ARM64"):
+                self.verify_build(native, source, changed)
 
     def test_openshell_admission_rejects_missing_duplicate_and_unexpected_components(self):
         with tempfile.TemporaryDirectory() as value:

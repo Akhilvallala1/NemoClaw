@@ -111,6 +111,7 @@ export function containedBrokerRelayFiles(
 export async function startNativeBrokerTunnel(options: {
   relayRoot: string;
   relayToken: string;
+  sandboxPipePort?: number;
   signal?: AbortSignal;
   measurements?: RelayMeasurements;
 }) {
@@ -139,6 +140,7 @@ export async function startNativeBrokerTunnel(options: {
     token: options.relayToken,
     slots: ready.slots as string[],
     side: "sandbox",
+    sandboxPipePort: options.sandboxPipePort,
     signal: options.signal,
     measurements: options.measurements,
   });
