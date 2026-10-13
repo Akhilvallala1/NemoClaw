@@ -604,6 +604,17 @@ describe("contributor environment doctor", () => {
     expect(result.output).toContain("Ready to create a feature branch.");
   });
 
+  it("keeps the environment ready when optional Dockerfile linting fails", () => {
+    const fixture = createFixture();
+    writeTool(path.join(fixture.fakeBin), "hadolint", "exit 1");
+
+    const result = runDoctor(fixture);
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("! hadolint: version check failed");
+    expect(result.output).toContain("Ready to create a feature branch.");
+  });
+
   it("does not ask npm to download TypeScript when plugin dependencies are missing", () => {
     const fixture = createFixture();
     fs.rmSync(path.join(fixture.repo, "nemoclaw", "node_modules", ".bin", "tsc"));
