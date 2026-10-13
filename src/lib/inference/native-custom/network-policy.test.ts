@@ -117,13 +117,18 @@ it("rejects conflicting endpoint policy without overwriting it (#12636)", async 
 
 it("reconciles an ambiguous update to the prior owned policy and still rejects success (#12636)", async () => {
   const f = await fixture();
+  const updateError = new Error("initial policy submission failed");
   f.backend.setPolicyDocument.mockImplementationOnce(async (_sandbox, requested) => {
     f.document = requested;
-    return false;
+    throw updateError;
   });
-  await expect(reconcileNativeCustomSandboxPolicy(f.input, f.backend)).rejects.toThrow(
-    /previous policy was verified/,
+  const failure = await reconcileNativeCustomSandboxPolicy(f.input, f.backend).catch(
+    (error: unknown) => error,
   );
+  expect(failure).toMatchObject({
+    message: expect.stringMatching(/previous policy was verified/),
+    cause: updateError,
+  });
   expect(f.document).toContain("8.8.8.8");
   expect(f.document).not.toContain("12.12.12.12");
   expect(f.backend.setPolicyDocument).toHaveBeenCalledTimes(2);
@@ -131,13 +136,21 @@ it("reconciles an ambiguous update to the prior owned policy and still rejects s
 
 it("retains an explicit recovery error when rollback cannot be verified (#12636)", async () => {
   const f = await fixture();
+  const updateError = new Error("initial policy submission failed");
+  const recoveryError = new Error("recovery policy submission failed");
   f.backend.setPolicyDocument.mockImplementation(async (_sandbox, requested) => {
     f.document = requested;
-    return false;
+    throw requested.includes("12.12.12.12") ? updateError : recoveryError;
   });
-  await expect(reconcileNativeCustomSandboxPolicy(f.input, f.backend)).rejects.toThrow(
-    /provider authority is retained/,
+  const failure = await reconcileNativeCustomSandboxPolicy(f.input, f.backend).catch(
+    (error: unknown) => error,
   );
+  expect(failure).toMatchObject({
+    message: expect.stringMatching(/provider authority is retained/),
+  });
+  const cause = failure instanceof Error ? failure.cause : undefined;
+  expect(cause).toBeInstanceOf(AggregateError);
+  expect((cause as AggregateError).errors).toEqual([updateError, recoveryError]);
 });
 
 it("rejects another sandbox's receipt before reading policy (#12636)", async () => {

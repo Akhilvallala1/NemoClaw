@@ -114,16 +114,18 @@ export async function reconcileNativeCustomSandboxPolicy(
   };
   try {
     await apply(input.previous, input.next);
-  } catch {
+  } catch (updateError) {
     try {
       await apply(input.next, input.previous);
-    } catch {
+    } catch (recoveryError) {
       throw new Error(
         "Native custom inference sandbox policy recovery could not be verified. Reconcile the selected sandbox before retrying; provider authority is retained.",
+        { cause: new AggregateError([updateError, recoveryError]) },
       );
     }
     throw new Error(
       "Native custom inference sandbox policy update failed. The previous policy was verified before returning.",
+      { cause: updateError },
     );
   }
   return () => apply(input.next, input.previous);

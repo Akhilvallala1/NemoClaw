@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as restoreWindow from "../actions/sandbox/runtime/openclaw-lifecycle";
 import { customAttachmentFromPrepared } from "../inference/native-custom";
 import { buildNativeCustomProfile } from "../inference/native-custom/profile";
+import * as registry from "../state/registry";
 import type { SandboxEntry } from "../state/registry";
 import type { QualifiedSandboxInferenceRouteReservation } from "../state/registry/route-reservation";
 import * as sandboxState from "../state/sandbox";
@@ -499,8 +500,27 @@ describe("created DCode sandbox finalization", () => {
       lifecycleLiveIdentityFingerprint: "a".repeat(64),
       route: "native" as const,
     };
+    const inferenceRouteReservation = {
+      authority: {
+        sandboxName: "dcode",
+        gatewayName: "nemoclaw",
+        sessionId: "session-1",
+        selection: {
+          provider: "compatible-endpoint",
+          model,
+          endpointUrl,
+          endpointSource: "onboard" as const,
+          credentialEnv: "COMPATIBLE_API_KEY",
+          preferredInferenceApi: "openai-completions",
+          compatibleEndpointReasoning: null,
+          compatibleEndpointReasoningEffort: null,
+          nimContainer: null,
+        },
+      },
+      entry: { name: "dcode", provider: "compatible-endpoint", nativeCustomProviderAttachment },
+    } satisfies QualifiedSandboxInferenceRouteReservation;
     const verifiedCreate = {
-      reservation: {} as never,
+      reservation: inferenceRouteReservation,
       checkpoint: pendingSandboxCreateIdentityForBoundary(verifiedCreateBoundary),
     } as NonNullable<CreatedSandboxRegistrationInput["verifiedCreate"]>;
     const runCaptureOpenshell = vi.fn(() =>
@@ -518,6 +538,9 @@ describe("created DCode sandbox finalization", () => {
       stdout: runCaptureOpenshell(),
       stderr: "",
     }));
+    const registerSandbox = vi
+      .spyOn(registry, "registerSandbox")
+      .mockImplementation((entry) => entry);
     vi.spyOn(process, "exit").mockImplementation((code): never => {
       throw new Error(`exit ${code}`);
     });
@@ -648,7 +671,12 @@ describe("created DCode sandbox finalization", () => {
         () => ({ lifecycleGeneration: "generation-1" }),
         lifecycle,
       ),
-    ).rejects.toThrow();
+    ).resolves.toMatchObject({ name: "dcode" });
+    expect(registerSandbox).toHaveBeenCalledOnce();
+    expect(registerSandbox.mock.calls[0]?.[0]).toMatchObject({
+      nativeCustomProviderAttachment,
+    });
+    expect(registerSandbox.mock.calls[0]?.[1]).toEqual(inferenceRouteReservation);
     expect(runBuffered).toHaveBeenCalledWith(
       expect.objectContaining({
         sandboxName: "dcode",
