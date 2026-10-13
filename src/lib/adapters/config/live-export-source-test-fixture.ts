@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import fs from "node:fs";
+import type { HOSTED_NATIVE_PROVIDERS } from "../../inference/native-provider/hosted";
+import { nativeProviderLifecycle } from "../../inference/native-provider";
+import { parseCheckedInProviderProfileContract } from "../openshell/provider-profile";
+import { managedBraveProfile } from "../../../../test/fixtures/openshell-provider-profile";
 import type { NativeCustomProfile } from "../../inference/native-custom";
 import { createHash } from "node:crypto";
 import { vi } from "vitest";
@@ -421,5 +426,50 @@ export function nativeCustomProfileResponse(prepared: NativeCustomProfile) {
       },
     ],
     binaries: prepared.profile.binaries.map((path) => ({ path })),
+  };
+}
+
+export function nativeHostedProfile(definition: (typeof HOSTED_NATIVE_PROVIDERS)[number]) {
+  const contract = parseCheckedInProviderProfileContract(
+    fs.readFileSync(nativeProviderLifecycle(definition).nativeProviderProfilePath(), "utf8"),
+  );
+  if (!contract) throw new Error("Native hosted profile fixture is invalid.");
+  const credential = contract.boundary.credentials[0];
+  const endpoint = contract.boundary.endpoints[0] as {
+    host: string;
+    rules: { allow: { method: string; path: string } }[];
+  };
+  const base = managedBraveProfile();
+  return {
+    ...base,
+    id: definition.profileId,
+    inferenceCapable: true,
+    credentials: [
+      {
+        ...base.credentials[0],
+        envVars: credential.env_vars,
+        authStyle: credential.auth_style,
+        headerName: credential.header_name,
+      },
+    ],
+    endpoints: [
+      {
+        ...base.endpoints[0],
+        host: endpoint.host,
+        access: "",
+        rules: endpoint.rules.map((rule) => ({
+          allow: {
+            ...rule.allow,
+            command: "",
+            query: {},
+            operationType: "",
+            operationName: "",
+            fields: [],
+            params: {},
+          },
+        })),
+      },
+    ],
+    binaries: contract.boundary.binaries.map((path) => ({ path })),
   };
 }

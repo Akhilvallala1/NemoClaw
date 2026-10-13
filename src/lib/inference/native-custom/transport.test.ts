@@ -10,6 +10,7 @@ import {
   rollbackNativeCustomAdapterRoute,
 } from "./transport";
 import { customAttachmentFromPrepared, normalizeNativeCustomProviderAttachment } from "./index";
+import { normalizeNativeCustomAdapterTransport } from "./adapter-transport";
 import { buildHttpsPinRouteBaseUrl, computeHttpsPinRouteId } from "../https-pin-runtime";
 import { BEDROCK_RUNTIME_ADAPTER_OPENAI_BASE_URL } from "../bedrock-runtime";
 import type { ensureHttpsPinRuntimeAdapter } from "../https-pin-runtime-adapter";
@@ -129,6 +130,39 @@ it("admits the native profile before handing upstream credentials to a sandbox-s
     sourceEndpointUrl: input.endpointUrl,
     sourceAddresses: ["8.8.8.8"],
   });
+});
+
+it("uses the bare HTTPS-pin route for Anthropic Messages while preserving the exact admitted path (#12636)", async () => {
+  const anthropic = {
+    ...input,
+    provider: "compatible-anthropic-endpoint" as const,
+    endpointUrl: "https://api.example.com/v1/messages",
+    api: "anthropic-messages",
+  };
+  const selected = await prepareNativeCustomInference(anthropic, {
+    ensureHttpsAdapter: httpsAdapter(),
+    admitProfile: async () => {},
+    discoverAllowedSourceCidrs: () => ["172.18.0.0/16"],
+  });
+  const routeBase = buildHttpsPinRouteBaseUrl(
+    computeHttpsPinRouteId("nemoclaw", anthropic.provider, "https://api.example.com", "alpha"),
+  );
+  expect(selected.prepared.endpointUrl).toBe(routeBase);
+  expect(selected.prepared.profile.endpoints[0].rules).toContainEqual({
+    allow: { method: "POST", path: `${new URL(routeBase).pathname}/v1/messages` },
+  });
+  expect(
+    normalizeNativeCustomAdapterTransport(selected.prepared.transport, {
+      ...anthropic,
+      endpointUrl: routeBase,
+    }),
+  ).toEqual(selected.prepared.transport);
+  expect(
+    normalizeNativeCustomAdapterTransport(selected.prepared.transport, {
+      ...anthropic,
+      endpointUrl: `${routeBase}/v1`,
+    }),
+  ).toBeUndefined();
 });
 
 it("isolates HTTPS route custody between sandboxes while preserving legacy route IDs (#12636)", async () => {

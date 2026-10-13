@@ -84,7 +84,8 @@ export function normalizeNativeCustomAdapterTransport(
           input.sandboxName,
         ),
       );
-      if (input.endpointUrl !== `${expected}/v1`) return undefined;
+      if (input.endpointUrl !== (input.api === "anthropic-messages" ? expected : `${expected}/v1`))
+        return undefined;
       return {
         kind: "https-pin",
         gatewayName: record.gatewayName,

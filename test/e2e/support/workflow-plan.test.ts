@@ -716,6 +716,15 @@ describe("E2E workflow plan", () => {
     expect(targets.map((target) => target.id)).toContain("rebuild-openclaw");
   });
 
+  it.each([
+    "test/e2e/fixtures/fake-anthropic-compatible.ts",
+    "test/e2e/live/openclaw-admin-scope.ts",
+  ])("selects native custom hosted inference when %s changes", (changedFile) => {
+    expect(catalogueTargetsForChangedFiles([changedFile]).map((target) => target.id)).toContain(
+      "inference-routing-custom-hosted",
+    );
+  });
+
   it("selects both stopped-recovery consumers when the shared proof changes", () => {
     const plan = buildE2eWorkflowPlan(
       {},

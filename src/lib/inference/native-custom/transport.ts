@@ -200,7 +200,15 @@ export async function prepareNativeCustomInference(
     };
     sourceAddresses = sourceProfile.profile.endpoints[0].allowed_ips;
     sourceTrustedPrivateCapability = sourceProfile.trustedPrivateCapability;
-    const bridgeEndpoint = `${buildHttpsPinRouteBaseUrl(computeHttpsPinRouteId(input.gatewayName, input.provider, sourceProfile.endpointUrl, input.sandboxName))}/v1`;
+    const routeBase = buildHttpsPinRouteBaseUrl(
+      computeHttpsPinRouteId(
+        input.gatewayName,
+        input.provider,
+        sourceProfile.endpointUrl,
+        input.sandboxName,
+      ),
+    );
+    const bridgeEndpoint = input.api === "anthropic-messages" ? routeBase : `${routeBase}/v1`;
     prepared = buildBridge(bridgeEndpoint, transport);
     await deps.admitProfile(prepared);
     const adapter = await (deps.ensureHttpsAdapter ?? ensureHttpsPinRuntimeAdapter)({
@@ -218,7 +226,7 @@ export async function prepareNativeCustomInference(
       trustedPrivateHosts: input.trustedPrivateHosts,
       discoverAllowedSourceCidrs: deps.discoverAllowedSourceCidrs,
     });
-    endpointUrl = `${adapter.baseUrl}/v1`;
+    endpointUrl = input.api === "anthropic-messages" ? adapter.baseUrl : `${adapter.baseUrl}/v1`;
     token = adapter.token;
     transport = {
       kind: "https-pin",

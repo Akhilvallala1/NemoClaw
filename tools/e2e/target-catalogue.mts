@@ -1071,6 +1071,8 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
       "test/e2e/live/inference-routing-helpers.ts",
       "test/e2e/live/https-pin-compatible-server.ts",
       "test/e2e/live/dns-rebinding-hosts-fixture.ts",
+      "test/e2e/fixtures/fake-anthropic-compatible.ts",
+      "test/e2e/live/openclaw-admin-scope.ts",
     ],
   }),
   managedRuntimeTarget("inference-routing-native-terminals", {
@@ -1297,6 +1299,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
       "src/lib/onboard/machine/handlers/sandbox.ts",
       "src/lib/onboard/openclaw-setup.ts",
       "src/lib/onboard/openclaw/initial-inference-route.ts",
+      "src/lib/onboard/sandbox-prebuild.ts",
       "src/lib/onboard/sandbox-recreate-transaction.ts",
       "test/e2e/live/openclaw-inference-switch-helpers.ts",
       "test/e2e/live/public-nvidia-switch-provider.ts",

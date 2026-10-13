@@ -123,7 +123,7 @@ const setupInference = createSetupInference({
       ? { ok: true, value: providerMetadata }
       : { ok: false, error: { kind: "command", reason: "not_found", message: "missing" } },
     createProvider: async (request) => {
-      require("node:fs").appendFileSync(process.env.NEMOCLAW_FAKE_COMMAND_LOG, "native.create " + request.name + "\\n");
+      require("node:fs").appendFileSync(process.env.NEMOCLAW_FAKE_COMMAND_LOG, "native.create " + request.name + "\n");
       calls.push(["native.create", JSON.stringify({ name: request.name, type: request.type,
         credentialKeys: request.credentials.map((credential) => credential.name) })]);
       providerMetadata = { name: request.name, type: request.type, configKeys: [],

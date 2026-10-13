@@ -144,7 +144,7 @@ const stagingReferenceVariants = [
 ];
 
 const actionMutations: Array<[string, (source: string) => string]> = [
-  ["asset-id", (source) => source.replace("releases/assets/602749331", "releases/assets/1")],
+  ["asset-id", (source) => source.replace("602749331", "1")],
   ["digest", (source) => source.replace(/sha256:[a-f0-9]{64}/, "sha256:" + "0".repeat(64))],
   [
     "source-release",
