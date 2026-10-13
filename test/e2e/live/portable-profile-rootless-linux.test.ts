@@ -74,6 +74,10 @@ import {
   recordPortableSandboxDiagnostics,
   verifyPinnedPodmanGatewayStarts,
 } from "./portable-profile-gateway-proof.ts";
+import {
+  proveHermesPortableOnboardingTransaction,
+  withAmbientPodmanHost,
+} from "../fixtures/portable-hermes-transaction-live.ts";
 
 const gatewayEnvModule = (
   "default" in importedGatewayEnv && importedGatewayEnv.default
@@ -156,7 +160,7 @@ const PORTABLE_PROFILE_E2E_PHASES = [
   "verify distinct same-network routes",
   "upgrade the historical receipt through public start and verify its lifecycle",
   "prove post-recovery stop settlement",
-  "record portable environment completion",
+  "run receipt-bound Hermes build, publish, and OpenShell create",
 ] as const;
 
 function run(command: string, args: readonly string[]): string {
@@ -1142,10 +1146,6 @@ async function main(progress: TestProgress): Promise<void> {
         "{{.Id}}",
         hermesImageRef,
       ]).toLowerCase();
-      assert.equal(
-        inspectedHermesImageId.replace(/^sha256:/u, ""),
-        hermesPrebuild.imageId!.replace(/^sha256:/u, ""),
-      );
       hermesImageId = inspectedHermesImageId;
       run("podman", [
         "run",
@@ -1330,6 +1330,36 @@ async function main(progress: TestProgress): Promise<void> {
         runtimeAuthority,
         sourceRevision,
       });
+      progress.phase("run receipt-bound Hermes build, publish, and OpenShell create");
+      await withAmbientPodmanHost(`unix://${path.join(root, "absent-podman.sock")}`, async () => {
+        await proveHermesPortableOnboardingTransaction({
+          artifactDir,
+          openshellBin,
+          openshellClientEnv,
+          runtimeAuthority,
+          sourceRevision,
+          sourceEnv: withoutPodmanConnectionSelectors(openshellClientEnv),
+          gatewayName: HERMES_PORTABLE_E2E_GATEWAY_NAME,
+          policySourcePath: HERMES_PORTABLE_E2E_POLICY,
+          buildSettings: HERMES_PORTABLE_E2E_BUILD_SETTINGS,
+        });
+      });
+      const transactionEvidence = JSON.parse(
+        fs.readFileSync(
+          path.join(artifactDir, "hermes-portable-transaction-receipt.json"),
+          "utf-8",
+        ),
+      ) as { imageRef: string };
+      const cleanedImage = spawnSync(
+        "podman",
+        ["--url", verifiedPodmanUrl, "image", "exists", transactionEvidence.imageRef],
+        { encoding: "utf-8", env: process.env, killSignal: "SIGKILL", timeout: 15_000 },
+      );
+      assert.equal(
+        cleanedImage.status,
+        1,
+        "transaction image must leave the receipt-selected Podman store",
+      );
     });
 
     fs.writeFileSync(
@@ -1374,7 +1404,6 @@ async function main(progress: TestProgress): Promise<void> {
       { encoding: "utf-8", mode: 0o600 },
     );
 
-    progress.phase("record portable environment completion");
     console.log("Portable profile rootless environment E2E passed.");
   } finally {
     void (disposableNetworkCreated

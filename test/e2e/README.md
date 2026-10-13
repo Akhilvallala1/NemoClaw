@@ -49,7 +49,8 @@ The install refuses package removals, preserving the runner's Docker and contain
   source commit. It reuses the reviewed native pasta, netavark, and aardvark-dns
   components. Select it with
   `jobs=portable-hermes-finalization`; the job selects Podman 5.7 regardless of
-  gateway-runtime inputs.
+  gateway-runtime inputs. The live scenario also runs the receipt-bound Hermes
+  build, registry publication, and OpenShell create transaction against those services.
 - `.github/workflows/podman-cpu-proof.yaml` publishes PR-only experimental runtime evidence.
 - `.github/workflows/sandbox-images.yaml` provides reusable sandbox-image build and test evidence.
   `.github/workflows/e2e.yaml` selects free-standing jobs, including `whatsapp-qr-compact` and `ollama-auth-proxy`.
@@ -1107,6 +1108,18 @@ completed onboarding session remains unchanged as historical onboarding
 evidence. Deterministic startup and action tests own the corresponding launch
 environment and session non-rewrite checks.
 
+The native switch must restart the gateway to refresh provider credentials;
+the compatible fixture preserves its gateway process. The live lane requires
+successful probes that each identify one gateway PID before comparing its lifecycle.
+Support tests reject failed, empty, and ambiguous PID probes.
+
+The Hermes Slack lane accepts only correctly scoped OpenShell resolver
+placeholders for both Slack assignments in `.env` and for the API egress probes.
+The saved assignments must each match the currently injected generation.
+Support tests execute the file probe against absent, current, raw, stale, duplicate, mismatched,
+and malformed values. The live lane retains startup, policy, raw credential
+scans, both Slack API calls, and resource cleanup as required evidence.
+
 ## Native plugin and package lifecycle
 
 Issue #11766 retired the dedicated `openclaw-plugin-runtime-exdev` workflow job
@@ -1981,10 +1994,14 @@ Runs without a PR catalog require a trusted main base and managed-image publicat
 PR runs select the nearest fully successful publication on the trusted workflow commit's first-parent history.
 The publication must cover the PR base's latest reviewed image input.
 For that publication, the job binds the run ID, attempt, revision, cohort artifact ID, and artifact digest before it emits `managed_image_revision`.
-It validates the complete three-agent, two-architecture cohort artifact and the immutable Deep Agents Code base artifact from that workflow attempt.
+It validates the complete three-agent, two-architecture cohort artifact and the immutable Deep Agents Code base artifact from that publication attempt.
 `generate-matrix` runs first and selects whether publication is required.
 Stock-onboarding jobs still depend on publication, so incomplete publication creates no onboarding fanout.
 Direct `main` runs use the same publication workflow and artifact contract.
+
+Protected managed-image build jobs apply a separate rule to their reusable base receipt.
+The producer must be from the same workflow run and no later than the consumer attempt.
+Receipt verification remains bound to the producer attempt.
 
 The Deep Agents Code managed-image target uses the shared receipt check to verify its image digest, source revision, and cohort.
 Onboarding and fresh re-onboarding do not supply a base-image override.
