@@ -207,13 +207,11 @@ impl InputsSpec {
     pub fn helper_name(&self) -> String {
         format!("{}-inputs", self.application_name())
     }
-    pub fn image_requirements(&self) -> crate::managed::ImageRequirements {
-        crate::managed::ImageRequirements {
-            engine: self.storage.engine.clone(),
-            image: self.setup.image.clone(),
-            architecture: self.architecture.clone(),
-            contract: crate::managed::ImageContract::Inputs,
-        }
+    pub fn image_requirements(&self) -> Value {
+        json!({
+            "engine": self.storage.engine, "image": self.setup.image,
+            "architecture": self.architecture, "contract": "inputs", "labels": {}
+        })
     }
 }
 

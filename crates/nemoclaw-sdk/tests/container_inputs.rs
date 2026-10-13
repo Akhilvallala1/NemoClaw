@@ -9,32 +9,14 @@ use serde_json::{Value, json};
 fn authored() -> Value {
     let mut value: Value =
         serde_saphyr::from_str(include_str!("fixtures/config/managed-ollama.yaml")).unwrap();
-    let sandbox = value["spec"]["sandboxes"][0]["name"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let agent = value["spec"]["sandboxes"][0]["agent"]["name"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    value["spec"]["services"]["voice"] = json!({
-        "kind":"container", "image":format!("voice@sha256:{}", "a".repeat(64)),
-        "architecture":"arm64", "imagePullPolicy":"Never",
-        "inputSetup":{"image":format!("inputs@sha256:{}", "b".repeat(64))},
-        "data":{"mountPath":"/var/lib/application"},
-        "secrets":{
-            "speech":{"credential":{"env":"SPEECH_KEY"},"targetPath":"/var/lib/application/credentials/speech"},
-            "openshell":{"credential":{"env":"SERVICE_TOKEN"},"targetPath":"/var/lib/application/credentials/openshell"}
-        },
-        "agentConnections":{"primary":{
-            "sandboxRef":sandbox, "agent":agent,
-            "targetPath":"/var/lib/application/config/agent-connection.json",
-            "gatewayEndpoint":"https://gateway.example.test:8443",
-            "authentication":{"mode":"oidcBearer","secretRef":"openshell","refreshMode":"none"},
-            "tls":{"trust":"system"},
-            "timeouts":{"healthSeconds":12,"invokeSeconds":120}
-        }}
-    });
+    let mut application: Value = serde_saphyr::from_str(include_str!(
+        "fixtures/config/container-agent-connection.yaml"
+    ))
+    .unwrap();
+    let mut service = application["spec"]["services"]["voice"].take();
+    // Keep the managed Ollama cache in this scenario; its gateway owns placement.
+    service.as_object_mut().unwrap().remove("placement");
+    value["spec"]["services"]["voice"] = service;
     value
 }
 fn generations() -> Generations {

@@ -25,15 +25,15 @@ pub(crate) enum InstallStage {
 pub(crate) struct InstallPlan {
     pub targets: Vec<crate::compile::Target>,
     pub dependencies: std::collections::BTreeMap<String, Vec<String>>,
-    pub image_checks: std::collections::BTreeMap<String, crate::managed::ImageRequirements>,
+    /// Provider observation attributes, validated by the installer that owns them.
+    pub image_checks: std::collections::BTreeMap<String, serde_json::Value>,
     pub replacement_triggers: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl InstallPlan {
     pub(crate) fn configure(&self, graph: &mut serde_json::Value) -> Result<(), crate::Error> {
         for (name, requirements) in &self.image_checks {
-            let mut attributes: serde_json::Value = serde_json::from_str(&requirements.json()?)
-                .map_err(|_| crate::Error::State("invalid installation image requirements"))?;
+            let mut attributes = requirements.clone();
             literal(&mut attributes);
             attributes["allow_missing"] = serde_json::json!(false);
             graph["data"]["nemoclaw_runtime_image"][name] = attributes;

@@ -68,7 +68,6 @@ impl InputsBackend {
                 .ok_or(Error::State("missing application inputs"))?,
         )
         .map_err(|_| Error::State("invalid application inputs"))?;
-        spec.validate()?;
         spec.descriptor(
             row.get("sandbox_id")
                 .ok_or(Error::State("missing application binding"))?,
@@ -298,6 +297,24 @@ impl InputsBackend {
             return Err(ObservationError::Incomplete.into());
         }
         Ok(created.id)
+    }
+    async fn delete(&self, id: &str, spec: &InputsSpec) -> Result<(), Error> {
+        self.engine
+            .api
+            .remove_container(
+                id,
+                Some(RemoveContainerOptions {
+                    force: false,
+                    v: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| crate::docker::remote(&e))?;
+        if self.engine.container(&spec.helper_name()).await?.is_some() {
+            return Err(ObservationError::Incomplete.into());
+        }
+        Ok(())
     }
     async fn execute(&self, id: &str, spec: &InputsSpec, payload: &[u8]) -> Result<(), Error> {
         let mut attached = self
@@ -612,26 +629,12 @@ impl Backend for InputsBackend {
                     ));
                 }
                 self.application_stopped(&spec).await?;
-                self.engine
-                    .api
-                    .remove_container(
-                        &id,
-                        Some(RemoveContainerOptions {
-                            force: false,
-                            v: true,
-                            ..Default::default()
-                        }),
-                    )
-                    .await
-                    .map_err(|e| crate::docker::remote(&e))?;
-                if self.engine.container(&spec.helper_name()).await?.is_some() {
-                    return Err(ObservationError::Incomplete.into());
-                }
+                self.delete(&id, &spec).await?;
             }
             self.application_stopped(&spec).await?;
             let id = self.create(&spec, desired).await?;
-            bound = Some(observed(desired.clone(), id.clone(), false));
             let fresh = observed(desired.clone(), id.clone(), false);
+            bound = Some(fresh.clone());
             let container = self
                 .container(&spec, &fresh, false)
                 .await?
@@ -683,21 +686,7 @@ impl Backend for InputsBackend {
                     .await
                     .map_err(|e| crate::docker::remote(&e))?;
             }
-            self.engine
-                .api
-                .remove_container(
-                    &id,
-                    Some(RemoveContainerOptions {
-                        force: false,
-                        v: true,
-                        ..Default::default()
-                    }),
-                )
-                .await
-                .map_err(|e| crate::docker::remote(&e))?;
-            if self.engine.container(&spec.helper_name()).await?.is_some() {
-                return Err(ObservationError::Incomplete.into());
-            }
+            self.delete(&id, &spec).await?;
             // Named-volume deletion belongs to the existing Docker graph.
             Ok::<_, Error>(())
         };
@@ -708,10 +697,64 @@ impl Backend for InputsBackend {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use tf_provider::value::Value;
+    #[test]
+    fn incomplete_input_delivery_requires_an_explicit_apply_update() {
+        let definition = definition();
+        assert_eq!(
+            definition.attributes().filter(|name| *name == "id").count(),
+            1
+        );
+        let prior: crate::State = [
+            ("id".into(), Value::Value("bound".into())),
+            ("complete".into(), Value::Value("false".into())),
+        ]
+        .into();
+        let (planned, replacements) = crate::plan_update(&definition, &prior, prior.clone());
+        assert_eq!(planned["complete"], Value::Unknown);
+        assert_eq!(planned["id"], Value::Unknown);
+        assert!(replacements.is_empty());
+        let mut complete = prior;
+        complete.insert("complete".into(), Value::Value("true".into()));
+        let (planned, replacements) = crate::plan_update(&definition, &complete, complete.clone());
+        assert_eq!(planned, complete);
+        assert!(replacements.is_empty());
+    }
     #[tokio::test]
+    #[cfg(unix)]
+    async fn application_inputs_register_an_engine_backend_without_a_gateway_client() {
+        let row = super::delivery_tests::row();
+        let fixture = crate::docker::fixture::Fixture::start(|_| {
+            panic!("backend registration must not query Docker")
+        })
+        .await;
+        let spec: InputsSpec = serde_json::from_str(&row["spec"]).unwrap();
+        for attribute in ["Owner", "Generation"] {
+            let mut invalid = serde_json::to_value(&spec).unwrap();
+            invalid["storage"][attribute] = json!("");
+            assert!(
+                nemoclaw_sdk::services::validate_resource_spec(
+                    definition().kind,
+                    &invalid.to_string()
+                )
+                .is_err(),
+                "input preparation requires the volume's {attribute}"
+            );
+        }
+        let connections =
+            crate::docker::Connections::fixed([fixture.engine_for(&spec.storage.engine)]).unwrap();
+        assert!(
+            super::super::BackendRegistry::new(&connections)
+                .resolve(definition().kind, &row)
+                .unwrap()
+                .is_some()
+        );
+    }
+    #[tokio::test]
+    #[cfg(unix)]
     async fn invalid_delivery_never_mutates_or_reports_absence() {
         let fixture = crate::docker::fixture::Fixture::engine(|_| {
             panic!("invalid input must not contact the engine")

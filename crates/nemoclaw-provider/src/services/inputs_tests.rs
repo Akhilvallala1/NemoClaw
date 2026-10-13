@@ -196,32 +196,34 @@ impl nemoclaw_sdk::Secrets for TestSecrets {
         }
     }
 }
-fn row() -> Row {
-    let mut value = serde_json::to_value(
-        nemoclaw_sdk::config::Document::parse(
-            include_bytes!("../../../nemoclaw-sdk/tests/fixtures/config/managed-ollama.yaml")
-                .as_slice(),
-        )
-        .unwrap(),
+pub(super) fn row() -> Row {
+    let mut document = connection_document();
+    let nemoclaw_sdk::services::ServiceDefinition::Container(service) =
+        document.spec.services.get_mut("voice").unwrap()
+    else {
+        unreachable!()
+    };
+    service.agent_connections.clear();
+    input_row(&document)
+}
+fn connection_document() -> nemoclaw_sdk::config::Document {
+    nemoclaw_sdk::config::Document::parse(
+        include_bytes!("../../../nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml")
+            .as_slice(),
     )
-    .unwrap();
-    value["spec"]["services"]["voice"] = json!({
-        "kind":"container","image":format!("voice@sha256:{}","a".repeat(64)),"architecture":"arm64",
-        "data":{"mountPath":"/var/lib/voiceclaw"},"inputSetup":{"image":format!("inputs@sha256:{}","b".repeat(64))},
-        "secrets":{"speech":{"credential":{"env":"SPEECH_KEY"},"targetPath":"/var/lib/voiceclaw/credentials/speech"}}
-    });
-    let document = nemoclaw_sdk::config::Document::parse(value.to_string().as_bytes()).unwrap();
+    .unwrap()
+}
+fn input_row(document: &nemoclaw_sdk::config::Document) -> Row {
     let generations = [
         "workspace",
         "provider",
         "sandbox",
-        "ollama_service",
         "managed_gateway",
         "container_service",
     ]
     .map(|kind| (kind.into(), "a".repeat(32)))
     .into();
-    nemoclaw_sdk::compile::targets(&document, &generations)
+    nemoclaw_sdk::compile::targets(document, &generations)
         .unwrap()
         .into_iter()
         .find(|t| t.kind == "container_inputs")
@@ -244,26 +246,7 @@ async fn local_connection_payload_delivers_speech_and_descriptor_without_an_open
             }
         }
     }
-    let document = nemoclaw_sdk::config::Document::parse(
-        include_bytes!("../../../nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml")
-            .as_slice(),
-    )
-    .unwrap();
-    let generations = [
-        "workspace",
-        "provider",
-        "sandbox",
-        "managed_gateway",
-        "container_service",
-    ]
-    .map(|kind| (kind.into(), "a".repeat(32)))
-    .into();
-    let mut desired = nemoclaw_sdk::compile::targets(&document, &generations)
-        .unwrap()
-        .into_iter()
-        .find(|target| target.kind == "container_inputs")
-        .unwrap()
-        .values;
+    let mut desired = input_row(&connection_document());
     desired.insert(
         "sandbox_id".into(),
         "11111111-2222-3333-4444-555555555555".into(),
@@ -803,26 +786,7 @@ async fn failed_setup_retries_only_when_stopped_and_never_adopts_a_foreign_bindi
 
 #[tokio::test]
 async fn changed_target_identity_and_helper_configuration_refuse_all_mutations() {
-    let document = nemoclaw_sdk::config::Document::parse(
-        include_bytes!("../../../nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml")
-            .as_slice(),
-    )
-    .unwrap();
-    let generations = [
-        "workspace",
-        "provider",
-        "sandbox",
-        "managed_gateway",
-        "container_service",
-    ]
-    .map(|kind| (kind.into(), "a".repeat(32)))
-    .into();
-    let mut row = nemoclaw_sdk::compile::targets(&document, &generations)
-        .unwrap()
-        .into_iter()
-        .find(|t| t.kind == "container_inputs")
-        .unwrap()
-        .values;
+    let mut row = input_row(&connection_document());
     row.insert(
         "sandbox_id".into(),
         "11111111-2222-3333-4444-555555555555".into(),

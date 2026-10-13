@@ -86,33 +86,14 @@ It is a NemoClaw authoring field; the application image owns its environment nam
 and reads the `nemoclaw.agent-connection.v1` descriptor. Do not place secret values in
 YAML, command arguments, Docker environment variables or saved test artifacts.
 
-Build a matching native bundle using `cargo ci`, or follow [the native build
-instructions](../../docs/build.md). With an approved complete deployment file,
-review the plan before apply, retain the same state directory, and export to a
-new file. Replace the bundle path with the generated native bundle directory:
+Follow [native build](../../docs/build.md) and [application usage](../../docs/usage.md)
+for deployment commands, connection profiles, readiness and disposable-data semantics.
+The [publisher contract](../../crates/nemoclaw-container-inputs/README.md) owns
+credential custody, unchanged setup and recovery behavior.
 
-```sh
-/absolute/path/to/native-bundle/bin/nemoclaw --bundle /absolute/path/to/native-bundle --state-dir .nemoclaw-voice-test plan voice.yaml
-/absolute/path/to/native-bundle/bin/nemoclaw --bundle /absolute/path/to/native-bundle --state-dir .nemoclaw-voice-test apply voice.yaml
-/absolute/path/to/native-bundle/bin/nemoclaw --bundle /absolute/path/to/native-bundle --state-dir .nemoclaw-voice-test export --output voice-observed.yaml
-```
-
-These commands operate on real declared resources; the helper-only test above
-does not authorize them. Use the CLI's protected credential prompts or your
-approved credential source. Re-applying unchanged references is not token rotation.
-Changing input references replaces disposable application data. Deployment-wide
-`destroy` removes owned workloads, including the sandbox agent and application
-data; it is not selective application removal. Never delete state to retry.
-
-As of October 6, 2026, the pinned Fabric revision has no supported native readiness
-check. [NemoClaw #12443](https://github.com/NVIDIA/NemoClaw/issues/12443) and
-[Fabric #298](https://github.com/NVIDIA/NeMo-Fabric/issues/298) track that missing
-capability. Apply requires confirmed native agent health, so an unsupported result
-blocks apply and the application that depends on that sandbox's readiness.
-The application's own readiness must check its local inputs and startup independently.
-The application image and selected connection profile require joint qualification.
-HTTPS/OIDC connections require a container-reachable HTTPS endpoint and an external
-service identity. The development-only HTTP profile requires this deployment's
-managed local Docker gateway and its owned private network. Full apply and voice
-turns are not qualified by this helper check. Do not substitute liveness, generation,
-operator login, or insecure TLS for those requirements.
+Apply requires confirmed native sandbox health; an unsupported result blocks dependent
+applications. [NemoClaw #12443](https://github.com/NVIDIA/NemoClaw/issues/12443) and
+[Fabric #298](https://github.com/NVIDIA/NeMo-Fabric/issues/298) track native readiness.
+This helper check does not qualify application startup, HTTPS/OIDC integration or voice
+turns. Joint application and connection qualification remains
+[NemoClaw #12570](https://github.com/NVIDIA/NemoClaw/issues/12570).

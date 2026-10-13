@@ -593,8 +593,7 @@ mod tests {
             .unwrap();
         let spec: crate::services::installers::container::inputs::InputsSpec =
             serde_json::from_str(&inputs.values["spec"]).unwrap();
-        let mut image: Value =
-            serde_json::from_str(&spec.image_requirements().json().unwrap()).unwrap();
+        let mut image = spec.image_requirements();
         image["allow_missing"] = json!(false);
         inputs.address = "nemoclaw_container_inputs.delivery".into();
         inputs
