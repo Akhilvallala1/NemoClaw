@@ -10,6 +10,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as restoreWindow from "../actions/sandbox/runtime/openclaw-lifecycle";
+import { customAttachmentFromPrepared } from "../inference/native-custom";
+import { buildNativeCustomProfile } from "../inference/native-custom/profile";
 import type { SandboxEntry } from "../state/registry";
 import type { QualifiedSandboxInferenceRouteReservation } from "../state/registry/route-reservation";
 import * as sandboxState from "../state/sandbox";
@@ -470,9 +472,25 @@ describe("created DCode sandbox finalization", () => {
     expect(register).toHaveBeenCalledOnce();
   });
 
-  it("passes the fresh create endpoint through the production completion constructor (#9555)", async () => {
-    const endpointUrl = "https://openrouter.ai/api/v1";
+  it("uses the verified native custom attachment for fresh DCode validation (#12636)", async () => {
+    const endpointUrl = "https://example.com/v1";
     const model = "nvidia/nemotron-3-ultra-550b-a55b";
+    const prepared = buildNativeCustomProfile({
+      sandboxName: "dcode",
+      provider: "compatible-endpoint",
+      endpointUrl,
+      api: "openai-completions",
+      addresses: ["1.1.1.1"],
+    });
+    const nativeCustomProviderAttachment = customAttachmentFromPrepared(
+      { ...prepared, trustedPrivateEndpoint: false },
+      {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "dcode-custom-provider-id",
+      },
+    );
     const verifiedCreateBoundary = {
       sandboxName: "dcode",
       gatewayName: "nemoclaw",
@@ -491,7 +509,7 @@ describe("created DCode sandbox finalization", () => {
         "Route:    inference",
         "Provider: compatible-endpoint",
         `Model:    openai:${model}`,
-        "Endpoint: https://inference.local/v1",
+        `Endpoint: ${endpointUrl}`,
         "Runtime:  Deep Agents Code (terminal)",
       ].join("\n"),
     );
@@ -503,7 +521,7 @@ describe("created DCode sandbox finalization", () => {
     vi.spyOn(process, "exit").mockImplementation((code): never => {
       throw new Error(`exit ${code}`);
     });
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     const completionArgs = [
       "dcode",
@@ -527,6 +545,7 @@ describe("created DCode sandbox finalization", () => {
         resolvedCreateIntent: {
           policy: { options: {} },
           hostMounts: undefined,
+          nativeCustomProviderAttachment,
         },
       },
       {
@@ -629,8 +648,17 @@ describe("created DCode sandbox finalization", () => {
         () => ({ lifecycleGeneration: "generation-1" }),
         lifecycle,
       ),
-    ).rejects.toThrow("exit 1");
+    ).rejects.toThrow();
+    expect(runBuffered).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxName: "dcode",
+        command: ["/usr/local/bin/dcode", "identity"],
+      }),
+    );
     expect(runBuffered).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalledWith(
+      expect.stringContaining("DCode live model/provider validation failed"),
+    );
   });
 
   it("does not publish registry metadata when live validation fails (#6311)", async () => {

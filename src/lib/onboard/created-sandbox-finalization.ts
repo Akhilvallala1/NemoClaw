@@ -74,7 +74,7 @@ export type CreatedSandboxFinalizationOptions = {
   model: string;
   preferredInferenceApi: string | null;
   endpointUrl?: string | null;
-  nativeProvider?: boolean;
+  nativeProvider?: boolean | NonNullable<SandboxEntry["nativeCustomProviderAttachment"]>;
 };
 
 export type CreatedSandboxFinalizationDeps = {
@@ -607,6 +607,7 @@ type OnboardCreateIntent = {
 type OnboardResolvedCreateIntent = {
   readonly nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
   readonly nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
+  readonly nativeCustomProviderAttachment?: SandboxEntry["nativeCustomProviderAttachment"];
   readonly policy: {
     readonly options: object;
   };
@@ -760,10 +761,12 @@ export function createOnboardCreatedSandboxCompletion(
         model,
         preferredInferenceApi,
         endpointUrl,
-        nativeProvider: Boolean(
-          resolvedCreateIntent.nativeHostedProviderAttachment ||
-          resolvedCreateIntent.nativeNvidiaProviderAttachment,
-        ),
+        nativeProvider:
+          resolvedCreateIntent.nativeCustomProviderAttachment ??
+          Boolean(
+            resolvedCreateIntent.nativeHostedProviderAttachment ||
+            resolvedCreateIntent.nativeNvidiaProviderAttachment,
+          ),
       },
       registration: {
         sandboxName,
