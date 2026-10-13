@@ -381,7 +381,7 @@ export function resolveInferenceSetEndpoint(options: {
   explicitEndpoint: string | null | undefined;
 }): string | null | undefined {
   return (
-    options.explicitEndpoint ??
+    options.explicitEndpoint ||
     (options.entry.provider === options.provider
       ? options.entry.endpointUrl
       : matchingSessionMetadata(options)?.endpointUrl)

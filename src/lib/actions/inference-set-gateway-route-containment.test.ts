@@ -14,6 +14,7 @@ import { baseSession, createDeps, HERMES_TARGET } from "../../../test/helpers/in
 import {
   finalizeInferenceSetRoute,
   prepareInferenceSetRoute,
+  resolveInferenceSetEndpoint,
 } from "./inference-set-route-containment";
 
 const entry = (name: string, overrides: Partial<SandboxEntry> = {}): SandboxEntry => ({
@@ -30,6 +31,24 @@ describe("runtime shared gateway route containment", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     delete process.env[HTTPS_PIN_RUNTIME_ADAPTER_PROVIDER_CREDENTIAL_ENV];
+  });
+
+  it("treats an empty explicit endpoint as omitted when selecting route ownership", () => {
+    expect(
+      resolveInferenceSetEndpoint({
+        entry: entry("alpha"),
+        provider: "compatible-endpoint",
+        model: "model-b",
+        sandboxName: "alpha",
+        session: baseSession({
+          sandboxName: "alpha",
+          provider: "compatible-endpoint",
+          model: "model-b",
+          endpointUrl: "https://inference.example.test/v1",
+        }),
+        explicitEndpoint: "",
+      }),
+    ).toBe("https://inference.example.test/v1");
   });
 
   it("retains native Hermes metadata when switching models on the same provider", () => {
