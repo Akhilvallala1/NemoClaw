@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { isIP } from "node:net";
-import { unsafeEndpointUrlViolation } from "../../core/endpoint-url-safety";
+import { unsafeEndpointUrlViolation } from "../../core/endpoint-url-safety.ts";
 
 export const NATIVE_LOCAL_CREDENTIAL_ENV = "NEMOCLAW_LOCAL_INFERENCE_TOKEN";
 
