@@ -276,7 +276,7 @@ for (const [phase, code, reason] of [
         ),
         reason,
       );
-      assert.equal(leaseChecks, 2);
+      assert.equal(leaseChecks, 4, "Check ownership before and after each status request.");
       assert.deepEqual(
         fixture.calls(),
         Array.from({ length: 2 }, () => ["sandbox", "get", sandboxName, "-o", "json"]),
@@ -286,6 +286,61 @@ for (const [phase, code, reason] of [
     }
   });
 }
+
+for (const revoked of ["lease", "gateway-exit", "gateway-signal"] as const) {
+  test(`completion polling rejects ${revoked} during a successful status request`, async () => {
+    const fixture = cliFixture([mainExit(0)]);
+    const gateway = { exitCode: null as number | null, signalCode: null as NodeJS.Signals | null };
+    let checks = 0;
+    try {
+      await assert.rejects(
+        waitForNativeMxcCompletion(process.execPath, fixture.environment, sandboxName, gateway, {
+          assertHeld() {
+            if (++checks !== 2) return;
+            if (revoked === "lease") throw new Error("lease revoked during request");
+            if (revoked === "gateway-exit") gateway.exitCode = 0;
+            else gateway.signalCode = "SIGTERM";
+          },
+        }),
+        revoked === "lease" ? /lease revoked during request/u : /gateway stopped/u,
+      );
+      assert.equal(fixture.calls().length, 1);
+    } finally {
+      fixture.close();
+    }
+  });
+}
+
+test("completion polling rejects a successful reply observed after its deadline", async (t) => {
+  const fixture = cliFixture([mainExit(0)]);
+  let now = 1000;
+  t.mock.method(Date, "now", () => now);
+  try {
+    await assert.rejects(
+      waitForNativeMxcCompletion(
+        process.execPath,
+        fixture.environment,
+        sandboxName,
+        { exitCode: null, signalCode: null },
+        {
+          assertHeld() {
+            try {
+              if (fixture.calls().length) now = 6000;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            }
+          },
+        },
+        5000,
+      ),
+      /before its deadline/u,
+    );
+    assert.equal(fixture.calls().length, 1);
+  } finally {
+    t.mock.restoreAll();
+    fixture.close();
+  }
+});
 
 test("the UI watcher rejects a completed main process while the gateway remains alive", async () => {
   const fixture = cliFixture([mainExit(0)]);
@@ -310,6 +365,41 @@ test("the UI watcher rejects a completed main process while the gateway remains 
     fixture.close();
   }
 });
+
+for (const revoked of ["lease", "gateway-exit", "gateway-signal"] as const) {
+  test(`UI polling rejects ${revoked} before interpreting a completed status`, async () => {
+    const fixture = cliFixture([mainExit(0)]);
+    const gateway = { exitCode: null as number | null, signalCode: null as NodeJS.Signals | null };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    let checks = 0;
+    try {
+      await assert.rejects(
+        watchNativeUiSandbox(
+          process.execPath,
+          fixture.environment,
+          sandboxName,
+          gateway,
+          {
+            assertHeld() {
+              if (++checks !== 2) return;
+              if (revoked === "lease") throw new Error("lease revoked during request");
+              if (revoked === "gateway-exit") gateway.exitCode = 0;
+              else gateway.signalCode = "SIGTERM";
+            },
+          },
+          controller.signal,
+        ),
+        revoked === "lease" ? /lease revoked during request/u : /gateway stopped/u,
+      );
+      assert.equal(fixture.calls().length, 1);
+    } finally {
+      clearTimeout(timeout);
+      controller.abort();
+      fixture.close();
+    }
+  });
+}
 
 const listArgs = ["sandbox", "list", "-o", "json"];
 const deleting = { name: sandboxName, phase: "Deleting" };

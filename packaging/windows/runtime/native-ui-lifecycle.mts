@@ -258,10 +258,13 @@ export async function waitForNativeMxcCompletion(
   timeout = 45_000,
 ): Promise<MxcCompletion> {
   const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
+  const assertOwnership = () => {
     stateSession?.assertHeld();
     if (gateway.exitCode !== null || gateway.signalCode !== null)
       throw new Error("The native gateway stopped before MXC execution completed.");
+  };
+  while (Date.now() < deadline) {
+    assertOwnership();
     const result = await execFileAsync(openshell, ["sandbox", "get", sandboxName, "-o", "json"], {
       env: environment,
       encoding: "utf8",
@@ -269,6 +272,8 @@ export async function waitForNativeMxcCompletion(
       timeout: Math.min(10_000, Math.max(1, deadline - Date.now())),
       maxBuffer: 1024 * 1024,
     });
+    assertOwnership();
+    if (Date.now() >= deadline) break;
     const completion = nativeMxcCompletion(JSON.parse(result.stdout), sandboxName);
     if (completion !== null) return completion;
     await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
@@ -303,6 +308,10 @@ export async function watchNativeUiSandbox(
       if (signal.aborted) return;
       throw new Error("The running OpenClaw sandbox could not be confirmed.");
     }
+    if (signal.aborted) return;
+    stateSession?.assertHeld();
+    if (gateway.exitCode !== null || gateway.signalCode !== null)
+      throw new Error("The OpenShell gateway stopped while the agent Web UI was open.");
     if (
       typeof status !== "object" ||
       status === null ||

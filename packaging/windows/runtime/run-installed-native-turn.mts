@@ -669,7 +669,7 @@ async function main(runtimeLease: NativeRuntimeSession) {
       cliEnvironment,
       sandboxName,
       gateway,
-      null,
+      runtimeLease,
     );
     if (completion === "ExecFailed" || completion === "MainProcessFailed")
       fail("OpenShell reported failed MXC workload termination");
