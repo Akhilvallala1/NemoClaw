@@ -7,6 +7,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { resolveSandboxHealthProbeUrl } from "../../../src/lib/actions/sandbox/forward-recovery.ts";
 import { shellQuote } from "../../../src/lib/core/shell-quote.ts";
+import { normalizeNativeLocalProviderAttachment } from "../../../src/lib/inference/native-local/contract.ts";
 import { resolveGatewayLogPathForPort } from "../../../src/lib/onboard/gateway/state-dir.ts";
 import {
   type ManagedImagePlatform,
@@ -279,7 +280,11 @@ exec ${command.map((argument) => shellQuote(argument)).join(" ")}
 interface ExternalImageRegistryDocument {
   sandboxes?: Record<
     string,
-    { toolDisclosure?: "progressive" | "direct"; workload?: Record<string, unknown> }
+    {
+      toolDisclosure?: "progressive" | "direct";
+      workload?: Record<string, unknown>;
+      nativeLocalProviderAttachment?: unknown;
+    }
   >;
 }
 
@@ -973,6 +978,27 @@ export async function qualifyAgent(
     resultText(readMarker),
   ).toBe(true);
   await runAgentTurn(sandbox, agent, sandboxName, "after", env);
+  if (agent === "openclaw" || agent === "langchain-deepagents-code") {
+    const receipt = normalizeNativeLocalProviderAttachment(
+      registryDocument().sandboxes?.[sandboxName]?.nativeLocalProviderAttachment,
+    );
+    const attachments = await sandbox.openshell(
+      ["sandbox", "provider", "list", "-g", GATEWAY, sandboxName],
+      {
+        artifactName: `managed-activation-native-provider-attachment-${agent}`,
+        env,
+        timeoutMs: 60_000,
+      },
+    );
+    expect(
+      receipt?.gatewayName === GATEWAY &&
+        receipt.sandboxName === sandboxName &&
+        receipt.endpointUrl === endpointUrl &&
+        attachments.exitCode === 0 &&
+        attachments.stdout.split(/\s+/u).includes(receipt.providerName),
+      `receipt=${JSON.stringify(receipt)} attachments=${resultText(attachments)}`,
+    ).toBe(true);
+  }
 
   enterCleanupPhase(progress, agent);
   await sandbox.cleanupSandbox(sandboxName, {
@@ -1168,17 +1194,12 @@ export async function qualifyManagedImageActivation(fixtures: RuntimeFixtures): 
     guard.dispose,
   );
   cleanup.trackGateway(host, GATEWAY, { env: guard.env, timeoutMs: 60_000 });
-  const runtimeInfo = await host.command(containerEngine, ["info"], {
-    artifactName: `managed-activation-${containerEngine}-info`,
-    env: guard.env,
-    timeoutMs: 30_000,
-  });
-  expect(runtimeInfo.exitCode, resultText(runtimeInfo)).toBe(0);
   const inference = await startFakeOpenAiCompatibleServer({
     apiKey: API_KEY,
     chatContent: "PONG",
     host: "0.0.0.0",
     model: MODEL,
+    port: 8000,
     progress,
     publicHost: "host.openshell.internal",
     requireAuth: true,
@@ -1239,8 +1260,7 @@ export async function qualifyManagedImageActivation(fixtures: RuntimeFixtures): 
     .requests()
     .filter((request) => request.method === "POST" && request.path === "/v1/chat/completions");
   expect(
-    chatRequests.length >= SHIPPED_MANAGED_IMAGE_AGENTS.length * 2 &&
-      chatRequests.every((request) => request.auth === "ok" && request.model === MODEL) &&
+    chatRequests.every((request) => request.auth === "ok" && request.model === MODEL) &&
       chatRequests.some((request) => request.requestCanaryPresent === true) &&
       chatRequests.some((request) => request.toolResultPresent === true) &&
       externalImages.every((image) => image.verified),

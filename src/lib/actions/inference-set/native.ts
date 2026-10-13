@@ -5,6 +5,7 @@ import { managedInferenceApiKey, NVIDIA_INFERENCE_PLACEHOLDER } from "../../infe
 import type { InferenceSetDeps } from "../inference-set";
 import type { ConfigObject } from "../../security/credential-filter";
 import { nativeHostedAgentConfig } from "../../inference/native-provider/agent-config";
+import { nativeLocalCredentialReference } from "../../inference/native-local/agent-config";
 import { isSafeModelId } from "../../validation";
 import { InferenceSetError } from "../inference-set-error";
 import type { NativeProviderAttachment } from "../../inference/native-provider/contract";
@@ -282,12 +283,14 @@ export function nativeSelectionConfigCredentials(
   const native = nativeHostedAgentConfig(provider, baseUrl);
   return {
     apiKey:
+      nativeLocalCredentialReference(provider, baseUrl) ??
       native?.apiKey ??
       managedInferenceApiKey(
         baseUrl,
         typeof existingApiKey === "string" &&
           existingApiKey &&
-          existingApiKey !== NVIDIA_INFERENCE_PLACEHOLDER
+          existingApiKey !== NVIDIA_INFERENCE_PLACEHOLDER &&
+          existingApiKey !== "openshell:resolve:env:NEMOCLAW_LOCAL_INFERENCE_TOKEN"
           ? existingApiKey
           : "unused",
       ),
