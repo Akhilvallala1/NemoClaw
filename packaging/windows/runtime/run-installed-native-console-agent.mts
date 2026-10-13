@@ -652,6 +652,7 @@ async function runNativeConsoleAgentInternal(
   let relay;
   let webSession = options.webSession;
   let sessionPassed = false;
+  let consoleSessionEnded = false;
   let dashboardRelayRoot;
   let statusRoot;
   let statusFiles;
@@ -1345,7 +1346,6 @@ async function runNativeConsoleAgentInternal(
       await gatewaySession.dispose();
       if (relay) await relay.close();
       if (relay) await relay.dispose();
-      for (const directory of [runRoot, runtimeRoot]) await removeDirectory(directory);
       if (consoleEvidenceRoot !== null) {
         const probe = await readStatus(probeRelative, 16384);
         const exit = await readStatus(exitRelative, 4096);
@@ -1359,21 +1359,7 @@ async function runNativeConsoleAgentInternal(
             flag: "wx",
             mode: 0o600,
           });
-        fs.writeFileSync(
-          path.join(consoleEvidenceRoot, "interactive-session-end.json"),
-          JSON.stringify({
-            schemaVersion: 1,
-            agent: agentId,
-            sandboxDeleted: passed,
-            gatewayStopped,
-            ephemeralRootsRemoved:
-              !fs.existsSync(runRoot) &&
-              !fs.existsSync(runtimeRoot) &&
-              !fs.existsSync(gatewaySession.root),
-            persistentStateRetained: fs.existsSync(agentRuntimeRoot),
-          }) + "\n",
-          { flag: "wx", mode: 0o600 },
-        );
+        consoleSessionEnded = true;
       }
     }
   } catch (error) {
@@ -1451,6 +1437,32 @@ async function runNativeConsoleAgentInternal(
         }
       });
     }
+    await attempt("interactive session cleanup receipt", () => {
+      if (!consoleSessionEnded || !consoleEvidenceRoot) return;
+      fs.writeFileSync(
+        path.join(consoleEvidenceRoot, "interactive-session-end.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          agent: agentId,
+          sandboxDeleted: sessionPassed,
+          gatewayStopped: dashboardGatewayStopped,
+          ephemeralRootsRemoved:
+            runtimeOwnersStopped &&
+            rootsRemoved &&
+            (!gatewaySession || !fs.existsSync(gatewaySession.root)) &&
+            [
+              runRoot,
+              runtimeRoot,
+              dashboardRelayRoot,
+              statusRoot,
+              brokerRelayRoot,
+              browserRelayRoot,
+            ].every((root) => !root || !fs.existsSync(root)),
+          persistentStateRetained: fs.existsSync(agentRuntimeRoot),
+        }) + "\n",
+        { flag: "wx", mode: 0o600 },
+      );
+    });
     let released = false;
     await attempt("private state release", async () => {
       await stateSession.release();

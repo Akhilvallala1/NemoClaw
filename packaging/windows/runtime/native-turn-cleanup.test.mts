@@ -259,6 +259,7 @@ for (const failure of ["none", "gateway-stop", "gateway-cleanup", "file-owner"] 
         statusRoot: roots[3],
         brokerRelayRoot: roots[4],
         browserRelayRoot: roots[5],
+        consoleSessionEnded: false,
         removeDirectory: async (directory: string) => {
           removed.push(directory);
           return true;
@@ -276,6 +277,136 @@ for (const failure of ["none", "gateway-stop", "gateway-cleanup", "file-owner"] 
         6,
       );
     }
+  });
+}
+
+for (const failure of ["none", "edge", "broker", "browser", "status", "removal"] as const) {
+  test(`console cleanup retains temporary roots through final owner shutdown: ${failure}`, async () => {
+    const roots = ["run", "runtime", "dashboard", "status", "broker", "browser"];
+    const present = new Set([...roots, "private-gateway", "state"]);
+    const removed: string[] = [];
+    const events: string[] = [];
+    const receipts = new Map<string, Record<string, unknown>>();
+    let statusClosed = false;
+    const context = {
+      diagnostics: { capture() {} },
+      gatewaySession: {
+        root: "private-gateway",
+        async stopGateway() {
+          return true;
+        },
+        async dispose() {
+          present.delete("private-gateway");
+        },
+      },
+      dashboardGatewayStopped: false,
+      sessionPassed: true,
+      passed: true,
+      consoleSessionEnded: false,
+      consoleAttachment: { async dispose() {} },
+      relay: { async close() {}, async dispose() {} },
+      statusFiles: {
+        async close() {
+          events.push("status");
+          if (failure === "status") throw new Error("status owner remains");
+          statusClosed = true;
+        },
+      },
+      brokerRelay: {
+        async dispose() {
+          events.push("broker");
+          if (failure === "broker") throw new Error("broker owner remains");
+        },
+      },
+      browserRelay: {
+        async dispose() {
+          events.push("browser");
+          if (failure === "browser") throw new Error("browser owner remains");
+        },
+      },
+      edge: {
+        async close() {
+          events.push("edge");
+          assert(present.has("run"), "Edge profile must remain until its owner stops.");
+          if (failure === "edge") throw new Error("Edge remains");
+        },
+      },
+      broker: null,
+      runRoot: roots[0],
+      runtimeRoot: roots[1],
+      dashboardRelayRoot: roots[2],
+      statusRoot: roots[3],
+      brokerRelayRoot: roots[4],
+      browserRelayRoot: roots[5],
+      agentRuntimeRoot: "state",
+      consoleEvidenceRoot: "evidence",
+      agentId: "hermes",
+      path,
+      probeRelative: "probe",
+      exitRelative: "exit",
+      readStatus: async (relative: string) => {
+        assert(!statusClosed, "Capture status before closing its owner.");
+        events.push("read-" + relative);
+        return JSON.stringify({ kind: relative });
+      },
+      fs: {
+        existsSync: (directory: string) => present.has(directory),
+        writeFileSync: (file: string, text: string) => {
+          const name = path.basename(file);
+          events.push(name);
+          receipts.set(name, JSON.parse(text));
+        },
+      },
+      removeDirectory: async (directory: string) => {
+        removed.push(directory);
+        events.push("remove-" + directory);
+        if (failure === "removal" && directory === "run") return false;
+        present.delete(directory);
+        return true;
+      },
+      fail: (message: string) => {
+        throw new Error(message);
+      },
+    };
+    Object.assign(
+      context,
+      await runCleanupFragment(
+        "./run-installed-native-console-agent.mts",
+        "      const gatewayStopped = await gatewaySession.stopGateway();",
+        "\n    }\n  } catch (error) {",
+        context,
+        "({ consoleSessionEnded, dashboardGatewayStopped })",
+      ),
+    );
+    assert.deepEqual(removed, [], "Inner cleanup must leave root removal to final owners.");
+    assert(!receipts.has("interactive-session-end.json"), "Do not publish early cleanup success.");
+    assert.deepEqual([...receipts.keys()], ["contained-console.json", "agent-exit.json"]);
+    const failures = await runCleanupFragment(
+      "./run-installed-native-console-agent.mts",
+      "    const cleanupFailures: string[] = [];",
+      "    let released = false;",
+      context,
+      "cleanupFailures",
+    );
+    const end = receipts.get("interactive-session-end.json");
+    assert(end, "Publish the final observed cleanup result.");
+    assert.equal(end.ephemeralRootsRemoved, failure === "none");
+    assert.equal(end.persistentStateRetained, true);
+    assert.equal(end.gatewayStopped, true);
+    assert.equal(end.sandboxDeleted, true);
+    for (const owner of ["status", "broker", "browser", "edge"])
+      assert(events.indexOf(owner) < events.indexOf("interactive-session-end.json"));
+    if (failure === "none" || failure === "removal") {
+      assert.deepEqual(removed, roots);
+      assert(events.indexOf("edge") < events.indexOf("remove-run"));
+    } else {
+      assert.deepEqual(removed, []);
+      assert.equal(
+        failures.filter((label: string) => label === "temporary runtime removal").length,
+        6,
+      );
+    }
+    assert.equal(failures.length === 0, failure === "none");
   });
 }
 
