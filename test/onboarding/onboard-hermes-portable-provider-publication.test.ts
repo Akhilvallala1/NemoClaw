@@ -259,7 +259,19 @@ require.cache[sandboxGpuCreateFlowId].exports = {
       const portableStateDir = process.env.HOME + "/.nemoclaw/state";
       assert.equal(lifecycleLock.isMcpLifecycleLockHeld(sandboxName, portableStateDir), true);
     });
-    if (${JSON.stringify(mode)} === "superseded") return { created: false };
+    if (${JSON.stringify(mode)} === "superseded") {
+      // The real active-receipt path proves matching registration before returning.
+      registry.registerSandbox({
+        name: sandboxName,
+        gatewayName,
+        gatewayPort: 8080,
+        lifecycleGeneration: input.lifecycleGeneration,
+        agent: "hermes",
+        provider: inferenceProvider,
+        model: "gpt-5.4",
+      });
+      return { created: false };
+    }
     const attemptRequest = {
       ...input.createRequest,
       labels: {
@@ -274,6 +286,18 @@ require.cache[sandboxGpuCreateFlowId].exports = {
       async () => ({ status: 0, output: "created", sawProgress: true }),
       input.createPolicyPath,
     );
+    // Model the lifecycle's publication after the real create callback verified identity.
+    const verifiedEntry = registry.getSandbox(sandboxName);
+    assert.equal(verifiedEntry?.lifecycleGeneration, input.lifecycleGeneration);
+    assert.equal(verifiedEntry?.pendingCreateIdentity?.route, "native");
+    registry.registerSandbox({
+      ...verifiedEntry,
+      pendingRouteReservation: false,
+      pendingCreateIdentity: undefined,
+      reservationSessionId: undefined,
+      agent: "hermes",
+      portableLifecycleProfile: "hermes",
+    });
     return { created: true, value: created };
   },
   runSandboxGpuCreateFlow: async (input) => {
