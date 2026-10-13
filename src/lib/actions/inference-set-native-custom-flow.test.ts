@@ -751,6 +751,7 @@ it.each(["openclaw", "hermes"])(
 it.each([
   ["compatible-endpoint", "openai-completions"],
   ["compatible-anthropic-endpoint", "anthropic-messages"],
+  ["compatible-anthropic-endpoint", "openai-responses"],
 ] as const)(
   "creates native authority for an explicit hosted switch from retained %s (#12636)",
   async (provider, inferenceApi) => {
@@ -778,6 +779,15 @@ it.each([
       f.deps,
     );
     expect(f.adapter.createProvider).toHaveBeenCalledOnce();
+    expect(f.config).toMatchObject({
+      models: {
+        providers: {
+          [inferenceApi === "anthropic-messages" ? "anthropic" : "inference"]: {
+            api: inferenceApi,
+          },
+        },
+      },
+    });
     expect(f.entry.nativeCustomProviderAttachment).toMatchObject({
       endpointUrl:
         inferenceApi === "anthropic-messages" ? "http://12.12.12.12" : "http://12.12.12.12/v1",

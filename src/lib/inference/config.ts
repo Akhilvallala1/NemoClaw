@@ -362,7 +362,11 @@ export function getSandboxInferenceConfig(
       break;
     case "anthropic-prod":
     case "compatible-anthropic-endpoint":
-      if (provider === "compatible-anthropic-endpoint" && inferenceApi === "openai-completions") {
+      if (
+        provider === "compatible-anthropic-endpoint" &&
+        (inferenceApi === "openai-completions" ||
+          (nativeCustomProviderAttachment && inferenceApi === "openai-responses"))
+      ) {
         providerKey = MANAGED_PROVIDER_ID;
         primaryModelRef = `${MANAGED_PROVIDER_ID}/${model}`;
         inferenceCompat = {

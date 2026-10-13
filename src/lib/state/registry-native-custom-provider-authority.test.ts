@@ -240,3 +240,59 @@ it.each([
     );
   },
 );
+
+it("keeps native resume authority in the process-selected gateway root (#12636)", async () => {
+  vi.stubEnv("NEMOCLAW_GATEWAY_PORT", "8080");
+  vi.resetModules();
+  const baseRegistry = await import("./registry");
+  const baseAuthority = await import("./registry/native-custom-provider-authority");
+  const baseReceipt = await receipt("alpha", "base-provider");
+  baseAuthority.setNativeCustomProviderAuthority("nemoclaw-19081", baseReceipt);
+  const baseBefore = await fs.readFile(baseRegistry.REGISTRY_FILE, "utf8");
+
+  vi.stubEnv("NEMOCLAW_GATEWAY_PORT", "19081");
+  vi.resetModules();
+  const ownerRegistry = await import("./registry");
+  const ownerAuthority = await import("./registry/native-custom-provider-authority");
+  const ownerReceipt = { ...baseReceipt, providerId: "owner-provider" };
+  ownerRegistry.registerSandbox({
+    name: "alpha",
+    gatewayName: "nemoclaw-19081",
+    gatewayPort: 19081,
+    provider: "compatible-endpoint",
+    model: "model-a",
+    endpointUrl: ownerReceipt.endpointUrl,
+    credentialEnv: ownerReceipt.credentialEnv,
+    preferredInferenceApi: ownerReceipt.api,
+    nativeCustomProviderAttachment: ownerReceipt,
+  });
+  ownerAuthority.setNativeCustomProviderAuthority("nemoclaw-19081", ownerReceipt);
+  const { hasRetainedNativeCustomSelection } = await import("../onboard/resume/native-custom");
+  expect(
+    hasRetainedNativeCustomSelection({
+      gatewayName: "nemoclaw-19081",
+      sandboxName: "alpha",
+      provider: "compatible-endpoint",
+      endpointUrl: ownerReceipt.endpointUrl,
+      api: ownerReceipt.api,
+      credentialEnv: ownerReceipt.credentialEnv,
+    }),
+  ).toBe(true);
+  expect(
+    ownerAuthority.getNativeCustomProviderAuthority("nemoclaw-19081", ownerReceipt.providerName),
+  ).toEqual(ownerReceipt);
+  ownerAuthority.clearNativeCustomProviderAuthority("nemoclaw-19081", ownerReceipt);
+  expect(
+    ownerAuthority.getNativeCustomProviderAuthority("nemoclaw-19081", ownerReceipt.providerName),
+  ).toBeUndefined();
+  expect(await fs.readFile(baseRegistry.REGISTRY_FILE, "utf8")).toBe(baseBefore);
+
+  vi.stubEnv("NEMOCLAW_GATEWAY_PORT", "8080");
+  vi.resetModules();
+  const callerRegistry = await import("./registry");
+  const callerAuthority = await import("./registry/native-custom-provider-authority");
+  expect(callerRegistry.getSandbox("alpha")).toBeNull();
+  expect(
+    callerAuthority.getNativeCustomProviderAuthority("nemoclaw-19081", baseReceipt.providerName),
+  ).toEqual(baseReceipt);
+});
