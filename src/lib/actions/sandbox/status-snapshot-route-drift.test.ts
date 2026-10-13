@@ -819,3 +819,142 @@ it.each(["healthy", "missing", "malformed"])(
     expect(JSON.stringify(snapshot)).not.toContain("private upstream diagnostic");
   },
 );
+
+it.each(
+  [
+    {
+      name: "401 credential rejection",
+      statuses: [401],
+      expectedOk: false,
+      label: "unauthorized",
+      retries: 0,
+    },
+    {
+      name: "403 credential rejection",
+      statuses: [403],
+      expectedOk: false,
+      label: "unauthorized",
+      retries: 0,
+    },
+    ...[429, 502, 503, 504].map((status) => ({
+      name: `${status} recovery`,
+      statuses: [status, 200],
+      expectedOk: true,
+      label: undefined,
+      retries: 1,
+    })),
+    {
+      name: "503 exhaustion",
+      statuses: [503, 503, 503],
+      expectedOk: false,
+      label: "unhealthy",
+      retries: 2,
+    },
+    {
+      name: "500 permanent failure",
+      statuses: [500],
+      expectedOk: false,
+      label: "unhealthy",
+      retries: 0,
+    },
+    {
+      name: "malformed 200 response",
+      statuses: [200],
+      expectedOk: false,
+      label: "unhealthy",
+      retries: 0,
+    },
+    {
+      name: "no HTTP response",
+      statuses: [null],
+      expectedOk: false,
+      label: "unreachable",
+      retries: 0,
+    },
+  ].flatMap((scenario) =>
+    ["openclaw", "hermes", "langchain-deepagents-code", "pi"].flatMap((agent) =>
+      [
+        {
+          apiMode: "recorded",
+          recordedApi: "openai-completions",
+          expectedApi: "openai-completions",
+        },
+        { apiMode: "blank", recordedApi: "  ", expectedApi: null },
+      ].map((api) => ({ ...scenario, agent, ...api })),
+    ),
+  ),
+)(
+  "preserves native $agent custom status with $apiMode API and bounded retry for $name (#12636)",
+  async (scenario) => {
+    const prepared = await prepareNativeCustomProfile({
+      sandboxName: "alpha",
+      provider: "compatible-endpoint",
+      endpointUrl: "http://8.8.8.8/v1",
+      api: "openai-completions",
+    });
+    const receipt = customAttachmentFromPrepared(prepared, {
+      schemaVersion: 1,
+      profileId: prepared.profile.id,
+      providerName: prepared.providerName,
+      providerId: "custom-id",
+    });
+    const sandbox = {
+      name: "alpha",
+      agent: scenario.agent,
+      gatewayName: "nemoclaw",
+      provider: "compatible-endpoint",
+      model: "selected-model",
+      preferredInferenceApi: scenario.recordedApi,
+      nativeCustomProviderAttachment: receipt,
+    } as SandboxEntry;
+    const shared = vi.fn();
+    const direct = vi.fn();
+    const verify = vi.fn(async () => undefined);
+    const invoke = vi.fn(async (_input: unknown) => {
+      const httpStatus =
+        scenario.statuses[Math.min(invoke.mock.calls.length - 1, scenario.statuses.length - 1)];
+      return {
+        ok: httpStatus === 200 && scenario.name !== "malformed 200 response",
+        detail: "selected request result",
+        httpStatus,
+        endpoint: "http://8.8.8.8/v1/chat/completions",
+      };
+    });
+    const delay = vi.fn(async () => undefined);
+    const retry = vi.fn();
+    const snapshot = await collectSandboxStatusSnapshot("alpha", {
+      deps: {
+        getSandbox: () => sandbox,
+        listPublishedSandboxesAcrossGatewayRoots: () => [sandbox],
+        reconcile: async () => ({ state: "present", output: "Phase: Ready" }),
+        inferenceRouteObserver: { observeInferenceRoute: shared },
+        probeProviderHealthImpl: direct,
+        nativeCustomHealthDeps: {
+          verifyNativeCustomAttachment: verify,
+          inferenceInvocationProbe: invoke,
+        },
+        delayInferenceRecoveryProbe: delay,
+        reportInferenceProbeRetry: retry,
+      },
+    });
+    expect(snapshot.inferenceHealth?.ok).toBe(scenario.expectedOk);
+    expect(snapshot.inferenceHealth?.failureLabel).toBe(scenario.label);
+    expect(snapshot.inferenceHealth?.endpoint).toBe("http://8.8.8.8/v1/chat/completions");
+    expect(invoke).toHaveBeenCalledTimes(scenario.statuses.length);
+    expect(invoke.mock.calls.map(([input]) => input)).toEqual(
+      scenario.statuses.map(() =>
+        expect.objectContaining({
+          agentName: scenario.agent,
+          model: "selected-model",
+          preferredInferenceApi: scenario.expectedApi,
+          nativeCustomProviderAttachment: receipt,
+        }),
+      ),
+    );
+    expect(verify).toHaveBeenCalledOnce();
+    expect(delay.mock.calls).toEqual(Array.from({ length: scenario.retries }, () => [2000]));
+    expect(retry).toHaveBeenCalledTimes(scenario.retries);
+    expect(shared).not.toHaveBeenCalled();
+    expect(direct).not.toHaveBeenCalled();
+  },
+);

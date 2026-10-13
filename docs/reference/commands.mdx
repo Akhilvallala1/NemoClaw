@@ -1196,7 +1196,7 @@ During that lease, another `launch` still verifies these conditions:
   Shared-route providers use `inference.local`.
   NVIDIA Endpoints verifies the recorded sandbox-attached provider and sends the request to `https://integrate.api.nvidia.com/v1`.
   Native custom hosted selections verify their recorded attachment and send an authenticated request through the selected endpoint and API.
-  The models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
+  The shared-route models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
   A failed model request rejects readiness before the agent starts.
   This check is stricter than the HTTP 200–499 reachability diagnostic used by ordinary `connect`.
 

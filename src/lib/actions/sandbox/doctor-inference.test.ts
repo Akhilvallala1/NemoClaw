@@ -581,3 +581,57 @@ describe("hosted native doctor", () => {
     },
   );
 });
+
+it.each([
+  { reachable: true, gatewayName: null, expectedStatus: "fail" },
+  { reachable: false, gatewayName: "nemoclaw", expectedStatus: "info" },
+])(
+  "reports native custom reachability=$reachable gateway=$gatewayName as $expectedStatus (#12636)",
+  async (scenario) => {
+    const { prepareNativeCustomProfile, customAttachmentFromPrepared } =
+      await import("../../inference/native-custom");
+    const prepared = await prepareNativeCustomProfile({
+      sandboxName: "alpha",
+      provider: "compatible-endpoint",
+      endpointUrl: "http://8.8.8.8/v1",
+      api: "openai-completions",
+    });
+    const receipt = customAttachmentFromPrepared(prepared, {
+      schemaVersion: 1,
+      profileId: prepared.profile.id,
+      providerName: prepared.providerName,
+      providerId: "custom-provider",
+    });
+    const verify = vi.fn();
+    const invoke = vi.fn();
+    const shared = vi.fn();
+    const checks = await collectInferenceChecks(
+      "alpha",
+      {
+        provider: "compatible-endpoint",
+        model: "model-a",
+        preferredInferenceApi: "openai-completions",
+        nativeCustomProviderAttachment: receipt,
+      },
+      scenario.reachable,
+      {
+        gatewayName: scenario.gatewayName,
+        includeServingProcessCheck: false,
+        nativeCustomHealthDeps: {
+          verifyNativeCustomAttachment: verify,
+          inferenceInvocationProbe: invoke,
+        },
+        probeSandboxInferenceGatewayHealthImpl: shared,
+      },
+    );
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        label: "Inference route (native custom)",
+        status: scenario.expectedStatus,
+      }),
+    );
+    expect(verify).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(shared).not.toHaveBeenCalled();
+  },
+);

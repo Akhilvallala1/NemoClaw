@@ -116,12 +116,21 @@ async function collectNativeCustomRouteProbe(
     endpoint: "selected native custom inference endpoint",
     probeLabel: "native custom",
   };
-  if (!sandboxReachable || !deps.gatewayName) {
+  if (!sandboxReachable) {
     return {
       ...base,
       ok: false,
       probed: false,
-      detail: "the selected sandbox or named gateway is not reachable",
+      detail: "skipped because the sandbox is not reachable through its named gateway",
+    };
+  }
+  if (!deps.gatewayName) {
+    return {
+      ...base,
+      ok: false,
+      probed: false,
+      failureLabel: "unreachable",
+      detail: "the native custom provider gateway binding is missing",
     };
   }
   try {

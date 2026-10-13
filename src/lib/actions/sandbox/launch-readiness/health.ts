@@ -255,6 +255,31 @@ export async function requireNativeInferenceHealth(
       throw new LaunchReadinessEvidenceError();
     return requireFixedNativeInferenceHealth(input);
   }
+  const { expected, provider, model, api } = await verifyNativeCustomInferenceAuthority(input);
+  const invocation = await (
+    input.deps.inferenceInvocationProbe ?? runSandboxInferenceInvocationProbe
+  )({
+    sandboxName: input.sandboxName,
+    gatewayName: input.gatewayName,
+    agentName: input.agentName,
+    provider,
+    model,
+    preferredInferenceApi: api,
+    nativeCustomProviderAttachment: expected,
+  });
+  if (!invocation.ok) throw new LaunchReadinessObservationError("health", "inference request");
+  return true;
+}
+
+/** Verify the selected custom route before readiness or status sends an inference request. */
+export async function verifyNativeCustomInferenceAuthority(
+  input: Parameters<typeof requireNativeNvidiaInferenceHealth>[0],
+): Promise<{
+  expected: NativeCustomProviderAttachment;
+  provider: string;
+  model: string;
+  api: string | null;
+}> {
   const expected = normalizeNativeCustomProviderAttachment(
     input.entry.nativeCustomProviderAttachment,
     input.sandboxName,
@@ -288,19 +313,7 @@ export async function requireNativeInferenceHealth(
       expected,
     });
   }
-  const invocation = await (
-    input.deps.inferenceInvocationProbe ?? runSandboxInferenceInvocationProbe
-  )({
-    sandboxName: input.sandboxName,
-    gatewayName: input.gatewayName,
-    agentName: input.agentName,
-    provider,
-    model,
-    preferredInferenceApi: api,
-    nativeCustomProviderAttachment: expected,
-  });
-  if (!invocation.ok) throw new LaunchReadinessObservationError("health", "inference request");
-  return true;
+  return { expected, provider, model, api };
 }
 
 async function requireFixedNativeInferenceHealth(input: {

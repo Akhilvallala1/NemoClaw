@@ -203,7 +203,7 @@ The `policy list` provenance tags are inferred from the current tier YAML and th
 A preset whose name matches an entry in the sandbox's current tier definition is labelled `[from <tier> tier]` even when an operator added it manually with `policy add` after onboarding; agent-specific preset names are only labelled `[from <agent> agent]` when the active agent matches.
 Claude Code direct egress is not included in the Restricted, Balanced, or Open tiers.
 Personal's broad route permits its port `443` transport but does not install or configure Claude Code; on other tiers, apply the `claude-code` preset explicitly if you install and run the CLI inside the sandbox with its own credentials.
-Normal NemoClaw Anthropic inference still routes through the OpenShell gateway.
+NemoClaw-managed Anthropic inference remains mediated by OpenShell.
 
 Tier definitions are stored in `nemoclaw-blueprint/policies/tiers.yaml`.
 
@@ -219,6 +219,8 @@ Unset, blank, or whitespace-only `NEMOCLAW_POLICY_TIER` values use the `balanced
 
 Host-local providers and retained shared-route selections use the OpenShell-managed `inference.local` route.
 NVIDIA Endpoints uses its least-privilege, sandbox-attached OpenShell provider at `integrate.api.nvidia.com`.
+Supported fixed hosted selections for OpenAI, Anthropic, Google Gemini, OpenRouter, and Hermes Provider also use sandbox-attached native providers.
+Their `native_hosted_inference` policy follows the selected provider profile, restricting endpoint hosts, request paths, methods, and agent-runtime binaries.
 Fresh hosted custom endpoints also use sandbox-attached providers, scoped to the selected endpoint, API paths, and agent-runtime binaries.
 OpenShell mediates both routes and keeps provider credentials outside the sandbox.
 For custom endpoint transport constraints, refer to [Meet Custom Endpoint Security Requirements](../inference/custom-endpoints/custom-endpoint-security).

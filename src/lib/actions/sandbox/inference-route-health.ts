@@ -392,6 +392,7 @@ export type SandboxInferenceRouteHealthContext = {
   nativeNvidia?: boolean;
   nativeProvider?: boolean;
   nativeEndpointUrl?: string;
+  nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
   model?: string | null;
   preferredInferenceApi?: string | null;
 };
@@ -426,18 +427,24 @@ export function buildSandboxInferenceRouteHealth(
   invocation: SandboxInferenceInvocationResult | null,
   context: SandboxInferenceRouteHealthContext,
 ): ProviderHealthStatus {
-  const definition = fixedNativeProvider(context.provider);
-  if ((context.nativeProvider || context.nativeNvidia) && definition) {
+  const definition = context.nativeCustomProviderAttachment
+    ? { logicalProvider: context.provider ?? "", label: "custom" }
+    : fixedNativeProvider(context.provider);
+  if (
+    (context.nativeCustomProviderAttachment || context.nativeProvider || context.nativeNvidia) &&
+    definition
+  ) {
     const endpoint =
       invocation && !invocation.ok && invocation.endpoint
         ? invocation.endpoint
         : resolveSandboxInferenceInvocationEndpoint({
-            sandboxName: "",
+            sandboxName: context.nativeCustomProviderAttachment?.sandboxName ?? "",
             provider: definition.logicalProvider,
             model: context.model ?? "",
             preferredInferenceApi: context.preferredInferenceApi ?? null,
-            nativeProvider: true,
+            nativeProvider: context.nativeCustomProviderAttachment ? undefined : true,
             nativeEndpointUrl: context.nativeEndpointUrl,
+            nativeCustomProviderAttachment: context.nativeCustomProviderAttachment,
           });
     const diagnostics = providerHealthDiagnostics(providerHealth, Boolean(invocation?.ok));
     const nativeHealth: ProviderHealthStatus = invocation?.ok
@@ -455,7 +462,9 @@ export function buildSandboxInferenceRouteHealth(
           endpoint,
           detail: invocation
             ? `The native ${definition.label} route did not serve an inference request: ${invocation.detail}.`
-            : `Could not probe the native ${definition.label} route from inside the sandbox. Recreate legacy beta sandboxes before using this route.`,
+            : context.nativeCustomProviderAttachment
+              ? "Could not probe the selected native custom route from inside the sandbox. Check the sandbox and its named gateway."
+              : `Could not probe the native ${definition.label} route from inside the sandbox. Recreate legacy beta sandboxes before using this route.`,
           failureLabel: classifyInferenceInvocationFailureLabel(invocation?.httpStatus ?? null),
         };
     return diagnostics.length > 0 ? { ...nativeHealth, subprobes: diagnostics } : nativeHealth;

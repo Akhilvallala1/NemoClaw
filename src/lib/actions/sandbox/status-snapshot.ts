@@ -3,7 +3,7 @@
 
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  requireNativeInferenceHealth,
+  verifyNativeCustomInferenceAuthority,
   type LaunchReadinessHealthDeps,
 } from "./launch-readiness/health";
 
@@ -722,45 +722,30 @@ export async function collectSandboxStatusSnapshot(
   let inferenceHealth = providerHealth;
   // Probe the same route the agent uses: the recorded attached provider for
   // native inference, otherwise the shared `inference.local` route.
+  let nativeCustomSelection: Awaited<
+    ReturnType<typeof verifyNativeCustomInferenceAuthority>
+  > | null = null;
   if (!suppressInferenceProbe && lookup.state === "present" && nativeCustom && sb) {
-    const base = {
-      providerLabel: "Native custom route",
-      endpoint: "selected native custom inference endpoint",
-      probeLabel: "native custom",
-    };
     try {
       if (!gatewayName) throw new Error("missing named gateway");
-      await requireNativeInferenceHealth({
+      nativeCustomSelection = await verifyNativeCustomInferenceAuthority({
         sandboxName,
         gatewayName,
         agentName: sb.agent || undefined,
         entry: sb,
         deps: opts.deps?.nativeCustomHealthDeps ?? {},
       });
-      inferenceHealth = {
-        ...base,
-        ok: true,
-        probed: true,
-        detail:
-          "The selected model served a request through its verified native custom attachment.",
-      };
     } catch {
-      inferenceHealth = {
-        ...base,
-        ok: false,
-        probed: false,
-        failureLabel: "unreachable",
-        detail: "The selected native custom attachment or inference request could not be verified.",
-      };
+      nativeAttachmentFailure = "The selected native custom attachment could not be verified.";
     }
   }
-  if (!suppressInferenceProbe && lookup.state === "present" && !nativeCustom) {
+  if (!suppressInferenceProbe && lookup.state === "present") {
     let gatewayChain: Awaited<ReturnType<ProbeSandboxInferenceGatewayHealth>> = null;
     // Take the provider and model as one pair. Falling back per field can pair
     // a live model with a recorded provider and request a route neither one
     // describes.
     const invocationRoute =
-      !nativeNvidia && live?.provider && live.model
+      !nativeInference && live?.provider && live.model
         ? {
             provider: live.provider,
             model: live.model,
@@ -774,52 +759,69 @@ export async function collectSandboxStatusSnapshot(
               live.provider === sb?.provider ? (sb?.preferredInferenceApi ?? null) : null,
           }
         : {
-            provider: currentProvider,
-            model: currentModel,
-            preferredInferenceApi: sb?.preferredInferenceApi ?? null,
+            provider: nativeCustomSelection?.provider ?? currentProvider,
+            model: nativeCustomSelection?.model ?? currentModel,
+            preferredInferenceApi: nativeCustomSelection
+              ? nativeCustomSelection.api
+              : (sb?.preferredInferenceApi ?? null),
           };
     const invocationModel = (invocationRoute.model || "").trim();
     const invocationProvider = (invocationRoute.provider || "").trim();
     const canProbeInvocation = Boolean(invocationModel && invocationProvider);
     let invocation: Awaited<ReturnType<typeof runSandboxInferenceInvocationProbe>> | null = null;
+    const invokeSelectedRoute = (
+      input: Parameters<typeof runSandboxInferenceInvocationProbe>[0],
+    ) => {
+      const nativeProbe = nativeCustom
+        ? opts.deps?.nativeCustomHealthDeps?.inferenceInvocationProbe
+        : undefined;
+      return nativeProbe
+        ? nativeProbe(input)
+        : runSandboxInferenceInvocationProbe(
+            input,
+            opts.deps?.probeSandboxInferenceInvocationImpl,
+            (error) =>
+              reportInferenceProbeError(
+                error,
+                opts.deps?.reportInferenceProbeError ?? console.error,
+              ),
+          );
+    };
     try {
       const probe =
         opts.deps?.probeSandboxInferenceGatewayHealthImpl ?? probeSandboxInferenceGatewayHealth;
       await retryUntilAsync(
         async () => {
-          gatewayChain = nativeNvidia
+          gatewayChain = nativeInference
             ? null
             : gatewayName
               ? await probe(sandboxName, { gatewayName })
               : null;
           invocation =
-            !nativeAttachmentFailure && (nativeNvidia || gatewayChain?.ok) && canProbeInvocation
-              ? await runSandboxInferenceInvocationProbe(
-                  {
-                    sandboxName,
-                    gatewayName: gatewayName ?? undefined,
-                    ...(sb?.agent === "langchain-deepagents-code" ? { agentName: sb.agent } : {}),
-                    provider: invocationProvider,
-                    model: invocationModel,
-                    preferredInferenceApi: invocationRoute.preferredInferenceApi,
-                    ...(nativeNvidia ? { nativeProvider: true } : {}),
-                    ...(nativeAttachment?.endpointUrl
-                      ? { nativeEndpointUrl: nativeAttachment.endpointUrl }
-                      : {}),
-                  },
-                  opts.deps?.probeSandboxInferenceInvocationImpl,
-                  (error) =>
-                    reportInferenceProbeError(
-                      error,
-                      opts.deps?.reportInferenceProbeError ?? console.error,
-                    ),
-                )
+            !nativeAttachmentFailure && (nativeInference || gatewayChain?.ok) && canProbeInvocation
+              ? await invokeSelectedRoute({
+                  sandboxName,
+                  gatewayName: gatewayName ?? undefined,
+                  ...((nativeCustom || sb?.agent === "langchain-deepagents-code") && sb?.agent
+                    ? { agentName: sb.agent }
+                    : {}),
+                  provider: invocationProvider,
+                  model: invocationModel,
+                  preferredInferenceApi: invocationRoute.preferredInferenceApi,
+                  ...(nativeNvidia ? { nativeProvider: true } : {}),
+                  ...(nativeCustomSelection
+                    ? { nativeCustomProviderAttachment: nativeCustomSelection.expected }
+                    : {}),
+                  ...(nativeAttachment?.endpointUrl
+                    ? { nativeEndpointUrl: nativeAttachment.endpointUrl }
+                    : {}),
+                })
               : null;
           return { gatewayChain, invocation };
         },
         {
           accept: ({ gatewayChain: chain, invocation: result }) => {
-            if (nativeNvidia) {
+            if (nativeInference) {
               return result?.ok === true || !isTransientInferenceInvocationFailure(result);
             }
             if (chain?.ok && (!canProbeInvocation || result?.ok)) return true;
@@ -857,8 +859,12 @@ export async function collectSandboxStatusSnapshot(
       ? {
           ok: false,
           probed: false,
-          providerLabel: `Native ${nativeLabel} provider attachment`,
-          endpoint: nativeSelection.endpoint,
+          providerLabel: nativeCustom
+            ? "Native custom provider attachment"
+            : `Native ${nativeLabel} provider attachment`,
+          endpoint: nativeCustom
+            ? "selected native custom inference endpoint"
+            : nativeSelection.endpoint,
           detail: nativeAttachmentFailure,
           failureLabel: "unreachable",
           probeLabel: "provider attachment",
@@ -866,9 +872,12 @@ export async function collectSandboxStatusSnapshot(
       : buildSandboxInferenceRouteHealth(gatewayChain, providerHealth, invocation, {
           provider: invocationRoute.provider ?? null,
           nativeProvider: nativeNvidia,
+          nativeCustomProviderAttachment: nativeCustomSelection?.expected,
           nativeEndpointUrl: nativeAttachment?.endpointUrl,
           model: invocationRoute.model ?? null,
-          preferredInferenceApi: sb?.preferredInferenceApi ?? null,
+          preferredInferenceApi: nativeCustomSelection
+            ? nativeCustomSelection.api
+            : (sb?.preferredInferenceApi ?? null),
         });
   }
   // Classify once per snapshot so every renderer observes the same receipt state.
