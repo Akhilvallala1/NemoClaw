@@ -40,6 +40,13 @@ describe("prepareSandboxDockerfilePatch", () => {
     "preserves an explicit native-provider selection of %s",
     async (nativeProvider) => {
       const patchStagedDockerfile = vi.fn();
+      const pullAndResolveBaseImageDigest = vi.fn(() => ({
+        digest: resolutionMetadata.digest,
+        ref: resolutionMetadata.ref,
+        source: resolutionMetadata.source,
+        glibcVersion: resolutionMetadata.glibcVersion,
+        metadata: resolutionMetadata,
+      }));
 
       await prepareSandboxDockerfilePatch({
         agent: null,
@@ -58,6 +65,7 @@ describe("prepareSandboxDockerfilePatch", () => {
         deps: {
           isLinuxDockerDriverGatewayEnabled: vi.fn(() => false),
           isWsl: vi.fn(() => false),
+          pullAndResolveBaseImageDigest,
           enforceDockerGpuPatchPreserveNetwork: vi.fn(async () => false),
           patchStagedDockerfile,
           now: () => 1,
