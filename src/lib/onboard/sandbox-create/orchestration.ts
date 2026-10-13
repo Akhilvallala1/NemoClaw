@@ -94,6 +94,7 @@ import {
   verifyNativeCustomAttachmentAfterCreate,
   verifyNativeHostedAttachmentAfterCreate,
   usesNativeHostedProvider,
+  retireRecreatedNativeCustomProviders,
 } from "./provider-publication";
 import {
   materializeRebuildPolicyHandoff,
@@ -2258,6 +2259,10 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
       }));
     };
     if (recreateRuntime.acceptedTarget && !resumingVerifiedCreate) {
+      await retireRecreatedNativeCustomProviders({
+        proof: recreateRuntime.sourceProof,
+        entry: registry.getSandbox(sandboxName),
+      });
       await restoreReusedSandboxDashboard(true);
       return sandboxName;
     }
@@ -2598,6 +2603,10 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
       );
       if (!createIntent?.recreateTransaction) recreateRuntime = openRecreateJournal();
       if (recreateRuntime.acceptedTarget) {
+        await retireRecreatedNativeCustomProviders({
+          proof: recreateRuntime.sourceProof,
+          entry: registry.getSandbox(sandboxName),
+        });
         if ("complete" in recreateRuntime) recreateRuntime.complete();
         await restoreReusedSandboxDashboard(true);
         return sandboxName;
@@ -3828,6 +3837,10 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
     }
     return runAsyncWithPostCreateRecovery(
       async () => {
+        await retireRecreatedNativeCustomProviders({
+          proof: recreateRuntime.sourceProof,
+          entry: registry.getSandbox(sandboxName),
+        });
         managedStateVolumeLifecycle.commit();
         if ("complete" in recreateRuntime) recreateRuntime.complete();
         if (agentCreateInput.hermesPortableLifecycle) return sandboxName;

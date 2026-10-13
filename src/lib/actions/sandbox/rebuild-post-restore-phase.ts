@@ -630,7 +630,9 @@ export async function runRebuildPostRestorePhase(
   if (
     postRestoreComplete &&
     targetAgentName === "openclaw" &&
-    recreatedEntry.provider === "compatible-endpoint"
+    (recreatedEntry.provider === "compatible-endpoint" ||
+      (recreatedEntry.provider === "compatible-anthropic-endpoint" &&
+        recreatedEntry.nativeCustomProviderAttachment !== undefined))
   ) {
     try {
       await rebuildOnboardDependencies.verifyRebuiltOpenClawCompatibleEndpoint({

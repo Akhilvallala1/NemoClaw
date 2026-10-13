@@ -172,12 +172,16 @@ describe("native custom rebuild restoration", () => {
     };
   }
 
-  function nativeCustomRestore() {
+  function nativeCustomRestore(
+    provider: "compatible-endpoint" | "compatible-anthropic-endpoint" = "compatible-endpoint",
+    api: "openai-completions" | "anthropic-messages" = "openai-completions",
+    credentialEnv = "COMPATIBLE_API_KEY",
+  ) {
     const prepared = buildNativeCustomProfile({
       sandboxName: "alpha",
-      provider: "compatible-endpoint",
+      provider,
       endpointUrl: "https://example.com/v1",
-      api: "openai-completions",
+      api,
       addresses: ["8.8.8.8"],
     });
     const attachment = nativeCustom.customAttachmentFromPrepared(
@@ -191,9 +195,9 @@ describe("native custom rebuild restoration", () => {
     );
     vi.mocked(registry.getSandbox).mockReturnValue({
       agent: null,
-      provider: "compatible-endpoint",
+      provider,
       model: "selected-model",
-      preferredInferenceApi: "openai-completions",
+      preferredInferenceApi: api,
       nativeCustomProviderAttachment: attachment,
     } as never);
     const verify = vi
@@ -207,13 +211,13 @@ describe("native custom rebuild restoration", () => {
       models: {
         providers: {
           inference: {
-            apiKey: "openshell:resolve:env:v1_COMPATIBLE_API_KEY",
+            apiKey: `openshell:resolve:env:v1_${credentialEnv}`,
             models: [{ id: "selected-model", contextWindow: 8192, maxTokens: 128 }],
           },
         },
       },
     };
-    const resolveReference = vi.fn(async () => "openshell:resolve:env:v2_COMPATIBLE_API_KEY");
+    const resolveReference = vi.fn(async () => `openshell:resolve:env:v2_${credentialEnv}`);
     const write = vi.fn(() => {
       order.push("route-written");
     });
@@ -277,4 +281,37 @@ describe("native custom rebuild restoration", () => {
       );
     },
   );
+
+  it("verifies native Anthropic inference after its restored gateway starts (#12636)", async () => {
+    const fixture = nativeCustomRestore(
+      "compatible-anthropic-endpoint",
+      "anthropic-messages",
+      "COMPATIBLE_ANTHROPIC_API_KEY",
+    );
+    const args = input();
+    await runRebuildPostRestorePhase(args);
+    expect(rebuildOnboardDependencies.verifyRebuiltOpenClawCompatibleEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "compatible-anthropic-endpoint",
+        nativeCustomProviderAttachment: fixture.attachment,
+      }),
+    );
+    expect(order.indexOf("native-start")).toBeLessThan(order.indexOf("inference-smoke"));
+    expect(args.bail).not.toHaveBeenCalled();
+  });
+
+  it("does not complete an Anthropic rebuild when final inference verification fails (#12636)", async () => {
+    nativeCustomRestore(
+      "compatible-anthropic-endpoint",
+      "anthropic-messages",
+      "COMPATIBLE_ANTHROPIC_API_KEY",
+    );
+    vi.mocked(rebuildOnboardDependencies.verifyRebuiltOpenClawCompatibleEndpoint).mockRejectedValue(
+      new Error("Anthropic route unavailable"),
+    );
+    const args = input();
+    await runRebuildPostRestorePhase(args);
+    expect(args.bail).toHaveBeenCalledWith("OpenClaw inference verification failed after rebuild.");
+    expect(vi.mocked(console.log).mock.calls.flat().join("\n")).not.toContain("rebuild completed");
+  });
 });

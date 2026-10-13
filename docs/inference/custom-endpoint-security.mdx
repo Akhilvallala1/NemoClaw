@@ -9,6 +9,7 @@ keywords: ["nemoclaw endpoint security", "inference endpoint ssrf", "custom endp
 content:
   type: "concept"
 ---
+
 NemoClaw keeps provider credentials on the host and validates explicit custom endpoint URLs before saving them through security-sensitive configuration paths.
 
 ## Protect Provider Credentials
@@ -103,7 +104,10 @@ The adapter accepts route-forwarding and non-control health requests only from l
 Authenticated control health and route-registration requests remain loopback-only.
 NemoClaw refuses to expose the adapter when it cannot discover a valid bridge subnet.
 Adapter reuse also requires an authenticated health proof for the same source-subnet policy, so a running process with a stale or different policy is replaced.
-After an adapter restart, routes other than the one that triggered recovery return a recovery-needed response until their original `inference set --endpoint-url` command is rerun.
+After an adapter restart, routes other than the one that triggered recovery return a recovery-needed response.
+To register an affected route again, rerun onboarding for the same sandbox and gateway with its original upstream endpoint URL, provider, model, API family, and credential.
+For OpenClaw and Hermes, you can instead run `$$nemoclaw inference set` for that sandbox and gateway with the same endpoint binding and credential environment variable.
+Register the route again before switching away to retry revocation.
 
 ### Handle a Route Revocation Warning
 
@@ -121,19 +125,20 @@ It does not derive the policy again from the current host because a recreated or
 If an adapter started before NemoClaw recorded the policy, NemoClaw cannot authenticate the adapter for revocation.
 NemoClaw preserves the route recovery state and reports the failed revocation.
 
-If the sandbox still exists, recover the route as follows:
+For OpenClaw and Hermes, if the sandbox still exists, recover the route as follows:
 
-1. Rerun the `inference set --endpoint-url` command that registered the affected route.
+1. Register the affected route again using the recovery procedure above.
 2. Switch away from that route again.
 
-The first command records the source-subnet policy for the running adapter.
+The first step records the source-subnet policy for the running adapter.
 NemoClaw retries revocation during the second command.
 When no other sandbox references the route, a completed switch without a revocation warning confirms that the adapter removed it.
 
 <Warning title="Download State Before Cleanup">
-Sandbox deletion is an OpenShell lifecycle operation and removes the sandbox's native storage.
-Before you destroy a remaining sandbox, download any state that you must keep to an independently managed location.
-Refer to [Transfer State Manually](../../manage-sandboxes/state-and-backups/transfer-state-manually) for instructions.
+  Sandbox deletion is an OpenShell lifecycle operation and removes the sandbox's native storage.
+  Before you destroy a remaining sandbox, download any state that you must keep to an independently
+  managed location. Refer to [Transfer State
+  Manually](../../manage-sandboxes/state-and-backups/transfer-state-manually) for instructions.
 </Warning>
 
 If the affected sandbox was destroyed or revocation continues to fail, destroy all remaining sandboxes before adapter cleanup.

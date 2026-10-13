@@ -31,6 +31,8 @@ import {
   MESSAGING_CREDENTIAL_PROVIDER_TYPE,
 } from "../../messaging/provider-profile";
 import type { SandboxEntry } from "../../state/registry";
+import { retireNativeCustomProviders } from "../../inference/native-custom/cleanup";
+import type { SandboxRecreateSourceProof } from "../sandbox-recreate-transaction";
 import { matchesGatewayCredentialFamilyProviderBinding } from "../gateway-provider-metadata";
 import { resolveRegisteredRuntimeProvider } from "../runtime-provider/selection";
 import type { SandboxCreateIntent } from "../sandbox-create-intent-types";
@@ -314,5 +316,31 @@ export async function verifyNativeCustomAttachmentAfterCreate(input: {
     target: namedOpenShellGateway(input.gatewayName),
     sandboxName: input.sandboxName,
     expected: input.expected,
+  });
+}
+
+/** Retire superseded receipts only after the journaled replacement is registered. */
+export async function retireRecreatedNativeCustomProviders(input: {
+  proof: SandboxRecreateSourceProof | null;
+  entry: SandboxEntry | null;
+  retire?: typeof retireNativeCustomProviders;
+}): Promise<void> {
+  if (!input.proof) return;
+  const { proof, entry } = input;
+  if (
+    !entry ||
+    entry.pendingRouteReservation === true ||
+    entry.name !== proof.sandboxName ||
+    entry.gatewayName !== proof.gatewayName ||
+    entry.gatewayPort !== proof.gatewayPort ||
+    entry.lifecycleGeneration !== proof.targetGeneration
+  ) {
+    throw new Error("Cannot retire native custom providers before replacement registration.");
+  }
+  await (input.retire ?? retireNativeCustomProviders)({
+    gatewayName: proof.gatewayName,
+    sandboxName: proof.sandboxName,
+    attachment: entry.nativeCustomProviderAttachment,
+    keepProviderName: entry.nativeCustomProviderAttachment?.providerName,
   });
 }

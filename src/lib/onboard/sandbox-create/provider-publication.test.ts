@@ -12,7 +12,10 @@ import {
 import {
   publishAttachedProvidersBeforeDockerSandboxCreation,
   validateAttachedMessagingProvidersBeforeSandboxCreation,
+  retireRecreatedNativeCustomProviders,
 } from "./provider-publication";
+import type { SandboxEntry } from "../../state/registry";
+import type { SandboxRecreateSourceProof } from "../sandbox-recreate-transaction";
 
 const providerName = "my-assistant-telegram-bridge";
 const target = { kind: "named", gatewayName: "nemoclaw" } as const;
@@ -574,5 +577,70 @@ describe("sandbox provider preparation", () => {
     expect(harness.adapter.getProvider).toHaveBeenCalledExactlyOnceWith({ target, providerName });
     expect(harness.adapter.updateProvider).not.toHaveBeenCalled();
     expect(harness.runOpenshell).not.toHaveBeenCalled();
+  });
+});
+
+describe("native custom retirement after recreate", () => {
+  const proof: SandboxRecreateSourceProof = {
+    transactionId: "recreate-alpha",
+    sandboxName: "alpha",
+    gatewayName: "nemoclaw",
+    gatewayPort: 19080,
+    sourceRegistryFingerprint: "a".repeat(64),
+    sourceLiveIdentityFingerprint: "b".repeat(64),
+    sourceConfirmedAbsent: true,
+    targetGeneration: "replacement-generation",
+    reservationSessionId: "session-alpha",
+  };
+  const entry = {
+    name: "alpha",
+    gatewayName: "nemoclaw",
+    gatewayPort: 19080,
+    lifecycleGeneration: proof.targetGeneration,
+    nativeCustomProviderAttachment: { providerName: "selected-replacement" },
+  } as SandboxEntry;
+
+  it("leaves ordinary creation outside recreate cleanup", async () => {
+    const retire = vi.fn();
+    await retireRecreatedNativeCustomProviders({ proof: null, entry, retire });
+    expect(retire).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    { ...entry, pendingRouteReservation: true as const },
+    { ...entry, name: "peer" },
+    { ...entry, gatewayName: "other-gateway" },
+    { ...entry, gatewayPort: 19081 },
+    { ...entry, lifecycleGeneration: "source-generation" },
+  ])("preserves resources without registered replacement authority [case %#]", async (recorded) => {
+    const retire = vi.fn();
+    await expect(
+      retireRecreatedNativeCustomProviders({ proof, entry: recorded, retire }),
+    ).rejects.toThrow("before replacement registration");
+    expect(retire).not.toHaveBeenCalled();
+  });
+
+  it("keeps the registered replacement's provider while retiring scoped residual receipts", async () => {
+    const retire = vi.fn();
+    await retireRecreatedNativeCustomProviders({ proof, entry, retire });
+    expect(retire).toHaveBeenCalledWith({
+      gatewayName: "nemoclaw",
+      sandboxName: "alpha",
+      attachment: entry.nativeCustomProviderAttachment,
+      keepProviderName: "selected-replacement",
+    });
+  });
+
+  it("propagates incomplete retirement and retries from the same registered target", async () => {
+    const retire = vi.fn().mockRejectedValueOnce(new Error("route revocation unconfirmed"));
+    const before = structuredClone(entry);
+    await expect(retireRecreatedNativeCustomProviders({ proof, entry, retire })).rejects.toThrow(
+      "route revocation unconfirmed",
+    );
+    expect(entry).toEqual(before);
+    await retireRecreatedNativeCustomProviders({ proof, entry, retire });
+    expect(retire).toHaveBeenCalledTimes(2);
+    expect(entry).toEqual(before);
   });
 });
