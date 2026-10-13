@@ -687,6 +687,23 @@ function recoverNativeCustomEndpointAdmission(
   return { retry: "selection" };
 }
 
+async function rollbackNativeCustomAdapterAfterSetupFailure(
+  admitted: NativeCustomProfile | undefined,
+  retained: NativeCustomProviderAttachment | undefined,
+  revokeRoute: typeof revokeHttpsPinRuntimeAdapterRoute | undefined,
+  setupError: unknown,
+): Promise<void> {
+  try {
+    await rollbackNativeCustomAdapterRoute(admitted, retained, revokeRoute);
+  } catch (rollbackError) {
+    throw new AggregateError(
+      [setupError, rollbackError],
+      "Native custom inference setup failed, and adapter route rollback was not confirmed.",
+      { cause: setupError },
+    );
+  }
+}
+
 export function createSetupInference(
   defaults: SetupInferenceDeps,
   overrides: Partial<SetupInferenceDeps> = {},
@@ -1597,10 +1614,11 @@ export function createSetupInference(
           shouldLogSuccessfulRoute = true;
           return { ok: true as const };
         } catch (error) {
-          await rollbackNativeCustomAdapterRoute(
+          await rollbackNativeCustomAdapterAfterSetupFailure(
             admittedNativeCustomAdapter,
             retainedNativeCustomAdapter,
             deps.revokeHttpsPinRuntimeAdapterRoute,
+            error,
           );
           if (!hostLocalRoute || !hostLocalSelection)
             return recoverNativeCustomEndpointAdmission(error, {

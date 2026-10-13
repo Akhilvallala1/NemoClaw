@@ -29,8 +29,9 @@ graph LR
     USER(["👤 User"]):::user
 
     subgraph EXTERNAL["External Services"]
-        SHARED_INFERENCE["Shared-route inference providers<br/><small>OpenAI · Anthropic · Ollama<br/>vLLM · Model Router</small>"]:::external
+        SHARED_INFERENCE["Shared-route inference providers<br/><small>Ollama · vLLM · Model Router<br/>retained legacy selections</small>"]:::external
         NVIDIA_INFERENCE["NVIDIA Endpoints<br/><small>integrate.api.nvidia.com</small>"]:::external
+        HOSTED_INFERENCE["Fixed hosted native providers<br/><small>OpenAI · Anthropic · Gemini<br/>OpenRouter · Hermes Provider</small>"]:::external
         CUSTOM_INFERENCE["Custom hosted endpoint<br/><small>Admitted API and endpoint</small>"]:::external
         INTEGRATIONS["Integration APIs<br/><small>MCP · GitHub · package indexes</small>"]:::external
         INTERNET["Internet<br/><small>PyPI · npm · GitHub · APIs</small>"]:::external
@@ -70,7 +71,8 @@ graph LR
     AGENT -->|"Shared inference requests<br/><small>inference.local · no credentials</small>"| GW
     GW -->|"Shared-route request with<br/>credential injected"| SHARED_INFERENCE
     AGENT -->|"Attached NVIDIA provider<br/><small>restricted request · placeholder credential</small>"| NVIDIA_INFERENCE
-    AGENT -->|"Attached custom provider<br/><small>restricted HTTP egress · issued credential rewritten</small>"| CUSTOM_INFERENCE
+    AGENT -->|"Attached fixed hosted provider<br/><small>restricted request · placeholder credential</small>"| HOSTED_INFERENCE
+    AGENT -->|"Attached custom provider<br/><small>direct admitted HTTP or HTTPS IP egress</small>"| CUSTOM_INFERENCE
     AGENT -->|"Attached custom provider<br/><small>restricted adapter egress · issued credential rewritten</small>"| CUSTOM_ADAPTER
     CUSTOM_ADAPTER -->|"Pinned HTTPS or authenticated Bedrock"| CUSTOM_INFERENCE
 
@@ -176,8 +178,9 @@ graph TB
         end
     end
 
-    SHARED_INFER["Shared-route inference provider<br/><small>OpenAI · Anthropic · Ollama<br/>vLLM · Model Router</small>"]:::external
+    SHARED_INFER["Shared-route inference provider<br/><small>Ollama · vLLM · Model Router<br/>retained legacy selections</small>"]:::external
     NVIDIA_INFER["NVIDIA Endpoints<br/><small>integrate.api.nvidia.com</small>"]:::external
+    HOSTED_INFER["Fixed hosted native providers<br/><small>OpenAI · Anthropic · Gemini<br/>OpenRouter · Hermes Provider</small>"]:::external
     CUSTOM_INFER["Custom hosted endpoint<br/><small>Admitted API and endpoint or host adapter</small>"]:::external
 
     CLI -->|"openshell CLI<br/>(orchestrates)"| GW
@@ -185,6 +188,7 @@ graph TB
     SANDBOX -->|"shared-route requests<br/><small>inference.local · placeholder credentials</small>"| GW
     GW -->|"shared-route egress<br/>credential injected at L7 proxy"| SHARED_INFER
     SANDBOX -->|"attached NVIDIA provider<br/><small>restricted egress · placeholder rewritten</small>"| NVIDIA_INFER
+    SANDBOX -->|"attached fixed hosted provider<br/><small>restricted egress · placeholder rewritten</small>"| HOSTED_INFER
     SANDBOX -->|"attached custom provider<br/><small>restricted egress · credential reference rewritten</small>"| CUSTOM_INFER
 
     class HOST host
@@ -209,6 +213,7 @@ NemoClaw never gives the sandbox a raw provider key.
 At onboard time it registers credentials with OpenShell's provider and placeholder system.
 Shared routes use the gateway L7 proxy to substitute the real value at egress.
 NVIDIA Endpoints uses the sandbox-attached provider profile to enforce the restricted request and replace its placeholder at egress.
+Fixed hosted OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider selections also use sandbox-attached native providers.
 Fresh custom hosted selections likewise use their recorded sandbox-attached provider identity and admitted endpoint/API contract, including a host adapter where required.
 The CLI helper `isInferenceRouteReady` (in `src/lib/onboard.ts`) is a host-side readiness check used by the resume flow to decide whether the active route already covers the chosen provider and model.
 It is not a runtime component.
@@ -381,11 +386,12 @@ Supported agent runtime (sandbox)  ──▶  integrate.api.nvidia.com  ──�
 ```
 
 The NVIDIA request does not use the shared `inference.local` route.
+Fixed hosted OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider requests also use their recorded sandbox-attached providers without the shared route.
 
 Fresh custom hosted endpoints also use a provider attached to the selected sandbox.
 Its profile binds the admitted endpoint, API, executable allowlist, address set, and issued credential.
-Public HTTP requests use that endpoint directly through OpenShell's credential rewrite.
-HTTPS and classified Bedrock requests use their selected host adapter, which retains upstream TLS or AWS credential custody.
+Public HTTP and admitted HTTPS IP-literal requests use that endpoint directly through OpenShell's credential rewrite.
+DNS-backed HTTPS and classified Bedrock requests use their selected host adapter, which retains upstream TLS or AWS credential custody.
 Host-local endpoints and existing shared-route sandboxes retain their existing path.
 The attached OpenShell profile allows only the configured endpoint, methods, paths, and binaries, and it replaces the placeholder credential at egress.
 

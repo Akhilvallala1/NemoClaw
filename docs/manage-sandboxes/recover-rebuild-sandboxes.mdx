@@ -192,6 +192,7 @@ Every configured route must serve a valid response to a bounded request for the 
 Shared-route providers use `inference.local`.
 Their models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
 NVIDIA Endpoints verifies its sandbox-attached provider at `integrate.api.nvidia.com` and runs the bounded model request without the shared-route models probe.
+Fixed hosted OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider selections verify their recorded attachment and send the bounded request to the selected provider endpoint.
 Native custom hosted endpoints verify the recorded sandbox attachment and provider identity, then run the bounded request through the recorded endpoint or its HTTPS or Bedrock adapter.
 A missing or mismatched native attachment rejects readiness without falling back to `inference.local`.
 A failed required probe or model request rejects launch readiness.
@@ -200,6 +201,8 @@ This check is stricter than the HTTP 200–499 reachability diagnostic used by o
 <AgentOnly variant="deepagents">
 Every configured route must serve a valid response to a bounded request for the recorded model before NemoClaw accepts or publishes launch readiness.
 For shared-route providers, the models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
+NVIDIA Endpoints verifies its sandbox-attached provider at `integrate.api.nvidia.com` and runs the bounded model request without the shared-route models probe.
+Fixed hosted OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider selections verify their recorded attachment and send the bounded request to the selected provider endpoint.
 Native custom hosted endpoints verify the recorded sandbox attachment and provider identity.
 They run the bounded request through the recorded endpoint or its HTTPS or Bedrock adapter, without a shared-route models probe.
 Missing or mismatched native authority rejects readiness without falling back to `inference.local`.

@@ -1197,6 +1197,7 @@ During that lease, another `launch` still verifies these conditions:
 - The recorded inference selection matches its provider path, and every configured route serves a valid response to a bounded request for the recorded model.
   Shared-route providers use `inference.local`.
   NVIDIA Endpoints verifies the recorded sandbox-attached provider and sends the request to `https://integrate.api.nvidia.com/v1`.
+  Fixed hosted OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider selections verify their recorded sandbox attachment and send an authenticated request to the selected provider endpoint.
   Native custom hosted selections verify their recorded attachment and send an authenticated request through the selected endpoint and API.
   The shared-route models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
   A failed model request rejects readiness before the agent starts.
@@ -1208,6 +1209,7 @@ During that lease, another `launch` still verifies these conditions:
 - The recorded inference selection matches its provider path, which serves a valid response to a bounded request for the recorded model.
   Shared-route providers use `inference.local`.
   NVIDIA Endpoints verifies the recorded sandbox-attached provider and sends the request to `https://integrate.api.nvidia.com/v1`.
+  Fixed hosted OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider selections verify their recorded sandbox attachment and send an authenticated request to the selected provider endpoint.
   Native custom hosted selections verify their recorded attachment and send an authenticated request through the selected endpoint and API.
   The shared-route models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
   A failed model request rejects readiness before the agent starts.
@@ -4520,7 +4522,8 @@ Keep `NEMOCLAW_CUA_ENABLED=1` set whenever NemoClaw uses the experimental `nemoc
   application 'nemocua'`. Choose a non-host-local inference provider instead.
 </Warning>
 
-When NemoCUA uses the recorded `openrouter-api` provider, `https://inference.local/v1/models` returns `HTTP 404` by design because NemoClaw's OpenRouter adapter serves Chat Completions without a model catalog.
+When NemoCUA uses a retained shared-route `openrouter-api` selection, `https://inference.local/v1/models` returns `HTTP 404` by design because NemoClaw's shared-route OpenRouter adapter serves Chat Completions without a model catalog.
+A fresh OpenRouter selection uses its sandbox-attached provider and does not use `inference.local`.
 NemoClaw reports the route ready only after a bounded inference request successfully serves the selected model.
 If that request fails, the expected catalog response does not make the route ready.
 

@@ -123,12 +123,31 @@ describe("onboard shared gateway route containment", () => {
         verifyInferenceRoute: vi.fn(),
         log: vi.fn(),
       } as unknown as SetupInferenceDeps);
-      await expect(
-        setup("alpha", "model-a", "compatible-endpoint", endpointUrl, "COMPATIBLE_API_KEY"),
-      ).rejects.toThrow(
+      const result = setup(
+        "alpha",
+        "model-a",
+        "compatible-endpoint",
+        endpointUrl,
+        "COMPATIBLE_API_KEY",
+      );
+      await expect(result).rejects.toThrow(
         !cleanupConfirmed
-          ? new RegExp(`route '${routeId}' cleanup could not be confirmed`)
+          ? "Native custom inference setup failed, and adapter route rollback was not confirmed."
           : "setup operation failed",
+      );
+      await expect(result).rejects.toMatchObject(
+        cleanupConfirmed
+          ? {}
+          : {
+              errors: [
+                { message: "setup operation failed" },
+                {
+                  message: expect.stringContaining(
+                    `route '${routeId}' cleanup could not be confirmed`,
+                  ),
+                },
+              ],
+            },
       );
       expect(native.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledOnce();
       expect(native.revokeHttpsPinRuntimeAdapterRoute.mock.calls).toEqual(
