@@ -19,7 +19,6 @@ import { StringDecoder } from "node:string_decoder";
 
 import {
   NATIVE_NODE_UI_POLICY,
-  nativeQualificationLoopbackConfig,
   readOpenedRegularFile,
   writeNativeGatewayConfig,
 } from "./native-security.mts";
@@ -338,6 +337,7 @@ export function probeSource() {
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
+import { nativeLocalPipeName } from "./native-local-pipe.mts";
 
 const required = (name) => {
   const value = process.env[name];
@@ -353,6 +353,7 @@ const env = {
   ...process.env,
   HOME: home,
   NODE_DISABLE_COMPILE_CACHE: "1",
+  NEMOCLAW_MXC_BROKER_PIPE_PORT: String(mockPort),
   OPENCLAW_HOME: home,
   OPENCLAW_NO_RESPAWN: "1",
   USERPROFILE: home,
@@ -432,19 +433,19 @@ const mock = createServer(async (request, response) => {
 });
 await new Promise((resolve, reject) => {
   mock.once("error", reject);
-  mock.listen(mockPort, "127.0.0.1", resolve);
+  mock.listen({ path: nativeLocalPipeName(mockPort) }, resolve);
 });
 const configDirectory = join(home, ".openclaw");
 mkdirSync(configDirectory, { recursive: true });
 writeFileSync(join(configDirectory, "openclaw.json"), JSON.stringify({
-  models: { mode: "merge", providers: { mock: {
+  models: { mode: "merge", providers: { nemoclawNative: {
     baseUrl: "http://127.0.0.1:" + mockPort + "/v1",
     apiKey: "unused",
     api: "openai-completions",
     timeoutSeconds: 180,
-    models: [{ id: "mock-chat", name: "mock/mock-chat", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 131072, maxTokens: 4096 }],
+    models: [{ id: "mock-chat", name: "mock-chat", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 131072, maxTokens: 4096 }],
   } } },
-  agents: { defaults: { model: { primary: "mock/mock-chat" }, timeoutSeconds: 180, skipBootstrap: true, thinkingDefault: "off" }, list: [{ id: "main", default: true }] },
+  agents: { defaults: { model: { primary: "nemoclawNative/mock-chat" }, timeoutSeconds: 180, skipBootstrap: true, thinkingDefault: "off" }, list: [{ id: "main", default: true }] },
 }), "utf8");
 const version = await run(["--version"], 30000);
 const normalizedVersion = /\b2026\.9\.2\b/u.test(version.stdout) ? "2026.9.2" : version.stdout.trim();
@@ -538,24 +539,7 @@ async function main(runtimeLease: NativeRuntimeSession) {
       installRoot,
       runRoot,
       undefined,
-      async () => ({
-        network: nativeQualificationLoopbackConfig(
-          JSON.parse(
-            (
-              await run(
-                path.join(installRoot, "mxc", "wxc-exec.exe"),
-                ["--probe"],
-                allowlistedWindowsEnvironment(),
-                "Selecting the qualification network policy",
-                15_000,
-                undefined,
-                gatewaySession.ownCommandProcess,
-              )
-            ).stdout,
-          ),
-          [mockPort],
-        ),
-      }),
+      { network: { kind: "supervised" } },
       gatewaySession,
     );
     runtimeLease.assertHeld();
@@ -684,6 +668,7 @@ async function main(runtimeLease: NativeRuntimeSession) {
     ];
     for (const [name, value] of Object.entries(sandboxEnvironment))
       createArgs.push("--env", `${name}=${value}`);
+    createArgs.push("--detach", "--", ...nativeRuntimeWorkerCommand(runtimeLease, probePath));
     console.log("NEMOCLAW> Creating native MXC OpenClaw sandbox");
     const createFailure: { error: Error | null } = { error: null };
     create = spawn(openshell, createArgs, {

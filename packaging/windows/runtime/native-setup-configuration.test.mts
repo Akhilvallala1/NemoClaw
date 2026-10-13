@@ -337,6 +337,82 @@ function heldHermesRuntime(agent: "hermes" | "openclaw" = "hermes") {
   };
 }
 
+test("OpenClaw startup config routes its mock provider through the private broker pipe", async () => {
+  const source = probeSource();
+  const start = source.indexOf("const required =");
+  const end = source.indexOf("const version = await run(");
+  assert(start >= 0 && end > start);
+  const files = new Map<string, string>();
+  const listeners: unknown[] = [];
+  const context = {
+    process: {
+      env: {
+        NEMOCLAW_MXC_OPENCLAW_ENTRY: "C:\\sealed\\openclaw-app.cjs",
+        NEMOCLAW_MXC_HOME: "C:\\owned\\home",
+        NEMOCLAW_MXC_RESULT: "C:\\owned\\result.json",
+        NEMOCLAW_MXC_MOCK_PORT: "18790",
+      },
+    },
+    dirname: path.win32.dirname,
+    join: path.win32.join,
+    mkdirSync() {},
+    writeFileSync: (file: string, value: string) => files.set(file, value),
+    nativeLocalPipeName: (port: number) => {
+      assert.equal(port, 18790);
+      return String.raw`\\.\pipe\LOCAL\OpenShell-Loopback-18790`;
+    },
+    createServer: () => ({
+      once() {},
+      listen(options: unknown, ready: () => void) {
+        listeners.push(options);
+        ready();
+      },
+    }),
+  };
+  const environment = await runInNewContext(
+    `(async () => { ${source.slice(start, end)} return env; })()`,
+    context,
+  );
+  assert.equal(environment.NEMOCLAW_MXC_BROKER_PIPE_PORT, "18790");
+  assert.deepEqual(JSON.parse(JSON.stringify(listeners)), [
+    { path: String.raw`\\.\pipe\LOCAL\OpenShell-Loopback-18790` },
+  ]);
+  const config = JSON.parse(files.get("C:\\owned\\home\\.openclaw\\openclaw.json")!);
+  assert.deepEqual(Object.keys(config.models.providers), ["nemoclawNative"]);
+  assert.equal(config.models.providers.nemoclawNative.baseUrl, "http://127.0.0.1:18790/v1");
+  assert.equal(config.agents.defaults.model.primary, "nemoclawNative/mock-chat");
+});
+
+test("OpenClaw startup passes the held worker as the canonical sandbox command", () => {
+  const source = fs.readFileSync(
+    new URL("./run-installed-native-turn.mts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("    const createArgs = [");
+  const end = source.indexOf("    console.log(", start);
+  assert(start >= 0 && end > start);
+  const runtimeLease = heldHermesRuntime("openclaw");
+  const probePath = path.win32.join(runtimeLease.runtimeRoot, "workers", "native-runtime.cjs");
+  const args = runInNewContext(`${source.slice(start, end)} createArgs;`, {
+    runtimeLease,
+    probePath,
+    nativeRuntimeWorkerCommand,
+    sandboxName: "owned-startup",
+    policyPath: "owned-policy",
+    shareRoot: "owned-share",
+    sandboxEnvironment: { NEMOCLAW_WORKER_MODE: "openclaw-turn" },
+  }) as string[];
+  const command = nativeRuntimeWorkerCommand(runtimeLease, probePath);
+  assert.deepEqual(Array.from(args.slice(args.indexOf("--") + 1)), command);
+  assert(args.includes("--detach"));
+  assert(args.includes("--no-tty"));
+  assert.equal(args[args.indexOf("--env") + 1], "NEMOCLAW_WORKER_MODE=openclaw-turn");
+  assert.deepEqual(JSON.parse(args[args.indexOf("--driver-config-json") + 1]).mxc, {
+    command,
+    cwd: "owned-share",
+  });
+});
+
 test("Hermes compatibility paths and prebuilt command bind the live sealed lease", () => {
   const runtime = heldHermesRuntime();
   const compatibility = nativeHermesCompatibility(runtime);

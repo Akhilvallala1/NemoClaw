@@ -51,7 +51,19 @@ describe("native MXC execution completion", () => {
       waitForNativeMxcCompletion("openshell.exe", {}, "owned", gateway, lease),
     ).resolves.toBe("AgentCompleted");
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
-    expect(lease.assertHeld).toHaveBeenCalledTimes(2);
+    expect(lease.assertHeld).toHaveBeenCalledTimes(4);
+    expect(lease.assertHeld.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.invoke.mock.invocationCallOrder[0],
+    );
+    expect(lease.assertHeld.mock.invocationCallOrder[1]).toBeGreaterThan(
+      mocks.invoke.mock.invocationCallOrder[0],
+    );
+    expect(lease.assertHeld.mock.invocationCallOrder[2]).toBeLessThan(
+      mocks.invoke.mock.invocationCallOrder[1],
+    );
+    expect(lease.assertHeld.mock.invocationCallOrder[3]).toBeGreaterThan(
+      mocks.invoke.mock.invocationCallOrder[1],
+    );
     expect(mocks.invoke).toHaveBeenCalledWith(
       "openshell.exe",
       ["sandbox", "get", "owned", "-o", "json"],

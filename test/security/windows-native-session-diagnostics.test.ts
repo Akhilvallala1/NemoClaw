@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import fs from "node:fs";
-import childProcess from "node:child_process";
+import childProcess, { type ChildProcess } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { NativeGatewaySession } from "../../packaging/windows/runtime/native-gateway-session.mts";
 import {
   createNativeDiagnosticCapture,
   createNativeSessionDiagnostics,
@@ -24,6 +25,7 @@ type CommandRunner = {
     label: string,
     timeout: number,
     diagnostics?: { capture(channel: string, chunk: Buffer | string): void },
+    ownProcess?: (child: ChildProcess) => void,
   ): Promise<CommandResult>;
 };
 // Exercise the actual legacy command runner at its runtime module boundary.
@@ -46,8 +48,11 @@ function captureChunks(
   return capture;
 }
 
-async function withChild<T>(operation: (script: string) => Promise<T>): Promise<T> {
+async function withChild<T>(
+  operation: (script: string, ownProcess: (child: ChildProcess) => void) => Promise<T>,
+): Promise<T> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-diagnostic-child-"));
+  const owner = new NativeGatewaySession(root, path.join(root, "command-session"));
   const script = path.join(root, "child.mjs");
   fs.writeFileSync(
     script,
@@ -73,8 +78,9 @@ if (mode === "tail-stderr" || mode === "tail-stdout") {
     "utf8",
   );
   try {
-    return await operation(script);
+    return await operation(script, owner.ownCommandProcess);
   } finally {
+    await owner.dispose();
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
@@ -165,7 +171,7 @@ describe("native session diagnostic secrecy and final errors", () => {
   it.each(["tail-stdout", "tail-stderr"])(
     "retains final provisioning failure from %s and redacts child argv and environment",
     async (mode) => {
-      await withChild(async (script) => {
+      await withChild(async (script, ownProcess) => {
         const { run } = await runner;
         const envValue = "ENV_DIAGNOSTIC_CANARY";
         const argvValue = "ARGV_DIAGNOSTIC_CANARY=with-equals";
@@ -177,6 +183,8 @@ describe("native session diagnostic secrecy and final errors", () => {
             { ...process.env, TEST_SECRET: envValue },
             "controlled provisioning child",
             5000,
+            undefined,
+            ownProcess,
           );
         } catch (error) {
           failure = error;
@@ -232,16 +240,24 @@ describe("native session diagnostic secrecy and final errors", () => {
   });
 
   it("returns the complete output from a successful real child", async () => {
-    await withChild(async (script) => {
+    await withChild(async (script, ownProcess) => {
       const result = await (
         await runner
-      ).run(process.execPath, [script, "zero"], process.env, "controlled success", 5000);
+      ).run(
+        process.execPath,
+        [script, "zero"],
+        process.env,
+        "controlled success",
+        5000,
+        undefined,
+        ownProcess,
+      );
       expect(result).toEqual({ exitCode: 0, stdout: "successful result\n", stderr: "" });
     });
   });
 
   it("keeps a real timeout as failure and terminates the owned child", async () => {
-    await withChild(async (script) => {
+    await withChild(async (script, ownProcess) => {
       const spawned = vi.spyOn(childProcess, "spawn");
       syncBuiltinESMExports();
       try {
@@ -252,6 +268,8 @@ describe("native session diagnostic secrecy and final errors", () => {
             process.env,
             "controlled timeout",
             400,
+            undefined,
+            ownProcess,
           ),
         ).rejects.toThrow(/timed out/u);
         // The deadline can expire before Node prints. Observe the actual child handle.
@@ -279,7 +297,7 @@ describe("native session diagnostic secrecy and final errors", () => {
   });
 
   it("rejects a real zero-exit child when it exceeds the output limit", async () => {
-    await withChild(async (script) => {
+    await withChild(async (script, ownProcess) => {
       const capture = createNativeDiagnosticCapture(() => []);
       await expect(
         (await runner).run(
@@ -293,6 +311,7 @@ describe("native session diagnostic secrecy and final errors", () => {
               capture.write(chunk);
             },
           },
+          ownProcess,
         ),
       ).rejects.toThrow(/exceeded its diagnostic output limit/u);
       expect(capture.finish().length).toBeLessThanOrEqual(24 * 1024);

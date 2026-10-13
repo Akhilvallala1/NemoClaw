@@ -1147,8 +1147,8 @@ jobs:
             $result = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           $text = Get-Content -LiteralPath $log -Raw
-          if ($result -ne 0 -or $text -notmatch '(?m)^# pass 16\r?$' -or $text -notmatch '(?m)^# skipped 0\r?$') {
-            throw 'All sixteen private-session, private-pipe and Node TLS controls must execute without skips.'
+          if ($result -ne 0 -or $text -notmatch '(?m)^# pass 29\r?$' -or $text -notmatch '(?m)^# skipped 0\r?$') {
+            throw 'All twenty-nine command-custody, private-session, private-pipe and Node TLS controls must execute without skips.'
           }
           $ownerRoot = Join-Path $env:RUNNER_TEMP 'gateway-process-helper'
           & dotnet publish packaging/windows/tests/gateway-process/Gateway.Process.Controls.csproj `
@@ -2821,8 +2821,8 @@ jobs:
             $pythonResult = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           $pythonText = [string](Get-Content -LiteralPath $pythonLog -Raw)
-          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 164 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
-            throw 'The 164 MSI build and metadata controls did not all pass.'
+          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 174 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
+            throw 'The 174 MSI build and metadata controls did not all pass.'
           }
 
       - name: Build and exercise actual isolated MSI transactions

@@ -33,6 +33,16 @@ function step(job: WorkflowJob, name: string): WorkflowStep {
 }
 type Mutation = { name: string; mutate: (value: WindowsInstallerWorkflowSources) => void };
 const mutations: Mutation[] = [
+  ...[["  $controls\n", "  $untrustedControls\n"]].map(([before, after]) => ({
+    name: "retained-state controls lose trusted input: " + before.trim(),
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const control = step(
+        value.trusted.jobs["full-installed-acceptance"],
+        "Verify retained-state qualifier controls from trusted main",
+      );
+      control.run = control.run!.replace(before, after);
+    },
+  })),
   ...[
     "test/automation/pull-requests/windows-native-installer-process.test.ts",
     "test/automation/pull-requests/windows-native-installer-process.support.ts",
@@ -642,7 +652,10 @@ const mutations: Mutation[] = [
     {
       name: "candidate-source",
       apply: (_job: WorkflowJob, entry: WorkflowStep) => {
-        entry.run = entry.run!.replaceAll("\\controller\\", "\\candidate\\");
+        entry.run = entry.run!.replaceAll(
+          "GITHUB_WORKSPACE/controller",
+          "GITHUB_WORKSPACE/candidate",
+        );
       },
     },
     {

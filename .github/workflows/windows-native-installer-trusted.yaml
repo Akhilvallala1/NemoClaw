@@ -314,8 +314,9 @@ jobs:
       - name: Verify retained-state qualifier controls from trusted main
         shell: pwsh
         run: |
+          $controls = Join-Path "$env:GITHUB_WORKSPACE/controller" 'packaging/windows/installer/qualify-installed-openclaw.test.mts'
           & $env:TRUSTED_CONTROLLER_NODE --experimental-strip-types --no-warnings --test `
-            "$env:GITHUB_WORKSPACE\controller\packaging\windows\installer\qualify-installed-openclaw.test.mts"
+            $controls
           if ($LASTEXITCODE -ne 0) { throw 'The trusted OpenClaw retained-state qualifier controls failed.' }
       - name: Exercise installed preview, real inference and owned cleanup
         # The main-resident controller strips inherited keys from product children.

@@ -768,9 +768,10 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     );
     assert.ok(
       restartControls.run?.includes(
-        '"$env:GITHUB_WORKSPACE\\controller\\packaging\\windows\\installer\\qualify-installed-openclaw.test.mts"',
+        "$controls = Join-Path \"$env:GITHUB_WORKSPACE/controller\" 'packaging/windows/installer/qualify-installed-openclaw.test.mts'",
       ),
     );
+    assert.match(restartControls.run ?? "", /--test\s*`\r?\n\s+\$controls\r?\n/u);
     assert.ok(restartControls.run?.includes("if ($LASTEXITCODE -ne 0) { throw"));
     const qualificationGate = requiredStep(
       full,

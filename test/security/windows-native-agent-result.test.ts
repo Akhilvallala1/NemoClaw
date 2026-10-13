@@ -171,7 +171,13 @@ describe.each(routes)("native %s result cleanup", (route) => {
       const fixture = createNativeAgentCompletionFixture(route);
       const pending = fixture.finish();
       expect(fixture.queries).toEqual([
-        ["owned-openshell", fixture.environment, "owned-sandbox", fixture.gateway, null],
+        [
+          "owned-openshell",
+          fixture.environment,
+          "owned-sandbox",
+          fixture.gateway,
+          fixture.runtimeLease,
+        ],
       ]);
       expect(fixture.deletions).toEqual([]);
       await delay(25);
