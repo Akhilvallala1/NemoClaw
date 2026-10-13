@@ -40,6 +40,7 @@ function rebuild(
   nativePolicy?: unknown,
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment,
   customPolicy?: unknown,
+  hostedPolicy?: unknown,
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-native-rebuild-policy-test-"));
   roots.push(root);
@@ -50,6 +51,7 @@ function rebuild(
       host_rule: hostPolicy,
       ...(nativePolicy === undefined ? {} : { native_nvidia_inference: nativePolicy }),
       ...(customPolicy === undefined ? {} : { native_custom_inference: customPolicy }),
+      ...(hostedPolicy === undefined ? {} : { native_hosted_inference: hostedPolicy }),
     },
   });
   fs.writeFileSync(livePath, source, { mode: 0o600 });
@@ -71,7 +73,7 @@ function rebuild(
     "openclaw",
     null,
     "dp",
-    [nativeProvider],
+    [nativeProvider, "nemoclaw-openai-api-v1"],
     source,
     inferenceProvider,
     nativeCustomProviderAttachment,
@@ -276,6 +278,40 @@ describe("native custom rebuild policy", () => {
     expect(rebuild(null, undefined, undefined, custom).selected.network_policies).toEqual({
       host_rule: hostPolicy,
       native_custom_inference: custom,
+    });
+  });
+});
+
+describe("native hosted rebuild policy", () => {
+  const hostedProvider = "nemoclaw-openai-api-v1";
+
+  it.each(["nvidia-router", nativeProvider])(
+    "removes the old hosted grant when switching to %s",
+    (selected) => {
+      const hosted = rebuild(hostedProvider).replacement.network_policies.native_hosted_inference;
+      const result = rebuild(selected, undefined, undefined, undefined, hosted);
+      expect(result.selected.network_policies).not.toHaveProperty("native_hosted_inference");
+      expect(result.selected.network_policies.host_rule).toEqual(hostPolicy);
+      expect(fs.readFileSync(result.livePath, "utf8")).toBe(result.source);
+    },
+  );
+
+  it("replaces the NVIDIA grant with the selected hosted grant", () => {
+    const native = rebuild(nativeProvider).replacement.network_policies.native_nvidia_inference;
+    const result = rebuild(hostedProvider, native);
+    expect(result.selected.network_policies).toEqual({
+      host_rule: hostPolicy,
+      native_hosted_inference: result.replacement.network_policies.native_hosted_inference,
+    });
+  });
+
+  it("retains a hosted grant when no replacement inference was selected", () => {
+    const hosted = rebuild(hostedProvider).replacement.network_policies.native_hosted_inference;
+    expect(
+      rebuild(null, undefined, undefined, undefined, hosted).selected.network_policies,
+    ).toEqual({
+      host_rule: hostPolicy,
+      native_hosted_inference: hosted,
     });
   });
 });
