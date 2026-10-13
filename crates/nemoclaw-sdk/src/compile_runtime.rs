@@ -216,6 +216,7 @@ pub(crate) fn runtime_graph(
         let (kind, logical) = target.address.split_once('.').unwrap();
         graph["resource"][kind][logical] = attrs;
     }
+    service_plans.configure(&mut graph)?;
     Ok((graph, targets))
 }
 

@@ -107,10 +107,8 @@ data; it is not selective application removal. Never delete state to retry.
 As of October 6, 2026, the pinned Fabric revision has no supported native readiness
 check. [NemoClaw #12443](https://github.com/NVIDIA/NemoClaw/issues/12443) and
 [Fabric #298](https://github.com/NVIDIA/NeMo-Fabric/issues/298) track that missing
-capability. The declaration fixture explicitly sets sandbox `allowUnsupportedHealth: true`
-to allow installation after infrastructure and configuration checks when native
-health reports exactly unsupported. It does not report native health as passing;
-omission or false retains the strict default. Failed or unknown observations still fail.
+capability. Apply requires confirmed native agent health, so an unsupported result
+blocks apply and the application that depends on that sandbox's readiness.
 The application's own readiness must check its local inputs and startup independently.
 The application image and selected connection profile require joint qualification.
 HTTPS/OIDC connections require a container-reachable HTTPS endpoint and an external

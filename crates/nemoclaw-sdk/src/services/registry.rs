@@ -495,6 +495,13 @@ pub(crate) struct InstallPlans {
 }
 
 impl InstallPlans {
+    pub(crate) fn configure(&self, graph: &mut serde_json::Value) -> Result<(), crate::Error> {
+        for plan in &self.plans {
+            plan.configure(graph)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn targets(&self) -> impl Iterator<Item = &Target> {
         self.plans.iter().flat_map(|plan| plan.targets.iter())
     }

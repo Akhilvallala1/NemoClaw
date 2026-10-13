@@ -402,30 +402,10 @@ mod tests {
 
     #[tokio::test]
     async fn application_image_contract_rejects_missing_health_startup_and_platform() {
-        let fixtures: Vec<serde_json::Value> =
-            serde_json::from_str(include_str!("managed/reference.json")).unwrap();
-        let mut value: serde_json::Value =
-            serde_json::from_str(fixtures[1]["spec"].as_str().unwrap()).unwrap();
-        value["kind"] = json!("container_service");
-        for (key, value_to_set) in [
-            ("configuration", json!("")),
-            ("entrypoint", json!([])),
-            ("command", json!([])),
-            ("user", json!("65532:65532")),
-            ("gpu", json!(false)),
-            ("host_ipc", json!(false)),
-            ("mount_target", json!("/var/lib/application")),
-            ("memory_bytes", json!(1_u64 << 30)),
-            ("shared_memory_bytes", json!(64_u64 << 20)),
-        ] {
-            value["process"][key] = value_to_set;
-        }
-        let service: nemoclaw_sdk::managed::Spec = serde_json::from_value(value).unwrap();
-        let process = service.process.as_ref().unwrap();
         let spec = Requirements {
-            engine: service.engine().into(),
-            image: process.image.clone(),
-            architecture: process.architecture.clone(),
+            engine: "unix:///var/run/docker.sock".into(),
+            image: format!("application@sha256:{}", "a".repeat(64)),
+            architecture: "arm64".into(),
             labels: Default::default(),
             contract: "application".into(),
         };

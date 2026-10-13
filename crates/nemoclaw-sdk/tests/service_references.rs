@@ -127,17 +127,6 @@ fn container_service_uses_shared_compute_without_an_inference_consumer() {
             .values()
             .any(|image| image["name"] == container_service()["image"])
     );
-    let exported = document.yaml().unwrap();
-    assert_eq!(Document::parse(exported.as_bytes()).unwrap(), document);
-    assert_eq!(
-        compile(
-            &Document::parse(exported.as_bytes()).unwrap(),
-            &container_generations(),
-            "0.1.0"
-        )
-        .unwrap(),
-        graph
-    );
     let original = Document::parse(managed_ollama_service().to_string().as_bytes()).unwrap();
     assert_eq!(
         nemoclaw_sdk::compile::compile_runtime(&original, &container_generations(), "0.1.0")

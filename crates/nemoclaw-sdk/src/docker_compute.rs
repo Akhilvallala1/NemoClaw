@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Compile disposable service compute into standard Docker provider resources.
 use crate::config::ComputeDriver;
+use crate::services::literal;
 use crate::{Error, backend::Row, compile::Target, config::ImagePullPolicy, managed::Spec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -133,7 +134,7 @@ pub(crate) fn targets(raw: &[Target]) -> Result<Vec<Target>, Error> {
     let mut result = raw.to_vec();
     for target in &mut result {
         if address(&target.address).starts_with("docker_volume.") {
-            let retained = target.kind != crate::services::installers::container::STORAGE_KIND;
+            let retained = crate::services::resource_behavior(&target.kind).retained_storage;
             let storage = crate::managed::Storage::from_row(&target.values)?;
             target.address = address(&target.address);
             target.kind = "docker_volume".into();
@@ -183,15 +184,6 @@ pub(crate) fn targets(raw: &[Target]) -> Result<Vec<Target>, Error> {
     result.extend(ancillary.into_values());
     Ok(result)
 }
-/// Escape OpenTofu template sequences in every string of `value`.
-pub(crate) fn literal(value: &mut Value) {
-    match value {
-        Value::String(text) => *text = text.replace("${", "$${").replace("%{", "%%{"),
-        Value::Array(values) => values.iter_mut().for_each(literal),
-        Value::Object(values) => values.values_mut().for_each(literal),
-        _ => {}
-    }
-}
 fn rewrite(value: &mut Value, old: &str, new: &str) {
     match value {
         Value::String(text) if text == old => *text = new.into(),
@@ -232,7 +224,7 @@ fn container(target: &Target) -> Result<Value, Error> {
         .ok_or(Error::State("missing runtime process"))?;
     let launch = spec.container("/data")?;
     let mut attrs = json!({"name":spec.name,"labels":[{"label":crate::managed::OWNER_LABEL,"value":spec.owner}],"entrypoint":launch.entrypoint,"command":launch.cmd,"env":launch.env,"network_mode":spec.network(),"mounts":[{"type":"volume","source":spec.volume(),"target":process.mount_target}],"capabilities":[{"drop":["ALL"]}],"security_opts":["no-new-privileges"],"restart":"no","memory":process.memory_bytes/(1<<20),"memory_swap":process.memory_bytes/(1<<20),"shm_size":process.shared_memory_bytes/(1<<20),"ipc_mode":if process.host_ipc {"host"} else {"private"},"ulimit":[{"name":"memlock","soft":-1,"hard":-1},{"name":"stack","soft":67108864,"hard":67108864}],"ports":[{"internal":process.port,"external":process.port,"ip":process.bind_address,"protocol":"tcp"}],"log_driver":"json-file","log_opts":{"max-size":"32m","max-file":"3"},"must_run":true,"wait":false,"remove_volumes":false,"destroy_grace_seconds":60});
-    if target.kind == crate::services::installers::container::SERVICE_KIND {
+    if process.image_owned.is_some() {
         let attrs_map = attrs.as_object_mut().unwrap();
         attrs_map.remove("entrypoint");
         attrs_map.remove("command");
@@ -240,7 +232,7 @@ fn container(target: &Target) -> Result<Value, Error> {
         if process.port == 0 {
             attrs_map.remove("ports");
         }
-        attrs["user"] = json!(process.user);
+        attrs["user"] = json!(launch.user);
         attrs["labels"] = json!(
             spec.labels()?
                 .into_iter()
@@ -455,17 +447,9 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
             dependencies.push(json!(network.address));
         }
         attrs["depends_on"] = json!(dependencies);
-        if let Some(preconditions) = old
-            .get("lifecycle")
-            .and_then(|lifecycle| lifecycle.get("precondition"))
-        {
-            attrs["lifecycle"] = json!({"precondition":preconditions});
-        }
-        if target.kind == crate::services::installers::container::SERVICE_KIND {
-            let name = target.address.split_once('.').unwrap().1;
-            let inputs = format!("nemoclaw_container_inputs.{name}");
-            if raw.iter().any(|t| t.address == inputs) {
-                attrs["lifecycle"]["replace_triggered_by"] = json!([inputs]);
+        for attribute in ["precondition", "replace_triggered_by"] {
+            if let Some(value) = old.get("lifecycle").and_then(|l| l.get(attribute)) {
+                attrs["lifecycle"][attribute] = value.clone();
             }
         }
         let physical = address(&target.address);
@@ -496,23 +480,12 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
 }
 
 fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> {
-    let mut gates = Vec::new();
-    for target in raw
-        .iter()
-        .filter(|t| t.kind == crate::services::installers::container::inputs::INPUTS_KIND)
-    {
-        let spec: crate::services::installers::container::inputs::InputsSpec =
-            serde_json::from_str(&target.values["spec"])
-                .map_err(|_| Error::State("invalid application inputs"))?;
-        spec.validate()?;
-        let name = format!("runtime_input_image_{}", spec.service);
-        let mut config: Value = serde_json::from_str(&spec.image_requirements().json()?)
-            .map_err(|_| Error::State("invalid input image requirements"))?;
-        config["allow_missing"] = json!(false);
-        literal(&mut config);
-        graph["data"]["nemoclaw_runtime_image"][&name] = config;
-        gates.push(json!(format!("data.nemoclaw_runtime_image.{name}")));
-    }
+    let mut gates: Vec<_> = graph["data"]["nemoclaw_runtime_image"]
+        .as_object()
+        .into_iter()
+        .flat_map(|checks| checks.keys())
+        .map(|name| json!(format!("data.nemoclaw_runtime_image.{name}")))
+        .collect();
     for target in raw.iter().filter(|target| {
         matches!(
             target.kind.as_str(),
@@ -537,7 +510,7 @@ fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
             "image": service.image(),
             "architecture": process.architecture,
             "labels": process.image_labels,
-            "contract": if target.kind == crate::services::installers::container::SERVICE_KIND { "application" } else { "runtime" },
+            "contract": if process.image_owned.is_some() { "application" } else { "runtime" },
             "allow_missing": image.kind == "docker_image",
         });
         literal(&mut config);
@@ -596,6 +569,65 @@ mod tests {
         compile::{Generations, runtime_graph},
         config::Document,
     };
+    #[test]
+    fn docker_compilation_keeps_preparation_specs_opaque() {
+        let document = Document::parse(
+            include_bytes!("../tests/fixtures/config/container-agent-connection.yaml").as_slice(),
+        )
+        .unwrap();
+        let generations = crate::state::Record::new(document.clone())
+            .unwrap()
+            .generations;
+        let mut raw: Vec<_> = crate::services::install_plans(
+            &document,
+            &generations,
+            crate::services::InstallStage::Deployment,
+        )
+        .unwrap()
+        .targets()
+        .cloned()
+        .collect();
+        let inputs = raw
+            .iter_mut()
+            .find(|t| t.kind == "container_inputs")
+            .unwrap();
+        let spec: crate::services::installers::container::inputs::InputsSpec =
+            serde_json::from_str(&inputs.values["spec"]).unwrap();
+        let mut image: Value =
+            serde_json::from_str(&spec.image_requirements().json().unwrap()).unwrap();
+        image["allow_missing"] = json!(false);
+        inputs.address = "nemoclaw_container_inputs.delivery".into();
+        inputs
+            .values
+            .insert("spec".into(), "opaque preparation payload".into());
+        let mut graph = json!({
+            "resource": {},
+            "data": {"nemoclaw_runtime_image": {"publisher": image}}
+        });
+        for target in &raw {
+            let (kind, name) = target.address.split_once('.').unwrap();
+            graph["resource"][kind][name] = json!(target.values);
+        }
+        graph["resource"]["nemoclaw_container_service"]["voice"]["lifecycle"] = json!({
+            "replace_triggered_by": ["nemoclaw_container_inputs.delivery"]
+        });
+        configure(&mut graph, &raw).unwrap();
+        let application = &graph["resource"]["docker_container"]["container_service_voice"];
+        assert_eq!(
+            application["lifecycle"]["replace_triggered_by"],
+            json!(["nemoclaw_container_inputs.delivery"])
+        );
+        assert_eq!(
+            graph["resource"]["nemoclaw_container_inputs"]["delivery"]["spec"],
+            "opaque preparation payload"
+        );
+        assert!(
+            application["depends_on"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("data.nemoclaw_runtime_image.publisher"))
+        );
+    }
     #[test]
     fn model_caches_use_native_volume_recovery_with_explicit_retention() {
         let document =

@@ -37,7 +37,7 @@ pub struct Spec {
 }
 
 /// Package-neutral container process compiled by a service installer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Process {
     pub engine: String,
@@ -55,13 +55,8 @@ pub struct Process {
     pub entrypoint: Vec<String>,
     #[serde(default)]
     pub command: Vec<String>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub user: String,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub environment: std::collections::BTreeMap<String, String>,
-    /// Nonsecret input-reference revision. Changed delivery intent replaces disposable application data.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub input_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_owned: Option<ImageLaunch>,
     pub mount_target: String,
     pub bind_address: String,
     pub port: u16,
@@ -69,6 +64,16 @@ pub struct Process {
     pub host_ipc: bool,
     pub memory_bytes: u64,
     pub gpu: bool,
+}
+
+/// Launch settings when the image owns its entrypoint, command, and health check.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageLaunch {
+    pub user: String,
+    pub environment: std::collections::BTreeMap<String, String>,
+    /// Nonsecret delivery revision used by the service's disposable storage policy.
+    pub input_revision: String,
 }
 /// Data source computing a Docker gateway container's launch.
 pub const GATEWAY_RUNTIME_DATA_SOURCE: &str = "gateway_runtime";
@@ -315,30 +320,15 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
-impl Process {
-    fn valid_application(&self) -> bool {
+impl ImageLaunch {
+    fn valid(&self) -> bool {
         let matches =
             |pattern: &str, value: &str| regex::Regex::new(pattern).unwrap().is_match(value);
         let env_name = regex::Regex::new(crate::config::constraints::ENV).unwrap();
-        self.engine.starts_with("unix:///")
-            && matches(crate::config::constraints::IMAGE, &self.image)
-            && !self.image.contains(['\0', '\r', '\n'])
-            && matches!(self.architecture.as_str(), "arm64" | "amd64")
-            && self
-                .network_cidr
-                .parse::<ipnet::Ipv4Net>()
-                .is_ok_and(|net| {
-                    net.addr().is_private() && net.prefix_len() == 24 && net.addr() == net.network()
-                })
-            && self.configuration.is_empty()
+        !self.user.is_empty()
+            && self.user.len() <= 1 << 20
+            && !self.user.contains(['\0', '\r', '\n'])
             && (self.input_revision.is_empty() || matches(r"^[a-f0-9]{64}$", &self.input_revision))
-            && self.entrypoint.is_empty()
-            && self.command.is_empty()
-            && !self.gpu
-            && !self.host_ipc
-            && self.memory_bytes == 1 << 30
-            && self.shared_memory_bytes == 64 << 20
-            && matches(crate::config::constraints::APPLICATION_USER, &self.user)
             && self.environment.len() <= 128
             && self.environment.values().map(String::len).sum::<usize>() <= 128 << 10
             && self.environment.iter().all(|(key, value)| {
@@ -347,16 +337,23 @@ impl Process {
                     && value.len() <= 65536
                     && !value.contains('\0')
             })
-            && matches(
-                crate::config::constraints::APPLICATION_ROOT,
-                &self.mount_target,
-            )
-            && (self.port == 0 && self.bind_address.is_empty()
-                || self.port >= 1024
-                    && self
-                        .bind_address
-                        .parse::<std::net::Ipv4Addr>()
-                        .is_ok_and(|ip| ip.is_private() || ip.is_loopback()))
+    }
+}
+impl Process {
+    fn valid_launch(&self) -> bool {
+        if let Some(image) = &self.image_owned {
+            image.valid()
+                && self.configuration.is_empty()
+                && self.entrypoint.is_empty()
+                && self.command.is_empty()
+        } else {
+            !self.configuration.is_empty()
+                && !self.configuration.contains(['\0', '\r', '\n'])
+                && self.configuration.len() <= 1 << 20
+                && !self.entrypoint.is_empty()
+                && !self.bind_address.is_empty()
+                && self.port != 0
+        }
     }
 }
 impl Spec {
@@ -412,17 +409,7 @@ impl Spec {
                 && crate::config::validate_engine_endpoint(&process.engine).is_ok()
                 && (process.engine.starts_with("unix://") || process.engine.starts_with("ssh://"))
                 && process.image.contains("@sha256:")
-                && (if self.kind == crate::services::installers::container::SERVICE_KIND {
-                    process.valid_application()
-                } else {
-                    valid_token(&process.configuration)
-                        && !process.entrypoint.is_empty()
-                        && process.user.is_empty()
-                        && process.environment.is_empty()
-                        && process.input_revision.is_empty()
-                        && !process.bind_address.is_empty()
-                        && process.port != 0
-                })
+                && process.valid_launch()
                 && process.entrypoint.iter().all(|value| valid_token(value))
                 && process.command.iter().all(|value| valid_token(value))
                 && process.mount_target.starts_with('/')
@@ -497,6 +484,7 @@ impl Spec {
         self.validate_runtime()?;
         self.process
             .as_ref()
+            .filter(|process| process.image_owned.is_none())
             .map(|process| process.configuration.as_str())
             .ok_or(Error::Conflict(
                 "runtime specification has no managed service process",
@@ -516,13 +504,23 @@ impl Spec {
     /// # Errors
     /// Returns validation or serialization errors from `json`.
     pub fn labels(&self) -> Result<HashMap<String, String>, Error> {
-        let mut identity = self.clone();
-        identity.gateway.image_pull_policy = None;
+        self.validate()?;
+        let identity = if self.process.is_some() {
+            let mut identity = serde_json::to_value(self)
+                .map_err(|_| Error::State("cannot serialize process identity"))?;
+            identity.as_object_mut().unwrap().remove("gateway");
+            serde_json::to_string(&identity)
+                .map_err(|_| Error::State("cannot serialize process identity"))?
+        } else {
+            let mut identity = self.clone();
+            identity.gateway.image_pull_policy = None;
+            identity.json()?
+        };
 
         Ok([
             (OWNER_LABEL.into(), self.owner.clone()),
             (GENERATION_LABEL.into(), self.generation.clone()),
-            (SPEC_LABEL.into(), hex(Sha256::digest(identity.json()?))),
+            (SPEC_LABEL.into(), hex(Sha256::digest(identity))),
         ]
         .into())
     }
@@ -531,7 +529,8 @@ impl Spec {
             &self.name,
             self.process
                 .as_ref()
-                .map_or("", |p| p.input_revision.as_str()),
+                .and_then(|p| p.image_owned.as_ref())
+                .map_or("", |image| image.input_revision.as_str()),
         )
     }
     pub fn network(&self) -> String {
@@ -594,10 +593,10 @@ impl Spec {
             let process = self.process.as_ref().ok_or(Error::Conflict(
                 "runtime specification has no managed service process",
             ))?;
-            if self.kind == crate::services::installers::container::SERVICE_KIND {
-                config["User"] = json!(process.user);
+            if let Some(image) = &process.image_owned {
+                config["User"] = json!(image.user);
                 config["Env"] = json!(
-                    process
+                    image
                         .environment
                         .iter()
                         .map(|(key, value)| format!("{key}={value}"))
@@ -623,7 +622,7 @@ impl Spec {
             if process.gpu {
                 host["DeviceRequests"] = json!([{"Driver":"","Count":-1,"Capabilities":[["gpu"]]}]);
             }
-            if self.kind != crate::services::installers::container::SERVICE_KIND {
+            if process.image_owned.is_none() {
                 host["Ulimits"] = json!([{"Name":"memlock","Soft":-1,"Hard":-1},{"Name":"stack","Soft":67108864,"Hard":67108864}]);
             }
             if process.port != 0 {

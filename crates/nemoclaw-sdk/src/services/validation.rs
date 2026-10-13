@@ -33,6 +33,9 @@ pub fn validate_resource_spec(kind: &str, encoded: &str) -> Result<(), Error> {
         ollama::SERVICE_KIND => {
             ollama::configured_service(&spec)?;
         }
+        super::installers::container::SERVICE_KIND => {
+            super::installers::container::validate_spec(&spec)?;
+        }
         _ => {}
     }
     Ok(())

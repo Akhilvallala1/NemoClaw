@@ -6,7 +6,7 @@ use crate::{
     Error,
     compile::{Generations, Target},
     config::{ConfigError, Document, ImagePullPolicy, validation::require},
-    managed::Process,
+    managed::{ImageLaunch, Process, Spec},
     services::contract::{InstallPlan, Installer, RemovePlan},
 };
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,47 @@ pub mod inputs;
 
 pub const SERVICE_KIND: &str = "container_service";
 pub const STORAGE_KIND: &str = "container_storage";
+
+/// Check the application policy on a compiled launch before installation or state reuse.
+pub(crate) fn validate_spec(spec: &Spec) -> Result<(), Error> {
+    spec.validate()?;
+    let process = spec
+        .process
+        .as_ref()
+        .filter(|p| p.image_owned.is_some())
+        .ok_or(Error::Conflict("application requires image-owned startup"))?;
+    let matches = |pattern: &str, value: &str| regex::Regex::new(pattern).unwrap().is_match(value);
+    let image = process.image_owned.as_ref().unwrap();
+    let valid = process.engine.starts_with("unix:///")
+        && matches(crate::config::constraints::APPLICATION_USER, &image.user)
+        && matches(crate::config::constraints::IMAGE, &process.image)
+        && !process.image.contains(['\0', '\r', '\n'])
+        && matches!(process.architecture.as_str(), "arm64" | "amd64")
+        && process
+            .network_cidr
+            .parse::<ipnet::Ipv4Net>()
+            .is_ok_and(|net| {
+                net.addr().is_private() && net.prefix_len() == 24 && net.addr() == net.network()
+            })
+        && !process.gpu
+        && !process.host_ipc
+        && process.memory_bytes == 1 << 30
+        && process.shared_memory_bytes == 64 << 20
+        && matches(
+            crate::config::constraints::APPLICATION_ROOT,
+            &process.mount_target,
+        )
+        && (process.port == 0 && process.bind_address.is_empty()
+            || process.port >= 1024
+                && process
+                    .bind_address
+                    .parse::<std::net::Ipv4Addr>()
+                    .is_ok_and(|ip| ip.is_private() || ip.is_loopback()));
+    if !valid {
+        return Err(Error::Conflict("invalid application process"));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -264,20 +305,16 @@ impl Installer for Service {
             network_cidr,
             create_network: shared_gateway.is_none(),
             architecture: self.architecture.clone(),
-            image_labels: BTreeMap::new(),
-            pull_image: false,
-            image_pull_policy: None,
-            configuration: String::new(),
-            entrypoint: Vec::new(),
-            command: Vec::new(),
-            user: self.user.clone(),
-            environment: self.environment.clone(),
-            input_revision: inputs::input_revision(
-                &self.user,
-                &self.data.mount_path,
-                &self.secrets,
-                &connections,
-            ),
+            image_owned: Some(ImageLaunch {
+                user: self.user.clone(),
+                environment: self.environment.clone(),
+                input_revision: inputs::input_revision(
+                    &self.user,
+                    &self.data.mount_path,
+                    &self.secrets,
+                    &connections,
+                ),
+            }),
             mount_target: self.data.mount_path.clone(),
             bind_address: self
                 .publication
@@ -285,9 +322,8 @@ impl Installer for Service {
                 .map_or(String::new(), |p| p.bind_address.clone()),
             port: self.publication.as_ref().map_or(0, |p| p.port),
             shared_memory_bytes: 64 << 20,
-            host_ipc: false,
             memory_bytes: 1 << 30,
-            gpu: false,
+            ..Process::default()
         };
         let spec = docker::specification(
             document,
@@ -297,6 +333,7 @@ impl Installer for Service {
             shared_gateway.map_or_else(Default::default, |gateway| gateway.runtime_settings()),
             process,
         )?;
+        validate_spec(&spec)?;
         let values = crate::backend::Row::from([(
             "wait_timeout_seconds".into(),
             self.readiness.startup_timeout_seconds.to_string(),
@@ -317,6 +354,8 @@ impl Installer for Service {
         }
         let mut targets = Vec::new();
         let mut edges = BTreeMap::new();
+        let mut image_checks = BTreeMap::new();
+        let mut replacement_triggers = BTreeMap::new();
         for connection in self.agent_connections.values() {
             dependencies.push(format!(
                 "data.fabric_sandbox_readiness.{}",
@@ -330,7 +369,15 @@ impl Installer for Service {
                 architecture: self.architecture.clone(),
                 user: self.user.clone(),
                 root: self.data.mount_path.clone(),
-                revision: spec.process.as_ref().unwrap().input_revision.clone(),
+                revision: spec
+                    .process
+                    .as_ref()
+                    .unwrap()
+                    .image_owned
+                    .as_ref()
+                    .unwrap()
+                    .input_revision
+                    .clone(),
                 local_gateway: connections
                     .values()
                     .any(|c| c.authentication.mode == connection::AuthenticationMode::None)
@@ -346,6 +393,11 @@ impl Installer for Service {
                 connections,
             };
             inputs.validate()?;
+            image_checks.insert(
+                format!("runtime_input_image_{name}"),
+                inputs.image_requirements(),
+            );
+            replacement_triggers.insert(address(SERVICE_KIND, name), vec![input_address.clone()]);
             targets.push(Target {
                 kind: inputs::INPUTS_KIND.into(),
                 address: input_address.clone(),
@@ -379,6 +431,8 @@ impl Installer for Service {
             InstallPlan {
                 targets,
                 dependencies: edges,
+                image_checks,
+                replacement_triggers,
             },
         )
     }

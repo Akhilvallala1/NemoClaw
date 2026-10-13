@@ -30,12 +30,12 @@ impl ImageRequirements {
             .process
             .as_ref()
             .ok_or(Error::State("missing runtime process"))?;
-        let contract = match spec.kind.as_str() {
-            "container_service" => ImageContract::Application,
-            "inference_service" | "ollama_service" => ImageContract::Runtime {
+        let contract = if process.image_owned.is_some() {
+            ImageContract::Application
+        } else {
+            ImageContract::Runtime {
                 labels: process.image_labels.clone(),
-            },
-            _ => return Err(Error::State("unsupported image contract")),
+            }
         };
         Ok(Self {
             engine: spec.engine().into(),

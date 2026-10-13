@@ -182,9 +182,6 @@ fn specification(
             .map_err(|_| Error::State("cannot serialize Ollama runtime configuration"))?,
         entrypoint: vec!["/usr/local/bin/nemoclaw-runtime".into()],
         command: Vec::new(),
-        user: String::new(),
-        environment: BTreeMap::new(),
-        input_revision: String::new(),
         mount_target: "/data".into(),
         bind_address: placed.bind_address,
         port: service.serving.port as u16,
@@ -199,6 +196,7 @@ fn specification(
             .is_some_and(|container| container.ipc == super::vllm::ServiceIpc::Host),
         memory_bytes: 104 * nemoclaw_runtime::hardware::GIB,
         gpu: true,
+        ..Process::default()
     };
     docker::specification(
         document,
@@ -234,6 +232,7 @@ impl Installer for ManagedOllama {
             InstallPlan {
                 targets: Vec::new(),
                 dependencies: BTreeMap::from([(address(SERVICE_KIND, name), prerequisites)]),
+                ..InstallPlan::default()
             },
         )
     }
@@ -265,6 +264,7 @@ impl Installer for OllamaProxy {
                 service,
                 vec![address(proxy::STORAGE, name), address(proxy::MODEL, name)],
             )]),
+            ..InstallPlan::default()
         })
     }
 

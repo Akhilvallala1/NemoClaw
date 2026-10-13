@@ -440,10 +440,7 @@ fn compile_with_plans(
                 .expect("Fabric configuration JSON");
             attributes["config_json"] = json!(model.replace("${", "$${").replace("%{", "%%{"));
         }
-        if target.kind == crate::services::installers::container::inputs::INPUTS_KIND {
-            let value = attributes["spec"]
-                .as_str()
-                .expect("application input specification");
+        if let Some(value) = attributes["spec"].as_str() {
             attributes["spec"] = json!(value.replace("${", "$${").replace("%{", "%%{"));
         }
         // OpenShell objects take typed inputs; their rows carry the JSON.
@@ -458,7 +455,7 @@ fn compile_with_plans(
                 let mut value = input.configuration(encoded).map_err(ConfigError::new)?;
                 // Values are still OpenTofu templates; keep literal policy
                 // paths and matchers intact through that interpretation.
-                crate::docker_compute::literal(&mut value);
+                crate::services::literal(&mut value);
                 attributes[input.attribute] = value;
             }
         }
@@ -541,7 +538,7 @@ fn compile_with_plans(
         }]});
         if crate::backend::openshell_lifecycle(&target.kind)
             != Some(crate::backend::OpenShellLifecycle::Reconstructible)
-            && target.kind != crate::services::installers::container::inputs::INPUTS_KIND
+            && !crate::services::resource_behavior(&target.kind).disposable
         {
             attributes["lifecycle"]["prevent_destroy"] = json!(true);
         }
@@ -599,15 +596,10 @@ fn compile_with_plans(
             // uuid() is unknown in a saved plan and records a unique observation
             // token, so failed applies cannot report stale health as a new result.
             readiness.insert("read_trigger".into(), json!("${uuid()}"));
-            let condition = if sandbox.allow_unsupported_health {
-                "${self.ready || try(jsondecode(self.health_json).supported == false && jsondecode(self.health_json).report == null && jsondecode(self.health_json).reason_code == \"fabric_health_unsupported\", false)}"
-            } else {
-                "${self.ready}"
-            };
             readiness.insert(
                 "lifecycle".into(),
                 json!({"postcondition":[{
-                    "condition":condition,
+                    "condition":"${self.ready}",
                     "error_message":"${self.error_message != null ? self.error_message : \"Fabric readiness could not be established; resources retained\"}"
                 }]}),
             );
@@ -617,6 +609,9 @@ fn compile_with_plans(
     graph["resource"] = resources;
     graph["data"]["fabric_sandbox_readiness"] = json!(sandbox_readiness);
     graph["data"]["openshell_gateway"]["apply"] = apply_readiness;
+    service_plans
+        .configure(&mut graph)
+        .map_err(|_| ConfigError::new("invalid service install requirements"))?;
     Ok(graph)
 }
 

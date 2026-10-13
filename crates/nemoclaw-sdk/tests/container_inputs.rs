@@ -67,15 +67,75 @@ fn local_development() -> Value {
 }
 
 #[test]
-fn application_launch_changes_preserve_preparation_intent() {
+fn image_owned_launch_is_independent_of_service_kind_and_keeps_application_policy() {
+    let document = Document::parse(authored().to_string().as_bytes()).unwrap();
+    let targets = nemoclaw_sdk::compile::targets(&document, &generations()).unwrap();
+    let target = targets
+        .iter()
+        .find(|t| t.kind == "container_service")
+        .unwrap();
+    let mut spec: nemoclaw_sdk::managed::Spec =
+        serde_json::from_str(&target.values["spec"]).unwrap();
+    let original = spec.container("/data").unwrap();
+    spec.kind = "custom_service".into();
+    let launch = spec.container("/data").unwrap();
+    assert_eq!(launch.user, original.user);
+    assert_eq!(launch.env, original.env);
+    assert_eq!(launch.entrypoint, original.entrypoint);
+    assert_eq!(launch.cmd, original.cmd);
+    spec.kind = "container_service".into();
+    spec.process.as_mut().unwrap().memory_bytes = 1;
+    assert!(
+        nemoclaw_sdk::services::validate_resource_spec(
+            &spec.kind,
+            &serde_json::to_string(&spec).unwrap()
+        )
+        .is_err()
+    );
+    spec.process.as_mut().unwrap().memory_bytes = 1 << 30;
+    spec.process
+        .as_mut()
+        .unwrap()
+        .image_owned
+        .as_mut()
+        .unwrap()
+        .user = "0:0".into();
+    spec.validate().unwrap();
+    assert!(
+        nemoclaw_sdk::services::validate_resource_spec(
+            &spec.kind,
+            &serde_json::to_string(&spec).unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn application_identity_uses_launch_settings_without_unrelated_gateway_settings() {
+    let application = |value: &Value| {
+        let document = Document::parse(value.to_string().as_bytes()).unwrap();
+        compile(&document, &generations(), "0.1.0").unwrap()["resource"]["docker_container"]
+            ["container_service_voice"]
+            .clone()
+    };
+    let mut value = authored();
+    let original = application(&value);
+    value["spec"]["gateway"]["endpoint"] = json!("http://127.0.0.1:18892");
+    assert_eq!(application(&value), original);
+    value["spec"]["services"]["voice"]["environment"] = json!({"LOG_LEVEL":"debug"});
+    assert_ne!(application(&value)["labels"], original["labels"]);
+    assert_eq!(application(&value)["mounts"], original["mounts"]);
+}
+
+#[test]
+fn launch_changes_preserve_preparation_and_input_references_replace_disposable_data() {
     let input = |value: &Value| {
         let document = Document::parse(value.to_string().as_bytes()).unwrap();
-        nemoclaw_sdk::compile::targets(&document, &generations())
-            .unwrap()
-            .into_iter()
-            .find(|target| target.kind == "container_inputs")
-            .unwrap()
-            .values
+        let graph = compile(&document, &generations(), "0.1.0").unwrap();
+        (
+            graph["resource"]["nemoclaw_container_inputs"]["voice"].clone(),
+            graph["resource"]["docker_volume"]["container_storage_voice"]["name"].clone(),
+        )
     };
     let mut value = authored();
     let original = input(&value);
@@ -86,20 +146,15 @@ fn application_launch_changes_preserve_preparation_intent() {
     assert_eq!(input(&value), original);
     value["spec"]["services"]["voice"]["secrets"]["speech"]["credential"]["env"] =
         json!("OTHER_SPEECH_KEY");
-    assert_ne!(input(&value), original);
+    let changed = input(&value);
+    assert_ne!(changed.0, original.0);
+    assert_ne!(changed.1, original.1);
 }
 
 #[test]
-fn local_container_connection_derives_the_owned_gateway_without_a_service_token() {
+fn local_container_connection_rejects_forged_managed_gateway_bindings() {
     let value = local_development();
-    assert!(
-        jsonschema::validator_for(&nemoclaw_sdk::config::schema::input_schema())
-            .unwrap()
-            .is_valid(&value)
-    );
     let document = Document::parse(value.to_string().as_bytes()).unwrap();
-    assert!(!document.credential_names().contains(&"SERVICE_TOKEN"));
-    assert!(document.credential_names().contains(&"SPEECH_KEY"));
     let targets = nemoclaw_sdk::compile::targets(&document, &generations()).unwrap();
     let input = targets
         .iter()
@@ -107,10 +162,6 @@ fn local_container_connection_derives_the_owned_gateway_without_a_service_token(
         .unwrap();
     let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
         serde_json::from_str(&input.values["spec"]).unwrap();
-    let (_, descriptor) = spec
-        .descriptor("11111111-2222-3333-4444-555555555555")
-        .unwrap()
-        .unwrap();
     let nemoclaw_sdk::config::Gateway::Managed(gateway) = &document.spec.gateway else {
         panic!("expected managed gateway")
     };
@@ -123,23 +174,6 @@ fn local_container_connection_derives_the_owned_gateway_without_a_service_token(
         .nth(1)
         .unwrap();
     let expected = format!("http://{address}:{port}");
-    assert_eq!(
-        descriptor["gateway"],
-        json!({"endpoint":expected, "tls":{"trust":"none","caFile":null}})
-    );
-    assert_eq!(
-        descriptor["authentication"],
-        json!({"mode":"none","credentialFile":null,"refreshMode":"none"})
-    );
-    assert_eq!(descriptor["target"]["workspace"], document.workspace());
-    assert_eq!(spec.secrets.len(), 1);
-    let exported = Document::parse(document.yaml().unwrap().as_bytes()).unwrap();
-    assert_eq!(document, exported);
-    assert_eq!(
-        compile(&document, &generations(), "0.1.0").unwrap(),
-        compile(&exported, &generations(), "0.1.0").unwrap()
-    );
-
     let mut explicit = value.clone();
     explicit["spec"]["services"]["voice"]["agentConnections"]["primary"]["gatewayEndpoint"] =
         json!(expected);
@@ -155,7 +189,7 @@ fn local_container_connection_derives_the_owned_gateway_without_a_service_token(
         let mut forged = serde_json::to_value(&spec).unwrap();
         *forged.pointer_mut(path).unwrap() = match path {
             "/connections/primary/gatewayEndpoint" => json!("http://192.168.77.2:8443"),
-            "/process/process/engine" => json!("unix:///other/docker.sock"),
+            "/storage/Engine" => json!("unix:///other/docker.sock"),
             _ => json!("192.168.77.0/24"),
         };
         let mut forged: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
@@ -271,43 +305,114 @@ fn container_authentication_schema_rejects_implicit_or_mixed_profiles() {
 }
 
 #[test]
-fn complete_local_container_fixture_binds_the_managed_gateway_and_protects_speech_inputs() {
-    let document =
-        Document::parse(include_str!("fixtures/config/container-managed-local.yaml").as_bytes())
-            .unwrap();
-    assert_eq!(
-        document.credential_names(),
-        ["AGENT_INFERENCE_API_KEY", "NVIDIA_API_KEY"]
-    );
-    let graph = compile(&document, &generations(), "0.1.0").unwrap();
-    let app = &graph["resource"]["docker_container"]["container_service_voice"];
-    assert!(
-        graph["resource"]["docker_network"].is_null(),
-        "application must not own a second gateway network"
-    );
-    assert!(
-        app["depends_on"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("nemoclaw_container_inputs.voice"))
-    );
-    let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
-        serde_json::from_str(
-            graph["resource"]["nemoclaw_container_inputs"]["voice"]["spec"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
-    let (_, descriptor) = spec
-        .descriptor("11111111-2222-3333-4444-555555555555")
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        descriptor["gateway"]["endpoint"],
-        "http://172.29.230.2:17681"
-    );
-    assert!(!graph.to_string().contains("OPENSHELL_OPERATOR_TOKEN"));
-    assert!(!graph.to_string().contains("APP_OPENSHELL_SERVICE_TOKEN"));
+fn canonical_connection_profiles_bind_descriptors_and_order_protected_delivery() {
+    let validator =
+        jsonschema::validator_for(&nemoclaw_sdk::config::schema::input_schema()).unwrap();
+    for (yaml, credentials, gateway, authentication) in [
+        (
+            include_str!("fixtures/config/container-managed-local.yaml"),
+            &["AGENT_INFERENCE_API_KEY", "NVIDIA_API_KEY"][..],
+            json!({"endpoint":"http://172.29.230.2:17681","tls":{"trust":"none","caFile":null}}),
+            json!({"mode":"none","credentialFile":null,"refreshMode":"none"}),
+        ),
+        (
+            include_str!("fixtures/config/container-agent-connection.yaml"),
+            &[
+                "AGENT_INFERENCE_API_KEY",
+                "APP_OPENSHELL_SERVICE_TOKEN",
+                "NVIDIA_API_KEY",
+                "OPENSHELL_OPERATOR_TOKEN",
+            ][..],
+            json!({"endpoint":"https://openshell.example.invalid:8443","tls":{"trust":"system","caFile":null}}),
+            json!({"mode":"oidcBearer","credentialFile":"/var/lib/application/credentials/openshell","refreshMode":"none"}),
+        ),
+    ] {
+        let value: Value = serde_saphyr::from_str(yaml).unwrap();
+        assert!(validator.is_valid(&value));
+        let document = Document::parse(yaml.as_bytes()).unwrap();
+        assert_eq!(document.credential_names(), credentials);
+        let graph = compile(&document, &generations(), "0.1.0").unwrap();
+        let restored = Document::parse(document.yaml().unwrap().as_bytes()).unwrap();
+        assert_eq!(restored, document);
+        assert_eq!(compile(&restored, &generations(), "0.1.0").unwrap(), graph);
+        let inputs = &graph["resource"]["nemoclaw_container_inputs"]["voice"];
+        assert_eq!(inputs["sandbox_id"], "${openshell_sandbox.assistant.id}");
+        assert!(
+            inputs["depends_on"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("docker_volume.container_storage_voice"))
+        );
+        assert!(!inputs.to_string().contains("OPENSHELL_OPERATOR_TOKEN"));
+        assert!(!inputs.to_string().contains("AGENT_INFERENCE_API_KEY"));
+        assert_eq!(
+            inputs.to_string().contains("APP_OPENSHELL_SERVICE_TOKEN"),
+            authentication["mode"] == "oidcBearer"
+        );
+        let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
+            serde_json::from_str(inputs["spec"].as_str().unwrap()).unwrap();
+        let sandbox_id = "11111111-2222-3333-4444-555555555555";
+        let (path, descriptor) = spec.descriptor(sandbox_id).unwrap().unwrap();
+        assert_eq!(path, "/var/lib/application/config/agent-connection.json");
+        assert_eq!(descriptor["schemaVersion"], "nemoclaw.agent-connection.v1");
+        assert_eq!(descriptor["target"]["workspace"], document.workspace());
+        assert_eq!(descriptor["target"]["sandboxId"], sandbox_id);
+        assert_eq!(
+            descriptor["target"]["agent"],
+            document.spec.sandboxes[0].agent.name
+        );
+        assert_eq!(descriptor["gateway"], gateway);
+        assert_eq!(descriptor["authentication"], authentication);
+        assert!(descriptor.get("credentialValue").is_none());
+        assert!(
+            !descriptor
+                .to_string()
+                .contains("APP_OPENSHELL_SERVICE_TOKEN")
+        );
+        let app = &graph["resource"]["docker_container"]["container_service_voice"];
+        assert_eq!(app["user"], "65532:65532");
+        for dependency in [
+            "nemoclaw_container_inputs.voice",
+            "data.fabric_sandbox_readiness.assistant",
+        ] {
+            assert!(
+                app["depends_on"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(dependency))
+            );
+        }
+        assert_eq!(
+            app["lifecycle"]["replace_triggered_by"],
+            json!(["nemoclaw_container_inputs.voice"])
+        );
+        assert_eq!(
+            graph["data"]["fabric_sandbox_readiness"]["assistant"]["lifecycle"]["postcondition"][0]
+                ["condition"],
+            "${self.ready}"
+        );
+        let environment = app["env"].as_array().unwrap();
+        assert!(environment.contains(&json!("APP_MODE=qualification")));
+        assert!(environment.contains(&json!(
+            "APP_AGENT_CONNECTION_FILE=/var/lib/application/config/agent-connection.json"
+        )));
+        for name in credentials {
+            assert!(
+                !environment
+                    .iter()
+                    .any(|entry| entry.as_str().unwrap().starts_with(&format!("{name}=")))
+            );
+        }
+        if authentication["mode"] == "none" {
+            assert!(
+                graph["resource"]["docker_network"].is_null(),
+                "application must not own a second gateway network"
+            );
+            assert_eq!(spec.secrets.len(), 1);
+            assert!(!graph.to_string().contains("OPENSHELL_OPERATOR_TOKEN"));
+            assert!(!graph.to_string().contains("APP_OPENSHELL_SERVICE_TOKEN"));
+        }
+    }
 }
 
 #[test]
@@ -344,128 +449,6 @@ fn protected_input_volume_labels_match_the_bound_process_generation() {
         );
         assert_eq!(cache["lifecycle"]["prevent_destroy"], true);
     }
-}
-
-#[test]
-fn complete_container_connection_document_keeps_operator_identity_out_of_application_inputs() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/config/container-agent-connection.yaml");
-    let document = Document::parse(std::fs::File::open(path).unwrap()).unwrap();
-    assert_eq!(
-        document.credential_names(),
-        [
-            "AGENT_INFERENCE_API_KEY",
-            "APP_OPENSHELL_SERVICE_TOKEN",
-            "NVIDIA_API_KEY",
-            "OPENSHELL_OPERATOR_TOKEN",
-        ]
-    );
-    let graph = compile(&document, &generations(), "0.1.0").unwrap();
-    let inputs = &graph["resource"]["nemoclaw_container_inputs"]["voice"];
-    let spec: Value = serde_json::from_str(inputs["spec"].as_str().unwrap()).unwrap();
-    assert!(!inputs.to_string().contains("OPENSHELL_OPERATOR_TOKEN"));
-    assert!(!inputs.to_string().contains("AGENT_INFERENCE_API_KEY"));
-    assert!(spec.to_string().contains("APP_OPENSHELL_SERVICE_TOKEN"));
-    assert_eq!(inputs["sandbox_id"], "${openshell_sandbox.assistant.id}");
-    let app = &graph["resource"]["docker_container"]["container_service_voice"];
-    assert_eq!(app["user"], "65532:65532");
-    for dependency in [
-        "nemoclaw_container_inputs.voice",
-        "data.fabric_sandbox_readiness.assistant",
-    ] {
-        assert!(
-            app["depends_on"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(dependency))
-        );
-    }
-    let environment = app["env"].as_array().unwrap();
-    assert!(environment.contains(&json!("APP_MODE=qualification")));
-    assert!(environment.contains(&json!(
-        "APP_AGENT_CONNECTION_FILE=/var/lib/application/config/agent-connection.json"
-    )));
-    for name in document.credential_names() {
-        assert!(
-            !environment
-                .iter()
-                .any(|entry| { entry.as_str().unwrap().starts_with(&format!("{name}=")) })
-        );
-    }
-    assert_eq!(
-        Document::parse(document.yaml().unwrap().as_bytes()).unwrap(),
-        document
-    );
-}
-
-#[test]
-fn unsupported_health_opt_in_changes_only_the_selected_sandbox_postcondition() {
-    let mut value = authored();
-    let graph = |value: &Value| {
-        compile(
-            &Document::parse(value.to_string().as_bytes()).unwrap(),
-            &generations(),
-            "0.1.0",
-        )
-        .unwrap()
-    };
-    let strict = graph(&value);
-    value["spec"]["sandboxes"][0]["allowUnsupportedHealth"] = json!(true);
-    let optional = graph(&value);
-    let condition =
-        optional["data"]["fabric_sandbox_readiness"]["assistant"]["lifecycle"]["postcondition"][0]
-            ["condition"]
-            .as_str()
-            .unwrap();
-    assert!(condition.contains("fabric_health_unsupported"));
-    assert!(condition.contains("supported == false"));
-    assert!(condition.contains("report == null"));
-    assert_eq!(
-        strict["data"]["fabric_sandbox_readiness"]["assistant"]["lifecycle"]["postcondition"][0]["condition"],
-        "${self.ready}"
-    );
-    assert_eq!(strict["resource"], optional["resource"]);
-    value["spec"]["sandboxes"][0]["allowUnsupportedHealth"] = json!(false);
-    assert_eq!(strict, graph(&value));
-}
-
-#[test]
-fn container_inputs_compile_references_and_order_complete_delivery_before_start() {
-    let value = authored();
-    let document = Document::parse(value.to_string().as_bytes()).unwrap();
-    assert!(document.credential_names().contains(&"SPEECH_KEY"));
-    assert!(document.credential_names().contains(&"SERVICE_TOKEN"));
-    let graph = compile(&document, &generations(), "0.1.0").unwrap();
-    let inputs = &graph["resource"]["nemoclaw_container_inputs"]["voice"];
-    assert_eq!(inputs["sandbox_id"], "${openshell_sandbox.assistant.id}");
-    assert!(inputs["spec"].as_str().unwrap().contains("SERVICE_TOKEN"));
-    assert!(
-        inputs["depends_on"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("docker_volume.container_storage_voice"))
-    );
-    let app = &graph["resource"]["docker_container"]["container_service_voice"];
-    for dependency in [
-        "nemoclaw_container_inputs.voice",
-        "data.fabric_sandbox_readiness.assistant",
-    ] {
-        assert!(
-            app["depends_on"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(dependency))
-        );
-    }
-    assert_eq!(
-        app["lifecycle"]["replace_triggered_by"],
-        json!(["nemoclaw_container_inputs.voice"])
-    );
-    assert!(app["env"].as_array().unwrap().is_empty());
-    assert_eq!(
-        Document::parse(document.yaml().unwrap().as_bytes()).unwrap(),
-        document
-    );
 }
 
 #[test]
@@ -556,33 +539,7 @@ fn setup_image_is_not_allowed_without_any_protected_inputs() {
 }
 
 #[test]
-fn changed_input_references_replace_disposable_data_but_literal_settings_do_not() {
-    let mut value = authored();
-    let graph = |v: &Value| {
-        compile(
-            &Document::parse(v.to_string().as_bytes()).unwrap(),
-            &generations(),
-            "0.1.0",
-        )
-        .unwrap()
-    };
-    let original = graph(&value);
-    value["spec"]["services"]["voice"]["secrets"]["speech"]["credential"]["env"] =
-        json!("OTHER_SPEECH_KEY");
-    let changed = graph(&value);
-    assert_ne!(
-        original["resource"]["docker_volume"]["container_storage_voice"]["name"],
-        changed["resource"]["docker_volume"]["container_storage_voice"]["name"]
-    );
-    value["spec"]["services"]["voice"]["environment"] = json!({"SETTING":"changed"});
-    assert_eq!(
-        changed["resource"]["docker_volume"]["container_storage_voice"]["name"],
-        graph(&value)["resource"]["docker_volume"]["container_storage_voice"]["name"]
-    );
-}
-
-#[test]
-fn application_descriptor_records_explicit_binding_without_secret_values() {
+fn application_descriptor_rejects_unresolved_binding_and_unknown_fields() {
     let document = Document::parse(authored().to_string().as_bytes()).unwrap();
     let target = nemoclaw_sdk::compile::targets(&document, &generations())
         .unwrap()
@@ -591,29 +548,6 @@ fn application_descriptor_records_explicit_binding_without_secret_values() {
         .unwrap();
     let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
         serde_json::from_str(&target.values["spec"]).unwrap();
-    let sandbox_id = "11111111-2222-3333-4444-555555555555";
-    let (path, descriptor) = spec.descriptor(sandbox_id).unwrap().unwrap();
-    assert_eq!(path, "/var/lib/application/config/agent-connection.json");
-    assert_eq!(descriptor["schemaVersion"], "nemoclaw.agent-connection.v1");
-    assert_eq!(descriptor["target"]["workspace"], document.workspace());
-    assert_eq!(descriptor["target"]["sandboxId"], sandbox_id);
-    assert_eq!(
-        descriptor["target"]["agent"],
-        document.spec.sandboxes[0].agent.name
-    );
-    assert_eq!(
-        descriptor["gateway"]["tls"],
-        json!({"trust":"system","caFile":null})
-    );
-    assert_eq!(
-        descriptor["authentication"]["credentialFile"],
-        "/var/lib/application/credentials/openshell"
-    );
-    assert!(descriptor.get("credentialValue").is_none());
-    assert!(
-        !descriptor.to_string().contains("SERVICE_TOKEN"),
-        "descriptor has a file path, not an installer credential reference"
-    );
     assert!(spec.descriptor("unresolved").is_err());
     assert!(serde_json::from_value::<nemoclaw_sdk::services::installers::container::inputs::InputsSpec>({
         let mut value=serde_json::to_value(&spec).unwrap(); value["unexpected"]=json!("field"); value

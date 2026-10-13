@@ -89,6 +89,6 @@ pub(super) fn install(
     targets.extend(preparation.targets);
     Ok(InstallPlan {
         targets,
-        dependencies: preparation.dependencies,
+        ..preparation
     })
 }

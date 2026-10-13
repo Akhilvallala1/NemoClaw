@@ -235,20 +235,22 @@ mod container_tests {
     }
 
     fn application() -> (Spec, serde_json::Value) {
-        let fixtures: Vec<serde_json::Value> =
-            serde_json::from_str(include_str!("../managed/reference.json")).unwrap();
-        let mut value: serde_json::Value =
-            serde_json::from_str(fixtures[1]["spec"].as_str().unwrap()).unwrap();
-        value["kind"] = json!("container_service");
-        value["process"]["configuration"] = json!("");
-        value["process"]["entrypoint"] = json!([]);
-        value["process"]["command"] = json!([]);
-        value["process"]["gpu"] = json!(false);
-        value["process"]["host_ipc"] = json!(false);
-        value["process"]["user"] = json!("65532:65532");
-        value["process"]["mount_target"] = json!("/var/lib/voiceclaw");
-        value["process"]["memory_bytes"] = json!(1_u64 << 30);
-        value["process"]["shared_memory_bytes"] = json!(64_u64 << 20);
+        let document = nemoclaw_sdk::config::Document::parse(
+            include_bytes!(
+                "../../../nemoclaw-sdk/tests/fixtures/config/container-agent-connection.yaml"
+            )
+            .as_slice(),
+        )
+        .unwrap();
+        let generations = ["workspace", "provider", "sandbox", "container_service"]
+            .map(|kind| (kind.into(), "a".repeat(32)))
+            .into();
+        let target = nemoclaw_sdk::compile::targets(&document, &generations)
+            .unwrap()
+            .into_iter()
+            .find(|target| target.kind == "container_service")
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&target.values["spec"]).unwrap();
         let spec: Spec = serde_json::from_value(value.clone()).unwrap();
         (spec, value)
     }
@@ -286,6 +288,19 @@ mod container_tests {
     #[tokio::test]
     async fn container_readiness_rejects_wrong_identity_and_unknown_observations() {
         let (spec, encoded) = application();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(matches!(
+            wait_service_ready(
+                &Connections::fixed([]).unwrap(),
+                &application_readiness(&encoded.to_string()).unwrap(),
+                "provider-container",
+                Duration::ZERO,
+                &cancel
+            )
+            .await,
+            Err(Error::Cancelled)
+        ));
         for variant in [
             "id",
             "name",
@@ -346,35 +361,22 @@ mod container_tests {
             if variant == "starting" {
                 assert!(error.to_string().contains("timed out"));
             }
-            let cancel = CancellationToken::new();
-            cancel.cancel();
-            assert!(matches!(
-                wait_service_ready(
-                    &connections,
-                    &application_readiness(&encoded.to_string()).unwrap(),
-                    "provider-container",
-                    Duration::ZERO,
-                    &cancel
-                )
-                .await,
-                Err(Error::Cancelled)
-            ));
         }
-        for (field, value) in [
-            ("user", json!("0:0")),
-            ("gpu", json!(true)),
-            ("host_ipc", json!(true)),
-            ("entrypoint", json!(["sh"])),
-            ("image", json!("application:latest")),
-            ("engine", json!("ssh://host")),
-            ("architecture", json!("native")),
-            ("mount_target", json!("/var/lib/../etc")),
+        for (pointer, value) in [
+            ("/process/image_owned/user", json!("0:0")),
+            ("/process/gpu", json!(true)),
+            ("/process/host_ipc", json!(true)),
+            ("/process/entrypoint", json!(["sh"])),
+            ("/process/image", json!("application:latest")),
+            ("/process/engine", json!("ssh://host")),
+            ("/process/architecture", json!("native")),
+            ("/process/mount_target", json!("/var/lib/../etc")),
         ] {
             let mut bad = encoded.clone();
-            bad["process"][field] = value;
+            *bad.pointer_mut(pointer).unwrap() = value;
             assert!(
                 application_readiness(&bad.to_string()).is_err(),
-                "accepted {field}"
+                "accepted {pointer}"
             );
         }
     }
