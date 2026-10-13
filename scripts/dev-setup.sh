@@ -15,7 +15,7 @@ WARN_COUNT=0
 FAIL_COUNT=0
 OUTPUT_FORMAT="human"
 JSON_RESULTS=""
-NODE_HEAP_REMEDIATION="The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying."
+NODE_HEAP_REMEDIATION="The Node.js command used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying."
 
 usage() {
   cat <<'EOF'
@@ -242,9 +242,10 @@ is_node_heap_oom_output() {
 }
 
 print_node_heap_oom_guidance() {
-  local remediation="$1"
+  local step="$1"
+  local remediation="$2"
 
-  printf 'Node.js exhausted its V8 heap while running this type check.\n' >&2
+  printf 'Node.js exhausted its V8 heap while attempting: %s.\n' "${step}" >&2
   printf 'Next: %s\n' "${remediation}" >&2
 }
 
@@ -371,7 +372,7 @@ run_setup_step_with_heap_hint() {
     return 0
   fi
   if is_node_heap_oom_output "${output_file}"; then
-    print_node_heap_oom_guidance "${heap_remediation}"
+    print_node_heap_oom_guidance "${label}" "${heap_remediation}"
   else
     cat "${output_file}" >&2
   fi
@@ -431,7 +432,8 @@ repair_repository() {
     node "${REPO_ROOT}/scripts/lib/openshell-sdk-install.mts" check || return 1
   run_setup_step "Install plugin dependencies" \
     npm --prefix nemoclaw install --include=dev --ignore-scripts || return 1
-  run_setup_step "Build the CLI" npm run build:cli || return 1
+  run_setup_step_with_heap_hint "Build the CLI" "${NODE_HEAP_REMEDIATION}" \
+    npm run build:cli || return 1
   run_setup_step_with_heap_hint "Build and type-check the plugin" "${NODE_HEAP_REMEDIATION}" \
     npm --prefix nemoclaw run build || return 1
   # Keep the explicit CLI check aligned with the broader pre-push and CI contracts.

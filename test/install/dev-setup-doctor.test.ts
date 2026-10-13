@@ -169,6 +169,13 @@ elif [ "\${FAKE_NPM_PLUGIN_BUILD_OOM:-}" = "1" ] && [ "\${1:-}" = "--prefix" ] &
 elif [ "\${1:-}" = "--prefix" ] && [ "\${2:-}" = "nemoclaw" ] && [ "\${3:-}" = "run" ] && [ "\${4:-}" = "build" ]; then
   printf 'npm-plugin-build NODE_OPTIONS=%s\\n' "\${NODE_OPTIONS-}" >>"\${FAKE_COMMAND_LOG}"
   echo "10.9.0"
+elif [ "\${1:-}" = "run" ] && [ "\${2:-}" = "build:cli" ]; then
+  printf 'npm-cli-build NODE_OPTIONS=%s\\n' "\${NODE_OPTIONS-}" >>"\${FAKE_COMMAND_LOG}"
+  if [ "\${FAKE_NPM_CLI_BUILD_OOM:-}" = "1" ]; then
+    printf '%s\\n' 'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory' >&2
+    exit 134
+  fi
+  echo "10.9.0"
 elif [ "\${FAKE_NPM_CLI_TYPECHECK_OOM:-}" = "1" ] && [ "\${1:-}" = "run" ] && [ "\${2:-}" = "typecheck:cli" ]; then
   printf '%s\\n' '<--- Last few GCs --->' >&2
   printf '%s\\n' 'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory' >&2
@@ -430,7 +437,7 @@ describe("contributor environment doctor", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("CLI type check: ran out of Node.js heap");
     expect(result.output).toContain(
-      "The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
+      "The Node.js command used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).not.toContain("tsc-path-that-must-not-be-reported");
   });
@@ -456,7 +463,7 @@ describe("contributor environment doctor", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("CLI type check: ran out of Node.js heap");
     expect(result.output).toContain(
-      "The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
+      "The Node.js command used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).not.toContain("large-tsc-path-that-must-not-be-reported");
   });
@@ -635,7 +642,7 @@ describe("contributor environment doctor", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("CLI type check: ran out of Node.js heap");
     expect(result.output).toContain(
-      "Next: The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
+      "Next: The Node.js command used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).not.toContain("Native stack trace");
   });
@@ -649,7 +656,7 @@ describe("contributor environment doctor", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("Plugin type check: ran out of Node.js heap");
     expect(result.output).toContain(
-      "Next: The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
+      "Next: The Node.js command used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).not.toContain("Native stack trace");
   });
@@ -920,6 +927,7 @@ describe("contributor repository setup", () => {
     const commands = readCommandLog(fixture);
     expect(commands).toContain("NODE_OPTIONS=--max-old-space-size=6144");
     expect(commands).toContain("npm-plugin-build NODE_OPTIONS=--max-old-space-size=6144");
+    expect(commands).toContain("npm-cli-build NODE_OPTIONS=--max-old-space-size=6144");
     expect(
       commands.split("\n").filter((command) => command.startsWith("tsc-plugin ")),
     ).toHaveLength(1);
@@ -936,6 +944,9 @@ describe("contributor repository setup", () => {
     expect(commands).toContain(
       "npm-plugin-build NODE_OPTIONS=--trace-warnings --max-old-space-size=6144",
     );
+    expect(commands).toContain(
+      "npm-cli-build NODE_OPTIONS=--trace-warnings --max-old-space-size=6144",
+    );
     expect(
       commands.split("\n").filter((command) => command.startsWith("tsc-plugin ")),
     ).toHaveLength(1);
@@ -950,6 +961,7 @@ describe("contributor repository setup", () => {
     const commands = readCommandLog(fixture);
     expect(commands).toContain("NODE_OPTIONS=--max_old_space_size=4096");
     expect(commands).toContain("npm-plugin-build NODE_OPTIONS=--max_old_space_size=4096");
+    expect(commands).toContain("npm-cli-build NODE_OPTIONS=--max_old_space_size=4096");
     expect(
       commands.split("\n").filter((command) => command.startsWith("tsc-plugin ")),
     ).toHaveLength(1);
@@ -968,6 +980,19 @@ describe("contributor repository setup", () => {
     expect(result.status).toBe(0);
     expect(Number(result.stdout.trim())).toBeGreaterThanOrEqual(4 * 1024 ** 3);
     expect(Number(result.stdout.trim())).toBeLessThan(5 * 1024 ** 3);
+  });
+
+  it.each([
+    ["hyphenated", "--max-old-space-size"],
+    ["underscored", "--max_old_space_size"],
+  ])("rejects a space-separated %s heap limit in NODE_OPTIONS", (_alias, option) => {
+    const result = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+      env: { ...process.env, NODE_OPTIONS: `${option} 4096` },
+      encoding: "utf8",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`illegal value for flag ${option}`);
   });
 
   it("uses the default heap for both doctor type checks", () => {
@@ -1016,8 +1041,29 @@ describe("contributor repository setup", () => {
     });
 
     expect(result.status).toBe(0);
+    const commands = readCommandLog(fixture);
+    expect(commands).toContain(
+      "npm-cli-build NODE_OPTIONS=--trace-warnings --max-old-space-size=4096",
+    );
+    expect(commands).toContain("NODE_OPTIONS=--trace-warnings --max-old-space-size=4096");
+  });
+
+  it("reports a heap-limit remedy when the CLI build exhausts Node.js heap", () => {
+    const fixture = createFixture();
+
+    const result = runSetup(fixture, [], { FAKE_NPM_CLI_BUILD_OOM: "1" });
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      "Node.js exhausted its V8 heap while attempting: Build the CLI.",
+    );
+    expect(result.output).toContain(
+      "Next: The Node.js command used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
+    );
+    expect(result.output).toContain("Setup stopped while attempting: Build the CLI");
+    expect(result.output).not.toContain("Build and type-check the plugin");
     expect(readCommandLog(fixture)).toContain(
-      "NODE_OPTIONS=--trace-warnings --max-old-space-size=4096",
+      "npm-cli-build NODE_OPTIONS=--max-old-space-size=6144",
     );
   });
 
@@ -1027,7 +1073,9 @@ describe("contributor repository setup", () => {
     const result = runSetup(fixture, [], { FAKE_NPM_PLUGIN_BUILD_OOM: "1" });
 
     expect(result.status).toBe(1);
-    expect(result.output).toContain("Node.js exhausted its V8 heap while running this type check.");
+    expect(result.output).toContain(
+      "Node.js exhausted its V8 heap while attempting: Build and type-check the plugin.",
+    );
     expect(result.output).toContain(
       "Setup stopped while attempting: Build and type-check the plugin",
     );
@@ -1041,9 +1089,11 @@ describe("contributor repository setup", () => {
     const result = runSetup(fixture, [], { FAKE_NPM_CLI_TYPECHECK_OOM: "1" });
 
     expect(result.status).toBe(1);
-    expect(result.output).toContain("Node.js exhausted its V8 heap while running this type check.");
     expect(result.output).toContain(
-      "Next: The type check used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
+      "Node.js exhausted its V8 heap while attempting: Type-check the CLI.",
+    );
+    expect(result.output).toContain(
+      "Next: The Node.js command used its configured heap limit. Free host memory or increase NODE_OPTIONS above that limit before retrying.",
     );
     expect(result.output).toContain("Setup stopped while attempting: Type-check the CLI");
     expect(result.output).not.toContain("Native stack trace");
@@ -1057,9 +1107,8 @@ describe("contributor repository setup", () => {
     const result = runSetup(fixture);
 
     expect(result.status).toBe(1);
-    expect(result.output).toContain(
-      "Setup stopped while attempting: Build and type-check the plugin",
-    );
+    expect(result.output).toContain("Setup stopped while attempting: Build the CLI");
+    expect(result.output).not.toContain("Build and type-check the plugin");
     expect(result.output).not.toContain("Install repository Git hooks");
   });
 
