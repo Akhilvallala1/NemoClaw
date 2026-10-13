@@ -441,6 +441,7 @@ describe("sandbox destroy host-local inference transaction", () => {
     });
 
     expect(result).toMatchObject({ ok: true, alreadyGone: true });
+    expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(5);
     expect(inspect.mock.calls.map(([options]) => options)).toEqual(
       new Array(inspect.mock.calls.length).fill(
         expect.objectContaining({
