@@ -342,6 +342,7 @@ export class NativeGatewaySession {
     if (this.disposed) fail("the gateway session is disposed");
     return (child) => {
       this.children.add(child);
+      child.once("close", () => this.children.delete(child));
     };
   }
 

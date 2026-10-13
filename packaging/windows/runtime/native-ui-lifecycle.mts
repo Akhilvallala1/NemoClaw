@@ -4,6 +4,7 @@
 import { execFile, type ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
+import { run } from "./run-installed-native-turn.mts";
 
 const execFileAsync = promisify(execFile);
 type GatewayState = Pick<ChildProcess, "exitCode" | "signalCode">;
@@ -288,6 +289,7 @@ export async function watchNativeUiSandbox(
   gateway: GatewayState,
   stateSession: StateLease | null,
   signal: AbortSignal,
+  ownProcess: (child: ChildProcess) => void,
 ): Promise<void> {
   while (!signal.aborted) {
     stateSession?.assertHeld();
@@ -295,14 +297,16 @@ export async function watchNativeUiSandbox(
       throw new Error("The OpenShell gateway stopped while the agent Web UI was open.");
     let status: unknown;
     try {
-      const result = await execFileAsync(openshell, ["sandbox", "get", sandboxName, "-o", "json"], {
-        env: environment,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-        signal,
-      });
+      const result = await run(
+        openshell,
+        ["sandbox", "get", sandboxName, "-o", "json"],
+        environment,
+        "Reading the native UI sandbox",
+        10_000,
+        undefined,
+        ownProcess,
+        { signal, quiet: true },
+      );
       status = JSON.parse(result.stdout);
     } catch {
       if (signal.aborted) return;

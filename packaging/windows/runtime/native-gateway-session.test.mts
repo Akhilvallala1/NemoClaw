@@ -32,18 +32,56 @@ test("gateway command refuses to spawn without a process owner", async (t) => {
   }
 });
 
+test("gateway command refuses an already cancelled request without spawning", async (t) => {
+  const controller = new AbortController();
+  controller.abort();
+  let owned = false;
+  t.mock.method(childProcess, "spawn", () => {
+    throw new Error("must not spawn");
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      run(
+        "fixture",
+        [],
+        {},
+        "owned command",
+        100,
+        undefined,
+        () => {
+          owned = true;
+        },
+        {
+          signal: controller.signal,
+        },
+      ),
+      /cancelled/u,
+    );
+    assert.equal(owned, false);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
 for (const fault of [
   "timeout",
   "unconfirmed",
+  "abort",
+  "abort-unconfirmed",
   "overflow",
+  "unicode-overflow",
   "owner",
   "diagnostic",
   "success",
 ] as const) {
   test(`gateway command keeps process custody through ${fault}`, async (t) => {
+    const controller = new AbortController();
     const primary = new Error("owned callback failure");
     const owned: unknown[] = [];
     let kills = 0;
+    let progressMessages = 0;
     const child = Object.assign(new EventEmitter(), {
       pid: 987654,
       exitCode: null as number | null,
@@ -56,7 +94,9 @@ for (const fault of [
       },
     });
     t.mock.method(childProcess, "spawn", () => child);
-    t.mock.method(console, "log", () => {});
+    t.mock.method(console, "log", () => {
+      progressMessages++;
+    });
     t.mock.timers.enable({ apis: ["setTimeout"] });
     syncBuiltinESMExports();
     let outcome: { error?: unknown; value?: unknown } | undefined;
@@ -76,6 +116,7 @@ for (const fault of [
           owned.push(process);
           if (fault === "owner") throw primary;
         },
+        { signal: controller.signal, quiet: true },
       ).then(
         (value) => {
           outcome = { value };
@@ -85,30 +126,42 @@ for (const fault of [
         },
       );
       assert.deepEqual(owned, [child]);
+      assert.equal(progressMessages, 0, "Background probes do not emit progress messages.");
       if (fault === "timeout" || fault === "unconfirmed") t.mock.timers.tick(100);
+      else if (fault === "abort" || fault === "abort-unconfirmed") controller.abort();
       else if (fault === "overflow") child.stdout.emit("data", Buffer.alloc(1024 * 1024 + 1, 65));
+      else if (fault === "unicode-overflow")
+        child.stdout.emit("data", Buffer.from("é".repeat(512 * 1024 + 1)));
       else if (fault === "diagnostic") child.stdout.emit("data", Buffer.from("fixture"));
-      else if (fault === "success") child.stdout.emit("data", Buffer.from("completed"));
+      else if (fault === "success") {
+        const output = Buffer.from("completed 🌍");
+        child.stdout.emit("data", output.subarray(0, output.length - 2));
+        child.stdout.emit("data", output.subarray(output.length - 2));
+      }
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(outcome, undefined, "Do not settle while the process is unconfirmed.");
-      if (fault === "unconfirmed") {
+      assert.equal(kills, fault === "success" ? 0 : 1);
+      if (fault === "unconfirmed" || fault === "abort-unconfirmed") {
         t.mock.timers.tick(5000);
         await completion;
         assert.match(String(outcome?.error), /owned process did not close/u);
         assert.equal(child.exitCode, null);
-        assert.match(String((outcome?.error as Error).cause), /timed out/u);
+        assert.match(
+          String((outcome?.error as Error).cause),
+          fault === "unconfirmed" ? /timed out/u : /cancelled/u,
+        );
       } else {
         child.exitCode = 0;
         child.emit("exit", 0, null);
         child.emit("close", 0, null);
         await completion;
         if (fault === "success")
-          assert.deepEqual(outcome?.value, { exitCode: 0, stdout: "completed", stderr: "" });
+          assert.deepEqual(outcome?.value, { exitCode: 0, stdout: "completed 🌍", stderr: "" });
         else if (fault === "owner" || fault === "diagnostic") assert.equal(outcome?.error, primary);
         else
           assert.match(
             String(outcome?.error),
-            fault === "timeout" ? /timed out/u : /output limit/u,
+            fault === "timeout" ? /timed out/u : fault === "abort" ? /cancelled/u : /output limit/u,
           );
       }
       assert.equal(kills, fault === "success" ? 0 : 1);
@@ -145,6 +198,24 @@ test("gateway command owner retains the session until its command exits", async 
   } finally {
     t.mock.timers.reset();
     t.mock.restoreAll();
+  }
+});
+
+test("gateway command owner retires completed polling children only after close", () => {
+  const session = new NativeGatewaySession(
+    path.resolve("owned-install"),
+    path.resolve("owned-run"),
+  );
+  // The registry is the memory owner for long-running polling sessions.
+  const children = (session as unknown as { children: Set<childProcess.ChildProcess> }).children;
+  for (let index = 0; index < 100; index++) {
+    const child = new EventEmitter() as childProcess.ChildProcess;
+    session.ownCommandProcess(child);
+    assert.equal(children.size, 1);
+    child.emit("exit", 0, null);
+    assert.equal(children.size, 1, "Process exit does not establish pipe closure.");
+    child.emit("close", 0, null);
+    assert.equal(children.size, 0);
   }
 });
 

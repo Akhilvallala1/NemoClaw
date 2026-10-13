@@ -15,6 +15,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import {
   NATIVE_NODE_UI_POLICY,
@@ -139,10 +140,12 @@ export async function run(
     capture(channel: string, chunk: Buffer | string): void;
   },
   ownProcess?: (child: ChildProcess) => void,
+  options: { signal?: AbortSignal; quiet?: boolean } = {},
 ) {
   if (typeof ownProcess !== "function")
     throw new Error(`${label} requires an owner before starting a command`);
-  console.log(`NEMOCLAW> ${label}`);
+  if (options.signal?.aborted) throw new Error(`${label} cancelled`);
+  if (!options.quiet) console.log(`NEMOCLAW> ${label}`);
   const child = spawn(file, args, {
     env: environment,
     stdio: ["ignore", "pipe", "pipe"],
@@ -151,6 +154,10 @@ export async function run(
   return await new Promise<NativeCommandResult>((resolve, reject) => {
     let stdout = "";
     let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     let failure: Error | undefined;
     let stopTimer: ReturnType<typeof setTimeout> | undefined;
     const failAndStop = (error: Error) => {
@@ -158,6 +165,7 @@ export async function run(
       failure = error;
       clearTimeout(timer);
       stopTimer = setTimeout(() => {
+        options.signal?.removeEventListener("abort", abort);
         reject(new Error(`${label} failed and its owned process did not close`, { cause: error }));
       }, 5000);
       try {
@@ -169,6 +177,7 @@ export async function run(
     const timer = setTimeout(() => {
       failAndStop(new Error(`${label} timed out`));
     }, timeout);
+    const abort = () => failAndStop(new Error(`${label} cancelled`));
     child.stdout.on("data", (chunk) => {
       if (failure) return;
       try {
@@ -177,10 +186,11 @@ export async function run(
         failAndStop(error instanceof Error ? error : new Error(`${label} diagnostics failed`));
         return;
       }
-      const text = chunk.toString("utf8");
-      if (stdout.length + text.length > 1024 * 1024) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stdoutBytes += bytes.length;
+      if (stdoutBytes > 1024 * 1024) {
         failAndStop(new Error(`${label} exceeded its diagnostic output limit`));
-      } else stdout += text;
+      } else stdout += stdoutDecoder.write(bytes);
     });
     child.stderr.on("data", (chunk) => {
       if (failure) return;
@@ -190,27 +200,32 @@ export async function run(
         failAndStop(error instanceof Error ? error : new Error(`${label} diagnostics failed`));
         return;
       }
-      const text = chunk.toString("utf8");
-      if (stderr.length + text.length > 1024 * 1024) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stderrBytes += bytes.length;
+      if (stderrBytes > 1024 * 1024) {
         failAndStop(new Error(`${label} exceeded its diagnostic output limit`));
-      } else stderr += text;
+      } else stderr += stderrDecoder.write(bytes);
     });
     child.once("error", (error) => {
       if (child.pid) failAndStop(error);
       else {
         clearTimeout(timer);
         clearTimeout(stopTimer);
+        options.signal?.removeEventListener("abort", abort);
         reject(error);
       }
     });
     child.once("close", (code) => {
       clearTimeout(timer);
       clearTimeout(stopTimer);
-      const result = { exitCode: code ?? 1, stdout, stderr };
+      options.signal?.removeEventListener("abort", abort);
       if (failure) {
         reject(failure);
         return;
       }
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      const result = { exitCode: code ?? 1, stdout, stderr };
       if (result.exitCode !== 0) {
         const secrets = Object.entries(environment ?? {})
           .filter(([name]) => /token|key|secret|password/iu.test(name))
@@ -238,6 +253,8 @@ export async function run(
     } catch (error) {
       failAndStop(error instanceof Error ? error : new Error(`${label} ownership failed`));
     }
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
   });
 }
 

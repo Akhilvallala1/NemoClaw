@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile, chmod, readFile, access } from "node:fs/
 import net, { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -18,6 +18,7 @@ import {
   readNativeUiTunnelMarker,
   startNativeUiTunnel,
 } from "../../packaging/windows/runtime/native-ui-tunnel.mts";
+import { stopChild } from "../../packaging/windows/runtime/run-installed-native-turn.mts";
 
 async function probeNativeUiRegistry(output: string, code: number) {
   const directory = await mkdtemp(path.join(tmpdir(), "native-create-registry-"));
@@ -352,6 +353,9 @@ describe("native OpenClaw session lifecycle", () => {
         { exitCode: 1, signalCode: null },
         null,
         signal,
+        () => {
+          throw new Error("A stopped gateway must not start a probe.");
+        },
       ),
     ).rejects.toThrow("gateway stopped");
     await expect(
@@ -366,6 +370,9 @@ describe("native OpenClaw session lifecycle", () => {
           },
         },
         signal,
+        () => {
+          throw new Error("A lost lease must not start a probe.");
+        },
       ),
     ).rejects.toThrow("lease closed");
   });
@@ -380,6 +387,7 @@ describe("native OpenClaw session lifecycle", () => {
       const executable = path.join(directory, "openshell-fixture");
       const controller = new AbortController();
       let monitoring: Promise<unknown> | undefined;
+      const probes: ChildProcess[] = [];
       try {
         await writeFile(status, JSON.stringify({ name: "owned", phase: "Ready" }));
         await writeFile(
@@ -399,6 +407,9 @@ describe("native OpenClaw session lifecycle", () => {
           { exitCode: null, signalCode: null },
           null,
           controller.signal,
+          (child) => {
+            probes.push(child);
+          },
         );
         const rejection = monitoring.then(
           () => expect.unreachable("the monitor resolved instead of rejecting"),
@@ -426,6 +437,7 @@ describe("native OpenClaw session lifecycle", () => {
       } finally {
         controller.abort();
         await monitoring?.catch(() => {});
+        expect((await Promise.all(probes.map(stopChild))).every(Boolean)).toBe(true);
         await rm(directory, { recursive: true, force: true });
       }
     },

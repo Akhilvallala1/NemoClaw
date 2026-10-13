@@ -1582,6 +1582,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         gateway,
         stateSession,
         monitoring.signal,
+        gatewaySession!.ownCommandProcess,
       );
       void monitor.catch(() => {});
       const uiUrl = `http://127.0.0.1:${uiRelay.browserPort}`;

@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { NativeGatewaySession } from "./native-gateway-session.mts";
 import {
   nativeMxcCompletion,
   waitForNativeMxcCompletion,
@@ -355,6 +359,7 @@ test("the UI watcher rejects a completed main process while the gateway remains 
         { exitCode: null, signalCode: null },
         null,
         controller.signal,
+        () => {},
       ),
       /session stopped/u,
     );
@@ -389,6 +394,7 @@ for (const revoked of ["lease", "gateway-exit", "gateway-signal"] as const) {
             },
           },
           controller.signal,
+          () => {},
         ),
         revoked === "lease" ? /lease revoked during request/u : /gateway stopped/u,
       );
@@ -402,6 +408,75 @@ for (const revoked of ["lease", "gateway-exit", "gateway-signal"] as const) {
 }
 
 const listArgs = ["sandbox", "list", "-o", "json"];
+
+for (const stopped of [true, false]) {
+  test(`UI monitor cancellation retains its probe until shutdown is confirmed: ${stopped}`, async (t) => {
+    const controller = new AbortController();
+    const session = new NativeGatewaySession(
+      path.resolve("owned-install"),
+      path.resolve("owned-run"),
+    );
+    const owned: unknown[] = [];
+    let settled = false;
+    let kills = 0;
+    const child = Object.assign(new EventEmitter(), {
+      pid: 987654,
+      exitCode: null as number | null,
+      signalCode: null,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill() {
+        kills++;
+        return true;
+      },
+    });
+    t.mock.method(childProcess, "spawn", () => child);
+    t.mock.method(fs, "existsSync", () => false);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    syncBuiltinESMExports();
+    try {
+      const monitoring = watchNativeUiSandbox(
+        "owned-cli",
+        {},
+        sandboxName,
+        { exitCode: null, signalCode: null },
+        null,
+        controller.signal,
+        (process) => {
+          owned.push(process);
+          session.ownCommandProcess(process);
+        },
+      ).then(() => {
+        settled = true;
+      });
+      void monitoring.catch(() => {});
+      assert.deepEqual(owned, [child]);
+      controller.abort();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(kills, 1);
+      assert.equal(settled, false, "An abort signal alone is not process closure.");
+      if (stopped) {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+      } else t.mock.timers.tick(5000);
+      await monitoring;
+      if (!stopped) {
+        assert.equal(child.exitCode, null);
+        const disposal = assert.rejects(session.dispose(), /owned process did not stop/u);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        t.mock.timers.tick(5000);
+        await disposal;
+        child.exitCode = 0;
+      }
+      await session.dispose();
+    } finally {
+      t.mock.timers.reset();
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+}
 const deleting = { name: sandboxName, phase: "Deleting" };
 
 test("UI shutdown requests deletion before confirming registry absence", async () => {
