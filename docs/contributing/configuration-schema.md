@@ -3,7 +3,7 @@
 
 # Maintain the Configuration Schema
 
-The [YAML field reference](../reference/configuration.md) and [JSON Schema](../../schemas/nemoclaw-v1alpha1.schema.json) come from the SDK's configuration types and validation constraints.
+The [YAML field reference](../reference/configuration.md) and [JSON Schema](../../schemas/nemoclaw-v1alpha2.schema.json) come from the SDK's configuration types and validation constraints.
 Edit their Rust sources, then regenerate both artifacts.
 CI rejects stale output.
 
@@ -36,7 +36,7 @@ From the repository root:
 cargo run --locked -p nemoclaw-build -- schema
 ```
 
-The command replaces `schemas/nemoclaw-v1alpha1.schema.json` and `docs/reference/configuration.md` from the compiled SDK.
+The command replaces `schemas/nemoclaw-v1alpha2.schema.json` and `docs/reference/configuration.md` from the compiled SDK.
 It contacts no deployment services and creates no runtime resources.
 Review both generated diffs with the source change.
 Generation fails when a public field or object has no description.
@@ -104,14 +104,29 @@ Use the same typed definition and resolved behavior for inline and reference for
 Test missing and conflicting selections, scope collisions, unused definitions, and export/reapply.
 Add the family to the authoring guide's coverage table only when its runtime behavior is implemented.
 
+## Change the API Version
+
+The schema's API version identifies the document format.
+A revision that rejects or reinterprets a document the previous revision accepted changes the API version; adding an optional field does not.
+An SDK still rejects fields added after its revision, so the API version alone does not identify a compatible SDK.
+
+To change the API version:
+
+1. Change `api_version!` in the [configuration module](../../crates/nemoclaw-sdk/src/config/mod.rs).
+   It sets `apiVersion`, the schema file name, and the schema's `$id` and title.
+2. Set `EARLIER_API_VERSION` in the same file to the replaced version, and raise `RECORD_VERSION` and update `EARLIER_STATE` in the [state store](../../crates/nemoclaw-sdk/src/state/mod.rs).
+   Earlier documents and state then fail with a pointer to [migration](../migration.md) instead of a schema or corruption error.
+3. Move the schema file with `git mv`, regenerate, and update examples, fixtures, and pages that name the version.
+   The freshness check fails while a schema file for another version remains in `schemas/`.
+4. Add the changed fields to the [re-authoring procedure](../migration.md#re-author-a-v1alpha1-document) and the [release notes](../release-notes.md).
+
 ## Keep Generation Reproducible
 
 The generator selects JSON Schema Draft 2020-12 explicitly, sorts object keys, and writes LF-terminated files.
 Schemars and the runtime validator have fixed versions in [Cargo.toml](../../Cargo.toml), with resolved dependencies in [Cargo.lock](../../Cargo.lock).
 Review generated changes when updating those dependencies.
 
-The schema's API version identifies the document format; accepted fields can change between source revisions without changing that version.
 Use a schema from the same source revision as the SDK or CLI you run.
-Native bundles carry their matching schema at `schemas/nemoclaw-v1alpha1.schema.json`, covered by the bundle manifest's hash.
+Native bundles carry their matching schema at `schemas/nemoclaw-v1alpha2.schema.json`, covered by the bundle manifest's hash.
 The builder generates it from the compiled SDK and checks its source fingerprint before assembling CLI and provider binaries.
 See [bundle construction](../build.md#build-a-native-bundle) for rebuild and verification behavior.

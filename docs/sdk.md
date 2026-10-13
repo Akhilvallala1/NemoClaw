@@ -22,7 +22,7 @@ serde_json = "1"
 
 The SDK build also needs the pinned Protocol Buffers compiler and native C toolchain described in the build guide.
 An application outside this workspace resolves its own dependencies and lockfile.
-Keep its SDK checkout, built bundle, and input schema matched; the `v1alpha1` API string alone does not establish compatibility.
+Keep its SDK checkout, built bundle, and input schema matched; the API version alone does not establish compatibility.
 
 ## Preview a Deployment
 

@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# yaml-language-server: $schema=../../schemas/nemoclaw-v1alpha1.schema.json
+# yaml-language-server: $schema=../../schemas/nemoclaw-v1alpha2.schema.json
 # One apply provisions a development gateway and three agents on an existing cluster.
 # Requires explicit access to an existing Kubernetes cluster with Agent Sandbox
 # and one default StorageClass installed.
 # Replace the deployment UID and every image digest before applying.
 # Write each image's metadata bundle with `cargo images export-metadata` and set
 # NEMOCLAW_AGENT_IMAGE_METADATA to its path; see docs/build.md.
-apiVersion: nemoclaw.nvidia.com/v1alpha1
+apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: kubernetes-managed-development

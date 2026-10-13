@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+use nemoclaw_sdk::config::schema::SCHEMA_PATH;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,7 +17,13 @@ pub fn render_reference(schema: &Value) -> Result<String, String> {
         "<!-- SPDX-License-Identifier: Apache-2.0 -->\n\n",
         "# YAML Configuration Reference\n\n",
         "<!-- Generated from the SDK schema. Edit Rust field descriptions and constraints, then run cargo run --locked -p nemoclaw-build -- schema. -->\n\n",
-        "This reference and the [JSON Schema](../../schemas/nemoclaw-v1alpha1.schema.json) describe authored YAML for this source revision.\n",
+    ));
+    writeln!(
+        output,
+        "This reference and the [JSON Schema](../../{SCHEMA_PATH}) describe authored YAML for this source revision."
+    )
+    .unwrap();
+    output.push_str(concat!(
         "See [schema maintenance](../contributing/configuration-schema.md) for generation and validation commands.\n\n",
         "Paths use `[]` for an array element and `{key}` for a map entry.\n",
         "Required fields must appear when their containing object is present; conditional requirements are stated in the table or description.\n",

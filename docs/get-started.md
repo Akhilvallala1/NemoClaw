@@ -79,7 +79,7 @@ Edit the copied YAML before executing it:
 Keep `gateway.management: external`, sandbox name `assistant`, and loopback dashboard port `18800` to match the access commands.
 The `engine` is used only for image inspection; it does not grant NemoClaw ownership of the external gateway.
 External gateways have no default image engine; use the address of the daemon holding the image, which may be on another host.
-Update the copied schema comment to `../../schemas/nemoclaw-v1alpha1.schema.json` so editor diagnostics use this checkout's schema.
+Update the copied schema comment to `../../schemas/nemoclaw-v1alpha2.schema.json` so editor diagnostics use this checkout's schema.
 Use the [field reference](reference/configuration.md) for accepted fields.
 
 For an authenticated inference endpoint, add this under its provider:

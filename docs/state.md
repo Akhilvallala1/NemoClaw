@@ -25,7 +25,10 @@ They are implementation details for identifying retained state, not a manual edi
 The [state store](../crates/nemoclaw-sdk/src/state/mod.rs), [deployment lifecycle](../crates/nemoclaw-sdk/src/deployment/mod.rs), and [OpenTofu configuration](../crates/nemoclaw-sdk/src/deployment/opentofu.rs) define these files.
 Keep the whole directory after failure; deleting state does not establish that its runtime resources are absent.
 The local lock does not exclude other clients of the same gateway.
-State records carry a format version; the SDK rejects a different version without rewriting the directory or adopting its resources.
+`intent.json` records format version 8 and a `nemoclaw.nvidia.com/v1alpha2` document.
+The SDK rejects any other format version without rewriting the directory or adopting its resources.
+State from an earlier NemoClaw, with format version 7 or earlier or a `nemoclaw.nvidia.com/v1alpha1` document, fails with `deployment state was written by an earlier NemoClaw for nemoclaw.nvidia.com/v1alpha1`.
+Keep that directory for the NemoClaw that wrote it, and follow [re-authoring](migration.md#re-author-a-v1alpha1-document) to deploy with this one.
 
 ## Agent Files
 

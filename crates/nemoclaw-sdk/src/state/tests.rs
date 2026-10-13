@@ -50,27 +50,54 @@ fn corrupt_intent_is_not_an_empty_deployment() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     std::fs::write(dir.path().join("intent.json"), "{broken").unwrap();
-    assert!(store.load().is_err());
+    assert_eq!(
+        store.load().unwrap_err().to_string(),
+        "deployment intent record is corrupt; retain it for recovery"
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("intent.json")).unwrap(),
         "{broken"
     );
 }
 #[test]
-fn legacy_intent_is_rejected_without_rewriting_recovery_state() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
+fn intent_from_another_nemoclaw_format_is_rejected_by_version_and_stays_untouched() {
+    let earlier = "deployment state was written by an earlier NemoClaw for nemoclaw.nvidia.com/v1alpha1; retain it and use that NemoClaw to destroy it, or deploy this document as a separate deployment";
     let document = crate::config::Document::parse(
         include_str!("../../tests/fixtures/config/local.yaml").as_bytes(),
     )
     .unwrap();
-    let mut record = Record::new(document).unwrap();
-    record.version = 6;
-    let bytes = serde_json::to_vec(&record).unwrap();
-    let path = dir.path().join("intent.json");
-    std::fs::write(&path, &bytes).unwrap();
-    assert!(store.load().is_err());
-    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    let current = serde_json::to_value(Record::new(document).unwrap()).unwrap();
+    assert_eq!(current["version"], 8);
+    // The last earlier format held a v1alpha1 document whose shape this
+    // NemoClaw cannot parse: sandboxes and providers were named list entries.
+    let mut written = current.clone();
+    written["version"] = serde_json::json!(7);
+    written["document"]["apiVersion"] = serde_json::json!("nemoclaw.nvidia.com/v1alpha1");
+    written["document"]["spec"]["sandboxes"] = serde_json::json!([
+        {"name": "assistant", "harness": {"kind": "nvidia.fabric.openclaw"}}
+    ]);
+    let mut version = current.clone();
+    version["version"] = serde_json::json!(6);
+    let mut api = current.clone();
+    api["document"]["apiVersion"] = serde_json::json!("nemoclaw.nvidia.com/v1alpha1");
+    let mut later = current.clone();
+    later["version"] = serde_json::json!(9);
+    let unsupported =
+        "deployment intent record has an unsupported format version; retain it for recovery";
+    for (record, message) in [
+        (written, earlier),
+        (version, earlier),
+        (api, earlier),
+        (later, unsupported),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let path = dir.path().join("intent.json");
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(store.load().unwrap_err().to_string(), message, "{record}");
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
 }
 
 #[test]

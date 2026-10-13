@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# yaml-language-server: $schema=../../schemas/nemoclaw-v1alpha1.schema.json
+# yaml-language-server: $schema=../../schemas/nemoclaw-v1alpha2.schema.json
 # The shared inference profile matches the Docker hosted-NVIDIA fixture at
 # crates/nemoclaw-e2e/fixtures/openclaw-nvidia-hosted/v1.yaml.
 # Replace the deployment UID and every image digest before applying.
 # Write each image's metadata bundle with `cargo images export-metadata` and set
 # NEMOCLAW_AGENT_IMAGE_METADATA to its path; see docs/build.md.
-apiVersion: nemoclaw.nvidia.com/v1alpha1
+apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: kubernetes-hosted-nvidia

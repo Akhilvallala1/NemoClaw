@@ -70,7 +70,7 @@ pub fn gateway_document(inputs: &GatewayInputs<'_>) -> String {
         })
         .unwrap_or_default();
     format!(
-        "apiVersion: nemoclaw.nvidia.com/v1alpha1
+        "apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: {name}

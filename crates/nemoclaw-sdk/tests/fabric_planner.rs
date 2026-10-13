@@ -354,7 +354,7 @@ fn explicit_filesystem_grants_reject_nul_in_required_paths_and_grants() {
 fn the_reference_dummy_descriptor_plans_a_deployment_configuration() {
     use nemoclaw_sdk::config::Document;
     let document = Document::parse(
-        br#"apiVersion: nemoclaw.nvidia.com/v1alpha1
+        br#"apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: dummy

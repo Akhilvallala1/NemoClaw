@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let capabilities = Capabilities::from_catalog(&catalog);
 
     let minimum = PartialDocument::from_yaml(
-        b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
+        b"apiVersion: nemoclaw.nvidia.com/v1alpha2\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
     )?;
     let minimum = JourneyDefinition::new("minimum viable values", minimum)
         .ask(["/metadata/name"])

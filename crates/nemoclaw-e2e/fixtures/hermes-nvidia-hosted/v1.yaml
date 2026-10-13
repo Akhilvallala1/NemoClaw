@@ -3,7 +3,7 @@
 # Current v1 intent authored from the reviewed raw v0 export produced by
 # NVIDIA/NemoClaw b6934c6300c4e1e175757e9281ae3a641d9a5b1f.
 
-apiVersion: nemoclaw.nvidia.com/v1alpha1
+apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: hermes-nvidia-hosted

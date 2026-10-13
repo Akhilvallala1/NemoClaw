@@ -64,7 +64,7 @@ fn configured_native_questions_appear_in_the_same_definition_tree() {
 #[test]
 fn minimum_values_preview_shows_harness_branches_and_optional_omission() {
     let base = PartialDocument::from_yaml(
-        b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
+        b"apiVersion: nemoclaw.nvidia.com/v1alpha2\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
     )
     .unwrap();
     let journey = JourneyDefinition::new("minimum-values", base)

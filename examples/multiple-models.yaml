@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# yaml-language-server: $schema=../schemas/nemoclaw-v1alpha1.schema.json
+# yaml-language-server: $schema=../schemas/nemoclaw-v1alpha2.schema.json
 # Replace the UID, endpoint, model IDs, and agent image for your services.
 # The existing endpoint must serve both models; this example does not start it.
-apiVersion: nemoclaw.nvidia.com/v1alpha1
+apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: multiple-models

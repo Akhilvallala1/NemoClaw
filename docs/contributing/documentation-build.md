@@ -15,7 +15,7 @@ Publication does not qualify the procedures or product configurations they descr
 | [Page manifest](../../fern/pages.json) | Selects published guides, navigation labels, and stable route slugs |
 | Repository `docs/*.md` and selected subdirectories | Generated `fern/_generated/pages/*.mdx` and `navigation.yml` |
 | [Pinned main revision](../../fern/main-source.json) | Earlier guides, generated agent variants, changelog, components, and assets under ignored `fern/_main/` |
-| SDK types and constraints | [JSON Schema](../../schemas/nemoclaw-v1alpha1.schema.json) and [configuration reference](../reference/configuration.md); stale checked-in output fails validation |
+| SDK types and constraints | [JSON Schema](../../schemas/nemoclaw-v1alpha2.schema.json) and [configuration reference](../reference/configuration.md); stale checked-in output fails validation |
 | [Fern configuration](../../fern/docs.yml) | NVIDIA theme, both versions, existing instances, and retained legacy redirects |
 | [Fern CLI pin](../../fern/fern.config.json) | The exact CLI used locally and in CI |
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # A deliberately sparse v1 single-sandbox authoring input. The inline forms,
 # one route, and external endpoint are structural choices supplied by the journey.
-apiVersion: nemoclaw.nvidia.com/v1alpha1
+apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata: {}
 spec:

@@ -7,7 +7,7 @@ use nemoclaw_sdk::config::Document;
 #[test]
 fn sparse_input_reports_missing_values_without_constructing_a_document() {
     let partial = PartialDocument::from_yaml(
-        b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant:\n      harness:\n        kind: nvidia.fabric.openclaw\n",
+        b"apiVersion: nemoclaw.nvidia.com/v1alpha2\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant:\n      harness:\n        kind: nvidia.fabric.openclaw\n",
     )
     .unwrap();
     let assessment = partial.assess();
@@ -29,7 +29,7 @@ fn sparse_input_reports_missing_values_without_constructing_a_document() {
 #[test]
 fn supplied_invalid_name_is_distinct_from_missing_values() {
     let partial = PartialDocument::from_yaml(
-        b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nmetadata:\n  name: Bad Name\nspec:\n  sandboxes:\n    assistant:\n      harness:\n        kind: nvidia.fabric.openclaw\n",
+        b"apiVersion: nemoclaw.nvidia.com/v1alpha2\nkind: NemoClawConfig\nmetadata:\n  name: Bad Name\nspec:\n  sandboxes:\n    assistant:\n      harness:\n        kind: nvidia.fabric.openclaw\n",
     )
     .unwrap();
     let assessment = partial.assess();

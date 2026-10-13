@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+// One version names the API, its schema file, and the schema's identity.
+// A revision that rejects or reinterprets a document the previous revision
+// accepted changes it; see docs/contributing/configuration-schema.md.
+macro_rules! api_version {
+    () => {
+        "v1alpha2"
+    };
+}
+
 mod agent_inference;
 pub(crate) mod constraints;
 #[doc(hidden)]
@@ -41,7 +50,10 @@ use std::io::Read;
 pub use types::*;
 pub use validation::{is_fabric_harness, valid_name, validate_endpoint};
 
-pub const API_VERSION: &str = "nemoclaw.nvidia.com/v1alpha1";
+pub const API_VERSION: &str = concat!("nemoclaw.nvidia.com/", api_version!());
+/// The API version of documents and retained state from earlier NemoClaw
+/// revisions, which must be re-authored rather than read.
+pub(crate) const EARLIER_API_VERSION: &str = "nemoclaw.nvidia.com/v1alpha1";
 pub const MAX_DOCUMENT_BYTES: u64 = 1 << 20;
 pub use crate::artifact_pins::DEFAULT_AGENT_IMAGE;
 pub use crate::artifact_pins::DEFAULT_GATEWAY_IMAGE;
@@ -94,6 +106,13 @@ impl Document {
     /// including duplicate keys.
     pub fn parse(input: impl Read) -> Result<Self, ConfigError> {
         let (text, tree) = read_yaml(input)?;
+        // An earlier document fails at its first changed field, which hides
+        // that the whole document must be re-authored.
+        if tree.get("apiVersion").and_then(serde_json::Value::as_str) == Some(EARLIER_API_VERSION) {
+            return Err(ConfigError(format!(
+                "configuration uses {EARLIER_API_VERSION}; this NemoClaw reads {API_VERSION}; re-author it as described in docs/migration.md"
+            )));
+        }
         schema::validate_input(&tree, Some(&text))?;
         let mut document: Self = serde_json::from_value(tree).map_err(|_| {
             ConfigError::new("configuration contains an unknown field or invalid field type")

@@ -5,7 +5,7 @@
 
 <!-- Generated from the SDK schema. Edit Rust field descriptions and constraints, then run cargo run --locked -p nemoclaw-build -- schema. -->
 
-This reference and the [JSON Schema](../../schemas/nemoclaw-v1alpha1.schema.json) describe authored YAML for this source revision.
+This reference and the [JSON Schema](../../schemas/nemoclaw-v1alpha2.schema.json) describe authored YAML for this source revision.
 See [schema maintenance](../contributing/configuration-schema.md) for generation and validation commands.
 
 Paths use `[]` for an array element and `{key}` for a map entry.
@@ -43,7 +43,7 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `apiVersion` | string | Yes | — | Configuration API version understood by this SDK. Constraints: `"nemoclaw.nvidia.com/v1alpha1"`. |
+| `apiVersion` | string | Yes | — | Configuration API version understood by this SDK. Constraints: `"nemoclaw.nvidia.com/v1alpha2"`. |
 | `kind` | string | Yes | — | Configuration document kind. Constraints: `"NemoClawConfig"`. |
 | `metadata` | [Metadata](#metadata) | Yes | — | Deployment name and durable ownership identity. |
 | `spec` | [Spec](#spec) | Yes | — | Gateway, inference provider, and sandbox configuration. |

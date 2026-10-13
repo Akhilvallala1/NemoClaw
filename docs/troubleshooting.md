@@ -37,6 +37,7 @@ Do not attach environment dumps, TLS private keys, interface tokens, or the enti
 |---|---|
 | Unknown field, duplicate key, or rejected combination | Use the [document path and source position](#correct-a-document-validation-error), then compare the input with the matching [configuration reference](reference/configuration.md) |
 | Bundle or schema hash failure | Follow [bundle rebuilding](build.md#build-a-native-bundle) and keep the selected bundle unchanged during operations |
+| `configuration uses nemoclaw.nvidia.com/v1alpha1` or `deployment state was written by an earlier NemoClaw` | Keep the earlier bundle and state directory, and [re-author the document](migration.md#re-author-a-v1alpha1-document) for a separate deployment |
 | `state is bound to a different deployment UID or gateway` | Restore the original UID and gateway endpoint; a new target needs separate state and resources |
 | `unfinished apply has different intent` | Reapply the exact YAML from the unfinished operation before trying another configuration |
 | Deployment lock error | Check for another operation using the same state directory; a lock failure does not authorize state deletion |

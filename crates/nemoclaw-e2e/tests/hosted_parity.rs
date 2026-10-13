@@ -15,6 +15,9 @@ fn authored_document(raw: &[u8], current: &[u8]) -> Document {
         Document::parse(current).expect("authored v1 input must use current agent syntax");
     let mut projected: serde_json::Value =
         serde_saphyr::from_str(std::str::from_utf8(raw).unwrap()).unwrap();
+    // The raw export names the API version this projection replaces.
+    assert_eq!(projected["apiVersion"], "nemoclaw.nvidia.com/v1alpha1");
+    projected["apiVersion"] = json!(nemoclaw_sdk::config::API_VERSION);
     // v0 named the compute driver beside the managed endpoint; current intent
     // keys the endpoint by the target the gateway runs on.
     let gateway = projected["spec"]["gateway"].as_object_mut().unwrap();

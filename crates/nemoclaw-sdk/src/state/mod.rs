@@ -15,6 +15,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Format of `intent.json`. Version 8 holds a `nemoclaw.nvidia.com/v1alpha2`
+/// document; earlier versions held v1alpha1 documents.
+const RECORD_VERSION: u32 = 8;
+const EARLIER_STATE: &str = "deployment state was written by an earlier NemoClaw for nemoclaw.nvidia.com/v1alpha1; retain it and use that NemoClaw to destroy it, or deploy this document as a separate deployment";
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub(crate) struct Record {
@@ -100,7 +105,7 @@ impl Record {
         let mut generations = Generations::new();
         allocate_missing_generation_values(&mut generations, &document)?;
         Ok(Self {
-            version: 7,
+            version: RECORD_VERSION,
             digest: document.digest(),
             document,
             generations,
@@ -283,9 +288,12 @@ impl Record {
         self.destroy_runtime
     }
     fn validate(&self) -> Result<(), Error> {
-        if self.version != 7 {
+        if self.version < RECORD_VERSION {
+            return Err(Error::State(EARLIER_STATE));
+        }
+        if self.version != RECORD_VERSION {
             return Err(Error::State(
-                "deployment predates Docker-provider model cache ownership; retain state and use the original NemoClaw version for recovery or teardown",
+                "deployment intent record has an unsupported format version; retain it for recovery",
             ));
         }
         let generations_valid = required_generation_kinds(&self.document).is_ok_and(|kinds| {
@@ -478,9 +486,23 @@ impl Store {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err(Error::State("cannot read deployment intent")),
         };
-        let record: Record = serde_json::from_slice(&bytes).map_err(|_| {
-            Error::State("deployment intent record is corrupt; retain it for recovery")
-        })?;
+        let corrupt =
+            || Error::State("deployment intent record is corrupt; retain it for recovery");
+        let raw: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| corrupt())?;
+        // An earlier record's document need not parse as the current type, so
+        // identify it before the typed parse would call it corrupt.
+        let earlier_version = raw
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|version| version < u64::from(RECORD_VERSION));
+        let earlier_document = raw
+            .pointer("/document/apiVersion")
+            .and_then(serde_json::Value::as_str)
+            == Some(crate::config::EARLIER_API_VERSION);
+        if earlier_version || earlier_document {
+            return Err(Error::State(EARLIER_STATE));
+        }
+        let record: Record = serde_json::from_value(raw).map_err(|_| corrupt())?;
         record.validate()?;
         Ok(Some(record))
     }

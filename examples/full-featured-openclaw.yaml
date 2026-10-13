@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# yaml-language-server: $schema=../schemas/nemoclaw-v1alpha1.schema.json
+# yaml-language-server: $schema=../schemas/nemoclaw-v1alpha2.schema.json
 
 # Broad compatible feature example, not an all-fields template or a live-qualified deployment.
 # Replace the UID, image placeholders, SSH alias, addresses, and model settings for your hosts.
 # Requires local Docker/OpenShell, a compatible remote NVIDIA GPU, an existing proxy and OTLP collector,
 # and BRAVE_API_KEY on the applying host. Apply provisions resources and checks readiness without inference.
 # See docs/configuration-references.md#combine-supported-features for alternatives and limits.
-apiVersion: nemoclaw.nvidia.com/v1alpha1
+apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: full-featured-openclaw

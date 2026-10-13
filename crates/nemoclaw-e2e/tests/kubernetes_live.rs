@@ -515,7 +515,7 @@ async fn deploy_to_the_health_check(distribution: &str, while_applying: impl Asy
         .unwrap()
         .port();
     let yaml = format!(
-        "apiVersion: nemoclaw.nvidia.com/v1alpha1
+        "apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: live-kind-agent

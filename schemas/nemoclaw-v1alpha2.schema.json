@@ -3593,7 +3593,7 @@
       "type": "object"
     }
   },
-  "$id": "urn:nemoclaw:config:v1alpha1",
+  "$id": "urn:nemoclaw:config:v1alpha2",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "allOf": [
@@ -3734,7 +3734,7 @@
   "description": "Desired configuration for one deployment. Fields describe authored input before SDK normalization.",
   "properties": {
     "apiVersion": {
-      "const": "nemoclaw.nvidia.com/v1alpha1",
+      "const": "nemoclaw.nvidia.com/v1alpha2",
       "description": "Configuration API version understood by this SDK.",
       "type": "string"
     },
@@ -3758,7 +3758,7 @@
     "metadata",
     "spec"
   ],
-  "title": "NemoClaw configuration (v1alpha1)",
+  "title": "NemoClaw configuration (v1alpha2)",
   "type": "object",
   "x-nemoclaw-parser-checks": [
     "Document::parse rejects YAML aliases, anchors, merge keys, all explicit tags (including core tags such as !!binary), duplicate keys, multiple documents, and input larger than 1 MiB. It applies the compiled input schema before defaulting; Document::validate applies the normalized schema and semantic checks, including for directly constructed Rust values.",

@@ -13,7 +13,7 @@ const TARGET: &str = "/spec/gateway/target";
 
 fn minimum() -> PartialDocument {
     PartialDocument::from_yaml(
-        b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
+        b"apiVersion: nemoclaw.nvidia.com/v1alpha2\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
     )
     .unwrap()
 }
@@ -3546,7 +3546,7 @@ fn absent_harness_catalog_cannot_silently_accept_an_unadvertised_choice() {
 #[test]
 fn missing_gateway_asks_for_the_schema_discriminator() {
     let base = PartialDocument::from_yaml(
-        b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
+        b"apiVersion: nemoclaw.nvidia.com/v1alpha2\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
     )
     .unwrap();
     let capabilities = Capabilities::available();

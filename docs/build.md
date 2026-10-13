@@ -29,7 +29,7 @@ The SDK verifies the bundle before use.
 A `Deployment` hashes the bundle on its first operation and again only when the manifest or a file it lists is written, replaced, or removed.
 Managed Kubernetes deployment uses the bundled Helm provider and requires no host Helm CLI.
 
-Each bundle includes `schemas/nemoclaw-v1alpha1.schema.json`, generated from its SDK contract and covered by the manifest hash.
+Each bundle includes `schemas/nemoclaw-v1alpha2.schema.json`, generated from its SDK contract and covered by the manifest hash.
 Use that file for [editor assistance](usage.md#editor-schema-assistance) with the bundled CLI.
 The API version alone does not identify a source revision.
 

@@ -219,11 +219,11 @@ There is no migration or lost-state adoption workflow for credentials or gateway
 Add a schema comment for editor completion, descriptions, and diagnostics:
 
 ```yaml
-# yaml-language-server: $schema=../schemas/nemoclaw-v1alpha1.schema.json
+# yaml-language-server: $schema=../schemas/nemoclaw-v1alpha2.schema.json
 ```
 
 Editors using [YAML Language Server](https://github.com/redhat-developer/yaml-language-server) resolve the path relative to the YAML file; update it when copying examples.
-Select `schemas/nemoclaw-v1alpha1.schema.json` from the matching bundle or CLI source revision; the API version alone is insufficient.
+Select `schemas/nemoclaw-v1alpha2.schema.json` from the matching bundle or CLI source revision; the API version alone is insufficient.
 
 Keep `$schema` in the comment; a YAML field named `$schema` is an unknown configuration field and is rejected.
 Exported YAML omits comments, so add the association again if you want editor assistance for an export.
@@ -259,6 +259,7 @@ Use separate deployments when you need independent teardown.
 | Sandbox network policy | Changes the sandbox specification; follow [policy change constraints](sandbox-network.md) and use a separate deployment when replacement is required |
 | Managed inference or proxy image or serving specification | Docker-provider reconciliation may replace the container while retaining its independently bound storage; review the plan and [model constraints](models.md) |
 | Deployment UID, [bound gateway settings](#choose-the-gateway-target), or bound credentials | Cannot retarget the existing state; create a separate deployment |
+| Move from a NemoClaw that wrote `nemoclaw.nvidia.com/v1alpha1` documents and state | This NemoClaw rejects both without changing resources; keep the earlier bundle and state, and [re-author the document](migration.md#re-author-a-v1alpha1-document) for a separate deployment |
 | Remove an unused inference provider definition | Changes the desired document only; the SDK creates registrations for selected definitions, so unused definitions have no resources to delete |
 | Remove or rename a sandbox, or remove retained storage or a protected gateway binding | Apply refuses removal; assess a separate deployment and explicit retirement of the original |
 | Change a credential value behind the same environment reference | Unchanged apply does not detect rotation; see [credential lifecycle](security.md#credentials-and-authentication) |

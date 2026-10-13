@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# yaml-language-server: $schema=../schemas/nemoclaw-v1alpha1.schema.json
+# yaml-language-server: $schema=../schemas/nemoclaw-v1alpha2.schema.json
 
 # Two agents share one inference provider and one Brave search definition.
 # Set your own deployment UID, endpoints, and model; see docs/agents.md#brave-web-search.
 
-apiVersion: nemoclaw.nvidia.com/v1alpha1
+apiVersion: nemoclaw.nvidia.com/v1alpha2
 kind: NemoClawConfig
 metadata:
   name: openclaw-web-search

@@ -637,6 +637,52 @@ fn schema_diagnostic(value: &Value) -> String {
 }
 
 #[test]
+fn a_document_for_the_earlier_api_version_fails_before_schema_validation() {
+    let earlier = "configuration uses nemoclaw.nvidia.com/v1alpha1; this NemoClaw reads nemoclaw.nvidia.com/v1alpha2; re-author it as described in docs/migration.md";
+    // An earlier document reports its version rather than its first moved field.
+    let written = br#"
+apiVersion: nemoclaw.nvidia.com/v1alpha1
+kind: NemoClawConfig
+metadata:
+  name: local-agent
+  uid: 87d485ad-fba7-4197-9eaa-aa97cc97446b
+spec:
+  gateway:
+    management: managed
+    runtime:
+      provider: docker
+    networkCIDR: 172.20.0.0/24
+  inferenceProviders:
+    - name: local
+      provider: openai
+      endpoint: http://172.20.0.1:11434/v1
+  sandboxes:
+    - name: assistant
+      harness:
+        kind: nvidia.fabric.openclaw
+"#;
+    assert_eq!(
+        Document::parse(&written[..]).unwrap_err().to_string(),
+        earlier
+    );
+    let mut current = input("local.yaml");
+    current["apiVersion"] = json!("nemoclaw.nvidia.com/v1alpha1");
+    assert_eq!(
+        Document::parse(current.to_string().as_bytes())
+            .unwrap_err()
+            .to_string(),
+        earlier
+    );
+    // Any other version keeps the schema's own constraint.
+    let mut later = input("local.yaml");
+    later["apiVersion"] = json!("nemoclaw.nvidia.com/v1alpha3");
+    assert_eq!(
+        schema_diagnostic(&later),
+        r#"apiVersion: must be "nemoclaw.nvidia.com/v1alpha2""#
+    );
+}
+
+#[test]
 fn an_earlier_gateway_shape_names_the_field_that_moved() {
     let runtime = "spec.gateway.runtime is replaced by the key under spec.gateway.target: docker, podman, or kubernetes";
     let engine = "spec.gateway.engine moved to spec.gateway.target.docker.engine or spec.gateway.target.podman.engine";

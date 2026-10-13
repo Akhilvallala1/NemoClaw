@@ -15,7 +15,38 @@ pub fn schema_bytes() -> Vec<u8> {
 pub fn generate(root: &Path, check: bool) -> Result<(), String> {
     let reference = render_reference(&input_schema())?;
     generated_file(root, SCHEMA_PATH, &schema_bytes(), check)?;
-    generated_file(root, REFERENCE_PATH, reference.as_bytes(), check)
+    generated_file(root, REFERENCE_PATH, reference.as_bytes(), check)?;
+    if check {
+        no_other_schema_version(root)?;
+    }
+    Ok(())
+}
+
+// Each API version has its own schema file. One left from another version
+// would let editors check documents against a contract this SDK rejects.
+fn no_other_schema_version(root: &Path) -> Result<(), String> {
+    let (directory, current) = SCHEMA_PATH.rsplit_once('/').expect("schema directory");
+    let entries = fs::read_dir(root.join(directory))
+        .map_err(|error| format!("cannot read {directory}: {error}"))?;
+    let mut others = entries
+        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot read {directory}: {error}"))?
+        .into_iter()
+        .filter(|name| {
+            name != current && name.starts_with("nemoclaw-") && name.ends_with(".schema.json")
+        })
+        .map(|name| format!("{directory}/{name}"))
+        .collect::<Vec<_>>();
+    others.sort_unstable();
+    if others.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} must be removed; {SCHEMA_PATH} is the only configuration schema",
+            others.join(", ")
+        ))
+    }
 }
 
 pub fn add_to_bundle(

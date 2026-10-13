@@ -10,6 +10,8 @@ Keep the earlier deployment's tooling, configuration, and state while evaluating
 There is no rehearsed upgrade, native-data transfer or rollback procedure yet ([#12639](https://github.com/NVIDIA/NemoClaw/issues/12639)).
 The evaluation steps below create a separate deployment; they do not provide an in-place upgrade or data conversion.
 
+To move a v1 document from `nemoclaw.nvidia.com/v1alpha1` to `nemoclaw.nvidia.com/v1alpha2`, [re-author it](#re-author-a-v1alpha1-document).
+
 ## Map the User Task
 
 | Earlier task | Current destination |
@@ -64,6 +66,132 @@ Read [state and retention](state.md) before retiring either deployment.
 
 Backup and restore of native agent data are tracked in [#12639](https://github.com/NVIDIA/NemoClaw/issues/12639).
 Retain the earlier deployment until the required continuity has been verified.
+
+## Re-Author a v1alpha1 Document
+
+This NemoClaw reads `apiVersion: nemoclaw.nvidia.com/v1alpha2`.
+Earlier v1 revisions wrote `nemoclaw.nvidia.com/v1alpha1`, which places the gateway settings and names sandboxes and inference providers differently.
+This NemoClaw rejects that document, and state written by an earlier NemoClaw, without changing any resource:
+
+| Input | Error |
+|---|---|
+| A v1alpha1 document given to `plan` or `apply` | `configuration uses nemoclaw.nvidia.com/v1alpha1; this NemoClaw reads nemoclaw.nvidia.com/v1alpha2; re-author it as described in docs/migration.md` |
+| A state directory written by an earlier NemoClaw, with any command that reads it | `deployment state was written by an earlier NemoClaw for nemoclaw.nvidia.com/v1alpha1; retain it and use that NemoClaw to destroy it, or deploy this document as a separate deployment` |
+
+There is no conversion command, and this NemoClaw cannot adopt the earlier deployment's resources.
+Re-author the document by hand and apply it as a separate deployment.
+Agent files and conversation history are not transferred ([#12639](https://github.com/NVIDIA/NemoClaw/issues/12639)).
+
+### Keep the Earlier Document
+
+Keep the earlier bundle and its state directory; this NemoClaw cannot export or destroy that deployment.
+Keep the v1alpha1 YAML you applied; it is the source for re-authoring and keeps its comments.
+If you no longer have it, export it with the earlier bundle's CLI:
+
+```sh
+/path/to/earlier-bundle/bin/nemoclaw export --state-dir .local/deployment --output v1alpha1.yaml
+```
+
+Export observes the running deployment and fails when its resources are unavailable or differ from the retained intent.
+Check its exit status before using the file.
+
+### Rewrite the Fields
+
+Copy the document and make these changes:
+
+1. Set `apiVersion: nemoclaw.nvidia.com/v1alpha2`.
+2. Set `metadata.uid` to a fresh UUID, for example from `uuidgen`.
+   A reused UID selects the earlier deployment's resource names.
+3. Change a `# yaml-language-server: $schema=` comment to `nemoclaw-v1alpha2.schema.json`.
+4. Move each field that v1alpha2 changed:
+
+| v1alpha1 field | v1alpha2 field |
+|---|---|
+| Managed `spec.gateway.runtime.provider`: `docker`, `podman`, or `kubernetes`; omitted means `docker` | The one key under `spec.gateway.target`; omitted `target` means `docker` |
+| Managed `spec.gateway.runtime.provider: openshift` | `spec.gateway.target.kubernetes.distribution: openshift` |
+| Managed `spec.gateway.endpoint` | `spec.gateway.target.<key>.endpoint`; required under `kubernetes` |
+| Managed `spec.gateway.engine` and `spec.gateway.imagePullPolicy` | The same names under `spec.gateway.target.docker` or `spec.gateway.target.podman` |
+| Managed `spec.gateway.networkCIDR` | `networkCidr` under `spec.gateway.target.docker` or `spec.gateway.target.podman` |
+| `spec.gateway.kubernetes`: `kubeconfig`, `context`, `namespace`, `authentication`, and `environment` | The same names under `spec.gateway.target.kubernetes` |
+| `spec.gateway.image` | Removed; delete it, because the SDK pins the gateway image |
+| External `spec.gateway.runtime.provider: docker` or `podman`, with `spec.gateway.engine` | `spec.gateway.target.docker.engine` or `spec.gateway.target.podman.engine`; `engine` stays optional |
+| External `spec.gateway.runtime.provider: kubernetes` or `openshift` | `spec.gateway.target.kubernetes: {}` |
+| External `spec.gateway.endpoint`, `credential`, and `tls` | Unchanged |
+| `spec.sandboxes` list entries, each with `name` | A map from each sandbox name to its settings, without `name` |
+| `spec.inferenceProviders` and a sandbox's `inferenceProviders` list entries, each with `name` | Maps from each provider name to its settings, without `name` |
+| An inline route provider, `routes[].provider`, with `name` | Unchanged; `name` stays required |
+| Credential references, `{env: NAME}` | Unchanged |
+
+Names keep their earlier rules, and a deployment holds 1 to 32 sandboxes.
+Map order has no meaning.
+
+For example, this v1alpha1 excerpt:
+
+```yaml
+spec:
+  gateway:
+    management: managed
+    runtime:
+      provider: docker
+    endpoint: http://127.0.0.1:17671
+    networkCIDR: 172.20.0.0/24
+  inferenceProviders:
+    - name: local
+      provider: openai
+      endpoint: http://172.20.0.1:11434/v1
+  sandboxes:
+    - name: assistant
+      harness:
+        kind: nvidia.fabric.openclaw
+```
+
+becomes:
+
+```yaml
+spec:
+  gateway:
+    management: managed
+    target:
+      docker:
+        endpoint: http://127.0.0.1:17671
+        networkCidr: 172.20.0.0/24
+  inferenceProviders:
+    local:
+      provider: openai
+      endpoint: http://172.20.0.1:11434/v1
+  sandboxes:
+    assistant:
+      harness:
+        kind: nvidia.fabric.openclaw
+```
+
+Plan the result with the new deployment's state directory.
+A field left at its v1alpha1 location fails with a message that names its replacement, for example:
+
+```text
+configuration violates schema at spec.gateway (line 8, column 5): spec.gateway.runtime is replaced by the key under spec.gateway.target: docker, podman, or kubernetes; spec.gateway.endpoint of a managed gateway moved to the endpoint of its spec.gateway.target key; spec.gateway.networkCIDR moved to networkCidr under spec.gateway.target.docker or spec.gateway.target.podman
+```
+
+Each run reports one location; correct it and plan again until the document parses.
+The [configuration reference](reference/configuration.md) lists every v1alpha2 field.
+To start over instead, `nemoclaw onboard` writes a v1alpha2 document with a fresh UID.
+
+### Deploy the Re-Authored Document
+
+Choose what happens to the earlier deployment:
+
+- **Destroy it with the earlier NemoClaw.**
+  Run `/path/to/earlier-bundle/bin/nemoclaw plan --destroy --state-dir .local/deployment`, review the preview, then run the same CLI's `destroy` with that state directory.
+  **Destroy deletes sandbox files and conversation history.**
+  The storage it retains, and how to remove that storage, follow the earlier revision's documentation.
+- **Keep it.**
+  Keep its bundle and state directory to operate it.
+
+Then apply the re-authored document as a separate deployment, as in [Keep Deployment Identities Separate](#keep-deployment-identities-separate):
+
+- Use its fresh `metadata.uid` and a new state directory.
+- Give the gateway an endpoint, `networkCidr`, and Kubernetes namespace that the earlier deployment does not use; destroy retains the earlier gateway network and namespace.
+- Plan and apply with this NemoClaw.
 
 ## Find Earlier Documentation
 

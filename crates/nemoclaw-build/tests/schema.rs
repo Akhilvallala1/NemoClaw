@@ -28,14 +28,14 @@ fn schema_generation_is_repeatable_and_check_rejects_missing_or_stale_output() {
     );
     let path = directory
         .path()
-        .join("schemas/nemoclaw-v1alpha1.schema.json");
+        .join("schemas/nemoclaw-v1alpha2.schema.json");
     let first = fs::read(&path).unwrap();
     let schema: serde_json::Value = serde_json::from_slice(&first).unwrap();
     assert_eq!(
         schema["$schema"],
         "https://json-schema.org/draft/2020-12/schema"
     );
-    assert_eq!(schema["$id"], "urn:nemoclaw:config:v1alpha1");
+    assert_eq!(schema["$id"], "urn:nemoclaw:config:v1alpha2");
     assert!(generate(directory.path(), false).status.success());
     assert_eq!(fs::read(&path).unwrap(), first);
     assert!(generate(directory.path(), true).status.success());
@@ -51,9 +51,31 @@ fn schema_generation_is_repeatable_and_check_rejects_missing_or_stale_output() {
     let stale = generate(directory.path(), true);
     assert!(!stale.status.success());
     assert!(
-        String::from_utf8_lossy(&stale.stderr).contains("schemas/nemoclaw-v1alpha1.schema.json")
+        String::from_utf8_lossy(&stale.stderr).contains("schemas/nemoclaw-v1alpha2.schema.json")
     );
     assert_eq!(fs::read(&path).unwrap(), b"{}\n");
+}
+
+#[test]
+fn check_rejects_a_schema_left_for_another_api_version() {
+    let directory = tempfile::tempdir().unwrap();
+    assert!(generate(directory.path(), false).status.success());
+    let earlier = directory
+        .path()
+        .join("schemas/nemoclaw-v1alpha1.schema.json");
+    fs::write(&earlier, b"{}\n").unwrap();
+    let stale = generate(directory.path(), true);
+    assert!(!stale.status.success());
+    let message = String::from_utf8_lossy(&stale.stderr);
+    assert!(
+        message.contains("schemas/nemoclaw-v1alpha1.schema.json"),
+        "{message}"
+    );
+    assert_eq!(fs::read(&earlier).unwrap(), b"{}\n");
+    // Other files in the directory are not schema versions.
+    fs::remove_file(&earlier).unwrap();
+    fs::write(directory.path().join("schemas/README.md"), b"notes\n").unwrap();
+    assert!(generate(directory.path(), true).status.success());
 }
 
 #[test]
