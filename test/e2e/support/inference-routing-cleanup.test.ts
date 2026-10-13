@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostCliClient } from "../fixtures/clients/host.ts";
 import { SandboxClient } from "../fixtures/clients/sandbox.ts";
 import type { ShellProbeResult } from "../fixtures/shell-probe.ts";
-import { cleanupSandbox } from "../live/inference-routing-helpers.ts";
+import { cleanupSandbox, sandboxGatewayEnv } from "../live/inference-routing-helpers.ts";
 
 const state = vi.hoisted(() => ({ gatewayName: null as string | null }));
 vi.mock("../../../src/lib/state/registry.ts", () => ({
@@ -38,6 +38,12 @@ beforeEach(() => {
 });
 
 describe("strict inference routing cleanup", () => {
+  it("targets the gateway recorded for a non-default sandbox (#12636)", () => {
+    state.gatewayName = "nemoclaw-18790";
+
+    expect(sandboxGatewayEnv("e2e-peer").OPENSHELL_GATEWAY).toBe("nemoclaw-18790");
+  });
+
   it("keeps recovery authority when the CLI refuses retained sandbox destruction (#12636)", async () => {
     const f = fixture(
       result({
