@@ -1598,7 +1598,8 @@ async function runInferenceSetWithoutHostLock(
   ) {
     throw new InferenceSetError(
       `Cannot change the provider-backed route because gateway '${preparedRoute.gatewayName}' has no configured ` +
-        "inference selection to restore if provider commit or sandbox verification fails.",
+        "inference selection to restore if provider commit or sandbox verification fails. " +
+        "The existing sandbox is unchanged. Onboard a separate sandbox with the desired inference selection instead.",
       2,
     );
   }

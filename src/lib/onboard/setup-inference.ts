@@ -879,7 +879,7 @@ export function createSetupInference(
             ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
             ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
             ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
-            ...(nativeCustomProviderAttachment ? { nativeCustomProviderAttachment } : {}),
+            nativeCustomProviderAttachment: nativeCustomProviderAttachment ?? undefined,
             ...(hostLocalInferenceProvenance && hostLocalInferenceGatewayPortAuthority !== undefined
               ? { gatewayPort: hostLocalInferenceGatewayPortAuthority }
               : {}),

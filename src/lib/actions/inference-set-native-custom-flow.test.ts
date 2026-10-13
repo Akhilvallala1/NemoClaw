@@ -870,7 +870,9 @@ it("rejects fixed native departure without a gateway rollback selection before m
       { ...hostLocalSelection, endpointUrl: "http://host.openshell.internal:18767/v1" },
       f.deps,
     ),
-  ).rejects.toThrow(/no configured inference selection to restore/);
+  ).rejects.toThrow(
+    /no configured inference selection to restore.*existing sandbox is unchanged.*Onboard a separate sandbox/,
+  );
   expect(f.deps.inferenceRouteMutator.setInferenceRoute).not.toHaveBeenCalled();
   expect([...f.attachments]).toEqual([f.fixed.providerName]);
   expect(f.deps.calls.updateSandbox).not.toHaveBeenCalled();

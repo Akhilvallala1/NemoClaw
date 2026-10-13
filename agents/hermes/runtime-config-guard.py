@@ -3219,15 +3219,29 @@ def refresh_native_custom_inference(hermes_dir: str, hash_file: str, mode: str) 
     if not isinstance(upstream, dict) or not isinstance(model, dict):
         return
     provider = upstream.get("provider")
+    if provider is None:
+        return
+    if not isinstance(provider, str):
+        raise UnsafePathError("Native custom inference configuration has an invalid provider")
     key = {"compatible-endpoint": "COMPATIBLE_API_KEY", "compatible-anthropic-endpoint": "COMPATIBLE_ANTHROPIC_API_KEY"}.get(provider)
-    if not key or urlsplit(model.get("base_url", "")).hostname == "inference.local":
+    if not key:
+        return
+    base_url = model.get("base_url", "")
+    if not isinstance(base_url, str):
+        raise UnsafePathError("Native custom inference configuration has an invalid base URL")
+    try:
+        hostname = urlsplit(base_url).hostname
+    except ValueError as exc:
+        raise UnsafePathError("Native custom inference configuration has an invalid base URL") from exc
+    if hostname == "inference.local":
         return
     issued = os.environ.get(key, "")
     if re.fullmatch(rf"openshell:resolve:env:(?:v[0-9]{{1,20}}|s[a-f0-9]{{64}})_{key}", issued) is None:
         raise UnsafePathError("Native custom inference requires its supervisor-issued credential placeholder")
     replacement = "sk-OPENSHELL-RESOLVE-ENV-" + issued.removeprefix(SCOPED_PLACEHOLDER_PREFIX)
     providers = config.get("providers", {})
-    selected = providers.get(upstream.get("provider_key"), {}) if isinstance(providers, dict) else {}
+    provider_key = upstream.get("provider_key")
+    selected = providers.get(provider_key, {}) if isinstance(providers, dict) and isinstance(provider_key, str) else {}
     custom_providers = config.get("custom_providers", [])
     if not isinstance(custom_providers, list):
         raise UnsafePathError("Native custom inference configuration has invalid custom providers")

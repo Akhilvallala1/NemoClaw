@@ -162,12 +162,15 @@ export async function verifyCompatibleEndpointSandboxSmoke(options: {
       const result = await probeSandboxInferenceInvocation(
         {
           sandboxName: options.sandboxName,
+          gatewayName: options.gatewayName,
+          agentName: options.agent?.name ?? null,
           provider: options.provider,
           model: options.model,
           preferredInferenceApi: options.nativeCustomProviderAttachment.api,
           nativeCustomProviderAttachment: options.nativeCustomProviderAttachment,
         },
         {
+          commandExecutor: options.sandboxCommandExecutor,
           execute: async (sandboxName, command, timeout) => {
             const completed = await options.sandboxCommandExecutor.runBuffered({
               sandboxName,

@@ -762,6 +762,10 @@ describe("onboard shared gateway route containment", () => {
     });
     expect(reservations).toHaveLength(2);
     expect(updateSandbox).toHaveBeenCalledTimes(2);
+    expect(updateSandbox.mock.calls[1]?.[1]).toHaveProperty(
+      "nativeCustomProviderAttachment",
+      undefined,
+    );
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("Affected registered sandboxes: 'alpha'"),
     );

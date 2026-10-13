@@ -19,7 +19,10 @@ import {
   inferenceSelectionRegistryFields,
   normalizeInferenceSelection,
 } from "../inference/selection";
-import { normalizeNativeCustomProviderAttachment } from "../inference/native-custom";
+import {
+  isNativeCustomProvider,
+  normalizeNativeCustomProviderAttachment,
+} from "../inference/native-custom";
 import { type WebSearchConfig, webSearchProviderForConfig } from "../inference/web-search";
 import { MessagingSetupApplier } from "../messaging/applier/setup-applier";
 import * as onboardSession from "../state/onboard-session";
@@ -383,6 +386,9 @@ export function prepareCreatedSandboxRegistration(
     input.reservationSessionId && pending
       ? registry.normalizeSandboxInferenceRouteSelection(normalizeInferenceSelection(pending))
       : null;
+  const inferenceSelection = pendingRoute
+    ? { ...input.inferenceSelection, ...pendingRoute }
+    : input.inferenceSelection;
   const pendingHostLocalInferenceReceipt =
     input.hostLocalInferenceReceipt !== undefined
       ? input.hostLocalInferenceReceipt
@@ -397,17 +403,17 @@ export function prepareCreatedSandboxRegistration(
       : pending?.nativeNvidiaProviderAttachment;
   const pendingNativeHostedProviderAttachment =
     input.nativeHostedProviderAttachment ?? pending?.nativeHostedProviderAttachment;
-  const pendingNativeCustomProviderAttachment =
-    input.nativeCustomProviderAttachment ?? pending?.nativeCustomProviderAttachment;
+  const pendingNativeCustomProviderAttachment = isNativeCustomProvider(inferenceSelection.provider)
+    ? (input.nativeCustomProviderAttachment ??
+      (pending?.provider === inferenceSelection.provider
+        ? pending.nativeCustomProviderAttachment
+        : undefined))
+    : undefined;
   const entry = buildCreatedSandboxRegistryEntry({
     ...input,
     nativeHostedProviderAttachment: pendingNativeHostedProviderAttachment,
-    ...(pendingNativeCustomProviderAttachment
-      ? { nativeCustomProviderAttachment: pendingNativeCustomProviderAttachment }
-      : {}),
-    inferenceSelection: pendingRoute
-      ? { ...input.inferenceSelection, ...pendingRoute }
-      : input.inferenceSelection,
+    nativeCustomProviderAttachment: pendingNativeCustomProviderAttachment,
+    inferenceSelection,
     ...(pendingHostLocalInferenceReceipt === undefined
       ? {}
       : { hostLocalInferenceReceipt: pendingHostLocalInferenceReceipt }),

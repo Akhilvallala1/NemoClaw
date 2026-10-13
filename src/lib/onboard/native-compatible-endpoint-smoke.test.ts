@@ -11,9 +11,17 @@ import {
 } from "./compatible-endpoint-smoke";
 
 describe("native custom onboarding inference verification", () => {
-  it.each(["openclaw", "hermes"])(
-    "verifies attached native inference for %s without the shared route",
-    async (agentName) => {
+  it.each([
+    { agentName: "openclaw", command: "sh", home: undefined },
+    { agentName: "hermes", command: "sh", home: undefined },
+    {
+      agentName: "langchain-deepagents-code",
+      command: "/usr/local/lib/nemoclaw/dcode-managed-exec",
+      home: "/usr/local/lib/nemoclaw",
+    },
+  ])(
+    "verifies attached native inference for $agentName without the shared route",
+    async ({ agentName, command: expectedCommand, home: expectedHome }) => {
       const prepared = await nativeCustom.prepareNativeCustomProfile({
         sandboxName: "smoke-sandbox",
         provider: "compatible-endpoint",
@@ -63,6 +71,9 @@ describe("native custom onboarding inference verification", () => {
           | undefined;
         expect(command?.command.join(" ")).toContain("https://api.example.com/v1/chat/completions");
         expect(command?.command.join(" ")).not.toContain("inference.local");
+        expect(command?.target).toEqual({ kind: "named", gatewayName: "gateway" });
+        expect(command?.command[0]).toBe(expectedCommand);
+        expect(command?.sandboxEnvironment?.HOME).toBe(expectedHome);
         const environment = { HOME: "/rebuild-owner", NEMOCLAW_GATEWAY_PORT: "8642" };
         const smoke = createCompatibleEndpointSmoke(vi.fn(), executor, (value) => value);
         await smoke.verifyRebuilt({

@@ -4,6 +4,10 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../inference/native-custom";
 
 import { managedStartupE2eProfile } from "../../../scripts/checks/generate-managed-startup-profile-fixture.mts";
 import {
@@ -509,6 +513,117 @@ describe("selection", () => {
 });
 
 describe("registerCreatedSandbox", () => {
+  it.each([
+    {
+      selected: "openai-compatible",
+      pending: "compatible-endpoint",
+      explicit: false,
+      retained: false,
+    },
+    {
+      selected: "compatible-endpoint",
+      pending: "compatible-anthropic-endpoint",
+      explicit: false,
+      retained: false,
+    },
+    {
+      selected: "compatible-endpoint",
+      pending: "compatible-endpoint",
+      explicit: false,
+      retained: true,
+    },
+    {
+      selected: "compatible-endpoint",
+      pending: "compatible-anthropic-endpoint",
+      explicit: true,
+      retained: true,
+    },
+    {
+      selected: "openai-compatible",
+      pending: "compatible-endpoint",
+      explicit: true,
+      retained: false,
+    },
+  ])(
+    "retains pending custom authority only for a matching custom selection: $selected / $pending",
+    async ({ selected, pending, explicit, retained }) => {
+      const prepared = await prepareNativeCustomProfile({
+        sandboxName: "demo",
+        provider: "compatible-endpoint",
+        endpointUrl: "https://api.example.com/v1",
+        api: "openai-completions",
+        lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      });
+      const attachment = customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "11111111-2222-4333-8444-555555555555",
+      });
+      const registry = requireDist("../state/registry.js") as typeof import("../state/registry");
+      const getSandbox = vi.spyOn(registry, "getSandbox").mockReturnValue({
+        name: "demo",
+        provider: pending,
+        nativeCustomProviderAttachment: attachment,
+      });
+      try {
+        const input = createdRegistryEntryInput();
+        const row = prepareCreatedSandboxRegistration({
+          ...input,
+          inferenceSelection: { ...input.inferenceSelection, provider: selected },
+          nativeCustomProviderAttachment: explicit ? attachment : undefined,
+          registerSandbox: vi.fn(),
+        });
+        expect(row.nativeCustomProviderAttachment).toEqual(retained ? attachment : undefined);
+      } finally {
+        getSandbox.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    { selected: "openai-compatible", pending: "compatible-endpoint", retained: true },
+    { selected: "compatible-endpoint", pending: "openai-compatible", retained: false },
+  ])(
+    "uses the reserved route when deciding custom attachment authority: $selected / $pending",
+    async ({ selected, pending, retained }) => {
+      const prepared = await prepareNativeCustomProfile({
+        sandboxName: "demo",
+        provider: "compatible-endpoint",
+        endpointUrl: "https://api.example.com/v1",
+        api: "openai-completions",
+        lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      });
+      const attachment = customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "11111111-2222-4333-8444-555555555555",
+      });
+      const registry = requireDist("../state/registry.js") as typeof import("../state/registry");
+      const getSandbox = vi.spyOn(registry, "getSandbox").mockReturnValue({
+        name: "demo",
+        provider: pending,
+        model: "llama",
+        nativeCustomProviderAttachment: attachment,
+      });
+      try {
+        const input = createdRegistryEntryInput();
+        const row = prepareCreatedSandboxRegistration({
+          ...input,
+          reservationSessionId: "session-current",
+          inferenceSelection: { ...input.inferenceSelection, provider: selected },
+          nativeCustomProviderAttachment: attachment,
+          registerSandbox: vi.fn(),
+        });
+        expect(row.provider).toBe(pending);
+        expect(row.nativeCustomProviderAttachment).toEqual(retained ? attachment : undefined);
+      } finally {
+        getSandbox.mockRestore();
+      }
+    },
+  );
+
   const runtimeAuthority = {
     schemaVersion: 1 as const,
     kind: "podman" as const,

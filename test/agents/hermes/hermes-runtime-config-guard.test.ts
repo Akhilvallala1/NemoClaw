@@ -1192,6 +1192,45 @@ print(json.dumps(captured))
 });
 
 describe("Hermes native custom credential refresh (#12636)", () => {
+  it("rejects malformed endpoint and provider selectors without changing config or integrity anchors", () => {
+    const result = runPythonHarness(`${loadGuardModule}
+import json
+import os
+import tempfile
+import yaml
+cases = [("base_url", value) for value in (None, 123, [], {}, "https://[broken/v1")] + [("provider_key", value) for value in ([], {})] + [("provider", value) for value in ([], {})]
+with tempfile.TemporaryDirectory() as tmp:
+    config_path = os.path.join(tmp, "config.yaml")
+    strict = os.path.join(tmp, "strict-hash")
+    compat = os.path.join(tmp, ".config-hash")
+    os.environ["COMPATIBLE_API_KEY"] = "openshell:resolve:env:v12_COMPATIBLE_API_KEY"
+    for field, value in cases:
+        reference = "sk-OPENSHELL-RESOLVE-ENV-COMPATIBLE_API_KEY"
+        config = {
+            "model": {"base_url": "https://api.example.com/v1", "api_key": reference},
+            "providers": {"compatible-endpoint": {"api": "https://api.example.com/v1", "api_key": reference}},
+            "custom_providers": [{"name": "compatible-endpoint", "base_url": "https://api.example.com/v1", "api_key": reference}],
+            "_nemoclaw_upstream": {"provider": "compatible-endpoint", "provider_key": "compatible-endpoint"},
+        }
+        (config["model"] if field == "base_url" else config["_nemoclaw_upstream"])[field] = value
+        with open(config_path, "w") as handle: yaml.safe_dump(config, handle)
+        before = open(config_path, "rb").read()
+        for anchor in (strict, compat):
+            with open(anchor, "w") as handle: handle.write("unchanged")
+        try:
+            guard.refresh_native_custom_inference(tmp, strict, "both")
+        except guard.UnsafePathError:
+            pass
+        else:
+            raise AssertionError("accepted malformed selector")
+        assert open(config_path, "rb").read() == before
+        for anchor in (strict, compat): assert open(anchor).read() == "unchanged"
+    print(json.dumps({"rejected": len(cases), "config_and_anchors_unchanged": True}))
+`);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ rejected: 9, config_and_anchors_unchanged: true });
+  });
+
   it("rejects malformed YAML without exposing config values or changing integrity anchors", () => {
     const result = runPythonHarness(`${loadGuardModule}
 import json
