@@ -187,6 +187,17 @@ export function resetDestroyModuleCache(): void {
   delete require.cache[requireSource.resolve(destroyModulePath)];
 }
 
+export function configureFailedGatewayList(harness: Pick<DestroyHarness, "runOpenshellSpy">): void {
+  const runOpenshell = harness.runOpenshellSpy.getMockImplementation();
+  harness.runOpenshellSpy.mockImplementation((args: unknown, options: unknown) => {
+    const argv = Array.isArray(args) ? args.map(String) : [];
+    if (argv[0] === "gateway" && argv[1] === "list") {
+      return { status: 1, stdout: "", stderr: "gateway unavailable" };
+    }
+    return runOpenshell?.(args, options) ?? { status: 0, stdout: "", stderr: "" };
+  });
+}
+
 export function configureFailedGatewayRestoration(
   harness: Pick<DestroyHarness, "runOpenshellSpy">,
 ): void {

@@ -117,6 +117,19 @@ type RemoveSandboxRegistryEntryWithReceiptDeps = {
   removeSandboxWithReceipt?: typeof registry.removeSandboxWithReceipt;
 };
 
+function hasOnlyIdentityFreeRecovery(
+  sandboxName: string,
+  sandbox: registry.SandboxEntry | null,
+  records: readonly onboardSession.RetainedSandboxRecoveryRecord[],
+): boolean {
+  const candidates = records.filter((record) => record.sandboxName === sandboxName);
+  return (
+    !sandbox?.pendingCreateIdentity &&
+    candidates.length > 0 &&
+    candidates.every((record) => record.sandboxIdentityFingerprint === null)
+  );
+}
+
 function selectRetainedSandboxRecoveryAuthority(
   sandboxName: string,
   sandbox: registry.SandboxEntry | null,
@@ -704,10 +717,16 @@ export async function destroySandbox(
       assertSandboxDestroyCommandAvailable(sandboxName);
       const sandbox = resolveSandboxDestroyRegistryAuthority(sandboxName).entry;
       const session = onboardSession.loadSession();
+      const retainedRecoveryRecords = onboardSession.listRetainedSandboxRecoveryRecords();
+      const skipGatewaySelection = hasOnlyIdentityFreeRecovery(
+        sandboxName,
+        sandbox,
+        retainedRecoveryRecords,
+      );
       const retainedRecoveryAuthority = selectRetainedSandboxRecoveryAuthority(
         sandboxName,
         sandbox,
-        onboardSession.listRetainedSandboxRecoveryRecords(),
+        retainedRecoveryRecords,
         session,
       );
       const gatewayName = resolveSandboxDestroyGatewayName(
@@ -717,15 +736,30 @@ export async function destroySandbox(
       );
       const hasRuntimeSelection = Boolean(resolveSandboxDestroyRuntimeSelection(sandbox));
       telemetryTarget.gatewayName = gatewayName;
-      await destroyWithActiveGatewayRestored(sandboxName, gatewayName, hasRuntimeSelection, () =>
+      const destroy = () =>
         destroySandboxUnlocked(
           sandboxName,
           options,
           removedImmutabilityMigration.stateRecord !== null,
           deps,
           telemetryTarget,
-        ),
-      );
+          skipGatewaySelection,
+        );
+      if (skipGatewaySelection) {
+        // Identity-free recovery can only retire retained metadata after destroy
+        // preflight confirms the sandbox is absent. If it is present, unknown, or
+        // lacks matching recovery authority, preflight refuses deletion because
+        // there is no durable identity to match. Do not require global gateway
+        // state for a path that cannot mutate a sandbox or select a gateway.
+        await destroy();
+      } else {
+        await destroyWithActiveGatewayRestored(
+          sandboxName,
+          gatewayName,
+          hasRuntimeSelection,
+          destroy,
+        );
+      }
       if (!telemetryTarget.completionRecorded) {
         await recordDestroyCompletion(sandboxName, "completed", undefined, gatewayName);
         telemetryTarget.completionRecorded = true;
@@ -764,6 +798,7 @@ async function destroySandboxUnlocked(
     mutationStarted?: boolean;
     completionRecorded?: boolean;
   },
+  skipGatewaySelection: boolean,
 ): Promise<void> {
   const normalized = normalizeDestroySandboxOptions(options);
   const registryAuthority = resolveSandboxDestroyRegistryAuthority(sandboxName);
@@ -797,6 +832,14 @@ async function destroySandboxUnlocked(
     retainedRecoveryRecords,
     destroySession,
   );
+  if (
+    skipGatewaySelection &&
+    !hasOnlyIdentityFreeRecovery(sandboxName, registeredSandbox, retainedRecoveryRecords)
+  ) {
+    throw new Error(
+      `Refusing to destroy sandbox '${sandboxName}': retained recovery authority changed before gateway selection. No sandbox resources were removed.`,
+    );
+  }
   if (
     !retainedRecoveryAuthority &&
     retainedRecoveryRecords.some((record) => record.sandboxName === sandboxName)
@@ -941,6 +984,7 @@ async function destroySandboxUnlocked(
       getSandbox: getRegisteredSandbox,
       retainedRecoveryGatewayName: retainedRecoveryAuthority?.gatewayName,
       operationRuntimeSelection,
+      identityFreeRecovery: skipGatewaySelection,
     });
   } catch (error) {
     preparedManagedLlamaCppCleanup?.abort();

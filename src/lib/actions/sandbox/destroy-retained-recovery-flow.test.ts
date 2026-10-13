@@ -6,8 +6,10 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 
 import {
+  configureFailedGatewayList,
   createDestroyHarness,
   resetDestroyModuleCache,
+  sandboxListJson,
 } from "../../../../test/helpers/destroy-flow-test-harness";
 import type { SessionCancellationRecovery } from "../../state/onboard-session";
 import type { RetainedSandboxRecoveryRecord } from "../../state/onboard-session/retained-sandbox-recovery";
@@ -272,13 +274,57 @@ describe("destroySandbox retained recovery flow", () => {
     { timeout: 30_000 },
     async () => {
       const { harness } = prepublicationRecoveryHarness({ identityFree: true });
+      configureFailedGatewayList(harness);
 
       await expect(harness.destroySandbox("alpha", { yes: true })).rejects.toThrow(
         "process.exit(1)",
       );
 
+      expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
+        ["gateway", "list", "-o", "json"],
+        expect.anything(),
+      );
       expect(harness.resolveRetainedSandboxRecoverySpy).not.toHaveBeenCalled();
       expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    "retires identity-free recovery without requiring global gateway state",
+    { timeout: 30_000 },
+    async () => {
+      const recovery = retainedRecoveryRecordWithoutIdentity();
+      const harness = createDestroyHarness({
+        sandboxPresent: false,
+        dockerRunResult: { status: 0, stdout: "" },
+        registryEntryOverrides: { lifecycleGeneration: recovery.lifecycleGeneration! },
+        retainedRecoveryRecords: [recovery],
+      });
+      harness.sessionState.cancellationRecovery = cancellationRecoveryFor(recovery);
+      configureFailedGatewayList(harness);
+
+      harness.captureOpenshellSpy.mockReturnValue({
+        status: 0,
+        output: "[]",
+        stdout: "[]",
+        stderr: "",
+      });
+
+      await expect(harness.destroySandbox("alpha", { yes: true })).resolves.toBeUndefined();
+
+      expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
+        ["gateway", "list", "-o", "json"],
+        expect.anything(),
+      );
+      expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
+        ["gateway", "select", expect.any(String)],
+        expect.anything(),
+      );
+      expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
+        ["sandbox", "delete", "alpha"],
+        expect.anything(),
+      );
+      expect(harness.removeSandboxSpy).toHaveBeenCalledWith("alpha");
     },
   );
 
@@ -480,6 +526,12 @@ describe("destroySandbox retained recovery flow", () => {
         },
         retainedRecoveryRecords: [recovery],
       });
+      harness.captureOpenshellSpy.mockReturnValue({
+        status: 0,
+        output: "[]",
+        stdout: "[]",
+        stderr: "",
+      });
 
       await expect(harness.destroySandbox("alpha", { yes: true })).resolves.toBeUndefined();
 
@@ -593,6 +645,15 @@ describe("destroySandbox retained recovery flow", () => {
         },
         retainedRecoveryRecords: [recovery],
         ...(sandboxListResult ? { sandboxListResult } : {}),
+      });
+      const captureResult = sandboxListResult ?? {
+        status: 0,
+        stdout: sandboxListJson(["alpha"]),
+        stderr: "",
+      };
+      harness.captureOpenshellSpy.mockReturnValue({
+        ...captureResult,
+        output: captureResult.stdout ?? "",
       });
 
       await expect(harness.destroySandbox("alpha", { yes: true })).rejects.toThrow(

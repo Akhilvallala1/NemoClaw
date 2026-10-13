@@ -4,7 +4,10 @@
 import { createCliOpenShellGatewayLifecycleFromRunner } from "../../adapters/openshell/gateway-lifecycle-cli";
 import os from "node:os";
 
-import { buildSelectedOpenShellSubprocessEnv } from "../../adapters/openshell/command-argv";
+import {
+  buildOpenShellCommandEnv,
+  buildSelectedOpenShellSubprocessEnv,
+} from "../../adapters/openshell/command-argv";
 import type { OpenShellRuntimeSelection } from "../../adapters/openshell/runtime-selection";
 import { OPENSHELL_PROBE_TIMEOUT_MS } from "../../adapters/openshell/timeouts";
 import { withModelRouterPortLifecycleLock } from "../../inference/gateway-route-mutation-lock";
@@ -564,10 +567,12 @@ export async function prepareSandboxDestroy(
     getSandbox = registry.getSandbox,
     retainedRecoveryGatewayName,
     operationRuntimeSelection,
+    identityFreeRecovery = false,
   }: {
     getSandbox?: typeof registry.getSandbox;
     retainedRecoveryGatewayName?: string;
     operationRuntimeSelection?: OpenShellRuntimeSelection;
+    identityFreeRecovery?: boolean;
   } = {},
 ): Promise<SandboxDestroyPreflight> {
   const sandbox = getSandbox(sandboxName);
@@ -609,6 +614,39 @@ export async function prepareSandboxDestroy(
           replaceEnv: true,
         })
     : undefined;
+  if (identityFreeRecovery && !runtimeSelection) {
+    if (process.env.OPENSHELL_GATEWAY_ENDPOINT?.trim()) {
+      throw new Error(
+        "OPENSHELL_GATEWAY_ENDPOINT is set, so OpenShell may bypass the gateway recorded for this sandbox. Unset OPENSHELL_GATEWAY_ENDPOINT and retry.",
+      );
+    }
+    const environment = buildOpenShellCommandEnv();
+    delete environment.OPENSHELL_GATEWAY;
+    const result = captureOpenshell(
+      ["sandbox", "list", "-g", cleanupGatewayName, "--output", "json"],
+      {
+        ignoreError: true,
+        includeStderr: true,
+        includeStreams: true,
+        timeout: OPENSHELL_PROBE_TIMEOUT_MS,
+        env: environment,
+        replaceEnv: true,
+      },
+    );
+    const sandboxPresence = classifyDestroySandboxPresence(sandboxName, {
+      status: result.status,
+      stdout: result.stdout ?? result.output,
+      stderr: result.stderr,
+    });
+    return {
+      cleanupGatewayName,
+      runOpenshell,
+      selectedRunOpenshell,
+      sandbox,
+      sandboxConfirmedAbsent: sandboxPresence === "absent",
+      sandboxPresence,
+    };
+  }
   if (!runtimeSelection) {
     await selectGatewayForSandboxDestroy(
       sandboxName,
