@@ -1333,16 +1333,18 @@ function Invoke-NativeSetupSelection {
         $provider = Wait-NativeSetupElement -Root $window -AutomationId 'InferenceProvider'
         $expanded = [Windows.Automation.ExpandCollapsePattern]$provider.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern)
         $expanded.Expand()
-        $listCondition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::ListItem)
+        $providerName = if ($Inference -ceq 'compatible') { 'Compatible HTTPS endpoint' } else { 'Local endpoint · experimental' }
+        $listCondition = [Windows.Automation.AndCondition]::new(
+            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::ListItem),
+            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $providerName))
         $providerClock = [Diagnostics.Stopwatch]::StartNew()
         do {
             $providers = $provider.FindAll([Windows.Automation.TreeScope]::Descendants, $listCondition)
-            if ($providers.Count -in @(4, 5)) { break }
+            if ($providers.Count -eq 1 -and $providers[0].Current.IsEnabled) { break }
             Start-Sleep -Milliseconds 100
         } while ($providerClock.ElapsedMilliseconds -lt 5000)
-        if ($providers.Count -notin @(4, 5)) { Fail-PackageQualification 'The native inference provider list is incomplete.' }
-        $providerIndex = if ($Inference -ceq 'compatible') { 2 } else { 3 }
-        ([Windows.Automation.SelectionItemPattern]$providers[$providerIndex].GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern)).Select()
+        if ($providers.Count -ne 1 -or -not $providers[0].Current.IsEnabled) { Fail-PackageQualification 'The requested native inference provider is missing, disabled, or ambiguous.' }
+        ([Windows.Automation.SelectionItemPattern]$providers[0].GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern)).Select()
         $expanded.Collapse()
         foreach ($field in @(
             [pscustomobject]@{ id = 'InferenceEndpoint'; value = $Endpoint },
@@ -1506,8 +1508,8 @@ function Get-NativeCanaryOptions {
 function Invoke-NativeCredentialBindingControl {
     $nonce = [guid]::NewGuid().ToString('N')
     $cases = @(
-        [pscustomobject]@{ agent = 'openclaw'; choice = 'AgentOpenClaw'; endpoint = "https://LOCALHOST:443/nemoclaw-$nonce-a/v1/"; canary = "NemoClawCredentialA-$nonce"; binding = $null; owned = $false; evidence = 'credential-a'; services = @{ brave = "BraveCanary-$nonce"; telegram = "TelegramCanary-$nonce"; discord = "DiscordCanary-$nonce"; 'slack-bot' = "xoxb-Canary-$nonce"; 'slack-app' = "xapp-Canary-$nonce" }; serviceBindings = @{} }
-        [pscustomobject]@{ agent = 'hermes'; choice = 'AgentHermes'; endpoint = "https://localhost/nemoclaw-$nonce-b/v1"; canary = "NemoClawCredentialB-$nonce"; binding = $null; owned = $false; evidence = 'credential-b'; services = @{ tavily = "TavilyCanary-$nonce" }; serviceBindings = @{} }
+        [pscustomobject]@{ agent = 'openclaw'; choice = 'AgentOpenClaw'; endpoint = "https://127.0.0.1:443/nemoclaw-$nonce-a/v1/"; canary = "NemoClawCredentialA-$nonce"; binding = $null; owned = $false; evidence = 'credential-a'; services = @{ brave = "BraveCanary-$nonce"; telegram = "TelegramCanary-$nonce"; discord = "DiscordCanary-$nonce"; 'slack-bot' = "xoxb-Canary-$nonce"; 'slack-app' = "xapp-Canary-$nonce" }; serviceBindings = @{} }
+        [pscustomobject]@{ agent = 'hermes'; choice = 'AgentHermes'; endpoint = "https://127.0.0.1/nemoclaw-$nonce-b/v1"; canary = "NemoClawCredentialB-$nonce"; binding = $null; owned = $false; evidence = 'credential-b'; services = @{ tavily = "TavilyCanary-$nonce" }; serviceBindings = @{} }
     )
     $snapshots = @()
     foreach ($file in @($nativeActiveAgentPath) + @($cases | ForEach-Object { Join-Path $nativeConfigurationRoot "$($_.agent)\native-windows.json" })) {
@@ -1529,7 +1531,7 @@ function Invoke-NativeCredentialBindingControl {
                 classification = 'nemoclaw-native-windows-agent-configuration'
                 profile = 'personal'
                 agent = $case.agent
-                inference = 'compatible'
+                inference = 'local'
                 endpoint = $case.endpoint
                 model = $script:NativeSetupModel
                 credentialStored = $true
@@ -1548,7 +1550,7 @@ function Invoke-NativeCredentialBindingControl {
             }
             Write-Host "[CREDENTIAL CONTROL] Check absent inference key: $($case.agent)"
             $absent = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
-                -Arguments @('--credential-read', 'compatible', '--binding', $case.binding)
+                -Arguments @('--credential-read', 'local', '--binding', $case.binding)
             if ($absent.exitCode -eq 0 -or $absent.stdout.Length -ne 0) {
                 Fail-PackageQualification 'Credential binding control requires absent canary targets.'
             }
@@ -1573,13 +1575,13 @@ function Invoke-NativeCredentialBindingControl {
         foreach ($case in $cases) {
             Write-Host "[CREDENTIAL CONTROL] Configure native canary selection: $($case.agent)"
             $selections += Invoke-NativeSetupSelection -Agent $case.agent -ChoiceId $case.choice `
-                -Standalone -ReplaceOwned -Inference compatible -Endpoint $case.endpoint `
+                -Standalone -ReplaceOwned -Inference local -Endpoint $case.endpoint `
                 -CredentialCanary $case.canary -ServiceCanaries $case.services -EvidenceName $case.evidence
         }
         Write-Host '[CREDENTIAL CONTROL] Verify stored bindings'
         foreach ($case in $cases) {
             $read = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
-                -Arguments @('--credential-read', 'compatible', '--binding', $case.binding)
+                -Arguments @('--credential-read', 'local', '--binding', $case.binding)
             if ($read.exitCode -ne 0 -or $read.stdout -cne $case.canary) {
                 Fail-PackageQualification 'The native setup canary did not remain bound to its own agent and endpoint.'
             }
@@ -1594,7 +1596,7 @@ function Invoke-NativeCredentialBindingControl {
         Write-Host '[CREDENTIAL CONTROL] Verify agent isolation and scoped deletion'
         $wrongAgentMetadata = [pscustomobject]@{
             schemaVersion = 1; classification = 'nemoclaw-native-windows-agent-configuration'; profile = 'personal'
-            agent = $cases[1].agent; inference = 'compatible'; endpoint = $cases[0].endpoint
+            agent = $cases[1].agent; inference = 'local'; endpoint = $cases[0].endpoint
             model = $script:NativeSetupModel; credentialStored = $true; options = @{}
         }
         $wrongAgent = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
@@ -1603,16 +1605,16 @@ function Invoke-NativeCredentialBindingControl {
             Fail-PackageQualification ('Changing the agent did not change the credential binding. ' + (Get-NativeCredentialPrepareDiagnostic -Result $wrongAgent))
         }
         $wrongRead = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
-            -Arguments @('--credential-read', 'compatible', '--binding', $wrongAgent.stdout)
+            -Arguments @('--credential-read', 'local', '--binding', $wrongAgent.stdout)
         if ($wrongRead.exitCode -eq 0 -or $wrongRead.stdout.Length -ne 0) {
             Fail-PackageQualification 'A different agent could read the first endpoint canary.'
         }
         $deleted = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
-            -Arguments @('--credential-delete', 'compatible', '--binding', $cases[0].binding)
+            -Arguments @('--credential-delete', 'local', '--binding', $cases[0].binding)
         $firstAbsent = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
-            -Arguments @('--credential-read', 'compatible', '--binding', $cases[0].binding)
+            -Arguments @('--credential-read', 'local', '--binding', $cases[0].binding)
         $secondRetained = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
-            -Arguments @('--credential-read', 'compatible', '--binding', $cases[1].binding)
+            -Arguments @('--credential-read', 'local', '--binding', $cases[1].binding)
         if ($deleted.exitCode -ne 0 -or $firstAbsent.exitCode -eq 0 -or $firstAbsent.stdout.Length -ne 0 -or
             $secondRetained.exitCode -ne 0 -or $secondRetained.stdout -cne $cases[1].canary) {
             Fail-PackageQualification 'Deleting one credential binding changed another endpoint credential.'
@@ -1646,9 +1648,9 @@ function Invoke-NativeCredentialBindingControl {
             if (-not $case.owned) { continue }
             try {
                 $deleted = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
-                    -Arguments @('--credential-delete', 'compatible', '--binding', $case.binding)
+                    -Arguments @('--credential-delete', 'local', '--binding', $case.binding)
                 $absent = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath `
-                    -Arguments @('--credential-read', 'compatible', '--binding', $case.binding)
+                    -Arguments @('--credential-read', 'local', '--binding', $case.binding)
                 if ($deleted.exitCode -ne 0 -or $absent.exitCode -eq 0 -or $absent.stdout.Length -ne 0) { $cleanupFailures.Add("key:$($case.agent)/inference") }
             } catch { $cleanupFailures.Add("key:$($case.agent)/inference") }
         }

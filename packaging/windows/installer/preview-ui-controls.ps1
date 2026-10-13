@@ -87,9 +87,9 @@ function Set-PreviewCanaryConfiguration($Window, [string]$Endpoint, [string]$Key
     $provider = Wait-PreviewElement $Window 'InferenceProvider'
     $expansion = [Windows.Automation.ExpandCollapsePattern]$provider.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern)
     $expansion.Expand()
-    $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Compatible HTTPS endpoint')
+    $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Local endpoint · experimental')
     $item = $provider.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
-    if ($null -eq $item) { throw 'The native compatible-provider choice is unavailable.' }
+    if ($null -eq $item) { throw 'The native local-provider choice is unavailable.' }
     ([Windows.Automation.SelectionItemPattern]$item.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern)).Select(); $expansion.Collapse()
     foreach ($field in @(@('InferenceEndpoint',$Endpoint), @('InferenceModel','qualification/migration-canary'), @('InferenceApiKey',$Key))) {
         $element = Wait-PreviewElement $Window $field[0]

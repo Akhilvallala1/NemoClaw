@@ -34,6 +34,17 @@ function step(job: WorkflowJob, name: string): WorkflowStep {
 type Mutation = { name: string; mutate: (value: WindowsInstallerWorkflowSources) => void };
 const mutations: Mutation[] = [
   ...[
+    "test/automation/pull-requests/windows-native-installer-process.test.ts",
+    "test/automation/pull-requests/windows-native-installer-process.support.ts",
+  ].map((path) => ({
+    name: "missing candidate trigger for " + path,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      value.workflow.on.pull_request.paths = value.workflow.on.pull_request.paths.filter(
+        (entry: string) => entry !== path,
+      );
+    },
+  })),
+  ...[
     ["repository", "untrusted/repository"],
     ["ref", "main"],
     ["path", "controller"],

@@ -16,9 +16,200 @@ import {
 } from "./verify-installed-openclaw-history.mts";
 import { privateDirectoryLibraryIdentity } from "../app/sqlite-private-directory-build.mts";
 import { createHash } from "node:crypto";
+import { normalizeOnboardingConfiguration } from "../runtime/native-setup-configuration.mts";
+import { nativeCredentialBinding } from "../runtime/native-security.mts";
+import { resolveNativeInferenceAddresses } from "../runtime/native-inference-endpoint.mts";
 
 const WINDOWS_POWERSHELL_ENVIRONMENT =
   /^(APPDATA|COMSPEC|HOMEDRIVE|HOMEPATH|LOCALAPPDATA|OS|PATH|PATHEXT|PROCESSOR_ARCHITECTURE|PROCESSOR_ARCHITEW6432|SystemRoot|TEMP|TMP|USERPROFILE|WINDIR)$/iu;
+
+for (const agent of ["openclaw", "hermes"]) {
+  for (const endpoint of [
+    "http://127.0.0.1:17193/canary-fixture/v1",
+    "https://127.0.0.1:17193/tester-fixture/v1",
+    "https://127.0.0.1:443/nemoclaw-fixture-a/v1/",
+  ]) {
+    test(`${agent} local canary retains an optional credential at ${endpoint}`, async () => {
+      const options = {
+        endpoint,
+        model: "qualification/migration-canary",
+        credential: "fixture-key",
+      };
+      const configuration = normalizeOnboardingConfiguration(
+        { agent, inference: "local", options },
+        false,
+      );
+      assert.equal(configuration.credential, "fixture-key");
+      assert.equal(configuration.localModel, undefined);
+      const identity = { agent, inference: "local", endpoint: configuration.endpoint! };
+      const destination = new URL("models", endpoint.replace(/\/$/u, "") + "/").href;
+      // The pinned 0.1.4 launcher uses this same provider/agent/destination binding.
+      assert.equal(
+        nativeCredentialBinding(identity),
+        createHash("sha256")
+          .update(JSON.stringify(["nemoclaw-native-credential-v1", agent, "local", destination]))
+          .digest("hex"),
+      );
+      assert.notEqual(
+        nativeCredentialBinding(identity),
+        nativeCredentialBinding({
+          ...identity,
+          agent: agent === "openclaw" ? "hermes" : "openclaw",
+        }),
+      );
+      assert.notEqual(
+        nativeCredentialBinding(identity),
+        nativeCredentialBinding({
+          ...identity,
+          endpoint: identity.endpoint + "/other",
+        }),
+      );
+      assert.deepEqual(
+        await resolveNativeInferenceAddresses(new URL(endpoint), "local", async () => {
+          throw new Error("The local canary must not consult DNS.");
+        }),
+        [{ address: "127.0.0.1", family: 4 }],
+      );
+      assert.throws(() =>
+        normalizeOnboardingConfiguration({ agent, inference: "compatible", options }, false),
+      );
+      assert.throws(() =>
+        normalizeOnboardingConfiguration(
+          {
+            agent,
+            inference: "local",
+            options: { ...options, endpoint: "https://example.com/v1" },
+          },
+          false,
+        ),
+      );
+    });
+  }
+}
+
+test("migration inference canary detects held and disconnected clients and releases its listener", () => {
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+. $env:CANARY_SOURCE
+foreach ($scenario in @('quiet','held','disconnected')) {
+    $canary=Start-PreviewInferenceCanary -Nonce ('a' * 32)
+    $endpoint=[uri]$canary.endpoint
+    $client=$null
+    try {
+        if ($scenario -cne 'quiet') {
+            $client=[Net.Sockets.TcpClient]::new()
+            $client.Connect($endpoint.Host,$endpoint.Port)
+            if ([Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]@($canary.accept),5000) -lt 0) {throw 'Fixture connection not accepted.'}
+            if ($scenario -ceq 'disconnected') {$client.Dispose();$client=$null}
+        }
+        $failure=$null;$receipt=$null
+        try {$receipt=Stop-PreviewInferenceCanary -Canary $canary} catch {$failure=$_.Exception.Message}
+        if ($scenario -ceq 'quiet') {
+            if ($null -ne $failure -or $receipt.connectionsObserved -ne 0 -or -not $receipt.closed) {throw 'Quiet listener failed.'}
+        } elseif ($failure -cne 'The migration fixture attempted an inference connection.' -or $null -ne $receipt) {
+            throw 'An inference connection was reported as quiet.'
+        }
+        if (-not $canary.closed -or -not $canary.accept.IsCompleted -or $canary.listener.Server.IsBound) {throw 'Listener or accept remained live.'}
+        $repeated=$false
+        try {$null=Stop-PreviewInferenceCanary -Canary $canary} catch {$repeated=$_.Exception.Message -ceq 'The inference canary was already closed.'}
+        if (-not $repeated) {throw 'Repeated closure manufactured a quiet receipt.'}
+    } finally {
+        if ($null -ne $client) {$client.Dispose()}
+        if (-not $canary.closed) {try {$null=Stop-PreviewInferenceCanary -Canary $canary} catch {}}
+    }
+}
+Write-Output 'CANARY_3_PASS'
+`;
+  const result = spawnSync(
+    process.platform === "win32" ? "pwsh.exe" : "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    {
+      env: powershellEnvironment({
+        CANARY_SOURCE: fileURLToPath(new URL("preview-inference-canary.ps1", import.meta.url)),
+      }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30000,
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.trim(), "CANARY_3_PASS");
+});
+
+test(
+  "native provider selection rejects missing, disabled and duplicate choices",
+  { skip: process.platform !== "win32" },
+  () => {
+    const script = String.raw`
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:QUALIFIER_SOURCE,[ref]$tokens,[ref]$errors)
+if ($errors.Count) {throw 'Package qualifier does not parse.'}
+$owner=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-NativeSetupSelection'},$true)
+foreach ($name in @('$providerName','$listCondition')) {
+    $assignment=@($owner.FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq $name},$true))
+    if ($assignment.Count -ne 1) {throw 'Provider selector assignment is ambiguous.'}
+    Set-Variable -Name $(if ($name -ceq '$providerName') {'nameAssignment'} else {'conditionAssignment'}) -Value ([scriptblock]::Create($assignment[0].Extent.Text))
+}
+$guard=@($owner.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Extent.Text.Contains('The requested native inference provider is missing, disabled, or ambiguous.')},$true))
+if ($guard.Count -ne 1) {throw 'Missing provider admission guard.'}
+$admit=[scriptblock]::Create($guard[0].Extent.Text)
+function Fail-PackageQualification {param($message) throw $message}
+foreach ($Inference in @('local','compatible')) {
+    . $nameAssignment; . $conditionAssignment
+    $conditions=$listCondition.GetConditions()
+    if ($conditions.Count -ne 2 -or $conditions[0].Property -ne [Windows.Automation.AutomationElement]::ControlTypeProperty -or
+        $conditions[0].Value -ne [Windows.Automation.ControlType]::ListItem.Id -or
+        $conditions[1].Property -ne [Windows.Automation.AutomationElement]::NameProperty -or
+        $conditions[1].Value -cne $(if ($Inference -ceq 'local') {'Local endpoint · experimental'} else {'Compatible HTTPS endpoint'})) {throw 'Wrong provider selection condition.'}
+    foreach ($scenario in @('single','missing','duplicate','disabled')) {
+        $providers=@(@{Current=@{IsEnabled=$true}})
+        if ($scenario -ceq 'missing') {$providers=@()}
+        if ($scenario -ceq 'duplicate') {$providers+=@{Current=@{IsEnabled=$true}}}
+        if ($scenario -ceq 'disabled') {$providers[0].Current.IsEnabled=$false}
+        $failed=$false
+        try {. $admit} catch {$failed=$true}
+        if ($failed -ne ($scenario -cne 'single')) {throw 'Provider admission verdict differs.'}
+    }
+}
+Write-Output 'PROVIDER_8_PASS'
+`;
+    const result = spawnSync(
+      "pwsh.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(script, "utf16le").toString("base64"),
+      ],
+      {
+        env: powershellEnvironment({
+          QUALIFIER_SOURCE: fileURLToPath(
+            new URL(
+              "../../../scripts/checks/run-windows-native-package-qualification.ps1",
+              import.meta.url,
+            ),
+          ),
+        }),
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30000,
+      },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(result.stdout.trim(), "PROVIDER_8_PASS");
+  },
+);
 
 test("OpenClaw source capture rejects incomplete provenance before installation", () => {
   const script = String.raw`
@@ -701,7 +892,7 @@ if ($save.Count -ne 1) { throw 'Reset canary configuration owner is ambiguous.' 
 function Invoke-NativeSetupSelection {
   param($Agent, $ChoiceId, [switch]$Standalone, [switch]$ReplaceOwned, $Inference, $Endpoint, $CredentialCanary, $EvidenceName)
   if ($Agent -cne 'hermes' -or $ChoiceId -cne 'AgentHermes' -or -not $Standalone -or $ReplaceOwned -or
-      $Inference -cne 'compatible' -or $CredentialCanary -cne 'fixture-key') { throw 'Fresh reset configuration tried to adopt prior user settings.' }
+      $Inference -cne 'local' -or $CredentialCanary -cne 'fixture-key') { throw 'Fresh reset configuration tried to adopt prior user settings.' }
   return @{agent=$Agent}
 }
 $endpoint = 'https://127.0.0.1:17193/fixture/v1'; $canary = 'fixture-key'

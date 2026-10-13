@@ -45,19 +45,19 @@ function Invoke-NativeTesterResetQualification {
         $marker = Join-Path $stateRoot 'tester-reset-canary.txt'
         [IO.File]::WriteAllText($marker, ('disposable native reset fixture ' + $nonce), [Text.UTF8Encoding]::new($false))
         $markerHash = (Get-FileHash -LiteralPath $marker -Algorithm SHA256).Hash.ToLowerInvariant()
-        $intent = [ordered]@{ schemaVersion = 1; classification = 'nemoclaw-native-windows-agent-configuration'; profile = 'personal'; agent = 'hermes'; inference = 'compatible'; endpoint = $endpoint; model = $script:NativeSetupModel; credentialStored = $true; options = @{} }
+        $intent = [ordered]@{ schemaVersion = 1; classification = 'nemoclaw-native-windows-agent-configuration'; profile = 'personal'; agent = 'hermes'; inference = 'local'; endpoint = $endpoint; model = $script:NativeSetupModel; credentialStored = $true; options = @{} }
         $prepared = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath -Arguments @('--configure-native', '--prepare') -StandardInput ($intent | ConvertTo-Json -Depth 8 -Compress)
         $binding = $prepared.stdout.Trim()
         if ($prepared.exitCode -ne 0 -or $binding -cnotmatch '^[0-9a-f]{64}$') { Fail-PackageQualification 'The reset canary binding could not be prepared before Save.' }
-        $absent = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'compatible', '--binding', $binding)
+        $absent = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'local', '--binding', $binding)
         if ($absent.exitCode -eq 0 -or $absent.stdout.Length -ne 0) { Fail-PackageQualification 'The unique tester-reset credential target already exists.' }
         $ownsKey = $true
         $selection = Invoke-NativeSetupSelection -Agent hermes -ChoiceId AgentHermes -Standalone `
-            -Inference compatible -Endpoint $endpoint -CredentialCanary $canary -EvidenceName 'tester-reset-canary'
+            -Inference local -Endpoint $endpoint -CredentialCanary $canary -EvidenceName 'tester-reset-canary'
         $metadata = [IO.File]::ReadAllText($hermesConfig)
         $prepared = Invoke-NativeCredentialHelper -LauncherPath $nemoclawUiLauncherPath -Arguments @('--configure-native', '--prepare') -StandardInput $metadata
         if ($prepared.exitCode -ne 0 -or $prepared.stdout.Trim() -cne $binding) { Fail-PackageQualification 'The saved reset canary binding does not match its prepared identity.' }
-        $read = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'compatible', '--binding', $binding)
+        $read = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'local', '--binding', $binding)
         if ($read.exitCode -ne 0 -or $read.stdout -cne $canary -or $metadata.Contains($canary)) {
             Fail-PackageQualification 'The real saved reset canary was not private and recoverable from its exact Windows binding.'
         }
@@ -108,7 +108,7 @@ function Invoke-NativeTesterResetQualification {
                 Fail-PackageQualification 'Selecting Hermes for reset changed another agent configuration.'
             }
         }
-        $read = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'compatible', '--binding', $binding)
+        $read = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'local', '--binding', $binding)
         if ($read.exitCode -eq 0 -or $read.stdout.Length -ne 0) { Fail-PackageQualification 'The selected reset key remained in Windows Credential Manager.' }
         $ownsKey = $false
         $desktopReceipt = Join-Path $artifactRoot 'tester-reset-desktop-absent.json'
@@ -164,9 +164,9 @@ function Invoke-NativeTesterResetQualification {
         } else {
             if ($ownsKey -and $binding) {
                 try {
-                    $read = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'compatible', '--binding', $binding)
+                    $read = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-read', 'local', '--binding', $binding)
                     if ($read.exitCode -eq 0 -and $read.stdout -ceq $canary) {
-                        $cleared = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-delete', 'compatible', '--binding', $binding)
+                        $cleared = Invoke-NativeCredentialHelper -LauncherPath $helper -Arguments @('--credential-delete', 'local', '--binding', $binding)
                         if ($cleared.exitCode -ne 0) { throw 'Credential removal failed.' }
                     } elseif ($read.stdout.Length -ne 0 -or $read.exitCode -eq 0) {
                         throw 'Credential identity changed.'

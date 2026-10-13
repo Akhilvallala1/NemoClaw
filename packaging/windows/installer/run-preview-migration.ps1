@@ -13,6 +13,7 @@ if ($ProductVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
 $NewAgent=$NewAgent.ToLowerInvariant()
 . (Join-Path $PSScriptRoot 'preview-ui-controls.ps1')
 . (Join-Path $PSScriptRoot 'preview-history-controls.ps1')
+. (Join-Path $PSScriptRoot 'preview-inference-canary.ps1')
 $work = [IO.Path]::GetFullPath($WorkDirectory)
 $output = Join-Path $work 'migration'
 if (Test-Path -LiteralPath $output) { throw 'Migration evidence must be fresh.' }
@@ -40,9 +41,10 @@ $oldHash = '99a1f9db86f9be25cf5b903545f6dce626f9f09700c0e51b0b4040f1fd82d750'
 $oldUrl = 'https://media.githubusercontent.com/media/NVIDIA/NemoClaw/7c570e3f09bac5a48df7a5f2b85456e35cbe77ec/NemoClawSetup-0.1.4-windows-arm64.exe'
 $report = [ordered]@{schemaVersion=1;classification='actual-published-preview-native-migration';sourceRevision=$env:GITHUB_SHA;productVersion=$ProductVersion;
     oldSource='7935e0ccee812d365fd58d32e7291fd3286a98bf';oldVersion='0.1.4';oldAgent='openclaw';newAgent=$NewAgent;oldSha256=$oldHash;newSha256=$newHash;status='failed';
-    freshInstallTimingContaminated=$false;realModelRequests=0;cases=@();cleanupErrors=@()}
+    freshInstallTimingContaminated=$false;realModelRequests=$null;cases=@();cleanupErrors=@()}
 $primary = $null; $retainedHelper = $null; $retainedHelperHash = $null; $binding = $null; $configHash = $null; $ownedCanary = $false; $script:MigrationInstallerOpen = $false
 $script:MigrationSessionOpen = $false
+$inferenceCanary = $null
 
 function Get-MigrationRegistrations {
     $rows = @()
@@ -93,13 +95,13 @@ function Invoke-MigrationHelper([string]$Executable, [string[]]$Arguments, [stri
 function Assert-MigrationCanary([string]$MarkerPath, [string]$MarkerHash, [string]$ConfigHash, [string]$Key) {
     if ((Get-FileHash -LiteralPath $MarkerPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $MarkerHash -or
         (Get-FileHash -LiteralPath $configuration -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ConfigHash) { throw 'Migration changed preserved agent state or configuration.' }
-    $read = Invoke-MigrationHelper $retainedHelper @('--credential-read','compatible','--binding',$binding)
+    $read = Invoke-MigrationHelper $retainedHelper @('--credential-read','local','--binding',$binding)
     if ($read.exitCode -ne 0 -or $read.stdout -cne $Key) { throw 'Migration did not preserve the exact owned Windows credential.' }
 }
 function Remove-MigrationOldCanary {
     if ($null -eq $retainedHelperHash -or (Get-FileHash -LiteralPath $retainedHelper -Algorithm SHA256).Hash.ToLowerInvariant() -cne $retainedHelperHash) { throw 'The retained old native cleanup helper changed.' }
     $failures=@()
-    foreach ($command in @(@('--state-remove','openclaw'), @('--credential-delete','compatible','--binding',$binding))) {
+    foreach ($command in @(@('--state-remove','openclaw'), @('--credential-delete','local','--binding',$binding))) {
         try {
             $cleanupResult=Invoke-MigrationHelper $retainedHelper $command
             if ($cleanupResult.exitCode -ne 0) { throw 'Retained native canary cleanup failed.' }
@@ -112,7 +114,7 @@ function Remove-MigrationOldCanary {
         }
     } catch { $failures+=@($_.Exception.Message) }
     try {
-        $read=Invoke-MigrationHelper $retainedHelper @('--credential-read','compatible','--binding',$binding)
+        $read=Invoke-MigrationHelper $retainedHelper @('--credential-read','local','--binding',$binding)
         if ((Test-Path -LiteralPath $state) -or (Test-Path -LiteralPath $configuration) -or $read.exitCode -eq 0 -or $read.stdout.Length -ne 0) { throw 'The exact old canary reset is incomplete.' }
     } catch { $failures+=@($_.Exception.Message) }
     if ($failures.Count) { throw ($failures -join ' ') }
@@ -153,7 +155,9 @@ try {
     if ((Get-Item -LiteralPath $oldSetup).Length -ne 204621797 -or (Get-FileHash -LiteralPath $oldSetup -Algorithm SHA256).Hash.ToLowerInvariant() -cne $oldHash) { throw 'The anonymous previous-preview download differs from the pinned full artifact.' }
     foreach ($kind in @('conventional-reinstall','native-replace-preview')) {
         $caseRoot = Join-Path $output $kind; [void][IO.Directory]::CreateDirectory($caseRoot)
-        $nonce=[guid]::NewGuid().ToString('N'); $canary='disposable-migration-key-'+$nonce; $endpoint='https://127.0.0.1:17193/migration-'+$nonce+'/v1'
+        $nonce=[guid]::NewGuid().ToString('N'); $canary='disposable-migration-key-'+$nonce
+        $inferenceCanary=Start-PreviewInferenceCanary -Nonce $nonce
+        $endpoint=$inferenceCanary.endpoint
         $newBinding=$null
         $case = [ordered]@{kind=$kind;oldAgent='openclaw';newAgent=$NewAgent;oldVersion='0.1.4';newVersion=$ProductVersion;oldInstall=$null;oldUninstall=$null;newInstall=$null;newUninstall=$null;preservedBeforeNewOnboarding=$false;preservedAfterSelectiveReset=$false;preparation=$null;resetVerified=$false}
         $report.cases+=@($case)
@@ -228,7 +232,7 @@ try {
             if ($prepared.exitCode -ne 0) { throw 'The migrated agent binding could not be inspected.' }
             $newBinding=($prepared.stdout | ConvertFrom-Json).inference
             if ($newBinding -cnotmatch '^[a-f0-9]{64}$' -or $newBinding -ceq $binding) { throw 'The old and new agent credential bindings are not distinct.' }
-            $newRead=Invoke-MigrationHelper $launcher @('--credential-read','compatible','--binding',$newBinding)
+            $newRead=Invoke-MigrationHelper $launcher @('--credential-read','local','--binding',$newBinding)
             if ($newRead.exitCode -ne 0 -or $newRead.stdout -cne $canary) { throw 'The migrated agent credential differs.' }
             $newLease=Invoke-MigrationHelper $launcher @('--state-session',$NewAgent)
             $newStateReceipt=$newLease.stdout | ConvertFrom-Json
@@ -239,7 +243,7 @@ try {
         $case.newUninstall=Invoke-PreviewUi -SetupPath $newSetup -SetupSha256 $newHash -Mode uninstall -LogPath (Join-Path $caseRoot 'new-uninstall.log') -RemoveAgentData -Agent $NewAgent
         Assert-MigrationRegistrations ''
         if ($NewAgent -cne 'openclaw') {
-            $newRead=Invoke-MigrationHelper $retainedHelper @('--credential-read','compatible','--binding',$newBinding)
+            $newRead=Invoke-MigrationHelper $retainedHelper @('--credential-read','local','--binding',$newBinding)
             if ((Test-Path -LiteralPath $newConfiguration) -or (Test-Path -LiteralPath $newState) -or $newRead.exitCode -eq 0 -or $newRead.stdout.Length -ne 0) { throw 'Selective agent reset retained its owned data or credential.' }
             Assert-MigrationCanary $marker $markerHash $configHash $canary
             Assert-MigrationHistoryPreserved $historyFixture
@@ -247,17 +251,23 @@ try {
             $case.preservedAfterSelectiveReset=$true
             Remove-MigrationOldCanary
         }
-        $read=Invoke-MigrationHelper $retainedHelper @('--credential-read','compatible','--binding',$binding)
+        $read=Invoke-MigrationHelper $retainedHelper @('--credential-read','local','--binding',$binding)
         $case['resetObserved'] = @{installationRootExists=(Test-Path -LiteralPath $installation);configurationExists=(Test-Path -LiteralPath $configuration);stateRootExists=(Test-Path -LiteralPath $state);credentialReadExitCode=$read.exitCode;credentialOutputEmpty=($read.stdout.Length -eq 0)}
         if ($case.resetObserved.installationRootExists) { throw 'Native tester reset retained the installation root.' }
         if ($case.resetObserved.configurationExists) { throw 'Native tester reset retained the selected agent configuration.' }
         if ($case.resetObserved.stateRootExists) { throw 'Native tester reset retained the selected agent state root.' }
         if ($read.exitCode -eq 0 -or $read.stdout.Length -ne 0) { throw 'Native tester reset retained the selected canary key.' }
         $ownedCanary=$false; $binding=$null; $case.resetVerified=$true
+        $case['inferenceCanary']=Stop-PreviewInferenceCanary -Canary $inferenceCanary
     }
+    $report.realModelRequests=0
     $report.status='pass'
 } catch { $primary=$_; $report['error']=$_.Exception.Message }
 finally {
+    if ($null -ne $inferenceCanary -and -not $inferenceCanary.closed) {
+        try { $null=Stop-PreviewInferenceCanary -Canary $inferenceCanary }
+        catch { $report.cleanupErrors+=@($_.Exception.Message) }
+    }
     foreach ($uiRecord in Get-ChildItem -LiteralPath $output -Recurse -Filter '*.ui.json' -File) {
         try { if ((Get-Content -LiteralPath $uiRecord.FullName -Raw | ConvertFrom-Json).cleanupClosed -ne $true) { $script:MigrationInstallerOpen=$true } } catch { $script:MigrationInstallerOpen=$true }
     }

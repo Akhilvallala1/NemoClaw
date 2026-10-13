@@ -22,6 +22,8 @@ on:
       - "scripts/checks/*windows-native*"
       - "scripts/install-windows-native.ps1"
       - "test/automation/pull-requests/windows-native-installer-workflow.test.ts"
+      - "test/automation/pull-requests/windows-native-installer-process.test.ts"
+      - "test/automation/pull-requests/windows-native-installer-process.support.ts"
       - "test/security/windows-native-*.test.ts"
       - "test/support/windows-native-*.ts"
       - "tools/windows-installer/**"
