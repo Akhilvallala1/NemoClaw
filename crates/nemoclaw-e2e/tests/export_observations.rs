@@ -91,7 +91,7 @@ async fn export_uses_provider_observations_without_resolving_inference_credentia
     *document.spec.gateway.endpoint_mut() = fixture.endpoint.clone();
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
     document.spec.inference_providers[0].endpoint = "https://models.example/v1".into();
-    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::Credential {
+    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::SecretRef {
         env: "EXPORT_INFERENCE_REFERENCE".into(),
     });
     let cancel = CancellationToken::new();

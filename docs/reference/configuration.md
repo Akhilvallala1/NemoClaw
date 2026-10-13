@@ -160,33 +160,6 @@ Paths:
 | `cudagraphMode` | string | Yes | — | CUDA graph execution mode. Constraints: `"NONE"` or `"FULL_DECODE_ONLY"`. |
 | `mode` | integer | Yes | — | Compilation mode understood by the pinned vLLM image. Constraints: minimum 0; maximum 3. |
 
-## Credential
-
-A reference to a caller-provided environment variable; the configuration contains no credential value.
-
-Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
-
-Paths:
-
-- `spec.gateway.credential`
-- `spec.gateway.kubernetes.kubeconfig`
-- `spec.gateway.tls.ca`
-- `spec.gateway.tls.certificate`
-- `spec.gateway.tls.key`
-- `spec.inferenceProviders[].credential`
-- `spec.inferences.{key}.routes[].provider.credential`
-- `spec.integrations.{key}.credential`
-- `spec.sandboxes[].agent.inference.routes[].provider.credential`
-- `spec.sandboxes[].agent.integrations.{key}.credential`
-- `spec.sandboxes[].image.metadata`
-- `spec.sandboxes[].inferenceProviders[].credential`
-- `spec.sandboxes[].inferences.{key}.routes[].provider.credential`
-- `spec.sandboxes[].integrations.{key}.credential`
-
-| Field | Input type | Required | Default | Description and constraints |
-|---|---|---|---|---|
-| `env` | string | Yes | — | Uppercase environment variable name. For TLS and kubeconfig fields, its value is a local file path; otherwise it is a bearer/API credential. NEMOCLAW_KUBERNETES_STATE and the NEMOCLAW_MANAGED_K8S_, HELM_, and KUBE_ prefixes are reserved for runtime controls. Constraints: pattern `^[A-Z_][A-Z0-9_]{0,127}$`. |
-
 ## DedicatedHardware
 
 Requirements for one NVIDIA GPU with dedicated memory on Linux AMD64. Declaring requirements does not qualify a model or host.
@@ -282,6 +255,24 @@ Paths:
 | `sha256` | string | Yes | — | Lowercase SHA-256 of the complete file. Constraints: pattern `^[a-f0-9]{64}$`. |
 | `size` | integer | Yes | — | Expected file length in bytes; zero is rejected. Constraints: minimum 1. |
 
+## FileRef
+
+Environment variable whose value is the path of a local file; the configuration holds neither the path nor the file.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.gateway.kubernetes.kubeconfig`
+- `spec.gateway.tls.ca`
+- `spec.gateway.tls.certificate`
+- `spec.gateway.tls.key`
+- `spec.sandboxes[].image.metadata`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `env` | string | Yes | — | Uppercase name of the caller environment variable that holds the local file path. NEMOCLAW_KUBERNETES_STATE and the NEMOCLAW_MANAGED_K8S_, HELM_, and KUBE_ prefixes are reserved for runtime controls. Constraints: pattern `^[A-Z_][A-Z0-9_]{0,127}$`. |
+
 ## Gateway
 
 Install a local or explicitly configured Kubernetes gateway, or connect to an existing gateway.
@@ -318,7 +309,7 @@ An existing gateway managed outside this deployment.
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `credential` | [Credential](#credential) | No | — | Optional bearer credential reference for an external HTTPS gateway. |
+| `credential` | [SecretRef](#secretref) | No | — | Optional bearer credential reference for an external HTTPS gateway. |
 | `endpoint` | string | Yes | — | Gateway HTTP(S) origin, without a path. Constraints: pattern `^https?://`. |
 | `engine` | string | No | — | Engine containing Docker or Podman sandbox images, used only for image metadata inspection. Required for their deployment planning; omission permits retained-state teardown. Kubernetes and OpenShift use image.metadata instead. |
 | `management` | string | Yes | — | Whether this deployment manages the gateway. Constraints: `"external"`. |
@@ -370,7 +361,7 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `metadata` | [Credential](#credential) | No | — | Environment reference to the absolute path of a local OCI metadata bundle for `ref`; required for Kubernetes and OpenShift, where no local engine can be inspected. Destroy does not read it. Its index, manifest, configuration, and Fabric catalog are verified against `ref` before use. The bundle holds no image layers or credentials. Docker and Podman inspect their engine instead. |
+| `metadata` | [FileRef](#fileref) | No | — | Environment reference to the absolute path of a local OCI metadata bundle for `ref`; required for Kubernetes and OpenShift, where no local engine can be inspected. Destroy does not read it. Its index, manifest, configuration, and Fabric catalog are verified against `ref` before use. The bundle holds no image layers or credentials. Docker and Podman inspect their engine instead. |
 | `ref` | string | For Kubernetes sandboxes | — | Immutable image reference. Kubernetes and OpenShift require an explicit nonempty reference. For other drivers, omitted or empty selects the generic SDK agent image pin; verify that it contains the selected Fabric adapter. Constraints: `""` or pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. Kubernetes and OpenShift require an explicit immutable image reference. For other drivers, omitted or empty selects the generic SDK agent image pin; verify that it contains the selected Fabric adapter. |
 
 ## ImagePullPolicy
@@ -440,7 +431,7 @@ Paths:
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
 | `api` | [InferenceApi](#inferenceapi) | No | — | Request API. Omission selects anthropic-messages for Anthropic providers and openai-completions for OpenAI providers; explicit values are preserved for Fabric validation. |
-| `credential` | [Credential](#credential) | No | — | Optional API credential reference for an external HTTPS endpoint. Excluded by serviceRef. |
+| `credential` | [SecretRef](#secretref) | No | — | Optional API credential reference for an external HTTPS endpoint. Excluded by serviceRef. |
 | `endpoint` | string | Without serviceRef | — | Inference HTTP(S) URL owned outside the deployment. Required without serviceRef and excluded with serviceRef. |
 | `name` | string | Yes | — | Provider name referenced by model choices. Constraints: pattern `^[a-z][a-z0-9-]{0,39}$`. |
 | `provider` | string | Yes | — | OpenShell provider implementation. Must match the selected API family. Constraints: `"openai"` or `"anthropic"`. |
@@ -490,7 +481,7 @@ Web search with gateway-held credentials and explicit agent grants.
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `credential` | [Credential](#credential) | Yes | — | Host environment reference. OpenShell supplies the search provider's placeholder to the sandbox. |
+| `credential` | [SecretRef](#secretref) | Yes | — | Host environment reference. OpenShell supplies the search provider's placeholder to the sandbox. |
 | `kind` | string | Yes | — | Integration implementation selected by this definition. Constraints: `"webSearch"`. |
 | `provider` | [SearchProvider](#searchprovider) | Yes | — | Supported search service. |
 
@@ -523,7 +514,7 @@ Paths:
 | `authentication` | [KubernetesAuthentication](#kubernetesauthentication) | Yes | — | Explicit generated development authentication profile; this is not a production identity service. |
 | `context` | string | Yes | — | Exact kubeconfig context used for every cluster operation. Constraints: pattern `^[^\x00-\x20\x7f]+$(?![\s\S])`; minimum characters 1; maximum characters 253. |
 | `environment` | array of string | No | — | Caller environment variables that the kubeconfig's exec credential plugin needs, such as `AWS_PROFILE` for an EKS cluster. Cluster operations receive only platform variables and these; they are resolved like credential references and never written to configuration or state. Constraints: maximum items 32; items: pattern `^[A-Z_][A-Z0-9_]{0,127}$`. |
-| `kubeconfig` | [Credential](#credential) | Yes | — | Environment reference whose value is the local kubeconfig file path. The file and its credentials remain outside configuration and exported state. Process, loader, trust, proxy, cluster, Python, Helm, OpenTofu, and SDK control variable names are reserved. |
+| `kubeconfig` | [FileRef](#fileref) | Yes | — | Environment reference whose value is the local kubeconfig file path. The file and its credentials remain outside configuration and exported state. Process, loader, trust, proxy, cluster, Python, Helm, OpenTofu, and SDK control variable names are reserved. |
 | `namespace` | string | Yes | — | Namespace for this deployment's gateway and generated development authentication resources. Constraints: pattern `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$(?![\s\S])`; minimum characters 1; maximum characters 63. |
 
 ## Manifest
@@ -983,6 +974,28 @@ Accepted input: string.
 
 Constraints: `"brave"` or `"tavily"`.
 
+## SecretRef
+
+Environment variable whose value is a bearer or API credential; the configuration holds no credential value.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.gateway.credential`
+- `spec.inferenceProviders[].credential`
+- `spec.inferences.{key}.routes[].provider.credential`
+- `spec.integrations.{key}.credential`
+- `spec.sandboxes[].agent.inference.routes[].provider.credential`
+- `spec.sandboxes[].agent.integrations.{key}.credential`
+- `spec.sandboxes[].inferenceProviders[].credential`
+- `spec.sandboxes[].inferences.{key}.routes[].provider.credential`
+- `spec.sandboxes[].integrations.{key}.credential`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `env` | string | Yes | — | Uppercase name of the caller environment variable that holds the credential. NEMOCLAW_KUBERNETES_STATE and the NEMOCLAW_MANAGED_K8S_, HELM_, and KUBE_ prefixes are reserved for runtime controls. Constraints: pattern `^[A-Z_][A-Z0-9_]{0,127}$`. |
+
 ## ServiceAuthentication
 
 Generated bearer authentication for a managed inference service.
@@ -1222,9 +1235,9 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `ca` | [Credential](#credential) | Yes | — | Environment variable whose value names the local CA certificate file. |
-| `certificate` | [Credential](#credential) | Yes | — | Environment variable whose value names the local client certificate file. |
-| `key` | [Credential](#credential) | Yes | — | Environment variable whose value names the local client private-key file. |
+| `ca` | [FileRef](#fileref) | Yes | — | Environment variable whose value names the local CA certificate file. |
+| `certificate` | [FileRef](#fileref) | Yes | — | Environment variable whose value names the local client certificate file. |
+| `key` | [FileRef](#fileref) | Yes | — | Environment variable whose value names the local client private-key file. |
 
 ## Tool
 

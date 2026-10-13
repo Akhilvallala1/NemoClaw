@@ -551,6 +551,91 @@ fn a_reserved_kubernetes_environment_name_states_the_naming_rule() {
 }
 
 #[test]
+fn a_reserved_reference_name_states_whether_the_reference_holds_a_secret_or_a_file_path() {
+    let secret = "secret reference must name a valid environment variable that does not shadow managed Kubernetes runtime controls";
+    let file = "file reference must name a valid environment variable that does not shadow managed Kubernetes runtime controls";
+    let mut external = external_document();
+    external["spec"]["gateway"]["endpoint"] = json!("https://openshell.example.com");
+    external["spec"]["gateway"]["credential"] = json!({"env": "GATEWAY_TOKEN"});
+    external["spec"]["gateway"]["tls"] = json!({
+        "ca": {"env": "GATEWAY_CA"},
+        "certificate": {"env": "GATEWAY_CERT"},
+        "key": {"env": "GATEWAY_KEY"}
+    });
+    external["spec"]["inferenceProviders"][0]["endpoint"] = json!("https://inference.example/v1");
+    external["spec"]["inferenceProviders"][0]["credential"] = json!({"env": "HOSTED_API_KEY"});
+    external["spec"]["sandboxes"][0]["integrations"] = json!({
+        "search": {"kind": "webSearch", "provider": "brave", "credential": {"env": "SEARCH_KEY"}}
+    });
+    external["spec"]["sandboxes"][0]["agent"]["integrationRefs"] = json!(["search"]);
+    Document::parse(external.to_string().as_bytes()).unwrap();
+    for (mut input, pointer, path, rule) in [
+        (
+            external.clone(),
+            "/spec/gateway/credential",
+            "spec.gateway.credential.env",
+            secret,
+        ),
+        (
+            external.clone(),
+            "/spec/inferenceProviders/0/credential",
+            "spec.inferenceProviders[0].credential.env",
+            secret,
+        ),
+        (
+            external.clone(),
+            "/spec/sandboxes/0/integrations/search/credential",
+            "spec.sandboxes[0].integrations.search.credential.env",
+            secret,
+        ),
+        (
+            external.clone(),
+            "/spec/gateway/tls/ca",
+            "spec.gateway.tls.ca.env",
+            file,
+        ),
+        (
+            external.clone(),
+            "/spec/gateway/tls/certificate",
+            "spec.gateway.tls.certificate.env",
+            file,
+        ),
+        (
+            external.clone(),
+            "/spec/gateway/tls/key",
+            "spec.gateway.tls.key.env",
+            file,
+        ),
+        (
+            external,
+            "/spec/sandboxes/0/image/metadata",
+            "spec.sandboxes[0].image.metadata.env",
+            file,
+        ),
+        (
+            managed_document(),
+            "/spec/gateway/kubernetes/kubeconfig",
+            "spec.gateway.kubernetes.kubeconfig.env",
+            file,
+        ),
+    ] {
+        *input.pointer_mut(pointer).unwrap() = json!({"env": "KUBE_TOKEN"});
+        let error = schema_error(&input);
+        assert!(
+            error.contains(&format!("schema at {path} (line")) && error.contains(rule),
+            "{error}"
+        );
+        assert!(!error.contains("KUBE_TOKEN"), "{error}");
+        let error = serde_json::from_value::<Document>(input)
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(rule), "{error}");
+    }
+}
+
+#[test]
 fn managed_services_with_a_kubernetes_runtime_state_the_cluster_rule() {
     let managed =
         Document::parse(include_bytes!("fixtures/config/managed-ollama.yaml").as_slice()).unwrap();

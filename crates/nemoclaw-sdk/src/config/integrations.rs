@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-use super::{AgentTools, ConfigError, Credential, Document, Sandbox};
+use super::{AgentTools, ConfigError, Document, Sandbox, SecretRef};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,7 +18,7 @@ pub struct WebSearch {
     /// Supported search service.
     pub provider: SearchProvider,
     /// Host environment reference. OpenShell supplies the search provider's placeholder to the sandbox.
-    pub credential: Credential,
+    pub credential: SecretRef,
 }
 
 /// A definition and its explicitly attached agents in one sandbox.
@@ -153,7 +153,7 @@ fn validate_definitions(definitions: &BTreeMap<String, Integration>) -> Result<(
 pub(crate) struct RuntimeWebSearch {
     pub provider: SearchProvider,
     pub agent_refs: Vec<String>,
-    pub credential: Credential,
+    pub credential: SecretRef,
 }
 pub use nemoclaw_openshell::search::{SearchProvider, search_provider_name};
 
@@ -187,6 +187,6 @@ impl RuntimeWebSearch {
                 "web search requires unique references to configured agents",
             ));
         }
-        super::validation::credential(&Some(self.credential.clone()))
+        super::schema::validate_definition("SecretRef", &self.credential)
     }
 }

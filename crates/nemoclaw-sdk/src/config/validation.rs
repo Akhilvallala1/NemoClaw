@@ -11,12 +11,6 @@ pub(crate) fn require(valid: bool, reason: &'static str) -> Result<(), ConfigErr
         Err(ConfigError::new(reason))
     }
 }
-pub(super) fn credential(value: &Option<Credential>) -> Result<(), ConfigError> {
-    if let Some(credential) = value {
-        schema::validate_definition("Credential", credential)?;
-    }
-    Ok(())
-}
 
 pub use nemoclaw_backend::validate_endpoint;
 
@@ -50,7 +44,9 @@ impl Document {
                     || sandbox.image.metadata.is_none(),
                 "image.metadata is available only for Kubernetes and OpenShift; Docker and Podman use engine image inspection",
             )?;
-            credential(&sandbox.image.metadata)?;
+            if let Some(metadata) = &sandbox.image.metadata {
+                schema::validate_definition("FileRef", metadata)?;
+            }
             require(
                 sandbox_names.insert(&sandbox.name),
                 "sandbox names must be unique",

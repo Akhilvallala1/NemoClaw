@@ -957,7 +957,7 @@ async fn destroy_does_not_require_the_inference_credential_or_rewrite_its_refere
     *document.spec.gateway.endpoint_mut() = fixture.endpoint.clone();
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
     document.spec.inference_providers[0].endpoint = "https://inference.example.test/v1".into();
-    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::Credential {
+    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::SecretRef {
         env: "NEMOCLAW_TEST_REMOVED_INFERENCE_KEY".into(),
     });
     let cancel = CancellationToken::new();
@@ -1030,7 +1030,7 @@ async fn apply_preserves_bindings_without_generating_inference() {
     *document.spec.gateway.endpoint_mut() = fixture.endpoint.clone();
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
     document.spec.inference_providers[0].endpoint = "https://unreachable.invalid/v1".into();
-    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::Credential {
+    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::SecretRef {
         env: "MODEL_TOKEN".into(),
     });
     let deployment =
@@ -1540,7 +1540,7 @@ async fn cli_redaction_preserves_failures_and_recovery_with_short_and_colliding_
     *document.spec.gateway.endpoint_mut() = fixture.endpoint.clone();
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
     document.spec.inference_providers[0].endpoint = "https://127.0.0.1:9/v1".into();
-    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::Credential {
+    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::SecretRef {
         env: "NEMOCLAW_TEST_REDACTION_KEY".into(),
     });
     let input = directory.path().join("deployment.yaml");
