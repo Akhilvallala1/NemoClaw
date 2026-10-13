@@ -29,7 +29,7 @@ graph LR
     USER(["👤 User"]):::user
 
     subgraph EXTERNAL["External Services"]
-        SHARED_INFERENCE["Shared-route inference providers<br/><small>Custom · legacy local<br/>Hermes local · Model Router</small>"]:::external
+        SHARED_INFERENCE["Shared-route inference providers<br/><small>Other custom · legacy local<br/>Hermes local · Model Router</small>"]:::external
         NVIDIA_INFERENCE["Attached inference providers<br/><small>NVIDIA · fixed hosted<br/>OpenClaw and DCode local</small>"]:::external
         INTEGRATIONS["Integration APIs<br/><small>MCP · GitHub · package indexes</small>"]:::external
         INTERNET["Internet<br/><small>PyPI · npm · GitHub · APIs</small>"]:::external
@@ -171,7 +171,7 @@ graph TB
         end
     end
 
-    SHARED_INFER["Shared-route inference provider<br/><small>Custom · legacy local<br/>Hermes local · Model Router</small>"]:::external
+    SHARED_INFER["Shared-route inference provider<br/><small>Other custom · legacy local<br/>Hermes local · Model Router</small>"]:::external
     NVIDIA_INFER["Attached inference providers<br/><small>NVIDIA · fixed hosted<br/>OpenClaw and DCode local</small>"]:::external
 
     CLI -->|"openshell CLI<br/>(orchestrates)"| GW
@@ -358,13 +358,13 @@ Inside the sandbox:
 ## Inference Routing
 
 Agent inference follows one of two OpenShell-managed paths.
-Custom endpoints, Hermes local selections, and existing legacy local routes use `inference.local` through the pinned OpenShell 0.0.116 gateway:
+Other custom endpoints, Hermes local selections, and existing legacy local routes use `inference.local` through the pinned OpenShell 0.0.116 gateway:
 
 ```text
 Supported agent runtime (sandbox)  ──▶  inference.local  ──▶  OpenShell gateway  ──▶  Provider endpoint
 ```
 
-NVIDIA Endpoints, supported fixed hosted providers, and new OpenClaw or Deep Agents Code local selections use restricted providers attached to the sandbox. For example, NVIDIA Endpoints uses this path:
+NVIDIA Endpoints, supported fixed hosted providers, and new OpenClaw or Deep Agents Code local selections, including qualified host-local `compatible-endpoint` routes, use restricted providers attached to the sandbox. For example, NVIDIA Endpoints uses this path:
 
 ```text
 Supported agent runtime (sandbox)  ──▶  integrate.api.nvidia.com  ──▶  NVIDIA Endpoints
