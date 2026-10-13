@@ -5,18 +5,14 @@
 
 use std::sync::LazyLock;
 
-use nemoclaw_sdk::config::{
-    Document, parse_yaml_value,
-    schema::{input_schema, select_variant},
-};
+use nemoclaw_sdk::config::{Document, parse_yaml_value, schema::select_variant};
 use serde_json::Value;
 
-use crate::{Diagnostics, diagnostics::diagnostic, pointer::escape};
+use crate::{Diagnostics, diagnostics::diagnostic, pointer::escape, sdk_schema::schema_root};
 use jsonschema::error::ValidationErrorKind as Kind;
 
-static INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(input_schema);
 static INPUT_VALIDATOR: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
-    jsonschema::validator_for(&INPUT_SCHEMA).expect("SDK input schema must compile")
+    jsonschema::validator_for(schema_root()).expect("SDK input schema must compile")
 });
 
 /// Authored values before SDK defaults or required-field validation.
@@ -97,7 +93,7 @@ impl PartialDocument {
     /// Inspect the current sparse input. Compound rules remain deferred until
     /// a partial evaluator can prove whether a branch is impossible or incomplete.
     pub fn assess(&self) -> PartialAssessment {
-        let issues = schema_issues(&INPUT_SCHEMA, &INPUT_VALIDATOR, &self.supplied);
+        let issues = schema_issues(schema_root(), &INPUT_VALIDATOR, &self.supplied);
         if !issues.is_empty() {
             return PartialAssessment {
                 issues,

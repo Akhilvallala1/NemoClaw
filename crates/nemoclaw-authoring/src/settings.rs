@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{Diagnostics, diagnostics::diagnostic, pointer::escape};
+use crate::{
+    Diagnostics,
+    diagnostics::diagnostic,
+    pointer::{escape, unescape},
+};
 use nemoclaw_sdk::json_schema::schema_accepts;
 use serde_json::{Map, Value};
 
@@ -22,11 +26,7 @@ pub(crate) fn put(root: &mut Value, path: &str, value: Option<Value>) -> Result<
         return Ok(());
     }
 
-    let parts: Vec<_> = path
-        .split('/')
-        .skip(1)
-        .map(|part| part.replace("~1", "/").replace("~0", "~"))
-        .collect();
+    let parts: Vec<_> = path.split('/').skip(1).map(unescape).collect();
     let mut current = root;
     for part in &parts[..parts.len().saturating_sub(1)] {
         current = current

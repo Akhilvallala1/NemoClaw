@@ -199,7 +199,7 @@ pub(super) fn native_questions_for_values(
     }
     if let (Some(schema), Some(document)) = (capabilities.model_schemas.get(harness_id), document) {
         let sandbox = crate::journey_definition::sole_sandbox(document)
-            .ok_or_else(|| diagnostic("journey", "The v1 journey requires one sandbox object."))?;
+            .ok_or_else(|| diagnostic("journey", crate::journey_definition::ONE_SANDBOX))?;
         let inference = document
             .sandbox_inference(sandbox)
             .map_err(|error| diagnostic("journey", &error.to_string()))?;

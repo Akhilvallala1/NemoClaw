@@ -76,10 +76,7 @@ fn runtime_targets_with_plans(
         });
         return Ok(targets);
     }
-    let (Some(settings), Some(local)) = (
-        document.spec.gateway.as_managed(),
-        document.spec.gateway.as_local_managed(),
-    ) else {
+    let Some(local) = document.spec.gateway.as_local_managed() else {
         return Ok(service_plans.targets().cloned().collect());
     };
     let gateway = Spec {
@@ -89,7 +86,7 @@ fn runtime_targets_with_plans(
         name: format!("{}-gateway", document.workspace()),
         owner: document.metadata.uid.clone(),
         generation: generation(generations, GATEWAY_KIND)?.into(),
-        gateway: settings.runtime_settings(),
+        gateway: local.runtime_settings(),
         process: None,
     };
     // The listen port changes Docker compute, not initialized data or credentials.

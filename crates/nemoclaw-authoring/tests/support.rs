@@ -3,7 +3,10 @@
 //! Helpers shared by the authoring tests.
 use nemoclaw_sdk::discovery::DiscoveryObservations;
 use nemoclaw_sdk::{
-    config::{ComputeDriver, Document},
+    config::{
+        ComputeDriver, Document, ExternalGateway, ExternalTarget, Gateway, KubernetesDistribution,
+        ManagedGateway, ManagedTarget,
+    },
     discovery::{
         DiscoveryObservation, DiscoveryQuery, DiscoveryRequest, EngineObservation,
         FabricObservation, ObservationStatus, plan_queries,
@@ -24,9 +27,24 @@ pub fn target(document: &Document) -> Target {
     let [sandbox] = document.spec.sandboxes.values().collect::<Vec<_>>()[..] else {
         panic!("the document has one sandbox");
     };
+    let (engine, compute_driver) = match &document.spec.gateway {
+        Gateway::Managed(ManagedGateway { target }) => match target {
+            ManagedTarget::Docker(docker) => (docker.engine.as_str(), ComputeDriver::Docker),
+            ManagedTarget::Podman(podman) => (podman.engine.as_str(), ComputeDriver::Podman),
+            ManagedTarget::Kubernetes(cluster) => match cluster.distribution {
+                KubernetesDistribution::Kubernetes => ("", ComputeDriver::Kubernetes),
+                KubernetesDistribution::OpenShift => ("", ComputeDriver::OpenShift),
+            },
+        },
+        Gateway::External(ExternalGateway { target, .. }) => match target {
+            ExternalTarget::Docker(docker) => (docker.engine.as_str(), ComputeDriver::Docker),
+            ExternalTarget::Podman(podman) => (podman.engine.as_str(), ComputeDriver::Podman),
+            ExternalTarget::Kubernetes(_) => ("", ComputeDriver::Kubernetes),
+        },
+    };
     Target {
-        engine: document.spec.gateway.image_engine().to_owned(),
-        compute_driver: document.spec.gateway.compute_driver(),
+        engine: engine.to_owned(),
+        compute_driver,
         image: sandbox.image.ref_.clone(),
     }
 }

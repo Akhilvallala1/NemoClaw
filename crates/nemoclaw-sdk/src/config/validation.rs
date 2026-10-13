@@ -107,12 +107,13 @@ impl Document {
 impl super::ManagedGateway {
     pub fn validate_managed(&self) -> Result<(), ConfigError> {
         schema::validate_definition("Gateway", &Gateway::Managed(self.clone()))?;
-        if let super::ManagedTarget::Kubernetes(cluster) = &self.target {
-            return validate_endpoint(&cluster.endpoint, true);
-        }
-        let local = self
-            .local()
-            .expect("Docker and Podman targets run on a local engine");
+        let local = match &self.target {
+            ManagedTarget::Docker(docker) => docker.local(),
+            ManagedTarget::Podman(podman) => podman.local(),
+            ManagedTarget::Kubernetes(cluster) => {
+                return validate_endpoint(&cluster.endpoint, true);
+            }
+        };
         let authority = local
             .endpoint
             .strip_prefix("http://")

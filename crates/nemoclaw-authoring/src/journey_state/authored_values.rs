@@ -75,8 +75,8 @@ impl AuthoredValues {
         {
             self.inactive_settings.insert(old.clone(), settings.clone());
         }
-        let sandbox = sandbox_path(&self.values)
-            .ok_or_else(|| diagnostic("journey", "The v1 journey requires one sandbox object."))?;
+        let sandbox =
+            sandbox_path(&self.values).ok_or_else(|| diagnostic("journey", ONE_SANDBOX))?;
         let inline = format!("{sandbox}/harness");
         let owner_path = harness_path(&self.values)
             .or_else(|| {
@@ -91,9 +91,7 @@ impl AuthoredValues {
             self.values
                 .pointer_mut(&sandbox)
                 .and_then(Value::as_object_mut)
-                .ok_or_else(|| {
-                    diagnostic("journey", "The v1 journey requires one sandbox object.")
-                })?
+                .ok_or_else(|| diagnostic("journey", ONE_SANDBOX))?
                 .entry("harness")
                 .or_insert_with(|| Value::Object(Map::new()))
         } else {
@@ -182,14 +180,12 @@ impl AuthoredValues {
         let (parent, property) = pointer
             .rsplit_once('/')
             .ok_or_else(|| diagnostic("journey", "Invalid SDK field path."))?;
-        let property = property.replace("~1", "/").replace("~0", "~");
+        let property = unescape(property);
         if value.is_none() && self.values.pointer(parent).is_none() {
             return Ok(());
         }
         // The journey edits its one sandbox; a write never adds another.
-        let sandbox = pointer
-            .strip_prefix("/spec/sandboxes/")
-            .map(|rest| rest.split_once('/').map_or(rest, |(key, _)| key));
+        let sandbox = entry_key(pointer, "/spec/sandboxes");
         if value.is_some()
             && let Some(key) = sandbox
             && self
@@ -204,7 +200,7 @@ impl AuthoredValues {
         }
         let mut current = &mut self.values;
         for segment in parent.split('/').skip(1) {
-            let key = segment.replace("~1", "/").replace("~0", "~");
+            let key = unescape(segment);
             current = match current {
                 Value::Array(items) => {
                     let index = key

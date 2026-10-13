@@ -154,6 +154,46 @@ fn references_reject_missing_names_shadowing_and_distinct_inline_instances() {
     }
 }
 #[test]
+fn a_rust_built_provider_name_outside_the_name_pattern_is_rejected_without_a_panic() {
+    // Its first 12 bytes end inside the final two-byte character.
+    let name = "aaaaaaaaaaaé";
+    let renamed = |mut value: Value| {
+        value["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["providerRef"] =
+            json!(name);
+        value
+    };
+    let mut deployment = renamed(input());
+    let providers = deployment["spec"]["inferenceProviders"]
+        .as_object_mut()
+        .unwrap();
+    let provider = providers.remove("local").unwrap();
+    providers.insert(name.into(), provider.clone());
+    let mut sandbox = renamed(input());
+    sandbox["spec"]
+        .as_object_mut()
+        .unwrap()
+        .remove("inferenceProviders");
+    sandbox["spec"]["sandboxes"]["assistant"]["inferenceProviders"] = json!({name: provider});
+    let mut route = inline(input());
+    route["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["provider"]["name"] =
+        json!(name);
+    for value in [deployment, sandbox, route] {
+        // Deserializing directly skips the input schema, as a Rust caller can.
+        let mut document: Document = serde_json::from_value(value).unwrap();
+        document.defaults();
+        assert!(document.credential_names().is_empty());
+        assert_eq!(
+            document
+                .selected_inference_providers()
+                .unwrap_err()
+                .to_string(),
+            "provider names must be lowercase names"
+        );
+        let error = document.validate().unwrap_err().to_string();
+        assert!(!error.contains(name), "{error}");
+    }
+}
+#[test]
 fn inline_managed_providers_reuse_named_service_runtime_and_defaults() {
     for input in [
         include_str!("../../../examples/managed-ollama.yaml"),

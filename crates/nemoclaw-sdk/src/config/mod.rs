@@ -197,8 +197,8 @@ impl Document {
             if let Some(metadata) = &sandbox.image.metadata {
                 names.push(metadata.env.as_str());
             }
-            for binding in sandbox
-                .integration_bindings(name, &self.spec.integrations)
+            for binding in self
+                .sandbox_integration_bindings(name)
                 .expect("validated integration references")
             {
                 match binding.definition {
@@ -284,20 +284,8 @@ impl ManagedGateway {
     /// Kubernetes target.
     pub fn local(&self) -> Option<LocalGateway<'_>> {
         match &self.target {
-            ManagedTarget::Docker(docker) => Some(LocalGateway {
-                compute_driver: ComputeDriver::Docker,
-                endpoint: &docker.endpoint,
-                engine: &docker.engine,
-                image_pull_policy: docker.image_pull_policy,
-                network_cidr: &docker.network_cidr,
-            }),
-            ManagedTarget::Podman(podman) => Some(LocalGateway {
-                compute_driver: ComputeDriver::Podman,
-                endpoint: &podman.endpoint,
-                engine: &podman.engine,
-                image_pull_policy: podman.image_pull_policy,
-                network_cidr: &podman.network_cidr,
-            }),
+            ManagedTarget::Docker(docker) => Some(docker.local()),
+            ManagedTarget::Podman(podman) => Some(podman.local()),
             ManagedTarget::Kubernetes(_) => None,
         }
     }
@@ -312,6 +300,29 @@ impl ManagedGateway {
                 "Kubernetes gateways have no local engine bridge",
             ))?
             .bridge()
+    }
+}
+
+impl ManagedDocker {
+    pub(crate) fn local(&self) -> LocalGateway<'_> {
+        LocalGateway {
+            compute_driver: ComputeDriver::Docker,
+            endpoint: &self.endpoint,
+            engine: &self.engine,
+            image_pull_policy: self.image_pull_policy,
+            network_cidr: &self.network_cidr,
+        }
+    }
+}
+impl ManagedPodman {
+    pub(crate) fn local(&self) -> LocalGateway<'_> {
+        LocalGateway {
+            compute_driver: ComputeDriver::Podman,
+            endpoint: &self.endpoint,
+            engine: &self.engine,
+            image_pull_policy: self.image_pull_policy,
+            network_cidr: &self.network_cidr,
+        }
     }
 }
 

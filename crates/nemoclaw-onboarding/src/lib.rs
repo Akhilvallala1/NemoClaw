@@ -113,6 +113,9 @@ fn write_path(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    const ONE_SANDBOX: &str =
+        "journey: The v1 journey requires exactly one sandbox keyed by a lowercase name.";
+
     #[test]
     fn default_source_starts_a_sparse_journey_with_existing_questions() {
         let capabilities = Capabilities::available();
@@ -172,8 +175,28 @@ mod tests {
         values["spec"]["sandboxes"]["second"] = values["spec"]["sandboxes"]["assistant"].clone();
         let yaml = serde_json::to_vec(&values).unwrap();
         std::fs::write(&path, &yaml).unwrap();
-        assert!(load_journey(Source::Template(&path), &Capabilities::available()).is_err());
+        let error = load_journey(Source::Template(&path), &Capabilities::available())
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(error, ONE_SANDBOX);
         assert_eq!(std::fs::read(path).unwrap(), yaml);
+    }
+
+    #[test]
+    fn a_template_without_a_sandbox_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("template.yaml");
+        let mut values: serde_json::Value =
+            serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
+                .unwrap();
+        values["spec"]["sandboxes"] = serde_json::json!({});
+        std::fs::write(&path, serde_json::to_vec(&values).unwrap()).unwrap();
+        let error = load_journey(Source::Template(&path), &Capabilities::available())
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(error, ONE_SANDBOX);
     }
 
     #[test]
@@ -191,10 +214,7 @@ mod tests {
             .err()
             .unwrap()
             .to_string();
-        assert_eq!(
-            error,
-            "journey: The v1 journey requires exactly one sandbox keyed by a lowercase name."
-        );
+        assert_eq!(error, ONE_SANDBOX);
     }
 
     #[test]

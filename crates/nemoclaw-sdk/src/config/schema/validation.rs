@@ -163,12 +163,14 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
             "x-nemoclaw-error": format!("spec.sandboxes must map 1 to 32 lowercase names ({}) to sandbox definitions", c::SLUG)
         }),
     );
-    // Earlier documents listed named entries; the key now carries the name.
+    // A keyed entry takes its name from its key; the hint answers a `name`
+    // copied from a v1alpha1 list entry.
     defs["Sandbox"]["x-nemoclaw-removed-fields"] =
-        json!({"name": "a sandbox's name is its key under spec.sandboxes"});
-    defs["InferenceProvider"]["x-nemoclaw-removed-fields"] = json!({
-        "name": "a provider's name is its key under inferenceProviders; only an inline route provider states name"
-    });
+        json!([["name", "a sandbox's name is its key under spec.sandboxes"]]);
+    defs["InferenceProvider"]["x-nemoclaw-removed-fields"] = json!([[
+        "name",
+        "a provider's name is its key under inferenceProviders; only an inline route provider states name"
+    ]]);
     defs["Sandbox"]["allOf"] = json!([]);
     optional_string(
         &mut defs["Image"],
@@ -353,18 +355,35 @@ fn constrain_gateway(defs: &mut serde_json::Map<String, Value>, normalized: bool
             };
             property(gateway, "target", json!({"default": target}));
         }
+        // `runtime` leads, since it chose where the other fields now live.
         if managed {
-            gateway["x-nemoclaw-removed-fields"] = json!({
-                "runtime": runtime,
-                "endpoint": "spec.gateway.endpoint of a managed gateway moved to the endpoint of its spec.gateway.target key",
-                "engine": engine,
-                "image": "spec.gateway.image is removed because the SDK pins the gateway image",
-                "imagePullPolicy": "spec.gateway.imagePullPolicy moved to spec.gateway.target.docker or spec.gateway.target.podman",
-                "networkCIDR": "spec.gateway.networkCIDR moved to networkCidr under spec.gateway.target.docker or spec.gateway.target.podman",
-                "kubernetes": "spec.gateway.kubernetes moved to spec.gateway.target.kubernetes"
-            });
+            gateway["x-nemoclaw-removed-fields"] = json!([
+                ["runtime", runtime],
+                [
+                    "endpoint",
+                    "spec.gateway.endpoint of a managed gateway moved to the endpoint of its spec.gateway.target key"
+                ],
+                ["engine", engine],
+                [
+                    "image",
+                    "spec.gateway.image is removed because the SDK pins the gateway image"
+                ],
+                [
+                    "imagePullPolicy",
+                    "spec.gateway.imagePullPolicy moved to spec.gateway.target.docker or spec.gateway.target.podman"
+                ],
+                [
+                    "networkCIDR",
+                    "spec.gateway.networkCIDR moved to networkCidr under spec.gateway.target.docker or spec.gateway.target.podman"
+                ],
+                [
+                    "kubernetes",
+                    "spec.gateway.kubernetes moved to spec.gateway.target.kubernetes"
+                ]
+            ]);
         } else {
-            gateway["x-nemoclaw-removed-fields"] = json!({"runtime": runtime, "engine": engine});
+            gateway["x-nemoclaw-removed-fields"] =
+                json!([["runtime", runtime], ["engine", engine]]);
             property(gateway, "endpoint", json!({"pattern": "^https?://"}));
             gateway["if"] = at("endpoint", json!({"pattern": "^http:"}), true);
             gateway["then"] = forbid(&["credential", "tls"]);
@@ -413,10 +432,18 @@ fn constrain_gateway(defs: &mut serde_json::Map<String, Value>, normalized: bool
             "imagePullPolicy",
             json!({"default": super::super::ImagePullPolicy::default()}),
         );
-        target["x-nemoclaw-removed-fields"] = json!({
-            "image": format!("spec.gateway.target.{key} takes no image because the SDK pins the gateway image"),
-            "networkCIDR": format!("spec.gateway.target.{key} spells networkCIDR as networkCidr")
-        });
+        target["x-nemoclaw-removed-fields"] = json!([
+            [
+                "image",
+                format!(
+                    "spec.gateway.target.{key} takes no image because the SDK pins the gateway image"
+                )
+            ],
+            [
+                "networkCIDR",
+                format!("spec.gateway.target.{key} spells networkCIDR as networkCidr")
+            ]
+        ]);
     }
     optional_string(
         &mut defs["ManagedDocker"],
@@ -465,7 +492,8 @@ fn constrain_gateway(defs: &mut serde_json::Map<String, Value>, normalized: bool
     // which the removed-field hint can name.
     let existing = &mut defs["ExternalKubernetes"];
     existing["properties"] = json!({});
-    existing["x-nemoclaw-removed-fields"] = json!({
-        "distribution": "distribution applies only to a managed gateway's spec.gateway.target.kubernetes; an existing gateway reports only the kubernetes driver"
-    });
+    existing["x-nemoclaw-removed-fields"] = json!([[
+        "distribution",
+        "distribution applies only to a managed gateway's spec.gateway.target.kubernetes; an existing gateway reports only the kubernetes driver"
+    ]]);
 }

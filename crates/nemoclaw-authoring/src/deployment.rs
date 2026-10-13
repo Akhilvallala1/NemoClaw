@@ -7,11 +7,10 @@ use crate::{
     Diagnostics,
     diagnostics::diagnostic,
     journey_definition::sandbox_path,
-    pointer::{escape, replace_entry_keys},
+    pointer::{escape, mask_entry_keys, replace_entry_keys},
     sdk_schema::{finite_choices, sdk_field_schema_for},
     settings::SettingQuestion,
 };
-use nemoclaw_sdk::config::valid_name;
 use serde_json::Value;
 
 pub(crate) fn deployment_questions_for_values(
@@ -162,10 +161,7 @@ fn title(path: &str) -> String {
         }
         result
     }
-    // A key the SDK rejects as a name is not shown.
-    let path = replace_entry_keys(path, |key| {
-        if valid_name(key) { key } else { "[entry]" }.to_owned()
-    });
+    let path = mask_entry_keys(path);
     let parts: Vec<_> = path.split('/').filter(|part| !part.is_empty()).collect();
     let (prefix, rest) = if parts.get(1) == Some(&"gateway") {
         ("Gateway".to_owned(), &parts[2..])

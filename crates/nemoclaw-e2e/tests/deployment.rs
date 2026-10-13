@@ -623,9 +623,10 @@ impl Lifecycle {
     /// A search profile without endpoints, or a sandbox without its provider
     /// attachments, stops plan and export until the gateway is restored.
     async fn assert_search_registration_drift(&self) {
-        let (name, sandbox) = self.document.spec.sandboxes.first_key_value().unwrap();
-        let search_provider = sandbox
-            .integration_bindings(name, &self.document.spec.integrations)
+        let (name, _) = self.document.spec.sandboxes.first_key_value().unwrap();
+        let search_provider = self
+            .document
+            .sandbox_integration_bindings(name)
             .unwrap()
             .first()
             .map(|binding| match binding.definition {

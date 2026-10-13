@@ -938,7 +938,7 @@ fn removed_disposable_compute_accepts_confirmed_absence() {
 }
 
 #[tokio::test]
-async fn changing_gateway_management_at_the_same_endpoint_preserves_saved_state() {
+async fn changing_gateway_management_or_a_managed_endpoint_preserves_saved_state() {
     let bundle_directory = tempfile::tempdir().unwrap();
     let mut manifest = crate::bundle::Manifest {
         version: "0.1.0".into(),
@@ -972,7 +972,14 @@ async fn changing_gateway_management_at_the_same_endpoint_preserves_saved_state(
     });
     managed.defaults();
     managed.validate().unwrap();
-    for (original, changed) in [(&external, &managed), (&managed, &external)] {
+    let mut moved = managed.clone();
+    *moved.spec.gateway.endpoint_mut() = "http://127.0.0.1:17682".into();
+    moved.validate().unwrap();
+    for (original, changed) in [
+        (&external, &managed),
+        (&managed, &external),
+        (&managed, &moved),
+    ] {
         let state_directory = tempfile::tempdir().unwrap();
         let store = Store::open(state_directory.path()).unwrap();
         store.save(&Record::new(original.clone()).unwrap()).unwrap();

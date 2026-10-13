@@ -23,8 +23,6 @@ static TUNING_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     serde_json::to_value(schemars::schema_for!(RouteTuning)).expect("tuning schema")
 });
 static TUNING: LazyLock<jsonschema::Validator> = LazyLock::new(|| compile(&TUNING_SCHEMA));
-static NAME: LazyLock<jsonschema::Validator> =
-    LazyLock::new(|| compile(&INPUT_SCHEMA["$defs"]["Metadata"]["properties"]["name"]));
 static FIELDS: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
     fn collect(value: &Value, fields: &mut BTreeSet<String>) {
         if let Some(properties) = value["properties"].as_object() {
@@ -216,11 +214,10 @@ fn annotation<'s>(
     None
 }
 
-/// The replacements for fields an earlier document shape accepted, when the
-/// rejecting object lists them under `x-nemoclaw-removed-fields`, so an
-/// earlier document gets every hint at once. `runtime` leads, since it chose
-/// where the other fields now live; the rest follow the annotation's order.
-/// Only the schema's text is rendered, never arbitrary input keys.
+/// The hints for the unknown fields that the rejecting object lists under
+/// `x-nemoclaw-removed-fields` as `[field, message]` pairs, joined in the
+/// annotation's order so the input gets every hint at once. Only the schema's
+/// text is rendered, never arbitrary input keys.
 fn removed_fields(schema: &Value, error: &jsonschema::ValidationError<'_>) -> Option<String> {
     use jsonschema::error::ValidationErrorKind as Kind;
     let Kind::AdditionalProperties { unexpected } = error.kind() else {
@@ -230,23 +227,17 @@ fn removed_fields(schema: &Value, error: &jsonschema::ValidationError<'_>) -> Op
         .schema_path()
         .as_str()
         .strip_suffix("/additionalProperties")?;
-    let removed = schema
+    let messages = schema
         .pointer(object)?
         .get("x-nemoclaw-removed-fields")?
-        .as_object()?;
-    let mut matched = removed
+        .as_array()?
         .iter()
-        .filter(|(field, _)| unexpected.contains(field))
-        .filter_map(|(field, message)| Some((field.as_str(), message.as_str()?)))
+        .filter_map(|pair| match pair.as_array()?.as_slice() {
+            [field, message] if unexpected.iter().any(|name| field == name) => message.as_str(),
+            _ => None,
+        })
         .collect::<Vec<_>>();
-    matched.sort_by_key(|(field, _)| *field != "runtime");
-    (!matched.is_empty()).then(|| {
-        matched
-            .into_iter()
-            .map(|(_, message)| message)
-            .collect::<Vec<_>>()
-            .join("; ")
-    })
+    (!messages.is_empty()).then(|| messages.join("; "))
 }
 
 fn count(limit: u64, one: &str, many: &str) -> String {
@@ -265,6 +256,35 @@ fn scalar_constraint(schema: &Value) -> Option<String> {
         (Some(minimum), Some(maximum)) => Some(format!("between {minimum} and {maximum}")),
         (Some(minimum), None) => Some(format!("at least {minimum}")),
         (None, Some(maximum)) => Some(format!("at most {maximum}")),
+        _ => None,
+    }
+}
+
+/// Whether a diagnostic shows `key` at the instance location after `parents`,
+/// the unescaped JSON pointer segments from the document root, or `None` when
+/// that location keys no named definition. Named definitions are sandboxes
+/// and the providers, services, harnesses, inferences, and integrations of the
+/// deployment or of a sandbox. Such a key is shown only when it, and the key
+/// of a sandbox that encloses it, are valid names. Editors use this to hide
+/// what diagnostics hide.
+#[doc(hidden)]
+pub fn entry_key_shown(parents: &[&str], key: &str) -> Option<bool> {
+    use crate::config::valid_name;
+    match parents {
+        [
+            "spec",
+            "sandboxes" | "inferenceProviders" | "services" | "harnesses" | "inferences"
+            | "integrations",
+        ] => Some(valid_name(key)),
+        [
+            "spec",
+            "sandboxes",
+            sandbox,
+            "inferenceProviders" | "harnesses" | "inferences" | "integrations",
+        ]
+        | ["spec", "sandboxes", sandbox, "agent", "integrations"] => {
+            Some(valid_name(sandbox) && valid_name(key))
+        }
         _ => None,
     }
 }
@@ -289,33 +309,11 @@ fn instance_path(pointer: &str, root: &Value) -> String {
         } else {
             // Only names in declared application collections can be shown. Invalid
             // names and opaque map keys remain hidden even if they resemble values.
-            let named = match parts[..offset]
+            let parents = parts[..offset]
                 .iter()
                 .map(String::as_str)
-                .collect::<Vec<_>>()
-                .as_slice()
-            {
-                [
-                    "spec",
-                    "services" | "harnesses" | "inferences" | "integrations" | "inferenceProviders"
-                    | "sandboxes",
-                ] => true,
-                [
-                    "spec",
-                    "sandboxes",
-                    sandbox,
-                    "harnesses" | "inferences" | "integrations" | "inferenceProviders",
-                ]
-                | ["spec", "sandboxes", sandbox, "agent", "integrations"] => {
-                    NAME.is_valid(&Value::String((*sandbox).to_owned()))
-                }
-                _ => false,
-            };
-            let visible = if named {
-                NAME.is_valid(&Value::String(key.clone()))
-            } else {
-                FIELDS.contains(key)
-            };
+                .collect::<Vec<_>>();
+            let visible = entry_key_shown(&parents, key).unwrap_or_else(|| FIELDS.contains(key));
             if !path.is_empty() {
                 path.push('.');
             }
@@ -624,6 +622,11 @@ mod tests {
             ),
             (
                 "/spec/sandboxes/Private-Sentinel/harnesses/shared",
+                "spec.sandboxes.[entry].harnesses.[entry]",
+            ),
+            // A name inside a hidden sandbox stays hidden, even a field name.
+            (
+                "/spec/sandboxes/Private-Sentinel/harnesses/endpoint",
                 "spec.sandboxes.[entry].harnesses.[entry]",
             ),
         ] {

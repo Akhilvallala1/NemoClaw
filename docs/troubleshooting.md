@@ -64,6 +64,7 @@ Retain the original binding while investigating the selected gateway and engine.
 
 Schema errors identify the document field, the violated constraint, and the source line and column.
 For example, `spec.services.qwen.memory.kvCacheGiB` identifies the `qwen` service, and `spec.sandboxes.assistant.agent.inference.routes[1]` identifies the second route of the `assistant` sandbox.
+Schema errors separate names with dots; semantic errors and the CLI's resource sources put each name in brackets, as in `spec.sandboxes[assistant].inferenceProviders[responses]`.
 Array indices start at zero; source lines and columns start at one, and columns count characters.
 Valid declaration names appear in paths, while arbitrary map keys appear as `[entry]` and rejected values remain omitted.
 YAML syntax and duplicate-key errors also include source positions without copying source snippets.

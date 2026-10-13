@@ -65,6 +65,8 @@ fn remove_serde_defaults(schema: &mut serde_json::Value) {
 }
 
 mod runtime;
+#[doc(hidden)]
+pub use runtime::entry_key_shown;
 pub(crate) use runtime::{
     validate_definition, validate_document, validate_input, validate_property, validate_service,
     validate_tuning,

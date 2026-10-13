@@ -338,9 +338,12 @@
       "description": "An existing Kubernetes or OpenShift gateway takes no target settings; sandbox image metadata replaces engine inspection.",
       "properties": {},
       "type": "object",
-      "x-nemoclaw-removed-fields": {
-        "distribution": "distribution applies only to a managed gateway's spec.gateway.target.kubernetes; an existing gateway reports only the kubernetes driver"
-      }
+      "x-nemoclaw-removed-fields": [
+        [
+          "distribution",
+          "distribution applies only to a managed gateway's spec.gateway.target.kubernetes; an existing gateway reports only the kubernetes driver"
+        ]
+      ]
     },
     "ExternalOllama": {
       "additionalProperties": false,
@@ -508,15 +511,36 @@
           ],
           "title": "Managed gateway",
           "type": "object",
-          "x-nemoclaw-removed-fields": {
-            "endpoint": "spec.gateway.endpoint of a managed gateway moved to the endpoint of its spec.gateway.target key",
-            "engine": "spec.gateway.engine moved to spec.gateway.target.docker.engine or spec.gateway.target.podman.engine",
-            "image": "spec.gateway.image is removed because the SDK pins the gateway image",
-            "imagePullPolicy": "spec.gateway.imagePullPolicy moved to spec.gateway.target.docker or spec.gateway.target.podman",
-            "kubernetes": "spec.gateway.kubernetes moved to spec.gateway.target.kubernetes",
-            "networkCIDR": "spec.gateway.networkCIDR moved to networkCidr under spec.gateway.target.docker or spec.gateway.target.podman",
-            "runtime": "spec.gateway.runtime is replaced by the key under spec.gateway.target: docker, podman, or kubernetes"
-          }
+          "x-nemoclaw-removed-fields": [
+            [
+              "runtime",
+              "spec.gateway.runtime is replaced by the key under spec.gateway.target: docker, podman, or kubernetes"
+            ],
+            [
+              "endpoint",
+              "spec.gateway.endpoint of a managed gateway moved to the endpoint of its spec.gateway.target key"
+            ],
+            [
+              "engine",
+              "spec.gateway.engine moved to spec.gateway.target.docker.engine or spec.gateway.target.podman.engine"
+            ],
+            [
+              "image",
+              "spec.gateway.image is removed because the SDK pins the gateway image"
+            ],
+            [
+              "imagePullPolicy",
+              "spec.gateway.imagePullPolicy moved to spec.gateway.target.docker or spec.gateway.target.podman"
+            ],
+            [
+              "networkCIDR",
+              "spec.gateway.networkCIDR moved to networkCidr under spec.gateway.target.docker or spec.gateway.target.podman"
+            ],
+            [
+              "kubernetes",
+              "spec.gateway.kubernetes moved to spec.gateway.target.kubernetes"
+            ]
+          ]
         },
         {
           "additionalProperties": false,
@@ -580,10 +604,16 @@
           },
           "title": "External gateway",
           "type": "object",
-          "x-nemoclaw-removed-fields": {
-            "engine": "spec.gateway.engine moved to spec.gateway.target.docker.engine or spec.gateway.target.podman.engine",
-            "runtime": "spec.gateway.runtime is replaced by the key under spec.gateway.target: docker, podman, or kubernetes"
-          }
+          "x-nemoclaw-removed-fields": [
+            [
+              "runtime",
+              "spec.gateway.runtime is replaced by the key under spec.gateway.target: docker, podman, or kubernetes"
+            ],
+            [
+              "engine",
+              "spec.gateway.engine moved to spec.gateway.target.docker.engine or spec.gateway.target.podman.engine"
+            ]
+          ]
         }
       ]
     },
@@ -870,9 +900,12 @@
         "x-nemoclaw-error": "serviceRef excludes endpoint and credential and selects provider openai"
       },
       "type": "object",
-      "x-nemoclaw-removed-fields": {
-        "name": "a provider's name is its key under inferenceProviders; only an inline route provider states name"
-      }
+      "x-nemoclaw-removed-fields": [
+        [
+          "name",
+          "a provider's name is its key under inferenceProviders; only an inline route provider states name"
+        ]
+      ]
     },
     "InlineInferenceProvider": {
       "additionalProperties": false,
@@ -1197,10 +1230,16 @@
         }
       },
       "type": "object",
-      "x-nemoclaw-removed-fields": {
-        "image": "spec.gateway.target.docker takes no image because the SDK pins the gateway image",
-        "networkCIDR": "spec.gateway.target.docker spells networkCIDR as networkCidr"
-      }
+      "x-nemoclaw-removed-fields": [
+        [
+          "image",
+          "spec.gateway.target.docker takes no image because the SDK pins the gateway image"
+        ],
+        [
+          "networkCIDR",
+          "spec.gateway.target.docker spells networkCIDR as networkCidr"
+        ]
+      ]
     },
     "ManagedKubernetes": {
       "additionalProperties": false,
@@ -1412,10 +1451,16 @@
         "engine"
       ],
       "type": "object",
-      "x-nemoclaw-removed-fields": {
-        "image": "spec.gateway.target.podman takes no image because the SDK pins the gateway image",
-        "networkCIDR": "spec.gateway.target.podman spells networkCIDR as networkCidr"
-      }
+      "x-nemoclaw-removed-fields": [
+        [
+          "image",
+          "spec.gateway.target.podman takes no image because the SDK pins the gateway image"
+        ],
+        [
+          "networkCIDR",
+          "spec.gateway.target.podman spells networkCIDR as networkCidr"
+        ]
+      ]
     },
     "ManagedTarget": {
       "description": "Exactly one target key: docker, podman, or kubernetes.",
@@ -2541,9 +2586,12 @@
         "agent"
       ],
       "type": "object",
-      "x-nemoclaw-removed-fields": {
-        "name": "a sandbox's name is its key under spec.sandboxes"
-      }
+      "x-nemoclaw-removed-fields": [
+        [
+          "name",
+          "a sandbox's name is its key under spec.sandboxes"
+        ]
+      ]
     },
     "SearchProvider": {
       "description": "Search provider supported by the managed profile.",

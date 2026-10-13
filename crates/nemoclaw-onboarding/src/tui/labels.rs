@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use nemoclaw_authoring::{
-    JourneyQuestion, JourneyQuestionKind, ProviderPreset, replace_entry_keys,
+    JourneyQuestion, JourneyQuestionKind, ProviderPreset, mask_entry_keys, replace_entry_keys,
 };
-use nemoclaw_sdk::config::valid_name;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::OnceLock};
@@ -143,18 +142,9 @@ pub(super) fn label(question: &JourneyQuestion) -> String {
     readable(id)
 }
 
-/// A question ID or document pointer for display: a sandbox, provider,
-/// service, or other definition key that is not a valid name reads as
-/// `[entry]`, as in SDK diagnostics, so rejected input is never shown.
-pub(super) fn pointer_text(pointer: &str) -> String {
-    replace_entry_keys(pointer, |key| {
-        if valid_name(key) { key } else { "[entry]" }.to_owned()
-    })
-}
-
 /// `adapter:x:/interfaces/dashboard/port` reads as "Dashboard: port".
 fn readable(id: &str) -> String {
-    let id = pointer_text(id);
+    let id = mask_entry_keys(id);
     let pointer = id
         .rsplit_once(':')
         .map_or(id.as_str(), |(_, pointer)| pointer);
@@ -225,13 +215,10 @@ fn words(part: &str) -> String {
 }
 
 /// The managed service a question belongs to, shown under its title.
-pub(super) fn service(question: &JourneyQuestion) -> Option<&str> {
-    let name = question
-        .id()
-        .strip_prefix("/spec/services/")?
-        .split('/')
-        .next()?;
-    Some(if valid_name(name) { name } else { "[entry]" })
+pub(super) fn service(question: &JourneyQuestion) -> Option<String> {
+    let id = mask_entry_keys(question.id());
+    let name = id.strip_prefix("/spec/services/")?.split('/').next()?;
+    Some(name.to_owned())
 }
 
 // External labels stay unchanged in authored values; escape them only for the terminal.

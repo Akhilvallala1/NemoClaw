@@ -35,7 +35,7 @@ pub struct IntegrationBinding<'a> {
 impl Sandbox {
     /// Resolve deployment and sandbox definitions without implicitly granting access.
     /// `name` is this sandbox's key, which diagnostics use to identify it.
-    pub fn integration_bindings<'a>(
+    pub(crate) fn integration_bindings<'a>(
         &'a self,
         name: &str,
         shared: &'a BTreeMap<String, Integration>,
@@ -117,14 +117,23 @@ impl Sandbox {
 }
 
 impl Document {
+    /// Resolve the deployment and sandbox integration definitions the named
+    /// sandbox selects, without implicitly granting access.
+    pub fn sandbox_integration_bindings(
+        &self,
+        sandbox: &str,
+    ) -> Result<Vec<IntegrationBinding<'_>>, ConfigError> {
+        let (name, sandbox) = self.named_sandbox(sandbox)?;
+        sandbox.integration_bindings(name, &self.spec.integrations)
+    }
+
     /// The web search attached to the named sandbox, if any.
     pub(crate) fn web_search(
         &self,
         sandbox: &str,
     ) -> Result<Option<RuntimeWebSearch>, ConfigError> {
-        let (name, sandbox) = self.named_sandbox(sandbox)?;
         let mut selected = None;
-        for binding in sandbox.integration_bindings(name, &self.spec.integrations)? {
+        for binding in self.sandbox_integration_bindings(sandbox)? {
             match binding.definition {
                 Integration::WebSearch(search) => {
                     if selected.is_some() {

@@ -10,11 +10,15 @@ use std::collections::BTreeSet;
 use crate::{
     Capabilities, Diagnostics, PartialDocument,
     diagnostics::diagnostic,
+    pointer::entry_key,
     sdk_schema::{sdk_field_possible, sdk_field_schema_for},
 };
 
 pub(crate) const NAME: &str = "/metadata/name";
 pub(crate) const INFERENCE_PRESET: &str = "inference:preset";
+/// The journey edits exactly one sandbox, which its key names.
+pub(crate) const ONE_SANDBOX: &str =
+    "The v1 journey requires exactly one sandbox keyed by a lowercase name.";
 
 /// The pointer to the journey's only sandbox, `/spec/sandboxes/<name>`, when
 /// `/spec/sandboxes` holds exactly one object and its key is a valid name.
@@ -161,10 +165,7 @@ impl JourneyDefinition {
     /// Start mutable resolution over the sparse v1 single-sandbox envelope.
     pub fn start(&self, capabilities: &Capabilities) -> Result<crate::JourneyState, Diagnostics> {
         if sandbox_path(self.base.supplied()).is_none() {
-            return Err(diagnostic(
-                "journey",
-                "The v1 journey requires exactly one sandbox keyed by a lowercase name.",
-            ));
+            return Err(diagnostic("journey", ONE_SANDBOX));
         }
         self.validate_guidance(capabilities)?;
         crate::JourneyState::new(self.clone())
@@ -202,11 +203,7 @@ impl JourneyDefinition {
             }
             // A field of another sandbox or of an absent provider would add
             // that entry when answered.
-            let entry = |collection: &str| {
-                let rest = field.strip_prefix(collection)?.strip_prefix('/')?;
-                Some(rest.split_once('/').map_or(rest, |(key, _)| key))
-            };
-            if let Some(key) = entry("/spec/sandboxes")
+            if let Some(key) = entry_key(field, "/spec/sandboxes")
                 && sandbox.as_ref() != Some(&format!("/spec/sandboxes/{key}"))
             {
                 return Err(diagnostic(
@@ -214,7 +211,7 @@ impl JourneyDefinition {
                     "asked fields must belong to the journey's sandbox",
                 ));
             }
-            if let Some(key) = entry("/spec/inferenceProviders")
+            if let Some(key) = entry_key(field, "/spec/inferenceProviders")
                 && supplied
                     .pointer(&format!("/spec/inferenceProviders/{key}"))
                     .is_none()

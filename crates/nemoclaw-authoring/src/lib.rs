@@ -35,7 +35,7 @@ pub use journey_state::{
     JourneyState,
 };
 pub use partial_document::{PartialAssessment, PartialDocument, PartialIssue, PartialIssueKind};
-pub use pointer::replace_entry_keys;
+pub use pointer::{mask_entry_keys, replace_entry_keys};
 pub use provider_presets::ProviderPreset;
 pub use target_assessment::{CompatibilityStatus, DiscoveryAssessment, assess_target};
 

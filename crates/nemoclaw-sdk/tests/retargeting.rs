@@ -14,16 +14,19 @@ enum Target {
     ManagedDocker,
     ManagedPodman,
     ManagedKubernetes,
+    /// Managed `kubernetes` with `distribution: openshift`.
+    ManagedOpenShift,
     ExternalDocker,
     ExternalPodman,
     ExternalKubernetes,
 }
 
 impl Target {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::ManagedDocker,
         Self::ManagedPodman,
         Self::ManagedKubernetes,
+        Self::ManagedOpenShift,
         Self::ExternalDocker,
         Self::ExternalPodman,
         Self::ExternalKubernetes,
@@ -34,6 +37,13 @@ impl Target {
         const DOCKER: &str = "unix:///var/run/docker.sock";
         const PODMAN: &str = "unix:///run/user/1000/podman/podman.sock";
         let managed = |target| json!({"management": "managed", "target": target});
+        let cluster = json!({
+            "endpoint": "https://127.0.0.1:17690",
+            "kubeconfig": {"env": "CLUSTER_KUBECONFIG"},
+            "context": "cluster",
+            "namespace": "agents",
+            "authentication": {"profile": "development"}
+        });
         let external = |target| {
             json!({
                 "management": "external",
@@ -44,13 +54,12 @@ impl Target {
         match self {
             Self::ManagedDocker => managed(json!({"docker": {}})),
             Self::ManagedPodman => managed(json!({"podman": {"engine": PODMAN}})),
-            Self::ManagedKubernetes => managed(json!({"kubernetes": {
-                "endpoint": "https://127.0.0.1:17690",
-                "kubeconfig": {"env": "CLUSTER_KUBECONFIG"},
-                "context": "cluster",
-                "namespace": "agents",
-                "authentication": {"profile": "development"}
-            }})),
+            Self::ManagedKubernetes => managed(json!({"kubernetes": cluster})),
+            Self::ManagedOpenShift => {
+                let mut cluster = cluster;
+                cluster["distribution"] = json!("openshift");
+                managed(json!({"kubernetes": cluster}))
+            }
             Self::ExternalDocker => external(json!({"docker": {"engine": DOCKER}})),
             Self::ExternalPodman => external(json!({"podman": {"engine": PODMAN}})),
             Self::ExternalKubernetes => external(json!({"kubernetes": {}})),
@@ -58,7 +67,10 @@ impl Target {
     }
 
     fn kubernetes(self) -> bool {
-        matches!(self, Self::ManagedKubernetes | Self::ExternalKubernetes)
+        matches!(
+            self,
+            Self::ManagedKubernetes | Self::ManagedOpenShift | Self::ExternalKubernetes
+        )
     }
 }
 
@@ -77,9 +89,11 @@ enum Edit {
     RemoveImageMetadata,
     /// Other than managed Docker: each Ollama and vLLM service needs explicit
     /// `placement` and `publication`, since only a managed Docker gateway
-    /// lends its engine and network to services. An `ollamaProxy` service
-    /// needs an explicit `engine` instead; no example declares one.
+    /// lends its engine and network to services.
     PlaceServices,
+    /// Other than managed Docker: each `ollamaProxy` service needs an explicit
+    /// `engine`, for the same reason.
+    SetProxyEngine,
 }
 
 /// The edits that resolve each violation a retargeted example reports. A
@@ -104,6 +118,10 @@ const RESOLUTIONS: &[(&str, &[Edit])] = &[
         "vLLM requires the managed gateway Docker engine or explicit placement",
         &[Edit::PlaceServices],
     ),
+    (
+        "Ollama proxy requires a managed local Docker gateway or explicit local engine",
+        &[Edit::SetProxyEngine],
+    ),
 ];
 
 /// The edits moving `example` to `target` needs, predicted from its features.
@@ -112,8 +130,10 @@ fn predicted(example: &Value, target: Target) -> BTreeSet<Edit> {
     let services = values(&example["spec"]["services"]);
     let named = |sandbox: &&Value| has_image_ref(sandbox);
     let described = |sandbox: &&Value| sandbox["image"].get("metadata").is_some();
-    let placed = |service: &&Value| service.get("placement").is_some();
+    let unplaced = |service: &&Value| !proxy(service) && service.get("placement").is_none();
+    let engineless = |service: &&Value| proxy(service) && service.get("engine").is_none();
     let cluster = target.kubernetes();
+    let local_services = !cluster && target != Target::ManagedDocker;
     [
         (Edit::SetImageRef, cluster && !sandboxes.iter().all(named)),
         (
@@ -127,7 +147,11 @@ fn predicted(example: &Value, target: Target) -> BTreeSet<Edit> {
         ),
         (
             Edit::PlaceServices,
-            !cluster && target != Target::ManagedDocker && !services.iter().all(placed),
+            local_services && services.iter().any(unplaced),
+        ),
+        (
+            Edit::SetProxyEngine,
+            local_services && services.iter().any(engineless),
         ),
     ]
     .into_iter()
@@ -138,15 +162,10 @@ fn predicted(example: &Value, target: Target) -> BTreeSet<Edit> {
 #[test]
 fn retargeting_each_example_needs_only_the_documented_edits() {
     let validator = jsonschema::validator_for(&input_schema()).unwrap();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let paths = examples::yaml_files(&root.join("examples"));
-    assert!(!paths.is_empty());
     let mut failures = Vec::new();
-    for path in paths {
-        let text = std::fs::read_to_string(&path).unwrap();
-        let example: Value = serde_saphyr::from_str(&text).unwrap();
-        let defaulted = serde_json::to_value(Document::parse(text.as_bytes()).unwrap()).unwrap();
-        let name = path.strip_prefix(&root).unwrap().display();
+    for (name, example) in inputs() {
+        let defaulted =
+            serde_json::to_value(Document::parse(example.to_string().as_bytes()).unwrap()).unwrap();
         for target in Target::ALL {
             let expected = predicted(&example, target);
             match required_edits(&validator, &example, &defaulted, target) {
@@ -159,6 +178,38 @@ fn retargeting_each_example_needs_only_the_documented_edits() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Each example by its path, and a document with an `ollamaProxy` service,
+/// which no example declares.
+fn inputs() -> Vec<(String, Value)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut inputs: Vec<(String, Value)> = examples::yaml_files(&root.join("examples"))
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let name = path.strip_prefix(&root).unwrap().display().to_string();
+            (name, serde_saphyr::from_str(&text).unwrap())
+        })
+        .collect();
+    let mut proxy = inputs
+        .iter()
+        .find(|(name, _)| name == "examples/managed-ollama.yaml")
+        .expect("the managed Ollama example")
+        .1
+        .clone();
+    proxy["spec"]["services"] = json!({"ollama-proxy": {
+        "kind": "ollamaProxy",
+        "image": format!("nc-prototype-ollama-proxy@sha256:{}", "a".repeat(64)),
+        "endpoint": "http://172.20.0.1:11435/v1",
+        "upstream": {
+            "endpoint": "http://127.0.0.1:11434/v1",
+            "model": {"name": "qwen3:0.6b", "digest": "a".repeat(64)}
+        }
+    }});
+    proxy["spec"]["inferenceProviders"]["local"]["serviceRef"] = json!("ollama-proxy");
+    inputs.push(("an ollamaProxy document".into(), proxy));
+    inputs
 }
 
 /// Retarget `example`, then apply the documented edit for each violation
@@ -268,7 +319,7 @@ impl Edit {
             }
             Self::PlaceServices => {
                 for (name, service) in spec["services"].as_object_mut().unwrap() {
-                    if service.get("placement").is_some() {
+                    if proxy(service) || service.get("placement").is_some() {
                         continue;
                     }
                     let port = &defaulted["spec"]["services"][name]["serving"]["port"];
@@ -278,6 +329,13 @@ impl Edit {
                         "endpoint": format!("http://10.0.0.8:{port}/v1"),
                         "bindAddress": "10.0.0.8"
                     });
+                }
+            }
+            Self::SetProxyEngine => {
+                for service in values_mut(&mut spec["services"]) {
+                    if proxy(service) && service.get("engine").is_none() {
+                        service["engine"] = json!("unix:///var/run/docker.sock");
+                    }
                 }
             }
         }
@@ -296,6 +354,10 @@ fn use_external_endpoints(value: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(use_external_endpoints),
         _ => {}
     }
+}
+
+fn proxy(service: &Value) -> bool {
+    service["kind"] == "ollamaProxy"
 }
 
 /// The schema already requires an authored `image.ref` to be pinned by digest.

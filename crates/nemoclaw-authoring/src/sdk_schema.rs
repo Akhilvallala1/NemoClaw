@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use crate::fingerprint::sha256;
+use crate::{fingerprint::sha256, pointer::unescape};
 use nemoclaw_sdk::config::schema::{input_schema, select_variant, variant_keys};
 use nemoclaw_sdk::json_schema::schema_accepts;
 use serde_json::{Value, json};
@@ -24,10 +24,7 @@ pub(crate) fn sdk_field_possible(path: &str) -> bool {
     let Some(path) = path.strip_prefix('/') else {
         return false;
     };
-    let parts = path
-        .split('/')
-        .map(|part| part.replace("~1", "/").replace("~0", "~"))
-        .collect::<Vec<_>>();
+    let parts = path.split('/').map(unescape).collect::<Vec<_>>();
     possible_in_schema(schema_root(), schema_root(), &parts, 0)
 }
 
@@ -67,7 +64,8 @@ fn possible_in_schema(root: &Value, schema: &Value, parts: &[String], depth: usi
         .any(|branch| possible_in_schema(root, branch, parts, depth + 1))
 }
 
-fn schema_root() -> &'static Value {
+/// The SDK input schema, built once.
+pub(crate) fn schema_root() -> &'static Value {
     static SCHEMA: OnceLock<Value> = OnceLock::new();
     SCHEMA.get_or_init(input_schema)
 }
@@ -98,7 +96,7 @@ fn field_schema_in(root: &Value, values: &Value, path: &str) -> Option<(Value, b
     let segments = path.strip_prefix('/')?.split('/').collect::<Vec<_>>();
     for (index, part) in segments.iter().enumerate() {
         node = follow_ref(root, node)?;
-        let name = part.replace("~1", "/").replace("~0", "~");
+        let name = unescape(part);
         if let Some((discriminator, choices)) = sdk_discriminator(node) {
             if name == discriminator {
                 if index + 1 != segments.len() {

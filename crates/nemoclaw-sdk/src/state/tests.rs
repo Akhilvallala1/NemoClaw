@@ -60,8 +60,35 @@ fn corrupt_intent_is_not_an_empty_deployment() {
     );
 }
 #[test]
+fn intent_without_an_integer_version_is_corrupt_and_stays_untouched() {
+    let document = crate::config::Document::parse(
+        include_str!("../../tests/fixtures/config/local.yaml").as_bytes(),
+    )
+    .unwrap();
+    let current = serde_json::to_value(Record::new(document).unwrap()).unwrap();
+    let mut missing = current.clone();
+    missing.as_object_mut().unwrap().remove("version");
+    let mut fraction = current.clone();
+    fraction["version"] = serde_json::json!(8.5);
+    let mut text = current;
+    text["version"] = serde_json::json!("8");
+    for record in [serde_json::json!({}), missing, fraction, text] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let path = dir.path().join("intent.json");
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            store.load().unwrap_err().to_string(),
+            "deployment intent record is corrupt; retain it for recovery",
+            "{record}"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+}
+#[test]
 fn intent_from_another_nemoclaw_format_is_rejected_by_version_and_stays_untouched() {
-    let earlier = "deployment state was written by an earlier NemoClaw for nemoclaw.nvidia.com/v1alpha1; retain it and use that NemoClaw to destroy it, or deploy this document as a separate deployment";
+    let earlier = "deployment state was written by an earlier NemoClaw for nemoclaw.nvidia.com/v1alpha1; retain it and use that NemoClaw to destroy it, or deploy this document as a separate deployment; see docs/migration.md";
     let document = crate::config::Document::parse(
         include_str!("../../tests/fixtures/config/local.yaml").as_bytes(),
     )

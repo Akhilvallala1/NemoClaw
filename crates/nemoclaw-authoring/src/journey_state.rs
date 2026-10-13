@@ -20,10 +20,10 @@ use crate::{
     diagnostics::diagnostic,
     identity::new_deployment_uid,
     journey_definition::{
-        INFERENCE_PRESET, JourneyDefinition, JourneyScope, NAME, adapter_field, adapter_schema,
-        harness_field, native_field, sandbox_path,
+        INFERENCE_PRESET, JourneyDefinition, JourneyScope, NAME, ONE_SANDBOX, adapter_field,
+        adapter_schema, harness_field, native_field, sandbox_path,
     },
-    pointer::escape,
+    pointer::{entry_key, escape, unescape},
     sdk_schema::{
         finite_choices, sdk_discriminator, sdk_exclusive_required_fields, sdk_field_possible,
         sdk_field_schema, sdk_field_schema_for, sdk_selected_branch, sdk_variant_key,
@@ -124,11 +124,12 @@ fn provider_path(name: &str) -> String {
 /// The key of a deployment provider and the field that `path` names inside
 /// it, for `/spec/inferenceProviders/<key>/<field>`.
 fn provider_field(path: &str) -> Option<(String, &str)> {
-    let (key, field) = path
+    let key = entry_key(path, "/spec/inferenceProviders")?;
+    let field = path
         .strip_prefix("/spec/inferenceProviders/")?
-        .split_once('/')?;
-    (!key.is_empty() && !field.contains('/'))
-        .then(|| (key.replace("~1", "/").replace("~0", "~"), field))
+        .strip_prefix(key)?
+        .strip_prefix('/')?;
+    (!key.is_empty() && !field.contains('/')).then(|| (unescape(key), field))
 }
 
 /// One currently applicable decision in the bounded journey surface.

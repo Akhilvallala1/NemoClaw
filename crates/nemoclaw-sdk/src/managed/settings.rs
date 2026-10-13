@@ -59,11 +59,10 @@ impl ManagedGateway {
     /// image on a local engine. The acquisition policy is a mutable provider
     /// attribute rather than container identity, so it is left out.
     pub(crate) fn runtime_settings(&self) -> GatewaySettings {
-        let ManagedTarget::Kubernetes(cluster) = &self.target else {
-            return self
-                .local()
-                .expect("Docker and Podman targets run on a local engine")
-                .runtime_settings();
+        let cluster = match &self.target {
+            ManagedTarget::Docker(docker) => return docker.local().runtime_settings(),
+            ManagedTarget::Podman(podman) => return podman.local().runtime_settings(),
+            ManagedTarget::Kubernetes(cluster) => cluster,
         };
         GatewaySettings {
             runtime: GatewayRuntime {

@@ -6,7 +6,7 @@ use super::{
     labels::{self, terminal_text},
     logo::BrandImage,
 };
-use nemoclaw_authoring::JourneyQuestion;
+use nemoclaw_authoring::{JourneyQuestion, mask_entry_keys};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -139,7 +139,7 @@ impl JourneyWizard {
         let mut lines = vec![Line::from(title)];
         if let Some(service) = labels::service(question) {
             lines.push(Line::from(Span::styled(
-                format!("Service: {}", terminal_text(service)),
+                format!("Service: {}", terminal_text(&service)),
                 Style::new().fg(MUTED),
             )));
         }
@@ -158,7 +158,7 @@ impl JourneyWizard {
                 } else {
                     "Optional"
                 },
-                terminal_text(&labels::pointer_text(question.id()))
+                terminal_text(&mask_entry_keys(question.id()))
             ),
             Style::new().fg(DIM),
         )));
@@ -246,7 +246,7 @@ impl JourneyWizard {
                                 Line::from(Span::styled(
                                     terminal_text(&format!(
                                         "{}: {}",
-                                        labels::pointer_text(issue.path()),
+                                        mask_entry_keys(issue.path()),
                                         issue.rule()
                                     )),
                                     Style::new().fg(WARNING),

@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::references::{ScopedInference, diagnostic_name, missing_reference, sandbox_path};
 use super::source::DefinitionSource;
+use super::validation::valid_name;
 use super::{ConfigError, Document, Inference, InferenceProvider, Route};
 use std::collections::{BTreeMap, BTreeSet};
+
+// Selection also runs without `validate`, as from `credential_names`, so a
+// document built in Rust can reach it with names the schema rejects.
+const INVALID_NAME: &str = "provider names must be lowercase names";
 
 // The resource key identifies the registration; the authored path distinguishes
 // separate definitions with identical values and lets export edit the right one.
@@ -41,7 +46,7 @@ impl<'a> SelectedProvider<'a> {
         use sha2::{Digest, Sha256};
         self.key = format!(
             "{}-{}",
-            &self.name[..self.name.len().min(12)],
+            self.name.chars().take(12).collect::<String>(),
             &super::hex(&Sha256::digest(format!("{}\0{scope}", self.key)))[..24]
         );
         self
@@ -217,6 +222,15 @@ impl Document {
     pub(crate) fn selected_providers(&self) -> Result<Vec<SelectedProvider<'_>>, ConfigError> {
         let mut selected = BTreeMap::new();
         for (name, sandbox) in &self.spec.sandboxes {
+            if !self
+                .spec
+                .inference_providers
+                .keys()
+                .chain(sandbox.inference_providers.keys())
+                .all(|name| valid_name(name))
+            {
+                return Err(ConfigError::new(INVALID_NAME));
+            }
             if sandbox
                 .inference_providers
                 .keys()
@@ -229,6 +243,10 @@ impl Document {
             let inference = self.scoped_inference(name)?;
             for route in &inference.inference.routes {
                 let provider = self.sandbox_route_registration(name, route)?;
+                // An inline definition states its own name.
+                if !valid_name(provider.name) {
+                    return Err(ConfigError::new(INVALID_NAME));
+                }
                 let path = provider.path.clone();
                 if let Some(previous) = selected.insert(provider.key.clone(), provider)
                     && previous.path != path

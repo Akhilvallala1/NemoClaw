@@ -177,6 +177,88 @@ fn kubernetes_gateway_requires_storage_and_fresh_readiness_without_replacement()
     assert!(check_runtime_plan(&plan, &checked.expected, &bindings).is_err());
 }
 
+const BOUND_STORAGE: &str = "bound storage specification differs from retained intent";
+
+/// State binds a managed gateway's target key and every setting under it
+/// except `imagePullPolicy`, so a retained gateway cannot move.
+#[test]
+fn a_bound_docker_gateway_refuses_another_target_key_or_network_but_not_a_pull_policy() {
+    let mut value: Value = serde_saphyr::from_slice(
+        include_bytes!("../../../tests/fixtures/config/local.yaml").as_slice(),
+    )
+    .unwrap();
+    value["spec"]["gateway"] = json!({"management": "managed"});
+    let document = Document::parse(value.to_string().as_bytes()).unwrap();
+    let generations = Record::new(document.clone()).unwrap().generations;
+    let targets = compile::runtime_targets(&document, &generations).unwrap();
+    let bindings: BTreeMap<String, StateBinding> = targets
+        .iter()
+        .map(|target| {
+            (
+                target.address.clone(),
+                bound(format!("physical-{}", target.kind), target),
+            )
+        })
+        .collect();
+    runtime_bindings(&targets, &bindings).unwrap();
+    let docker =
+        serde_json::to_value(&document).unwrap()["spec"]["gateway"]["target"]["docker"].clone();
+    let mut network = docker.clone();
+    network["networkCidr"] = json!("172.30.250.0/24");
+    let mut policy = docker.clone();
+    policy["imagePullPolicy"] = json!("Never");
+    for (target, refused) in [
+        // The same engine socket and settings under another key.
+        (json!({"podman": docker}), true),
+        (json!({"docker": network}), true),
+        (json!({"docker": policy}), false),
+    ] {
+        value["spec"]["gateway"]["target"] = target.clone();
+        let changed = Document::parse(value.to_string().as_bytes()).unwrap();
+        let targets = compile::runtime_targets(&changed, &generations).unwrap();
+        let result = runtime_bindings(&targets, &bindings);
+        if refused {
+            assert!(
+                matches!(result, Err(Error::Conflict(BOUND_STORAGE))),
+                "{target}"
+            );
+        } else {
+            result.unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_bound_kubernetes_gateway_refuses_another_distribution_context_or_namespace() {
+    let (document, generations) = kubernetes_context();
+    let targets = compile::runtime_targets(&document, &generations).unwrap();
+    let bindings = kubernetes_bindings(&targets);
+    runtime_bindings(&targets, &bindings).unwrap();
+    let edits: [fn(&mut crate::config::ManagedKubernetes); 3] = [
+        |cluster| cluster.distribution = crate::config::KubernetesDistribution::OpenShift,
+        |cluster| cluster.context = "another-cluster".into(),
+        |cluster| cluster.namespace = "another-namespace".into(),
+    ];
+    for (index, edit) in edits.into_iter().enumerate() {
+        let mut changed = document.clone();
+        let Some(crate::config::ManagedGateway {
+            target: crate::config::ManagedTarget::Kubernetes(cluster),
+        }) = changed.spec.gateway.as_managed_mut()
+        else {
+            panic!("managed Kubernetes context");
+        };
+        edit(cluster);
+        let targets = compile::runtime_targets(&changed, &generations).unwrap();
+        assert!(
+            matches!(
+                runtime_bindings(&targets, &bindings),
+                Err(Error::Conflict(BOUND_STORAGE))
+            ),
+            "edit {index}"
+        );
+    }
+}
+
 #[test]
 fn interrupted_kubernetes_platform_apply_cannot_move_to_another_namespace() {
     let (document, _) = kubernetes_context();

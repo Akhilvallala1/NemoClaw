@@ -76,7 +76,7 @@ This NemoClaw rejects that document, and state written by an earlier NemoClaw, w
 | Input | Error |
 |---|---|
 | A v1alpha1 document given to `plan` or `apply` | `configuration uses nemoclaw.nvidia.com/v1alpha1; this NemoClaw reads nemoclaw.nvidia.com/v1alpha2; re-author it as described in docs/migration.md` |
-| A state directory written by an earlier NemoClaw, with any command that reads it | `deployment state was written by an earlier NemoClaw for nemoclaw.nvidia.com/v1alpha1; retain it and use that NemoClaw to destroy it, or deploy this document as a separate deployment` |
+| A state directory written by an earlier NemoClaw, with any command that reads it | `deployment state was written by an earlier NemoClaw for nemoclaw.nvidia.com/v1alpha1; retain it and use that NemoClaw to destroy it, or deploy this document as a separate deployment; see docs/migration.md` |
 
 There is no conversion command, and this NemoClaw cannot adopt the earlier deployment's resources.
 Re-author the document by hand and apply it as a separate deployment.
@@ -100,7 +100,7 @@ Check its exit status before using the file.
 Copy the document and make these changes:
 
 1. Set `apiVersion: nemoclaw.nvidia.com/v1alpha2`.
-2. Set `metadata.uid` to a fresh UUID, for example from `uuidgen`.
+2. Set `metadata.uid` to a fresh lowercase UUID, for example from `uuidgen | tr '[:upper:]' '[:lower:]'`.
    A reused UID selects the earlier deployment's resource names.
 3. Change a `# yaml-language-server: $schema=` comment to `nemoclaw-v1alpha2.schema.json`.
 4. Move each field that v1alpha2 changed:
@@ -153,8 +153,10 @@ spec:
     management: managed
     target:
       docker:
-        endpoint: http://127.0.0.1:17671
-        networkCidr: 172.20.0.0/24
+        # A separate deployment needs an endpoint and network that the
+        # earlier deployment does not use.
+        endpoint: http://127.0.0.1:17681
+        networkCidr: 172.20.1.0/24
   inferenceProviders:
     local:
       provider: openai
