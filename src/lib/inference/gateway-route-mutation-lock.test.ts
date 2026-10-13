@@ -10,7 +10,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   resolveCurrentUserModelRouterLockStateDir,
   resolveModelRouterPortLifecycleLockOptions,
-  withOpenShellActiveGatewaySelectionLock,
   withGatewayRouteMutationLock,
   withGatewayRouteMutationLockSync,
   withModelRouterPortLifecycleLock,
@@ -62,23 +61,6 @@ describe("gateway route mutation lock", () => {
     expect(
       resolveModelRouterPortLifecycleLockOptions({ stateDir: "/isolated" }, homeDir).stateDir,
     ).toBe("/isolated");
-  });
-
-  it("ignores an empty Vitest state override for the active gateway lock", async () => {
-    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "nemoclaw-active-gateway-lock-home-"));
-    try {
-      vi.stubEnv("HOME", homeDir);
-      vi.stubEnv("NEMOCLAW_TEST_BASE_HOME", "/different-home");
-      vi.stubEnv("NEMOCLAW_TEST_STATE_DIR", "");
-
-      await withOpenShellActiveGatewaySelectionLock(() => undefined);
-
-      expect(
-        fsSync.existsSync(path.join(homeDir, ".nemoclaw", "state", "mcp-lifecycle-locks")),
-      ).toBe(true);
-    } finally {
-      await fs.rm(homeDir, { recursive: true, force: true });
-    }
   });
 
   it("serializes separate operations for the same gateway", async () => {

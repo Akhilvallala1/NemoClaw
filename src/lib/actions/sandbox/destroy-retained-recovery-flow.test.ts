@@ -896,14 +896,10 @@ describe("destroySandbox retained recovery flow", () => {
         { sandboxName: "alpha", gatewayPort: matchingRecovery.gatewayPort },
         { recoverySandboxName: "alpha" },
       );
-      expect(harness.selectGatewaySpy).toHaveBeenCalledTimes(1);
-      const [sandboxName, gatewayName, lifecycle, options] =
-        harness.selectGatewaySpy.mock.calls[0]!;
-      expect([sandboxName, gatewayName]).toEqual(["alpha", matchingRecovery.gatewayName]);
-      expect(lifecycle).toHaveProperty("selectGateway");
-      expect(typeof lifecycle.selectGateway).toBe("function");
-      expect(options).toBeUndefined();
-      expect(harness.gatewayPinsAtSandboxList).toEqual([matchingRecovery.gatewayName]);
+      expect(harness.runOpenshellSpy).toHaveBeenCalledWith(
+        ["sandbox", "list", "-g", matchingRecovery.gatewayName, "-o", "json"],
+        expect.objectContaining({ ignoreError: true }),
+      );
       expect(exitSpy).not.toHaveBeenCalled();
     },
   );

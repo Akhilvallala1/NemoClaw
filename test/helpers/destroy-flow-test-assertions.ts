@@ -46,13 +46,10 @@ export function expectStrictSandboxPresenceClassification(): void {
 }
 
 export function expectSuccessfulLiveDestroy(harness: DestroyHarness, exitSpy: MockInstance): void {
-  expect(harness.selectGatewaySpy).toHaveBeenCalledTimes(1);
-  const [sandboxName, gatewayName, lifecycle, options] = harness.selectGatewaySpy.mock.calls[0]!;
-  expect([sandboxName, gatewayName]).toEqual(["alpha", "nemoclaw-19080"]);
-  expect(lifecycle).toHaveProperty("selectGateway");
-  expect(typeof lifecycle.selectGateway).toBe("function");
-  expect(options).toBeUndefined();
-  expect(harness.gatewayPinsAtSandboxList).toEqual(["nemoclaw-19080"]);
+  expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
+    ["gateway", "select", "nemoclaw-19080"],
+    expect.anything(),
+  );
   expect(harness.runOpenshellSpy).toHaveBeenCalledWith(
     ["sandbox", "list", "-g", "nemoclaw-19080", "-o", "json"],
     expect.objectContaining({ ignoreError: true }),
@@ -96,7 +93,6 @@ export function expectMcpFinalizeAfterDelete(harness: DestroyHarness): void {
       sandbox: expect.objectContaining({ name: "alpha" }),
     }),
   );
-  expect(harness.gatewayPinsAtMcpPrepare).toEqual(["nemoclaw-19080"]);
   const deleteCall = harness.runOpenshellSpy.mock.calls.findIndex(
     (call) =>
       Array.isArray(call[0]) &&
@@ -185,7 +181,6 @@ export function expectAbsentSandboxMcpFinalize(harness: DestroyHarness): void {
   expect(harness.prepareMcpBridgesForAbsentSandboxDestroySpy).toHaveBeenCalledWith("alpha", {
     force: false,
   });
-  expect(harness.gatewayPinsAtMcpPrepare).toEqual(["nemoclaw-19080"]);
   expect(harness.restoreMcpBridgesAfterDestroyAbortSpy).not.toHaveBeenCalled();
   expect(harness.finalizeMcpBridgesAfterSandboxDeleteSpy).toHaveBeenCalledWith(
     "alpha",

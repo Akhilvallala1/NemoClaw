@@ -66,8 +66,6 @@ import {
 } from "./destroy-execution";
 import {
   cleanupGatewayAfterLastSandbox,
-  destroyWithActiveGatewayRestored,
-  DestroyGatewaySelectionError,
   resolveGatewayCleanupRuntimeProviderId,
 } from "./destroy-gateway";
 import {
@@ -718,7 +716,7 @@ export async function destroySandbox(
       const sandbox = resolveSandboxDestroyRegistryAuthority(sandboxName).entry;
       const session = onboardSession.loadSession();
       const retainedRecoveryRecords = onboardSession.listRetainedSandboxRecoveryRecords();
-      const skipGatewaySelection = hasOnlyIdentityFreeRecovery(
+      const identityFreeRecovery = hasOnlyIdentityFreeRecovery(
         sandboxName,
         sandbox,
         retainedRecoveryRecords,
@@ -734,32 +732,15 @@ export async function destroySandbox(
         sandbox,
         retainedRecoveryAuthority?.gatewayName,
       );
-      const hasRuntimeSelection = Boolean(resolveSandboxDestroyRuntimeSelection(sandbox));
       telemetryTarget.gatewayName = gatewayName;
-      const destroy = () =>
-        destroySandboxUnlocked(
-          sandboxName,
-          options,
-          removedImmutabilityMigration.stateRecord !== null,
-          deps,
-          telemetryTarget,
-          skipGatewaySelection,
-        );
-      if (skipGatewaySelection) {
-        // Identity-free recovery can only retire retained metadata after destroy
-        // preflight confirms the sandbox is absent. If it is present, unknown, or
-        // lacks matching recovery authority, preflight refuses deletion because
-        // there is no durable identity to match. Do not require global gateway
-        // state for a path that cannot mutate a sandbox or select a gateway.
-        await destroy();
-      } else {
-        await destroyWithActiveGatewayRestored(
-          sandboxName,
-          gatewayName,
-          hasRuntimeSelection,
-          destroy,
-        );
-      }
+      await destroySandboxUnlocked(
+        sandboxName,
+        options,
+        removedImmutabilityMigration.stateRecord !== null,
+        deps,
+        telemetryTarget,
+        identityFreeRecovery,
+      );
       if (!telemetryTarget.completionRecorded) {
         await recordDestroyCompletion(sandboxName, "completed", undefined, gatewayName);
         telemetryTarget.completionRecorded = true;
@@ -778,10 +759,6 @@ export async function destroySandbox(
     if (error instanceof SandboxDestroyExitRequest) {
       process.exit(error.exitCode);
     }
-    if (error instanceof DestroyGatewaySelectionError) {
-      console.error(`  ${error.message}`);
-      process.exit(1);
-    }
     throw error;
   }
 }
@@ -798,7 +775,7 @@ async function destroySandboxUnlocked(
     mutationStarted?: boolean;
     completionRecorded?: boolean;
   },
-  skipGatewaySelection: boolean,
+  identityFreeRecovery: boolean,
 ): Promise<void> {
   const normalized = normalizeDestroySandboxOptions(options);
   const registryAuthority = resolveSandboxDestroyRegistryAuthority(sandboxName);
@@ -833,11 +810,11 @@ async function destroySandboxUnlocked(
     destroySession,
   );
   if (
-    skipGatewaySelection &&
+    identityFreeRecovery &&
     !hasOnlyIdentityFreeRecovery(sandboxName, registeredSandbox, retainedRecoveryRecords)
   ) {
     throw new Error(
-      `Refusing to destroy sandbox '${sandboxName}': retained recovery authority changed before gateway selection. No sandbox resources were removed.`,
+      `Refusing to destroy sandbox '${sandboxName}': retained recovery authority changed before the gateway-scoped operation. No sandbox resources were removed.`,
     );
   }
   if (
@@ -984,7 +961,7 @@ async function destroySandboxUnlocked(
       getSandbox: getRegisteredSandbox,
       retainedRecoveryGatewayName: retainedRecoveryAuthority?.gatewayName,
       operationRuntimeSelection,
-      identityFreeRecovery: skipGatewaySelection,
+      identityFreeRecovery,
     });
   } catch (error) {
     preparedManagedLlamaCppCleanup?.abort();

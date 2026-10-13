@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { isValidName } from "../../../../nemoclaw/dist/shared/sandbox-name.cjs";
-import { buildOpenShellCommandEnv, withSelectedOpenShellCommandOptions } from "./command-argv";
+import { withSelectedOpenShellCommandOptions } from "./command-argv";
 import { assertNoOpenShellGatewayEndpointOverride } from "./gateway-scope";
 import type { ObserveOpenShellGatewayRequest } from "./gateway-observer";
 import type {
@@ -263,17 +263,4 @@ export function createCliOpenShellGatewayLifecycleFromRunner(
       error: result.error,
     };
   });
-}
-
-export function createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway(
-  run: (
-    args: string[],
-    options?: Record<string, unknown>,
-  ) => { status: number | null; stdout?: unknown; stderr?: unknown; error?: Error },
-): OpenShellGatewayLifecycle {
-  const environment = buildOpenShellCommandEnv();
-  delete environment.OPENSHELL_GATEWAY;
-  return createCliOpenShellGatewayLifecycleFromRunner((args, options) =>
-    run(args, { ...options, env: environment, replaceEnv: true }),
-  );
 }

@@ -32,7 +32,7 @@ vi.mock("../../onboard/gateway-teardown-authority", async (importOriginal) => ({
 import {
   cleanupGatewayAfterLastSandbox,
   resolveGatewayCleanupRuntimeProviderId,
-  selectGatewayForSandboxDestroy,
+  scopeSandboxDestroyOpenShellArgs,
 } from "./destroy-gateway";
 
 function packagedServiceOwner({
@@ -76,24 +76,6 @@ function idleHostReaperResult() {
   };
 }
 
-describe("selectGatewayForSandboxDestroy", () => {
-  it("throws when the target gateway cannot be selected so restore logic can run", async () => {
-    const selectGateway = vi.fn().mockResolvedValue({
-      ok: false,
-      error: { kind: "command", reason: "failed", message: "selection failed" },
-      unsupported: false,
-      ambiguous: false,
-    });
-
-    await expect(
-      selectGatewayForSandboxDestroy("alpha", "nemoclaw-8081", { selectGateway }),
-    ).rejects.toThrow(
-      "Failed to select gateway 'nemoclaw-8081' before destroying sandbox 'alpha': selection failed",
-    );
-    expect(selectGateway).toHaveBeenCalledOnce();
-  });
-});
-
 describe("cleanupGatewayAfterLastSandbox", () => {
   beforeEach(() => {
     mocks.resolveGatewayTeardownAuthority.mockImplementation(
@@ -115,6 +97,43 @@ describe("cleanupGatewayAfterLastSandbox", () => {
       stopped: [],
       sudoRemediationPids: [],
     });
+  });
+
+  it("allows named final-gateway lifecycle commands through the scoped destroy runner", async () => {
+    const runOpenshell = vi
+      .fn()
+      .mockReturnValueOnce({ status: 1, stdout: "", stderr: "unrecognized subcommand 'remove'" })
+      .mockReturnValue({ status: 0, stdout: "", stderr: "" });
+
+    await cleanupGatewayAfterLastSandbox("nemoclaw", (args, options) =>
+      runOpenshell(scopeSandboxDestroyOpenShellArgs(args, "nemoclaw"), options),
+    );
+
+    const calls = runOpenshell.mock.calls.map(([args]) =>
+      scopeSandboxDestroyOpenShellArgs(args, "nemoclaw"),
+    );
+    expect(calls).toEqual([
+      ["gateway", "remove", "nemoclaw"],
+      ["gateway", "destroy", "-g", "nemoclaw"],
+    ]);
+    expect(scopeSandboxDestroyOpenShellArgs(["gateway", "list", "-o", "json"], "nemoclaw")).toEqual(
+      ["gateway", "list", "-o", "json"],
+    );
+    expect(() =>
+      scopeSandboxDestroyOpenShellArgs(["gateway", "remove", "other-gateway"], "nemoclaw"),
+    ).toThrow("OpenShell command targets gateway 'other-gateway' instead of 'nemoclaw'.");
+    expect(() =>
+      scopeSandboxDestroyOpenShellArgs(["gateway", "destroy", "-g", "other-gateway"], "nemoclaw"),
+    ).toThrow("OpenShell command targets gateway 'other-gateway' instead of 'nemoclaw'.");
+    expect(() =>
+      scopeSandboxDestroyOpenShellArgs(
+        ["gateway", "remove", "nemoclaw", "-g", "nemoclaw"],
+        "nemoclaw",
+      ),
+    ).toThrow("OpenShell command contains multiple gateway targets.");
+    expect(() =>
+      scopeSandboxDestroyOpenShellArgs(["gateway", "select", "other"], "nemoclaw"),
+    ).toThrow();
   });
 
   it("recovers Podman cleanup authority after the sandbox registry row is gone", () => {

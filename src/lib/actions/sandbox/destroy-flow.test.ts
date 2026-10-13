@@ -616,9 +616,7 @@ describe("destroySandbox flow", () => {
     expect(String(refusal)).not.toContain("opaque-portable-secret");
     expect(exitSpy).not.toHaveBeenCalled();
     expect(harness.dockerRunSpy).not.toHaveBeenCalled();
-    expect(harness.runOpenshellSpy.mock.calls.map(([args]) => args)).toEqual([
-      ["gateway", "list", "-o", "json"],
-    ]);
+    expect(harness.runOpenshellSpy).not.toHaveBeenCalled();
     expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
     expect(harness.retirePortableLifecycleReceiptSpy).not.toHaveBeenCalled();
 
@@ -890,11 +888,8 @@ describe("destroySandbox flow", () => {
     expect(harness.errorSpy.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
       "Docker container identity could not be inspected",
     );
-    expect(harness.runOpenshellSpy.mock.calls.map(([args]) => args)).toEqual([
-      ["gateway", "list", "-o", "json"],
-    ]);
+    expect(harness.runOpenshellSpy).not.toHaveBeenCalled();
     expect(harness.events).toEqual([]);
-    expect(harness.selectGatewaySpy).not.toHaveBeenCalled();
     expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
     expect(harness.updateSessionSpy).not.toHaveBeenCalled();
     expect(harness.stopAllSpy).not.toHaveBeenCalled();
@@ -922,13 +917,10 @@ describe("destroySandbox flow", () => {
     expect(errorOutput).toContain("Managed sandbox container: aaaa00000000");
     expect(errorOutput).toContain("Conflicting container: ffff00000000");
     expect(errorOutput).toContain("sb-real");
-    expect(harness.runOpenshellSpy.mock.calls.map(([args]) => args)).toEqual([
-      ["gateway", "list", "-o", "json"],
-    ]);
+    expect(harness.runOpenshellSpy).not.toHaveBeenCalled();
     expect(harness.events).toEqual([]);
     expect(harness.events).not.toContain("wipe");
     expect(harness.events).not.toContain("detach");
-    expect(harness.selectGatewaySpy).not.toHaveBeenCalled();
     expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
     expect(harness.updateSessionSpy).not.toHaveBeenCalled();
     expect(harness.prepareMcpBridgesForDestroySpy).not.toHaveBeenCalled();
@@ -951,7 +943,6 @@ describe("destroySandbox flow", () => {
 
     await expect(harness.destroySandbox("alpha", { yes: true })).rejects.toThrow("process.exit(1)");
 
-    expect(harness.selectGatewaySpy).toHaveBeenCalledOnce();
     expect(harness.runOpenshellSpy).toHaveBeenCalledWith(
       ["sandbox", "list", "-g", "nemoclaw-19080", "-o", "json"],
       expect.any(Object),

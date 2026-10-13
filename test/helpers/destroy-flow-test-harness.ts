@@ -37,8 +37,6 @@ export type DestroyHarness = {
   enforceRemovedImmutabilityMigrationBoundarySpy: MockInstance;
   finalGatewaySleepSpy: MockInstance;
   finalizeMcpBridgesAfterSandboxDeleteSpy: MockInstance;
-  gatewayPinsAtMcpPrepare: Array<string | undefined>;
-  gatewayPinsAtSandboxList: Array<string | undefined>;
   killStaleProxySpy: MockInstance;
   lifecycleLockEvents: string[];
   listHostGatewayRegistryEntriesSpy: MockInstance;
@@ -70,7 +68,6 @@ export type DestroyHarness = {
   restoreMcpBridgesAfterDestroyAbortSpy: MockInstance;
   runOpenshellSpy: MockInstance;
   runSandboxProviderPreDeleteCleanupSpy: MockInstance;
-  selectGatewaySpy: MockInstance;
   sessionState: Session;
   setDockerIdentityResult: (result: {
     status: number | null;
@@ -93,7 +90,6 @@ export type DestroyHarness = {
 };
 
 type DestroyHarnessOptions = {
-  callThroughGatewaySelection?: boolean;
   agent?: "openclaw" | "hermes" | "langchain-deepagents-code";
   deleteError?: Error;
   deleteConvergenceAttempts?: number;
@@ -195,52 +191,6 @@ export function configureFailedGatewayList(harness: Pick<DestroyHarness, "runOpe
       return { status: 1, stdout: "", stderr: "gateway unavailable" };
     }
     return runOpenshell?.(args, options) ?? { status: 0, stdout: "", stderr: "" };
-  });
-}
-
-export function configureFailedGatewayRestoration(
-  harness: Pick<DestroyHarness, "runOpenshellSpy">,
-): void {
-  let activeGateway = "beta";
-  let sandboxPresent = true;
-  harness.runOpenshellSpy.mockImplementation((args: unknown) => {
-    const argv = Array.isArray(args) ? args.map(String) : [];
-    switch (`${argv[0]}:${argv[1]}`) {
-      case "gateway:list":
-        return {
-          status: 0,
-          stdout: JSON.stringify(
-            ["nemoclaw-19080", "beta"].map((name) => ({
-              name,
-              active: activeGateway === name,
-            })),
-          ),
-          stderr: "",
-        };
-      case "gateway:select":
-        switch (argv[2]) {
-          case "beta":
-            return { status: 1, stdout: "", stderr: "restore failed" };
-          default:
-            activeGateway = String(argv[2]);
-            return { status: 0, stdout: "", stderr: "" };
-        }
-      case "sandbox:delete":
-        sandboxPresent = false;
-        return { status: 0, stdout: "", stderr: "" };
-      case "sandbox:get":
-        return sandboxPresent
-          ? { status: 0, stdout: "Name: alpha\\nPhase: Ready", stderr: "" }
-          : { status: 1, stdout: "", stderr: "Error: sandbox alpha not found" };
-      case "sandbox:list":
-        return {
-          status: 0,
-          stdout: JSON.stringify(sandboxPresent ? [{ name: "alpha", phase: "Ready" }] : []),
-          stderr: "",
-        };
-      default:
-        return { status: 0, stdout: "", stderr: "" };
-    }
   });
 }
 
@@ -575,7 +525,6 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
       (mutator as (value: typeof session) => void)(session);
       return session;
     });
-  const gatewayPinsAtSandboxList: Array<string | undefined> = [];
   let activeGateway: string | null = null;
   let identityProbeCall = 0;
   const runOpenshellSpy = vi.spyOn(runtime, "runOpenshell").mockImplementation((args: unknown) => {
@@ -593,7 +542,6 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
         activeGateway = String(argv[2]);
         return { status: 0, stdout: "", stderr: "" };
       case "sandbox:list":
-        gatewayPinsAtSandboxList.push(process.env.OPENSHELL_GATEWAY);
         return (
           options.sandboxListResult ?? {
             status: 0,
@@ -705,9 +653,6 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
       defaultIdentityResult;
     return result as ReturnType<typeof dockerRun.dockerRun>;
   });
-  const selectGatewaySpy = vi.spyOn(destroyGateway, "selectGatewayForSandboxDestroy");
-  if (!options.callThroughGatewaySelection)
-    selectGatewaySpy.mockImplementation(async () => undefined);
   const resolveGatewayRuntimeProviderIdSpy = vi
     .spyOn(destroyGateway, "resolveGatewayCleanupRuntimeProviderId")
     .mockImplementation(
@@ -794,7 +739,6 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
     ...(preparedServers.length ? { runtimeSelection: resolvedMcpRuntimeSelection } : {}),
     ...(options.mcpAdapterScrubSkipped ? { adapterScrubSkipped: true as const } : {}),
   };
-  const gatewayPinsAtMcpPrepare: Array<string | undefined> = [];
   const { McpBridgeError } = mcpBridge as any;
   const prepareMcpBridgesForDestroySpy = vi
     .spyOn(mcpBridge, "prepareMcpBridgesForDestroy")
@@ -803,15 +747,11 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
       if (options.prepareMcpBridgeError !== undefined) {
         throw new McpBridgeError(options.prepareMcpBridgeError);
       }
-      gatewayPinsAtMcpPrepare.push(process.env.OPENSHELL_GATEWAY);
       return mcpPreparation;
     });
   const prepareMcpBridgesForAbsentSandboxDestroySpy = vi
     .spyOn(mcpBridge, "prepareMcpBridgesForAbsentSandboxDestroy")
-    .mockImplementation(async () => {
-      gatewayPinsAtMcpPrepare.push(process.env.OPENSHELL_GATEWAY);
-      return mcpPreparation;
-    });
+    .mockImplementation(async () => mcpPreparation);
   const restoreMcpBridgesAfterDestroyAbortSpy = vi
     .spyOn(mcpBridge, "restoreMcpBridgesAfterDestroyAbort")
     .mockImplementation(async () => {
@@ -857,8 +797,6 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
     enforceRemovedImmutabilityMigrationBoundarySpy,
     finalGatewaySleepSpy,
     finalizeMcpBridgesAfterSandboxDeleteSpy,
-    gatewayPinsAtMcpPrepare,
-    gatewayPinsAtSandboxList,
     killStaleProxySpy,
     lifecycleLockEvents,
     listHostGatewayRegistryEntriesSpy,
@@ -888,7 +826,6 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
     revokeHttpsPinRuntimeAdapterRouteSpy,
     restoreMcpBridgesAfterDestroyAbortSpy,
     runOpenshellSpy,
-    selectGatewaySpy,
     sessionState,
     setDockerIdentityResult: (result) => {
       dockerIdentityResult = result;

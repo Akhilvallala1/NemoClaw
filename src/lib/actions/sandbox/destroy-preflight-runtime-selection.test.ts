@@ -22,12 +22,11 @@ describe("destroy preflight runtime selection", () => {
       workspace: "default",
       localTlsDir: "/authority/tls",
     };
-    const harness = createDestroyHarness({ callThroughGatewaySelection: true });
+    const harness = createDestroyHarness();
     const preflight = await harness.prepareSandboxDestroy("alpha", {
       operationRuntimeSelection: runtimeSelection,
     });
     expect(preflight.runtimeSelection).toEqual(runtimeSelection);
-    expect(harness.selectGatewaySpy).not.toHaveBeenCalled();
     const frozenOptions = {
       replaceEnv: true,
       env: expect.objectContaining({
@@ -51,8 +50,8 @@ describe("destroy preflight runtime selection", () => {
     expect(selectionOptions.env).not.toHaveProperty("OPENSHELL_GATEWAY_ENDPOINT");
   }, 30_000);
 
-  it("keeps destroy commands gateway-scoped across a concurrent gateway selection", async () => {
-    const harness = createDestroyHarness({ callThroughGatewaySelection: true });
+  it("keeps destroy commands gateway-scoped across ambient gateway changes", async () => {
+    const harness = createDestroyHarness();
     const preflight = await harness.prepareSandboxDestroy("alpha");
     harness.runOpenshellSpy.mockClear();
 

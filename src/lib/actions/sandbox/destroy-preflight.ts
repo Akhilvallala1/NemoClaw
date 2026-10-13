@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { createCliOpenShellGatewayLifecycleFromRunner } from "../../adapters/openshell/gateway-lifecycle-cli";
 import os from "node:os";
 
 import {
@@ -50,11 +49,7 @@ import {
 } from "../../state/registry/cross-port";
 
 export { listInferenceRouteOwnersAcrossGatewayRoots };
-import {
-  type DestroyRunOpenshell,
-  scopeSandboxDestroyOpenShellArgs,
-  selectGatewayForSandboxDestroy,
-} from "./destroy-gateway";
+import { type DestroyRunOpenshell, scopeSandboxDestroyOpenShellArgs } from "./destroy-gateway";
 import { classifyDestroySandboxPresence, type DestroySandboxPresence } from "./destroy-presence";
 import {
   getPersistedSandboxTargetGatewayName,
@@ -597,13 +592,18 @@ export async function prepareSandboxDestroy(
   );
   const runtimeSelection =
     operationRuntimeSelection ?? resolveSandboxDestroyRuntimeSelection(sandbox);
+  if (!runtimeSelection && process.env.OPENSHELL_GATEWAY_ENDPOINT?.trim()) {
+    throw new Error(
+      "OPENSHELL_GATEWAY_ENDPOINT is set, so OpenShell may bypass the gateway recorded for this sandbox. Unset OPENSHELL_GATEWAY_ENDPOINT and retry.",
+    );
+  }
   if (runtimeSelection && runtimeSelection.gatewayName !== cleanupGatewayName) {
     throw new Error(
       `Refusing to destroy sandbox '${sandboxName}': recorded MCP gateway '${runtimeSelection.gatewayName}' does not match destroy gateway '${cleanupGatewayName}'.`,
     );
   }
   const scopeDestroyCommand = (args: string[]): string[] =>
-    scopeSandboxDestroyOpenShellArgs(args, cleanupGatewayName, true);
+    scopeSandboxDestroyOpenShellArgs(args, cleanupGatewayName);
   const selectedRunOpenshell: DestroyRunOpenshell = runtimeSelection
     ? (args, options = {}) =>
         runOpenshell(scopeDestroyCommand(args), {
@@ -622,11 +622,6 @@ export async function prepareSandboxDestroy(
     : (args: string[], options: Record<string, unknown> = {}) =>
         captureOpenshell(scopeDestroyCommand(args), options);
   if (identityFreeRecovery && !runtimeSelection) {
-    if (process.env.OPENSHELL_GATEWAY_ENDPOINT?.trim()) {
-      throw new Error(
-        "OPENSHELL_GATEWAY_ENDPOINT is set, so OpenShell may bypass the gateway recorded for this sandbox. Unset OPENSHELL_GATEWAY_ENDPOINT and retry.",
-      );
-    }
     const environment = buildOpenShellCommandEnv();
     delete environment.OPENSHELL_GATEWAY;
     const result = captureOpenshell(
@@ -654,15 +649,6 @@ export async function prepareSandboxDestroy(
       sandboxPresence,
     };
   }
-  if (!runtimeSelection) {
-    await selectGatewayForSandboxDestroy(
-      sandboxName,
-      cleanupGatewayName,
-      createCliOpenShellGatewayLifecycleFromRunner(selectedRunOpenshell),
-    );
-    process.env.OPENSHELL_GATEWAY = cleanupGatewayName;
-  }
-
   const sandboxPresence = classifyDestroySandboxPresence(
     sandboxName,
     selectedRunOpenshell(["sandbox", "list", "-o", "json"], {
