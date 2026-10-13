@@ -98,6 +98,43 @@ function Assert-MigrationCanary([string]$MarkerPath, [string]$MarkerHash, [strin
     $read = Invoke-MigrationHelper $retainedHelper @('--credential-read','local','--binding',$binding)
     if ($read.exitCode -ne 0 -or $read.stdout -cne $Key) { throw 'Migration did not preserve the exact owned Windows credential.' }
 }
+function Assert-MigrationSavedConfiguration([string]$OriginalText, [string]$SavedText, [string]$OriginalSha256) {
+    $expectedNames=@('schemaVersion','classification','agent','inference','endpoint','model','credentialStored','profile','options')
+    $records=@()
+    foreach ($text in @($OriginalText,$SavedText)) {
+        if ([Text.Encoding]::UTF8.GetByteCount($text) -gt 16384) { throw 'The migration configuration exceeds its bound.' }
+        $document=[Text.Json.JsonDocument]::Parse($text)
+        try {
+            $properties=@($document.RootElement.EnumerateObject())
+            $names=@($properties | ForEach-Object Name)
+            if ($names.Count -ne $expectedNames.Count -or @($names | Select-Object -Unique).Count -ne $names.Count -or
+                @(Compare-Object ($expectedNames | Sort-Object) ($names | Sort-Object)).Count -ne 0) {
+                throw 'The migration configuration fields changed.'
+            }
+            $record=$text | ConvertFrom-Json
+            foreach ($name in @('classification','agent','inference','endpoint','model','profile')) {
+                if ($document.RootElement.GetProperty($name).ValueKind -ne [Text.Json.JsonValueKind]::String) { throw 'The migration configuration field type changed.' }
+            }
+            if ($document.RootElement.GetProperty('schemaVersion').ValueKind -ne [Text.Json.JsonValueKind]::Number -or
+                $record.schemaVersion -ne 1 -or $record.classification -cne 'nemoclaw-native-windows-agent-configuration' -or
+                $record.agent -cne 'openclaw' -or $record.inference -cne 'local' -or $record.profile -cne 'personal' -or
+                $record.endpoint -isnot [string] -or $record.model -isnot [string] -or
+                $record.credentialStored -isnot [bool] -or -not $record.credentialStored -or
+                $document.RootElement.GetProperty('options').ValueKind -ne [Text.Json.JsonValueKind]::Object -or
+                @($document.RootElement.GetProperty('options').EnumerateObject()).Count -ne 0) {
+                throw 'The migration configuration no longer matches its manual local canary.'
+            }
+            $records+=@($record)
+        } finally { $document.Dispose() }
+    }
+    if ($records[0].endpoint -cne $records[1].endpoint -or $records[0].model -cne $records[1].model) {
+        throw 'Saving the migrated configuration changed the selected endpoint or model.'
+    }
+    $oldHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($OriginalText))).ToLowerInvariant()
+    if ($oldHash -cne $OriginalSha256) { throw 'The migration configuration baseline changed.' }
+    $savedHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($SavedText))).ToLowerInvariant()
+    return @{originalSha256=$oldHash;savedSha256=$savedHash;settingsPreserved=$true;serializationChanged=($oldHash -cne $savedHash)}
+}
 function Remove-MigrationOldCanary {
     if ($null -eq $retainedHelperHash -or (Get-FileHash -LiteralPath $retainedHelper -Algorithm SHA256).Hash.ToLowerInvariant() -cne $retainedHelperHash) { throw 'The retained old native cleanup helper changed.' }
     $failures=@()
@@ -168,7 +205,8 @@ try {
         if ((Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $retainedHelper -Algorithm SHA256).Hash) { throw 'The retained canary helper differs from the installed old preview.' }
         $retainedHelperHash=(Get-FileHash -LiteralPath $retainedHelper -Algorithm SHA256).Hash.ToLowerInvariant()
         $case['retainedOldHelperSha256']=$retainedHelperHash
-        $prepared=Invoke-MigrationHelper $launcher @('--configure-native','--prepare-all') (Get-Content -LiteralPath $configuration -Raw)
+        $originalConfigurationText=Get-Content -LiteralPath $configuration -Raw
+        $prepared=Invoke-MigrationHelper $launcher @('--configure-native','--prepare-all') $originalConfigurationText
         if ($prepared.exitCode -ne 0) { throw 'The existing configuration bindings could not be inspected.' }
         $binding=($prepared.stdout | ConvertFrom-Json).inference
         if ($binding -cnotmatch '^[a-f0-9]{64}$') { throw 'The canary credential binding is invalid.' }
@@ -193,6 +231,11 @@ try {
             $case.newInstall=Invoke-PreviewUi -SetupPath $newSetup -SetupSha256 $newHash -Mode replace -LogPath $newLog -Endpoint $endpoint -CanaryKey $canary -AfterReplacement $afterRemoval -Agent $NewAgent
         }
         Assert-MigrationRegistrations $ProductVersion
+        if ($NewAgent -ceq 'openclaw') {
+            # Explicit Save may change JSON field order, but not the canary settings.
+            $case['savedConfiguration']=Assert-MigrationSavedConfiguration $originalConfigurationText (Get-Content -LiteralPath $configuration -Raw) $configHash
+            $configHash=$case.savedConfiguration.savedSha256
+        }
         Assert-MigrationCanary $marker $markerHash $configHash $canary
         Assert-MigrationHistoryPreserved $historyFixture
         if (-not $case.preservedBeforeNewOnboarding -or $case.newInstall.installClicks -ne 1 -or $case.newInstall.configureClicks -ne 1) { throw 'The native migration did not preserve data before its single onboarding flow.' }

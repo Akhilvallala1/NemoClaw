@@ -16,12 +16,124 @@ import {
 } from "./verify-installed-openclaw-history.mts";
 import { privateDirectoryLibraryIdentity } from "../app/sqlite-private-directory-build.mts";
 import { createHash } from "node:crypto";
-import { normalizeOnboardingConfiguration } from "../runtime/native-setup-configuration.mts";
+import {
+  nativeAgentConfigurationRecord,
+  normalizeOnboardingConfiguration,
+} from "../runtime/native-setup-configuration.mts";
 import { nativeCredentialBinding } from "../runtime/native-security.mts";
 import { resolveNativeInferenceAddresses } from "../runtime/native-inference-endpoint.mts";
 
 const WINDOWS_POWERSHELL_ENVIRONMENT =
   /^(APPDATA|COMSPEC|HOMEDRIVE|HOMEPATH|LOCALAPPDATA|OS|PATH|PATHEXT|PROCESSOR_ARCHITECTURE|PROCESSOR_ARCHITEW6432|SystemRoot|TEMP|TMP|USERPROFILE|WINDIR)$/iu;
+
+test("migration Save accepts reordered settings but rejects changed values and an unbound baseline", () => {
+  const configuration = normalizeOnboardingConfiguration(
+    {
+      agent: "openclaw",
+      inference: "local",
+      options: {
+        endpoint: "http://127.0.0.1:17193/canary-fixture/v1",
+        model: "qualification/migration-canary",
+        credential: "fixture-key",
+      },
+    },
+    false,
+  );
+  // Field order from the pinned 0.1.4 writer, before nativeConfigurationChoices existed.
+  const original =
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        classification: "nemoclaw-native-windows-agent-configuration",
+        agent: configuration.agent,
+        inference: configuration.inference,
+        endpoint: configuration.endpoint,
+        model: configuration.model,
+        credentialStored: true,
+        profile: "personal",
+        options: {},
+      },
+      null,
+      2,
+    ) + "\n";
+  const saved = nativeAgentConfigurationRecord(configuration);
+  const text = JSON.stringify(saved, null, 2) + "\n";
+  assert.notEqual(text, original);
+  const cases = [
+    { name: "current serializer", text, pass: true },
+    { name: "unchanged serializer", text: original, pass: true },
+    ...Object.entries({
+      agent: "hermes",
+      inference: "compatible",
+      endpoint: "http://127.0.0.1:18000/v1",
+      model: "other-model",
+      credentialStored: false,
+      profile: "other",
+      schemaVersion: "1",
+      options: { search: { provider: "brave" } },
+      credential: "unexpected-key",
+      classification: "other",
+    }).map(([name, value]) => ({
+      name,
+      text: JSON.stringify({ ...saved, [name]: value }),
+      pass: false,
+    })),
+    {
+      name: "duplicate field",
+      text: text.replace('"schemaVersion": 1,', '"schemaVersion": 1, "schemaVersion": 1,'),
+      pass: false,
+    },
+    { name: "wrong baseline", text, pass: false },
+  ];
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:MIGRATION_SOURCE,[ref]$tokens,[ref]$errors)
+if ($errors.Count) {throw 'Migration source does not parse.'}
+$owner=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-MigrationSavedConfiguration'},$true)
+if ($null -eq $owner) {throw 'Missing configuration transition owner.'}
+. ([scriptblock]::Create($owner.Extent.Text))
+$payload=[Console]::In.ReadToEnd() | ConvertFrom-Json
+foreach ($case in $payload.cases) {
+    $hash=if ($case.name -ceq 'wrong baseline') {'0' * 64} else {$payload.originalSha256}
+    $failed=$false;$receipt=$null
+    try {$receipt=Assert-MigrationSavedConfiguration $payload.original $case.text $hash} catch {$failed=$true}
+    if ($failed -eq $case.pass) {throw ('Configuration transition verdict differs: '+$case.name)}
+    if ($case.pass) {
+        $expected=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($case.text))).ToLowerInvariant()
+        if (-not $receipt.settingsPreserved -or $receipt.originalSha256 -cne $hash -or $receipt.savedSha256 -cne $expected -or
+            $receipt.serializationChanged -ne ($case.name -ceq 'current serializer')) {throw 'Configuration transition evidence differs.'}
+    } elseif ($null -ne $receipt) {throw 'Rejected transition emitted success evidence.'}
+}
+Write-Output $payload.cases.Count
+`;
+  const result = spawnSync(
+    process.platform === "win32" ? "pwsh.exe" : "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    {
+      env: powershellEnvironment({
+        MIGRATION_SOURCE: fileURLToPath(new URL("run-preview-migration.ps1", import.meta.url)),
+      }),
+      input: JSON.stringify({
+        original,
+        originalSha256: createHash("sha256").update(original).digest("hex"),
+        cases,
+      }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30000,
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(Number(result.stdout.trim()), cases.length);
+});
 
 for (const agent of ["openclaw", "hermes"]) {
   for (const endpoint of [
@@ -757,6 +869,80 @@ function powershellEnvironment(extra: NodeJS.ProcessEnv = {}) {
   };
 }
 
+test("setup transactions retain recovery custody after timeout or uncertain process status", () => {
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:ACCEPTANCE_SOURCE,[ref]$tokens,[ref]$errors)
+if ($errors.Count) {throw 'Acceptance source does not parse.'}
+$owner=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-OwnedSetup'},$true)
+if ($null -eq $owner) {throw 'Setup process owner missing.'}
+. ([scriptblock]::Create($owner.Extent.Text.Replace('[Diagnostics.Process]::Start($info)','(Start-Fixture $info)')))
+$guard=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$restartCustodyUnresolved -or $script:SetupTransactionUnconfirmed'},$true))
+if ($guard.Count -ne 1) {throw 'Uninstall custody guard is missing or ambiguous.'}
+$cleanup=[scriptblock]::Create($guard[0].Extent.Text)
+function Start-Fixture($info) {
+    $script:starts++
+    if ($scenario -ceq 'start-throws') {throw 'start-query-failed'}
+    $child=[pscustomobject]@{}
+    $child | Add-Member ScriptProperty Id {if ($scenario -ceq 'id-throws') {throw 'identity-query-failed'};return 123}
+    $child | Add-Member ScriptProperty ExitCode {if ($scenario -ceq 'exit-query-throws') {throw 'exit-query-failed'};if ($scenario -ceq 'exit-fails') {return 17};return 0}
+    $child | Add-Member ScriptMethod WaitForExit {
+        param($milliseconds)
+        if ($milliseconds -ne 1200000) {throw 'Setup deadline changed.'}
+        if ($scenario -cin @('wait-throws','wait-dispose-throws')) {throw 'wait-query-failed'}
+        return $scenario -cne 'timeout'
+    }
+    $child | Add-Member ScriptMethod Kill {$script:kills++;throw 'Installer must not be killed.'}
+    $child | Add-Member ScriptMethod Dispose {
+        $script:disposals++
+        if ($scenario -cin @('dispose-throws','wait-dispose-throws')) {throw 'dispose-failed'}
+    }
+    return $child
+}
+$setup='inert-setup-fixture';$restartCustodyUnresolved=$false
+foreach ($scenario in @('pass','exit-fails','timeout','start-throws','id-throws','wait-throws','exit-query-throws','dispose-throws','wait-dispose-throws')) {
+    $timings=@{stages=@{}};$script:SetupTransactionUnconfirmed=$false;$script:starts=0;$script:kills=0;$script:disposals=0
+    $caught=$null
+    try {Invoke-OwnedSetup '-install' 'fixture.log'} catch {$caught=$_}
+    if (($null -ne $caught) -ne ($scenario -cne 'pass')) {throw ('Setup verdict differs: '+$scenario)}
+    $stopped=$scenario -cin @('pass','exit-fails','dispose-throws')
+    if ($script:SetupTransactionUnconfirmed -eq $stopped -or $timings.stages['-install'].transactionStopped -ne $stopped) {throw ('Setup custody differs: '+$scenario)}
+    if ($script:kills -ne 0 -or $script:starts -ne 1 -or $script:disposals -ne $(if ($scenario -ceq 'start-throws') {0} else {1})) {throw 'Unexpected process lifecycle.'}
+    if ($scenario -ceq 'wait-dispose-throws' -and $caught.Exception.Message -notmatch 'wait-query-failed') {throw 'Disposal replaced the primary failure.'}
+    $cleanupBlocked=$false
+    try {. $cleanup} catch {$cleanupBlocked=$true}
+    if ($cleanupBlocked -eq $stopped) {throw 'Cleanup crossed unresolved transaction custody.'}
+    if (-not $stopped) {
+        $blocked=$false
+        try {Invoke-OwnedSetup '-uninstall' 'fixture.log'} catch {$blocked=$_.Exception.Message -ceq 'A prior setup transaction is unconfirmed; no overlapping installer was started.'}
+        if (-not $blocked -or $script:starts -ne 1 -or -not $timings.uninstallDeferredForSetupTransaction) {throw 'An overlapping transaction was admitted.'}
+    }
+}
+Write-Output 'SETUP_CUSTODY_9_PASS'
+`;
+  const result = spawnSync(
+    process.platform === "win32" ? "pwsh.exe" : "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    {
+      env: powershellEnvironment({
+        ACCEPTANCE_SOURCE: fileURLToPath(new URL("run-installed-acceptance.ps1", import.meta.url)),
+      }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30000,
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /SETUP_CUSTODY_9_PASS/u);
+});
+
 test("setup receives only installation environment while the controller retains credentials", (context) => {
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -773,7 +959,7 @@ if ($owner.Extent.Text.Split($launch).Count -ne 2) { throw 'Setup process bounda
 $setup = 'owned-setup-fixture'
 $timings = @{ stages = @{} }
 $allowed = @('SystemRoot','WINDIR','SystemDrive','COMSPEC','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA','ProgramData','ProgramFiles','ProgramFiles(x86)','CommonProgramFiles','CommonProgramFiles(x86)','PROCESSOR_ARCHITECTURE','PROCESSOR_ARCHITEW6432','NUMBER_OF_PROCESSORS','OS','PATH')
-$script:starts = 0; $script:waits = 0; $script:disposals = 0
+$script:starts = 0; $script:waits = 0; $script:disposals = 0; $script:SetupTransactionUnconfirmed=$false
 function Start-Fixture($Info) {
   $script:starts++
   if ($Info.FileName -cne $setup -or $Info.UseShellExecute -or -not $Info.CreateNoWindow) { throw 'Setup process options changed.' }
@@ -787,8 +973,8 @@ function Start-Fixture($Info) {
   if ($Info.Environment['TEMP'] -cne $env:TEMP -or $Info.Environment['USERPROFILE'] -cne $env:USERPROFILE) { throw 'Required installation environment was lost.' }
   $expectedPath = [Environment]::SystemDirectory + ';' + [Environment]::GetEnvironmentVariable('SystemRoot')
   if ($Info.Environment['PATH'] -cne $expectedPath) { throw 'Setup inherited executable search paths.' }
-  $process = [pscustomobject]@{ ExitCode = $exitCode }
-  $process | Add-Member ScriptMethod WaitForExit { $script:waits++ }
+  $process = [pscustomobject]@{ ExitCode = $exitCode; Id=123 }
+  $process | Add-Member ScriptMethod WaitForExit { param($milliseconds) if ($milliseconds -ne 1200000) {throw 'Unexpected setup deadline.'}; $script:waits++; return $true }
   $process | Add-Member ScriptMethod Dispose { $script:disposals++ }
   return $process
 }

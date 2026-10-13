@@ -129,7 +129,9 @@ if ($openClawRestart) {
 $timings = [ordered]@{ schemaVersion = 1; sourceRevision = $ArtifactSourceRevision; artifactSourceRevision = $ArtifactSourceRevision; controllerSourceRevision = $controllerSource; currentHeadQualification = ($ArtifactSourceRevision -ceq $controllerSource); mode = $Mode; measurement = 'fresh-runner-installed-preview'; agent = $Agent;
   validationScope = $ValidationScope; fullInstalledQualification = $false; migrationQualified = $false;
   hostPreparationRunBeforeInstall = $false; upgradeMeasured = $false; installTargetMilliseconds = 30000; installTargetSatisfied = $false; primaryException = $null; nativeRuntimeFailure = $null; compiledMsi = $build.compiledMsi; stages = [ordered]@{} }
+$script:SetupTransactionUnconfirmed = $false
 function Invoke-OwnedSetup([string]$Action, [string]$Log) {
+  if ($script:SetupTransactionUnconfirmed) { throw 'A prior setup transaction is unconfirmed; no overlapping installer was started.' }
   $info = [Diagnostics.ProcessStartInfo]::new()
   $info.FileName = $setup; $info.UseShellExecute = $false; $info.CreateNoWindow = $true
   # Installation and uninstall must not receive the controller's inference keys
@@ -142,9 +144,25 @@ function Invoke-OwnedSetup([string]$Action, [string]$Log) {
   $info.Environment['PATH'] = [Environment]::SystemDirectory + ';' + [Environment]::GetEnvironmentVariable('SystemRoot')
   foreach ($value in @($Action, '-quiet', '-norestart', '-log', $Log)) { $info.ArgumentList.Add($value) }
   $clock = [Diagnostics.Stopwatch]::StartNew()
-  $process = [Diagnostics.Process]::Start($info)
-  try { $process.WaitForExit(); $code = $process.ExitCode } finally { $process.Dispose() }
-  $timings.stages[$Action] = @{ elapsedMilliseconds = $clock.ElapsedMilliseconds; exitCode = $code }
+  $process = $null; $code = $null; $startedPid = $null; $setupFailure = $null
+  $script:SetupTransactionUnconfirmed = $true
+  try {
+    $process = [Diagnostics.Process]::Start($info)
+    $startedPid = $process.Id
+    if ($startedPid -isnot [int] -or $startedPid -le 0) { throw 'Setup process identity is unavailable.' }
+    if (-not $process.WaitForExit(1200000)) { throw 'Setup exceeded its 20-minute deadline; the live transaction was retained, not killed.' }
+    $code = $process.ExitCode
+    if ($code -isnot [int]) { throw 'Setup process exit status is unavailable.' }
+    $script:SetupTransactionUnconfirmed = $false
+  } catch { $setupFailure = $_ }
+  finally {
+    if ($null -ne $process) {
+      try { $process.Dispose() }
+      catch { if ($null -eq $setupFailure) { $setupFailure = $_ } else { Write-Warning 'The setup failure is preserved; its process handle also failed to close.' } }
+    }
+    $timings.stages[$Action] = @{ elapsedMilliseconds = $clock.ElapsedMilliseconds; exitCode = $code; processId = $startedPid; transactionStopped = -not $script:SetupTransactionUnconfirmed }
+  }
+  if ($null -ne $setupFailure) { throw $setupFailure }
   if ($code -ne 0) { throw "Finished preview $Action failed with status $code." }
 }
 function Assert-HermesCaseReceipt($Receipt, [string]$CaseName, $ColdReceipt) {
@@ -416,7 +434,11 @@ finally {
     }
   } catch { if ($null -eq $primary) { $primary = $_ } else { Write-Warning 'The original failure is preserved; installed counts also failed.' } }
   try {
-    if ($restartCustodyUnresolved) {
+    if ($restartCustodyUnresolved -or $script:SetupTransactionUnconfirmed) {
+      if ($script:SetupTransactionUnconfirmed) {
+        $timings['uninstallDeferredForSetupTransaction'] = $true
+        throw 'Setup transaction completion is unconfirmed; preserve the installation and do not start cleanup uninstall.'
+      }
       $timings['uninstallDeferredForRecovery'] = $true
       throw 'Selected-agent retained-state custody is unresolved; preserve the installation, data and credentials for recovery.'
     }
