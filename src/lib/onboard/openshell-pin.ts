@@ -229,7 +229,7 @@ export function prependInstalledUserLocalOpenshellPath(
 }
 
 /**
- * Execute `scripts/install-openshell.sh`, wiring in the blueprint-driven pin
+ * Execute the guarded product installer, wiring in the blueprint-driven pin
  * resolution and the host-side state updates onboard.ts cares about (binary
  * path, PATH augmentation, `OPENSHELL_BIN` cache). Lives in this submodule so
  * the top-level onboard entrypoint stays net-neutral (#3404 follow-up).
@@ -248,12 +248,16 @@ export function runOpenshellInstall(deps: RunOpenshellInstallDeps): OpenShellIns
   // for the whole download/verify (#4431). `inherit` keeps this call synchronous
   // (no async ripple into the onboard entrypoint) while the child writes straight
   // to the terminal in real time.
-  const result = spawnSync("bash", [path.join(deps.scriptsDir, "install-openshell.sh")], {
-    cwd: deps.cwd,
-    env: installEnv,
-    stdio: redirectInheritedChildStdoutToStderr(["ignore", "inherit", "inherit"]),
-    timeout: 300_000,
-  });
+  const result = spawnSync(
+    process.execPath,
+    [path.join(deps.scriptsDir, "lib", "install-openshell-for-nemoclaw.mts")],
+    {
+      cwd: deps.cwd,
+      env: installEnv,
+      stdio: redirectInheritedChildStdoutToStderr(["ignore", "inherit", "inherit"]),
+      timeout: 300_000,
+    },
+  );
   if (result.status !== 0) {
     return { installed: false, localBin: null, futureShellPathHint: null };
   }

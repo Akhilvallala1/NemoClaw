@@ -18,6 +18,7 @@ import {
   removeReviewedNpmArchive,
 } from "../../../scripts/lib/reviewed-npm-archive.mts";
 import { shellQuote } from "../../../src/lib/core/shell-quote";
+import { SUPPORTED_OPENSHELL_FALLBACK_VERSION } from "../../../src/lib/onboard/openshell-version";
 import {
   REVIEWED_GATEWAY_UPGRADE_FIXTURE,
   REVIEWED_GATEWAY_UPGRADE_FIXTURES,
@@ -87,7 +88,8 @@ const OLD_INSTALLER_SHA256 =
 const OLD_OPENSHELL_VERSION =
   process.env.NEMOCLAW_OLD_OPENSHELL_VERSION ??
   REVIEWED_GATEWAY_UPGRADE_FIXTURE_FOR_REF.openShellVersion;
-const CURRENT_OPENSHELL_VERSION = process.env.NEMOCLAW_CURRENT_OPENSHELL_VERSION ?? "0.0.116";
+const CURRENT_OPENSHELL_VERSION =
+  process.env.NEMOCLAW_CURRENT_OPENSHELL_VERSION ?? SUPPORTED_OPENSHELL_FALLBACK_VERSION;
 const OLD_SANDBOX_BASE_IMAGE_REF =
   process.env.NEMOCLAW_OLD_SANDBOX_BASE_IMAGE_REF ??
   REVIEWED_GATEWAY_UPGRADE_FIXTURE_FOR_REF.sandboxBaseImageRef;

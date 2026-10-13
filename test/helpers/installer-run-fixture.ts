@@ -231,8 +231,13 @@ fi`,
   });
 }
 
-/** Writes the package files that make a temporary root a source checkout. */
+/** Writes package identities and the product installer entrypoint for a source checkout. */
 export function writeSourceCheckoutPackages(root: string): void {
+  fs.mkdirSync(path.join(root, "scripts", "lib"), { recursive: true });
+  fs.copyFileSync(
+    path.join(REPO_ROOT, "scripts", "lib", "install-openshell-for-nemoclaw.mts"),
+    path.join(root, "scripts", "lib", "install-openshell-for-nemoclaw.mts"),
+  );
   fs.writeFileSync(
     path.join(root, "package.json"),
     JSON.stringify({ name: "nemoclaw", version: "0.1.0" }, null, 2),

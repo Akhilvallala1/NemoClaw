@@ -579,7 +579,6 @@ exit 0
 
       writeSourceCheckoutPackages(tmp);
 
-      fs.mkdirSync(path.join(tmp, "scripts"), { recursive: true });
       writeExecutable(
         path.join(tmp, "scripts", "install-openshell.sh"),
         `#!/usr/bin/env bash
@@ -1063,7 +1062,8 @@ if [ "\${1:-}" = "-C" ]; then
 fi
 if [ "$1" = "init" ]; then
   target="\${@: -1}"
-  mkdir -p "$target/nemoclaw" "$target/scripts"
+  mkdir -p "$target/nemoclaw" "$target/scripts/lib"
+  cp ${JSON.stringify(path.join(path.dirname(INSTALLER_PAYLOAD), "lib", "install-openshell-for-nemoclaw.mts"))} "$target/scripts/lib/"
   echo '{"name":"nemoclaw","version":"0.1.0","dependencies":{"openclaw":"2026.3.11"}}' > "$target/package.json"
   echo '{"name":"nemoclaw-plugin","version":"0.1.0"}' > "$target/nemoclaw/package.json"
   cat > "$target/scripts/install-openshell.sh" <<'EOS'

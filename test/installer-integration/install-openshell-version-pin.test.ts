@@ -333,6 +333,13 @@ function runVersionPinTarget(options: {
     const fakeBin = path.join(tmp, "bin");
     const downloadLog = path.join(tmp, "downloads.log");
     fs.mkdirSync(fakeBin);
+    fs.symlinkSync(process.execPath, path.join(fakeBin, "node"));
+    writeExecutable(
+      path.join(fakeBin, "mktemp"),
+      `#!/usr/bin/env bash
+if [ "$*" = "-d" ]; then exec /usr/bin/mktemp -d ${JSON.stringify(path.join(tmp, "install.XXXXXX"))}; fi
+exec /usr/bin/mktemp "$@"`,
+    );
     fs.writeFileSync(downloadLog, "");
 
     createFakeUname(fakeBin);
@@ -349,6 +356,9 @@ function runVersionPinTarget(options: {
         ...process.env,
         NEMOCLAW_OPENSHELL_CHANNEL: "stable",
         PATH: `${fakeBin}:/usr/bin:/bin`,
+        HOME: tmp,
+        XDG_CONFIG_HOME: path.join(tmp, "config"),
+        OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
       },
       encoding: "utf8",
       killSignal: "SIGKILL",
