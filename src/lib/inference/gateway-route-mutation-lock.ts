@@ -9,6 +9,7 @@ import {
   withMcpLifecycleLock,
   withMcpLifecycleLockSync,
 } from "../state/mcp-lifecycle-lock";
+import { resolveNemoclawStateDir } from "../state/paths";
 import { resolveSharedLocalAdapterStateRoot } from "./local-adapter-lifecycle";
 
 const GATEWAY_ROUTE_LOCK_PREFIX = "gateway-route:";
@@ -35,10 +36,15 @@ export function withOpenShellActiveGatewaySelectionLock<T>(
   operation: () => Promise<T> | T,
   options: McpLifecycleLockOptions = {},
 ): Promise<T> {
+  const testStateDir = process.env.NEMOCLAW_TEST_STATE_DIR;
+  const resolvedTestStateDir = resolveNemoclawStateDir();
+  // Active selection is host-wide across gateway-port instances, so production
+  // uses the shared root; only accept the guarded Vitest override for tests.
   const stateDir =
     options.stateDir ??
-    process.env.NEMOCLAW_TEST_STATE_DIR ??
-    resolveCurrentUserModelRouterLockStateDir();
+    (testStateDir !== undefined && resolvedTestStateDir === testStateDir
+      ? resolvedTestStateDir
+      : resolveCurrentUserModelRouterLockStateDir());
   return withMcpLifecycleLock(ACTIVE_GATEWAY_SELECTION_LOCK_NAME, operation, {
     ...options,
     stateDir,
