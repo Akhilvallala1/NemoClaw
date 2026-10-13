@@ -311,6 +311,11 @@ export function renderReadinessReport(report: Readonly<SystemReadinessReport>): 
     "Mutation performed: no",
   ];
 
+  const gpus = report.evidence.filter(({ id }) => /^host\.gpu\.device\.[0-9]+$/u.test(id));
+  if (gpus.length > 0) {
+    lines.push("GPUs:", ...gpus.map(({ summary }) => `- ${summary}`));
+  }
+
   if (report.findings.length === 0) {
     lines.push("Findings: none");
   } else {
