@@ -492,6 +492,10 @@ export async function executeSandboxDestroy({
       runtimeProviders,
     );
     const pendingCreateIdentity = sandbox?.pendingCreateIdentity;
+    const resolveEffectiveDeleteGatewayName = () =>
+      pendingCreateIdentity?.gatewayName ??
+      destroyRuntimeSelection?.gatewayName ??
+      deleteGatewayName;
     const expectedSandboxIdentityFingerprint =
       pendingCreateIdentity?.sandboxIdentityFingerprint ?? expectedContainerIdentityFingerprint;
     const expectedContainerProof: DestroyContainerIdentityProof = expectedRuntimeProviderIdentity
@@ -546,7 +550,7 @@ export async function executeSandboxDestroy({
           inspectOpenShellSandboxIdentityFingerprint;
         const liveFingerprint = inspectIdentity({
           sandboxName,
-          gatewayName: pendingCreateIdentity?.gatewayName ?? deleteGatewayName,
+          gatewayName: resolveEffectiveDeleteGatewayName(),
           ...(destroyRuntimeSelection ? { runtimeSelection: destroyRuntimeSelection } : {}),
         });
         if (
@@ -731,10 +735,7 @@ export async function executeSandboxDestroy({
       };
     }
     destroyRuntimeSelection = mcpPreparation.runtimeSelection;
-    const effectiveDeleteGatewayName =
-      pendingCreateIdentity?.gatewayName ??
-      destroyRuntimeSelection?.gatewayName ??
-      deleteGatewayName;
+    const effectiveDeleteGatewayName = resolveEffectiveDeleteGatewayName();
     const selectedRunOpenshell = createGatewayScopedDestroyRunner(
       runOpenshell,
       effectiveDeleteGatewayName,
