@@ -522,7 +522,14 @@ export function nativeLocalReservationStatus(input: {
   credentialEnv: string | null;
   preferredInferenceApi: string | null;
 }): "shared" | "exact" | "changed" {
-  if (!usesNativeLocalInferenceForAgent(input.agentName, input.provider, input.endpointUrl)) {
+  if (
+    !usesNativeLocalInferenceForAgent(
+      input.agentName,
+      input.provider,
+      input.endpointUrl,
+      input.provider === "vllm-local" && Boolean(input.entry.nimContainer),
+    )
+  ) {
     return "shared";
   }
   const attachment = normalizeNativeLocalProviderAttachment(

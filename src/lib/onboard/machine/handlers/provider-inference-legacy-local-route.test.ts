@@ -10,11 +10,23 @@ vi.mock("../../../state/registry", async (importOriginal) => ({
 }));
 
 import { createSession } from "../../../state/onboard-session";
+import { hasLegacySharedLocalInferenceRoute } from "../../../inference/selection";
 import type { SandboxEntry } from "../../../state/registry";
 import { handleProviderInferenceState } from "./provider-inference";
 import { baseOptions, createDeps } from "./provider-inference.test-support";
 
 describe("legacy local inference resume", () => {
+  it("keeps an owned Local NIM resume distinct from standalone vLLM", () => {
+    const recorded = {
+      agent: "openclaw",
+      provider: "vllm-local",
+      endpointUrl: "http://host.openshell.internal:8000/v1",
+      nimContainer: "nemoclaw-nim-owned",
+    };
+    expect(hasLegacySharedLocalInferenceRoute(recorded)).toBe(false);
+    expect(hasLegacySharedLocalInferenceRoute({ ...recorded, nimContainer: null })).toBe(true);
+  });
+
   it.each([
     ["openclaw", true],
     ["langchain-deepagents-code", true],

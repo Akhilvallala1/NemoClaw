@@ -1193,6 +1193,10 @@ function resolveMatchingAgentConfigTarget(
   return target;
 }
 
+function keepsLocalNimSharedRoute(entry: SandboxEntry, provider: string): boolean {
+  return provider === "vllm-local" && entry.provider === provider && Boolean(entry.nimContainer);
+}
+
 async function runInferenceSetWithoutHostLock(
   options: InferenceSetOptions,
   deps: InferenceSetDeps,
@@ -1285,6 +1289,7 @@ async function runInferenceSetWithoutHostLock(
     agentName,
     provider,
     options.endpointUrl ?? (entry.provider === provider ? entry.endpointUrl : null),
+    keepsLocalNimSharedRoute(entry, provider),
   );
   const selectingNative =
     selectingNativeLocal ||

@@ -379,6 +379,7 @@ export function retainedNativeLocalProviderAttachment(
   selection: Pick<InferenceSelection, "provider" | "endpointUrl"> & { gatewayName: string },
 ): SandboxEntry["nativeLocalProviderAttachment"] {
   return existing &&
+    !existing.nimContainer &&
     usesNativeLocalInference(selection.provider, selection.endpointUrl) &&
     selection.provider === existing.provider &&
     selection.endpointUrl === existing.endpointUrl &&

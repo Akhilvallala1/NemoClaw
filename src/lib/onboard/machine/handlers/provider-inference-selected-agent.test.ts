@@ -67,3 +67,45 @@ it.each(["pi", "hermes"])(
     );
   },
 );
+
+it.each(["openclaw", "langchain-deepagents-code"])(
+  "keeps selected %s Local NIM on its owned shared route",
+  async (name) => {
+    const { deps, calls } = createDeps();
+    calls.setupNim.mockResolvedValue({
+      ...baseSelection,
+      provider: "vllm-local",
+      model: "nim-model",
+      endpointUrl: "http://host.openshell.internal:8000/v1",
+      nimContainer: "nemoclaw-nim-owned",
+    });
+
+    await handleProviderInferenceState({
+      ...baseOptions(deps, createSession()),
+      sandboxName: "nim-sandbox",
+      agent: { name },
+    });
+
+    expect(calls.setupInference).toHaveBeenCalledOnce();
+    expect(calls.setupInference.mock.calls[0]?.[7]).toEqual(
+      expect.objectContaining({ agentName: name, localNimSelected: true }),
+    );
+    const policyFailure = new Error("native policy must not run for NIM");
+    const requireNativeProviderPolicy = vi.fn(async () => {
+      throw policyFailure;
+    });
+    const setup = createSetupInference({
+      getGatewayName: () => "nemoclaw",
+      getSandbox: () => ({ agent: name, nimContainer: "nemoclaw-nim-owned" }),
+      requireNativeProviderPolicy,
+      withSandboxMutationLock: (_name: string, operation: () => unknown) => operation(),
+      withGatewayRouteMutationLock: () => {
+        throw new Error("reached the existing shared route");
+      },
+    } as unknown as SetupInferenceDeps);
+    await expect(setup(...calls.setupInference.mock.calls[0]!)).rejects.toThrow(
+      "reached the existing shared route",
+    );
+    expect(requireNativeProviderPolicy).not.toHaveBeenCalled();
+  },
+);

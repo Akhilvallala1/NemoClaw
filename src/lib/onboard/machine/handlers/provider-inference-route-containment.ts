@@ -19,6 +19,7 @@ export interface ProviderInferenceRouteContainmentDeps {
 
 export type ProviderInferenceProbeRoute = Omit<GatewayInferenceRoute, "model"> & {
   model: string | null;
+  localNimSelected?: boolean;
 };
 
 function unconstrainedGatewayRouteDiscovery(): GatewayRouteDiscoveryConstraints {

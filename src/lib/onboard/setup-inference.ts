@@ -839,6 +839,8 @@ export function createSetupInference(
         (sandboxName ? deps.getSandbox?.(sandboxName)?.agent : undefined),
       provider,
       endpointUrl,
+      options.localNimSelected ??
+        Boolean(sandboxName && deps.getSandbox?.(sandboxName)?.nimContainer),
     );
     if (selectingNativeLocal)
       await (deps.requireNativeProviderPolicy ?? requireNativeProviderPolicy)(gatewayName);

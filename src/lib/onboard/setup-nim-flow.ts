@@ -1062,6 +1062,7 @@ export function createSetupNim(
         );
       const route = (): ProviderInferenceProbeRoute => ({
         provider: state.provider,
+        ...(state.localNimSelected ? { localNimSelected: true } : {}),
         model: typeof state.model === "string" && state.model.trim() ? state.model.trim() : null,
         endpointUrl: state.endpointUrl,
         preferredInferenceApi: effectiveInferenceApi(),
@@ -1385,6 +1386,7 @@ export function createSetupNim(
           break;
         } else if (selected.key === "nim-local") {
           const state = createSelectionState();
+          state.localNimSelected = true;
           const result = await deps.handleNimLocalSelection(
             gpu,
             { requestedModel, recoveredFromSandbox, recoveredModel },

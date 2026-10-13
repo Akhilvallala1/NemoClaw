@@ -52,4 +52,22 @@ describe("rebuild legacy local route preflight", () => {
     ).toBe(false);
     expect(bail).not.toHaveBeenCalled();
   });
+
+  it("preserves the existing Local NIM rebuild path without admitting standalone legacy vLLM", () => {
+    const bail = vi.fn((message: string): never => {
+      throw new Error(message);
+    });
+    const entry = {
+      name: "alpha",
+      createdAt: "2026-09-01T00:00:00Z",
+      agent: "openclaw",
+      provider: "vllm-local",
+      model: "local-model",
+      nimContainer: "nemoclaw-nim-owned",
+    } as RebuildSandboxEntry;
+    expect(blockRebuildOnLegacySharedLocalRoute("alpha", entry, bail)).toBe(false);
+    expect(() =>
+      blockRebuildOnLegacySharedLocalRoute("alpha", { ...entry, nimContainer: null }, bail),
+    ).toThrow("Legacy shared local inference cannot be rebuilt safely");
+  });
 });

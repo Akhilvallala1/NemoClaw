@@ -159,8 +159,10 @@ export function usesNativeLocalInferenceForAgent(
   agentName: string | null | undefined,
   provider: string | null | undefined,
   endpointUrl?: string | null,
+  localNimSelected = false,
 ): boolean {
   return (
+    !localNimSelected &&
     (agentName === "openclaw" || agentName === "langchain-deepagents-code") &&
     usesNativeLocalInference(provider, endpointUrl)
   );

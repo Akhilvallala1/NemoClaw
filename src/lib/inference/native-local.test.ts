@@ -154,6 +154,17 @@ describe("native local inference", () => {
     );
   });
 
+  it("keeps an owned Local NIM selection on the shared route while standalone vLLM is native", () => {
+    expect(usesNativeLocalInferenceForAgent("openclaw", "vllm-local", null)).toBe(true);
+    expect(usesNativeLocalInferenceForAgent("langchain-deepagents-code", "vllm-local", null)).toBe(
+      true,
+    );
+    expect(usesNativeLocalInferenceForAgent("openclaw", "vllm-local", null, true)).toBe(false);
+    expect(
+      usesNativeLocalInferenceForAgent("langchain-deepagents-code", "vllm-local", null, true),
+    ).toBe(false);
+  });
+
   it("restricts the selected bridge to models and chat requests (#12558)", () => {
     const profile = prepareNativeLocalProfile(binding);
     expect(profile.document.binaries).toContain("/usr/local/bin/openclaw");

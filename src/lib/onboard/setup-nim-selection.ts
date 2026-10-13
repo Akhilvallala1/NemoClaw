@@ -44,6 +44,8 @@ export type SetupNimSelectionState<THermesAuthMethod = unknown> = {
   compatibleEndpointReasoning?: string | null;
   compatibleEndpointReasoningEffort?: string | null;
   nimContainer: string | null;
+  /** Ephemeral selection identity before the owned NIM container is started. */
+  localNimSelected?: boolean;
   allowToolsIncompatible: boolean;
   /** Minimum Ollama daemon context length to request for this agent. */
   ollamaContextWindowFloor?: number;
@@ -109,6 +111,7 @@ export function applyCloudFallbackSelection(
   state.onModelSelected?.(cloudConfig.defaultModel, "product_catalog");
   state.preferredInferenceApi = null;
   state.nimContainer = null;
+  state.localNimSelected = false;
   state.allowToolsIncompatible = false;
   state.skipHostInferenceSmoke = false;
   state.reuseGatewayCredentialWithoutLocalKey = false;
