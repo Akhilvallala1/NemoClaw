@@ -21,6 +21,13 @@ vi.mock("./mcp-bridge", async (importOriginal) => ({
   }),
 }));
 
+vi.mock("../../state/registry/native-custom-provider-authority", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../state/registry/native-custom-provider-authority")
+  >()),
+  listNativeCustomProviderAuthorities: vi.fn(() => []),
+}));
+
 import { createInMemoryRuntimeProviderBundle } from "../../../../test/helpers/runtime-provider-bundle";
 import { llamaCppHostLocalInferenceReceipt } from "../../../../test/helpers/host-local-inference-receipt";
 import type { OpenShellRuntimeSelection } from "../../adapters/openshell/runtime-selection";
@@ -219,6 +226,9 @@ async function runDestroy(
         Parameters<typeof executeSandboxDestroy>[0]["deps"]
       >["hostLocalInferenceLifecycleOptions"]
     >;
+    listNativeCustomProviderAuthorities?: NonNullable<
+      Parameters<typeof executeSandboxDestroy>[0]["listNativeCustomProviderAuthorities"]
+    >;
   } = {},
 ) {
   const entry = options.entry ?? sandbox();
@@ -269,6 +279,9 @@ async function runDestroy(
     sandboxName: "alpha",
     stopInferenceResources,
     onMutationStarted,
+    ...(options.listNativeCustomProviderAuthorities
+      ? { listNativeCustomProviderAuthorities: options.listNativeCustomProviderAuthorities }
+      : {}),
     ...(options.mcpRuntimeSelection ? { mcpRuntimeSelection: options.mcpRuntimeSelection } : {}),
     runtimeProviders: { mxc: runtimeProvider.bundle },
     deps: {
@@ -299,6 +312,21 @@ async function runDestroy(
 }
 
 describe("sandbox destroy host-local inference transaction", () => {
+  it("reads native custom ownership before starting destroy mutations", async () => {
+    const runtimeProvider = provider();
+    const listNativeCustomProviderAuthorities = vi.fn(() => {
+      expect(runtimeProvider.events).toEqual(["runtime prepare destroy"]);
+      throw new Error("native ownership unavailable");
+    });
+
+    await expect(
+      runDestroy(runtimeProvider, { listNativeCustomProviderAuthorities }),
+    ).rejects.toThrow("native ownership unavailable");
+
+    expect(listNativeCustomProviderAuthorities).toHaveBeenCalledWith("nemoclaw", "alpha");
+    expect(runtimeProvider.events).toEqual(["runtime prepare destroy"]);
+  });
+
   function explicitLlamaReceipt(): HostLocalInferenceReceipt {
     const value = llamaCppHostLocalInferenceReceipt();
     return {

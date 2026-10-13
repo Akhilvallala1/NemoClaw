@@ -41,6 +41,7 @@ export type PrepareSandboxDockerfilePatchInput = {
   chatUiUrl: string;
   provider: string | null;
   endpointUrl?: string | null;
+  nativeProvider?: boolean;
   nativeCustomProviderAttachment?: import("../inference/native-custom").NativeCustomProviderAttachment;
   compatibleEndpointReasoning?: "true" | "false";
   preferredInferenceApi: string | null;
@@ -122,6 +123,7 @@ export async function prepareSandboxDockerfilePatch({
   chatUiUrl,
   provider,
   endpointUrl = null,
+  nativeProvider,
   nativeCustomProviderAttachment,
   compatibleEndpointReasoning,
   preferredInferenceApi,
@@ -232,6 +234,7 @@ export async function prepareSandboxDockerfilePatch({
           ? { wslDashboardExposure: managedOpenClawWslExposure }
           : {}),
         ...(endpointUrl ? { upstreamEndpointUrl: endpointUrl } : {}),
+        ...(nativeProvider !== undefined ? { nativeProvider } : {}),
         ...(nativeCustomProviderAttachment ? { nativeCustomProviderAttachment } : {}),
         ...(compatibleEndpointReasoning ? { compatibleEndpointReasoning } : {}),
         ...(dcodeAutoApprovalMode ? { dcodeAutoApprovalMode } : {}),

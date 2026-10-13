@@ -748,6 +748,13 @@ export async function executeSandboxDestroy({
       };
     }
     destroyRuntimeSelection = mcpPreparation.runtimeSelection;
+    const effectiveDeleteGatewayName =
+      pendingCreateIdentity?.gatewayName ??
+      destroyRuntimeSelection?.gatewayName ??
+      deleteGatewayName;
+    const hasNativeCustomOwnership =
+      sandbox?.nativeCustomProviderAttachment !== undefined ||
+      listCustomAuthorities(effectiveDeleteGatewayName, sandboxName).length > 0;
     const selectedRunOpenshell: DestroyRunOpenshell = destroyRuntimeSelection
       ? (args, options = {}) =>
           runOpenshell(args, {
@@ -950,10 +957,6 @@ export async function executeSandboxDestroy({
         mcpRecoveryFailure,
       };
     }
-    const effectiveDeleteGatewayName =
-      pendingCreateIdentity?.gatewayName ??
-      destroyRuntimeSelection?.gatewayName ??
-      deleteGatewayName;
     // A successful preflight absence is already the required OpenShell
     // lifecycle proof. Do not issue a later mutable-name delete that could
     // target a same-name replacement created after that observation.
@@ -1006,9 +1009,6 @@ export async function executeSandboxDestroy({
       }
     }
     const deleteFailed = deleteResult.kind === "failed" && !alreadyGone;
-    const hasNativeCustomOwnership =
-      sandbox?.nativeCustomProviderAttachment !== undefined ||
-      listCustomAuthorities(effectiveDeleteGatewayName, sandboxName).length > 0;
     // Exact MCP, native custom, host-local inference, and Portable lifecycle ownership must
     // survive an unconfirmed remote deletion. Force may discard only a local
     // record that retains none of those cleanup authorities.

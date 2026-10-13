@@ -36,6 +36,38 @@ const resolutionMetadata: SandboxBaseImageResolutionMetadata = {
 };
 
 describe("prepareSandboxDockerfilePatch", () => {
+  it.each([false, true])(
+    "preserves an explicit native-provider selection of %s",
+    async (nativeProvider) => {
+      const patchStagedDockerfile = vi.fn();
+
+      await prepareSandboxDockerfilePatch({
+        agent: null,
+        fromDockerfile: null,
+        sandboxBaseImage: "ghcr.io/nvidia/nemoclaw/sandbox-base",
+        sandboxBaseTag: "latest",
+        stagedDockerfile: "/tmp/Dockerfile",
+        model: "model-a",
+        chatUiUrl: "http://127.0.0.1:7000",
+        provider: "nvidia-prod",
+        nativeProvider,
+        preferredInferenceApi: "chat",
+        webSearchConfig: null,
+        hermesToolGateways: [],
+        sandboxGpuConfig,
+        deps: {
+          isLinuxDockerDriverGatewayEnabled: vi.fn(() => false),
+          isWsl: vi.fn(() => false),
+          enforceDockerGpuPatchPreserveNetwork: vi.fn(async () => false),
+          patchStagedDockerfile,
+          now: () => 1,
+        },
+      });
+
+      expect(patchStagedDockerfile.mock.calls[0]?.[11]).toMatchObject({ nativeProvider });
+    },
+  );
+
   it("keeps rebuild hints isolated per flow and lets fresh bypass reuse (#4680)", () => {
     const warmContext = createBaseImageResolutionContext({
       fresh: false,
