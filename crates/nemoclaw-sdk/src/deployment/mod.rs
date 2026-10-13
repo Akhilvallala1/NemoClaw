@@ -5,6 +5,7 @@
 mod tests;
 
 mod apply;
+mod context_advisory;
 mod export;
 mod opentofu;
 mod plan;
@@ -37,6 +38,10 @@ pub use timing::StepOutcome;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Progress {
+    /// An authored deployment condition that requires operator attention.
+    Warning {
+        message: String,
+    },
     /// A mutating OpenTofu subprocess has launched. Emitted synchronously once
     /// per launch, before child output; this does not prove any change completed.
     MutationStarted,
@@ -221,6 +226,9 @@ impl Deployment {
         document.validate()?;
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
+        }
+        for message in context_advisory::context_warnings(&document)? {
+            (self.progress)(Progress::Warning { message });
         }
         let (bundle, store) = self.open()?;
         let prior = store.load()?;

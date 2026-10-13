@@ -9,6 +9,7 @@ mod service_hardware;
 use crate::Error;
 pub use crate::services::placement::{ServicePlacement, ServicePublication};
 pub use config::{Memory, Model, Service, ServiceAuthentication, Serving};
+pub(crate) use container::DEFAULT_MEMORY_LIMIT_GIB;
 pub use container::{ServiceContainer, ServiceIpc};
 pub use hardware_profile::HardwareProfile;
 #[cfg(test)]
@@ -56,6 +57,11 @@ impl Service {
     }
 }
 
+/// The address of the service's model container resource.
+pub(crate) fn service_address(name: &str) -> String {
+    address(SERVICE_KIND, name)
+}
+
 fn address(kind: &str, name: &str) -> String {
     format!("nemoclaw_{kind}.inference_{name}")
 }
@@ -88,6 +94,7 @@ fn targets(
             "org.nemoclaw.inference.authentication".into(),
             "bearer-v1".into(),
         );
+        image_labels.insert("org.nemoclaw.inference.routes".into(), "openai-v2".into());
     }
     let placed = crate::services::placement::ResolvedPlacement::resolve(
         service.published_placement()?,
@@ -95,6 +102,7 @@ fn targets(
         service.serving.port,
     )?;
     let architecture = service.architecture()?.to_owned();
+    let resources = ServiceContainer::resources(service.container.as_ref());
     let process = Process {
         engine: placed.engine.clone(),
         image: service.image.clone(),
@@ -113,16 +121,10 @@ fn targets(
         mount_target: "/data".into(),
         bind_address: placed.bind_address,
         port: service.serving.port as u16,
-        shared_memory_bytes: service
-            .container
-            .as_ref()
-            .map_or(8, |container| container.shared_memory_gi_b)
-            * nemoclaw_runtime::hardware::GIB,
-        host_ipc: service
-            .container
-            .as_ref()
-            .is_some_and(|container| container.ipc == ServiceIpc::Host),
-        memory_bytes: 104 * nemoclaw_runtime::hardware::GIB,
+        shared_memory_bytes: resources.shared_memory_bytes,
+        host_ipc: resources.host_ipc,
+        cpu_limit_millis: resources.cpu_limit_millis,
+        memory_bytes: resources.memory_bytes,
         gpu: true,
     };
     let spec = Spec {

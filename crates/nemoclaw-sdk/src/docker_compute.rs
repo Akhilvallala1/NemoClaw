@@ -231,7 +231,33 @@ fn container(target: &Target) -> Result<Value, Error> {
     if process.gpu {
         attrs["gpus"] = json!("all");
     }
+    // Labels force replacement because Docker provider v4.6.0 updates limits in
+    // place: its Update omits CFS quota, and lowering memory on a running
+    // container can OOM-kill the model. Its `cpus` formatter also loses some
+    // fractions, so CPU uses an integer quota:
+    // https://github.com/kreuzwerker/terraform-provider-docker/blob/v4.6.0/internal/provider/resource_docker_container_funcs.go
+    if let Some(limit) = process.cpu_limit_millis {
+        attrs["cpu_period"] = json!(crate::managed::CPU_PERIOD_MICROS);
+        attrs["cpu_quota"] = json!(crate::managed::cpu_quota_micros(limit));
+        push_label(&mut attrs, "nemoclaw.nvidia.com/cpu-limit-millis", limit);
+    }
+    // Containers created before memory limits were configurable used the
+    // default and have no label; keep them unchanged.
+    let memory_gib = process.memory_bytes / nemoclaw_runtime::hardware::GIB;
+    if memory_gib != crate::services::installers::vllm::DEFAULT_MEMORY_LIMIT_GIB {
+        push_label(
+            &mut attrs,
+            "nemoclaw.nvidia.com/memory-limit-gib",
+            memory_gib,
+        );
+    }
     Ok(attrs)
+}
+fn push_label(attrs: &mut Value, label: &str, value: impl ToString) {
+    attrs["labels"]
+        .as_array_mut()
+        .expect("container attributes start with an owner label")
+        .push(json!({"label": label, "value": value.to_string()}));
 }
 pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> {
     let mut providers = BTreeMap::new();

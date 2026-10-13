@@ -3,8 +3,13 @@
 //! SDK integration tests, linked into one binary so the SDK links once.
 //! Each file is a module; helpers under support/ are shared by all of them.
 
+#[path = "support/bundle.rs"]
+mod bundle;
 #[path = "support/examples.rs"]
 mod examples;
+#[cfg(unix)]
+#[path = "../../test-support/executable.rs"]
+mod executable;
 #[path = "../../test-support/kube_api.rs"]
 mod kube_api;
 #[path = "support/kube_client.rs"]

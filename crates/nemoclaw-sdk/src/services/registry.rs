@@ -176,10 +176,47 @@ pub(crate) fn constrain_schema(
             "imagePullPolicy",
             serde_json::json!({"enum":["IfNotPresent", "Never"]}),
         );
+        if matches!(
+            service["properties"]["kind"]["const"].as_str(),
+            Some("vllm" | "ollama")
+        ) {
+            crate::config::schema::validation::property(
+                service,
+                "updatePolicy",
+                serde_json::json!({"default": super::ServiceUpdatePolicy::default()}),
+            );
+        }
     }
 }
 
 impl ServiceDefinition {
+    /// Context tokens a managed model serves; none for a proxy.
+    pub(crate) fn context_tokens(&self) -> Option<i64> {
+        match self {
+            Self::Ollama(service) => Some(service.serving.context_tokens),
+            Self::Vllm(service) => Some(service.serving.context_tokens),
+            Self::OllamaProxy(_) => None,
+        }
+    }
+
+    /// Update policy of a managed model; none for a proxy.
+    pub(crate) fn update_policy(&self) -> Option<super::ServiceUpdatePolicy> {
+        match self {
+            Self::Ollama(service) => Some(service.update_policy),
+            Self::Vllm(service) => Some(service.update_policy),
+            Self::OllamaProxy(_) => None,
+        }
+    }
+
+    /// Address of a managed model's container resource; none for a proxy.
+    pub(crate) fn model_address(&self, name: &str) -> Option<String> {
+        match self {
+            Self::Ollama(_) => Some(installers::ollama::service_address(name)),
+            Self::Vllm(_) => Some(installers::vllm::service_address(name)),
+            Self::OllamaProxy(_) => None,
+        }
+    }
+
     fn stage(&self) -> InstallStage {
         match self {
             Self::Ollama(_) | Self::Vllm(_) => InstallStage::Runtime,
@@ -196,6 +233,20 @@ impl ServiceDefinition {
     }
 
     fn validate_installation(&self, document: &Document) -> Result<(), ConfigError> {
+        let (container, preparation_memory) = match self {
+            Self::Vllm(service) => (
+                service.container.as_ref(),
+                service
+                    .recipe
+                    .as_ref()
+                    .map_or(0, |recipe| recipe.resources.preparation_memory_gi_b),
+            ),
+            Self::Ollama(service) => (service.container.as_ref(), 0),
+            Self::OllamaProxy(_) => (None, 0),
+        };
+        if let Some(container) = container {
+            container.validate_memory(preparation_memory)?;
+        }
         let gateway = &document.spec.gateway;
         let local_docker = gateway.as_local_managed().is_some_and(|gateway| {
             gateway.compute_driver == ComputeDriver::Docker

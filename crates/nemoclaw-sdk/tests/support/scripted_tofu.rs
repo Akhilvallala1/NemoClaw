@@ -13,17 +13,15 @@
 
 use nemoclaw_sdk::{
     CancellationToken, Deployment, ObservationError, Progress, Secrets, StepOutcome,
-    bundle::{Manifest, executable, hash_file, required_files},
-    compile::{Generations, OPENTOFU_VERSION, Target},
+    compile::{Generations, Target},
     config::Document,
     kubernetes::{GATEWAY_KIND, STORAGE_KIND, gateway::ADDRESS as HELM_RELEASE},
 };
 use serde_json::{Value, json};
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex},
 };
 
 /// `@CONTROL@` and `@STATE@` become the control directory and the state
@@ -63,82 +61,20 @@ case "$1" in
 esac
 "##;
 
-/// A bundle whose files verify; only `libexec/tofu` can execute. Adapted from
-/// `deployment.rs::write_bundle`, which keeps its own copy because it also runs
-/// on Windows. The SDK requires `rust` to be non-empty and `version` to be a
-/// semantic version, so these values need not match the toolchain or the
-/// workspace version.
-fn write_bundle(directory: &Path, script: &str) {
-    let mut manifest = Manifest {
-        version: "0.1.0".into(),
-        rust: "1.98.1".into(),
-        opentofu: OPENTOFU_VERSION.into(),
-        files: Default::default(),
-    };
-    let tofu = format!("libexec/{}", executable("tofu"));
-    for name in required_files(&manifest.version).unwrap() {
-        let path = directory.join(&name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        if name == tofu {
-            fs::write(&path, script).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        } else {
-            fs::write(&path, b"non-executable fixture").unwrap();
-        }
-        manifest.files.insert(name, hash_file(&path).unwrap());
-    }
-    fs::write(
-        directory.join("manifest.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
-}
-
-/// Run the script once. The kernel refuses to execute a file that any process
-/// holds open for writing, and a child that another thread forked while this
-/// one wrote the script keeps that descriptor until it executes something. After
-/// one successful run no writer remains.
-fn warm(tofu: &Path) {
-    for _ in 0..100 {
-        match std::process::Command::new(tofu).arg("init").output() {
-            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            result => {
-                result.expect(
-                    "cannot run the scripted tofu; is the temporary directory mounted noexec?",
-                );
-                return;
-            }
-        }
-    }
-    panic!("the scripted tofu stayed busy");
-}
-
-/// Scripted tests of one process run one at a time. `Deployment` holds a lock
-/// file for each operation, and a child that another thread forks while the lock
-/// is held keeps the lock until it executes, so a test's next operation can find
-/// the lock held. Nextest runs each test in its own process, where nothing
-/// waits here; `cargo test` runs them as threads of one process.
-static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-
 /// A temporary bundle with a scripted `tofu`, a control directory, and the path
 /// of a state directory that `Deployment` creates. A test creates one.
 pub struct Scripted {
-    _turn: MutexGuard<'static, ()>,
     _directory: tempfile::TempDir,
     root: PathBuf,
 }
 
 impl Scripted {
     pub fn new() -> Self {
-        let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
         let directory = tempfile::tempdir().unwrap();
         // The script compares its physical working directory with the state
         // directory, and a macOS temporary path traverses a symbolic link.
         let root = directory.path().canonicalize().unwrap();
         let scripted = Self {
-            _turn: turn,
             _directory: directory,
             root,
         };
@@ -154,9 +90,7 @@ impl Scripted {
         let script = SCRIPT
             .replace("@CONTROL@", &quoted(scripted.control()))
             .replace("@STATE@", &quoted(scripted.state()));
-        write_bundle(&scripted.bundle(), &script);
-        warm(&scripted.bundle().join("libexec").join(executable("tofu")));
-        let _ = fs::remove_file(scripted.control().join("calls"));
+        crate::bundle::write_bundle(&scripted.bundle(), Some(&script));
         scripted
     }
 

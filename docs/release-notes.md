@@ -30,6 +30,8 @@ It makes five changes:
 Deployment state uses `intent.json` format version 8.
 This NemoClaw rejects v1alpha1 documents and state written by an earlier NemoClaw without converting or adopting them; [re-author each document](migration.md#re-author-a-v1alpha1-document) and apply it as a separate deployment.
 
+Docker-managed vLLM and Ollama services default to [`updatePolicy: Preserve`](inference.md#set-container-limits-and-update-policy), which refuses an image, model, serving, or container-limit change that would replace a running container; set `spec.services.<name>.updatePolicy: Recreate` to permit the replacement and its downtime.
+
 ## Qualification and Known Issues
 
 See [current limits](limits.md) for what v1 does not do yet or has not tested, with the issue tracking each.

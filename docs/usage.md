@@ -101,7 +101,8 @@ Rootless operation requires an API that reports `pasta` networking, as required 
 Older APIs that omit this information fail during plan.
 The host must have a private IPv4 address on its default-route interface.
 OpenShell uses that address for sandbox-only callbacks while keeping its user API on loopback.
-Managed vLLM with Podman sandboxes still requires explicit SSH Docker placement and publication.
+Native managed inference on Podman remains unsupported.
+A Podman gateway can consume managed vLLM or Ollama through explicit SSH Docker placement and publication; see [remote services](remote-service.md).
 
 Podman's changing compatibility `/info.ID` is not a durable identity.
 Gateway bindings use the retained owned network UUID, volume creation identity, container ID, and persisted signing keys.
@@ -257,7 +258,8 @@ Use separate deployments when you need independent teardown.
 | External inference endpoint, provider implementation, or authenticated/anonymous mode | Changes a selected provider's profile and registration; changes to an existing sandbox's launch specification still require a separate deployment |
 | Harness adapter, sandbox image, agent identity, or provider attachments | Changes the immutable sandbox specification; apply refuses replacement; use a separate deployment with a fresh UID and state |
 | Sandbox network policy | Changes the sandbox specification; follow [policy change constraints](sandbox-network.md) and use a separate deployment when replacement is required |
-| Managed inference or proxy image or serving specification | Docker-provider reconciliation may replace the container while retaining its independently bound storage; review the plan and [model constraints](models.md) |
+| Managed vLLM or Ollama image, container limits, or serving specification | Replaces the Docker container. Service-level `updatePolicy: Preserve` blocks replacement of a running Docker container; set `Recreate` only when accepting sequential replacement and downtime. Review the plan, [container limits and update policy](inference.md#set-container-limits-and-update-policy), and [model constraints](models.md) |
+| Ollama proxy image or serving specification | Docker-provider reconciliation may replace the proxy container while retaining its independently bound credential storage |
 | Deployment UID, [bound gateway settings](#choose-the-gateway-target), or bound credentials | Cannot retarget the existing state; create a separate deployment |
 | Move from a NemoClaw that wrote `nemoclaw.nvidia.com/v1alpha1` documents and state | This NemoClaw rejects both without changing resources; keep the earlier bundle and state, and [re-author the document](migration.md#re-author-a-v1alpha1-document) for a separate deployment |
 | Remove an unused inference provider definition | Changes the desired document only; the SDK creates registrations for selected definitions, so unused definitions have no resources to delete |
