@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Bindings, observations, and the safe diagnostic categories backends report.
 
-use regex::Regex;
+use regex::{Captures, Regex, Replacer};
 use std::{fmt, sync::LazyLock};
 
 /// Identity that must survive refresh, independently of configuration drift.
@@ -246,6 +246,24 @@ static TOKENS: LazyLock<Regex> = LazyLock::new(|| {
 impl ObservationError {
     /// Bound backend diagnostics and remove credentials before they enter public errors.
     pub fn sanitized_detail(detail: &str) -> Box<str> {
+        Self::sanitize(detail, "[REDACTED]")
+    }
+
+    /// Preserve an exact non-secret resource name obtained from the request or
+    /// verified binding, never from the diagnostic. Credential fields remain redacted.
+    pub fn sanitized_resource_detail(detail: &str, resource_name: &str) -> Box<str> {
+        // Long generated object names resemble tokens. Only the caller's known
+        // name is exempt, after credential values have been removed.
+        Self::sanitize(detail, |token: &Captures<'_>| {
+            if &token[0] == resource_name {
+                resource_name
+            } else {
+                "[REDACTED]"
+            }
+        })
+    }
+
+    fn sanitize(detail: &str, tokens: impl Replacer) -> Box<str> {
         let printable: String = detail
             .chars()
             .map(|character| {
@@ -259,7 +277,7 @@ impl ObservationError {
         // Redact Bearer first: a key/value match alone would consume only the scheme.
         let hidden = BEARER.replace_all(&printable, "[REDACTED]");
         let hidden = CREDENTIALS.replace_all(&hidden, "[REDACTED]");
-        let hidden = TOKENS.replace_all(&hidden, "[REDACTED]");
+        let hidden = TOKENS.replace_all(&hidden, tokens);
         let mut result = hidden.split_whitespace().collect::<Vec<_>>().join(" ");
         if result.len() > 1024 {
             result.truncate(1021);
