@@ -79,6 +79,14 @@ function execute(
     ],
     input.timeoutMs,
     input.input,
+    ...(input.maxOutputBytes !== undefined || (input.input?.length ?? 0) > 1024 * 1024
+      ? [
+          {
+            maxInputBytes: Math.max(1, input.input?.length ?? 0),
+            maxOutputBytes: input.maxOutputBytes ?? 1024 * 1024,
+          },
+        ]
+      : []),
   );
   return Object.freeze({
     status: result.status,

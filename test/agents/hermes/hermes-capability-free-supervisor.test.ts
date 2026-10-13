@@ -36,6 +36,14 @@ with tempfile.TemporaryDirectory() as tmp:
             "Uid": "1000 1000 0 1000", "Gid": "1000 1000 0 1000",
             "Groups": "1000", "NoNewPrivs": "0", "NSpid": "2",
         }[scenario]
+    if scenario in ("bootstrap-primary-group", "runtime-bootstrap-primary-group"):
+        fields["Groups"] = "1000"
+    if scenario == "bootstrap-extra-group":
+        fields["Groups"] = "1000 1001"
+    if scenario == "bootstrap-root-group":
+        fields["Groups"] = "0"
+    if scenario == "bootstrap-repeated-group":
+        fields["Groups"] = "1000 1000"
     status = "".join(f"{key}:\t{value}\n" for key, value in fields.items())
     if scenario == "duplicate-field":
         status += "NoNewPrivs:\t1\n"
@@ -43,9 +51,9 @@ with tempfile.TemporaryDirectory() as tmp:
         status = status.replace("CapAmb:\t0000000000000000\n", "")
     bootstrap = b"/.openshell/channel/sandbox/bootstrap.json"
     argv = b"\0".join((guard.OPENSHELL_SUPERVISOR_ARGV0, b"launch-capability-free", b"1000", b"1000", bootstrap, b"/sandbox")) + b"\0"
-    if scenario == "bootstrap":
+    if scenario.startswith("bootstrap"):
         argv = guard.OPENSHELL_SUPERVISOR_ARGV0 + b"\0--bootstrap\0" + bootstrap + b"\0"
-    if scenario == "runtime-bootstrap":
+    if scenario.startswith("runtime-bootstrap"):
         argv = b"/.openshell/runtime/openshell-sandbox\0--bootstrap\0" + bootstrap + b"\0"
     if scenario == "argv":
         argv += b"foreign\0"
@@ -87,6 +95,11 @@ describe("Hermes capability-free supervisor authority", () => {
     ["rootless", true],
     ["bootstrap", true],
     ["runtime-bootstrap", true],
+    ["bootstrap-primary-group", true],
+    ["runtime-bootstrap-primary-group", true],
+    ["bootstrap-extra-group", false],
+    ["bootstrap-root-group", false],
+    ["bootstrap-repeated-group", false],
     ["argv", false],
     ["status-uid", false],
     ["status-gid", false],

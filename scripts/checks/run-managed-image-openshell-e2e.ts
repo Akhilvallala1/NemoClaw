@@ -49,6 +49,7 @@ import {
 } from "./generate-managed-startup-profile-fixture.mts";
 import {
   createManagedImageSandboxWithDiagnostics,
+  isManagedImageHarnessWorkload,
   isManagedImageLocalInferenceKind,
   managedImageFailureDetail,
   type ManagedImageLocalInferenceKind,
@@ -381,9 +382,13 @@ function commandDetail(result: ManagedImageCommandResult): string {
     .slice(-8_000);
 }
 
-function printExactContainerFailureState(containerId: string | null, env: NodeJS.ProcessEnv): void {
+export function printExactContainerFailureState(
+  containerId: string | null,
+  env: NodeJS.ProcessEnv,
+  runCommand: ManagedImageCommandRunner = commandResult,
+): void {
   if (!containerId || !/^[a-f0-9]{64}$/u.test(containerId)) return;
-  const state = commandResult(
+  const state = runCommand(
     [
       "docker",
       "container",
@@ -398,7 +403,7 @@ function printExactContainerFailureState(containerId: string | null, env: NodeJS
   console.error(
     `Managed-image exact container state: ${managedImageFailureDetail(commandDetail(state))}`,
   );
-  const processState = commandResult(
+  const processState = runCommand(
     [
       "docker",
       "exec",
@@ -414,6 +419,38 @@ function printExactContainerFailureState(containerId: string | null, env: NodeJS
   );
   console.error(
     `Managed-image exact container processes: ${managedImageFailureDetail(commandDetail(processState))}`,
+  );
+  // The canonical process can exit while OpenShell PID 1 stays alive. Read only
+  // its fixed diagnostic logs as the sandbox owner before fixture cleanup.
+  const startupLogs = runCommand(
+    [
+      "docker",
+      "exec",
+      "--user",
+      "sandbox",
+      containerId,
+      "/usr/local/bin/node",
+      "-e",
+      `const fs = require("node:fs");
+for (const file of ["/tmp/nemoclaw-start.log", "/tmp/gateway.log", "/tmp/dashboard.log"]) {
+  let fd;
+  process.stdout.write(file + "\\n");
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > 262144) throw new Error("unsafe or oversized log");
+    const bytes = Buffer.alloc(Math.min(stat.size, 262144));
+    const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    process.stdout.write(bytes.subarray(0, count));
+  } catch { process.stdout.write("diagnostic log unavailable\\n"); }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+}`,
+    ],
+    env,
+    5_000,
+  );
+  console.error(
+    `Managed-image startup logs (bounded): ${managedImageFailureDetail(`${startupLogs.error?.message ?? ""}\n${startupLogs.stdout ?? ""}\n${startupLogs.stderr ?? ""}`, env)}`,
   );
 }
 
@@ -901,12 +938,14 @@ export function managedImageHarnessContainerListArgs(
     "label=openshell.ai/managed-by=openshell",
     "--filter",
     `label=openshell.ai/sandbox-name=${sandbox}`,
+    "--filter",
+    "label=openshell.ai/isolation-role=sandbox",
   ];
 }
 
 function exactHarnessContainerIds(
   input: Inputs,
-  networkName: string,
+  stateDir: string,
   env: NodeJS.ProcessEnv,
   includeStopped = true,
   runCommand: ManagedImageCommandRunner = commandResult,
@@ -928,14 +967,15 @@ function exactHarnessContainerIds(
       const records = JSON.parse(String(inspect.stdout ?? "")) as Array<{
         Config?: { Labels?: Record<string, string> };
         Image?: string;
-        NetworkSettings?: { Networks?: Record<string, unknown> };
+        HostConfig?: { NetworkMode?: string };
       }>;
       const record = records.length === 1 ? records[0] : undefined;
       if (
-        record?.Config?.Labels?.["openshell.ai/managed-by"] === "openshell" &&
-        record.Config.Labels["openshell.ai/sandbox-name"] === input.sandbox &&
-        record.Image === expectedContentId &&
-        Object.hasOwn(record.NetworkSettings?.Networks ?? {}, networkName)
+        isManagedImageHarnessWorkload(record, {
+          sandbox: input.sandbox,
+          stateDir,
+          imageContentId: expectedContentId,
+        })
       ) {
         exactIds.push(candidate);
       }
@@ -948,14 +988,16 @@ function exactHarnessContainerIds(
 
 export function assertExactSandboxImage(
   input: Inputs,
-  networkName: string,
+  stateDir: string,
   env: NodeJS.ProcessEnv,
   runCommand: ManagedImageCommandRunner = commandResult,
 ): string {
   // A managed-bootstrap transaction keeps its stopped rollback backup until
   // commit. Qualify the one running replacement here; rollback cleanup below
   // continues to inspect every stopped and running container.
-  const resolved = exactHarnessContainerIds(input, networkName, env, false, runCommand);
+  // OpenShell 0.1.2 separates supervisor and workload containers and puts the
+  // workload on network=none. Bind ownership to our private gateway namespace.
+  const resolved = exactHarnessContainerIds(input, stateDir, env, false, runCommand);
   if (resolved.candidateCount !== 1 || resolved.exactIds.length !== 1) {
     throw new Error(
       `OpenShell did not launch exactly one running harness-owned PR image container: found ${resolved.candidateCount} running labeled and ${resolved.exactIds.length} running exact`,
@@ -1310,7 +1352,7 @@ async function run<T extends ManagedImageOpenShellE2eLocalInferenceEvidence = ne
         );
       }
 
-      ownedContainerId = assertExactSandboxImage(input, networkName, launch.sandboxEnv);
+      ownedContainerId = assertExactSandboxImage(input, stateDir, launch.sandboxEnv);
       const sandbox = onboard.runOpenshell(["sandbox", "get", input.sandbox], {
         ignoreError: true,
         env: launch.sandboxEnv,
@@ -1444,7 +1486,7 @@ async function run<T extends ManagedImageOpenShellE2eLocalInferenceEvidence = ne
       }
     }
     try {
-      const resolved = exactHarnessContainerIds(input, networkName, process.env);
+      const resolved = exactHarnessContainerIds(input, stateDir, process.env);
       const cleanupContainerId =
         resolved.exactIds.length === 1 ? (resolved.exactIds[0] ?? null) : null;
       if (cleanupContainerId) {

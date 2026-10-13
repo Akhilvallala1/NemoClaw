@@ -554,7 +554,7 @@ describe("created sandbox identity gate", () => {
         `${NEMOCLAW_CREATE_ATTEMPT_LABEL}=${nonce}`,
         "--output",
         "json",
-        "--limit",
+        "--page-size",
         "2",
       ],
       {
@@ -877,7 +877,7 @@ describe("created sandbox identity gate", () => {
           `${NEMOCLAW_CREATE_ATTEMPT_LABEL}=${nonce}`,
           "--output",
           "json",
-          "--limit",
+          "--page-size",
           "2",
         ].join("\0")]: () => {
           events.push("selector-settled");

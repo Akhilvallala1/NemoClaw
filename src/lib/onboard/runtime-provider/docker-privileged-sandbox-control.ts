@@ -21,6 +21,7 @@ import {
 } from "./privileged-sandbox-control-errors";
 import { selectDockerPrivilegedSandboxTarget } from "./docker-privileged-sandbox-identity";
 import { createDockerOperationAuthority } from "./docker-operation-authority";
+import { prepareManagedWorkspaceMetadata } from "./managed-workspace-metadata";
 import {
   clearStoppedNativeHomeWithEngine,
   clearStoppedSandboxStateWithEngine,
@@ -175,8 +176,9 @@ function resolveDockerTarget(
 
 function executeDockerCommand(
   input: RuntimeProviderPrivilegedSandboxCommandInput,
+  sandboxUser?: string,
 ): RuntimeProviderPrivilegedSandboxCommandResult {
-  const argv = buildLegacyDockerArgv(input);
+  const argv = buildLegacyDockerArgv(input, sandboxUser);
   const result = dockerSpawnSync(argv, {
     encoding: null,
     input: input.input,
@@ -195,6 +197,7 @@ function executeDockerCommand(
 
 function buildLegacyDockerArgv(
   input: Omit<RuntimeProviderPrivilegedSandboxCommandInput, "timeoutMs">,
+  sandboxUser?: string,
 ): string[] {
   const portable = portableTarget(input.sandboxName, input.sandbox);
   const target = portable
@@ -217,7 +220,7 @@ function buildLegacyDockerArgv(
     ...(input.input ? ["-i"] : []),
     ...environment,
     "--user",
-    portable ? "0" : "root",
+    sandboxUser ?? (portable ? "0" : "root"),
     target,
     ...input.command,
   ];
@@ -328,8 +331,48 @@ function clearStoppedNativeHome(input: RuntimeProviderStoppedNativeHomeCleanupIn
 
 export function createDockerPrivilegedSandboxControl(): RuntimeProviderPrivilegedSandboxControl {
   return Object.freeze({
+    prepareManagedStartupWorkspace: (
+      input: Parameters<
+        NonNullable<RuntimeProviderPrivilegedSandboxControl["prepareManagedStartupWorkspace"]>
+      >[0],
+    ) =>
+      prepareManagedWorkspaceMetadata(input.workspace, {
+        execute: (command) =>
+          executeDockerCommand({
+            ...input,
+            command,
+            sanitizeEnvironment: true,
+            maxOutputBytes: 4096,
+          }),
+        copyDirectory: (archive) => {
+          const target = resolvePinnedDockerTarget(input, input.expectedResourceHandle);
+          // Do not pass -a: Docker then substitutes Config.User for archive ownership.
+          const result = dockerSpawnSync(["cp", "-", `${target}:/`], {
+            encoding: null,
+            input: archive,
+            maxBuffer: 4096,
+            stdio: ["pipe", "pipe", "pipe"],
+            timeout: input.timeoutMs,
+          });
+          return {
+            ...result,
+            stdout: Buffer.from(result.stdout ?? ""),
+            stderr: Buffer.from(result.stderr ?? ""),
+          };
+        },
+      }),
     resolveTarget: resolveDockerTarget,
     execute: executeDockerCommand,
+    // Capability-free root cannot remove private sandbox-owned native state.
+    // Retain the same target checks and sanitized transport for its owner.
+    executeAsSandboxUser: (
+      input: RuntimeProviderPrivilegedSandboxCommandInput & { readonly sandboxUser: string },
+    ) => {
+      if (!/^[1-9][0-9]{0,9}:[1-9][0-9]{0,9}$/u.test(input.sandboxUser)) {
+        throw new Error("Docker sandbox-user cleanup requires a non-root numeric UID and GID.");
+      }
+      return executeDockerCommand(input, input.sandboxUser);
+    },
     clearStoppedStateRoots,
     clearStoppedNativeHome,
     buildLegacyDockerArgv,

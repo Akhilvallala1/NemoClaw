@@ -240,7 +240,7 @@ export function observeCreatedOpenShellSandboxId(
         `${NEMOCLAW_CREATE_ATTEMPT_LABEL}=${input.createAttemptNonce}`,
         "--output",
         "json",
-        "--limit",
+        "--page-size",
         "2",
       ],
       {

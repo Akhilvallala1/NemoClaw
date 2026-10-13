@@ -703,7 +703,7 @@ describe("LangChain Deep Agents Code image contracts", () => {
           quickjsImagePath?.startsWith(`${root}/`),
         ),
       ).toBe(true);
-      expect(defaultPolicy.landlock).toMatchObject({ compatibility: "strict" });
+      expect(defaultPolicy.landlock).toMatchObject({ compatibility: "hard_requirement" });
 
       const githubBinaries = policyBinaryPaths(defaultPolicy, "github");
       expect(githubBinaries).toEqual(

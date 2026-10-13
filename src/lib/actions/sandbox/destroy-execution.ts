@@ -193,6 +193,7 @@ export function wipeAgentNativeHome(
     '  for keep in "$@"; do [ "${keep#"$candidate"/}" = "$keep" ] || return 0; done',
     "  return 1",
     "}",
+    "cleanup_failed=0",
     "clean_dir() {",
     "  local directory entry",
     '  directory="$1"; shift',
@@ -206,7 +207,7 @@ export function wipeAgentNativeHome(
     "      fi",
     '      clean_dir "$entry" "$@"',
     "    else",
-    '      rm -rf -- "$entry"',
+    '      if ! rm -rf -- "$entry"; then cleanup_failed=1; fi',
     "    fi",
     "  done",
     "}",
@@ -225,6 +226,7 @@ export function wipeAgentNativeHome(
     "  done",
     "}",
     'clean_dir "$root" "$@"',
+    'if [ "$cleanup_failed" != 0 ]; then exit 1; fi',
     'if ! verify_dir "$root" "$@"; then',
     '  echo "agent native root retains sandbox-owned state" >&2',
     "  exit 22",
@@ -255,7 +257,8 @@ export function wipeAgentNativeHome(
       throw error;
     }
     // Deep Agents' native tree contains both sandbox-owned state and root-owned
-    // managed files. Rootless Podman cannot always remove the former as root.
+    // managed files. Capability-free engines cannot remove owner-private state
+    // as root. The root pass must still visit all entries before reporting failure.
     // Complete the same validated wipe as the image's pinned sandbox user.
     if (
       agentName === "langchain-deepagents-code" &&

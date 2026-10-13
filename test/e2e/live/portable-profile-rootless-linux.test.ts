@@ -69,12 +69,11 @@ import {
   installPortableProfileSystemctlShim,
 } from "../fixtures/portable-profile-systemctl.ts";
 import type { TestProgress } from "../fixtures/progress.ts";
+import { runSandboxTokenContainerProbe } from "./openshell-gateway-auth-probe.ts";
 import {
-  getSandboxConfigRequest,
-  mintSandboxJwt,
-  runSandboxTokenContainerProbe,
-} from "./openshell-gateway-auth-probe.ts";
-import { verifyPinnedPodmanGatewayStarts } from "./portable-profile-gateway-proof.ts";
+  recordPortableSandboxDiagnostics,
+  verifyPinnedPodmanGatewayStarts,
+} from "./portable-profile-gateway-proof.ts";
 
 const gatewayEnvModule = (
   "default" in importedGatewayEnv && importedGatewayEnv.default
@@ -669,6 +668,11 @@ async function proveHistoricalHermesPortableLifecycle(input: {
       readyCheckOutputPatterns: [/Setting up NemoClaw/u],
       waitForReadyTermination: true,
     },
+  );
+  recordPortableSandboxDiagnostics(
+    input.runtimeAuthority.socketPath,
+    sandboxName,
+    createResult.status,
   );
   requireOpenShellResult(
     {
@@ -1275,17 +1279,12 @@ async function main(progress: TestProgress): Promise<void> {
       waitForOpenShellGateway(openshellBin, openshellClientEnv);
 
       progress.phase("verify distinct same-network routes");
-      const sandboxId = "portable-e2e";
-      const sandboxToken = mintSandboxJwt({
-        configPath: gatewayEnv.OPENSHELL_GATEWAY_CONFIG,
-        sandboxId,
-      });
       const gatewayProbe = runSandboxTokenContainerProbe({
-        authorization: `Bearer ${sandboxToken}`,
         dockerBin: "podman",
+        grpcPath: "/openshell.v1.OpenShell/Health",
         hostGatewayIp: PORTABLE_HOST_GATEWAY_IP,
         networkName: PORTABLE_DOCKER_NETWORK_NAME,
-        payload: getSandboxConfigRequest(sandboxId),
+        payload: Buffer.alloc(0),
         port: 8080,
         stateDir,
       });
@@ -1295,8 +1294,7 @@ async function main(progress: TestProgress): Promise<void> {
         httpStatus?: number;
       };
       assert.equal(gatewayResult.httpStatus, 200);
-      assert.ok(gatewayResult.grpcStatus);
-      assert.ok(!["7", "16"].includes(gatewayResult.grpcStatus));
+      assert.equal(gatewayResult.grpcStatus, "0");
 
       const registryRouteProof = [
         `exec 3<>/dev/tcp/${PORTABLE_REGISTRY_IP}/5000`,

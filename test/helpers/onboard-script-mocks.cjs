@@ -673,7 +673,7 @@ function createCreatedSandboxFixture(options = {}) {
         !exactArgs[5].startsWith(prefix) ||
         exactArgs[6] !== "--output" ||
         exactArgs[7] !== "json" ||
-        exactArgs[8] !== "--limit" ||
+        exactArgs[8] !== "--page-size" ||
         exactArgs[9] !== "2"
       ) {
         return null;

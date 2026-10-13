@@ -11,6 +11,7 @@ import YAML from "yaml";
 import { getDockerDriverGatewayLocalTlsBundle } from "../../../dist/lib/onboard/docker-driver-gateway-local-tls";
 import type { ArtifactSink } from "../fixtures/artifacts.ts";
 import type { CleanupRegistry } from "../fixtures/cleanup.ts";
+import { externalGatewayHealthConfig } from "../fixtures/external-gateway-health-config.ts";
 import {
   externalGatewayHealthProcessStopped,
   stopExternalGatewayHealthGateway,
@@ -241,28 +242,7 @@ export async function startPreparedExternalTlsGateway({
   );
   requireProbeSuccess(certificate, "OpenShell gateway certificate generation");
   const configPath = path.join(stateDir, "gateway.toml");
-  fs.writeFileSync(
-    configPath,
-    [
-      "[openshell]",
-      "version = 1",
-      "",
-      "[openshell.gateway]",
-      `bind_address = "${address}:${String(port)}"`,
-      "compute_drivers = []",
-      "disable_tls = false",
-      "",
-      "[openshell.gateway.tls]",
-      `cert_path = ${JSON.stringify(tls.serverCertPath)}`,
-      `key_path = ${JSON.stringify(tls.serverKeyPath)}`,
-      "require_client_auth = false",
-      "",
-      "[openshell.gateway.auth]",
-      "allow_unauthenticated_users = true",
-      "",
-    ].join("\n"),
-    { mode: 0o600 },
-  );
+  fs.writeFileSync(configPath, externalGatewayHealthConfig(address, port, tls), { mode: 0o600 });
 
   progress.phase("launch a TLS gateway without client-certificate authentication");
   let gatewayOutput = "";

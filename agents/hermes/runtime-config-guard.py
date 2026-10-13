@@ -572,6 +572,15 @@ def _capability_free_supervisor_matches(
                 observed[name] = value.split()
     except UnicodeDecodeError:
         return False
+    # The 0.1.2 Docker driver preserves the named OCI user's primary group
+    # membership. The trusted rootless launcher instead clears supplementary
+    # groups. A duplicate primary group grants no authority beyond the exact
+    # Gid already required; do not admit other groups or relax launcher checks.
+    if (
+        cmdline != b"\0".join(rootless_argv) + b"\0"
+        and observed.get("Groups") == [str(sandbox.pw_gid)]
+    ):
+        expected_fields["Groups"] = [str(sandbox.pw_gid)]
     return observed == expected_fields
 
 
