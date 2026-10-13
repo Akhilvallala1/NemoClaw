@@ -110,6 +110,12 @@ export function resolveSandboxDestroyGatewayName(
   retainedRecoveryGatewayName?: string,
 ): string {
   const registeredGatewayName = sandbox ? getPersistedSandboxTargetGatewayName(sandbox) : null;
+  const pendingCreateGatewayName = sandbox?.pendingCreateIdentity?.gatewayName;
+  if (sandbox?.pendingCreateIdentity && pendingCreateGatewayName !== registeredGatewayName) {
+    throw new Error(
+      `Refusing to destroy sandbox '${sandboxName}': pending create gateway '${pendingCreateGatewayName}' does not match registered gateway '${registeredGatewayName}'.`,
+    );
+  }
   if (
     retainedRecoveryGatewayName &&
     registeredGatewayName &&

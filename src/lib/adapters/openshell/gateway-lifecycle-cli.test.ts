@@ -193,11 +193,6 @@ describe("gateway lifecycle CLI", () => {
       { name: "a", active: false },
       { name: "a", active: false },
     ],
-    [
-      { name: "a", active: true },
-      { name: "b", active: true },
-    ],
-    [{ name: "a", active: "true" }],
   ])("rejects malformed registry %j", async (registry) => {
     const capture = vi.fn().mockResolvedValue({ status: 0, output: JSON.stringify(registry) });
     expect(
@@ -205,43 +200,16 @@ describe("gateway lifecycle CLI", () => {
     ).toMatchObject({ ok: false, error: { kind: "schema" } });
   });
 
-  it("returns null when a valid registry has no active gateway", async () => {
+  it("returns validated gateway names without parsing active selection", async () => {
     const capture = vi.fn().mockResolvedValue({
       status: 0,
-      output: '[{"name":"nemoclaw","active":false}]',
-    });
-    await expect(
-      createCliOpenShellGatewayLifecycle(capture).listGateways({ target }),
-    ).resolves.toEqual({
-      ok: true,
-      names: ["nemoclaw"],
-      activeGateway: null,
-    });
-  });
-
-  it("keeps registry names but leaves selection unknown when active flags are missing", async () => {
-    const capture = vi.fn().mockResolvedValue({
-      status: 0,
-      output: '[{"name":"nemoclaw","active":true},{"name":"nemoclaw-8091"}]',
+      output: '[{"name":"nemoclaw","active":false},{"name":"nemoclaw-8091","active":"untrusted"}]',
     });
     await expect(
       createCliOpenShellGatewayLifecycle(capture).listGateways({ target }),
     ).resolves.toEqual({
       ok: true,
       names: ["nemoclaw", "nemoclaw-8091"],
-      activeGateway: undefined,
-    });
-  });
-
-  it("returns validated registry identities and the active gateway", async () => {
-    const capture = vi.fn().mockResolvedValue({
-      status: 0,
-      output: '[{"name":"nemoclaw","active":false},{"name":"nemoclaw-8091","active":true}]',
-    });
-    expect(await createCliOpenShellGatewayLifecycle(capture).listGateways({ target })).toEqual({
-      ok: true,
-      names: ["nemoclaw", "nemoclaw-8091"],
-      activeGateway: "nemoclaw-8091",
     });
   });
   it("reads buffered runner streams and reports invalid capture without retry", async () => {

@@ -6,8 +6,24 @@ import {
   createDestroyHarness,
   resetDestroyModuleCache,
 } from "../../../../test/helpers/destroy-flow-test-harness";
+import { resolveSandboxDestroyGatewayName } from "./destroy-preflight";
 
 describe("destroy preflight runtime selection", () => {
+  it("refuses conflicting pending-create and registry gateway authority", () => {
+    const sandbox = {
+      name: "alpha",
+      gatewayName: "nemoclaw-19080",
+      gatewayPort: 19080,
+      pendingCreateIdentity: {
+        gatewayName: "nemoclaw",
+        gatewayPort: 8080,
+      },
+    } as Parameters<typeof resolveSandboxDestroyGatewayName>[1];
+
+    expect(() => resolveSandboxDestroyGatewayName("alpha", sandbox)).toThrow(
+      /pending create gateway 'nemoclaw' does not match registered gateway 'nemoclaw-19080'/u,
+    );
+  });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();

@@ -8,8 +8,8 @@
  * allocation, port-scoped `nemoclaw list`, OpenShell sandbox discovery, host
  * socket probes, and selected-instance uninstall/health cleanup. This case also
  * owns cross-gateway destroy survival: destroy sandbox B with both gateway
- * cleanup policies, then stop/start A through OpenShell and verify its dashboard
- * forward. Unit and CLI tests cover command routing but cannot observe these real
+ * cleanup policies, then use the ordinary NemoClaw CLI to stop/start A and verify
+ * its dashboard forward. Unit and CLI tests cannot observe these real
  * gateway processes or host forwards.
  */
 
@@ -307,6 +307,7 @@ async function probeSurvivorDashboard(
 }
 
 async function stopStartSurvivor(
+  host: HostCliClient,
   sandbox: SandboxClient,
   sandboxName: string,
   gatewayName: string,
@@ -316,14 +317,14 @@ async function stopStartSurvivor(
   readonly start: ShellProbeResult;
   readonly phase: string;
 }> {
-  const stop = await sandbox.openshell(["sandbox", "stop", "-g", gatewayName, sandboxName], {
+  const stop = await command(host, [sandboxName, "stop"], {
     artifactName: `${artifactPrefix}-stop`,
-    env: openshellEnvForGateway(gatewayName),
+    env: commandEnv(),
     timeoutMs: 120_000,
   });
-  const start = await sandbox.openshell(["sandbox", "start", "-g", gatewayName, sandboxName], {
+  const start = await command(host, [sandboxName, "start"], {
     artifactName: `${artifactPrefix}-start`,
-    env: openshellEnvForGateway(gatewayName),
+    env: commandEnv(),
     timeoutMs: 120_000,
   });
   const phase = await waitForSandboxReady(
@@ -768,6 +769,7 @@ test(
       `destroy=${resultText(destroyBWithGatewayCleanup)}; gateway B=${resultText(gatewayBStoppedAfterCleanupDestroy)}; gateway A before=${gatewayAProcessBeforeCleanupDestroy}; gateway A after=${gatewayAProcessAfterCleanupDestroy}; survivor port=${resultText(liveSurvivorAfterCleanupDestroy.gatewayPort)}; list=${resultText(liveSurvivorAfterCleanupDestroy.scopedList)}; dashboard=${liveSurvivorAfterCleanupDestroy.dashboard.map(resultText).join("\\n")}`,
     ).toBe(true);
     const survivorRestartAfterCleanupDestroy = await stopStartSurvivor(
+      host,
       sandbox,
       SANDBOX_A,
       gatewayA,
@@ -871,6 +873,7 @@ test(
       `destroy=${resultText(destroyBWithoutGatewayCleanup)}; gateway B=${resultText(gatewayBRetainedAfterDestroy)}; sandbox B=${resultText(sandboxBAfterRetainedDestroy)}; gateway A=${gatewayAProcessAfterRetainedDestroy}; survivor port=${resultText(liveSurvivorAfterRetainedDestroy.gatewayPort)}; list=${resultText(liveSurvivorAfterRetainedDestroy.scopedList)}; dashboard=${liveSurvivorAfterRetainedDestroy.dashboard.map(resultText).join("\\n")}`,
     ).toBe(true);
     const survivorRestartAfterRetainedDestroy = await stopStartSurvivor(
+      host,
       sandbox,
       SANDBOX_A,
       gatewayA,

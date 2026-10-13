@@ -164,26 +164,12 @@ export function createCliOpenShellGatewayLifecycle(
       const values: unknown = JSON.parse(result?.stdout ?? result?.output ?? "");
       if (
         !Array.isArray(values) ||
-        values.some(
-          (entry) =>
-            !entry ||
-            typeof entry !== "object" ||
-            !isValidName(entry.name) ||
-            (entry.active !== undefined && typeof entry.active !== "boolean"),
-        )
+        values.some((entry) => !entry || typeof entry !== "object" || !isValidName(entry.name))
       )
         throw new Error("Invalid registry");
       const names = values.map((entry: { name: string }) => entry.name);
       if (new Set(names).size !== names.length) throw new Error("Duplicate registry entry");
-      const hasActiveState = values.every((entry) => typeof entry.active === "boolean");
-      const activeGateways = values.filter((entry: { active?: boolean }) => entry.active === true);
-      if (activeGateways.length > 1) throw new Error("Multiple active gateways");
-      let activeGateway: string | null | undefined;
-      if (hasActiveState) {
-        activeGateway =
-          activeGateways.length === 1 ? (activeGateways[0] as { name: string }).name : null;
-      }
-      return { ok: true, names, activeGateway };
+      return { ok: true, names };
     } catch {
       return {
         ok: false,

@@ -17,8 +17,6 @@ export type OpenShellGatewayRegistryResult =
   | Readonly<{
       ok: true;
       names: readonly string[];
-      /** Undefined means the CLI omitted active markers; null means none are active. */
-      activeGateway?: string | null;
     }>
   | Readonly<{ ok: false; error: OpenShellSandboxError }>;
 
