@@ -63,15 +63,17 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
         );
     }
     for name in ["Spec", "Sandbox"] {
+        for field in ["inferences", "harnesses", "inferenceProviders"] {
+            property(
+                &mut defs[name],
+                field,
+                json!({"propertyNames": {"pattern": c::SLUG}}),
+            );
+        }
         property(
             &mut defs[name],
-            "inferences",
-            json!({"propertyNames": {"pattern": c::SLUG}}),
-        );
-        property(
-            &mut defs[name],
-            "harnesses",
-            json!({"propertyNames": {"pattern": c::SLUG}}),
+            "inferenceProviders",
+            json!({"x-nemoclaw-error": format!("inferenceProviders must map lowercase names ({}) to provider definitions", c::SLUG)}),
         );
     }
     property(
@@ -93,7 +95,7 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
         "integrationRefs",
         json!({"uniqueItems": true, "items": {"type": "string", "pattern": c::SLUG}}),
     );
-    for name in ["Metadata", "InferenceProvider", "Sandbox", "Agent"] {
+    for name in ["Metadata", "InlineInferenceProvider", "Agent"] {
         property(
             defs.get_mut(name).unwrap(),
             "name",
@@ -156,8 +158,17 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
     property(
         &mut defs["Spec"],
         "sandboxes",
-        json!({"minItems":1,"maxItems":32}),
+        json!({
+            "propertyNames": {"pattern": c::SLUG}, "minProperties": 1, "maxProperties": 32,
+            "x-nemoclaw-error": format!("spec.sandboxes must map 1 to 32 lowercase names ({}) to sandbox definitions", c::SLUG)
+        }),
     );
+    // Earlier documents listed named entries; the key now carries the name.
+    defs["Sandbox"]["x-nemoclaw-removed-fields"] =
+        json!({"name": "a sandbox's name is its key under spec.sandboxes"});
+    defs["InferenceProvider"]["x-nemoclaw-removed-fields"] = json!({
+        "name": "a provider's name is its key under inferenceProviders; only an inline route provider states name"
+    });
     defs["Sandbox"]["allOf"] = json!([]);
     optional_string(
         &mut defs["Image"],
@@ -240,20 +251,28 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
 
     constrain_gateway(defs, normalized);
 
-    let provider = &mut defs["InferenceProvider"];
-    property(provider, "serviceRef", json!({"pattern": c::SLUG}));
-    provider["if"] = json!({"required": ["serviceRef"]});
-    provider["then"] = json!({"properties": {"provider":{"const":"openai"},"endpoint": {"const": ""}}, "allOf": [forbid(&["credential"])]});
-    provider["else"] =
-        json!({"required": ["endpoint"], "properties": {"endpoint": {"pattern": "^https?://"}}});
-    provider["allOf"] = json!([
-        {"if": at("endpoint", json!({"pattern": "^http:"}), true), "then": forbid(&["credential"])},
-        {"if": {"required":["api"]}, "then": {
-            "if": at("api", json!({"const":"anthropic-messages"}), true),
-            "then": at("provider", json!({"const":"anthropic"}), false),
-            "else": at("provider", json!({"const":"openai"}), false)
-        }}
-    ]);
+    // An inline definition carries the keyed definition's fields beside its
+    // name, so it takes the same rules.
+    for name in ["InferenceProvider", "InlineInferenceProvider"] {
+        let provider = &mut defs[name];
+        property(provider, "serviceRef", json!({"pattern": c::SLUG}));
+        provider["if"] = json!({"required": ["serviceRef"]});
+        provider["then"] = json!({
+            "properties": {"provider":{"const":"openai"},"endpoint": {"const": ""}}, "allOf": [forbid(&["credential"])],
+            "x-nemoclaw-error": "serviceRef excludes endpoint and credential and selects provider openai"
+        });
+        provider["else"] = json!({"required": ["endpoint"], "properties": {"endpoint": {"pattern": "^https?://"}}});
+        let mut plain = forbid(&["credential"]);
+        plain["x-nemoclaw-error"] = json!("an http:// endpoint takes no credential");
+        provider["allOf"] = json!([
+            {"if": at("endpoint", json!({"pattern": "^http:"}), true), "then": plain},
+            {"if": {"required":["api"]}, "then": {
+                "if": at("api", json!({"const":"anthropic-messages"}), true),
+                "then": at("provider", json!({"const":"anthropic"}), false),
+                "else": at("provider", json!({"const":"openai"}), false)
+            }}
+        ]);
+    }
     defs["AgentExecution"]["minProperties"] = json!(1);
     crate::services::constrain_schema(defs, normalized);
 
@@ -265,14 +284,14 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
         true,
     );
     let mut explicit = at(
-        "spec/sandboxes/[]/image",
+        "spec/sandboxes/*/image",
         json!({"required": ["ref", "metadata"], "properties": {"ref": {"pattern": c::IMAGE}}}),
         true,
     );
     explicit["x-nemoclaw-error"] = json!(
         "a Kubernetes target requires each sandbox image.ref pinned by digest and image.metadata"
     );
-    let mut inspected = at("spec/sandboxes/[]/image", forbid(&["metadata"]), false);
+    let mut inspected = at("spec/sandboxes/*/image", forbid(&["metadata"]), false);
     inspected["x-nemoclaw-error"] = json!(
         "image.metadata is available only for a spec.gateway.target.kubernetes gateway; Docker and Podman use engine image inspection"
     );

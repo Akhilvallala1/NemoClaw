@@ -93,13 +93,12 @@ pub fn plan_queries(document: &Document) -> Result<Vec<DiscoveryQuery>, ConfigEr
             compute_driver: gateway.compute_driver,
         });
     queries.extend(platform.clone().map(DiscoveryQuery::Engine));
-    let mut sandboxes: Vec<_> = document.spec.sandboxes.iter().collect();
-    sandboxes.sort_by(|left, right| left.name.cmp(&right.name));
-    for sandbox in sandboxes {
+    // One Fabric read per sandbox, in name order.
+    for (name, sandbox) in &document.spec.sandboxes {
         queries.push(DiscoveryQuery::Fabric(FabricRequest {
             engine: engine.into(),
             image: sandbox.image.ref_.clone(),
-            requirements: crate::fabric_capabilities::requirements_for_sandbox(document, sandbox)?,
+            requirements: crate::fabric_capabilities::requirements_for_sandbox(document, name)?,
             platform: platform.clone(),
             metadata_env: sandbox
                 .image

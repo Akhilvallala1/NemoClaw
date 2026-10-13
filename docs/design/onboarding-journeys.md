@@ -89,12 +89,13 @@ Run `cargo run -p nemoclaw-authoring --example print_journey_tree` from the repo
 
 | Preview | Input | Result |
 | --- | --- | --- |
-| Minimum viable values | One empty sandbox, with explicit `ask` guidance for the name. | Stops at an unresolved SDK frontier; it does not enumerate every question. |
-| Minimum inline scaffold | `crates/nemoclaw-authoring/tests/fixtures/minimum-inline.yaml`: inline harness and inference forms, one route, and an external endpoint. | Asks the deployment, sandbox, agent, and route names, gateway management, harness, provider kind, and model. `minimally_supplied_inline_envelope_materializes_through_one_resolver` materializes it after those answers and explicit optional omissions. |
+| Minimum viable values | One empty sandbox keyed `assistant`, with explicit `ask` guidance for the deployment name. | Stops at an unresolved SDK frontier; it does not enumerate every question. |
+| Minimum inline scaffold | `crates/nemoclaw-authoring/tests/fixtures/minimum-inline.yaml`: one sandbox keyed `assistant`, inline harness and inference forms, one route, and an external endpoint. | Asks the deployment, agent, and route names, gateway management, harness, provider kind, and model. `minimally_supplied_inline_envelope_materializes_through_one_resolver` materializes it after those answers and explicit optional omissions. |
 | Express | `examples/onboarding/openclaw.yaml`. | Zero questions, with absent optional adapter settings omitted through the `ActiveAdapterSettings` scope. Target compatibility remains a separate assessment. |
-| Guided preview | The express template without a route model, with explicit `ask` guidance for the name, harness, gateway target, provider, API, and model fields. | Asks each of those fields. |
+| Guided preview | The express template without a route model, with explicit `ask` guidance for the deployment name, harness, gateway target, provider, API, and model fields. | Asks each of those fields. |
 
 Starting a journey generates a missing deployment uid, so the uid is never a question.
+A journey starts only when the partial document supplies exactly one sandbox; its key is the sandbox name, so that name is never a question.
 These previews do not establish complete coverage of arbitrary partial documents.
 
 ## Prototype Decisions and Limits

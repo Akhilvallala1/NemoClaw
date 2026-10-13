@@ -50,8 +50,7 @@ impl Document {
         for definition in self.provider_definitions() {
             self.validate_provider(definition)?;
         }
-        let mut sandbox_names = std::collections::BTreeSet::new();
-        for sandbox in &self.spec.sandboxes {
+        for (name, sandbox) in &self.spec.sandboxes {
             require(
                 self.spec.gateway.compute_driver().is_kubernetes()
                     || sandbox.image.metadata.is_none(),
@@ -60,13 +59,9 @@ impl Document {
             if let Some(metadata) = &sandbox.image.metadata {
                 schema::validate_definition("FileRef", metadata)?;
             }
-            require(
-                sandbox_names.insert(&sandbox.name),
-                "sandbox names must be unique",
-            )?;
             sandbox.network.validate()?;
-            let web_search = self.web_search(sandbox)?;
-            crate::image_runtime::policy_input(self, sandbox)?;
+            let web_search = self.web_search(name)?;
+            crate::image_runtime::policy_input(self, name)?;
             if let Some(search) = web_search {
                 require(
                     selected_providers.iter().all(|provider| {
@@ -87,7 +82,7 @@ impl Document {
             if let Some(tools) = &agent.tools {
                 tools.validate()?;
             }
-            let inference = self.scoped_inference(sandbox)?;
+            let inference = self.scoped_inference(name)?;
             for route in &inference.inference.routes {
                 let selected = self.route_provider(route, &inference)?;
                 let provider = selected.definition;

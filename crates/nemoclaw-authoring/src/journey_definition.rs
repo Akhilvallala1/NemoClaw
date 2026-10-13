@@ -3,6 +3,7 @@
 
 //! Sparse values and deliberate question guidance for one onboarding journey.
 
+use nemoclaw_sdk::config::{Document, valid_name};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -13,9 +14,34 @@ use crate::{
 };
 
 pub(crate) const NAME: &str = "/metadata/name";
-pub(crate) const HARNESS: &str = "/spec/sandboxes/0/harness/kind";
-pub(crate) const SETTINGS: &str = "/spec/sandboxes/0/harness/settings";
 pub(crate) const INFERENCE_PRESET: &str = "inference:preset";
+
+/// The pointer to the journey's only sandbox, `/spec/sandboxes/<name>`, when
+/// `/spec/sandboxes` holds exactly one object and its key is a valid name.
+/// Questions address the sandbox by this key, so a key the SDK rejects never
+/// becomes part of a question ID.
+pub(crate) fn sandbox_path(values: &Value) -> Option<String> {
+    let sandboxes = values.pointer("/spec/sandboxes")?.as_object()?;
+    let [(name, sandbox)] = sandboxes.iter().collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    (sandbox.is_object() && valid_name(name)).then(|| format!("/spec/sandboxes/{name}"))
+}
+
+/// The pointer to the inline harness kind of the journey's only sandbox,
+/// which is also the ID of the harness question.
+pub(crate) fn harness_field(values: &Value) -> Option<String> {
+    sandbox_path(values).map(|sandbox| format!("{sandbox}/harness/kind"))
+}
+
+/// The name of a one-sandbox document's sandbox; `None` for any other count.
+pub(crate) fn sole_sandbox(document: &Document) -> Option<&str> {
+    let mut names = document.spec.sandboxes.keys();
+    match (names.next(), names.next()) {
+        (Some(name), None) => Some(name),
+        _ => None,
+    }
+}
 
 /// A schema-discovered family of applicable questions. The schema determines
 /// which fields exist and whether they are required; this only asks to review
@@ -134,19 +160,13 @@ impl JourneyDefinition {
 
     /// Start mutable resolution over the sparse v1 single-sandbox envelope.
     pub fn start(&self, capabilities: &Capabilities) -> Result<crate::JourneyState, Diagnostics> {
-        self.validate_guidance(capabilities)?;
-        if !self
-            .base
-            .supplied()
-            .pointer("/spec/sandboxes")
-            .and_then(Value::as_array)
-            .is_some_and(|sandboxes| sandboxes.len() == 1 && sandboxes[0].is_object())
-        {
+        if sandbox_path(self.base.supplied()).is_none() {
             return Err(diagnostic(
                 "journey",
-                "The v1 journey requires exactly one sandbox object.",
+                "The v1 journey requires exactly one sandbox keyed by a lowercase name.",
             ));
         }
+        self.validate_guidance(capabilities)?;
         crate::JourneyState::new(self.clone())
     }
 
@@ -173,9 +193,36 @@ impl JourneyDefinition {
                 &format!("scope {scope:?} cannot be omitted in this preview"),
             ));
         }
+        let supplied = self.base.supplied();
+        let sandbox = sandbox_path(supplied);
+        let harness = harness_field(supplied);
         for field in &self.ask {
-            if field == NAME || field == HARNESS || field == INFERENCE_PRESET {
+            if field == NAME || Some(field) == harness.as_ref() || field == INFERENCE_PRESET {
                 continue;
+            }
+            // A field of another sandbox or of an absent provider would add
+            // that entry when answered.
+            let entry = |collection: &str| {
+                let rest = field.strip_prefix(collection)?.strip_prefix('/')?;
+                Some(rest.split_once('/').map_or(rest, |(key, _)| key))
+            };
+            if let Some(key) = entry("/spec/sandboxes")
+                && sandbox.as_ref() != Some(&format!("/spec/sandboxes/{key}"))
+            {
+                return Err(diagnostic(
+                    "journey",
+                    "asked fields must belong to the journey's sandbox",
+                ));
+            }
+            if let Some(key) = entry("/spec/inferenceProviders")
+                && supplied
+                    .pointer(&format!("/spec/inferenceProviders/{key}"))
+                    .is_none()
+            {
+                return Err(diagnostic(
+                    "journey",
+                    "asked provider fields must belong to a supplied provider",
+                ));
             }
             if sdk_field_schema_for(self.base.supplied(), field).is_some()
                 || sdk_field_possible(field)
@@ -231,16 +278,10 @@ impl JourneyDefinition {
                     "required adapter settings alternatives cannot be omitted",
                 ));
             }
-            if self
-                .base
-                .supplied()
-                .pointer(HARNESS)
-                .and_then(Value::as_str)
-                == Some(adapter)
-                && self
-                    .base
-                    .supplied()
-                    .pointer(&format!("{SETTINGS}{pointer}"))
+            if let (Some(sandbox), Some(harness)) = (&sandbox, &harness)
+                && supplied.pointer(harness).and_then(Value::as_str) == Some(adapter)
+                && supplied
+                    .pointer(&format!("{sandbox}/harness/settings{pointer}"))
                     .is_some()
             {
                 return Err(diagnostic(

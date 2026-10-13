@@ -107,14 +107,15 @@ impl Scenario {
             ))
             .unwrap();
             value["spec"]["services"]["qwen"] = source["spec"]["services"]["ollama-server"].clone();
-            value["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["overrides"]["model"] =
-                json!("qwen3:0.6b");
+            let route =
+                &mut value["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0];
+            route["overrides"]["model"] = json!("qwen3:0.6b");
         }
         let check_pulls = harness == "nvidia.fabric.openclaw" && !authenticated;
         if check_pulls {
             value["spec"]["services"]["qwen"]["imagePullPolicy"] = json!("IfNotPresent");
         }
-        value["spec"]["sandboxes"][0]["harness"]["kind"] = harness.into();
+        value["spec"]["sandboxes"]["assistant"]["harness"]["kind"] = harness.into();
         value["spec"]["gateway"] =
             json!({"management":"external","endpoint":gateway.endpoint,"target":{"podman":{}}});
         value["spec"]["services"]["qwen"]["placement"] =
@@ -123,7 +124,7 @@ impl Scenario {
             json!({"endpoint":"http://10.0.0.8:18888/v1","bindAddress":"10.0.0.8"});
         if authenticated {
             value["spec"]["services"]["qwen"]["authentication"] = "bearer".into();
-            value["spec"]["sandboxes"][0]["agent"]["auth"] = json!({"method":"api-key"});
+            value["spec"]["sandboxes"]["assistant"]["agent"]["auth"] = json!({"method":"api-key"});
         }
         let mut image_document =
             Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
@@ -837,12 +838,7 @@ async fn refused_sandbox_changes_preserve_retained_intent(
     gateway: &Fixture,
 ) {
     let mut original = read(root, "config.yaml");
-    let mut reviewer = original["spec"]["sandboxes"][0].clone();
-    reviewer["name"] = json!("reviewer");
-    original["spec"]["sandboxes"]
-        .as_array_mut()
-        .unwrap()
-        .push(reviewer);
+    original["spec"]["sandboxes"]["reviewer"] = original["spec"]["sandboxes"]["assistant"].clone();
     save(root, "config.yaml", &original);
     run(root, bundle, "apply", "config.yaml", true).await;
     let before = [
@@ -857,14 +853,17 @@ async fn refused_sandbox_changes_preserve_retained_intent(
         let mut rejected = original.clone();
         match change {
             "remove" => {
-                rejected["spec"]["sandboxes"].as_array_mut().unwrap().pop();
+                rejected["spec"]["sandboxes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("reviewer");
             }
             "policy" => {
-                rejected["spec"]["sandboxes"][1]["network"] =
+                rejected["spec"]["sandboxes"]["reviewer"]["network"] =
                     json!({"policy":{"explicit":{"version":1,"network_policies":{}}}});
             }
             _ => {
-                rejected["spec"]["sandboxes"][1]["image"]["ref"] =
+                rejected["spec"]["sandboxes"]["reviewer"]["image"]["ref"] =
                     json!(format!("sandbox@sha256:{}", "c".repeat(64)));
                 if change == "image-with-runtime-change" {
                     rejected["spec"]["services"]["qwen"]["image"] =

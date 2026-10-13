@@ -11,7 +11,7 @@ use nemoclaw_sdk::config::{
 };
 use serde_json::Value;
 
-use crate::{Diagnostics, diagnostics::diagnostic};
+use crate::{Diagnostics, diagnostics::diagnostic, pointer::escape};
 use jsonschema::error::ValidationErrorKind as Kind;
 
 static INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(input_schema);
@@ -87,6 +87,13 @@ impl PartialDocument {
         &self.supplied
     }
 
+    /// The ID of a single-sandbox journey's harness question, the pointer to
+    /// `/spec/sandboxes/<name>/harness/kind`, or `None` unless exactly one
+    /// sandbox is supplied and its key is a valid name.
+    pub fn harness_field(&self) -> Option<String> {
+        crate::journey_definition::harness_field(&self.supplied)
+    }
+
     /// Inspect the current sparse input. Compound rules remain deferred until
     /// a partial evaluator can prove whether a branch is impossible or incomplete.
     pub fn assess(&self) -> PartialAssessment {
@@ -121,7 +128,7 @@ fn issue(error: &jsonschema::ValidationError<'_>) -> PartialIssue {
         && let Some(property) = property.as_str()
     {
         path.push('/');
-        path.push_str(&property.replace('~', "~0").replace('/', "~1"));
+        path.push_str(&escape(property));
     }
     PartialIssue {
         path,

@@ -21,7 +21,9 @@ pub struct Target {
 
 /// Read a one-sandbox document's target directly, independently of the code under test.
 pub fn target(document: &Document) -> Target {
-    let sandbox = &document.spec.sandboxes[0];
+    let [sandbox] = document.spec.sandboxes.values().collect::<Vec<_>>()[..] else {
+        panic!("the document has one sandbox");
+    };
     Target {
         engine: document.spec.gateway.image_engine().to_owned(),
         compute_driver: document.spec.gateway.compute_driver(),

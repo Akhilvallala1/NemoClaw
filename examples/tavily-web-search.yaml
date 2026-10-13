@@ -14,7 +14,7 @@ spec:
     management: external
     endpoint: http://127.0.0.1:17681
   inferenceProviders:
-    - name: local
+    local:
       provider: openai
       endpoint: http://172.20.0.1:11446/v1
   integrations:
@@ -24,7 +24,7 @@ spec:
       credential:
         env: TAVILY_API_KEY
   sandboxes:
-    - name: researcher
+    researcher:
       image:
         # Use the digest from an OpenClaw image built from this revision.
         ref: nc-fabric@sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -54,7 +54,7 @@ spec:
               providerRef: local
               overrides:
                 model: qwen3:4b
-    - name: hermes
+    hermes:
       image:
         # Use the digest from a Hermes image built from this revision.
         ref: nc-fabric@sha256:0000000000000000000000000000000000000000000000000000000000000000

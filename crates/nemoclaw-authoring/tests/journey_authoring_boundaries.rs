@@ -9,6 +9,13 @@ fn supplied() -> Value {
     serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml")).unwrap()
 }
 
+/// Rename a map entry, keeping its value.
+fn rename(map: &mut Value, from: &str, to: &str) {
+    let map = map.as_object_mut().unwrap();
+    let value = map.remove(from).unwrap();
+    map.insert(to.into(), value);
+}
+
 fn start(values: Value, capabilities: &Capabilities) -> nemoclaw_authoring::JourneyState {
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     JourneyDefinition::new("boundaries", base)
@@ -28,7 +35,7 @@ fn supplied_hosted_defaults_remain_an_sdk_valid_isolated_document() {
         .document()
         .unwrap()
         .clone();
-    let sandbox = &document.spec.sandboxes[0];
+    let sandbox = &document.spec.sandboxes["assistant"];
     let provider = document.inference_provider().unwrap();
     assert_eq!(provider.provider, InferenceProviderKind::Openai);
     assert_eq!(provider.api, Some(InferenceApi::OpenaiCompletions));
@@ -41,14 +48,19 @@ fn supplied_hosted_defaults_remain_an_sdk_valid_isolated_document() {
 fn explicit_custom_provider_identity_survives_an_unrelated_model_answer() {
     let capabilities = Capabilities::available();
     let mut values = supplied();
-    values["spec"]["inferenceProviders"][0]["name"] = json!("my-private-service");
-    values["spec"]["inferenceProviders"][0]["endpoint"] =
+    rename(
+        &mut values["spec"]["inferenceProviders"],
+        "nvidia-prod",
+        "my-private-service",
+    );
+    values["spec"]["inferenceProviders"]["my-private-service"]["endpoint"] =
         json!("https://models.private.example/v1");
-    values["spec"]["inferenceProviders"][0]["credential"]["env"] = json!("PRIVATE_MODEL_TOKEN");
-    values["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["providerRef"] =
+    values["spec"]["inferenceProviders"]["my-private-service"]["credential"]["env"] =
+        json!("PRIVATE_MODEL_TOKEN");
+    values["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["providerRef"] =
         json!("my-private-service");
     let mut state = start(values, &capabilities);
-    let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
+    let model = "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model";
     state
         .answer(&capabilities, model, Some(json!("custom/new-model")))
         .unwrap();
@@ -64,7 +76,7 @@ fn explicit_custom_provider_identity_survives_an_unrelated_model_answer() {
     assert_eq!(provider.endpoint, "https://models.private.example/v1");
     assert_eq!(document.credential_names(), ["PRIVATE_MODEL_TOKEN"]);
     assert_eq!(
-        document.spec.sandboxes[0]
+        document.spec.sandboxes["assistant"]
             .agent
             .inference
             .as_ref()
@@ -81,12 +93,21 @@ fn supplied_automation_values_survive_a_journey_without_reprojection() {
     let capabilities = Capabilities::available();
     let mut values = supplied();
     values["metadata"]["name"] = json!("automated-deployment");
-    values["spec"]["sandboxes"][0]["name"] = json!("automated-sandbox");
-    values["spec"]["sandboxes"][0]["agent"]["name"] = json!("automated-agent");
-    values["spec"]["inferenceProviders"][0]["name"] = json!("automated-provider");
-    values["spec"]["inferenceProviders"][0]["api"] = json!("openai-responses");
-    values["spec"]["inferenceProviders"][0]["credential"]["env"] = json!("AUTOMATED_API_KEY");
-    values["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["providerRef"] =
+    rename(
+        &mut values["spec"]["sandboxes"],
+        "assistant",
+        "automated-sandbox",
+    );
+    values["spec"]["sandboxes"]["automated-sandbox"]["agent"]["name"] = json!("automated-agent");
+    rename(
+        &mut values["spec"]["inferenceProviders"],
+        "nvidia-prod",
+        "automated-provider",
+    );
+    values["spec"]["inferenceProviders"]["automated-provider"]["api"] = json!("openai-responses");
+    values["spec"]["inferenceProviders"]["automated-provider"]["credential"]["env"] =
+        json!("AUTOMATED_API_KEY");
+    values["spec"]["sandboxes"]["automated-sandbox"]["agent"]["inference"]["routes"][0]["providerRef"] =
         json!("automated-provider");
     let state = start(values, &capabilities);
     let document = state
@@ -97,8 +118,14 @@ fn supplied_automation_values_survive_a_journey_without_reprojection() {
         .unwrap()
         .clone();
     assert_eq!(document.metadata.name, "automated-deployment");
-    assert_eq!(document.spec.sandboxes[0].name, "automated-sandbox");
-    assert_eq!(document.spec.sandboxes[0].agent.name, "automated-agent");
+    assert_eq!(
+        document.spec.sandboxes.keys().collect::<Vec<_>>(),
+        ["automated-sandbox"]
+    );
+    assert_eq!(
+        document.spec.sandboxes["automated-sandbox"].agent.name,
+        "automated-agent"
+    );
     assert_eq!(
         document.inference_provider().unwrap().name,
         "automated-provider"
@@ -128,7 +155,7 @@ fn every_advertised_harness_preserves_the_isolated_network_boundary() {
     let capabilities = Capabilities::available();
     for harness in capabilities.harnesses() {
         let mut values = supplied();
-        values["spec"]["sandboxes"][0]["harness"]["kind"] = json!(harness.as_str());
+        values["spec"]["sandboxes"]["assistant"]["harness"]["kind"] = json!(harness.as_str());
         let state = start(values, &capabilities);
         let document = state
             .resolve(&capabilities)
@@ -140,7 +167,7 @@ fn every_advertised_harness_preserves_the_isolated_network_boundary() {
         let reopened = Document::parse(document.yaml().unwrap().as_bytes()).unwrap();
         assert_eq!(reopened, document);
         assert!(matches!(
-            document.spec.sandboxes[0].network.policy,
+            document.spec.sandboxes["assistant"].network.policy,
             NetworkPolicy::Isolated
         ));
     }
@@ -150,11 +177,13 @@ fn every_advertised_harness_preserves_the_isolated_network_boundary() {
 fn a_missing_fabric_catalog_does_not_rewrite_supplied_harness_intent() {
     let capabilities = Capabilities::from_harnesses([]);
     let mut values = supplied();
-    values["spec"]["sandboxes"][0]["harness"]["kind"] = json!("nvidia.fabric.claude");
+    values["spec"]["sandboxes"]["assistant"]["harness"]["kind"] = json!("nvidia.fabric.claude");
     let state = start(values, &capabilities);
     let resolution = state.resolve(&capabilities).unwrap();
     assert_eq!(
-        state.values().pointer("/spec/sandboxes/0/harness/kind"),
+        state
+            .values()
+            .pointer("/spec/sandboxes/assistant/harness/kind"),
         Some(&json!("nvidia.fabric.claude"))
     );
     assert!(!resolution.unverified().is_empty());
@@ -176,7 +205,7 @@ fn unsupported_protocol_answer_is_rejected_without_mutating_the_document() {
         state
             .answer(
                 &capabilities,
-                "/spec/inferenceProviders/0/api",
+                "/spec/inferenceProviders/nvidia-prod/api",
                 Some(json!("anthropic-messages"))
             )
             .is_err()

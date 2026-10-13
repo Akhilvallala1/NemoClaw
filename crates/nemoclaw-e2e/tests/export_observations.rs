@@ -90,8 +90,9 @@ async fn export_uses_provider_observations_without_resolving_inference_credentia
     .unwrap();
     *document.spec.gateway.endpoint_mut() = fixture.endpoint.clone();
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
-    document.spec.inference_providers[0].endpoint = "https://models.example/v1".into();
-    document.spec.inference_providers[0].credential = Some(nemoclaw_sdk::config::SecretRef {
+    let local = document.spec.inference_providers.get_mut("local").unwrap();
+    local.endpoint = "https://models.example/v1".into();
+    local.credential = Some(nemoclaw_sdk::config::SecretRef {
         env: "EXPORT_INFERENCE_REFERENCE".into(),
     });
     let cancel = CancellationToken::new();
@@ -112,7 +113,11 @@ async fn export_uses_provider_observations_without_resolving_inference_credentia
             "CHANGED_EXPORT_REFERENCE".into(),
         );
     }
-    document.spec.inference_providers[0]
+    document
+        .spec
+        .inference_providers
+        .get_mut("local")
+        .unwrap()
         .credential
         .as_mut()
         .unwrap()
@@ -137,7 +142,15 @@ async fn export_rejects_observed_pi_model_drift_without_reconfiguring_it() {
     .unwrap();
     *document.spec.gateway.endpoint_mut() = fixture.endpoint.clone();
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
-    document.spec.sandboxes[0].harness.as_mut().unwrap().kind = "nvidia.fabric.pi".parse().unwrap();
+    document
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .harness
+        .as_mut()
+        .unwrap()
+        .kind = "nvidia.fabric.pi".parse().unwrap();
     let deployment = Deployment::new(directory.path(), &bundle);
     let cancel = CancellationToken::new();
     deployment.apply(&document, &cancel).await.unwrap();
@@ -198,25 +211,32 @@ async fn mixed_search_export_preserves_scopes_shared_registrations_and_state_on_
             .unwrap();
     *document.spec.gateway.endpoint_mut() = fixture.endpoint.clone();
     let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
-    document.spec.inference_providers[0].endpoint = "https://127.0.0.1:9/v1".into();
+    document
+        .spec
+        .inference_providers
+        .get_mut("local")
+        .unwrap()
+        .endpoint = "https://127.0.0.1:9/v1".into();
     document.spec.integrations = serde_json::from_value(serde_json::json!({
         "shared-search":{"kind":"webSearch", "provider":"tavily", "credential":{"env":"EXPORT_TAVILY_KEY"}},
         "unused-search":{"kind":"webSearch", "provider":"brave", "credential":{"env":"UNUSED_EXPORT_KEY"}}
     })).unwrap();
-    document.spec.sandboxes[0].agent.integration_refs = vec!["shared-search".into()];
-    let mut hermes = document.spec.sandboxes[0].clone();
-    hermes.name = "hermes".into();
+    let assistant = document.spec.sandboxes.get_mut("assistant").unwrap();
+    assistant.agent.integration_refs = vec!["shared-search".into()];
+    let mut hermes = assistant.clone();
     hermes.harness.as_mut().unwrap().kind = "nvidia.fabric.hermes".parse().unwrap();
     hermes.integrations = serde_json::from_value(serde_json::json!({
         "sandbox-search":{"kind":"webSearch", "provider":"brave", "credential":{"env":"EXPORT_BRAVE_KEY"}}
     })).unwrap();
     hermes.agent.integration_refs = vec!["sandbox-search".into()];
     let mut pi = hermes.clone();
-    pi.name = "pi".into();
     pi.harness.as_mut().unwrap().kind = "nvidia.fabric.pi".parse().unwrap();
     pi.agent.integration_refs.clear();
     pi.agent.integrations = std::mem::take(&mut pi.integrations);
-    document.spec.sandboxes.extend([hermes, pi]);
+    document
+        .spec
+        .sandboxes
+        .extend([("hermes".into(), hermes), ("pi".into(), pi)]);
     let deployment = Deployment::new(directory.path(), &bundle).with_secrets(Arc::new(Values));
     let cancel = CancellationToken::new();
     deployment.apply(&document, &cancel).await.unwrap();

@@ -53,9 +53,10 @@ impl QuestionResolver<'_> {
             });
         }
 
+        let harness = harness_field(&self.authored.values);
         for field in &self.definition.ask {
             if field == NAME
-                || field == HARNESS
+                || Some(field) == harness.as_ref()
                 || field == INFERENCE_PRESET
                 || adapter_field(field).is_some()
             {
@@ -79,7 +80,7 @@ impl QuestionResolver<'_> {
                     key,
                 ),
                 None => (
-                    QuestionTarget::sdk(field.clone()),
+                    QuestionTarget::sdk(&self.authored.values, field.clone()),
                     policy.sdk_schema(field, schema),
                     supplied.cloned(),
                 ),
@@ -116,7 +117,7 @@ impl QuestionResolver<'_> {
         // arrays and conditional alternatives remain an explicit frontier.
         for issue in assessment.issues() {
             if issue.path() == NAME
-                || issue.path() == HARNESS
+                || harness.as_deref() == Some(issue.path())
                 || questions.iter().any(|question| question.id == issue.path())
             {
                 continue;
@@ -182,7 +183,7 @@ impl QuestionResolver<'_> {
                 continue;
             }
             questions.push(JourneyQuestion {
-                target: QuestionTarget::sdk(issue.path()),
+                target: QuestionTarget::sdk(&self.authored.values, issue.path()),
                 kind: JourneyQuestionKind::Field,
                 reopened_because: None,
                 id: issue.path().into(),

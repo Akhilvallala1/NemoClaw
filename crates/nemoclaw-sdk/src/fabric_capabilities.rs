@@ -5,12 +5,12 @@
 //! document places on its image.
 pub use nemoclaw_fabric::capabilities::*;
 
-/// The Fabric configuration and filesystem reads a sandbox requires.
+/// The Fabric configuration and filesystem reads the named sandbox requires.
 pub fn requirements_for_sandbox(
     document: &crate::config::Document,
-    sandbox: &crate::config::Sandbox,
+    sandbox: &str,
 ) -> Result<FabricRequirements, crate::config::ConfigError> {
-    let filesystem_read = match &sandbox.network.policy {
+    let filesystem_read = match &document.sandbox(sandbox)?.network.policy {
         crate::config::NetworkPolicy::Explicit(policy) => {
             policy.filesystem_policy.as_ref().map(|fs| {
                 fs.read_only

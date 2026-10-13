@@ -13,7 +13,7 @@ fn guided() -> nemoclaw_authoring::JourneyState {
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     JourneyDefinition::new("guided-presets", base)
-        .ask(["/spec/sandboxes/0/harness/kind", "inference:preset"])
+        .ask(["/spec/sandboxes/assistant/harness/kind", "inference:preset"])
         .ask([JourneyScope::InferenceApi])
         .ask([JourneyScope::RouteModels])
         .start(&capabilities)
@@ -35,7 +35,7 @@ fn the_journey_advertises_every_fabric_harness_and_curated_provider() {
     let state = guided();
     let resolution = state.resolve(&capabilities).unwrap();
     let harnesses = resolution
-        .question("/spec/sandboxes/0/harness/kind")
+        .question("/spec/sandboxes/assistant/harness/kind")
         .unwrap();
     assert_eq!(
         harnesses.choices(),
@@ -64,7 +64,7 @@ fn every_curated_preset_and_protocol_roundtrips_through_the_sdk() {
             state
                 .answer(&capabilities, "inference:preset", Some(json!(preset.id())))
                 .unwrap();
-            let endpoint = "/spec/inferenceProviders/0/endpoint";
+            let endpoint = "/spec/inferenceProviders/nvidia-prod/endpoint";
             if state
                 .resolve(&capabilities)
                 .unwrap()
@@ -79,7 +79,7 @@ fn every_curated_preset_and_protocol_roundtrips_through_the_sdk() {
                     )
                     .unwrap();
             }
-            let api_path = "/spec/inferenceProviders/0/api";
+            let api_path = "/spec/inferenceProviders/nvidia-prod/api";
             state
                 .answer(
                     &capabilities,
@@ -87,7 +87,7 @@ fn every_curated_preset_and_protocol_roundtrips_through_the_sdk() {
                     Some(serde_json::to_value(api).unwrap()),
                 )
                 .unwrap();
-            let model_path = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
+            let model_path = "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model";
             if state
                 .resolve(&capabilities)
                 .unwrap()
@@ -129,17 +129,12 @@ fn custom_endpoint_questions_stay_user_facing_without_internal_provider_names() 
             Some(json!("openai-compatible")),
         )
         .unwrap();
-    let endpoint = "/spec/inferenceProviders/0/endpoint";
+    let endpoint = "/spec/inferenceProviders/nvidia-prod/endpoint";
     let resolution = state.resolve(&capabilities).unwrap();
     assert!(resolution.question(endpoint).is_some());
     assert!(
         resolution
-            .question("/spec/inferenceProviders/0/name")
-            .is_none()
-    );
-    assert!(
-        resolution
-            .question("/spec/inferenceProviders/0/credential/env")
+            .question("/spec/inferenceProviders/nvidia-prod/credential/env")
             .is_none()
     );
     state
@@ -149,7 +144,7 @@ fn custom_endpoint_questions_stay_user_facing_without_internal_provider_names() 
             Some(json!("https://inference.example.com/v1")),
         )
         .unwrap();
-    let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
+    let model = "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model";
     state
         .answer(&capabilities, model, Some(json!("example/reasoning-model")))
         .unwrap();
@@ -177,7 +172,7 @@ fn switching_the_target_preserves_the_selected_model() {
         .ask(["/spec/gateway/target"])
         .start(&capabilities)
         .unwrap();
-    let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
+    let model = "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model";
     let before: Value = state.values().pointer(model).unwrap().clone();
     let podman = "unix:///run/user/501/podman/podman.sock";
     crate::support::found_local_engines(
@@ -197,7 +192,7 @@ fn switching_the_target_preserves_the_selected_model() {
 #[test]
 fn provider_presets_offer_the_expected_connection_and_model_suggestions() {
     let capabilities = Capabilities::available();
-    let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
+    let model = "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model";
     let cases = [
         (
             ProviderPreset::OpenAi,
@@ -261,7 +256,7 @@ fn a_hermes_author_can_select_nous_without_losing_the_selected_harness() {
     state
         .answer(
             &capabilities,
-            "/spec/sandboxes/0/harness/kind",
+            "/spec/sandboxes/assistant/harness/kind",
             Some(json!("nvidia.fabric.hermes")),
         )
         .unwrap();
@@ -278,13 +273,15 @@ fn a_hermes_author_can_select_nous_without_losing_the_selected_harness() {
         .answer(&capabilities, "inference:preset", Some(json!("nous")))
         .unwrap();
     assert_eq!(
-        state.values().pointer("/spec/sandboxes/0/harness/kind"),
+        state
+            .values()
+            .pointer("/spec/sandboxes/assistant/harness/kind"),
         Some(&json!("nvidia.fabric.hermes"))
     );
     assert_eq!(
         state
             .values()
-            .pointer("/spec/inferenceProviders/0/endpoint"),
+            .pointer("/spec/inferenceProviders/nvidia-prod/endpoint"),
         Some(&json!("https://inference-api.nousresearch.com/v1"))
     );
 }
@@ -296,7 +293,7 @@ fn a_pi_author_can_explicitly_choose_responses_api() {
     state
         .answer(
             &capabilities,
-            "/spec/sandboxes/0/harness/kind",
+            "/spec/sandboxes/assistant/harness/kind",
             Some(json!("nvidia.fabric.pi")),
         )
         .unwrap();
@@ -307,7 +304,7 @@ fn a_pi_author_can_explicitly_choose_responses_api() {
             Some(json!("nvidia-endpoints")),
         )
         .unwrap();
-    let api = "/spec/inferenceProviders/0/api";
+    let api = "/spec/inferenceProviders/nvidia-prod/api";
     state
         .answer(&capabilities, api, Some(json!("openai-responses")))
         .unwrap();

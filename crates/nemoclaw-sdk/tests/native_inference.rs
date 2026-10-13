@@ -40,10 +40,27 @@ fn explicit_protocol_is_preserved_for_selected_image_validation() {
     use nemoclaw_sdk::config::{InferenceApi, InferenceProviderKind};
     let mut document =
         Document::parse(include_str!("fixtures/config/local.yaml").as_bytes()).unwrap();
-    document.spec.sandboxes[0].harness.as_mut().unwrap().kind =
-        "nvidia.fabric.codex".parse().unwrap();
-    document.spec.inference_providers[0].api = Some(InferenceApi::AnthropicMessages);
-    document.spec.inference_providers[0].provider = InferenceProviderKind::Anthropic;
+    document
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .harness
+        .as_mut()
+        .unwrap()
+        .kind = "nvidia.fabric.codex".parse().unwrap();
+    document
+        .spec
+        .inference_providers
+        .get_mut("local")
+        .unwrap()
+        .api = Some(InferenceApi::AnthropicMessages);
+    document
+        .spec
+        .inference_providers
+        .get_mut("local")
+        .unwrap()
+        .provider = InferenceProviderKind::Anthropic;
     document.validate().unwrap();
     let generations: Generations = ["workspace", "provider", "sandbox"]
         .map(|key| (key.into(), "a".repeat(32)))

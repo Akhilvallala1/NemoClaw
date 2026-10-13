@@ -64,7 +64,7 @@ fn configured_native_questions_appear_in_the_same_definition_tree() {
 #[test]
 fn minimum_values_preview_shows_harness_branches_and_optional_omission() {
     let base = PartialDocument::from_yaml(
-        b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    - {}\n",
+        b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    assistant: {}\n",
     )
     .unwrap();
     let journey = JourneyDefinition::new("minimum-values", base)
@@ -73,15 +73,16 @@ fn minimum_values_preview_shows_harness_branches_and_optional_omission() {
     let tree = journey.print_tree(&Capabilities::available()).unwrap();
 
     assert!(tree.contains("/metadata/name"));
-    assert!(tree.contains("/spec/sandboxes/0/name"));
-    assert!(tree.contains("/spec/sandboxes/0/agent/name"));
+    // The sandbox's key is its name, so no question asks for one.
+    assert!(!tree.contains("/spec/sandboxes/assistant/name"), "{tree}");
+    assert!(tree.contains("/spec/sandboxes/assistant/agent/name"));
     assert!(
-        tree.contains("Choices for form:/spec/sandboxes/0:"),
+        tree.contains("Choices for form:/spec/sandboxes/assistant:"),
         "{tree}"
     );
     assert!(tree.contains("├─ harnessRef"), "{tree}");
     assert!(
-        tree.contains("Choices for /spec/sandboxes/0/harness/kind:"),
+        tree.contains("Choices for /spec/sandboxes/assistant/harness/kind:"),
         "{tree}"
     );
     assert!(tree.contains("nvidia.fabric.openclaw"));
@@ -122,13 +123,16 @@ fn guided_sdk_questions_are_visible_in_the_tree_without_printing_suggestions() {
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     let journey = JourneyDefinition::new("guided-sdk", base).ask([
-        "/spec/inferenceProviders/0/api",
-        "/spec/sandboxes/0/agent/inference/routes/0/overrides/model",
+        "/spec/inferenceProviders/nvidia-prod/api",
+        "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model",
     ]);
     let tree = journey.print_tree(&Capabilities::available()).unwrap();
-    assert!(tree.contains("/spec/inferenceProviders/0/api"), "{tree}");
     assert!(
-        tree.contains("/spec/sandboxes/0/agent/inference/routes/0/overrides/model"),
+        tree.contains("/spec/inferenceProviders/nvidia-prod/api"),
+        "{tree}"
+    );
+    assert!(
+        tree.contains("/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model"),
         "{tree}"
     );
     assert!(
@@ -145,18 +149,18 @@ fn inference_preset_preview_shows_custom_endpoint_branch() {
             .unwrap();
     let journey = JourneyDefinition::new("preset", base).ask([
         "inference:preset",
-        "/spec/inferenceProviders/0/api",
-        "/spec/sandboxes/0/agent/inference/routes/0/overrides/model",
+        "/spec/inferenceProviders/nvidia-prod/api",
+        "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model",
     ]);
     let tree = journey.print_tree(&Capabilities::available()).unwrap();
     assert!(tree.contains("inference:preset"), "{tree}");
     assert!(tree.contains("openai-compatible"), "{tree}");
     assert!(
-        tree.contains("/spec/inferenceProviders/0/endpoint"),
+        tree.contains("/spec/inferenceProviders/nvidia-prod/endpoint"),
         "{tree}"
     );
     assert!(
-        tree.contains("/spec/sandboxes/0/agent/inference/routes/0/overrides/model"),
+        tree.contains("/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model"),
         "{tree}"
     );
     assert!(!tree.contains("https://inference.example.com/v1"), "{tree}");
@@ -167,7 +171,7 @@ fn preview_does_not_print_supplied_native_setting_values() {
     let mut base: serde_json::Value =
         serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    base.pointer_mut("/spec/sandboxes/0/harness")
+    base.pointer_mut("/spec/sandboxes/assistant/harness")
         .unwrap()
         .as_object_mut()
         .unwrap()
@@ -189,7 +193,9 @@ fn omission_is_scoped_to_its_adapter() {
     let mut base: serde_json::Value =
         serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    let harness = base.pointer_mut("/spec/sandboxes/0/harness").unwrap();
+    let harness = base
+        .pointer_mut("/spec/sandboxes/assistant/harness")
+        .unwrap();
     harness["kind"] = serde_json::json!("nvidia.fabric.hermes");
     harness["settings"] = serde_json::json!({"cli": "from-other-adapter"});
     let base = PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap();
@@ -243,12 +249,16 @@ fn invalid_supplied_sdk_leaf_is_visible_without_printing_its_value() {
     let mut values: serde_json::Value =
         serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    values["spec"]["sandboxes"][0]["name"] = serde_json::json!("PRIVATE INVALID NAME");
+    values["spec"]["sandboxes"]["assistant"]["agent"]["name"] =
+        serde_json::json!("PRIVATE INVALID NAME");
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
-    let tree = JourneyDefinition::new("invalid-sandbox", base)
+    let tree = JourneyDefinition::new("invalid-agent", base)
         .print_tree(&Capabilities::available())
         .unwrap();
-    assert!(tree.contains("/spec/sandboxes/0/name: <string>"), "{tree}");
+    assert!(
+        tree.contains("/spec/sandboxes/assistant/agent/name: <string>"),
+        "{tree}"
+    );
     assert!(tree.contains("invalid supplied value"), "{tree}");
     assert!(!tree.contains("PRIVATE INVALID NAME"), "{tree}");
 }
@@ -258,7 +268,7 @@ fn harness_without_a_fabric_schema_does_not_claim_zero_questions() {
     let mut base: serde_json::Value =
         serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    base["spec"]["sandboxes"][0]["harness"]["kind"] =
+    base["spec"]["sandboxes"]["assistant"]["harness"]["kind"] =
         serde_json::json!("nvidia.fabric.unsupported");
     let base = PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap();
     let journey = JourneyDefinition::new("invalid-harness", base);
@@ -273,7 +283,7 @@ fn invalid_fabric_setting_is_labeled_without_printing_its_value() {
     let mut base: serde_json::Value =
         serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    base["spec"]["sandboxes"][0]["harness"]["settings"] = serde_json::json!({"cli": 42});
+    base["spec"]["sandboxes"]["assistant"]["harness"]["settings"] = serde_json::json!({"cli": 42});
     let base = PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap();
 
     let tree = JourneyDefinition::new("invalid-setting", base)
@@ -295,8 +305,8 @@ fn tree_branches_on_finite_sdk_choices_from_the_resolver() {
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    let definition =
-        JourneyDefinition::new("api-choices", base).ask(["/spec/inferenceProviders/0/api"]);
+    let definition = JourneyDefinition::new("api-choices", base)
+        .ask(["/spec/inferenceProviders/nvidia-prod/api"]);
     let capabilities = Capabilities::available();
     let resolution = definition
         .start(&capabilities)
@@ -304,7 +314,7 @@ fn tree_branches_on_finite_sdk_choices_from_the_resolver() {
         .resolve(&capabilities)
         .unwrap();
     let question = resolution
-        .question("/spec/inferenceProviders/0/api")
+        .question("/spec/inferenceProviders/nvidia-prod/api")
         .unwrap();
     assert!(question.choices().len() > 1);
     let tree = definition.print_tree(&capabilities).unwrap();
@@ -322,7 +332,7 @@ fn tree_does_not_print_supplied_route_names_as_choice_labels() {
         serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     let routes = values
-        .pointer_mut("/spec/sandboxes/0/agent/inference/routes")
+        .pointer_mut("/spec/sandboxes/assistant/agent/inference/routes")
         .unwrap()
         .as_array_mut()
         .unwrap();
@@ -363,7 +373,7 @@ fn tree_branches_on_sdk_exclusive_forms() {
     let mut values: serde_json::Value =
         serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    values["spec"]["sandboxes"][0]["agent"]
+    values["spec"]["sandboxes"]["assistant"]["agent"]
         .as_object_mut()
         .unwrap()
         .remove("inference");
@@ -372,11 +382,11 @@ fn tree_branches_on_sdk_exclusive_forms() {
         .print_tree(&capabilities)
         .unwrap();
     assert!(
-        tree.contains("Choices for form:/spec/sandboxes/0/agent"),
+        tree.contains("Choices for form:/spec/sandboxes/assistant/agent"),
         "{tree}"
     );
     assert!(
-        tree.contains("/spec/sandboxes/0/agent/inferenceRef: <string>"),
+        tree.contains("/spec/sandboxes/assistant/agent/inferenceRef: <string>"),
         "{tree}"
     );
 }
@@ -390,9 +400,9 @@ fn minimum_inline_fixture_prints_the_questions_it_can_materialize() {
     for field in [
         "/metadata/name",
         "/spec/gateway/management",
-        "/spec/sandboxes/0/harness/kind",
-        "/spec/sandboxes/0/agent/inference/routes/0/name",
-        "/spec/sandboxes/0/agent/inference/routes/0/overrides/model",
+        "/spec/sandboxes/assistant/harness/kind",
+        "/spec/sandboxes/assistant/agent/inference/routes/0/name",
+        "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model",
     ] {
         assert!(tree.contains(field), "missing {field}: {tree}");
     }

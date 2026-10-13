@@ -55,8 +55,13 @@ fn declared_services_install_once_and_service_ref_selects_the_inference_connecti
 #[test]
 fn service_references_reject_missing_names() {
     let mut missing = managed_ollama_service();
-    missing["spec"]["inferenceProviders"][0]["serviceRef"] = json!("missing");
-    assert!(Document::parse(missing.to_string().as_bytes()).is_err());
+    missing["spec"]["inferenceProviders"]["local"]["serviceRef"] = json!("missing");
+    assert_eq!(
+        Document::parse(missing.to_string().as_bytes())
+            .unwrap_err()
+            .to_string(),
+        r#"serviceRef: unknown service "missing"; visible definitions: ollama-server, unused"#
+    );
 }
 
 #[test]
@@ -66,7 +71,7 @@ fn unconsumed_local_services_cannot_inherit_a_podman_engine() {
         include_str!("../../../examples/managed-ollama-gpu.yaml"),
     ] {
         let mut value: serde_json::Value = serde_saphyr::from_str(source).unwrap();
-        let provider = value["spec"]["inferenceProviders"][0]
+        let provider = value["spec"]["inferenceProviders"]["qwen"]
             .as_object_mut()
             .unwrap();
         provider.remove("serviceRef");

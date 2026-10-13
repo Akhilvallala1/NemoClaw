@@ -158,7 +158,7 @@ impl JourneyWizard {
                 } else {
                     "Optional"
                 },
-                terminal_text(question.id())
+                terminal_text(&labels::pointer_text(question.id()))
             ),
             Style::new().fg(DIM),
         )));
@@ -244,7 +244,11 @@ impl JourneyWizard {
                             .take(5)
                             .map(|issue| {
                                 Line::from(Span::styled(
-                                    terminal_text(&format!("{}: {}", issue.path(), issue.rule())),
+                                    terminal_text(&format!(
+                                        "{}: {}",
+                                        labels::pointer_text(issue.path()),
+                                        issue.rule()
+                                    )),
                                     Style::new().fg(WARNING),
                                 ))
                             }),

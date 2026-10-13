@@ -34,8 +34,10 @@ pub struct IntegrationBinding<'a> {
 
 impl Sandbox {
     /// Resolve deployment and sandbox definitions without implicitly granting access.
+    /// `name` is this sandbox's key, which diagnostics use to identify it.
     pub fn integration_bindings<'a>(
         &'a self,
+        name: &str,
         shared: &'a BTreeMap<String, Integration>,
     ) -> Result<Vec<IntegrationBinding<'a>>, ConfigError> {
         validate_definitions(shared)?;
@@ -66,26 +68,26 @@ impl Sandbox {
             .integration_refs
             .iter()
             .enumerate()
-            .map(|(index, name)| {
+            .map(|(index, reference)| {
                 let definition = self
                     .integrations
-                    .get(name)
-                    .or_else(|| shared.get(name))
+                    .get(reference)
+                    .or_else(|| shared.get(reference))
                     .ok_or_else(|| {
                         super::references::missing_reference(
                             &format!(
-                                "spec.sandboxes[{}].agent.integrationRefs[{index}]",
-                                super::references::diagnostic_name(&self.name)
+                                "{}.agent.integrationRefs[{index}]",
+                                super::references::sandbox_path(name)
                             ),
                             "integration",
-                            name,
+                            reference,
                             shared
                                 .keys()
                                 .chain(self.integrations.keys())
                                 .map(String::as_str),
                         )
                     })?;
-                Ok((None, name.as_str(), definition))
+                Ok((None, reference.as_str(), definition))
             });
         let inline = agent
             .integrations
@@ -115,12 +117,14 @@ impl Sandbox {
 }
 
 impl Document {
+    /// The web search attached to the named sandbox, if any.
     pub(crate) fn web_search(
         &self,
-        sandbox: &super::Sandbox,
+        sandbox: &str,
     ) -> Result<Option<RuntimeWebSearch>, ConfigError> {
+        let (name, sandbox) = self.named_sandbox(sandbox)?;
         let mut selected = None;
-        for binding in sandbox.integration_bindings(&self.spec.integrations)? {
+        for binding in sandbox.integration_bindings(name, &self.spec.integrations)? {
             match binding.definition {
                 Integration::WebSearch(search) => {
                     if selected.is_some() {

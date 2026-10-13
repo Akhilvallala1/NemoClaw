@@ -68,13 +68,13 @@ fn load_journey(
         .ok_or("template metadata must be an object")?
         .insert("uid".into(), serde_json::json!(new_deployment_uid()?));
     let partial = PartialDocument::from_yaml(&serde_json::to_vec(&supplied)?)?;
+    // The harness question names the template's only sandbox by its key;
+    // `start` rejects a template without exactly one sandbox keyed by a name.
+    let harness = partial.harness_field();
     JourneyDefinition::new("onboarding", partial)
-        .ask([
-            "/metadata/name",
-            "/spec/sandboxes/0/harness/kind",
-            "/spec/gateway/target",
-            "inference:preset",
-        ])
+        .ask(["/metadata/name"])
+        .ask(harness)
+        .ask(["/spec/gateway/target", "inference:preset"])
         .ask([JourneyScope::InferenceApi])
         .ask([JourneyScope::RouteModels])
         .ask([JourneyScope::ActiveAdapterSettings])
@@ -169,15 +169,58 @@ mod tests {
         let mut values: serde_json::Value =
             serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
                 .unwrap();
-        let second = values["spec"]["sandboxes"][0].clone();
-        values["spec"]["sandboxes"]
-            .as_array_mut()
-            .unwrap()
-            .push(second);
+        values["spec"]["sandboxes"]["second"] = values["spec"]["sandboxes"]["assistant"].clone();
         let yaml = serde_json::to_vec(&values).unwrap();
         std::fs::write(&path, &yaml).unwrap();
         assert!(load_journey(Source::Template(&path), &Capabilities::available()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), yaml);
+    }
+
+    #[test]
+    fn a_template_sandbox_key_that_is_not_a_name_is_rejected_without_echoing_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("template.yaml");
+        let mut values: serde_json::Value =
+            serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
+                .unwrap();
+        let sandboxes = values["spec"]["sandboxes"].as_object_mut().unwrap();
+        let sandbox = sandboxes.remove("assistant").unwrap();
+        sandboxes.insert("PRIVATE INVALID NAME".into(), sandbox);
+        std::fs::write(&path, serde_json::to_vec(&values).unwrap()).unwrap();
+        let error = load_journey(Source::Template(&path), &Capabilities::available())
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            error,
+            "journey: The v1 journey requires exactly one sandbox keyed by a lowercase name."
+        );
+    }
+
+    #[test]
+    fn the_harness_question_names_the_template_sandbox_by_its_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("template.yaml");
+        let mut values: serde_json::Value =
+            serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
+                .unwrap();
+        let sandboxes = values["spec"]["sandboxes"].as_object_mut().unwrap();
+        let sandbox = sandboxes.remove("assistant").unwrap();
+        sandboxes.insert("coder".into(), sandbox);
+        std::fs::write(&path, serde_json::to_vec(&values).unwrap()).unwrap();
+        let capabilities = Capabilities::available();
+        let journey = load_journey(Source::Template(&path), &capabilities).unwrap();
+        let resolution = journey.resolve(&capabilities).unwrap();
+        assert!(
+            resolution
+                .question("/spec/sandboxes/coder/harness/kind")
+                .is_some()
+        );
+        assert!(
+            resolution
+                .question("/spec/sandboxes/assistant/harness/kind")
+                .is_none()
+        );
     }
 
     #[test]
@@ -187,7 +230,7 @@ mod tests {
         let mut values: serde_json::Value =
             serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
                 .unwrap();
-        values["spec"]["sandboxes"][0]["harness"] = serde_json::json!({
+        values["spec"]["sandboxes"]["assistant"]["harness"] = serde_json::json!({
             "kind": "fixture-reopen-adapter",
             "settings": {"custom_option": "retained"}
         });
@@ -197,7 +240,7 @@ mod tests {
         assert_eq!(
             journey
                 .values()
-                .pointer("/spec/sandboxes/0/harness/settings/custom_option"),
+                .pointer("/spec/sandboxes/assistant/harness/settings/custom_option"),
             Some(&serde_json::json!("retained"))
         );
         let resolution = journey.resolve(&capabilities).unwrap();
@@ -232,7 +275,7 @@ mod tests {
         assert_eq!(
             state
                 .values()
-                .pointer("/spec/sandboxes/0/agent/inference/routes/0/overrides/model"),
+                .pointer("/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model"),
             Some(&serde_json::json!("nvidia/nemotron-3-super-120b-a12b"))
         );
     }

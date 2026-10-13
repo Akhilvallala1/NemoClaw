@@ -34,10 +34,13 @@ pub fn forbid(names: &[&str]) -> Value {
 }
 // Required ancestors make a condition false when a field is omitted.
 // Consequences constrain only fields that are present, allowing SDK defaults.
+// A `[]` segment reaches every array item and a `*` segment every map value.
 pub fn at(path: &str, rule: Value, required: bool) -> Value {
     path.split('/').rev().fold(rule, |child, segment| {
         if segment == "[]" {
             json!({"items": child})
+        } else if segment == "*" {
+            json!({"additionalProperties": child})
         } else if required {
             json!({"required": [segment], "properties": {segment: child}})
         } else {
@@ -246,6 +249,30 @@ mod tests {
             keyed("podman", json!({"type": "object"})),
             keyed("kubernetes", json!({"$ref": "#/$defs/Cluster"})),
         ]
+    }
+
+    #[test]
+    fn a_path_reaches_array_items_and_every_map_value() {
+        let rule = json!({"required": ["ref"]});
+        assert_eq!(
+            at("spec/sandboxes/*/image", rule.clone(), true),
+            json!({"required": ["spec"], "properties": {"spec": {
+                "required": ["sandboxes"], "properties": {"sandboxes": {
+                    "additionalProperties": {"required": ["image"], "properties": {"image": rule}}
+                }}
+            }}})
+        );
+        assert_eq!(
+            at("routes/[]/provider", json!({}), false),
+            json!({"properties": {"routes": {"items": {"properties": {"provider": {}}}}}})
+        );
+        let schema = at("sandboxes/*/image", forbid(&["metadata"]), false);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert!(validator.is_valid(&json!({"sandboxes": {"one": {"image": {}}}})));
+        assert!(!validator.is_valid(&json!({"sandboxes": {
+            "one": {"image": {}},
+            "two": {"image": {"metadata": {}}}
+        }})));
     }
 
     #[test]

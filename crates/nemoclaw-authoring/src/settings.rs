@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{Diagnostics, diagnostics::diagnostic};
+use crate::{Diagnostics, diagnostics::diagnostic, pointer::escape};
 use nemoclaw_sdk::json_schema::schema_accepts;
 use serde_json::{Map, Value};
 
@@ -242,7 +242,7 @@ pub(crate) fn collect(
         .filter(|_| path.is_empty() || required || !values.is_null())
     {
         for (name, child) in properties {
-            let child_path = format!("{path}/{}", name.replace('~', "~0").replace('/', "~1"));
+            let child_path = format!("{path}/{}", escape(name));
             let child_required = effective["required"]
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value.as_str() == Some(name)));

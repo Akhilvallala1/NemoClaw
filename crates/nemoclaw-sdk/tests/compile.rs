@@ -157,15 +157,18 @@ fn compiled_resources_preserve_ownership_connections_and_dependency_order() {
             env: "GATEWAY_KEY".into(),
         },
     });
-    let provider = &mut document.spec.inference_providers[0];
-    provider.name = "remote".into();
+    let mut provider = document.spec.inference_providers.remove("local").unwrap();
     provider.endpoint = "https://models.example.test/v1".into();
     provider.credential = Some(SecretRef {
         env: "MODEL_TOKEN".into(),
     });
-    let sandbox = &mut document.spec.sandboxes[0];
-    sandbox.name = "worker".into();
+    document
+        .spec
+        .inference_providers
+        .insert("remote".into(), provider);
+    let mut sandbox = document.spec.sandboxes.remove("assistant").unwrap();
     sandbox.agent.inference.as_mut().unwrap().routes[0].provider_ref = Some("remote".into());
+    document.spec.sandboxes.insert("worker".into(), sandbox);
     let generations = ownership_generations();
     let graph = compile(&document, &generations, "0.1.0").unwrap();
     // Only the gateway providers take the connection.
@@ -267,7 +270,10 @@ fn managed_plans_query_selected_engine_and_image_without_probe_resources() {
             "read existing capabilities during plan"
         );
         let image = &graph["data"]["fabric_capabilities"]["sandbox_0"];
-        assert_eq!(image["image"], document.spec.sandboxes[0].image.ref_);
+        assert_eq!(
+            image["image"],
+            document.spec.sandboxes["assistant"].image.ref_
+        );
         assert!(
             image.get("depends_on").is_none(),
             "metadata inspection must not depend on image acquisition"
@@ -282,11 +288,7 @@ fn managed_plans_query_selected_engine_and_image_without_probe_resources() {
             serde_json::from_str(image["config_json"].as_str().unwrap()).unwrap();
         assert_eq!(
             configuration["harness"]["adapter_id"],
-            document
-                .sandbox_harness(&document.spec.sandboxes[0])
-                .unwrap()
-                .kind
-                .as_str()
+            document.sandbox_harness("assistant").unwrap().kind.as_str()
         );
         assert_eq!(
             configuration["models"]["default"]["api"],
@@ -300,10 +302,11 @@ fn managed_plans_query_selected_engine_and_image_without_probe_resources() {
 fn arbitrary_fabric_harness_identifier_survives_runtime_compilation() {
     let mut value: serde_json::Value =
         serde_saphyr::from_str(include_str!("fixtures/config/local.yaml")).unwrap();
-    value["spec"]["sandboxes"][0]["harness"]["kind"] = "org.fixture.custom-adapter".into();
-    value["spec"]["sandboxes"][0]["harness"]["settings"] =
+    value["spec"]["sandboxes"]["assistant"]["harness"]["kind"] =
+        "org.fixture.custom-adapter".into();
+    value["spec"]["sandboxes"]["assistant"]["harness"]["settings"] =
         serde_json::json!({"custom_option":"fixture-value"});
-    value["spec"]["inferenceProviders"][0]["api"] = "openai-responses".into();
+    value["spec"]["inferenceProviders"]["local"]["api"] = "openai-responses".into();
     let document = Document::parse(value.to_string().as_bytes()).unwrap();
     let targets = nemoclaw_sdk::compile::targets(&document, &ownership_generations()).unwrap();
     let sandbox = targets
@@ -345,10 +348,9 @@ fn adding_an_image_keeps_existing_registration_and_separates_executable_scopes()
         .find(|target| target.kind == "provider")
         .unwrap();
     let mut changed = document.clone();
-    let mut second = changed.spec.sandboxes[0].clone();
-    second.name = "second".into();
+    let mut second = changed.spec.sandboxes["assistant"].clone();
     second.image.ref_ = format!("fixture/other@sha256:{}", "b".repeat(64));
-    changed.spec.sandboxes.push(second);
+    changed.spec.sandboxes.insert("second".into(), second);
     let after = targets(&changed, &generations).unwrap();
     assert!(after.contains(original));
     assert_eq!(
@@ -363,7 +365,7 @@ fn adding_an_image_keeps_existing_registration_and_separates_executable_scopes()
         1,
         "authored provider selection is independent of registration count"
     );
-    assert_eq!(changed.inference_provider_mut().unwrap().name, "local");
+    assert_eq!(changed.inference_provider().unwrap().name, "local");
     let graph = compile(&changed, &generations, "0.1.0").unwrap();
     for name in ["assistant", "second"] {
         assert!(

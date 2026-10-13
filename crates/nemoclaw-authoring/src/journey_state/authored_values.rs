@@ -75,18 +75,21 @@ impl AuthoredValues {
         {
             self.inactive_settings.insert(old.clone(), settings.clone());
         }
+        let sandbox = sandbox_path(&self.values)
+            .ok_or_else(|| diagnostic("journey", "The v1 journey requires one sandbox object."))?;
+        let inline = format!("{sandbox}/harness");
         let owner_path = harness_path(&self.values)
             .or_else(|| {
                 position
                     .selected_forms
-                    .get("/spec/sandboxes/0")
+                    .get(&sandbox)
                     .filter(|form| *form == "harness")
-                    .map(|_| "/spec/sandboxes/0/harness".into())
+                    .map(|_| inline.clone())
             })
             .ok_or_else(|| diagnostic("journey", "Harness is unavailable."))?;
-        let harness = if owner_path == "/spec/sandboxes/0/harness" {
+        let harness = if owner_path == inline {
             self.values
-                .pointer_mut("/spec/sandboxes/0")
+                .pointer_mut(&sandbox)
                 .and_then(Value::as_object_mut)
                 .ok_or_else(|| {
                     diagnostic("journey", "The v1 journey requires one sandbox object.")
@@ -183,6 +186,22 @@ impl AuthoredValues {
         if value.is_none() && self.values.pointer(parent).is_none() {
             return Ok(());
         }
+        // The journey edits its one sandbox; a write never adds another.
+        let sandbox = pointer
+            .strip_prefix("/spec/sandboxes/")
+            .map(|rest| rest.split_once('/').map_or(rest, |(key, _)| key));
+        if value.is_some()
+            && let Some(key) = sandbox
+            && self
+                .values
+                .pointer(&format!("/spec/sandboxes/{key}"))
+                .is_none()
+        {
+            return Err(diagnostic(
+                "journey",
+                "The v1 journey cannot add a sandbox.",
+            ));
+        }
         let mut current = &mut self.values;
         for segment in parent.split('/').skip(1) {
             let key = segment.replace("~1", "/").replace("~0", "~");
@@ -241,7 +260,7 @@ impl AuthoredValues {
         let mut inactive = Vec::new();
         let mut active_objects = Vec::new();
         for (key, value) in fields {
-            let field = format!("{parent}/{}", escape_pointer(key));
+            let field = format!("{parent}/{}", escape(key));
             if field == written || sdk_field_schema_for(before, &field).is_none() {
                 continue;
             }
@@ -297,15 +316,12 @@ impl AuthoredValues {
             .cloned()
             .unwrap_or_default();
         self.put_sdk_field(pointer, Some(serde_json::json!({ key: {} })))?;
-        let selected = format!("{pointer}/{}", escape_pointer(key));
+        let selected = format!("{pointer}/{}", escape(key));
         let carried = settings
             .into_iter()
             .filter(|(name, value)| {
-                sdk_field_schema_for(
-                    &self.values,
-                    &format!("{selected}/{}", escape_pointer(name)),
-                )
-                .is_some_and(|(schema, _)| schema_accepts(&schema, value) == Some(true))
+                sdk_field_schema_for(&self.values, &format!("{selected}/{}", escape(name)))
+                    .is_some_and(|(schema, _)| schema_accepts(&schema, value) == Some(true))
             })
             .collect::<Map<_, _>>();
         self.put_sdk_field(&selected, Some(Value::Object(carried)))
@@ -333,5 +349,32 @@ impl AuthoredValues {
         }
         self.generated_gateway_engine = engine.is_some();
         self.put_sdk_field(&path, engine)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn an_sdk_field_write_never_adds_a_sandbox() {
+        let original = json!({"spec": {"sandboxes": {"assistant": {"agent": {}}}}});
+        let mut authored = AuthoredValues::new(original.clone());
+        for pointer in ["/spec/sandboxes/other/agent/name", "/spec/sandboxes/other"] {
+            let error = authored
+                .put_sdk_field(pointer, Some(json!("main")))
+                .unwrap_err()
+                .to_string();
+            assert_eq!(error, "journey: The v1 journey cannot add a sandbox.");
+            assert_eq!(authored.values, original);
+        }
+        authored
+            .put_sdk_field("/spec/sandboxes/assistant/agent/name", Some(json!("main")))
+            .unwrap();
+        assert_eq!(
+            authored.values,
+            json!({"spec": {"sandboxes": {"assistant": {"agent": {"name": "main"}}}}})
+        );
     }
 }

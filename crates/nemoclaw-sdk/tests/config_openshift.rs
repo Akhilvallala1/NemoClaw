@@ -22,7 +22,8 @@ fn cluster(distribution: Option<&str>) -> Value {
         target["distribution"] = json!(distribution);
     }
     input["spec"]["gateway"] = json!({"management": "managed", "target": {"kubernetes": target}});
-    input["spec"]["sandboxes"][0]["image"]["metadata"] = json!({"env":"TEST_IMAGE_METADATA"});
+    input["spec"]["sandboxes"]["assistant"]["image"]["metadata"] =
+        json!({"env":"TEST_IMAGE_METADATA"});
     input
 }
 
@@ -72,15 +73,15 @@ fn openshift_preserves_authored_profile_and_uses_the_upstream_kubernetes_driver(
 fn openshift_never_defaults_an_image_or_uses_a_local_managed_gateway() {
     for managed in [false, true] {
         let mut value = input(managed);
-        value["spec"]["sandboxes"][0]
+        value["spec"]["sandboxes"]["assistant"]
             .as_object_mut()
             .unwrap()
             .remove("image");
         assert!(Document::parse(value.to_string().as_bytes()).is_err());
         let mut document = Document::parse(input(managed).to_string().as_bytes()).unwrap();
-        document.spec.sandboxes[0].image = Default::default();
+        document.spec.sandboxes.get_mut("assistant").unwrap().image = Default::default();
         document.defaults();
-        assert!(document.spec.sandboxes[0].image.ref_.is_empty());
+        assert!(document.spec.sandboxes["assistant"].image.ref_.is_empty());
         assert!(document.validate().is_err());
     }
     let mut value = input(false);

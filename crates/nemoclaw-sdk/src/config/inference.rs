@@ -22,7 +22,7 @@ impl Document {
     /// cannot be resolved. This operation does not contact external services.
     pub fn inference_connection(&self) -> Result<InferenceConnection, ConfigError> {
         self.validate()?;
-        self.provider_connection(self.inference_provider()?)
+        self.provider_connection(self.inference_provider()?.definition)
     }
 
     /// Resolve one selected provider using the same publication rules as deployment.

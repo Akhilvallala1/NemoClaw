@@ -133,8 +133,11 @@ fn field_schema_in(root: &Value, values: &Value, path: &str) -> Option<(Value, b
         {
             node = branch;
         }
-        if part.parse::<usize>().is_ok() {
-            node = node.get("items")?;
+        // A numeric segment indexes an array; under an object it is a map key.
+        if part.parse::<usize>().is_ok()
+            && let Some(items) = node.get("items")
+        {
+            node = items;
             required = true;
         } else if let Some(property) = node
             .get("properties")
@@ -433,6 +436,31 @@ mod tests {
         // Another variant's fields do not apply while the input names this one.
         let values = json!({"target": {"docker": {}}});
         assert!(field_schema_in(&root, &values, "/target/podman/engine").is_none());
+    }
+
+    #[test]
+    fn a_numeric_map_key_names_an_entry_and_an_array_index_names_an_item() {
+        // SDK collections reject numeric names, so this map accepts any key.
+        let root = json!({
+            "type": "object",
+            "properties": {"entries": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "routes": {"type": "array", "items": {"type": "integer"}}
+                    },
+                    "required": ["name"]
+                }
+            }}
+        });
+        let values = json!({"entries": {"7": {"routes": [1]}}});
+        let (schema, required) = field_schema_in(&root, &values, "/entries/7/name").unwrap();
+        assert_eq!(schema["type"], "string");
+        assert!(required);
+        let (schema, _) = field_schema_in(&root, &values, "/entries/7/routes/0").unwrap();
+        assert_eq!(schema["type"], "integer");
     }
 
     #[test]

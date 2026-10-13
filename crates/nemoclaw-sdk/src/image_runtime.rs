@@ -7,13 +7,13 @@ use std::collections::BTreeMap;
 
 pub use nemoclaw_openshell::runtime::{ImageRuntime, PolicyInput, RuntimeBinding, path_is_granted};
 
-/// Authored policy and deployment-owned endpoint grants for a sandbox.
+/// Authored policy and deployment-owned endpoint grants for the named sandbox.
 pub fn policy_input(
     document: &crate::config::Document,
-    sandbox: &crate::config::Sandbox,
+    sandbox: &str,
 ) -> Result<PolicyInput, crate::config::ConfigError> {
     use crate::config::{ConfigError, NetworkPolicy};
-    let explicit = match &sandbox.network.policy {
+    let explicit = match &document.sandbox(sandbox)?.network.policy {
         NetworkPolicy::Isolated => None,
         NetworkPolicy::Explicit(policy) => Some(policy.clone()),
     };

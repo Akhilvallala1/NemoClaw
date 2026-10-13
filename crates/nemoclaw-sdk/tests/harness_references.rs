@@ -9,19 +9,19 @@ use serde_json::{Value, json};
 fn input() -> Value {
     let mut value: Value =
         serde_saphyr::from_str(include_str!("../../../examples/fabric-openclaw.yaml")).unwrap();
-    value["spec"]["sandboxes"][0]["harness"] =
+    value["spec"]["sandboxes"]["assistant"]["harness"] =
         json!({"kind":"openclaw", "execution":{"timeoutSeconds":900}});
     value
 }
 fn shared(mut value: Value, sandbox: bool) -> Value {
-    let harness = value["spec"]["sandboxes"][0]
+    let harness = value["spec"]["sandboxes"]["assistant"]
         .as_object_mut()
         .unwrap()
         .remove("harness")
         .unwrap();
-    value["spec"]["sandboxes"][0]["harnessRef"] = json!("assistant");
+    value["spec"]["sandboxes"]["assistant"]["harnessRef"] = json!("assistant");
     let scope = if sandbox {
-        &mut value["spec"]["sandboxes"][0]
+        &mut value["spec"]["sandboxes"]["assistant"]
     } else {
         &mut value["spec"]
     };
@@ -49,12 +49,7 @@ fn shared_harness_configuration_compiles_identically_and_survives_export() {
             Document::parse(doc.yaml().unwrap().as_bytes()).unwrap(),
             doc
         );
-        let mut other = value["spec"]["sandboxes"][0].clone();
-        other["name"] = json!("writer");
-        value["spec"]["sandboxes"]
-            .as_array_mut()
-            .unwrap()
-            .push(other);
+        value["spec"]["sandboxes"]["writer"] = value["spec"]["sandboxes"]["assistant"].clone();
         let doc = Document::parse(value.to_string().as_bytes()).unwrap();
         let rows = targets(&doc, &generations).unwrap();
         let runtime: Value = serde_json::from_str(
@@ -72,23 +67,23 @@ fn shared_harness_configuration_compiles_identically_and_survives_export() {
 #[test]
 fn sandbox_harness_selection_rejects_ambiguity_agent_selection_and_unsupported_counts() {
     let mut missing = shared(input(), false);
-    missing["spec"]["sandboxes"][0]["harnessRef"] = json!("missing");
+    missing["spec"]["sandboxes"]["assistant"]["harnessRef"] = json!("missing");
     let mut both = shared(input(), false);
-    both["spec"]["sandboxes"][0]["harness"] = json!({"kind":"openclaw"});
+    both["spec"]["sandboxes"]["assistant"]["harness"] = json!({"kind":"openclaw"});
     let mut shadow = shared(input(), false);
-    shadow["spec"]["sandboxes"][0]["harnesses"] = shadow["spec"]["harnesses"].clone();
+    shadow["spec"]["sandboxes"]["assistant"]["harnesses"] = shadow["spec"]["harnesses"].clone();
     let mut absent = input();
-    absent["spec"]["sandboxes"][0]
+    absent["spec"]["sandboxes"]["assistant"]
         .as_object_mut()
         .unwrap()
         .remove("harness");
     let mut limited = input();
     limited["spec"]["gateway"] =
         json!({"management":"external","endpoint":"http://127.0.0.1:8080"});
-    limited["spec"]["sandboxes"][0]["harness"] = json!({"kind":"nvidia.fabric.hermes"});
-    let mut other = limited["spec"]["sandboxes"][0]["agent"].clone();
+    limited["spec"]["sandboxes"]["assistant"]["harness"] = json!({"kind":"nvidia.fabric.hermes"});
+    let mut other = limited["spec"]["sandboxes"]["assistant"]["agent"].clone();
     other["name"] = json!("other");
-    limited["spec"]["sandboxes"][0]["agents"] = json!([other]);
+    limited["spec"]["sandboxes"]["assistant"]["agents"] = json!([other]);
     let schema = jsonschema::validator_for(&input_schema()).unwrap();
     for value in [absent, both, limited] {
         assert!(Document::parse(value.to_string().as_bytes()).is_err());
@@ -123,13 +118,13 @@ fn default_image_follows_the_selected_harness_and_tolerates_incomplete_selection
     use nemoclaw_sdk::config::DEFAULT_AGENT_IMAGE;
 
     let mut inline = input();
-    inline["spec"]["sandboxes"][0]["harness"] = json!({"kind":"nvidia.fabric.hermes"});
+    inline["spec"]["sandboxes"]["assistant"]["harness"] = json!({"kind":"nvidia.fabric.hermes"});
     let mut missing = shared(inline.clone(), false);
-    missing["spec"]["sandboxes"][0]["harnessRef"] = json!("missing");
+    missing["spec"]["sandboxes"]["assistant"]["harnessRef"] = json!("missing");
     let mut both = shared(inline.clone(), false);
-    both["spec"]["sandboxes"][0]["harness"] = json!({"kind":"nvidia.fabric.hermes"});
+    both["spec"]["sandboxes"]["assistant"]["harness"] = json!({"kind":"nvidia.fabric.hermes"});
     let mut absent = input();
-    absent["spec"]["sandboxes"][0]
+    absent["spec"]["sandboxes"]["assistant"]
         .as_object_mut()
         .unwrap()
         .remove("harness");
@@ -142,11 +137,14 @@ fn default_image_follows_the_selected_harness_and_tolerates_incomplete_selection
         (absent, false),
     ] {
         let mut document: Document = serde_json::from_value(value).unwrap();
-        document.spec.sandboxes[0].image.ref_.clear();
+        let sandbox = document.spec.sandboxes.get_mut("assistant").unwrap();
+        sandbox.image.ref_.clear();
         document.defaults();
-        let sandbox = &document.spec.sandboxes[0];
-        assert_eq!(sandbox.image.ref_, DEFAULT_AGENT_IMAGE);
-        let selected = document.sandbox_harness(sandbox);
+        assert_eq!(
+            document.spec.sandboxes["assistant"].image.ref_,
+            DEFAULT_AGENT_IMAGE
+        );
+        let selected = document.sandbox_harness("assistant");
         if valid {
             assert_eq!(
                 selected.unwrap().kind,

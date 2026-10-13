@@ -28,7 +28,7 @@ impl QuestionResolver<'_> {
                     continue;
                 }
                 questions.push(JourneyQuestion {
-                    target: QuestionTarget::sdk(field.path.clone()),
+                    target: QuestionTarget::sdk(&self.authored.values, field.path.clone()),
                     kind: JourneyQuestionKind::Field,
                     reopened_because: None,
                     id: field.path,

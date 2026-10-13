@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use nemoclaw_authoring::{JourneyQuestion, JourneyQuestionKind, ProviderPreset};
+use nemoclaw_authoring::{
+    JourneyQuestion, JourneyQuestionKind, ProviderPreset, replace_entry_keys,
+};
+use nemoclaw_sdk::config::valid_name;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::OnceLock};
@@ -21,8 +24,8 @@ struct QuestionText {
 }
 
 /// Friendly text for questions and choices from `text.json`, keyed by
-/// question ID with `*` standing for array indices, service names, gateway
-/// target keys, and adapter IDs. Entries
+/// question ID with `*` standing for array indices, sandbox, provider, and
+/// service names, gateway target keys, and adapter IDs. Entries
 /// override the titles and descriptions advertised by the SDK and Fabric
 /// schemas. Describe Fabric adapter and model settings in the Fabric adapter
 /// descriptors instead, so every client receives the same text.
@@ -34,20 +37,18 @@ fn text() -> &'static Text {
 }
 
 /// Map keys for a question ID, most specific first: the ID itself, then with
-/// array indices, service names, and gateway target keys replaced by `*`, then
-/// also the adapter ID.
+/// array indices, the names of sandboxes, providers, services, and other named
+/// definitions, and the gateway target key replaced by `*`, then also the
+/// adapter ID. A key is a name only by its position in the ID.
 fn keys(id: &str) -> [String; 3] {
-    let parts = id.split('/').collect::<Vec<_>>();
+    let named = replace_entry_keys(id, |_| "*".into());
+    let parts = named.split('/').collect::<Vec<_>>();
     let indices = parts
         .iter()
         .enumerate()
         .map(|(index, part)| {
-            let service = index > 0 && parts[index - 1] == "services";
-            let target = index > 1 && parts[index - 2..index] == ["gateway", "target"];
-            if service
-                || target
-                || (!part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-            {
+            let target = index == 4 && parts[1..4] == ["spec", "gateway", "target"];
+            if target || (!part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())) {
                 "*"
             } else {
                 part
@@ -142,14 +143,26 @@ pub(super) fn label(question: &JourneyQuestion) -> String {
     readable(id)
 }
 
+/// A question ID or document pointer for display: a sandbox, provider,
+/// service, or other definition key that is not a valid name reads as
+/// `[entry]`, as in SDK diagnostics, so rejected input is never shown.
+pub(super) fn pointer_text(pointer: &str) -> String {
+    replace_entry_keys(pointer, |key| {
+        if valid_name(key) { key } else { "[entry]" }.to_owned()
+    })
+}
+
 /// `adapter:x:/interfaces/dashboard/port` reads as "Dashboard: port".
 fn readable(id: &str) -> String {
-    let pointer = id.rsplit_once(':').map_or(id, |(_, pointer)| pointer);
+    let id = pointer_text(id);
+    let pointer = id
+        .rsplit_once(':')
+        .map_or(id.as_str(), |(_, pointer)| pointer);
     let mut parts = pointer
         .split('/')
         .filter(|part| !part.is_empty() && !part.bytes().all(|byte| byte.is_ascii_digit()))
         .map(words);
-    let last = parts.next_back().unwrap_or_else(|| words(id));
+    let last = parts.next_back().unwrap_or_else(|| words(&id));
     match parts.next_back() {
         Some(parent) if !matches!(parent.as_str(), "Spec" | "Settings") => {
             acronyms(&format!("{parent}: {}", last.to_lowercase()))
@@ -213,11 +226,12 @@ fn words(part: &str) -> String {
 
 /// The managed service a question belongs to, shown under its title.
 pub(super) fn service(question: &JourneyQuestion) -> Option<&str> {
-    question
+    let name = question
         .id()
         .strip_prefix("/spec/services/")?
         .split('/')
-        .next()
+        .next()?;
+    Some(if valid_name(name) { name } else { "[entry]" })
 }
 
 // External labels stay unchanged in authored values; escape them only for the terminal.
@@ -241,10 +255,22 @@ mod tests {
     use super::{keys, readable};
 
     #[test]
-    fn map_keys_generalize_indices_service_names_and_adapters() {
+    fn map_keys_generalize_indices_collection_keys_and_adapters() {
         assert_eq!(
-            keys("/spec/sandboxes/0/agent/inference/routes/1/name")[1],
+            keys("/spec/sandboxes/assistant/agent/inference/routes/1/name")[1],
             "/spec/sandboxes/*/agent/inference/routes/*/name"
+        );
+        assert_eq!(
+            keys("form:/spec/sandboxes/assistant/agent")[1],
+            "form:/spec/sandboxes/*/agent"
+        );
+        assert_eq!(
+            keys("/spec/inferenceProviders/nvidia-prod/api")[1],
+            "/spec/inferenceProviders/*/api"
+        );
+        assert_eq!(
+            keys("/spec/sandboxes/assistant/inferenceProviders/own/endpoint")[1],
+            "/spec/sandboxes/*/inferenceProviders/*/endpoint"
         );
         assert_eq!(
             keys("/spec/services/qwen/serving/port")[1],
@@ -256,6 +282,23 @@ mod tests {
         );
         // The target key question itself names no key.
         assert_eq!(keys("/spec/gateway/target")[1], "/spec/gateway/target");
+        // Only a key's position makes it a name; a name can equal a field.
+        assert_eq!(
+            keys("/spec/sandboxes/services/image/ref")[1],
+            "/spec/sandboxes/*/image/ref"
+        );
+        assert_eq!(
+            keys("/spec/sandboxes/target/inferenceProviders/sandboxes/endpoint")[1],
+            "/spec/sandboxes/*/inferenceProviders/*/endpoint"
+        );
+        assert_eq!(
+            keys("adapter:x:/services/port")[1],
+            "adapter:x:/services/port"
+        );
+        assert_eq!(
+            keys("/spec/gateway/kubernetes/target/endpoint")[1],
+            "/spec/gateway/kubernetes/target/endpoint"
+        );
         assert_eq!(
             keys("adapter:nvidia.fabric.openclaw:/native_config/cron")[2],
             "adapter:*:/native_config/cron"
@@ -274,6 +317,10 @@ mod tests {
         assert_eq!(
             readable("/spec/gateway/target/docker/networkCidr"),
             "Docker: network CIDR"
+        );
+        assert_eq!(
+            readable("/spec/inferenceProviders/PRIVATE INVALID NAME/endpoint"),
+            "[entry]: endpoint"
         );
     }
 }

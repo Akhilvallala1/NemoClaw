@@ -192,7 +192,9 @@ impl JourneyState {
         capabilities: &Capabilities,
         observations: &DiscoveryObservations,
     ) -> Result<(), Diagnostics> {
-        if !self.decisions.accepted.contains(HARNESS) {
+        if !harness_field(&self.authored.values)
+            .is_some_and(|field| self.decisions.accepted.contains(&field))
+        {
             return Err(diagnostic(
                 "delegation",
                 "Choose a harness before delegating settings.",

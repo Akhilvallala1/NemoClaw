@@ -80,18 +80,18 @@ fn public_fabric_configuration_passes_through_without_overriding_deployment_bind
     use nemoclaw_sdk::config::Document;
     let mut input: serde_json::Value =
         serde_saphyr::from_str(include_str!("fixtures/config/local.yaml")).unwrap();
-    input["spec"]["sandboxes"][0]["harness"]["config"] = json!({"mcp":{"servers":{"custom":{"transport":"stdio","url":"owned-fixture","exposure":"harness_native"}}},"runtime":{"max_turns":3}});
+    input["spec"]["sandboxes"]["assistant"]["harness"]["config"] = json!({"mcp":{"servers":{"custom":{"transport":"stdio","url":"owned-fixture","exposure":"harness_native"}}},"runtime":{"max_turns":3}});
     let doc = Document::parse(input.to_string().as_bytes()).unwrap();
-    let actual = nemoclaw_sdk::fabric_config::for_sandbox(&doc, &doc.spec.sandboxes[0]).unwrap();
+    let actual = nemoclaw_sdk::fabric_config::for_sandbox(&doc, "assistant").unwrap();
     assert_eq!(actual["runtime"]["max_turns"], 3);
     assert_eq!(
         actual["mcp"],
-        input["spec"]["sandboxes"][0]["harness"]["config"]["mcp"]
+        input["spec"]["sandboxes"]["assistant"]["harness"]["config"]["mcp"]
     );
-    input["spec"]["sandboxes"][0]["harness"]["config"]["models"] =
+    input["spec"]["sandboxes"]["assistant"]["harness"]["config"]["models"] =
         json!({"default":{"base_url":"https://substituted.invalid"}});
     let doc = Document::parse(input.to_string().as_bytes()).unwrap();
-    assert!(nemoclaw_sdk::fabric_config::for_sandbox(&doc, &doc.spec.sandboxes[0]).is_err());
+    assert!(nemoclaw_sdk::fabric_config::for_sandbox(&doc, "assistant").is_err());
 }
 
 #[test]
@@ -197,16 +197,15 @@ fn rejected_model_limit_identifies_the_field_and_authored_route_without_values()
     };
     let mut input: serde_json::Value =
         serde_saphyr::from_str(include_str!("fixtures/config/local.yaml")).unwrap();
-    input["spec"]["sandboxes"][0]["harness"]["kind"] = "nvidia.fabric.pi".into();
-    input["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["name"] = "fast".into();
-    input["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["overrides"]["maxTokens"] =
+    input["spec"]["sandboxes"]["assistant"]["harness"]["kind"] = "nvidia.fabric.pi".into();
+    input["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["name"] =
+        "fast".into();
+    input["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["overrides"]["maxTokens"] =
         256.into();
     let document = Document::parse(input.to_string().as_bytes()).unwrap();
-    let mut request = nemoclaw_sdk::fabric_capabilities::requirements_for_sandbox(
-        &document,
-        &document.spec.sandboxes[0],
-    )
-    .unwrap();
+    let mut request =
+        nemoclaw_sdk::fabric_capabilities::requirements_for_sandbox(&document, "assistant")
+            .unwrap();
     let report = assess_fabric(&FabricCatalog::bundled(), &request);
     assert_eq!(report.status, Support::Unsupported);
     let text = serde_json::to_string(&report).unwrap();
@@ -369,11 +368,11 @@ spec:
         endpoint: http://127.0.0.1:18080
         networkCidr: 10.231.200.0/24
   inferenceProviders:
-    - name: hosted
+    hosted:
       provider: openai
       endpoint: https://inference.example.test/v1
   sandboxes:
-    - name: assistant
+    assistant:
       image:
         ref: nc-dummy@sha256:0000000000000000000000000000000000000000000000000000000000000000
       network:
@@ -402,8 +401,7 @@ spec:
         ))
         .unwrap(),
     }];
-    let configuration =
-        nemoclaw_sdk::fabric_config::for_sandbox(&document, &document.spec.sandboxes[0]).unwrap();
+    let configuration = nemoclaw_sdk::fabric_config::for_sandbox(&document, "assistant").unwrap();
     let plan = plan_configuration(&catalog, configuration.clone()).unwrap();
     assert_eq!(plan.config.harness.unwrap().settings["reply"], "dummy-ok");
     let mut unknown = configuration;

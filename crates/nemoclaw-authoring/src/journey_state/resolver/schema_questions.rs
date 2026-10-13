@@ -17,14 +17,13 @@ pub(super) fn collect_required_leaf_questions(
         return;
     }
     if let Some((discriminator, _)) = sdk_discriminator(schema) {
-        let escaped = discriminator.replace('~', "~0").replace('/', "~1");
-        let choice_path = format!("{path}/{escaped}");
+        let choice_path = format!("{path}/{}", escape(&discriminator));
         if let Some((choice_schema, _)) = sdk_field_schema_for(values, &choice_path) {
             let supplied = values.pointer(&choice_path);
             if !supplied.is_some_and(|value| schema_accepts(&choice_schema, value) == Some(true)) {
                 if !questions.iter().any(|question| question.id == choice_path) {
                     questions.push(JourneyQuestion {
-                        target: QuestionTarget::sdk(choice_path.clone()),
+                        target: QuestionTarget::sdk(values, choice_path.clone()),
                         kind: JourneyQuestionKind::Field,
                         reopened_because: None,
                         id: choice_path,
@@ -64,7 +63,7 @@ pub(super) fn collect_required_leaf_questions(
             .iter()
             .filter(|name| {
                 values
-                    .pointer(&format!("{path}/{}", escape_pointer(name)))
+                    .pointer(&format!("{path}/{}", escape(name)))
                     .is_some()
             })
             .collect::<Vec<_>>();
@@ -76,7 +75,7 @@ pub(super) fn collect_required_leaf_questions(
             .map(|name| name.as_str())
             .or_else(|| selected_forms.get(path).map(String::as_str));
         if let Some(selected) = selected {
-            let child_path = format!("{path}/{}", escape_pointer(selected));
+            let child_path = format!("{path}/{}", escape(selected));
             if let Some((child_schema, _)) = sdk_field_schema_for(values, &child_path) {
                 let supplied = values.pointer(&child_path);
                 if !supplied.is_some_and(|value| schema_accepts(&child_schema, value) == Some(true))
@@ -85,7 +84,7 @@ pub(super) fn collect_required_leaf_questions(
                     let choices = finite_choices(&child_schema);
                     if scalar_question(&child_schema, &choices) {
                         questions.push(JourneyQuestion {
-                            target: QuestionTarget::sdk(child_path.clone()),
+                            target: QuestionTarget::sdk(values, child_path.clone()),
                             kind: JourneyQuestionKind::Field,
                             reopened_because: None,
                             id: child_path,
@@ -139,8 +138,7 @@ pub(super) fn collect_required_leaf_questions(
         return;
     };
     for name in required.iter().filter_map(Value::as_str) {
-        let escaped = name.replace('~', "~0").replace('/', "~1");
-        let child_path = format!("{path}/{escaped}");
+        let child_path = format!("{path}/{}", escape(name));
         if questions.iter().any(|question| question.id == child_path) {
             continue;
         }
@@ -154,7 +152,7 @@ pub(super) fn collect_required_leaf_questions(
         let choices = finite_choices(&child_schema);
         if scalar_question(&child_schema, &choices) {
             questions.push(JourneyQuestion {
-                target: QuestionTarget::sdk(child_path.clone()),
+                target: QuestionTarget::sdk(values, child_path.clone()),
                 kind: JourneyQuestionKind::Field,
                 reopened_because: None,
                 id: child_path,

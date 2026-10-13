@@ -98,9 +98,8 @@ fn read(
 
 pub(crate) fn populate(graph: &mut Value, document: &Document) -> Result<(), ConfigError> {
     let mut observations = Map::new();
-    let mut sandboxes: Vec<_> = document.spec.sandboxes.iter().collect();
-    sandboxes.sort_by(|left, right| left.name.cmp(&right.name));
-    let mut sandboxes = sandboxes.into_iter();
+    // Discovery reads Fabric once per sandbox, in name order.
+    let mut sandboxes = document.spec.sandboxes.keys();
     let (mut endpoints, mut targets, mut images) = (0, 0, 0);
     for query in plan_queries(document)? {
         match &query {
@@ -149,7 +148,7 @@ pub(crate) fn populate(graph: &mut Value, document: &Document) -> Result<(), Con
                     .expect("resolved adapter");
                 let context = literal(&format!(
                     "sandbox/{}: adapter/{} compatibility rejected",
-                    sandbox.name,
+                    sandbox,
                     crate::fabric_capabilities::diagnostic_field(adapter)
                 ));
                 let rejection = format!(
@@ -163,9 +162,9 @@ pub(crate) fn populate(graph: &mut Value, document: &Document) -> Result<(), Con
                     }, {
                         "condition": "${self.runtime_json != \"\"}",
                         "error_message": if metadata_env.is_some() || document.spec.gateway.compute_driver().is_kubernetes() {
-                            format!("sandbox/{}: image runtime metadata is unavailable. Set image.metadata.env to an absolute metadata bundle path and verify that it matches the immutable image digest. Resources retained.", sandbox.name)
+                            format!("sandbox/{sandbox}: image runtime metadata is unavailable. Set image.metadata.env to an absolute metadata bundle path and verify that it matches the immutable image digest. Resources retained.")
                         } else {
-                            format!("sandbox/{}: image runtime metadata is unavailable. Set the engine of spec.gateway.target.docker or spec.gateway.target.podman to the sandbox image engine, load an image built with its runtime manifest, and use its immutable digest. Resources retained.", sandbox.name)
+                            format!("sandbox/{sandbox}: image runtime metadata is unavailable. Set the engine of spec.gateway.target.docker or spec.gateway.target.podman to the sandbox image engine, load an image built with its runtime manifest, and use its immutable digest. Resources retained.")
                         }
                     }] });
                 })?;

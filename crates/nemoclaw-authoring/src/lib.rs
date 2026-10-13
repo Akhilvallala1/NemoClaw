@@ -19,6 +19,7 @@ mod journey_definition;
 mod journey_state;
 mod journey_tree;
 mod partial_document;
+mod pointer;
 mod provider_presets;
 mod target_assessment;
 
@@ -34,6 +35,7 @@ pub use journey_state::{
     JourneyState,
 };
 pub use partial_document::{PartialAssessment, PartialDocument, PartialIssue, PartialIssueKind};
+pub use pointer::replace_entry_keys;
 pub use provider_presets::ProviderPreset;
 pub use target_assessment::{CompatibilityStatus, DiscoveryAssessment, assess_target};
 

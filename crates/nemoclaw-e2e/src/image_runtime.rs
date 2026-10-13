@@ -34,14 +34,10 @@ pub fn targets(
                 serde_json::json!(["/usr/local/bin/python3.99"]).to_string(),
             );
         } else if target.kind == "sandbox" {
-            let sandbox = document
-                .spec
-                .sandboxes
-                .iter()
-                .find(|sandbox| sandbox.name == target.values["name"])
-                .unwrap();
-            let requirements =
-                nemoclaw_sdk::fabric_capabilities::requirements_for_sandbox(document, sandbox)?;
+            let requirements = nemoclaw_sdk::fabric_capabilities::requirements_for_sandbox(
+                document,
+                &target.values["name"],
+            )?;
             let adapter = requirements.configuration["harness"]["adapter_id"]
                 .as_str()
                 .unwrap();
@@ -96,7 +92,7 @@ pub async fn engine(document: &mut Document) -> transport::Fixture {
     let references: Vec<_> = document
         .spec
         .sandboxes
-        .iter()
+        .values()
         .map(|sandbox| sandbox.image.ref_.clone())
         .collect();
     let fixture = transport::Fixture::engine(move |request| {

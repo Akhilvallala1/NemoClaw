@@ -83,7 +83,8 @@ fn removed_ownership_annotations_preserve_intent_and_resource_bindings_for_recov
     .unwrap();
     let record = Record::new(document).unwrap();
     let mut old = serde_json::to_value(&record).unwrap();
-    old["document"]["spec"]["inferenceProviders"][0]["management"] = serde_json::json!("external");
+    old["document"]["spec"]["inferenceProviders"]["local"]["management"] =
+        serde_json::json!("external");
     let bytes = serde_json::to_vec(&old).unwrap();
     let intent = dir.path().join("intent.json");
     let state = dir.path().join("terraform.tfstate");
@@ -248,18 +249,26 @@ fn pending_creation_guards_only_unresolved_targets_and_survives_runtime_recovery
     record.pending = true;
     record.pending_creations = [(pending.address.clone(), pending.values.clone())].into();
     let mut revised = document.clone();
-    let mut unrelated = revised.spec.inference_providers[0].clone();
-    unrelated.name = "unrelated".into();
-    revised.spec.inference_providers.push(unrelated);
+    let unrelated = revised.spec.inference_providers["local"].clone();
+    revised
+        .spec
+        .inference_providers
+        .insert("unrelated".into(), unrelated);
     assert!(record.validate_pending_intent(&revised).is_ok());
-    revised.spec.sandboxes[0].image.ref_ =
-        format!("example.invalid/changed@sha256:{}", "b".repeat(64));
+    revised
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .image
+        .ref_ = format!("example.invalid/changed@sha256:{}", "b".repeat(64));
     revised.validate().unwrap();
     assert!(matches!(
         record.validate_pending_intent(&revised),
         Err(Error::Conflict(_))
     ));
-    revised.spec.sandboxes[0].name = "replacement".into();
+    let sandbox = revised.spec.sandboxes.remove("assistant").unwrap();
+    revised.spec.sandboxes.insert("replacement".into(), sandbox);
     revised.validate().unwrap();
     assert!(matches!(
         record.validate_pending_intent(&revised),
@@ -398,7 +407,7 @@ fn a_kubernetes_records_generations_reload_and_stay_stable() {
             "namespace": "test-agents", "authentication": {"profile": "development"}
         }}
     });
-    value["spec"]["sandboxes"][0]["image"]["metadata"] =
+    value["spec"]["sandboxes"]["assistant"]["image"]["metadata"] =
         serde_json::json!({"env": "TEST_IMAGE_METADATA"});
     let document = Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
     let mut record = Record::new(document.clone()).unwrap();
@@ -658,7 +667,11 @@ fn bound_sandbox_guard_allows_configuration_updates_additions_and_explicit_recre
     )]);
     let mut revised = document.clone();
     revised.metadata.name = "new-display-name".into();
-    revised.spec.sandboxes[0]
+    revised
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
         .agent
         .inference
         .as_mut()
@@ -666,28 +679,31 @@ fn bound_sandbox_guard_allows_configuration_updates_additions_and_explicit_recre
         .routes[0]
         .overrides
         .model = "corrected-model".into();
-    let mut added = revised.spec.sandboxes[0].clone();
-    added.name = "reviewer".into();
-    revised.spec.sandboxes.push(added);
-    revised.spec.sandboxes.reverse();
+    let added = revised.spec.sandboxes["assistant"].clone();
+    revised.spec.sandboxes.insert("reviewer".into(), added);
     record.validate_bound_sandboxes(&revised, &bound).unwrap();
     for change in ["remove", "image", "agent", "policy", "endpoint"] {
         let mut value = serde_json::to_value(&document).unwrap();
         match change {
-            "remove" => value["spec"]["sandboxes"][0]["name"] = serde_json::json!("different"),
+            "remove" => {
+                let sandboxes = value["spec"]["sandboxes"].as_object_mut().unwrap();
+                let sandbox = sandboxes.remove("assistant").unwrap();
+                sandboxes.insert("different".into(), sandbox);
+            }
             "image" => {
-                value["spec"]["sandboxes"][0]["image"]["ref"] =
+                value["spec"]["sandboxes"]["assistant"]["image"]["ref"] =
                     serde_json::json!(format!("sandbox@sha256:{}", "f".repeat(64)))
             }
             "agent" => {
-                value["spec"]["sandboxes"][0]["agent"]["name"] = serde_json::json!("different")
+                value["spec"]["sandboxes"]["assistant"]["agent"]["name"] =
+                    serde_json::json!("different")
             }
             "policy" => {
-                value["spec"]["sandboxes"][0]["network"] =
+                value["spec"]["sandboxes"]["assistant"]["network"] =
                     serde_json::json!({"policy":{"explicit":{"version":1,"network_policies":{}}}})
             }
             "endpoint" => {
-                value["spec"]["inferenceProviders"][0]["endpoint"] =
+                value["spec"]["inferenceProviders"]["local"]["endpoint"] =
                     serde_json::json!("http://127.0.0.1:19999/v1")
             }
             _ => unreachable!(),

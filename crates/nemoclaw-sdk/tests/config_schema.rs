@@ -83,7 +83,7 @@ fn image_pull_policy_accepts_only_supported_values_on_managed_containers() {
     external["spec"]["gateway"]["imagePullPolicy"] = json!("Never");
     agrees(&validator, &external, false);
     let mut sandbox = input("local.yaml");
-    sandbox["spec"]["sandboxes"][0]["imagePullPolicy"] = json!("Never");
+    sandbox["spec"]["sandboxes"]["assistant"]["imagePullPolicy"] = json!("Never");
     agrees(&validator, &sandbox, false);
 }
 
@@ -101,13 +101,12 @@ fn input_schema_rejects_missing_required_fields_and_structural_nulls() {
         "/spec",
         "/spec/gateway",
         "/spec/gateway/management",
-        "/spec/inferenceProviders/0/name",
+        "/spec/inferenceProviders/local/provider",
         "/spec/sandboxes",
-        "/spec/sandboxes/0/name",
-        "/spec/sandboxes/0/agent",
-        "/spec/sandboxes/0/harness",
-        "/spec/sandboxes/0/agent/inference",
-        "/spec/sandboxes/0/agent/inference/routes/0/overrides/model",
+        "/spec/sandboxes/assistant/agent",
+        "/spec/sandboxes/assistant/harness",
+        "/spec/sandboxes/assistant/agent/inference",
+        "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model",
     ] {
         let mut value = original.clone();
         let (parent, key) = path.rsplit_once('/').unwrap();
@@ -124,7 +123,7 @@ fn input_schema_rejects_missing_required_fields_and_structural_nulls() {
         ("/spec/gateway", "tls"),
         ("/spec/gateway", "target"),
         ("/spec/gateway/target", "docker"),
-        ("/spec/inferenceProviders/0", "serviceRef"),
+        ("/spec/inferenceProviders/local", "serviceRef"),
         ("/spec", "services"),
     ] {
         let mut value = original.clone();
@@ -144,7 +143,7 @@ fn input_schema_preserves_defaults_strict_objects_and_opaque_pi_metadata() {
             .remove(key);
     }
     for key in ["image", "network", "runtime"] {
-        value["spec"]["sandboxes"][0]
+        value["spec"]["sandboxes"]["assistant"]
             .as_object_mut()
             .unwrap()
             .remove(key);
@@ -159,7 +158,7 @@ fn input_schema_preserves_defaults_strict_objects_and_opaque_pi_metadata() {
     value["spec"]["gateway"]["surprise"] = json!(true);
     agrees(&validator, &value, false);
     let mut value = input("fabric-pi.yaml");
-    let path = "/spec/sandboxes/0/agent/inference/routes/0/overrides/settings";
+    let path = "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/settings";
     *value.pointer_mut(path).unwrap() = json!({"future": [null, {"value": null}]});
     agrees(&validator, &value, true);
     *value.pointer_mut(path).unwrap() = Value::Null;
@@ -234,13 +233,13 @@ fn schema_and_parser_enforce_choices_bounds_and_conditional_forms() {
         ),
         (
             "spark/vllm.yaml",
-            "/spec/inferenceProviders/0/endpoint",
+            "/spec/inferenceProviders/qwen/endpoint",
             json!("https://api.example.com/v1"),
             false,
         ),
         (
             "spark/vllm.yaml",
-            "/spec/inferenceProviders/0/credential",
+            "/spec/inferenceProviders/qwen/credential",
             json!({"env": "TOKEN"}),
             false,
         ),
@@ -300,7 +299,7 @@ fn schema_and_parser_enforce_choices_bounds_and_conditional_forms() {
         ),
         (
             "spark/vllm.yaml",
-            "/spec/sandboxes/0/harness/kind",
+            "/spec/sandboxes/assistant/harness/kind",
             json!("deepagents"),
             true,
         ),
@@ -377,10 +376,10 @@ fn documented_parser_checks_remain_required_after_schema_validation() {
     assert!(schema["x-nemoclaw-parser-checks"].as_array().unwrap().len() >= 4);
     let validator = jsonschema::validator_for(&schema).unwrap();
     for (file, path, replacement) in [
-        ("local.yaml", "/spec/inferenceProviders", json!([])),
+        ("local.yaml", "/spec/inferenceProviders", json!({})),
         (
             "local.yaml",
-            "/spec/sandboxes/0/agent/inference/routes/0/providerRef",
+            "/spec/sandboxes/assistant/agent/inference/routes/0/providerRef",
             json!("foreign"),
         ),
         (
@@ -400,7 +399,7 @@ fn documented_parser_checks_remain_required_after_schema_validation() {
         ),
         (
             "managed-ollama.yaml",
-            "/spec/sandboxes/0/agent/inference/routes/0/overrides/model",
+            "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model",
             json!("untagged"),
         ),
         (
@@ -446,7 +445,7 @@ fn every_sandbox_requires_one_agent() {
     let value = input("local.yaml");
     agrees(&validator, &value, true);
     let mut missing = value.clone();
-    missing["spec"]["sandboxes"][0]
+    missing["spec"]["sandboxes"]["assistant"]
         .as_object_mut()
         .unwrap()
         .remove("agent");
@@ -482,7 +481,7 @@ fn gateway_variants_reject_fields_owned_by_the_other_mode() {
 fn a_sandbox_cannot_choose_a_runtime_apart_from_its_gateway() {
     let validator = jsonschema::validator_for(&input_schema()).unwrap();
     let mut value = input("managed-podman.yaml");
-    value["spec"]["sandboxes"][0]["runtime"] = json!({"provider": "docker"});
+    value["spec"]["sandboxes"]["assistant"]["runtime"] = json!({"provider": "docker"});
     agrees(&validator, &value, false);
 }
 
@@ -524,7 +523,7 @@ fn cluster_target() -> Value {
 /// and its metadata bundle.
 fn cluster_document() -> Value {
     let mut value = managed(json!({"kubernetes": cluster_target()}));
-    value["spec"]["sandboxes"][0]["image"] = json!({
+    value["spec"]["sandboxes"]["assistant"]["image"] = json!({
         "ref": format!("registry.example/agent@sha256:{}", "a".repeat(64)),
         "metadata": {"env": "TEST_IMAGE_METADATA"}
     });
@@ -890,10 +889,10 @@ fn schema_patterns_reject_trailing_newlines_in_identifiers_and_pins() {
     for (file, path) in [
         ("local.yaml", "/metadata/name"),
         ("local.yaml", "/metadata/uid"),
-        ("local.yaml", "/spec/sandboxes/0/agent/name"),
+        ("local.yaml", "/spec/sandboxes/assistant/agent/name"),
         (
             "local.yaml",
-            "/spec/sandboxes/0/agent/inference/routes/0/overrides/model",
+            "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model",
         ),
         ("spark/vllm.yaml", "/spec/services/qwen/image"),
         (
@@ -906,4 +905,255 @@ fn schema_patterns_reject_trailing_newlines_in_identifiers_and_pins() {
         *target = json!(format!("{}\n", target.as_str().unwrap()));
         agrees_at(&validator, &value, false, file, path);
     }
+}
+
+/// The keys of the object at `pointer`, sorted, since `serde_json::Map`
+/// keeps no insertion order.
+fn keys(value: &Value, pointer: &str) -> Vec<String> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("{pointer} is not an object"))
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn sandboxes_and_inference_providers_are_keyed_by_name() {
+    let validator = jsonschema::validator_for(&input_schema()).unwrap();
+    let mut value = input("multiple-providers.yaml");
+    let writer = &mut value["spec"]["sandboxes"]["writer"];
+    writer["inferenceProviders"] = json!({"own": {
+        "provider": "openai",
+        "endpoint": "http://172.20.0.1:11447/v1"
+    }});
+    writer["agent"]["inference"]["routes"][0]["providerRef"] = json!("own");
+    agrees(&validator, &value, true);
+    let document =
+        serde_json::to_value(Document::parse(value.to_string().as_bytes()).unwrap()).unwrap();
+    assert_eq!(keys(&document, "/spec/sandboxes"), ["researcher", "writer"]);
+    assert_eq!(
+        keys(&document, "/spec/inferenceProviders"),
+        ["hosted", "local"]
+    );
+    assert_eq!(
+        keys(&document, "/spec/sandboxes/writer/inferenceProviders"),
+        ["own"]
+    );
+    // The key is the name, so a keyed definition takes no name field.
+    let sandbox = "a sandbox's name is its key under spec.sandboxes";
+    let provider = "a provider's name is its key under inferenceProviders; only an inline route provider states name";
+    for (pointer, message) in [
+        ("/spec/sandboxes/writer", sandbox),
+        ("/spec/inferenceProviders/local", provider),
+        ("/spec/sandboxes/writer/inferenceProviders/own", provider),
+    ] {
+        let mut named = value.clone();
+        let key = pointer.rsplit('/').next().unwrap();
+        named.pointer_mut(pointer).unwrap()["name"] = json!(key);
+        agrees_at(
+            &validator,
+            &named,
+            false,
+            "multiple-providers.yaml",
+            pointer,
+        );
+        assert_eq!(
+            schema_diagnostic(&named),
+            format!("{}: {message}", pointer[1..].replace('/', "."))
+        );
+    }
+    // The earlier list of named entries is rejected.
+    let mut listed = input("local.yaml");
+    let mut sandbox = listed["spec"]["sandboxes"]["assistant"].clone();
+    sandbox["name"] = json!("assistant");
+    listed["spec"]["sandboxes"] = json!([sandbox]);
+    agrees(&validator, &listed, false);
+    assert_eq!(
+        schema_diagnostic(&listed),
+        format!("spec.sandboxes: {SANDBOXES}")
+    );
+    let mut listed = input("local.yaml");
+    let mut provider = listed["spec"]["inferenceProviders"]["local"].clone();
+    provider["name"] = json!("local");
+    listed["spec"]["inferenceProviders"] = json!([provider]);
+    agrees(&validator, &listed, false);
+    assert_eq!(
+        schema_diagnostic(&listed),
+        format!("spec.inferenceProviders: {PROVIDERS}")
+    );
+}
+
+const SANDBOXES: &str = "spec.sandboxes must map 1 to 32 lowercase names (^[a-z][a-z0-9-]{0,39}$) to sandbox definitions";
+const PROVIDERS: &str =
+    "inferenceProviders must map lowercase names (^[a-z][a-z0-9-]{0,39}$) to provider definitions";
+
+#[test]
+fn a_name_key_outside_the_name_pattern_is_rejected_without_echoing_it() {
+    let validator = jsonschema::validator_for(&input_schema()).unwrap();
+    let mut scoped = input("local.yaml");
+    scoped["spec"]["sandboxes"]["assistant"]["inferenceProviders"] = json!({"own": {
+        "provider": "openai",
+        "endpoint": "http://172.20.0.1:11447/v1"
+    }});
+    agrees(&validator, &scoped, true);
+    for (collection, key, rule) in [
+        ("/spec/sandboxes", "assistant", SANDBOXES),
+        ("/spec/inferenceProviders", "local", PROVIDERS),
+        (
+            "/spec/sandboxes/assistant/inferenceProviders",
+            "own",
+            PROVIDERS,
+        ),
+    ] {
+        for invalid in ["Private-Sentinel", "9private-sentinel", "private_sentinel"] {
+            let mut value = scoped.clone();
+            let map = value
+                .pointer_mut(collection)
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            let entry = map.remove(key).unwrap();
+            map.insert(invalid.into(), entry);
+            agrees_at(&validator, &value, false, invalid, collection);
+            let error = schema_diagnostic(&value);
+            let path = collection[1..].replace('/', ".");
+            assert_eq!(error, format!("{path}: {rule}"));
+            assert!(!error.contains(invalid), "{error}");
+        }
+    }
+}
+
+#[test]
+fn a_deployment_declares_one_to_32_sandboxes() {
+    let validator = jsonschema::validator_for(&input_schema()).unwrap();
+    let value = input("local.yaml");
+    let sandbox = value["spec"]["sandboxes"]["assistant"].clone();
+    for (count, accepted) in [(0, false), (1, true), (32, true), (33, false)] {
+        let mut sized = value.clone();
+        sized["spec"]["sandboxes"] = Value::Object(
+            (0..count)
+                .map(|index| (format!("sandbox-{index}"), sandbox.clone()))
+                .collect(),
+        );
+        agrees_at(
+            &validator,
+            &sized,
+            accepted,
+            "local.yaml",
+            &count.to_string(),
+        );
+        if !accepted {
+            assert_eq!(
+                schema_diagnostic(&sized),
+                format!("spec.sandboxes: {SANDBOXES}")
+            );
+        }
+    }
+}
+
+#[test]
+fn an_inline_route_provider_names_itself_and_keeps_the_provider_rules() {
+    let validator = jsonschema::validator_for(&input_schema()).unwrap();
+    let original = input("inline-inference.yaml");
+    agrees(&validator, &original, true);
+    let pointer = "/spec/sandboxes/assistant/agent/inference/routes/0/provider";
+    let mut unnamed = original.clone();
+    unnamed
+        .pointer_mut(pointer)
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("name");
+    agrees(&validator, &unnamed, false);
+    assert_eq!(
+        schema_diagnostic(&unnamed),
+        r#"spec.sandboxes.assistant.agent.inference.routes[0].provider: required field: "name""#
+    );
+    for (field, replacement) in [
+        ("name", json!("Upper")),
+        ("credential", json!({"env": "MODEL_TOKEN"})),
+        ("api", json!("anthropic-messages")),
+        ("serviceRef", json!("qwen")),
+        ("endpoint", json!("")),
+    ] {
+        let mut value = original.clone();
+        value.pointer_mut(pointer).unwrap()[field] = replacement;
+        agrees_at(&validator, &value, false, "inline-inference.yaml", field);
+    }
+}
+
+#[test]
+fn a_provider_exclusion_rule_states_what_it_excludes() {
+    let service = "serviceRef excludes endpoint and credential and selects provider openai";
+    let plain = "an http:// endpoint takes no credential";
+    let credential = json!({"env": "MODEL_TOKEN"});
+    for (file, pointer, path) in [
+        (
+            "local.yaml",
+            "/spec/inferenceProviders/local",
+            "spec.inferenceProviders.local",
+        ),
+        (
+            "inline-inference.yaml",
+            "/spec/sandboxes/assistant/agent/inference/routes/0/provider",
+            "spec.sandboxes.assistant.agent.inference.routes[0].provider",
+        ),
+    ] {
+        for (fields, at, message) in [
+            (json!({"serviceRef": "qwen"}), ".endpoint", service),
+            (
+                json!({"serviceRef": "qwen", "endpoint": null, "credential": credential}),
+                "",
+                service,
+            ),
+            (
+                json!({"serviceRef": "qwen", "endpoint": null, "provider": "anthropic"}),
+                ".provider",
+                service,
+            ),
+            (json!({"credential": credential}), "", plain),
+        ] {
+            let mut value = input(file);
+            let provider = value.pointer_mut(pointer).unwrap().as_object_mut().unwrap();
+            for (field, replacement) in fields.as_object().unwrap() {
+                match replacement {
+                    Value::Null => provider.remove(field),
+                    _ => provider.insert(field.clone(), replacement.clone()),
+                };
+            }
+            assert_eq!(
+                schema_diagnostic(&value),
+                format!("{path}{at}: {message}"),
+                "{file}: {fields}"
+            );
+        }
+    }
+}
+
+#[test]
+fn duplicate_sandbox_or_provider_names_are_rejected_as_duplicate_yaml_keys() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    for (file, key, duplicate) in [
+        ("multiple-sandboxes.yaml", "\n    bob:\n", "\n    alice:\n"),
+        (
+            "multiple-providers.yaml",
+            "\n    hosted:\n",
+            "\n    local:\n",
+        ),
+    ] {
+        let text = std::fs::read_to_string(root.join(file)).unwrap();
+        assert!(text.contains(key), "{file}");
+        let error = Document::parse(text.replacen(key, duplicate, 1).as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate mapping key"), "{file}: {error}");
+    }
+    // JSON input is read as YAML, so it gets the same check.
+    let text = input("multiple-sandboxes.yaml").to_string();
+    let error = Document::parse(text.replacen(r#""bob":"#, r#""alice":"#, 1).as_bytes())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("duplicate mapping key"), "{error}");
 }

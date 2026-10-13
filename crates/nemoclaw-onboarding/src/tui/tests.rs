@@ -122,8 +122,9 @@ fn root_adapter_alternatives_accept_json_object_input() {
         "../../../../examples/onboarding/openclaw.yaml"
     ))
     .unwrap();
-    values["spec"]["sandboxes"][0]["harness"]["kind"] = serde_json::json!("fixture-root-agent");
-    values["spec"]["sandboxes"][0]["harness"]
+    values["spec"]["sandboxes"]["assistant"]["harness"]["kind"] =
+        serde_json::json!("fixture-root-agent");
+    values["spec"]["sandboxes"]["assistant"]["harness"]
         .as_object_mut()
         .unwrap()
         .remove("settings");
@@ -160,7 +161,8 @@ fn resolver_failure_is_not_reported_as_a_finished_questionnaire() {
         "../../../../examples/onboarding/openclaw.yaml"
     ))
     .unwrap();
-    values["spec"]["sandboxes"][0]["harness"]["kind"] = serde_json::json!("fixture-schema-agent");
+    values["spec"]["sandboxes"]["assistant"]["harness"]["kind"] =
+        serde_json::json!("fixture-schema-agent");
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     let state = JourneyDefinition::new("conflicting-descriptors", base)
         .start(&capabilities)
@@ -186,6 +188,42 @@ fn resolver_failure_is_not_reported_as_a_finished_questionnaire() {
         screen.contains("Press ← to go back"),
         "missing recovery hint: {screen}"
     );
+}
+
+#[test]
+fn output_shows_a_collection_key_that_is_not_a_name_as_an_entry() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("template.yaml");
+    let mut values: Value = serde_saphyr::from_slice(include_bytes!(
+        "../../../../examples/onboarding/openclaw.yaml"
+    ))
+    .unwrap();
+    values["spec"]["inferenceProviders"]["PRIVATE INVALID NAME"] =
+        serde_json::json!({"provider": "openai", "endpoint": 7});
+    std::fs::write(&path, serde_json::to_vec(&values).unwrap()).unwrap();
+    let capabilities = Capabilities::available();
+    let state = load_journey(Source::Template(&path), &capabilities).unwrap();
+    let mut wizard = JourneyWizard::new(capabilities, state);
+    let mut terminal = Terminal::new(TestBackend::new(200, 60)).unwrap();
+    let mut output = String::new();
+    for _ in 0..100 {
+        terminal.draw(|frame| wizard.render(frame)).unwrap();
+        output.push_str(&terminal.backend().to_string());
+        wizard.advance();
+        if let Some(error) = &wizard.error {
+            output.push_str(error);
+        }
+        if wizard.accepted || wizard.error.is_some() {
+            break;
+        }
+    }
+    terminal.draw(|frame| wizard.render(frame)).unwrap();
+    output.push_str(&terminal.backend().to_string());
+    assert!(
+        output.contains("/spec/inferenceProviders/[entry]/endpoint"),
+        "{output}"
+    );
+    assert!(!output.contains("PRIVATE"), "{output}");
 }
 
 #[test]
@@ -227,7 +265,7 @@ fn wizard_uses_the_shared_resolver_for_an_sdk_form_choice() {
         "../../../../examples/onboarding/openclaw.yaml"
     ))
     .unwrap();
-    values["spec"]["sandboxes"][0]["agent"]
+    values["spec"]["sandboxes"]["assistant"]["agent"]
         .as_object_mut()
         .unwrap()
         .remove("inference");
@@ -237,14 +275,14 @@ fn wizard_uses_the_shared_resolver_for_an_sdk_form_choice() {
         .unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     let question = wizard.question().unwrap().unwrap();
-    assert_eq!(question.id(), "form:/spec/sandboxes/0/agent");
+    assert_eq!(question.id(), "form:/spec/sandboxes/assistant/agent");
     assert_eq!(label(&question), "Choose agent form");
     wizard
         .submit(Some(serde_json::json!("inferenceRef")))
         .unwrap();
     assert_eq!(
         wizard.question().unwrap().unwrap().id(),
-        "/spec/sandboxes/0/agent/inferenceRef"
+        "/spec/sandboxes/assistant/agent/inferenceRef"
     );
 }
 
@@ -257,14 +295,14 @@ fn enter_uses_the_supplied_choice_suggestion() {
     wizard.advance();
     assert_eq!(
         wizard.question().unwrap().unwrap().id(),
-        "/spec/sandboxes/0/harness/kind"
+        "/spec/sandboxes/assistant/harness/kind"
     );
     wizard.advance();
     assert_eq!(
         wizard
             .state()
             .values()
-            .pointer("/spec/sandboxes/0/harness/kind"),
+            .pointer("/spec/sandboxes/assistant/harness/kind"),
         Some(&serde_json::json!("nvidia.fabric.openclaw"))
     );
 }
@@ -280,7 +318,7 @@ fn back_restores_the_previous_answer_without_rewriting_the_template() {
         .unwrap();
     assert_eq!(
         wizard.question().unwrap().unwrap().id(),
-        "/spec/sandboxes/0/harness/kind"
+        "/spec/sandboxes/assistant/harness/kind"
     );
     wizard.back();
     assert_eq!(wizard.question().unwrap().unwrap().id(), "/metadata/name");
@@ -382,7 +420,7 @@ fn mixed_local_and_hosted_template_reaches_review_without_losing_routes() {
     );
     let document = wizard.document().unwrap();
     assert_eq!(
-        document.spec.sandboxes[0]
+        document.spec.sandboxes["assistant"]
             .agent
             .inference
             .as_ref()
@@ -868,13 +906,13 @@ fn missing_catalog_key_does_not_occupy_the_error_slot_or_hide_engine_failures() 
     ))
     .unwrap();
     let mut state = JourneyDefinition::new("catalog-note", base)
-        .ask(["/spec/sandboxes/0/harness/kind", "/metadata/name"])
+        .ask(["/spec/sandboxes/assistant/harness/kind", "/metadata/name"])
         .start(&capabilities)
         .unwrap();
     state
         .answer(
             &capabilities,
-            "/spec/sandboxes/0/harness/kind",
+            "/spec/sandboxes/assistant/harness/kind",
             Some(serde_json::json!("nvidia.fabric.openclaw")),
         )
         .unwrap();
@@ -937,7 +975,7 @@ fn missing_catalog_key_does_not_occupy_the_error_slot_or_hide_engine_failures() 
             image: ImageMetadata {
                 architecture: Some("arm64".into()),
                 operating_system: Some("linux".into()),
-                repo_digests: vec![document.spec.sandboxes[0].image.ref_.clone()],
+                repo_digests: vec![document.spec.sandboxes["assistant"].image.ref_.clone()],
                 ..Default::default()
             },
             compatibility: Some(CompatibilityReport {

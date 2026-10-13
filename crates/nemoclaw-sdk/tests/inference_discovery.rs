@@ -38,20 +38,16 @@ fn endpoint_requests_deduplicate_shared_routes_and_preserve_harness_api_defaults
         Document::parse(include_bytes!("../../../examples/onboarding/openclaw.yaml").as_slice())
             .unwrap();
     let mut value = serde_json::to_value(document).unwrap();
-    value["spec"]["inferenceProviders"][0]
+    value["spec"]["inferenceProviders"]["nvidia-prod"]
         .as_object_mut()
         .unwrap()
         .remove("api");
-    let mut second = value["spec"]["sandboxes"][0].clone();
-    second["name"] = serde_json::json!("second");
-    value["spec"]["sandboxes"]
-        .as_array_mut()
-        .unwrap()
-        .push(second.clone());
+    let mut second = value["spec"]["sandboxes"]["assistant"].clone();
+    value["spec"]["sandboxes"]["second"] = second.clone();
     let document = Document::parse(value.to_string().as_bytes()).unwrap();
     assert_eq!(endpoint_requests(&document).unwrap().len(), 1);
     second["harness"]["kind"] = serde_json::json!("codex");
-    value["spec"]["sandboxes"][1] = second;
+    value["spec"]["sandboxes"]["second"] = second;
     let document = Document::parse(value.to_string().as_bytes()).unwrap();
     let requests = endpoint_requests(&document).unwrap();
     assert_eq!(requests.len(), 1);

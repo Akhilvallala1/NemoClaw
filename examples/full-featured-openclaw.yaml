@@ -111,7 +111,7 @@ spec:
       memory:
         gpuMemoryUtilization: 0.75
   inferenceProviders:
-    - name: nemotron
+    nemotron:
       provider: openai
       api: openai-completions
       serviceRef: nemotron
@@ -122,7 +122,7 @@ spec:
       credential:
         env: BRAVE_API_KEY
   sandboxes:
-    - name: researcher
+    researcher:
       image:
         # Build a current Fabric OpenClaw image; the default image lacks these features.
         ref:
@@ -189,7 +189,7 @@ spec:
                     contextWindow: 65536
                     reasoning: true
                   reasoning_effort: high
-    - name: writer
+    writer:
       image:
         # Build a current Fabric OpenClaw image; the default image lacks these features.
         ref:
@@ -256,7 +256,7 @@ spec:
                     contextWindow: 65536
                     reasoning: true
                   reasoning_effort: high
-    - name: reader
+    reader:
       image:
         # Build a current Fabric OpenClaw image; the default image lacks these features.
         ref:

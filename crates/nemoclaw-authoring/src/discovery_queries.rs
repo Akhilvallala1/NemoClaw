@@ -15,7 +15,7 @@ pub fn inference_request_for_document(
     document: &Document,
     route_name: Option<&str>,
 ) -> Result<Option<EndpointRequest>, Diagnostics> {
-    let [sandbox] = document.spec.sandboxes.as_slice() else {
+    let Some(sandbox) = crate::journey_definition::sole_sandbox(document) else {
         return Err(crate::diagnostics::diagnostic(
             "sandbox",
             "Inference discovery requires one sandbox.",
@@ -33,7 +33,7 @@ pub fn inference_request_for_document(
     let provider = document
         .sandbox_route_provider(sandbox, route)
         .map_err(|error| crate::diagnostics::diagnostic("provider", &error.to_string()))?;
-    EndpointRequest::for_external_provider(provider)
+    EndpointRequest::for_external_provider(provider.definition)
         .map_err(|error| crate::diagnostics::diagnostic("provider", &error.to_string()))
 }
 

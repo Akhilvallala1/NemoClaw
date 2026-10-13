@@ -19,9 +19,15 @@ fn generations() -> Generations {
     .map(|key| (key.into(), "a".repeat(32)))
     .into()
 }
+/// The name of the example's only deployment provider.
+fn only_provider(value: &Value) -> String {
+    let providers = value["spec"]["inferenceProviders"].as_object().unwrap();
+    assert_eq!(providers.len(), 1);
+    providers.keys().next().unwrap().clone()
+}
 fn hosted(mut value: Value) -> Value {
-    value["spec"]["inferenceProviders"].as_array_mut().unwrap().push(json!({"name":"hosted","provider":"anthropic","api":"anthropic-messages","endpoint":"https://hosted.example/v1","credential":{"env":"HOSTED_KEY"}}));
-    let inference = &mut value["spec"]["sandboxes"][0]["agent"]["inference"];
+    value["spec"]["inferenceProviders"]["hosted"] = json!({"provider":"anthropic","api":"anthropic-messages","endpoint":"https://hosted.example/v1","credential":{"env":"HOSTED_KEY"}});
+    let inference = &mut value["spec"]["sandboxes"]["assistant"]["agent"]["inference"];
     inference["default"] = json!("smart");
     inference["routes"]
         .as_array_mut()
@@ -34,8 +40,7 @@ fn a_sandbox_attaches_the_union_of_selected_providers_with_bound_credentials() {
     let input: Value =
         serde_saphyr::from_str(include_str!("../../../examples/fabric-openclaw.yaml")).unwrap();
     let mut value = hosted(input);
-    let mut other = value["spec"]["sandboxes"][0].clone();
-    other["name"] = json!("other");
+    let mut other = value["spec"]["sandboxes"]["assistant"].clone();
     other["agent"]["inference"]["routes"]
         .as_array_mut()
         .unwrap()
@@ -44,10 +49,7 @@ fn a_sandbox_attaches_the_union_of_selected_providers_with_bound_credentials() {
         .as_object_mut()
         .unwrap()
         .remove("default");
-    value["spec"]["sandboxes"]
-        .as_array_mut()
-        .unwrap()
-        .push(other);
+    value["spec"]["sandboxes"]["other"] = other;
     let doc = Document::parse(value.to_string().as_bytes()).expect("local and hosted providers");
     assert!(
         jsonschema::validator_for(&input_schema())
@@ -139,10 +141,7 @@ fn a_sandbox_attaches_the_union_of_selected_providers_with_bound_credentials() {
 fn managed_inference_remains_owned_when_the_default_uses_a_hosted_provider() {
     let mut value: Value =
         serde_saphyr::from_str(include_str!("../../../examples/spark/vllm.yaml")).unwrap();
-    let local_name = value["spec"]["inferenceProviders"][0]["name"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let local_name = only_provider(&value);
     value["spec"]["services"]["qwen"]["authentication"] = json!("bearer");
     let doc = Document::parse(hosted(value).to_string().as_bytes())
         .expect("managed local model plus external default");
@@ -172,10 +171,7 @@ fn managed_inference_remains_owned_when_the_default_uses_a_hosted_provider() {
 fn managed_ollama_installs_while_an_external_provider_is_the_default() {
     let value: Value =
         serde_saphyr::from_str(include_str!("../../../examples/managed-ollama.yaml")).unwrap();
-    let local_name = value["spec"]["inferenceProviders"][0]["name"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let local_name = only_provider(&value);
     let doc = Document::parse(hosted(value).to_string().as_bytes()).unwrap();
     let runtime = runtime_targets(&doc, &generations()).unwrap();
     assert!(
@@ -207,17 +203,13 @@ fn managed_ollama_installs_while_an_external_provider_is_the_default() {
 fn multiple_selected_ollama_installers_have_independent_resources_and_dependencies() {
     let mut value: Value =
         serde_saphyr::from_str(include_str!("../../../examples/managed-ollama.yaml")).unwrap();
-    let mut other = value["spec"]["inferenceProviders"][0].clone();
-    other["name"] = json!("other");
+    let mut other = value["spec"]["inferenceProviders"]["local"].clone();
     other["serviceRef"] = json!("other");
     let mut other_service = value["spec"]["services"]["ollama-server"].clone();
     other_service["serving"]["port"] = json!(18999);
     value["spec"]["services"]["other"] = other_service;
-    value["spec"]["inferenceProviders"]
-        .as_array_mut()
-        .unwrap()
-        .push(other);
-    let inference = &mut value["spec"]["sandboxes"][0]["agent"]["inference"];
+    value["spec"]["inferenceProviders"]["other"] = other;
+    let inference = &mut value["spec"]["sandboxes"]["assistant"]["agent"]["inference"];
     inference["default"] = json!("primary");
     let mut route = inference["routes"][0].clone();
     route["name"] = json!("other");
@@ -245,22 +237,15 @@ fn multiple_selected_ollama_installers_have_independent_resources_and_dependenci
 fn managed_services_have_independent_storage_credentials_and_dependencies() {
     let mut value: Value =
         serde_saphyr::from_str(include_str!("../../../examples/spark/vllm.yaml")).unwrap();
-    let first = value["spec"]["inferenceProviders"][0]["name"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let first = only_provider(&value);
     value["spec"]["services"]["qwen"]["authentication"] = json!("bearer");
-    let mut other = value["spec"]["inferenceProviders"][0].clone();
-    other["name"] = json!("other");
+    let mut other = value["spec"]["inferenceProviders"][&first].clone();
     other["serviceRef"] = json!("other");
     let mut other_service = value["spec"]["services"]["qwen"].clone();
     other_service["serving"]["port"] = json!(18999);
     value["spec"]["services"]["other"] = other_service;
-    value["spec"]["inferenceProviders"]
-        .as_array_mut()
-        .unwrap()
-        .push(other);
-    let inference = &mut value["spec"]["sandboxes"][0]["agent"]["inference"];
+    value["spec"]["inferenceProviders"]["other"] = other;
+    let inference = &mut value["spec"]["sandboxes"]["assistant"]["agent"]["inference"];
     inference["default"] = json!("primary");
     let mut route = inference["routes"][0].clone();
     route["name"] = json!("other");

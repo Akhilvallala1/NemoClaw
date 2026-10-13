@@ -5,7 +5,8 @@ use nemoclaw_authoring::{
     Capabilities, JourneyDefinition, JourneyQuestionReason, JourneyScope, PartialDocument,
 };
 use nemoclaw_sdk::config::Document;
-use serde_json::json;
+use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 fn example(name: &str) -> PartialDocument {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -302,7 +303,7 @@ fn single_sandbox_examples_offer_existing_sdk_values_without_changing_them() {
 fn reference_scoped_execution_questions_follow_the_selected_harness_only() {
     let capabilities = Capabilities::available();
     let mut value = example("fabric-openclaw.yaml").supplied().clone();
-    let mut harness = value["spec"]["sandboxes"][0]["harness"].clone();
+    let mut harness = value["spec"]["sandboxes"]["assistant"]["harness"].clone();
     harness["execution"] = json!({"timeoutSeconds":120});
     value["spec"]["harnesses"] = json!({"unused":harness});
     let path = "/spec/harnesses/unused/execution/timeoutSeconds";
@@ -323,11 +324,11 @@ fn reference_scoped_execution_questions_follow_the_selected_harness_only() {
     let mut state = state;
     assert!(state.answer(&capabilities, path, Some(json!(240))).is_err());
 
-    value["spec"]["sandboxes"][0]
+    value["spec"]["sandboxes"]["assistant"]
         .as_object_mut()
         .unwrap()
         .remove("harness");
-    value["spec"]["sandboxes"][0]["harnessRef"] = json!("unused");
+    value["spec"]["sandboxes"]["assistant"]["harnessRef"] = json!("unused");
     let mut state = JourneyDefinition::new(
         "reference",
         PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap(),
@@ -344,4 +345,86 @@ fn reference_scoped_execution_questions_follow_the_selected_harness_only() {
     );
     state.answer(&capabilities, path, Some(json!(240))).unwrap();
     assert_eq!(state.values().pointer(path), Some(&json!(240)));
+}
+
+#[test]
+fn deployment_questions_do_not_depend_on_sandbox_service_or_harness_names() {
+    let capabilities = Capabilities::available();
+    // Move each map entry to `to` and point the references at it.
+    fn renamed(base: &Value, sandbox: &str, service: &str, harness: &str) -> Value {
+        let mut value = base.clone();
+        for (collection, from, to) in [
+            ("sandboxes", "assistant", sandbox),
+            ("services", "ollama-server", service),
+            ("harnesses", "agent", harness),
+        ] {
+            let map = value["spec"][collection].as_object_mut().unwrap();
+            let entry = map.remove(from).unwrap();
+            map.insert(to.into(), entry);
+        }
+        value["spec"]["inferenceProviders"]["local"]["serviceRef"] = json!(service);
+        value["spec"]["sandboxes"][sandbox]["harnessRef"] = json!(harness);
+        value
+    }
+    // Question IDs with each key replaced by its collection's placeholder.
+    let ids = |value: &Value, keys: [&str; 3]| {
+        let state = JourneyDefinition::new(
+            "names",
+            PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap(),
+        )
+        .ask([JourneyScope::DeploymentFields])
+        .start(&capabilities)
+        .unwrap();
+        state
+            .resolve(&capabilities)
+            .unwrap()
+            .questions()
+            .iter()
+            .map(|question| {
+                let mut id = question.id().to_owned();
+                for (collection, key) in ["sandboxes", "services", "harnesses"].iter().zip(keys) {
+                    let prefix = format!("/spec/{collection}/{key}/");
+                    if let Some(rest) = id.strip_prefix(&prefix) {
+                        id = format!("/spec/{collection}/<key>/{rest}");
+                    }
+                }
+                id
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    let mut base = example("managed-ollama.yaml").supplied().clone();
+    let sandbox = base["spec"]["sandboxes"]["assistant"]
+        .as_object_mut()
+        .unwrap();
+    sandbox.insert(
+        "image".into(),
+        json!({"ref": nemoclaw_sdk::config::DEFAULT_AGENT_IMAGE}),
+    );
+    let mut harness = sandbox.remove("harness").unwrap();
+    harness["execution"] = json!({"timeoutSeconds": 120});
+    base["spec"]["harnesses"] = json!({"agent": harness});
+    let base = renamed(&base, "assistant", "ollama-server", "agent");
+    let expected = ids(&base, ["assistant", "ollama-server", "agent"]);
+    for id in [
+        "/spec/sandboxes/<key>/image/ref",
+        "/spec/sandboxes/<key>/network/tier",
+        "/spec/services/<key>/image",
+        "/spec/harnesses/<key>/execution/timeoutSeconds",
+    ] {
+        assert!(expected.contains(id), "{id}: {expected:#?}");
+    }
+    // Each key is also a field name or contains one that the question filters
+    // look for.
+    for keys in [
+        ["routes", "config-server", "settings"],
+        ["configurator", "routes", "config"],
+        ["execution", "settings", "routes"],
+    ] {
+        let [sandbox, service, harness] = keys;
+        assert_eq!(
+            ids(&renamed(&base, sandbox, service, harness), keys),
+            expected,
+            "{keys:?}"
+        );
+    }
 }

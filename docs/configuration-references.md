@@ -34,19 +34,19 @@ Moving a definition does not authorize replacing an existing resource; normal id
 
 ## Supported Families
 
-Paths below are relative to `spec`; `agent` is inside `sandboxes[]` and `routes[]` is inside an inline or shared inference configuration.
+Paths below are relative to `spec`; `agent` is inside `sandboxes.<name>` and `routes[]` is inside an inline or shared inference configuration.
 
 | Family | Enclosing definitions | Consumer selection | Current runtime limit |
 |---|---|---|---|
-| Inference provider | `inferenceProviders[]` or `sandboxes[].inferenceProviders[]`, each with a `name` | Route `provider` or `providerRef` | Up to 32 selected providers; each uses an external endpoint or references a named service |
-| Inference | `inferences.<name>` or `sandboxes[].inferences.<name>` | Agent `inference` or `inferenceRef` | An explicit default selects a Fabric model role; Fabric validates the adapter's supported roles |
-| Harness | `harnesses.<name>` or `sandboxes[].harnesses.<name>` | Sandbox `harness` or `harnessRef` | Exactly one configuration and one agent per sandbox |
-| Integration | `integrations.<name>` or `sandboxes[].integrations.<name>` | Agent `integrations.<name>` and/or `integrationRefs` | Brave or Tavily `webSearch` credentials and grants; one attached search definition per sandbox |
+| Inference provider | `inferenceProviders.<name>` or `sandboxes.<name>.inferenceProviders.<name>` | Route `provider` or `providerRef` | Up to 32 selected providers; each uses an external endpoint or references a named service |
+| Inference | `inferences.<name>` or `sandboxes.<name>.inferences.<name>` | Agent `inference` or `inferenceRef` | An explicit default selects a Fabric model role; Fabric validates the adapter's supported roles |
+| Harness | `harnesses.<name>` or `sandboxes.<name>.harnesses.<name>` | Sandbox `harness` or `harnessRef` | Exactly one configuration and one agent per sandbox |
+| Integration | `integrations.<name>` or `sandboxes.<name>.integrations.<name>` | Agent `integrations.<name>` and/or `integrationRefs` | Brave or Tavily `webSearch` credentials and grants; one attached search definition per sandbox |
 
-Inference providers are list entries with a `name`; inferences, harnesses, and integrations are maps keyed by name.
-Inline providers also require `name`.
-Deployment-level provider names identify their OpenShell registrations; sandbox-local providers receive stable identities derived from the sandbox and provider names.
-Different sandboxes can reuse a local definition name without sharing its registration.
+Sandboxes and the definitions in each family are maps keyed by name; a deployment-level or sandbox-level provider takes its name from its key.
+An inline route `provider` has no key, so it requires `name`.
+Each OpenShell registration name derives from the provider name, the sandbox that declares a sandbox-local definition, and the selecting sandbox's image reference and harness kind.
+Sandboxes with the same image reference and harness kind share the registration of a deployment-level definition; different sandboxes can reuse a local definition name without sharing its registration.
 A document supports one to 32 named sandboxes; OpenClaw agents can select models from different providers.
 See [multiple model choices](inference.md#give-an-agent-multiple-model-choices) for defaults and current service limits.
 Multiple OpenClaw agents can reference the same provider and integration; distinct inline instances are not shared implicitly.
@@ -74,12 +74,12 @@ spec:
               enabled: true
               allowedOrigins: [http://127.0.0.1:18800]
   sandboxes:
-    - name: researcher
+    researcher:
       harnessRef: assistant
       agent:
         name: researcher
         inferenceRef: chat
-    - name: writer
+    writer:
       harnessRef: assistant
       agent:
         name: writer
@@ -101,7 +101,7 @@ Use `inferenceRef` to reuse the complete inference configuration, including its 
 ```yaml
 spec:
   inferenceProviders:
-    - name: local
+    local:
       provider: openai
       endpoint: http://172.20.0.1:11446/v1
   inferences:
@@ -112,12 +112,12 @@ spec:
           overrides:
             model: qwen3:4b
   sandboxes:
-    - name: researcher
+    researcher:
       harness: {kind: nvidia.fabric.openclaw}
       agent:
         name: researcher
         inferenceRef: chat
-    - name: writer
+    writer:
       harness: {kind: nvidia.fabric.openclaw}
       agent:
         name: writer
@@ -137,11 +137,11 @@ This fragment omits the deployment's other required fields:
 ```yaml
 spec:
   inferenceProviders:
-    - name: local
+    local:
       provider: openai
       endpoint: http://172.20.0.1:11446/v1
   sandboxes:
-    - name: assistant
+    assistant:
       harness: {kind: nvidia.fabric.openclaw}
       agent:
         name: researcher

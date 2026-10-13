@@ -23,7 +23,7 @@ impl QuestionResolver<'_> {
                 {
                     let value = self.authored.values.pointer(&path);
                     questions.push(JourneyQuestion {
-                        target: QuestionTarget::sdk(path.clone()),
+                        target: QuestionTarget::sdk(&self.authored.values, path.clone()),
                         kind: JourneyQuestionKind::InferenceModel,
                         reopened_because: None,
                         id: path,
@@ -136,7 +136,7 @@ impl QuestionResolver<'_> {
                 let schema = policy.sdk_schema(&path, schema);
                 let value = self.authored.values.pointer(&path);
                 questions.push(JourneyQuestion {
-                    target: QuestionTarget::sdk(path.clone()),
+                    target: QuestionTarget::sdk(&self.authored.values, path.clone()),
                     kind: JourneyQuestionKind::Field,
                     reopened_because: None,
                     id: path,
@@ -162,7 +162,7 @@ impl QuestionResolver<'_> {
                 .expect("external provider endpoint is in the SDK schema")
                 .0;
             questions.push(JourneyQuestion {
-                target: QuestionTarget::sdk(endpoint.clone()),
+                target: QuestionTarget::sdk(&self.authored.values, endpoint.clone()),
                 kind: JourneyQuestionKind::Field,
                 reopened_because: None,
                 id: endpoint.clone(),

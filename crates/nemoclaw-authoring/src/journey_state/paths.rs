@@ -22,27 +22,27 @@ pub(super) fn native_value<'a>(
 }
 
 pub(super) fn routes_path(values: &Value) -> Option<String> {
-    let agent = values.pointer("/spec/sandboxes/0/agent")?;
+    let sandbox = sandbox_path(values)?;
+    let agent = values.pointer(&format!("{sandbox}/agent"))?;
     if agent.get("inference").is_some() {
-        return Some(ROUTES.into());
+        return Some(format!("{sandbox}/agent/inference/routes"));
     }
     let reference = agent.get("inferenceRef")?.as_str()?;
-    let escaped = reference.replace('~', "~0").replace('/', "~1");
-    let path = format!("/spec/inferences/{escaped}/routes");
+    let path = format!("/spec/inferences/{}/routes", escape(reference));
     values.pointer(&path).is_some().then_some(path)
 }
 
 pub(super) fn harness_path(values: &Value) -> Option<String> {
-    let sandbox = values.pointer("/spec/sandboxes/0")?;
+    let path = sandbox_path(values)?;
+    let sandbox = values.pointer(&path)?;
     if let Some(reference) = sandbox.get("harnessRef").and_then(Value::as_str) {
-        let escaped = reference.replace('~', "~0").replace('/', "~1");
-        let path = format!("/spec/harnesses/{escaped}");
+        let path = format!("/spec/harnesses/{}", escape(reference));
         return values.pointer(&path).is_some().then_some(path);
     }
     sandbox
         .get("harness")
         .is_some()
-        .then(|| "/spec/sandboxes/0/harness".into())
+        .then(|| format!("{path}/harness"))
 }
 
 pub(super) fn harness_kind(values: &Value) -> Option<&str> {
@@ -73,12 +73,8 @@ pub(super) fn managed_target_engine(values: &Value) -> Option<(String, String)> 
     else {
         return None;
     };
-    let engine = format!("{GATEWAY_TARGET}/{}/engine", escape_pointer(key));
+    let engine = format!("{GATEWAY_TARGET}/{}/engine", escape(key));
     sdk_field_schema_for(values, &engine).map(|_| (key.clone(), engine))
-}
-
-pub(super) fn escape_pointer(segment: &str) -> String {
-    segment.replace('~', "~0").replace('/', "~1")
 }
 
 pub(super) fn scalar_question(schema: &Value, choices: &[Value]) -> bool {

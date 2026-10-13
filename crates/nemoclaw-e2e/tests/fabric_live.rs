@@ -145,7 +145,8 @@ async fn fabric_native_access_and_reconciliation_preserve_the_hosted_runtime() {
     let input = invocation_input("NEMOCLAW_LIVE_FABRIC_INPUT");
     assert!(uses_independent_inference(&document));
     let provider = document.inference_provider().unwrap();
-    let agent = &document.spec.sandboxes[0].agent;
+    let sandbox = document.spec.sandboxes.values().next().unwrap();
+    let agent = &sandbox.agent;
     assert!(matches!(document.spec.gateway, Gateway::External(_)));
     // Managed-service installation is qualified separately; this live target
     // exercises only an external inference provider.
@@ -162,7 +163,7 @@ async fn fabric_native_access_and_reconciliation_preserve_the_hosted_runtime() {
         Arc::new(EnvironmentSecrets),
     )
     .unwrap();
-    if document.spec.sandboxes[0].network.policy == nemoclaw_sdk::config::NetworkPolicy::Isolated {
+    if sandbox.network.policy == nemoclaw_sdk::config::NetworkPolicy::Isolated {
         let denial = exec(
             &client,
             &binding,
@@ -283,7 +284,7 @@ async fn dependency_upgrade_survives_apply_process_exit() {
     let reply = invoke(
         &client,
         &binding,
-        &document.spec.sandboxes[0].agent.name,
+        &document.spec.sandboxes.values().next().unwrap().agent.name,
         &input,
     )
     .await;

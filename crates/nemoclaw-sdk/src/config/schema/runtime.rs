@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Offline validators compiled once from the SDK contract, never from a deployment file.
-use crate::config::{ConfigError, Document, RouteTuning};
+use crate::config::{
+    ConfigError, Document, RouteTuning,
+    yaml_source::{self, escape},
+};
 use nemoclaw_runtime::schema::{select_variant, variant_keys};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -111,8 +114,25 @@ fn diagnostic(
             Kind::Constant { expected_value } => format!("must be {expected_value}"),
             Kind::Minimum { limit } => format!("must be at least {limit}"),
             Kind::Maximum { limit } => format!("must be at most {limit}"),
+            Kind::MinItems { limit } => {
+                format!("must have at least {}", count(*limit, "item", "items"))
+            }
+            Kind::MaxItems { limit } => {
+                format!("must have at most {}", count(*limit, "item", "items"))
+            }
+            Kind::MinProperties { limit } => {
+                format!("must have at least {}", count(*limit, "entry", "entries"))
+            }
+            Kind::MaxProperties { limit } => {
+                format!("must have at most {}", count(*limit, "entry", "entries"))
+            }
             Kind::Required { property } => format!("required field: {property}"),
             Kind::Pattern { pattern } => format!("required pattern: {pattern}"),
+            // The rejected key is input, so only the rule it broke is shown.
+            Kind::PropertyNames { error } => match error.kind() {
+                Kind::Pattern { pattern } => format!("each name requires pattern: {pattern}"),
+                _ => "names must be valid".into(),
+            },
             Kind::Type {
                 kind: TypeKind::Single(kind),
             } => format!("must be {kind}"),
@@ -141,8 +161,17 @@ fn diagnostic(
     };
     let pointer = error.instance_path().to_string();
     let path = instance_path(&pointer, root);
+    // A rejected name is located at its own key, though the path names only
+    // its collection.
+    let rejected_key = match error.kind() {
+        Kind::PropertyNames { error } => error.instance().as_str().map(escape),
+        _ => None,
+    };
     let position = source
-        .and_then(|text| super::super::yaml_source::position(text, &pointer))
+        .and_then(|text| match &rejected_key {
+            Some(key) => yaml_source::position(text, &format!("{pointer}/{key}"), true),
+            None => yaml_source::position(text, &pointer, false),
+        })
         .map(|(line, column)| format!(" (line {line}, column {column})"))
         .unwrap_or_default();
     ConfigError(format!(
@@ -166,10 +195,7 @@ fn annotation<'s>(
     let path = error.schema_path().as_str();
     if let Kind::Required { property } = error.kind()
         && let (Some(object), Some(name)) = (path.strip_suffix("/required"), property.as_str())
-        && let Some(found) = message(&format!(
-            "{object}/properties/{}",
-            name.replace('~', "~0").replace('/', "~1")
-        ))
+        && let Some(found) = message(&format!("{object}/properties/{}", escape(name)))
     {
         return Some(found);
     }
@@ -223,6 +249,14 @@ fn removed_fields(schema: &Value, error: &jsonschema::ValidationError<'_>) -> Op
     })
 }
 
+fn count(limit: u64, one: &str, many: &str) -> String {
+    if limit == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{limit} {many}")
+    }
+}
+
 fn scalar_constraint(schema: &Value) -> Option<String> {
     if let Some(value) = schema.get("const") {
         return Some(value.to_string());
@@ -263,16 +297,17 @@ fn instance_path(pointer: &str, root: &Value) -> String {
             {
                 [
                     "spec",
-                    "services" | "harnesses" | "inferences" | "integrations",
+                    "services" | "harnesses" | "inferences" | "integrations" | "inferenceProviders"
+                    | "sandboxes",
                 ] => true,
                 [
                     "spec",
                     "sandboxes",
-                    index,
-                    "harnesses" | "inferences" | "integrations",
+                    sandbox,
+                    "harnesses" | "inferences" | "integrations" | "inferenceProviders",
                 ]
-                | ["spec", "sandboxes", index, "agent", "integrations"] => {
-                    index.parse::<usize>().is_ok()
+                | ["spec", "sandboxes", sandbox, "agent", "integrations"] => {
+                    NAME.is_valid(&Value::String((*sandbox).to_owned()))
                 }
                 _ => false,
             };
@@ -536,6 +571,95 @@ mod tests {
             message(&schema, json!({"gateway": {"target": {}}})),
             "configuration violates schema at gateway.target: unknown fields are not allowed"
         );
+    }
+
+    #[test]
+    fn a_path_shows_collection_keys_only_when_they_are_names() {
+        let entry = json!({
+            "agent": {"inference": {"routes": [{"provider": {}}]}, "integrations": {"search": {}}},
+            "harnesses": {"shared": {}},
+            "inferenceProviders": {"own": {}, "Private-Sentinel": {}}
+        });
+        let root = json!({"spec": {
+            "inferenceProviders": {"local": {}, "Private-Sentinel": {}},
+            "sandboxes": {"assistant": entry.clone(), "Private-Sentinel": entry}
+        }});
+        for (pointer, expected) in [
+            ("/spec/sandboxes", "spec.sandboxes"),
+            (
+                "/spec/sandboxes/assistant/agent",
+                "spec.sandboxes.assistant.agent",
+            ),
+            (
+                "/spec/sandboxes/assistant/agent/inference/routes/0/provider",
+                "spec.sandboxes.assistant.agent.inference.routes[0].provider",
+            ),
+            (
+                "/spec/inferenceProviders/local",
+                "spec.inferenceProviders.local",
+            ),
+            (
+                "/spec/sandboxes/assistant/inferenceProviders/own",
+                "spec.sandboxes.assistant.inferenceProviders.own",
+            ),
+            (
+                "/spec/sandboxes/assistant/harnesses/shared",
+                "spec.sandboxes.assistant.harnesses.shared",
+            ),
+            (
+                "/spec/sandboxes/assistant/agent/integrations/search",
+                "spec.sandboxes.assistant.agent.integrations.search",
+            ),
+            (
+                "/spec/inferenceProviders/Private-Sentinel",
+                "spec.inferenceProviders.[entry]",
+            ),
+            (
+                "/spec/sandboxes/assistant/inferenceProviders/Private-Sentinel",
+                "spec.sandboxes.assistant.inferenceProviders.[entry]",
+            ),
+            (
+                "/spec/sandboxes/Private-Sentinel/agent",
+                "spec.sandboxes.[entry].agent",
+            ),
+            (
+                "/spec/sandboxes/Private-Sentinel/harnesses/shared",
+                "spec.sandboxes.[entry].harnesses.[entry]",
+            ),
+        ] {
+            assert_eq!(instance_path(pointer, &root), expected, "{pointer}");
+        }
+    }
+
+    #[test]
+    fn a_collection_size_error_states_its_bound() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "routes": {"type": "array", "minItems": 1, "maxItems": 2},
+                "services": {"type": "object", "minProperties": 2, "maxProperties": 1}
+            }
+        });
+        for (instance, expected) in [
+            (json!({"routes": []}), "routes: must have at least 1 item"),
+            (
+                json!({"routes": [1, 2, 3]}),
+                "routes: must have at most 2 items",
+            ),
+            (
+                json!({"services": {}}),
+                "services: must have at least 2 entries",
+            ),
+            (
+                json!({"services": {"a": 1, "b": 2}}),
+                "services: must have at most 1 entry",
+            ),
+        ] {
+            assert_eq!(
+                message(&schema, instance),
+                format!("configuration violates schema at {expected}")
+            );
+        }
     }
 
     #[test]

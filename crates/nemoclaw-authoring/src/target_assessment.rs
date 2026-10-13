@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{Diagnostics, diagnostics::diagnostic};
+use crate::{Diagnostics, diagnostics::diagnostic, journey_definition::sole_sandbox};
 use nemoclaw_sdk::{
     config::Document,
     discovery::{DiscoveryObservations, DiscoveryQuery, ObservationStatus, plan_queries},
@@ -35,12 +35,12 @@ pub struct DiscoveryAssessment {
 
 /// Read the target from SDK-valid desired state.
 pub(crate) fn target_of(document: &Document) -> Result<Target, Diagnostics> {
-    let [_] = document.spec.sandboxes.as_slice() else {
+    if sole_sandbox(document).is_none() {
         return Err(diagnostic(
             "sandbox",
             "guided discovery requires one sandbox",
         ));
-    };
+    }
     Ok(Target {
         engine: document.spec.gateway.image_engine().to_owned(),
         managed_gateway: document.spec.gateway.as_managed().is_some(),

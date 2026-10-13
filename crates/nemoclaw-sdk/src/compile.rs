@@ -93,15 +93,13 @@ fn targets_with_plans(
             generations,
         )?);
     }
-    let mut sandboxes: Vec<_> = document.spec.sandboxes.iter().collect();
-    sandboxes.sort_by_key(|sandbox| &sandbox.name);
-    for sandbox in sandboxes {
-        let harness = document.sandbox_harness(sandbox)?;
-        let web_search = document.web_search(sandbox)?;
-        let image_scope = document.image_scope(sandbox)?;
+    for (name, sandbox) in &document.spec.sandboxes {
+        let harness = document.sandbox_harness(name)?;
+        let web_search = document.web_search(name)?;
+        let image_scope = document.image_scope(name)?;
         let agent_name = &sandbox.agent.name;
         let mut provider_names = document
-            .sandbox_inference_providers(sandbox)?
+            .sandbox_inference_providers(name)?
             .iter()
             .map(|provider| provider.key.clone())
             .collect::<Vec<_>>();
@@ -114,7 +112,7 @@ fn targets_with_plans(
         }
 
         let mut values: Row = [
-            ("name".into(), sandbox.name.clone()),
+            ("name".into(), name.clone()),
             ("workspace".into(), workspace.clone()),
             ("owner".into(), document.metadata.uid.clone()),
             (
@@ -132,16 +130,16 @@ fn targets_with_plans(
         .into();
         values.insert(
             "policy_json".into(),
-            serde_json::to_string(&crate::image_runtime::policy_input(document, sandbox)?)
+            serde_json::to_string(&crate::image_runtime::policy_input(document, name)?)
                 .expect("policy input"),
         );
         {
             result.push(Target {
                 kind: "agent_configuration".into(),
-                address: format!("fabric_agent_configuration.{}", sandbox.name),
+                address: format!("fabric_agent_configuration.{name}"),
                 values: [
                     ("workspace".into(), workspace.clone()),
-                    ("name".into(), sandbox.name.clone()),
+                    ("name".into(), name.clone()),
                     ("owner".into(), document.metadata.uid.clone()),
                     (
                         "generation".into(),
@@ -149,11 +147,11 @@ fn targets_with_plans(
                     ),
                     (
                         "sandbox_id".into(),
-                        format!("${{openshell_sandbox.{}.id}}", sandbox.name),
+                        format!("${{openshell_sandbox.{name}.id}}"),
                     ),
                     (
                         "config_json".into(),
-                        crate::fabric_config::for_sandbox(document, sandbox)?.to_string(),
+                        crate::fabric_config::for_sandbox(document, name)?.to_string(),
                     ),
                 ]
                 .into(),
@@ -161,7 +159,7 @@ fn targets_with_plans(
         }
         result.push(Target {
             kind: "sandbox".into(),
-            address: format!("openshell_sandbox.{}", sandbox.name),
+            address: format!("openshell_sandbox.{name}"),
             values,
         });
         if let Some(search) = web_search {
@@ -405,11 +403,10 @@ fn compile_with_plans(
         .collect();
     let mut runtime_sources = BTreeMap::new();
     let mut profile_sources = BTreeMap::new();
-    let mut ordered: Vec<_> = document.spec.sandboxes.iter().collect();
-    ordered.sort_by_key(|sandbox| &sandbox.name);
-    for (index, sandbox) in ordered.iter().enumerate() {
+    // Fabric reads are numbered in name order, as discovery issues them.
+    for (index, sandbox) in document.spec.sandboxes.keys().enumerate() {
         let source = format!("data.fabric_capabilities.sandbox_{index}");
-        runtime_sources.insert(sandbox.name.clone(), source.clone());
+        runtime_sources.insert(sandbox.clone(), source.clone());
         for provider in document.sandbox_inference_providers(sandbox)? {
             profile_sources
                 .entry(format!("nemoclaw-inference-{}", provider.key))
@@ -467,7 +464,7 @@ fn compile_with_plans(
                 "${{{}.runtime_json}}",
                 runtime_sources[&target.values["name"]]
             ));
-            let sandbox = document.sandbox(&target.values["name"])?;
+            let sandbox = target.values["name"].as_str();
             let mut dependencies: Vec<_> = document
                 .sandbox_inference_providers(sandbox)?
                 .into_iter()
@@ -561,7 +558,7 @@ fn compile_with_plans(
     let sandbox_readiness: BTreeMap<_, _> = document
         .spec
         .sandboxes
-        .iter()
+        .keys()
         .map(|sandbox| {
             // Readiness names the sandbox and configuration attributes it reads.
             let mut readiness: serde_json::Map<String, Value> = [
@@ -578,15 +575,14 @@ fn compile_with_plans(
             .map(|name| {
                 (
                     name.to_owned(),
-                    json!(format!("${{openshell_sandbox.{}.{name}}}", sandbox.name)),
+                    json!(format!("${{openshell_sandbox.{sandbox}.{name}}}")),
                 )
             })
             .collect();
             readiness.insert(
                 "config_json".into(),
                 json!(format!(
-                    "${{fabric_agent_configuration.{}.config_json}}",
-                    sandbox.name
+                    "${{fabric_agent_configuration.{sandbox}.config_json}}"
                 )),
             );
             // uuid() is unknown in a saved plan and records a unique observation
@@ -599,7 +595,7 @@ fn compile_with_plans(
                     "error_message":"${self.error_message != null ? self.error_message : \"Fabric readiness could not be established; resources retained\"}"
                 }]}),
             );
-            (sandbox.name.clone(), Value::Object(readiness))
+            (sandbox.clone(), Value::Object(readiness))
         })
         .collect();
     graph["resource"] = resources;

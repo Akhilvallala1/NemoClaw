@@ -33,7 +33,7 @@ async fn shared_service_preserves_consumers_and_export_reapply() {
     assert_eq!(scenario.agent_identity("assistant-1"), survivor);
 
     let original = document.clone();
-    document.spec.sandboxes.remove(0);
+    document.spec.sandboxes.remove("assistant-0");
     let error = deployment.apply(&document, &cancel).await.unwrap_err();
     assert!(
         matches!(error, nemoclaw_sdk::Error::SandboxChangeRefused { sandbox, action: "remove" } if sandbox == "assistant-0")

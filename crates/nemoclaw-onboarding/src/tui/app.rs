@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use super::labels::display_value;
+use super::labels::{display_value, pointer_text};
 use nemoclaw_authoring::{
     Capabilities, Diagnostics, JourneyQuestion, JourneyResolution, JourneyState,
 };
@@ -290,7 +290,7 @@ impl JourneyWizard {
                     .assessment()
                     .issues()
                     .iter()
-                    .map(|issue| format!("{}: {}", issue.path(), issue.rule()))
+                    .map(|issue| format!("{}: {}", pointer_text(issue.path()), issue.rule()))
                     .collect::<Vec<_>>();
                 self.error = Some(format!(
                     "Cannot save yet: {} {} {}",

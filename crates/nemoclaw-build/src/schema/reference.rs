@@ -236,6 +236,7 @@ fn guide(name: &str) -> &'static str {
             "[Managed models](../models.md)"
         }
         "InferenceProvider"
+        | "InlineInferenceProvider"
         | "Inference"
         | "Route"
         | "Overrides"
@@ -321,6 +322,8 @@ fn constraints(schema: &Value) -> String {
         ("maxLength", "maximum characters"),
         ("minItems", "minimum items"),
         ("maxItems", "maximum items"),
+        ("minProperties", "minimum entries"),
+        ("maxProperties", "maximum entries"),
     ] {
         if let Some(value) = schema.get(key) {
             parts.push(format!("{label} {value}"));
@@ -442,6 +445,26 @@ mod tests {
         for expected in ["rules[].{key}", "#choice", "alpha", "beta"] {
             assert!(markdown.contains(expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn map_entry_bounds_render_beside_the_key_pattern() {
+        let input = schema(
+            json!({"entries":{"description":"Entries by name.", "type":"object",
+                "minProperties":1, "maxProperties":32, "propertyNames":{"pattern":"^[a-z]+$"},
+                "additionalProperties":{"type":"string"}}}),
+            json!({}),
+        );
+        let markdown = render_reference(&input).unwrap();
+        assert!(
+            markdown.contains("minimum entries 1; maximum entries 32; keys: pattern `^[a-z]+$`"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn inline_inference_providers_share_the_inference_guide() {
+        assert_eq!(guide("InlineInferenceProvider"), guide("InferenceProvider"));
     }
 
     #[test]

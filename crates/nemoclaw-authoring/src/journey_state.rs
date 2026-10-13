@@ -20,9 +20,10 @@ use crate::{
     diagnostics::diagnostic,
     identity::new_deployment_uid,
     journey_definition::{
-        HARNESS, INFERENCE_PRESET, JourneyDefinition, JourneyScope, NAME, adapter_field,
-        adapter_schema, native_field,
+        INFERENCE_PRESET, JourneyDefinition, JourneyScope, NAME, adapter_field, adapter_schema,
+        harness_field, native_field, sandbox_path,
     },
+    pointer::escape,
     sdk_schema::{
         finite_choices, sdk_discriminator, sdk_exclusive_required_fields, sdk_field_possible,
         sdk_field_schema, sdk_field_schema_for, sdk_selected_branch, sdk_variant_key,
@@ -32,7 +33,6 @@ use crate::{
 };
 
 const ROUTE_SELECTION: &str = "route:selection";
-const ROUTES: &str = "/spec/sandboxes/0/agent/inference/routes";
 const GATEWAY_TARGET: &str = "/spec/gateway/target";
 
 /// Why an applicable decision is still open.
@@ -85,19 +85,17 @@ enum NativeSettingOwner {
 }
 
 impl QuestionTarget {
-    fn sdk(path: impl Into<String>) -> Self {
+    /// The target of an SDK field question in a journey whose current values
+    /// are `values`.
+    fn sdk(values: &Value, path: impl Into<String>) -> Self {
         let path = path.into();
         if path == NAME {
             return Self::DeploymentName;
         }
-        if path == HARNESS {
+        if harness_field(values).as_ref() == Some(&path) {
             return Self::Harness;
         }
-        let segments = path.split('/').collect::<Vec<_>>();
-        let provider_field = segments.len() == 5
-            && segments[1] == "spec"
-            && segments[2] == "inferenceProviders"
-            && segments[3].parse::<usize>().is_ok();
+        let provider_field = provider_field(&path).map(|(_, field)| field);
         let target_field = path
             .strip_prefix(GATEWAY_TARGET)
             .and_then(|rest| rest.strip_prefix('/'))
@@ -107,15 +105,30 @@ impl QuestionTarget {
             SdkFieldRole::GatewayManagement
         } else if target_field == Some("engine") {
             SdkFieldRole::GatewayEngine
-        } else if provider_field && segments[4] == "api" {
+        } else if provider_field == Some("api") {
             SdkFieldRole::ProviderApi
-        } else if provider_field && segments[4] == "endpoint" {
+        } else if provider_field == Some("endpoint") {
             SdkFieldRole::ProviderEndpoint
         } else {
             SdkFieldRole::Plain
         };
         Self::SdkField { path, role }
     }
+}
+
+/// The pointer to the deployment provider keyed `name`.
+fn provider_path(name: &str) -> String {
+    format!("/spec/inferenceProviders/{}", escape(name))
+}
+
+/// The key of a deployment provider and the field that `path` names inside
+/// it, for `/spec/inferenceProviders/<key>/<field>`.
+fn provider_field(path: &str) -> Option<(String, &str)> {
+    let (key, field) = path
+        .strip_prefix("/spec/inferenceProviders/")?
+        .split_once('/')?;
+    (!key.is_empty() && !field.contains('/'))
+        .then(|| (key.replace("~1", "/").replace("~0", "~"), field))
 }
 
 /// One currently applicable decision in the bounded journey surface.
@@ -351,6 +364,6 @@ use authored_values::AuthoredValues;
 use decision_record::DecisionRecord;
 use journey_position::JourneyPosition;
 use paths::{
-    escape_pointer, harness_kind, harness_path, managed_target_engine, native_value, routes_path,
-    scalar_question, settings_path,
+    harness_kind, harness_path, managed_target_engine, native_value, routes_path, scalar_question,
+    settings_path,
 };

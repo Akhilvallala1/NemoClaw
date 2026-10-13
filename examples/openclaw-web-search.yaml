@@ -15,7 +15,7 @@ spec:
     management: external
     endpoint: http://127.0.0.1:17681
   inferenceProviders:
-    - name: local
+    local:
       provider: openai
       endpoint: http://172.20.0.1:11446/v1
   integrations:
@@ -25,7 +25,7 @@ spec:
       credential:
         env: BRAVE_API_KEY
   sandboxes:
-    - name: researcher
+    researcher:
       image:
         # Replace with the digest from a current OpenClaw image build.
         ref: nc-fabric@sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -55,7 +55,7 @@ spec:
               providerRef: local
               overrides:
                 model: qwen3:4b
-    - name: writer
+    writer:
       image:
         # Replace with the digest from a current OpenClaw image build.
         ref: nc-fabric@sha256:0000000000000000000000000000000000000000000000000000000000000000

@@ -68,9 +68,10 @@ async fn optional_catalog_failures_preserve_complete_unchanged_plans_and_typed_u
                 .unwrap();
         *document.spec.gateway.endpoint_mut() = fixture.endpoint.clone();
         let _image_engine = nemoclaw_e2e::image_runtime::engine(&mut document).await;
-        document.spec.inference_providers[0].provider = provider;
-        document.spec.inference_providers[0].api = Some(api);
-        document.spec.inference_providers[0].endpoint = endpoint.clone();
+        let local = document.spec.inference_providers.get_mut("local").unwrap();
+        local.provider = provider;
+        local.api = Some(api);
+        local.endpoint = endpoint.clone();
         let input = directory.path().join("deployment.yaml");
         fs::write(&input, document.yaml().unwrap()).unwrap();
         let deployment = Deployment::new(directory.path(), &bundle);

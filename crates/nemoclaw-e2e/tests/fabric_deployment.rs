@@ -50,20 +50,37 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
         }
     })
     .await;
-    document.spec.inference_providers[0].endpoint = format!("{}/v1", catalog.endpoint);
-    document.spec.sandboxes[0].harness.as_mut().unwrap().kind = harness.parse().unwrap();
+    document
+        .spec
+        .inference_providers
+        .get_mut("local")
+        .unwrap()
+        .endpoint = format!("{}/v1", catalog.endpoint);
+    document
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .harness
+        .as_mut()
+        .unwrap()
+        .kind = harness.parse().unwrap();
     if harness == "nvidia.fabric.pi" {
         let pi = Document::parse(
             include_str!("../../nemoclaw-sdk/tests/fixtures/config/fabric-pi.yaml").as_bytes(),
         )
         .unwrap();
-        document.spec.sandboxes[0]
+        document
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
             .agent
             .inference
             .as_mut()
             .unwrap()
             .routes[0]
-            .overrides = pi.spec.sandboxes[0]
+            .overrides = pi.spec.sandboxes["assistant"]
             .agent
             .inference
             .as_ref()
@@ -144,7 +161,11 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
     );
     if harness != "nvidia.fabric.pi" {
         let mut changed_model = document.clone();
-        changed_model.spec.sandboxes[0]
+        changed_model
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
             .agent
             .inference
             .as_mut()
@@ -184,7 +205,11 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
     let initial_writes = writes();
     if harness == "nvidia.fabric.pi" {
         let mut changed_model = document.clone();
-        changed_model.spec.sandboxes[0]
+        changed_model
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
             .agent
             .inference
             .as_mut()
@@ -192,7 +217,11 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
             .routes[0]
             .overrides
             .model = "another-custom-model".into();
-        changed_model.spec.sandboxes[0]
+        changed_model
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
             .agent
             .inference
             .as_mut()
@@ -210,11 +239,12 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
                 serde_json::json!("${runtime.value} %{native}"),
             );
         let planned = deployment.plan(&changed_model, &cancel).await.unwrap();
-        assert!(planned.changes.iter().any(|change| change.resource
-            == format!(
-                "fabric_agent_configuration.{}",
-                document.spec.sandboxes[0].name
-            )));
+        assert!(
+            planned
+                .changes
+                .iter()
+                .any(|change| change.resource == "fabric_agent_configuration.assistant")
+        );
         assert_eq!(writes(), initial_writes, "plan must not configure Pi");
         let before = fs::read(directory.path().join("terraform.tfstate")).unwrap();
         let state = fixture.state.clone();
@@ -291,22 +321,22 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
     let sandboxes = fixture.state.lock().unwrap().sandboxes.clone();
     let before_writes = writes();
     let mut changed = document.clone();
-    changed.spec.sandboxes[0].harness.as_mut().unwrap().kind =
-        if harness == "nvidia.fabric.langchain.deepagents" {
-            "nvidia.fabric.hermes".parse().unwrap()
-        } else {
-            "nvidia.fabric.langchain.deepagents".parse().unwrap()
-        };
-    changed.spec.sandboxes[0].harness.as_mut().unwrap().config = None;
-    changed.spec.inference_providers[0].api = None;
-    changed.spec.sandboxes[0]
-        .agent
-        .inference
-        .as_mut()
-        .unwrap()
-        .routes[0]
+    let sandbox = changed.spec.sandboxes.get_mut("assistant").unwrap();
+    sandbox.harness.as_mut().unwrap().kind = if harness == "nvidia.fabric.langchain.deepagents" {
+        "nvidia.fabric.hermes".parse().unwrap()
+    } else {
+        "nvidia.fabric.langchain.deepagents".parse().unwrap()
+    };
+    sandbox.harness.as_mut().unwrap().config = None;
+    sandbox.agent.inference.as_mut().unwrap().routes[0]
         .overrides
         .settings = None;
+    changed
+        .spec
+        .inference_providers
+        .get_mut("local")
+        .unwrap()
+        .api = None;
     // An adapter change selects different image-scoped executable grants and
     // provider attachments. It cannot replace the retained sandbox implicitly.
     let state = fs::read(directory.path().join("terraform.tfstate")).unwrap();
@@ -315,7 +345,7 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
         deployment.apply(&changed, &cancel).await.unwrap_err(),
     ] {
         assert!(
-            matches!(&error, nemoclaw_sdk::Error::SandboxChangeRefused { sandbox, action: "replace" } if sandbox == &document.spec.sandboxes[0].name),
+            matches!(&error, nemoclaw_sdk::Error::SandboxChangeRefused { sandbox, action: "replace" } if sandbox == "assistant"),
             "{error}"
         );
     }
@@ -331,7 +361,13 @@ async fn harness_reconciles_configuration_and_protects_sandbox_identity(harness:
     let state = fs::read(directory.path().join("terraform.tfstate")).unwrap();
     let before_writes = writes();
     let mut replacement = document.clone();
-    replacement.spec.sandboxes[0].image.ref_ = format!("replacement@sha256:{}", "a".repeat(64));
+    replacement
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .image
+        .ref_ = format!("replacement@sha256:{}", "a".repeat(64));
     assert!(
         deployment.plan(&replacement, &cancel).await.is_err(),
         "{harness} sandbox replacement must be refused during plan"
@@ -474,7 +510,11 @@ async fn failed_configuration_reports_safe_runtime_state_and_recovers_without_re
         .id
         .clone();
     let effects = fixture.state.lock().unwrap().effects;
-    document.spec.sandboxes[0]
+    document
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
         .agent
         .inference
         .as_mut()

@@ -198,7 +198,8 @@ pub(super) fn native_questions_for_values(
         }
     }
     if let (Some(schema), Some(document)) = (capabilities.model_schemas.get(harness_id), document) {
-        let sandbox = &document.spec.sandboxes[0];
+        let sandbox = crate::journey_definition::sole_sandbox(document)
+            .ok_or_else(|| diagnostic("journey", "The v1 journey requires one sandbox object."))?;
         let inference = document
             .sandbox_inference(sandbox)
             .map_err(|error| diagnostic("journey", &error.to_string()))?;

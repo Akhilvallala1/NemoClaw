@@ -44,11 +44,12 @@ See [CLI options and output](reference/cli.md) for bundle selection, formats, an
 
 ## Configure Sandboxes and Inference
 
-A document contains one to 32 named sandboxes, each with one harness and one agent.
+`spec.sandboxes` holds one to 32 sandboxes keyed by name, each with one harness and one agent.
+Key order has no meaning: export writes sandboxes and inference providers in name order, and apply reports sandbox health in name order.
 Use the [multiple-sandbox example](../examples/multiple-sandboxes.yaml) to share inference across different harnesses.
 [OpenClaw and Pi](agents.md) can select multiple models; each Deep Agents instance selects one.
 
-Declare managed services under `spec.services` and select their connections with `inferenceProviders[].serviceRef`.
+Declare managed services under `spec.services` and select their connections with an inference provider's `serviceRef`.
 Every declared service is installed and checked, even without an inference consumer.
 Services run on the gateway's Docker engine by default, or on another host through [SSH placement](remote-service.md).
 See [service constraints](inference.md#combine-local-and-hosted-providers) for multiple Ollama/vLLM services and [models](models.md) for hardware contracts and optional [recipes](recipes.md).
@@ -238,14 +239,14 @@ Apply recomputes its plan; a successful earlier plan does not reserve resources 
 
 ### Multiple Sandboxes
 
-Sandbox names must be unique within a deployment; each sandbox declares one named agent.
+Each sandbox declares one named agent.
 Agent names may repeat across sandboxes.
-Adding a named sandbox preserves existing sandbox and provider identities.
-Reordering declarations is not an update.
-Each sandbox receives only its selected inference provider policies, while shared definitions reuse one provider registration.
+Adding a sandbox preserves existing sandbox and provider identities.
+Each sandbox receives only its selected inference provider policies; sandboxes with the same image reference and harness kind share the registration of a shared definition.
 Sandbox-local definitions are visible only to their enclosing sandbox.
 Sandboxes can select distinct Brave credential references; shared references reuse one registration.
-Apply still refuses sandbox removal or replacement because its files and history are not separately retained; destroy operates on the whole deployment.
+Apply still refuses to remove, rename, or replace an applied sandbox because its files and history are not separately retained; renaming its key removes the sandbox under the old name.
+Destroy operates on the whole deployment.
 Use separate deployments when you need independent teardown.
 
 ### Choose the Change Path
@@ -259,7 +260,7 @@ Use separate deployments when you need independent teardown.
 | Managed inference or proxy image or serving specification | Docker-provider reconciliation may replace the container while retaining its independently bound storage; review the plan and [model constraints](models.md) |
 | Deployment UID, [bound gateway settings](#choose-the-gateway-target), or bound credentials | Cannot retarget the existing state; create a separate deployment |
 | Remove an unused inference provider definition | Changes the desired document only; the SDK creates registrations for selected definitions, so unused definitions have no resources to delete |
-| Remove a sandbox, retained storage, or a protected gateway binding | Apply refuses removal; assess a separate deployment and explicit retirement of the original |
+| Remove or rename a sandbox, or remove retained storage or a protected gateway binding | Apply refuses removal; assess a separate deployment and explicit retirement of the original |
 | Change a credential value behind the same environment reference | Unchanged apply does not detect rotation; see [credential lifecycle](security.md#credentials-and-authentication) |
 
 Configuration edits do not recover a runtime whose bridge snapshot reports `runtime_state: unknown`.

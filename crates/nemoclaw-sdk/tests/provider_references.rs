@@ -11,13 +11,20 @@ use serde_json::{Value, json};
 fn input() -> Value {
     crate::support::example("fabric-openclaw.yaml")
 }
+/// Moves the example's only provider into its first route; an inline
+/// provider carries its name instead of a key.
 fn inline(mut value: Value) -> Value {
-    let provider = value["spec"]["inferenceProviders"][0].clone();
-    value["spec"]
+    let providers = value["spec"]
         .as_object_mut()
         .unwrap()
-        .remove("inferenceProviders");
-    let route = &mut value["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0];
+        .remove("inferenceProviders")
+        .unwrap();
+    let providers = providers.as_object().unwrap();
+    assert_eq!(providers.len(), 1);
+    let (name, provider) = providers.iter().next().unwrap();
+    let mut provider = provider.clone();
+    provider["name"] = json!(name);
+    let route = &mut value["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0];
     route.as_object_mut().unwrap().remove("providerRef");
     route["provider"] = provider;
     value
@@ -26,7 +33,7 @@ fn inline(mut value: Value) -> Value {
 fn provider_declaration_scope_preserves_intent_and_compiles_identically() {
     let shared = input();
     let mut sandbox = shared.clone();
-    sandbox["spec"]["sandboxes"][0]["inferenceProviders"] = sandbox["spec"]
+    sandbox["spec"]["sandboxes"]["assistant"]["inferenceProviders"] = sandbox["spec"]
         .as_object_mut()
         .unwrap()
         .remove("inferenceProviders")
@@ -59,12 +66,14 @@ fn provider_declaration_scope_preserves_intent_and_compiles_identically() {
 }
 #[test]
 fn route_requires_exactly_one_provider_form() {
+    let mut provider = input()["spec"]["inferenceProviders"]["local"].clone();
+    provider["name"] = json!("local");
     for patch in [
         json!({}),
-        json!({"providerRef":"local", "provider":input()["spec"]["inferenceProviders"][0]}),
+        json!({"providerRef":"local", "provider":provider}),
     ] {
         let mut value = input();
-        let route = &mut value["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0];
+        let route = &mut value["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0];
         route.as_object_mut().unwrap().remove("providerRef");
         route
             .as_object_mut()
@@ -82,7 +91,7 @@ fn route_requires_exactly_one_provider_form() {
 fn unused_provider_definitions_require_no_secrets_or_resources() {
     let mut value = input();
     let original = Document::parse(value.to_string().as_bytes()).unwrap();
-    value["spec"]["inferenceProviders"].as_array_mut().unwrap().insert(0, json!({"name":"unused", "provider":"openai", "endpoint":"https://example.com/v1", "credential":{"env":"UNUSED_KEY"}}));
+    value["spec"]["inferenceProviders"]["unused"] = json!({"provider":"openai", "endpoint":"https://example.com/v1", "credential":{"env":"UNUSED_KEY"}});
     let doc = Document::parse(value.to_string().as_bytes()).unwrap();
     let generations: Generations = ["workspace", "provider", "sandbox"]
         .map(|k| (k.into(), "a".repeat(32)))
@@ -97,8 +106,8 @@ fn unused_provider_definitions_require_no_secrets_or_resources() {
 #[test]
 fn hermes_auth_uses_the_selected_inline_provider_without_a_second_reference() {
     let mut value = inline(input());
-    value["spec"]["sandboxes"][0]["harness"]["kind"] = json!("hermes");
-    let agent = &mut value["spec"]["sandboxes"][0]["agent"];
+    value["spec"]["sandboxes"]["assistant"]["harness"]["kind"] = json!("hermes");
+    let agent = &mut value["spec"]["sandboxes"]["assistant"]["agent"];
     agent["auth"] = json!({"method":"api-key"});
     agent["inference"]["routes"][0]["provider"]["endpoint"] =
         json!("https://inference.example.test/v1");
@@ -129,22 +138,18 @@ fn hermes_auth_uses_the_selected_inline_provider_without_a_second_reference() {
 #[test]
 fn references_reject_missing_names_shadowing_and_distinct_inline_instances() {
     let original = input();
-    let provider = original["spec"]["inferenceProviders"][0].clone();
+    let providers = original["spec"]["inferenceProviders"].clone();
     let mut missing = original.clone();
-    missing["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["providerRef"] =
+    missing["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["providerRef"] =
         json!("missing");
-    let mut duplicate = original.clone();
-    duplicate["spec"]["inferenceProviders"]
-        .as_array_mut()
-        .unwrap()
-        .push(provider.clone());
     let mut shadow = original.clone();
-    shadow["spec"]["sandboxes"][0]["inferenceProviders"] = json!([provider.clone()]);
+    shadow["spec"]["sandboxes"]["assistant"]["inferenceProviders"] = providers.clone();
     let mut inline_shadow = inline(original.clone());
-    inline_shadow["spec"]["inferenceProviders"] = json!([provider]);
+    inline_shadow["spec"]["inferenceProviders"] = providers;
     let mut empty_ref = inline(original);
-    empty_ref["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["providerRef"] = json!("");
-    for value in [missing, duplicate, shadow, inline_shadow, empty_ref] {
+    empty_ref["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["providerRef"] =
+        json!("");
+    for value in [missing, shadow, inline_shadow, empty_ref] {
         assert!(Document::parse(value.to_string().as_bytes()).is_err());
     }
 }
@@ -172,11 +177,11 @@ fn inline_managed_providers_reuse_named_service_runtime_and_defaults() {
         assert_eq!(
             provider_scope::normalized_as(
                 targets(&local, &generations).unwrap(),
-                &shared.inference_provider().unwrap().name
+                shared.inference_provider().unwrap().name
             ),
             provider_scope::normalized_as(
                 targets(&shared, &generations).unwrap(),
-                &shared.inference_provider().unwrap().name
+                shared.inference_provider().unwrap().name
             )
         );
         let local_runtime = nemoclaw_sdk::compile::runtime_targets(&local, &generations).unwrap();
@@ -199,8 +204,7 @@ fn selected_route_provider_updates_its_declared_scope_without_flattening() {
         include_bytes!("../../../examples/multiple-providers.yaml").as_slice(),
     )
     .unwrap();
-    let sandbox = &document.spec.sandboxes[0];
-    let inference = document.sandbox_inference(sandbox).unwrap();
+    let inference = document.sandbox_inference("researcher").unwrap();
     let route = inference
         .routes
         .iter()
@@ -208,7 +212,7 @@ fn selected_route_provider_updates_its_declared_scope_without_flattening() {
         .unwrap();
     assert_eq!(
         document
-            .sandbox_route_provider(sandbox, route)
+            .sandbox_route_provider("researcher", route)
             .unwrap()
             .name,
         "local"
@@ -218,15 +222,18 @@ fn selected_route_provider_updates_its_declared_scope_without_flattening() {
         .unwrap()
         .endpoint = "http://127.0.0.1:9000/v1".into();
     assert_eq!(
-        document.spec.inference_providers[0].endpoint,
+        document.spec.inference_providers["local"].endpoint,
         "http://127.0.0.1:9000/v1"
     );
     assert_eq!(
-        document.spec.inference_providers[1].endpoint,
+        document.spec.inference_providers["hosted"].endpoint,
         "https://hosted.example/v1"
     );
     assert_eq!(
-        document.spec.sandboxes[0].agent.inference_ref.as_deref(),
+        document.spec.sandboxes["researcher"]
+            .agent
+            .inference_ref
+            .as_deref(),
         Some("smart-and-fast")
     );
     document.validate().unwrap();

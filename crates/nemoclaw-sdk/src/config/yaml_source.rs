@@ -95,7 +95,9 @@ enum Frame {
 
 /// Locate a validated JSON pointer using the same YAML parser's node positions.
 /// This runs only after bounded deserialization, and never renders source text.
-pub(super) fn position(text: &str, pointer: &str) -> Option<(usize, usize)> {
+/// With `at_key`, the pointer names a mapping entry and the position is its
+/// key's, so a rejected name points at itself rather than at its value.
+pub(super) fn position(text: &str, pointer: &str, at_key: bool) -> Option<(usize, usize)> {
     let mut frames = Vec::new();
     for event in Parser::new_from_str(text) {
         let (event, span) = event.ok()?;
@@ -106,15 +108,17 @@ pub(super) fn position(text: &str, pointer: &str) -> Option<(usize, usize)> {
             Event::Scalar(ref value, ..)
                 if matches!(frames.last(), Some(Frame::Mapping { key: None, .. })) =>
             {
-                if let Some(Frame::Mapping { key, .. }) = frames.last_mut() {
+                if let Some(Frame::Mapping { path, key }) = frames.last_mut() {
+                    if at_key && format!("{path}/{}", escape(value)) == pointer {
+                        return Some((span.start.line(), span.start.col() + 1));
+                    }
                     *key = Some(value.to_string());
                 }
             }
             Event::Scalar(..) | Event::MappingStart(..) | Event::SequenceStart(..) => {
                 let path = match frames.last_mut() {
                     Some(Frame::Mapping { path, key }) => {
-                        let key = key.take()?.replace('~', "~0").replace('/', "~1");
-                        format!("{path}/{key}")
+                        format!("{path}/{}", escape(&key.take()?))
                     }
                     Some(Frame::Sequence { path, next }) => {
                         let path = format!("{path}/{next}");
@@ -123,7 +127,7 @@ pub(super) fn position(text: &str, pointer: &str) -> Option<(usize, usize)> {
                     }
                     None => String::new(),
                 };
-                if path == pointer {
+                if !at_key && path == pointer {
                     return Some((span.start.line(), span.start.col() + 1));
                 }
                 match event {
@@ -136,4 +140,9 @@ pub(super) fn position(text: &str, pointer: &str) -> Option<(usize, usize)> {
         }
     }
     None
+}
+
+/// Escape one JSON pointer segment.
+pub(super) fn escape(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
 }

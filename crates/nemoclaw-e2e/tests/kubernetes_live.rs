@@ -361,7 +361,8 @@ async fn the_gateway_installs_authenticates_and_is_removed_keeping_storage() {
             "authentication": {"profile": "development"}
         }}
     });
-    value["spec"]["sandboxes"][0]["image"]["metadata"] = json!({"env": "TEST_IMAGE_METADATA"});
+    value["spec"]["sandboxes"]["assistant"]["image"]["metadata"] =
+        json!({"env": "TEST_IMAGE_METADATA"});
     let document = Document::parse(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
     let generations: Generations = [
         "workspace",
@@ -531,11 +532,11 @@ spec:
         namespace: {namespace}
         authentication: {{profile: development}}
   inferenceProviders:
-    - name: hosted
+    hosted:
       provider: openai
       endpoint: https://inference.example.test/v1
   sandboxes:
-    - name: assistant
+    assistant:
       image:
         ref: {image}
         metadata: {{env: NEMOCLAW_TEST_AGENT_METADATA}}

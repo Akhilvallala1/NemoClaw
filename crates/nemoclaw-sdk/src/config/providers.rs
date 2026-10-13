@@ -1,28 +1,37 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-use super::references::{ScopedInference, diagnostic_name, missing_reference};
+use super::references::{ScopedInference, diagnostic_name, missing_reference, sandbox_path};
 use super::source::DefinitionSource;
-use super::{ConfigError, Document, Inference, InferenceProvider, Route, Sandbox};
+use super::{ConfigError, Document, Inference, InferenceProvider, Route};
 use std::collections::{BTreeMap, BTreeSet};
 
 // The resource key identifies the registration; the authored path distinguishes
 // separate definitions with identical values and lets export edit the right one.
 pub(crate) struct SelectedProvider<'a> {
+    /// The definition's map key, or an inline definition's own name.
+    pub name: &'a str,
     pub definition: &'a InferenceProvider,
     pub key: String,
     pub(crate) path: String,
 }
 impl<'a> SelectedProvider<'a> {
-    fn new(definition: &'a InferenceProvider, sandbox: Option<&Sandbox>, path: String) -> Self {
+    /// `sandbox` names the sandbox that declares the definition, if any.
+    fn new(
+        name: &'a str,
+        definition: &'a InferenceProvider,
+        sandbox: Option<&str>,
+        path: String,
+    ) -> Self {
         use sha2::{Digest, Sha256};
         let key = sandbox.map_or_else(
-            || definition.name.clone(),
+            || name.to_owned(),
             |sandbox| {
-                let digest = Sha256::digest(format!("{}/{}", sandbox.name, definition.name));
+                let digest = Sha256::digest(format!("{sandbox}/{name}"));
                 format!("local-{}", &super::hex(&digest)[..24])
             },
         );
         Self {
+            name,
             definition,
             key,
             path,
@@ -32,33 +41,46 @@ impl<'a> SelectedProvider<'a> {
         use sha2::{Digest, Sha256};
         self.key = format!(
             "{}-{}",
-            &self.definition.name[..self.definition.name.len().min(12)],
+            &self.name[..self.name.len().min(12)],
             &super::hex(&Sha256::digest(format!("{}\0{scope}", self.key)))[..24]
         );
         self
     }
 }
 
+/// A selected inference definition with the name that identifies it: its map
+/// key, or an inline definition's own name. Its fields read through to the
+/// definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedProvider<'a> {
+    pub name: &'a str,
+    pub definition: &'a InferenceProvider,
+}
+impl std::ops::Deref for NamedProvider<'_> {
+    type Target = InferenceProvider;
+    fn deref(&self) -> &InferenceProvider {
+        self.definition
+    }
+}
+
 fn provider_path(base: &str, name: &str) -> String {
     format!("{base}.inferenceProviders[{}]", diagnostic_name(name))
 }
-fn sandbox_path(sandbox: &Sandbox) -> String {
-    format!("spec.sandboxes[{}]", diagnostic_name(&sandbox.name))
-}
 
 impl Document {
-    pub(crate) fn image_scope(&self, sandbox: &Sandbox) -> Result<String, ConfigError> {
+    /// The image identity of the named sandbox, which scopes its registrations.
+    pub(crate) fn image_scope(&self, sandbox: &str) -> Result<String, ConfigError> {
         use sha2::{Digest, Sha256};
         Ok(super::hex(&Sha256::digest(format!(
             "{}\0{}",
-            sandbox.image.ref_,
+            self.sandbox(sandbox)?.image.ref_,
             self.sandbox_harness(sandbox)?.kind.as_str()
         )))[..24]
             .into())
     }
     pub(crate) fn sandbox_route_registration<'a>(
         &'a self,
-        sandbox: &'a Sandbox,
+        sandbox: &str,
         route: &'a Route,
     ) -> Result<SelectedProvider<'a>, ConfigError> {
         let inference = self.scoped_inference(sandbox)?;
@@ -72,11 +94,11 @@ impl Document {
         inference: &ScopedInference<'a>,
     ) -> Result<SelectedProvider<'a>, ConfigError> {
         let enclosing = || {
-            self.spec.inference_providers.iter().chain(
+            self.spec.inference_providers.keys().chain(
                 inference
                     .sandbox
                     .into_iter()
-                    .flat_map(|s| &s.inference_providers),
+                    .flat_map(|(_, sandbox)| sandbox.inference_providers.keys()),
             )
         };
         match DefinitionSource::from_parts(
@@ -85,35 +107,33 @@ impl Document {
             "route requires exactly one of provider or providerRef",
         )? {
             DefinitionSource::Inline(provider) => {
-                if enclosing().any(|definition| definition.name == provider.name) {
+                if enclosing().any(|name| *name == provider.name) {
                     return Err(ConfigError::new(
                         "inline provider names must not shadow enclosing definitions",
                     ));
                 }
                 Ok(SelectedProvider::new(
-                    provider,
-                    inference.sandbox,
+                    &provider.name,
+                    &provider.definition,
+                    inference.sandbox.map(|(sandbox, _)| sandbox),
                     format!("{}.provider", inference.route_path(route)),
                 ))
             }
             DefinitionSource::Reference(name) => {
-                if let Some(provider) = self
-                    .spec
-                    .inference_providers
-                    .iter()
-                    .find(|p| p.name == name)
-                {
+                if let Some((name, provider)) = self.spec.inference_providers.get_key_value(name) {
                     return Ok(SelectedProvider::new(
+                        name,
                         provider,
                         None,
                         provider_path("spec", name),
                     ));
                 }
-                if let Some(sandbox) = inference.sandbox
-                    && let Some(provider) =
-                        sandbox.inference_providers.iter().find(|p| p.name == name)
+                if let Some((sandbox, definition)) = inference.sandbox
+                    && let Some((name, provider)) =
+                        definition.inference_providers.get_key_value(name)
                 {
                     return Ok(SelectedProvider::new(
+                        name,
                         provider,
                         Some(sandbox),
                         provider_path(&sandbox_path(sandbox), name),
@@ -123,18 +143,18 @@ impl Document {
                     &format!("{}.providerRef", inference.route_path(route)),
                     "provider",
                     name,
-                    enclosing().map(|p| p.name.as_str()),
+                    enclosing().map(String::as_str),
                 ))
             }
         }
     }
 
-    /// Resolve a route using the declaration scope of the sandbox's selected inference.
+    /// Resolve a route using the declaration scope of the named sandbox's selected inference.
     pub fn sandbox_route_provider<'a>(
         &'a self,
-        sandbox: &'a Sandbox,
-        route: &'a Route,
-    ) -> Result<&'a InferenceProvider, ConfigError> {
+        sandbox: &str,
+        route: &Route,
+    ) -> Result<NamedProvider<'a>, ConfigError> {
         let inference = self.scoped_inference(sandbox)?;
         let selected = inference
             .inference
@@ -142,7 +162,11 @@ impl Document {
             .iter()
             .find(|candidate| candidate.name == route.name)
             .ok_or(ConfigError::new("route is not selected by this sandbox"))?;
-        Ok(self.route_provider(selected, &inference)?.definition)
+        let provider = self.route_provider(selected, &inference)?;
+        Ok(NamedProvider {
+            name: provider.name,
+            definition: provider.definition,
+        })
     }
 
     /// Mutate the authored provider definition selected by a sandbox route.
@@ -151,8 +175,7 @@ impl Document {
         sandbox_name: &str,
         route_name: &str,
     ) -> Result<&mut InferenceProvider, ConfigError> {
-        let sandbox = self.sandbox(sandbox_name)?;
-        let inference = self.scoped_inference(sandbox)?;
+        let inference = self.scoped_inference(sandbox_name)?;
         let route = inference
             .inference
             .routes
@@ -164,10 +187,10 @@ impl Document {
     }
 
     /// Resolve an unambiguous deployment provider. Multi-provider callers must select by identity.
-    pub fn inference_provider(&self) -> Result<&InferenceProvider, ConfigError> {
+    pub fn inference_provider(&self) -> Result<NamedProvider<'_>, ConfigError> {
         let providers = self.selected_inference_providers()?;
         match providers.as_slice() {
-            [provider] => Ok(provider),
+            [provider] => Ok(*provider),
             _ => Err(ConfigError::new(
                 "select an explicit provider in a multi-provider deployment",
             )),
@@ -175,11 +198,17 @@ impl Document {
     }
 
     /// Providers selected across all sandboxes, deduplicated by scoped definition identity.
-    pub fn selected_inference_providers(&self) -> Result<Vec<&InferenceProvider>, ConfigError> {
+    pub fn selected_inference_providers(&self) -> Result<Vec<NamedProvider<'_>>, ConfigError> {
         Ok(self
             .selected_providers()?
             .into_iter()
-            .map(|p| (p.path, p.definition))
+            .map(|p| {
+                let provider = NamedProvider {
+                    name: p.name,
+                    definition: p.definition,
+                };
+                (p.path, provider)
+            })
             .collect::<BTreeMap<_, _>>()
             .into_values()
             .collect())
@@ -187,25 +216,19 @@ impl Document {
 
     pub(crate) fn selected_providers(&self) -> Result<Vec<SelectedProvider<'_>>, ConfigError> {
         let mut selected = BTreeMap::new();
-        for sandbox in &self.spec.sandboxes {
-            let mut names = BTreeSet::new();
-            for definition in self
-                .spec
+        for (name, sandbox) in &self.spec.sandboxes {
+            if sandbox
                 .inference_providers
-                .iter()
-                .chain(&sandbox.inference_providers)
+                .keys()
+                .any(|name| self.spec.inference_providers.contains_key(name))
             {
-                if !super::validation::valid_name(&definition.name)
-                    || !names.insert(&definition.name)
-                {
-                    return Err(ConfigError::new(
-                        "provider names must be unique lowercase names without shadowing",
-                    ));
-                }
+                return Err(ConfigError::new(
+                    "sandbox provider names must not shadow deployment definitions",
+                ));
             }
-            let inference = self.scoped_inference(sandbox)?;
+            let inference = self.scoped_inference(name)?;
             for route in &inference.inference.routes {
-                let provider = self.sandbox_route_registration(sandbox, route)?;
+                let provider = self.sandbox_route_registration(name, route)?;
                 let path = provider.path.clone();
                 if let Some(previous) = selected.insert(provider.key.clone(), provider)
                     && previous.path != path
@@ -231,10 +254,10 @@ impl Document {
         Ok(selected.into_values().collect())
     }
 
-    pub(crate) fn sandbox_inference_providers<'a>(
-        &'a self,
-        sandbox: &'a Sandbox,
-    ) -> Result<Vec<SelectedProvider<'a>>, ConfigError> {
+    pub(crate) fn sandbox_inference_providers(
+        &self,
+        sandbox: &str,
+    ) -> Result<Vec<SelectedProvider<'_>>, ConfigError> {
         let mut selected = BTreeMap::new();
         let inference = self.scoped_inference(sandbox)?;
         for route in &inference.inference.routes {
@@ -295,7 +318,7 @@ impl Document {
         self.spec
             .inference_providers
             .iter_mut()
-            .map(|provider| (provider_path("spec", &provider.name), provider))
+            .map(|(name, provider)| (provider_path("spec", name), provider))
             .chain(
                 self.spec
                     .inferences
@@ -307,14 +330,14 @@ impl Document {
                         )
                     }),
             )
-            .chain(self.spec.sandboxes.iter_mut().flat_map(|sandbox| {
-                let base = sandbox_path(sandbox);
+            .chain(self.spec.sandboxes.iter_mut().flat_map(|(name, sandbox)| {
+                let base = sandbox_path(name);
                 let definitions = base.clone();
                 let inferences = base.clone();
                 sandbox
                     .inference_providers
                     .iter_mut()
-                    .map(move |provider| (provider_path(&definitions, &provider.name), provider))
+                    .map(move |(name, provider)| (provider_path(&definitions, name), provider))
                     .chain(
                         sandbox
                             .inferences
@@ -341,12 +364,12 @@ impl Document {
     pub(super) fn provider_definitions(&self) -> impl Iterator<Item = &InferenceProvider> {
         self.spec
             .inference_providers
-            .iter()
+            .values()
             .chain(
                 self.spec
                     .sandboxes
-                    .iter()
-                    .flat_map(|sandbox| &sandbox.inference_providers),
+                    .values()
+                    .flat_map(|sandbox| sandbox.inference_providers.values()),
             )
             .chain(self.inference_definitions().flat_map(|selection| {
                 selection
@@ -354,6 +377,7 @@ impl Document {
                     .routes
                     .iter()
                     .filter_map(|route| route.provider.as_ref())
+                    .map(|provider| &provider.definition)
             }))
     }
 }
@@ -364,6 +388,9 @@ fn inline_providers_mut(
 ) -> impl Iterator<Item = (String, &mut InferenceProvider)> {
     inference.routes.iter_mut().filter_map(move |route| {
         let path = format!("{base}.routes[{}].provider", diagnostic_name(&route.name));
-        route.provider.as_mut().map(|provider| (path, provider))
+        route
+            .provider
+            .as_mut()
+            .map(|provider| (path, &mut provider.definition))
     })
 }

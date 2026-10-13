@@ -20,7 +20,7 @@ fn journey(values: Value, capabilities: &Capabilities) -> nemoclaw_authoring::Jo
     )
     .ask([
         "/metadata/name",
-        "/spec/sandboxes/0/harness/kind",
+        "/spec/sandboxes/assistant/harness/kind",
         "inference:preset",
     ])
     .ask([JourneyScope::InferenceApi, JourneyScope::RouteModels])
@@ -37,9 +37,170 @@ fn supplied_values_are_suggestions_for_finite_and_free_text_questions() {
     assert_eq!(name.reason(), JourneyQuestionReason::ExplicitAsk);
     assert_eq!(name.suggestion(), Some(&json!("openclaw-nvidia-hosted")));
     assert!(name.choices().is_empty());
-    let harness = resolved.question("/spec/sandboxes/0/harness/kind").unwrap();
+    let harness = resolved
+        .question("/spec/sandboxes/assistant/harness/kind")
+        .unwrap();
     assert_eq!(harness.suggestion(), Some(&json!("nvidia.fabric.openclaw")));
     assert_eq!(harness.choices().len(), capabilities.harnesses().len());
+}
+
+#[test]
+fn questions_address_the_only_sandbox_and_its_provider_by_their_keys() {
+    let capabilities = Capabilities::available();
+    let mut values = supplied();
+    let sandboxes = values["spec"]["sandboxes"].as_object_mut().unwrap();
+    let sandbox = sandboxes.remove("assistant").unwrap();
+    sandboxes.insert("coder".into(), sandbox);
+    let providers = values["spec"]["inferenceProviders"]
+        .as_object_mut()
+        .unwrap();
+    let provider = providers.remove("nvidia-prod").unwrap();
+    providers.insert("hosted".into(), provider);
+    values["spec"]["sandboxes"]["coder"]["agent"]["inference"]["routes"][0]["providerRef"] =
+        json!("hosted");
+    let harness = "/spec/sandboxes/coder/harness/kind";
+    let mut state = JourneyDefinition::new(
+        "keyed",
+        PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap(),
+    )
+    .ask([harness, "inference:preset"])
+    .ask([JourneyScope::InferenceApi, JourneyScope::RouteModels])
+    .start(&capabilities)
+    .unwrap();
+    assert!(
+        state
+            .resolve(&capabilities)
+            .unwrap()
+            .question(harness)
+            .is_some()
+    );
+    state
+        .answer(&capabilities, harness, Some(json!("nvidia.fabric.hermes")))
+        .unwrap();
+    state
+        .answer(
+            &capabilities,
+            "inference:preset",
+            Some(json!("nvidia-endpoints")),
+        )
+        .unwrap();
+    let api = "/spec/inferenceProviders/hosted/api";
+    state
+        .answer(&capabilities, api, Some(json!("openai-responses")))
+        .unwrap();
+    let model = "/spec/sandboxes/coder/agent/inference/routes/0/overrides/model";
+    state
+        .answer(&capabilities, model, Some(json!("custom/model")))
+        .unwrap();
+    let resolution = state.resolve(&capabilities).unwrap();
+    let document = resolution.assessment().document().unwrap();
+    let sandbox = &document.spec.sandboxes["coder"];
+    assert_eq!(
+        sandbox.harness.as_ref().unwrap().kind.as_str(),
+        "nvidia.fabric.hermes"
+    );
+    assert_eq!(
+        sandbox.agent.inference.as_ref().unwrap().routes[0]
+            .overrides
+            .model,
+        "custom/model"
+    );
+    assert_eq!(
+        document.spec.inference_providers["hosted"].api,
+        Some(InferenceApi::OpenaiResponses)
+    );
+}
+
+#[test]
+fn a_journey_requires_its_sandbox_key_to_be_a_name_and_never_echoes_it() {
+    let capabilities = Capabilities::available();
+    let mut values = supplied();
+    let sandboxes = values["spec"]["sandboxes"].as_object_mut().unwrap();
+    let sandbox = sandboxes.remove("assistant").unwrap();
+    sandboxes.insert("PRIVATE INVALID NAME".into(), sandbox);
+    let error = JourneyDefinition::new(
+        "invalid",
+        PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap(),
+    )
+    .ask([JourneyScope::DeploymentFields])
+    .start(&capabilities)
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        error,
+        "journey: The v1 journey requires exactly one sandbox keyed by a lowercase name."
+    );
+}
+
+#[test]
+fn a_provider_key_that_is_not_a_name_is_never_a_question_id() {
+    let capabilities = Capabilities::available();
+    let mut values = supplied();
+    let providers = values["spec"]["inferenceProviders"]
+        .as_object_mut()
+        .unwrap();
+    let provider = providers.remove("nvidia-prod").unwrap();
+    providers.insert("PRIVATE INVALID NAME".into(), provider);
+    values["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["providerRef"] =
+        json!("PRIVATE INVALID NAME");
+    let mut state = journey(values, &capabilities);
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let resolution = state.resolve(&capabilities).unwrap();
+        ids.extend(
+            resolution
+                .questions()
+                .iter()
+                .map(|question| question.id().to_owned()),
+        );
+        if resolution.question("inference:preset").is_none() {
+            break;
+        }
+        state
+            .answer(
+                &capabilities,
+                "inference:preset",
+                Some(json!("nvidia-endpoints")),
+            )
+            .unwrap();
+    }
+    assert!(!ids.is_empty());
+    assert!(ids.iter().all(|id| !id.contains("PRIVATE")), "{ids:?}");
+}
+
+#[test]
+fn asked_fields_must_name_the_journey_sandbox_or_a_supplied_provider() {
+    let capabilities = Capabilities::available();
+    let start = |field: &str| {
+        JourneyDefinition::new(
+            "asked",
+            PartialDocument::from_yaml(supplied().to_string().as_bytes()).unwrap(),
+        )
+        .ask([field])
+        .start(&capabilities)
+    };
+    for (field, message) in [
+        (
+            "/spec/sandboxes/other/agent/name",
+            "journey: asked fields must belong to the journey's sandbox",
+        ),
+        (
+            "/spec/sandboxes/other",
+            "journey: asked fields must belong to the journey's sandbox",
+        ),
+        (
+            "/spec/inferenceProviders/other/api",
+            "journey: asked provider fields must belong to a supplied provider",
+        ),
+    ] {
+        assert_eq!(start(field).unwrap_err().to_string(), message, "{field}");
+    }
+    for field in [
+        "/spec/sandboxes/assistant/agent/name",
+        "/spec/inferenceProviders/nvidia-prod/api",
+    ] {
+        assert!(start(field).is_ok(), "{field}");
+    }
 }
 
 #[test]
@@ -56,7 +217,7 @@ fn generated_yaml_reopens_as_the_same_supplied_intent() {
     state
         .answer(
             &capabilities,
-            "/spec/inferenceProviders/0/api",
+            "/spec/inferenceProviders/nvidia-prod/api",
             Some(json!("openai-responses")),
         )
         .unwrap();
@@ -79,16 +240,18 @@ fn generated_yaml_reopens_as_the_same_supplied_intent() {
         state.values().pointer("/metadata/uid")
     );
     assert_eq!(
-        again.values().pointer("/spec/inferenceProviders/0/api"),
+        again
+            .values()
+            .pointer("/spec/inferenceProviders/nvidia-prod/api"),
         Some(&json!("openai-responses"))
     );
     assert_eq!(
         again
             .values()
-            .pointer("/spec/sandboxes/0/agent/inference/routes/0/overrides/model"),
+            .pointer("/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model"),
         state
             .values()
-            .pointer("/spec/sandboxes/0/agent/inference/routes/0/overrides/model")
+            .pointer("/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model")
     );
 }
 
@@ -101,7 +264,7 @@ fn every_advertised_harness_keeps_provider_protocol_choices() {
             state
                 .answer(
                     &capabilities,
-                    "/spec/sandboxes/0/harness/kind",
+                    "/spec/sandboxes/assistant/harness/kind",
                     Some(json!(harness.as_str())),
                 )
                 .unwrap();
@@ -111,7 +274,7 @@ fn every_advertised_harness_keeps_provider_protocol_choices() {
             let api = state
                 .resolve(&capabilities)
                 .unwrap()
-                .question("/spec/inferenceProviders/0/api")
+                .question("/spec/inferenceProviders/nvidia-prod/api")
                 .cloned()
                 .unwrap();
             assert_eq!(
@@ -144,7 +307,7 @@ fn changing_a_model_preserves_an_explicit_target_engine() {
             Some(json!("nvidia-endpoints")),
         )
         .unwrap();
-    let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
+    let model = "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model";
     state
         .answer(&capabilities, model, Some(json!("updated-model")))
         .unwrap();
@@ -158,12 +321,13 @@ fn changing_a_model_preserves_an_explicit_target_engine() {
 fn an_anonymous_local_provider_is_lossless_without_a_credential_reference() {
     let capabilities = Capabilities::available();
     let mut values = supplied();
-    values["spec"]["inferenceProviders"][0]["endpoint"] = json!("http://127.0.0.1:11434/v1");
-    values["spec"]["inferenceProviders"][0]
+    values["spec"]["inferenceProviders"]["nvidia-prod"]["endpoint"] =
+        json!("http://127.0.0.1:11434/v1");
+    values["spec"]["inferenceProviders"]["nvidia-prod"]
         .as_object_mut()
         .unwrap()
         .remove("credential");
-    values["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["overrides"]["model"] =
+    values["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["overrides"]["model"] =
         json!("local-model");
     let mut state = journey(values, &capabilities);
     state
@@ -176,11 +340,11 @@ fn an_anonymous_local_provider_is_lossless_without_a_credential_reference() {
     state
         .answer(
             &capabilities,
-            "/spec/inferenceProviders/0/endpoint",
+            "/spec/inferenceProviders/nvidia-prod/endpoint",
             Some(json!("http://127.0.0.1:11434/v1")),
         )
         .unwrap();
-    let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
+    let model = "/spec/sandboxes/assistant/agent/inference/routes/0/overrides/model";
     state
         .answer(&capabilities, model, Some(json!("local-model")))
         .unwrap();
@@ -218,7 +382,7 @@ fn newly_advertised_fabric_harness_is_a_choice_without_code_registration() {
     catalog.adapters.push(adapter);
     let capabilities = Capabilities::from_catalog(&catalog);
     let mut state = journey(supplied(), &capabilities);
-    let harness = "/spec/sandboxes/0/harness/kind";
+    let harness = "/spec/sandboxes/assistant/harness/kind";
     assert!(
         state
             .resolve(&capabilities)
@@ -247,7 +411,7 @@ fn newly_advertised_fabric_harness_is_a_choice_without_code_registration() {
         .unwrap()
         .clone();
     assert_eq!(
-        document.spec.sandboxes[0]
+        document.spec.sandboxes["assistant"]
             .harness
             .as_ref()
             .unwrap()

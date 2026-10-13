@@ -90,7 +90,13 @@ fn endpoint_policy_rejects_credentials_metadata_and_remote_plaintext() {
 fn managed_defaults_and_safety_bounds_match_the_qualified_recipe() {
     let mut original =
         Document::parse(include_str!("fixtures/config/spark.yaml").as_bytes()).unwrap();
-    original.spec.sandboxes[0].image.ref_ = nemoclaw_sdk::config::DEFAULT_AGENT_IMAGE.into();
+    original
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .image
+        .ref_ = nemoclaw_sdk::config::DEFAULT_AGENT_IMAGE.into();
     let mut defaulted = original.clone();
     let network_cidr = original
         .spec
@@ -109,8 +115,21 @@ fn managed_defaults_and_safety_bounds_match_the_qualified_recipe() {
     };
     service.serving = Default::default();
     service.memory = Default::default();
-    defaulted.spec.sandboxes[0].image.ref_.clear();
-    defaulted.spec.sandboxes[0].network.policy = Default::default();
+    defaulted
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .image
+        .ref_
+        .clear();
+    defaulted
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .network
+        .policy = Default::default();
     defaulted.defaults();
     assert_eq!(defaulted, original);
     for timeout in [0, 59, 3601] {
@@ -123,7 +142,12 @@ fn managed_defaults_and_safety_bounds_match_the_qualified_recipe() {
         assert!(changed.validate().is_err());
     }
     let mut changed = original.clone();
-    changed.spec.inference_providers[0].endpoint = "http://127.0.0.1:18888/v1".into();
+    changed
+        .spec
+        .inference_providers
+        .get_mut("qwen")
+        .unwrap()
+        .endpoint = "http://127.0.0.1:18888/v1".into();
     assert!(changed.validate().is_err());
     let mut changed = original;
     let ServiceDefinition::Vllm(service) = changed.spec.services.get_mut("qwen").unwrap() else {
@@ -149,24 +173,41 @@ fn fabric_protocol_and_managed_ollama_constraints_survive_the_port() {
         "pi",
     ] {
         let mut document = original.clone();
-        document.spec.sandboxes[0].harness.as_mut().unwrap().kind = harness.parse().unwrap();
-        document.spec.inference_providers[0].provider = if harness == "claude" {
+        document
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
+            .harness
+            .as_mut()
+            .unwrap()
+            .kind = harness.parse().unwrap();
+        document
+            .spec
+            .inference_providers
+            .get_mut("local")
+            .unwrap()
+            .provider = if harness == "claude" {
             nemoclaw_sdk::config::InferenceProviderKind::Anthropic
         } else {
             nemoclaw_sdk::config::InferenceProviderKind::Openai
         };
         assert!(document.validate().is_ok());
         assert_eq!(
-            document
-                .sandbox_harness(&document.spec.sandboxes[0])
-                .unwrap()
-                .runtime(),
+            document.sandbox_harness("assistant").unwrap().runtime(),
             "fabric"
         );
     }
     let mut wrong = original;
-    wrong.spec.sandboxes[0].harness.as_mut().unwrap().kind =
-        "nvidia.fabric.claude".parse().unwrap();
+    wrong
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .harness
+        .as_mut()
+        .unwrap()
+        .kind = "nvidia.fabric.claude".parse().unwrap();
     assert!(wrong.validate().is_ok());
     let base = include_str!("fixtures/config/managed-ollama.yaml");
     for (from, to) in [
@@ -193,24 +234,35 @@ fn openclaw_uses_only_fabric_with_external_or_managed_dependencies() {
         include_str!("fixtures/config/managed-ollama.yaml"),
     ] {
         let mut document = Document::parse(input.as_bytes()).unwrap();
-        document.spec.sandboxes[0].harness.as_mut().unwrap().kind =
-            "nvidia.fabric.openclaw".parse().unwrap();
-        document.spec.sandboxes[0].image.ref_.clear();
+        document
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
+            .harness
+            .as_mut()
+            .unwrap()
+            .kind = "nvidia.fabric.openclaw".parse().unwrap();
+        document
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
+            .image
+            .ref_
+            .clear();
         document.defaults();
         document.validate().unwrap();
         assert_eq!(
-            document.spec.sandboxes[0].image.ref_,
+            document.spec.sandboxes["assistant"].image.ref_,
             nemoclaw_sdk::config::DEFAULT_AGENT_IMAGE
         );
         assert_eq!(
-            document
-                .sandbox_harness(&document.spec.sandboxes[0])
-                .unwrap()
-                .runtime(),
+            document.sandbox_harness("assistant").unwrap().runtime(),
             "fabric"
         );
         let mut input = serde_json::to_value(&document).unwrap();
-        input["spec"]["sandboxes"][0]["harness"]["kind"] = serde_json::json!("");
+        input["spec"]["sandboxes"]["assistant"]["harness"]["kind"] = serde_json::json!("");
         assert!(
             Document::parse(input.to_string().as_bytes()).is_err(),
             "a harness must be declared"
@@ -223,10 +275,7 @@ fn sandbox_harness_is_the_only_implementation_selector() {
     let input = include_str!("fixtures/config/local.yaml");
     let document = Document::parse(input.as_bytes()).unwrap();
     assert_eq!(
-        document
-            .sandbox_harness(&document.spec.sandboxes[0])
-            .unwrap()
-            .runtime(),
+        document.sandbox_harness("assistant").unwrap().runtime(),
         "fabric"
     );
     assert!(!document.yaml().unwrap().contains("type:"));
@@ -245,7 +294,11 @@ fn pi_preserves_yaml_model_ids_and_explicit_custom_metadata() {
     let custom = Document::parse(input.as_bytes()).unwrap();
     for name in ["qwen3:4b", "my-custom-model", "gpt-4o-mini"] {
         let mut document = custom.clone();
-        document.spec.sandboxes[0]
+        document
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
             .agent
             .inference
             .as_mut()
@@ -258,7 +311,11 @@ fn pi_preserves_yaml_model_ids_and_explicit_custom_metadata() {
         assert_eq!(Document::parse(yaml.as_bytes()).unwrap(), document);
     }
     let mut catalog = custom;
-    let route = &mut catalog.spec.sandboxes[0]
+    let route = &mut catalog
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
         .agent
         .inference
         .as_mut()
@@ -277,12 +334,12 @@ fn pi_model_is_an_optional_opaque_object() {
     )
     .unwrap();
     let opaque = serde_json::json!({"contextWindow": "Pi validates this", "futureOption": {"nested": [null, 7, true]}, "thinkingLevelMap": {"off": null}});
-    tree["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["overrides"]["settings"]["model_metadata"] =
-        opaque.clone();
+    tree["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["overrides"]["settings"]
+        ["model_metadata"] = opaque.clone();
     let parsed = Document::parse(tree.to_string().as_bytes()).unwrap();
     assert_eq!(
-        serde_json::to_value(&parsed).unwrap()["spec"]["sandboxes"][0]["agent"]["inference"]["routes"]
-            [0]["overrides"]["settings"]["model_metadata"],
+        serde_json::to_value(&parsed).unwrap()["spec"]["sandboxes"]["assistant"]["agent"]["inference"]
+            ["routes"][0]["overrides"]["settings"]["model_metadata"],
         opaque
     );
     assert_eq!(
@@ -295,7 +352,7 @@ fn pi_model_is_an_optional_opaque_object() {
         serde_json::json!(7),
         Value::Null,
     ] {
-        tree["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["overrides"]["settings"] =
+        tree["spec"]["sandboxes"]["assistant"]["agent"]["inference"]["routes"][0]["overrides"]["settings"] =
             invalid;
         assert!(Document::parse(tree.to_string().as_bytes()).is_err());
     }
@@ -310,7 +367,11 @@ fn pi_model_updates_leave_the_sandbox_connection_unchanged() {
         .map(|name| (name.into(), "a".repeat(32)))
         .into();
     let before = targets(&document, &generations).unwrap();
-    document.spec.sandboxes[0]
+    document
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
         .agent
         .inference
         .as_mut()
@@ -353,7 +414,15 @@ fn harness_selection_does_not_determine_service_ownership() {
             include_str!("fixtures/config/managed-ollama.yaml"),
         ] {
             let mut document = Document::parse(fixture.as_bytes()).unwrap();
-            document.spec.sandboxes[0].harness.as_mut().unwrap().kind = harness.parse().unwrap();
+            document
+                .spec
+                .sandboxes
+                .get_mut("assistant")
+                .unwrap()
+                .harness
+                .as_mut()
+                .unwrap()
+                .kind = harness.parse().unwrap();
             assert!(
                 document.validate().is_ok(),
                 "{harness}: {:?}",
@@ -363,13 +432,25 @@ fn harness_selection_does_not_determine_service_ownership() {
     }
     let mut claude =
         Document::parse(include_str!("../../../examples/spark/vllm.yaml").as_bytes()).unwrap();
-    claude.spec.sandboxes[0].harness.as_mut().unwrap().kind =
-        "nvidia.fabric.claude".parse().unwrap();
+    claude
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
+        .harness
+        .as_mut()
+        .unwrap()
+        .kind = "nvidia.fabric.claude".parse().unwrap();
     assert!(
         claude.validate().is_ok(),
         "harness identity does not change the provider's protocol default"
     );
-    claude.spec.inference_providers[0].provider = InferenceProviderKind::Anthropic;
+    claude
+        .spec
+        .inference_providers
+        .get_mut("qwen")
+        .unwrap()
+        .provider = InferenceProviderKind::Anthropic;
     assert!(
         claude.validate().is_err(),
         "managed vLLM exposes the OpenAI API regardless of harness ownership"
@@ -400,7 +481,11 @@ fn fabric_harness_identifiers_are_extensible_and_validated() {
     let baseline = include_str!("fixtures/config/local.yaml");
     let source = baseline.replace("kind: nvidia.fabric.openclaw", "kind: fixture-new-agent");
     let mut document = Document::parse(source.as_bytes()).unwrap();
-    document.spec.sandboxes[0]
+    document
+        .spec
+        .sandboxes
+        .get_mut("assistant")
+        .unwrap()
         .harness
         .as_mut()
         .unwrap()
@@ -426,17 +511,26 @@ fn fabric_harness_identifiers_are_extensible_and_validated() {
         nemoclaw_sdk::config::InferenceApi::OpenaiResponses,
         nemoclaw_sdk::config::InferenceApi::AnthropicMessages,
     ] {
-        document.spec.inference_providers[0].api = Some(api);
-        document.spec.inference_providers[0].provider =
-            if api == nemoclaw_sdk::config::InferenceApi::AnthropicMessages {
-                InferenceProviderKind::Anthropic
-            } else {
-                InferenceProviderKind::Openai
-            };
+        document
+            .spec
+            .inference_providers
+            .get_mut("local")
+            .unwrap()
+            .api = Some(api);
+        document
+            .spec
+            .inference_providers
+            .get_mut("local")
+            .unwrap()
+            .provider = if api == nemoclaw_sdk::config::InferenceApi::AnthropicMessages {
+            InferenceProviderKind::Anthropic
+        } else {
+            InferenceProviderKind::Openai
+        };
         document.validate().unwrap();
     }
     assert_eq!(
-        document.spec.sandboxes[0]
+        document.spec.sandboxes["assistant"]
             .harness
             .as_ref()
             .unwrap()
@@ -468,8 +562,8 @@ fn fabric_harness_identifiers_are_extensible_and_validated() {
 fn default_image_is_deployment_policy_independent_of_adapter_identity() {
     let mut value: Value =
         serde_saphyr::from_str(include_str!("fixtures/config/local.yaml")).unwrap();
-    value["spec"]["sandboxes"][0]["harness"]["kind"] = "fixture-new-agent".into();
-    value["spec"]["sandboxes"][0]
+    value["spec"]["sandboxes"]["assistant"]["harness"]["kind"] = "fixture-new-agent".into();
+    value["spec"]["sandboxes"]["assistant"]
         .as_object_mut()
         .unwrap()
         .remove("image");
@@ -477,7 +571,7 @@ fn default_image_is_deployment_policy_independent_of_adapter_identity() {
         Document::parse(serde_json::to_vec(&value).unwrap().as_slice())
             .unwrap()
             .spec
-            .sandboxes[0]
+            .sandboxes["assistant"]
             .image
             .ref_,
         nemoclaw_sdk::config::DEFAULT_AGENT_IMAGE
@@ -504,7 +598,7 @@ fn arbitrary_adapter_features_are_preserved_for_fabric_validation() {
 fn native_identifiers_and_model_metadata_do_not_require_sdk_registration() {
     let mut tree: Value =
         serde_saphyr::from_str(include_str!("fixtures/config/local.yaml")).unwrap();
-    let sandbox = &mut tree["spec"]["sandboxes"][0];
+    let sandbox = &mut tree["spec"]["sandboxes"]["assistant"];
     sandbox["harness"]["kind"] = "fixture-featureful-agent".into();
     sandbox["agent"]["tools"] = serde_json::json!({"allow":["lookup","custom_search"]});
     let inference = &mut sandbox["agent"]["inference"];
@@ -520,7 +614,7 @@ fn native_identifiers_and_model_metadata_do_not_require_sdk_registration() {
         Document::parse(parsed.yaml().unwrap().as_bytes()).unwrap(),
         parsed
     );
-    tree["spec"]["sandboxes"][0]["harness"]["settings"] =
+    tree["spec"]["sandboxes"]["assistant"]["harness"]["settings"] =
         serde_json::json!({"disclosure":"adapter-defined-mode"});
     Document::parse(serde_json::to_vec(&tree).unwrap().as_slice()).unwrap();
     for invalid in [
@@ -528,7 +622,7 @@ fn native_identifiers_and_model_metadata_do_not_require_sdk_registration() {
         serde_json::json!({"allow":["read","read"]}),
         serde_json::json!({"disclosure":""}),
     ] {
-        tree["spec"]["sandboxes"][0]["agent"]["tools"] = invalid;
+        tree["spec"]["sandboxes"]["assistant"]["agent"]["tools"] = invalid;
         assert!(Document::parse(serde_json::to_vec(&tree).unwrap().as_slice()).is_err());
     }
 }

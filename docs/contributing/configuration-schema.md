@@ -86,7 +86,7 @@ For a semantic check outside the schema, document the distinction in the generat
 
 `Document::parse` owns YAML syntax restrictions and invokes both validation stages.
 Schema diagnostics identify document fields, array indices, and constraints without echoing rejected values or unknown properties.
-Valid names in the declared service, harness, inference, and integration collections identify the failing definition; other map keys appear as `[entry]`.
+Valid names identify the failing definition in `spec.sandboxes`, `spec.inferenceProviders`, `spec.services`, `spec.harnesses`, `spec.inferences`, and `spec.integrations`, and in a validly named sandbox's `inferenceProviders`, `harnesses`, `inferences`, `integrations`, and `agent.integrations`; keys that are not valid names, and keys of other maps, appear as `[entry]`.
 Parsing a document also reports the source line and column for schema failures and YAML syntax errors.
 When a field moves or is removed, map its old name to a message naming the replacement in the rejecting object's `x-nemoclaw-removed-fields` annotation; the diagnostic then reports the messages of all such fields in the input instead of an unknown field.
 The `spec.gateway` variants list the fields that moved into `spec.gateway.target`; the reference generator does not render this annotation.

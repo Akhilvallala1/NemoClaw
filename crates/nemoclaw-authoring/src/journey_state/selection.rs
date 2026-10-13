@@ -19,7 +19,10 @@ impl SelectionView<'_> {
         ))
     }
 
-    fn route_provider(&self) -> Option<(usize, usize)> {
+    /// The selected route and the key of the deployment provider it uses,
+    /// when that provider has an external endpoint. Questions address the
+    /// provider by this key, so it must be a valid name.
+    fn route_provider(&self) -> Option<(usize, String)> {
         let route = self.position.selected_route?;
         let reference = self
             .values
@@ -27,30 +30,26 @@ impl SelectionView<'_> {
                 "{}/{route}/providerRef",
                 routes_path(self.values)?
             ))?
-            .as_str()?;
-        let providers = self
+            .as_str()
+            .filter(|reference| nemoclaw_sdk::config::valid_name(reference))?;
+        let provider = self
             .values
             .pointer("/spec/inferenceProviders")?
-            .as_array()?;
-        let provider = providers
-            .iter()
-            .position(|item| item.get("name").and_then(Value::as_str) == Some(reference))?;
-        (providers[provider].get("serviceRef").is_none()).then_some((route, provider))
+            .get(reference)?;
+        (provider.get("serviceRef").is_none()).then(|| (route, reference.to_owned()))
     }
 
     fn provider_path(&self) -> Option<String> {
         self.route_provider()
-            .map(|(_, provider)| format!("/spec/inferenceProviders/{provider}"))
+            .map(|(_, provider)| provider_path(&provider))
     }
 
     fn current_preset(&self) -> Option<ProviderPreset> {
-        let (route, provider_index) = self.route_provider()?;
+        let (route, provider) = self.route_provider()?;
         if let Some(preset) = self.decisions.selected_presets.get(&route).copied() {
             return Some(preset);
         }
-        let provider = self
-            .values
-            .pointer(&format!("/spec/inferenceProviders/{provider_index}"))?;
+        let provider = self.values.pointer(&provider_path(&provider))?;
         let kind: InferenceProviderKind =
             serde_json::from_value(provider.get("provider")?.clone()).ok()?;
         let endpoint = provider.get("endpoint")?.as_str()?;
@@ -76,7 +75,7 @@ impl JourneyState {
     pub(super) fn route_model_path(&self) -> Option<String> {
         self.selection().route_model_path()
     }
-    pub(super) fn route_provider(&self) -> Option<(usize, usize)> {
+    pub(super) fn route_provider(&self) -> Option<(usize, String)> {
         self.selection().route_provider()
     }
     pub(super) fn current_preset(&self) -> Option<ProviderPreset> {

@@ -28,9 +28,20 @@ fn authored_document(raw: &[u8], current: &[u8]) -> Document {
     assert_eq!(gateway.len(), 1, "unexpected historical gateway field");
     let target = runtime["provider"].as_str().unwrap();
     gateway.insert("target".into(), json!({target: {"endpoint": endpoint}}));
-    let sandboxes = projected["spec"]["sandboxes"].as_array_mut().unwrap();
+    // v0 listed sandboxes and providers with a name field; current intent keys
+    // each by that name.
+    for collection in ["inferenceProviders", "sandboxes"] {
+        let entries = projected["spec"][collection].take();
+        projected["spec"][collection] = keyed(entries);
+    }
+    let sandboxes = projected["spec"]["sandboxes"].as_object_mut().unwrap();
     assert_eq!(sandboxes.len(), 1, "hosted parity requires one sandbox");
-    let sandbox = sandboxes[0].as_object_mut().unwrap();
+    let sandbox = sandboxes
+        .values_mut()
+        .next()
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
     let agents = sandbox
         .remove("agents")
         .expect("raw v0 export requires its historical agents list");
@@ -82,6 +93,24 @@ fn authored_document(raw: &[u8], current: &[u8]) -> Document {
     document
 }
 
+fn keyed(entries: serde_json::Value) -> serde_json::Value {
+    let mut keyed = serde_json::Map::new();
+    for mut entry in serde_json::from_value::<Vec<serde_json::Value>>(entries)
+        .expect("raw v0 export lists its entries")
+    {
+        let name = entry
+            .as_object_mut()
+            .unwrap()
+            .remove("name")
+            .expect("raw v0 export names each entry");
+        assert!(
+            keyed.insert(name.as_str().unwrap().into(), entry).is_none(),
+            "raw v0 export repeats a name"
+        );
+    }
+    keyed.into()
+}
+
 #[test]
 fn live_inputs_preserve_raw_export_and_require_matching_authored_intent() {
     for (raw, current) in [
@@ -97,7 +126,13 @@ fn live_inputs_preserve_raw_export_and_require_matching_authored_intent() {
         let document = authored_document(raw, current);
         assert_eq!(document, Document::parse(current).unwrap());
         let mut changed = document.clone();
-        changed.spec.sandboxes[0].agent.name = "different-agent".into();
+        changed
+            .spec
+            .sandboxes
+            .get_mut("assistant")
+            .unwrap()
+            .agent
+            .name = "different-agent".into();
         assert!(
             std::panic::catch_unwind(|| authored_document(raw, changed.yaml().unwrap().as_bytes()))
                 .is_err()
@@ -118,8 +153,11 @@ fn assert_hosted_document(document: &Document, harness: HarnessKind, runtime_roo
     assert!(runtime.to_string().contains(DEFAULT_GATEWAY_IMAGE));
     assert!(!document.yaml().unwrap().contains(DEFAULT_GATEWAY_IMAGE));
 
-    let provider = &document.spec.inference_providers[0];
-    assert_eq!(provider.name, "hosted-nvidia-prod");
+    assert_eq!(
+        document.spec.inference_providers.keys().collect::<Vec<_>>(),
+        ["hosted-nvidia-prod"]
+    );
+    let provider = &document.spec.inference_providers["hosted-nvidia-prod"];
     assert_eq!(provider.provider, InferenceProviderKind::Openai);
     assert_eq!(provider.endpoint, "https://integrate.api.nvidia.com/v1");
     assert_eq!(
@@ -128,7 +166,11 @@ fn assert_hosted_document(document: &Document, harness: HarnessKind, runtime_roo
     );
     assert!(provider.service_ref.is_none());
 
-    let sandbox = &document.spec.sandboxes[0];
+    assert_eq!(
+        document.spec.sandboxes.keys().collect::<Vec<_>>(),
+        ["assistant"]
+    );
+    let sandbox = &document.spec.sandboxes["assistant"];
     assert!(sandbox.image.ref_.contains("@sha256:"));
     assert_eq!(sandbox.image.ref_.rsplit(':').next().unwrap().len(), 64);
     assert_eq!(
@@ -154,11 +196,11 @@ fn assert_hosted_document(document: &Document, harness: HarnessKind, runtime_roo
             "raw export policy must grant the v1 runtime root {root}"
         );
     }
-    assert_eq!(document.sandbox_harness(sandbox).unwrap().kind, harness);
-    let inference = document.sandbox_inference(sandbox).unwrap();
+    assert_eq!(document.sandbox_harness("assistant").unwrap().kind, harness);
+    let inference = document.sandbox_inference("assistant").unwrap();
     assert_eq!(
         inference.routes[0].provider_ref.as_deref(),
-        Some(provider.name.as_str())
+        Some("hosted-nvidia-prod")
     );
     assert_eq!(
         inference.routes[0].overrides.model,
@@ -184,7 +226,7 @@ fn hosted_hermes_scenario_preserves_authored_intent() {
         include_bytes!("../fixtures/hermes-nvidia-hosted/v1.yaml"),
     );
     assert_hosted_document(&v1, "nvidia.fabric.hermes".parse().unwrap(), "/opt/hermes");
-    let harness = v1.sandbox_harness(&v1.spec.sandboxes[0]).unwrap();
+    let harness = v1.sandbox_harness("assistant").unwrap();
     assert_eq!(
         harness.settings.as_ref().unwrap()["interfaces"],
         json!({"api":{"port":8643}})

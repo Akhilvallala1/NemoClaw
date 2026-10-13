@@ -16,7 +16,12 @@ fn explicit_path(name: &str) -> PathBuf {
 }
 
 fn vllm(document: &Document) -> &Service {
-    let name = document.spec.inference_providers[0]
+    let name = document
+        .spec
+        .inference_providers
+        .values()
+        .next()
+        .unwrap()
         .service_ref
         .as_ref()
         .unwrap();
@@ -27,7 +32,12 @@ fn vllm(document: &Document) -> &Service {
 }
 
 fn vllm_mut(document: &mut Document) -> &mut Service {
-    let name = document.spec.inference_providers[0]
+    let name = document
+        .spec
+        .inference_providers
+        .values()
+        .next()
+        .unwrap()
         .service_ref
         .clone()
         .unwrap();

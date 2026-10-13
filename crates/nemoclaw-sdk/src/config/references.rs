@@ -7,15 +7,17 @@ use super::{ConfigError, Document, Harness, Inference, Route, Sandbox};
 // A shared deployment definition cannot see a consuming sandbox's local providers.
 pub(crate) struct ScopedInference<'a> {
     pub inference: &'a Inference,
-    pub sandbox: Option<&'a Sandbox>,
+    /// The declaring sandbox's name and definition; none for a deployment definition.
+    pub sandbox: Option<(&'a str, &'a Sandbox)>,
     pub path: String,
 }
 impl<'a> ScopedInference<'a> {
-    fn new(inference: &'a Inference, sandbox: Option<&'a Sandbox>, name: Option<&str>) -> Self {
-        let base = sandbox.map_or_else(
-            || "spec".into(),
-            |s| format!("spec.sandboxes[{}]", diagnostic_name(&s.name)),
-        );
+    fn new(
+        inference: &'a Inference,
+        sandbox: Option<(&'a str, &'a Sandbox)>,
+        name: Option<&str>,
+    ) -> Self {
+        let base = sandbox.map_or_else(|| "spec".into(), |(sandbox, _)| sandbox_path(sandbox));
         let path = name.map_or_else(
             || format!("{base}.agent.inference"),
             |name| format!("{base}.inferences[{}]", diagnostic_name(name)),
@@ -31,28 +33,33 @@ impl<'a> ScopedInference<'a> {
     }
 }
 
+/// The diagnostic path of a sandbox, which its name identifies.
+pub(super) fn sandbox_path(name: &str) -> String {
+    format!("spec.sandboxes[{}]", diagnostic_name(name))
+}
+
 impl Document {
     pub fn sandbox(&self, name: &str) -> Result<&Sandbox, ConfigError> {
+        Ok(self.named_sandbox(name)?.1)
+    }
+
+    /// The sandbox declared under `name`, with the name borrowed from its key.
+    pub(crate) fn named_sandbox(&self, name: &str) -> Result<(&str, &Sandbox), ConfigError> {
         self.spec
             .sandboxes
-            .iter()
-            .find(|sandbox| sandbox.name == name)
+            .get_key_value(name)
+            .map(|(name, sandbox)| (name.as_str(), sandbox))
             .ok_or(ConfigError::new("sandbox name has no definition"))
     }
 
-    /// Resolve inference using the supplied sandbox's definitions and this deployment's definitions.
+    /// Resolve inference using the named sandbox's definitions and this deployment's definitions.
     /// Authored references are preserved; resolution does not depend on object addresses.
-    pub fn sandbox_inference<'a>(
-        &'a self,
-        sandbox: &'a Sandbox,
-    ) -> Result<&'a Inference, ConfigError> {
+    pub fn sandbox_inference(&self, sandbox: &str) -> Result<&Inference, ConfigError> {
         Ok(self.scoped_inference(sandbox)?.inference)
     }
 
-    pub(crate) fn scoped_inference<'a>(
-        &'a self,
-        sandbox: &'a Sandbox,
-    ) -> Result<ScopedInference<'a>, ConfigError> {
+    pub(crate) fn scoped_inference(&self, name: &str) -> Result<ScopedInference<'_>, ConfigError> {
+        let (name, sandbox) = self.named_sandbox(name)?;
         let agent = &sandbox.agent;
         match DefinitionSource::from_parts(
             agent.inference.as_ref(),
@@ -60,24 +67,23 @@ impl Document {
             "agent requires exactly one of inference or inferenceRef",
         )? {
             DefinitionSource::Inline(inference) => {
-                Ok(ScopedInference::new(inference, Some(sandbox), None))
+                Ok(ScopedInference::new(inference, Some((name, sandbox)), None))
             }
-            DefinitionSource::Reference(name) => {
-                if let Some(inference) = self.spec.inferences.get(name) {
-                    return Ok(ScopedInference::new(inference, None, Some(name)));
+            DefinitionSource::Reference(reference) => {
+                if let Some(inference) = self.spec.inferences.get(reference) {
+                    return Ok(ScopedInference::new(inference, None, Some(reference)));
                 }
                 sandbox
                     .inferences
-                    .get(name)
-                    .map(|inference| ScopedInference::new(inference, Some(sandbox), Some(name)))
+                    .get(reference)
+                    .map(|inference| {
+                        ScopedInference::new(inference, Some((name, sandbox)), Some(reference))
+                    })
                     .ok_or_else(|| {
                         missing_reference(
-                            &format!(
-                                "spec.sandboxes[{}].agent.inferenceRef",
-                                diagnostic_name(&sandbox.name)
-                            ),
+                            &format!("{}.agent.inferenceRef", sandbox_path(name)),
                             "inference",
-                            name,
+                            reference,
                             self.spec
                                 .inferences
                                 .keys()
@@ -94,23 +100,29 @@ impl Document {
             .inferences
             .iter()
             .map(|(name, inference)| ScopedInference::new(inference, None, Some(name)))
-            .chain(self.spec.sandboxes.iter().flat_map(|sandbox| {
-                sandbox
-                    .inferences
+            .chain(
+                self.spec
+                    .sandboxes
                     .iter()
-                    .map(move |(name, inference)| {
-                        ScopedInference::new(inference, Some(sandbox), Some(name))
-                    })
-                    .chain(
-                        sandbox.agent.inference.iter().map(move |inference| {
-                            ScopedInference::new(inference, Some(sandbox), None)
-                        }),
-                    )
-            }))
+                    .flat_map(|(sandbox, definition)| {
+                        let scope = Some((sandbox.as_str(), definition));
+                        definition
+                            .inferences
+                            .iter()
+                            .map(move |(name, inference)| {
+                                ScopedInference::new(inference, scope, Some(name))
+                            })
+                            .chain(
+                                definition.agent.inference.iter().map(move |inference| {
+                                    ScopedInference::new(inference, scope, None)
+                                }),
+                            )
+                    }),
+            )
     }
 
     pub(super) fn validate_inference_references(&self) -> Result<(), ConfigError> {
-        for sandbox in &self.spec.sandboxes {
+        for (name, sandbox) in &self.spec.sandboxes {
             if sandbox
                 .inferences
                 .keys()
@@ -120,7 +132,7 @@ impl Document {
                     "inference names must not shadow enclosing definitions",
                 ));
             }
-            self.sandbox_inference(sandbox)?;
+            self.sandbox_inference(name)?;
         }
         for selection in self.inference_definitions() {
             selection.inference.validate_choices()?;
@@ -133,13 +145,14 @@ impl Document {
 }
 
 impl Document {
-    /// Resolve the sandbox's harness without replacing its authored selection.
-    pub fn sandbox_harness<'a>(&'a self, sandbox: &'a Sandbox) -> Result<&'a Harness, ConfigError> {
-        sandbox.resolve_harness(&self.spec.harnesses)
+    /// Resolve the named sandbox's harness without replacing its authored selection.
+    pub fn sandbox_harness(&self, sandbox: &str) -> Result<&Harness, ConfigError> {
+        let (name, sandbox) = self.named_sandbox(sandbox)?;
+        sandbox.resolve_harness(name, &self.spec.harnesses)
     }
 
     pub(super) fn validate_harness_references(&self) -> Result<(), ConfigError> {
-        for sandbox in &self.spec.sandboxes {
+        for (name, sandbox) in &self.spec.sandboxes {
             if sandbox
                 .harnesses
                 .keys()
@@ -158,7 +171,7 @@ impl Document {
             {
                 harness.validate()?;
             }
-            self.sandbox_harness(sandbox)?;
+            sandbox.resolve_harness(name, &self.spec.harnesses)?;
         }
         Ok(())
     }
@@ -233,8 +246,10 @@ pub(crate) fn missing_reference<'a>(
 }
 
 impl Sandbox {
+    /// `name` is this sandbox's key, which diagnostics use to identify it.
     pub(super) fn resolve_harness<'a>(
         &'a self,
+        name: &str,
         harnesses: &'a std::collections::BTreeMap<String, Harness>,
     ) -> Result<&'a Harness, ConfigError> {
         match DefinitionSource::from_parts(
@@ -243,14 +258,14 @@ impl Sandbox {
             "sandbox requires exactly one of harness or harnessRef",
         )? {
             DefinitionSource::Inline(harness) => Ok(harness),
-            DefinitionSource::Reference(name) => harnesses
-                .get(name)
-                .or_else(|| self.harnesses.get(name))
+            DefinitionSource::Reference(reference) => harnesses
+                .get(reference)
+                .or_else(|| self.harnesses.get(reference))
                 .ok_or_else(|| {
                     missing_reference(
-                        &format!("spec.sandboxes[{}].harnessRef", diagnostic_name(&self.name)),
+                        &format!("{}.harnessRef", sandbox_path(name)),
                         "harness",
-                        name,
+                        reference,
                         harnesses
                             .keys()
                             .chain(self.harnesses.keys())

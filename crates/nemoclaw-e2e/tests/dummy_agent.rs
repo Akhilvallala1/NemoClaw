@@ -118,8 +118,8 @@ async fn the_dummy_agent_completes_a_managed_docker_lifecycle() {
         document.spec.gateway.compute_driver(),
         ComputeDriver::Docker
     );
-    let sandbox = &document.spec.sandboxes[0];
-    let harness = document.sandbox_harness(sandbox).unwrap();
+    let (name, sandbox) = document.spec.sandboxes.first_key_value().unwrap();
+    let harness = document.sandbox_harness(name).unwrap();
     assert_eq!(harness.kind, "org.nemoclaw.dummy".parse().unwrap());
     // The dummy replies with this setting, so the reply shows that apply
     // delivered the authored native settings to the running agent.
@@ -130,7 +130,7 @@ async fn the_dummy_agent_completes_a_managed_docker_lifecycle() {
         .and_then(|reply| reply.as_str())
         .expect("the document sets harness.settings.reply")
         .to_owned();
-    let resource = format!("openshell_sandbox.{}", sandbox.name);
+    let resource = format!("openshell_sandbox.{name}");
     let engine = document
         .spec
         .gateway

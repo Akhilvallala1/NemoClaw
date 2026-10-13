@@ -136,7 +136,7 @@ Guides for named hosted providers are tracked in [#12038](https://github.com/NVI
 
 ## Use an Image Built from This Revision
 
-Explicit API selection, tuning, and authentication require an agent image built from this revision; [build it](build.md#build-agent-images) and use its immutable digest in `sandboxes[].image.ref`.
+Explicit API selection, tuning, and authentication require an agent image built from this revision; [build it](build.md#build-agent-images) and use its immutable digest in `spec.sandboxes.<name>.image.ref`.
 The [tuning example](../examples/inference-tuning.yaml) and [Hermes authentication example](../examples/hermes-auth.yaml) contain zero-digest placeholders that must be replaced before deployment.
 Set their gateway and inference endpoints and model IDs for your services, and assign a fresh deployment UID.
 Model and native settings changes restart the runtime inside the existing sandbox; changing its image requires a separate deployment, as described in [the change path](usage.md#choose-the-change-path).
@@ -187,7 +187,7 @@ services:
     memory:
       gpuMemoryGiB: 16
 inferenceProviders:
-  - name: qwen
+  qwen:
     provider: openai
     api: openai-completions
     serviceRef: qwen
@@ -237,7 +237,7 @@ Live image builds, GPU inference, tools and agent replies with this adapter have
 Set `authentication: bearer` under `spec.services.<name>` to generate a private key for a managed vLLM service.
 Omission preserves the existing unauthenticated serving behavior.
 Build the [runtime image](build.md#build-a-runtime-image) from this revision and use its immutable digest; a container created from an incompatible image will not satisfy application readiness.
-Do not supply `inferenceProviders[].credential` for a managed service.
+Do not set `credential` on a provider that references a managed service.
 
 The supervisor creates a mode-0600 key in `/credentials/inference-key` on a separate credential volume under its own writer lock and reuses it after restart.
 It passes the key only to the vLLM child process through `VLLM_API_KEY`, then verifies `/v1/models` using bearer authentication before reporting readiness.
@@ -289,7 +289,7 @@ services:
         name: qwen3:4b
         digest: REPLACE_WITH_MODEL_DIGEST
 inferenceProviders:
-  - name: local
+  local:
     provider: openai
     serviceRef: local
 ```
@@ -347,7 +347,7 @@ Declare an external HTTPS provider with a credential reference, then select it f
 
 ```yaml
 # Under spec.inferenceProviders:
-- name: nous
+nous:
   provider: openai
   api: openai-completions
   endpoint: https://inference-api.nousresearch.com/v1

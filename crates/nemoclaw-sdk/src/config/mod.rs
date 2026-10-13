@@ -14,6 +14,7 @@ pub use integrations::*;
 pub use nemoclaw_openshell::search::search_policy;
 mod inference;
 mod providers;
+pub use providers::NamedProvider;
 pub(crate) mod references;
 mod source;
 mod yaml_source;
@@ -83,8 +84,14 @@ fn read_yaml(input: impl Read) -> Result<(String, serde_json::Value), ConfigErro
 impl Document {
     /// Read, default, and validate a configuration document.
     ///
+    /// The input is read as YAML, which also accepts JSON, and a duplicate key
+    /// is an error, so two sandboxes or providers in one collection cannot share
+    /// a name. Deserializing a `Document` directly, for example with
+    /// `serde_json`, keeps the last duplicate instead.
+    ///
     /// # Errors
-    /// Returns an error for unreadable, oversized, malformed, or invalid input.
+    /// Returns an error for unreadable, oversized, malformed, or invalid input,
+    /// including duplicate keys.
     pub fn parse(input: impl Read) -> Result<Self, ConfigError> {
         let (text, tree) = read_yaml(input)?;
         schema::validate_input(&tree, Some(&text))?;
@@ -105,20 +112,14 @@ impl Document {
             .map_err(|_| ConfigError::new("cannot serialize configuration"))
     }
     pub fn digest(&self) -> String {
-        // Named declaration order is not deployment intent; retain authored order on export.
+        // Route order is not deployment intent; retain authored order on export.
+        // Sandboxes and providers are maps ordered by name, so their authored
+        // order is not intent and export emits name order.
         let mut canonical = self.clone();
-        canonical.spec.sandboxes.sort_by(|a, b| a.name.cmp(&b.name));
-        canonical
-            .spec
-            .inference_providers
-            .sort_by(|a, b| a.name.cmp(&b.name));
         for inference in canonical.spec.inferences.values_mut() {
             inference.routes.sort_by(|a, b| a.name.cmp(&b.name));
         }
-        for sandbox in &mut canonical.spec.sandboxes {
-            sandbox
-                .inference_providers
-                .sort_by(|a, b| a.name.cmp(&b.name));
+        for sandbox in canonical.spec.sandboxes.values_mut() {
             for inference in sandbox
                 .inferences
                 .values_mut()
@@ -168,17 +169,17 @@ impl Document {
         }
         if let Ok(providers) = self.selected_inference_providers() {
             for provider in providers {
-                if let Some(credential) = &provider.credential {
+                if let Some(credential) = &provider.definition.credential {
                     names.push(credential.env.as_str());
                 }
             }
         }
-        for sandbox in &self.spec.sandboxes {
+        for (name, sandbox) in &self.spec.sandboxes {
             if let Some(metadata) = &sandbox.image.metadata {
                 names.push(metadata.env.as_str());
             }
             for binding in sandbox
-                .integration_bindings(&self.spec.integrations)
+                .integration_bindings(name, &self.spec.integrations)
                 .expect("validated integration references")
             {
                 match binding.definition {
@@ -218,7 +219,7 @@ impl Document {
         }
         // Cluster sandboxes have no engine-supplied default image.
         if !self.spec.gateway.compute_driver().is_kubernetes() {
-            for sandbox in &mut self.spec.sandboxes {
+            for sandbox in self.spec.sandboxes.values_mut() {
                 default_string(&mut sandbox.image.ref_, DEFAULT_AGENT_IMAGE);
             }
         }

@@ -95,7 +95,7 @@ impl JourneyState {
                     .filter_map(Value::as_str)
                     .filter(|other| *other != selected)
                 {
-                    let field = format!("{path}/{}", escape_pointer(other));
+                    let field = format!("{path}/{}", escape(other));
                     candidate.authored.put_sdk_field(&field, None)?;
                     candidate.decisions.accepted.remove(&field);
                 }
@@ -161,12 +161,7 @@ impl JourneyState {
                     role,
                     SdkFieldRole::ProviderApi | SdkFieldRole::ProviderEndpoint
                 ) {
-                    path.rsplit_once('/')
-                        .and_then(|(base, _)| {
-                            candidate.authored.values.pointer(&format!("{base}/name"))
-                        })
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
+                    provider_field(path).map(|(provider, _)| provider)
                 } else {
                     None
                 };
@@ -297,7 +292,7 @@ impl JourneyState {
                     })?;
                 previous
                     .authored
-                    .put_sdk_field(&format!("{path}/{}", escape_pointer(&selected)), None)?;
+                    .put_sdk_field(&format!("{path}/{}", escape(&selected)), None)?;
                 Some(Value::String(selected))
             }
             QuestionTarget::VariantKey { path } => {

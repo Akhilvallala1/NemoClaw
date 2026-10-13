@@ -89,8 +89,8 @@ impl Readiness {
             .spec
             .sandboxes
             .iter()
-            .map(|sandbox| {
-                let address = format!("data.fabric_sandbox_readiness.{}", sandbox.name);
+            .map(|(name, sandbox)| {
+                let address = format!("data.fabric_sandbox_readiness.{name}");
                 let observed = observations
                     .get(&address)
                     .ok_or(Error::State("sandbox readiness observation is absent"))?;
@@ -111,7 +111,7 @@ impl Readiness {
                     ));
                 }
                 Ok(SandboxObservation {
-                    sandbox: sandbox.name.clone(),
+                    sandbox: name.clone(),
                     agent: sandbox.agent.name.clone(),
                     failed: !observed["ready"]
                         .as_bool()
