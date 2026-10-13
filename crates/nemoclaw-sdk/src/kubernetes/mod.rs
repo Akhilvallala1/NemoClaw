@@ -168,7 +168,7 @@ impl Spec {
                 runtime: crate::config::Runtime { provider },
                 endpoint: get("endpoint")?,
                 kubernetes: Some(crate::config::ManagedKubernetes {
-                    kubeconfig: crate::config::Credential {
+                    kubeconfig: crate::config::FileRef {
                         env: get("kubeconfig_env")?,
                     },
                     context: get("context")?,

@@ -101,18 +101,20 @@ pub(super) fn constrain(root: &mut Value, normalized: bool) {
         );
     }
     property(&mut defs["Metadata"], "uid", json!({"pattern": c::UUID}));
-    property(
-        &mut defs["Credential"],
-        "env",
-        json!({
-            "pattern": c::ENV,
-            "not": {"anyOf": [
-                {"const": "NEMOCLAW_KUBERNETES_STATE"},
-                {"pattern": "^(?:NEMOCLAW_MANAGED_K8S_|HELM_|KUBE_)"}
-            ]},
-            "x-nemoclaw-error": "credential environment reference must be valid and must not shadow managed Kubernetes runtime controls"
-        }),
-    );
+    for (name, kind) in [("SecretRef", "secret"), ("FileRef", "file")] {
+        property(
+            &mut defs[name],
+            "env",
+            json!({
+                "pattern": c::ENV,
+                "not": {"anyOf": [
+                    {"const": "NEMOCLAW_KUBERNETES_STATE"},
+                    {"pattern": "^(?:NEMOCLAW_MANAGED_K8S_|HELM_|KUBE_)"}
+                ]},
+                "x-nemoclaw-error": format!("{kind} reference must name a valid environment variable that does not shadow managed Kubernetes runtime controls")
+            }),
+        );
+    }
     property(
         &mut defs["ManagedKubernetes"],
         "kubeconfig",

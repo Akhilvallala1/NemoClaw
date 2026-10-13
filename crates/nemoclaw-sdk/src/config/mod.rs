@@ -336,7 +336,7 @@ impl Gateway {
             "operation requires a managed local gateway",
         ))
     }
-    pub fn credential(&self) -> Option<&Credential> {
+    pub fn credential(&self) -> Option<&SecretRef> {
         match self {
             Self::Managed(_) => None,
             Self::External(gateway) => gateway.credential.as_ref(),
