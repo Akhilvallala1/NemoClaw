@@ -219,134 +219,160 @@ describe("onboard shared gateway route containment", () => {
     },
   );
 
-  it.each([
-    {
-      scenario: "public",
-      endpointUrl: "https://public-name.example/v1",
-      resolvedAddress: "93.184.216.34",
-      trustedHosts: "",
-      expectedError: null,
-      expectedPinnedAddresses: ["93.184.216.34"],
-      expectedTrustedPrivateAddresses: [],
-    },
-    {
-      scenario: "operator-trusted private",
-      endpointUrl: "https://llm.corp.example/v1",
-      resolvedAddress: "10.0.0.8",
-      trustedHosts: "llm.corp.example",
-      expectedError: null,
-      expectedPinnedAddresses: ["10.0.0.8"],
-      expectedTrustedPrivateAddresses: ["10.0.0.8"],
-    },
-    {
-      scenario: "unlisted private",
-      endpointUrl: "https://unlisted.corp.example/v1",
-      resolvedAddress: "10.0.0.8",
-      trustedHosts: "",
-      expectedError:
-        "Custom inference endpoint rejected: Endpoint resolves to a private or internal address. Set NEMOCLAW_TRUSTED_PRIVATE_HOSTS to trust this exact host.",
-      expectedPinnedAddresses: [],
-      expectedTrustedPrivateAddresses: [],
-    },
-  ])("handles a resumed $scenario endpoint at native admission (#12636)", async (scenario) => {
-    vi.stubEnv("NEMOCLAW_TRUSTED_PRIVATE_HOSTS", scenario.trustedHosts);
-    let lookupCount = 0;
-    const resolveEndpointHost = vi.fn(async () => {
-      lookupCount += 1;
-      return lookupCount === 1
-        ? [{ address: scenario.resolvedAddress, family: 4 }]
-        : [{ address: "10.0.0.8", family: 4 }];
-    });
-    const verifyOnboardInferenceSmoke = vi.fn();
-    const setupInference = createSetupInference({
-      ...createNativeCustomSetupDependencies(),
-      checkGatewayRouteCompatibility: vi.fn(() => ({ ok: true as const })),
-      withSandboxMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
-        await operation(),
-      withGatewayRouteMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
-        await operation(),
-      step: vi.fn(),
-      getGatewayName: () => "nemoclaw",
-      runOpenshell: vi.fn((args: string[]) => ({
-        status: 0,
-        stdout: args.includes("export")
-          ? JSON.stringify({
-              id: "openai",
-              credentials: [],
-              endpoints: [],
-              binaries: [],
-              inference_capable: true,
-            })
-          : "",
-        stderr: "",
-      })),
-      inferenceRouteMutator: successfulInferenceRouteMutator(),
-      inferenceRouteObserver: successfulInferenceRouteObserver(),
-      updateSandbox: vi.fn(() => true),
-      upsertProvider: vi.fn(async () => ({ ok: true })),
-      verifyInferenceRoute: vi.fn(),
-      verifyOnboardInferenceSmoke,
-      resolveEndpointHost,
-      isNonInteractive: () => true,
-      hermesProviderAuth: { HERMES_PROVIDER_NAME: "hermes-provider" },
-      REMOTE_PROVIDER_CONFIG: {
-        custom: {
-          label: "Other OpenAI-compatible endpoint",
-          providerName: "compatible-endpoint",
-          providerType: "openai",
-          credentialEnv: "COMPATIBLE_API_KEY",
-          endpointUrl: scenario.endpointUrl,
-          helpUrl: null,
-          modelMode: "input",
-          defaultModel: "model-a",
+  it.each(
+    [
+      {
+        scenario: "public",
+        endpointUrl: "https://public-name.example/v1",
+        resolvedAddress: "93.184.216.34",
+        trustedHosts: "",
+        expectedError: null,
+        expectedPinnedAddresses: ["93.184.216.34"],
+        expectedTrustedPrivateAddresses: [],
+      },
+      {
+        scenario: "operator-trusted private",
+        endpointUrl: "https://llm.corp.example/v1",
+        resolvedAddress: "10.0.0.8",
+        trustedHosts: "llm.corp.example",
+        expectedError: null,
+        expectedPinnedAddresses: ["10.0.0.8"],
+        expectedTrustedPrivateAddresses: ["10.0.0.8"],
+      },
+      {
+        scenario: "unlisted private",
+        endpointUrl: "https://unlisted.corp.example/v1",
+        resolvedAddress: "10.0.0.8",
+        trustedHosts: "",
+        expectedError:
+          "Custom inference endpoint rejected: Endpoint resolves to a private or internal address. Set NEMOCLAW_TRUSTED_PRIVATE_HOSTS to trust this exact host.",
+        expectedPinnedAddresses: [],
+        expectedTrustedPrivateAddresses: [],
+      },
+    ].flatMap((scenario) =>
+      [true, false].map((nonInteractive) => ({ ...scenario, nonInteractive })),
+    ),
+  )(
+    "enforces native $scenario admission with noninteractive=$nonInteractive (#12636)",
+    async (scenario) => {
+      vi.stubEnv("NEMOCLAW_TRUSTED_PRIVATE_HOSTS", scenario.trustedHosts);
+      let lookupCount = 0;
+      const resolveEndpointHost = vi.fn(async () => {
+        lookupCount += 1;
+        return lookupCount === 1
+          ? [{ address: scenario.resolvedAddress, family: 4 }]
+          : [{ address: "10.0.0.8", family: 4 }];
+      });
+      const verifyOnboardInferenceSmoke = vi.fn();
+      const native = createNativeCustomSetupDependencies();
+      const errorLog = vi.fn();
+      const setupInference = createSetupInference({
+        ...native,
+        checkGatewayRouteCompatibility: vi.fn(() => ({ ok: true as const })),
+        withSandboxMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
+          await operation(),
+        withGatewayRouteMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
+          await operation(),
+        step: vi.fn(),
+        getGatewayName: () => "nemoclaw",
+        runOpenshell: vi.fn((args: string[]) => ({
+          status: 0,
+          stdout: args.includes("export")
+            ? JSON.stringify({
+                id: "openai",
+                credentials: [],
+                endpoints: [],
+                binaries: [],
+                inference_capable: true,
+              })
+            : "",
+          stderr: "",
+        })),
+        inferenceRouteMutator: successfulInferenceRouteMutator(),
+        inferenceRouteObserver: successfulInferenceRouteObserver(),
+        updateSandbox: vi.fn(() => true),
+        upsertProvider: vi.fn(async () => ({ ok: true })),
+        verifyInferenceRoute: vi.fn(),
+        verifyOnboardInferenceSmoke,
+        resolveEndpointHost,
+        isNonInteractive: () => scenario.nonInteractive,
+        hermesProviderAuth: { HERMES_PROVIDER_NAME: "hermes-provider" },
+        REMOTE_PROVIDER_CONFIG: {
+          custom: {
+            label: "Other OpenAI-compatible endpoint",
+            providerName: "compatible-endpoint",
+            providerType: "openai",
+            credentialEnv: "COMPATIBLE_API_KEY",
+            endpointUrl: scenario.endpointUrl,
+            helpUrl: null,
+            modelMode: "input",
+            defaultModel: "model-a",
+          },
         },
-      },
-      hydrateCredentialEnv: vi.fn(() => "secret"),
-      promptValidationRecovery: vi.fn(),
-      classifyApplyFailure: vi.fn(),
-      localInferenceTimeoutSecs: 60,
-      bedrockRuntimeOnboard: {
-        setupBedrockRuntimeInference: vi.fn(async () => ({ handled: false as const })),
-      },
-      openrouterRuntimeOnboard: {
-        setupOpenRouterRuntimeInference: vi.fn(async () => ({ handled: false as const })),
-      },
-      redact: (value: string) => value,
-      compactText: (value: string) => value,
-      log: vi.fn(),
-      error: vi.fn(),
-      exitProcess: vi.fn((code: number): never => {
-        throw new Error(`exit ${code}`);
-      }),
-    } as unknown as SetupInferenceDeps);
+        hydrateCredentialEnv: vi.fn(() => "secret"),
+        promptValidationRecovery: vi.fn(),
+        classifyApplyFailure: vi.fn(),
+        localInferenceTimeoutSecs: 60,
+        bedrockRuntimeOnboard: {
+          setupBedrockRuntimeInference: vi.fn(async () => ({ handled: false as const })),
+        },
+        openrouterRuntimeOnboard: {
+          setupOpenRouterRuntimeInference: vi.fn(async () => ({ handled: false as const })),
+        },
+        redact: (value: string) => value,
+        compactText: (value: string) => value,
+        log: vi.fn(),
+        error: errorLog,
+        exitProcess: vi.fn((code: number): never => {
+          throw new Error(`exit ${code}`);
+        }),
+      } as unknown as SetupInferenceDeps);
 
-    const errorMessage = await setupInference(
-      "sandbox-a",
-      "model-a",
-      "compatible-endpoint",
-      scenario.endpointUrl,
-      "COMPATIBLE_API_KEY",
-      null,
-      [],
-      { revalidateSandboxIdentity },
-    ).then(
-      () => null,
-      (error: Error) => error.message,
-    );
+      const outcome = await setupInference(
+        "sandbox-a",
+        "model-a",
+        "compatible-endpoint",
+        scenario.endpointUrl,
+        "COMPATIBLE_API_KEY",
+        null,
+        [],
+        { revalidateSandboxIdentity },
+      ).then(
+        (result) => result,
+        (error: Error) => error.message,
+      );
 
-    expect(errorMessage).toEqual(
-      scenario.expectedError ? expect.stringMatching(/rejected.*private|rejected.*internal/) : null,
-    );
-    expect(resolveEndpointHost).toHaveBeenCalledOnce();
-    expect(
-      verifyOnboardInferenceSmoke.mock.calls.flatMap(([request]) => request.pinnedAddresses ?? []),
-    ).toEqual(scenario.expectedPinnedAddresses);
-    expect(
-      verifyOnboardInferenceSmoke.mock.calls.flatMap(
-        ([request]) => request.trustedPrivateCapability?.addresses ?? [],
-      ),
-    ).toEqual(scenario.expectedTrustedPrivateAddresses);
-  });
+      expect(outcome).toEqual(
+        scenario.expectedError
+          ? scenario.nonInteractive
+            ? "exit 1"
+            : { retry: "selection" }
+          : { ok: true },
+      );
+      expect(errorLog.mock.calls).toEqual(
+        scenario.expectedError
+          ? [[expect.stringMatching(/rejected.*private|rejected.*internal/)]]
+          : [],
+      );
+      expect(native.providerAdapter.createProvider).toHaveBeenCalledTimes(
+        scenario.expectedError ? 0 : 1,
+      );
+      expect(native.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledTimes(
+        scenario.expectedError ? 0 : 1,
+      );
+      expect(resolveEndpointHost).toHaveBeenCalledOnce();
+      expect(
+        verifyOnboardInferenceSmoke.mock.calls.flatMap(
+          ([request]) => request.pinnedAddresses ?? [],
+        ),
+      ).toEqual(scenario.expectedPinnedAddresses);
+      expect(
+        verifyOnboardInferenceSmoke.mock.calls.flatMap(
+          ([request]) => request.trustedPrivateCapability?.addresses ?? [],
+        ),
+      ).toEqual(scenario.expectedTrustedPrivateAddresses);
+    },
+  );
 
   it("warns once inside the gateway lock before applying a valid conflicting route (#6315)", async () => {
     const events: string[] = [];

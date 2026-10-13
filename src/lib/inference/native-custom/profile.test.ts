@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from "vitest";
-import { prepareNativeCustomProfile } from "./profile";
+import { NativeCustomEndpointAdmissionError, prepareNativeCustomProfile } from "./profile";
 
 const publicLookup = vi.fn(async () => [{ address: "8.8.8.8", family: 4 }]);
 
@@ -84,6 +84,8 @@ describe("native custom endpoint profile", () => {
   });
 
   it.each([
+    "",
+    "   ",
     "https://user:secret@api.example.com/v1",
     "https://api.example.com/v1?key=secret",
     "https://api.example.com/v1#fragment",
@@ -100,7 +102,7 @@ describe("native custom endpoint profile", () => {
         api: "openai-completions",
         lookup: publicLookup,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(NativeCustomEndpointAdmissionError);
   });
 
   it("rejects a mixed public and private DNS answer (#12636)", async () => {

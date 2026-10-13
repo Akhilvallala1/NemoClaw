@@ -17,6 +17,9 @@ import {
 export type NativeCustomProvider = "compatible-endpoint" | "compatible-anthropic-endpoint";
 export type NativeCustomApi = "openai-completions" | "openai-responses" | "anthropic-messages";
 
+/** Endpoint admission failed before provider or adapter mutation. */
+export class NativeCustomEndpointAdmissionError extends Error {}
+
 const CUSTOM_APIS = new Set<string>([
   "openai-completions",
   "openai-responses",
@@ -62,8 +65,11 @@ export async function prepareNativeCustomProfile(input: {
   if (!isNativeCustomProvider(input.provider) || !CUSTOM_APIS.has(input.api)) {
     throw new Error("Unsupported custom provider or inference API.");
   }
+  if (!input.endpointUrl.trim())
+    throw new NativeCustomEndpointAdmissionError("Custom inference endpoint URL is required.");
   const violation = unsafeEndpointUrlViolation(input.endpointUrl);
-  if (violation) throw new Error(`Custom inference endpoint ${violation.reason}`);
+  if (violation)
+    throw new NativeCustomEndpointAdmissionError(`Custom inference endpoint ${violation.reason}`);
   const parsed = new URL(input.endpointUrl.trim());
   if (
     parsed.username ||
@@ -73,7 +79,9 @@ export async function prepareNativeCustomProfile(input: {
     /[*[\]{}\\]/u.test(parsed.pathname) ||
     /%2f|%5c/iu.test(parsed.pathname)
   ) {
-    throw new Error("Custom inference endpoint must have an exact credential-free URL path.");
+    throw new NativeCustomEndpointAdmissionError(
+      "Custom inference endpoint must have an exact credential-free URL path.",
+    );
   }
   const api = input.api as NativeCustomApi;
   const flavor = api === "anthropic-messages" ? "anthropic" : "openai";
@@ -82,14 +90,20 @@ export async function prepareNativeCustomProfile(input: {
   const admitted = await assertEndpointResolvesPublic(endpointUrl, input.lookup, {
     trustedPrivateHosts: input.trustedPrivateHosts ? [...input.trustedPrivateHosts] : [],
   });
-  if (!admitted.ok) throw new Error(`Custom inference endpoint rejected: ${admitted.reason}`);
+  if (!admitted.ok)
+    throw new NativeCustomEndpointAdmissionError(
+      `Custom inference endpoint rejected: ${admitted.reason}`,
+    );
   const host = url.hostname.replace(/^\[|\]$/gu, "");
   const addresses = [
     ...new Set(
       (admitted.addresses ?? []).length ? (admitted.addresses ?? []) : isIP(host) ? [host] : [],
     ),
   ].sort();
-  if (!addresses.length) throw new Error("Custom inference endpoint has no validated address.");
+  if (!addresses.length)
+    throw new NativeCustomEndpointAdmissionError(
+      "Custom inference endpoint has no validated address.",
+    );
   return {
     ...buildNativeCustomProfile({
       sandboxName: input.sandboxName,

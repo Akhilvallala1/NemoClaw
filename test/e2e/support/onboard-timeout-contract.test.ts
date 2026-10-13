@@ -10,6 +10,8 @@ import {
   CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS,
   CUSTOM_HOSTED_LIFECYCLE_OPERATION_BUDGET_MS,
   CUSTOM_HOSTED_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
+  NATIVE_TERMINAL_LIFECYCLE_TEST_TIMEOUT_MS,
+  NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
   INFERENCE_ROUTING_BASE_TARGET_TIMEOUT_MINUTES,
   CONFIG_EXPORT_PINNED_V1_CONSUMER_TIMEOUT_MS,
   CONFIG_EXPORT_POLICY_TIMEOUT_MS,
@@ -41,6 +43,7 @@ const finalHandoffTimeoutMs = getDockerGpuSupervisorReconnectTimeoutSecs(1, {}) 
 const affectedTargetIds = [
   "inference-routing",
   "inference-routing-custom-hosted",
+  "inference-routing-native-terminals",
   "onboard-resume",
 ] as const;
 const timeoutContractPath = "tools/e2e/onboard-timeout-contract.mts";
@@ -70,7 +73,6 @@ describe("onboard final-handoff timeout contract", () => {
       2 * 30_000 + CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS + 30_000 + 90_000;
     const nativeAnthropic = adminApproval + 30_000 + 240_000 + 210_000 + 30_000;
     const nativeHermes = 120_000 + 240_000 + 30_000 + 180_000 + 210_000 + 30_000;
-    const nativeDeepAgents = 180_000 + 210_000 + 30_000;
     const selectionAndDeletion =
       CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS +
       30_000 +
@@ -91,15 +93,33 @@ describe("onboard final-handoff timeout contract", () => {
         directHttp +
         nativeAnthropic +
         nativeHermes +
-        nativeDeepAgents +
         selectionAndDeletion +
         fixturePreparation,
     );
     expect(CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS).toBeGreaterThanOrEqual(
-      5 * ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS +
+      4 * ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS +
         CUSTOM_HOSTED_LIFECYCLE_OPERATION_BUDGET_MS +
         testHeadroomMs,
     );
+  });
+  it("contains both native terminal lifecycles without increasing the core deadline", () => {
+    const terminalOperations =
+      120_000 + 240_000 + 30_000 + 180_000 + 30_000 + 90_000 + 150_000 + 30_000;
+    const fixturePreparation = 2 * MINUTE_MS;
+    expect(NATIVE_TERMINAL_LIFECYCLE_TEST_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      2 * (ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS + terminalOperations) +
+        fixturePreparation +
+        testHeadroomMs,
+    );
+    expect(NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES * MINUTE_MS).toBeGreaterThanOrEqual(
+      NATIVE_TERMINAL_LIFECYCLE_TEST_TIMEOUT_MS + jobHeadroomMs,
+    );
+    expect(catalogueTarget("inference-routing-native-terminals").timeoutMinutes).toBe(
+      NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
+    );
+    expect(CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS).toBe(330 * MINUTE_MS);
+    expect(CUSTOM_HOSTED_LIFECYCLE_TARGET_TIMEOUT_MINUTES).toBe(350);
+    expect(NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES).toBeLessThanOrEqual(360);
   });
   it("keeps the command alive through both reconnect waits and the failure diagnostic", () => {
     expect(ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS).toBeGreaterThanOrEqual(

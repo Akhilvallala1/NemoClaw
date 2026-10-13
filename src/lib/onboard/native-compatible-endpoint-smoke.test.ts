@@ -3,8 +3,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 import * as nativeCustom from "../inference/native-custom";
+import * as providerAdapterCli from "../adapters/openshell/provider-adapter-cli";
 import type { OpenShellSandboxBufferedCommandRequest } from "../adapters/openshell/sandbox-command";
-import { verifyCompatibleEndpointSandboxSmoke } from "./compatible-endpoint-smoke";
+import {
+  createCompatibleEndpointSmoke,
+  verifyCompatibleEndpointSandboxSmoke,
+} from "./compatible-endpoint-smoke";
 
 describe("native custom onboarding inference verification", () => {
   it.each(["openclaw", "hermes"])(
@@ -26,6 +30,7 @@ describe("native custom onboarding inference verification", () => {
       const verify = vi
         .spyOn(nativeCustom, "verifyNativeCustomProviderAttachment")
         .mockResolvedValue(receipt);
+      const adapterFactory = vi.spyOn(providerAdapterCli, "createCliOpenShellProviderAdapter");
       const executor = {
         runBuffered: vi.fn(async (_request: OpenShellSandboxBufferedCommandRequest) => ({
           outcome: { kind: "completed" as const, exitCode: 0 },
@@ -58,6 +63,23 @@ describe("native custom onboarding inference verification", () => {
           | undefined;
         expect(command?.command.join(" ")).toContain("https://api.example.com/v1/chat/completions");
         expect(command?.command.join(" ")).not.toContain("inference.local");
+        const environment = { HOME: "/rebuild-owner", NEMOCLAW_GATEWAY_PORT: "8642" };
+        const smoke = createCompatibleEndpointSmoke(vi.fn(), executor, (value) => value);
+        await smoke.verifyRebuilt({
+          sandboxName: "smoke-sandbox",
+          provider: "compatible-endpoint",
+          model: "example-model",
+          gatewayName: "gateway",
+          nativeCustomProviderAttachment: receipt,
+          environment,
+        });
+        expect(adapterFactory).toHaveBeenCalledWith({ environment });
+        expect(executor.runBuffered).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            environment,
+            target: { kind: "named", gatewayName: "gateway" },
+          }),
+        );
         verify.mockRejectedValueOnce(new Error("attachment replaced"));
         executor.runBuffered.mockClear();
         await expect(
@@ -78,6 +100,7 @@ describe("native custom onboarding inference verification", () => {
         expect(executor.runBuffered).not.toHaveBeenCalled();
       } finally {
         verify.mockRestore();
+        adapterFactory.mockRestore();
       }
     },
   );

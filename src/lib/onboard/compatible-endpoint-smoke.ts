@@ -110,6 +110,7 @@ export async function verifyCompatibleEndpointSandboxSmoke(options: {
   provider: string;
   model: string;
   gatewayName?: string;
+  environment?: NodeJS.ProcessEnv;
   nativeCustomProviderAttachment?: SandboxInferenceInvocationInput["nativeCustomProviderAttachment"];
   runOpenshell: CompatibleEndpointSmokeRun;
   sandboxCommandExecutor: OpenShellSandboxBufferedCommandExecutor;
@@ -156,6 +157,7 @@ export async function verifyCompatibleEndpointSandboxSmoke(options: {
         gatewayName: options.gatewayName,
         sandboxName: options.sandboxName,
         expected: options.nativeCustomProviderAttachment,
+        environment: options.environment,
       });
       const result = await probeSandboxInferenceInvocation(
         {
@@ -336,6 +338,7 @@ export function createCompatibleEndpointSmoke(
       return verifyCompatibleEndpointSandboxSmoke({
         ...selection,
         gatewayName,
+        environment,
         onFailure: (exitCode) => {
           throw new Error(`Compatible endpoint verification failed (exit ${exitCode}).`);
         },

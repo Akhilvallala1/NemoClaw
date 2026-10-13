@@ -36,6 +36,7 @@ import {
 } from "../inference/gateway-route-mutation-lock";
 import { getManagedVllmProviderBinding, shouldFrontOllamaWithProxy } from "../inference/local";
 import {
+  NativeCustomEndpointAdmissionError,
   isHostLocalCustomEndpoint,
   customAttachmentFromPrepared,
   isNativeCustomProvider,
@@ -663,6 +664,27 @@ function releaseSupersededOllamaModel(
   }
   if (cleanupWarning) console.warn(cleanupWarning);
   if (authorityRefusal) throw authorityRefusal;
+}
+
+function recoverNativeCustomEndpointAdmission(
+  error: unknown,
+  options: {
+    usesNativeCustom: boolean;
+    admittedNativeCustomAdapter: NativeCustomProfile | undefined;
+    nativeCustomProviderAttachment: NativeCustomProviderAttachment | undefined;
+    deps: Pick<SetupInferenceDeps, "error" | "redact" | "isNonInteractive" | "exitProcess">;
+  },
+): SetupInferenceResult {
+  if (
+    !options.usesNativeCustom ||
+    !(error instanceof NativeCustomEndpointAdmissionError) ||
+    options.admittedNativeCustomAdapter ||
+    options.nativeCustomProviderAttachment
+  )
+    throw error;
+  options.deps.error(`  Endpoint SSRF preflight failed: ${options.deps.redact(error.message)}`);
+  if (options.deps.isNonInteractive()) return options.deps.exitProcess(1);
+  return { retry: "selection" };
 }
 
 export function createSetupInference(
@@ -1580,7 +1602,13 @@ export function createSetupInference(
             retainedNativeCustomAdapter,
             deps.revokeHttpsPinRuntimeAdapterRoute,
           );
-          if (!hostLocalRoute || !hostLocalSelection) throw error;
+          if (!hostLocalRoute || !hostLocalSelection)
+            return recoverNativeCustomEndpointAdmission(error, {
+              usesNativeCustom,
+              admittedNativeCustomAdapter,
+              nativeCustomProviderAttachment,
+              deps,
+            });
           emitHostLocalInferenceFailure(
             hostLocalSelection.runtimeProviderId,
             error instanceof HostLocalInferenceBranchExit

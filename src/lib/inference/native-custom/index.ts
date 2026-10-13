@@ -22,6 +22,7 @@ import {
 } from "./adapter-transport";
 
 export {
+  NativeCustomEndpointAdmissionError,
   prepareNativeCustomProfile,
   isNativeCustomProvider,
   isHostLocalCustomEndpoint,

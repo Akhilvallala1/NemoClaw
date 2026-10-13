@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
+import { catalogueTarget } from "../../../tools/e2e/target-catalogue.mts";
 
 import {
   buildE2eWorkflowPlan,
@@ -35,9 +36,22 @@ describe("native custom lifecycle workflow planning", () => {
       .flat()
       .filter((row) => row.id === "inference-routing-custom-hosted");
     expect(lifecycle.map((row) => [row.runtime_provider, row.agent_runtime, row.shard])).toEqual([
-      ["docker", "openclaw + hermes + langchain-deepagents-code + pi", "custom-hosted"],
-      ["podman", "openclaw + hermes + langchain-deepagents-code", "custom-hosted"],
+      ["docker", "openclaw + hermes", "custom-hosted"],
+      ["podman", "openclaw + hermes", "custom-hosted"],
     ]);
+    const terminals = Object.values(plan.catalogueMatrices)
+      .flat()
+      .filter((row) => row.id === "inference-routing-native-terminals");
+    expect(terminals.map((row) => [row.runtime_provider, row.agent_runtime, row.shard])).toEqual([
+      ["docker", "langchain-deepagents-code + pi", "native-terminals"],
+      ["podman", "langchain-deepagents-code", "native-terminals"],
+    ]);
+    expect(catalogueTarget("inference-routing-custom-hosted").selector).toBe(
+      "^TC-INF-11-custom-hosted",
+    );
+    expect(catalogueTarget("inference-routing-native-terminals").selector).toBe(
+      "^TC-INF-11-native-terminals",
+    );
     expect(validateE2eWorkflowPlan(plan)).toEqual(plan);
     lifecycle.find((row) => row.runtime_provider === "podman")!.agent_runtime =
       "openclaw + hermes + langchain-deepagents-code + pi";

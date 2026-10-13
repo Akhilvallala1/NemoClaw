@@ -20,6 +20,7 @@ import { captureSandboxFailureDiagnostics } from "../fixtures/sandbox-failure-di
 import {
   ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS,
   CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS,
+  NATIVE_TERMINAL_LIFECYCLE_TEST_TIMEOUT_MS,
   CUSTOM_HOSTED_INFERENCE_SWITCH_COMMAND_TIMEOUT_MS,
 } from "../../../tools/e2e/onboard-timeout-contract.mts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
@@ -272,8 +273,53 @@ async function verifyFreshNativeTerminalEndpoint(
   await artifacts.writeJson(`tc-inf-11-native-${label}-receipt.json`, receipt);
 }
 
+async function prepareOwnedPublicHttpAddress(
+  { host, cleanup }: Pick<E2ETargetFixtures, "host" | "cleanup">,
+  artifactPrefix: string,
+): Promise<string> {
+  const publicHttpAddress = "93.184.216.34";
+  const existingAddresses = await host.command("ip", ["-j", "address", "show", "dev", "lo"], {
+    artifactName: `${artifactPrefix}-before`,
+    timeoutMs: 30_000,
+  });
+  expect(existingAddresses.exitCode, resultText(existingAddresses)).toBe(0);
+  expect(existingAddresses.stdout).not.toContain(publicHttpAddress);
+  cleanup.add("remove owned public HTTP endpoint address", async () => {
+    const current = await host.command("ip", ["-j", "address", "show", "dev", "lo"], {
+      artifactName: `${artifactPrefix}-cleanup-before`,
+      timeoutMs: 30_000,
+    });
+    expect(current.exitCode, resultText(current)).toBe(0);
+    const removed = await host.command(
+      "sudo",
+      ["ip", "address", "del", `${publicHttpAddress}/32`, "dev", "lo"],
+      {
+        artifactName: `${artifactPrefix}-cleanup`,
+        timeoutMs: 30_000,
+      },
+    );
+    expect(removed.exitCode, resultText(removed)).toBe(0);
+    const after = await host.command("ip", ["-j", "address", "show", "dev", "lo"], {
+      artifactName: `${artifactPrefix}-cleanup-after`,
+      timeoutMs: 30_000,
+    });
+    expect(after.exitCode, resultText(after)).toBe(0);
+    expect(after.stdout).not.toContain(publicHttpAddress);
+  });
+  const added = await host.command(
+    "sudo",
+    ["ip", "address", "add", `${publicHttpAddress}/32`, "dev", "lo"],
+    {
+      artifactName: `${artifactPrefix}-add`,
+      timeoutMs: 30_000,
+    },
+  );
+  expect(added.exitCode, resultText(added)).toBe(0);
+  return publicHttpAddress;
+}
+
 test(
-  "TC-INF-11 DNS-backed HTTPS custom endpoint routes through the local pinning adapter (#6141)",
+  "TC-INF-11-custom-hosted DNS-backed HTTPS routes through the local pinning adapter (#6141)",
   {
     timeout: CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS,
     meta: {
@@ -344,8 +390,6 @@ test(
         "destroy removes the owned provider and HTTPS route",
         "native Anthropic serves authenticated Messages after stop/start",
         "ordinary native Hermes serves a fresh authenticated OpenAI request after restart",
-        "native Deep Agents Code consumes an authenticated OpenAI response after restart",
-        "protected Pi on Docker preserves native custom credentials and policy after restart",
       ],
       endpointUrl,
       model,
@@ -822,46 +866,10 @@ test(
       peerReceipt,
     );
     progress.phase("verify direct native public HTTP and Anthropic routing");
-    // Own one runner-local public address so this HTTP proof reaches the
-    // authenticated fixture through the native profile without an adapter.
-    const publicHttpAddress = "93.184.216.34";
-    const existingAddresses = await host.command("ip", ["-j", "address", "show", "dev", "lo"], {
-      artifactName: "tc-inf-11-public-http-address-before",
-      timeoutMs: 30_000,
-    });
-    expect(existingAddresses.exitCode, resultText(existingAddresses)).toBe(0);
-    expect(existingAddresses.stdout).not.toContain(publicHttpAddress);
-    cleanup.add("remove owned public HTTP endpoint address", async () => {
-      const current = await host.command("ip", ["-j", "address", "show", "dev", "lo"], {
-        artifactName: "tc-inf-11-public-http-address-cleanup-before",
-        timeoutMs: 30_000,
-      });
-      expect(current.exitCode, resultText(current)).toBe(0);
-      const removed = await host.command(
-        "sudo",
-        ["ip", "address", "del", `${publicHttpAddress}/32`, "dev", "lo"],
-        {
-          artifactName: "tc-inf-11-public-http-address-cleanup",
-          timeoutMs: 30_000,
-        },
-      );
-      expect(removed.exitCode, resultText(removed)).toBe(0);
-      const after = await host.command("ip", ["-j", "address", "show", "dev", "lo"], {
-        artifactName: "tc-inf-11-public-http-address-cleanup-after",
-        timeoutMs: 30_000,
-      });
-      expect(after.exitCode, resultText(after)).toBe(0);
-      expect(after.stdout).not.toContain(publicHttpAddress);
-    });
-    const added = await host.command(
-      "sudo",
-      ["ip", "address", "add", `${publicHttpAddress}/32`, "dev", "lo"],
-      {
-        artifactName: "tc-inf-11-public-http-address-add",
-        timeoutMs: 30_000,
-      },
+    const publicHttpAddress = await prepareOwnedPublicHttpAddress(
+      fixtures,
+      "tc-inf-11-public-http-address",
     );
-    expect(added.exitCode, resultText(added)).toBe(0);
     const responsesCanary = `native-responses-${Date.now()}`;
     const publicHttp = await startFakeOpenAiCompatibleServer({
       apiKey,
@@ -980,25 +988,6 @@ test(
     ).toBe(true);
     await verifyFreshNativeAnthropicEndpoint(fixtures, { sandboxName, apiKey, publicHttpAddress });
     await verifyFreshNativeHermesEndpoint(fixtures, { endpoint: publicHttp, apiKey, model });
-    await verifyFreshNativeTerminalEndpoint(
-      fixtures,
-      NATIVE_TERMINAL_CASES.dcode,
-      publicHttp,
-      apiKey,
-      model,
-    );
-    // Pi qualification is available only on Docker; retain the existing Podman cases.
-    const nativePiByRuntime: Partial<Record<string, () => Promise<void>>> = {
-      docker: () =>
-        verifyFreshNativeTerminalEndpoint(
-          fixtures,
-          NATIVE_TERMINAL_CASES.pi,
-          publicHttp,
-          apiKey,
-          model,
-        ),
-    };
-    await nativePiByRuntime[runtimeProvider.id]?.();
     progress.phase("verify final native provider cleanup");
     await cleanupSandbox(host, sandbox, peerName, { strict: true });
     const peerProviderAfterDestroy = await sandbox.openshell(
@@ -1034,5 +1023,75 @@ test(
       peerProviderId: peerReceipt.providerId,
       publicHttpProviderId: httpReceipt.providerId,
     });
+  },
+);
+
+test(
+  "TC-INF-11-native-terminals preserve custom credentials and policy after restart (#12636)",
+  {
+    timeout: NATIVE_TERMINAL_LIFECYCLE_TEST_TIMEOUT_MS,
+    meta: {
+      e2ePhases: ["prepare the native terminal endpoint", "verify native terminal lifecycles"],
+    },
+  },
+  async ({ artifacts, cleanup, host, progress, runtimeProvider, sandbox }) => {
+    const fixtures = { artifacts, cleanup, host, progress, sandbox };
+    progress.phase("prepare the native terminal endpoint");
+    await requireLivePrerequisites(host, runtimeProvider);
+    const model = "nemoclaw-e2e-https-pin";
+    const apiKey = "sk-https-pin-TEST-NOT-A-REAL-VALUE";
+    const publicHost = await prepareOwnedPublicHttpAddress(
+      fixtures,
+      "tc-inf-11-terminal-http-address",
+    );
+    const endpoint = await startFakeOpenAiCompatibleServer({
+      apiKey,
+      chatContent: "PONG",
+      host: "0.0.0.0",
+      model,
+      progress,
+      publicHost,
+      requireAuth: true,
+      requireAuthModels: true,
+    });
+    cleanup.add("close native terminal public HTTP endpoint", async () => {
+      try {
+        await artifacts.writeJson("tc-inf-11-terminal-endpoint-requests.json", endpoint.requests());
+      } finally {
+        await endpoint.close();
+      }
+    });
+    await artifacts.target.declare({
+      id: "native-terminal-custom-hosted",
+      issue: 12636,
+      contract: [
+        "native Deep Agents Code consumes an authenticated OpenAI response after restart",
+        "protected Pi on Docker preserves native custom credentials and policy after restart",
+        "unapproved executables cannot authorize an upstream request",
+        "destroy confirms sandbox and owned provider absence",
+      ],
+      endpointUrl: endpoint.baseUrl,
+      model,
+    });
+    progress.phase("verify native terminal lifecycles");
+    await verifyFreshNativeTerminalEndpoint(
+      fixtures,
+      NATIVE_TERMINAL_CASES.dcode,
+      endpoint,
+      apiKey,
+      model,
+    );
+    const nativePiByRuntime: Partial<Record<string, () => Promise<void>>> = {
+      docker: () =>
+        verifyFreshNativeTerminalEndpoint(
+          fixtures,
+          NATIVE_TERMINAL_CASES.pi,
+          endpoint,
+          apiKey,
+          model,
+        ),
+    };
+    await nativePiByRuntime[runtimeProvider.id]?.();
+    await artifacts.target.complete({ id: "native-terminal-custom-hosted" });
   },
 );

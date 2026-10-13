@@ -721,7 +721,7 @@ export async function collectSandboxStatusSnapshot(
   }
   let inferenceHealth = providerHealth;
   // Probe the same route the agent uses: the recorded attached provider for
-  // native NVIDIA, otherwise the shared `inference.local` route.
+  // native inference, otherwise the shared `inference.local` route.
   if (!suppressInferenceProbe && lookup.state === "present" && nativeCustom && sb) {
     const base = {
       providerLabel: "Native custom route",

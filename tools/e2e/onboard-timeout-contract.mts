@@ -42,9 +42,8 @@ export const ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES = 75;
 // create, admin-scope approval, agent request, and owned-provider cleanup.
 // Ordinary Hermes adds one fresh onboard and a bounded stop/start, config,
 // local agent API request and strict owned cleanup using the existing fixture.
-// Deep Agents Code adds one fresh onboard, agent request and owned cleanup.
-// Docker-only Pi consumes one onboarding bound from the existing operation
-// allowance; the total test and target deadlines remain unchanged.
+// The core shard runs OpenClaw and Hermes; terminal agents have their own shard.
+// Keep the reviewed 330-minute core test and 350-minute target limits unchanged.
 export const CUSTOM_HOSTED_LIFECYCLE_OPERATION_BUDGET_MS = 120 * MINUTE_MS;
 export const CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS =
   5 * ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS +
@@ -52,6 +51,14 @@ export const CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS =
   ONBOARD_TEST_HEADROOM_MS;
 export const CUSTOM_HOSTED_LIFECYCLE_TARGET_TIMEOUT_MINUTES =
   (CUSTOM_HOSTED_LIFECYCLE_TEST_TIMEOUT_MS + ONBOARD_JOB_HEADROOM_MS) / MINUTE_MS;
+
+// Deep Agents Code and Docker-only Pi each retain their 40-minute onboarding,
+// stop/start, credential projection, agent request, executable denial and cleanup.
+// This shard reserves both agent bounds even when Podman selects only Deep Agents.
+export const NATIVE_TERMINAL_LIFECYCLE_TEST_TIMEOUT_MS =
+  2 * ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS + 32 * MINUTE_MS + ONBOARD_TEST_HEADROOM_MS;
+export const NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES =
+  (NATIVE_TERMINAL_LIFECYCLE_TEST_TIMEOUT_MS + ONBOARD_JOB_HEADROOM_MS) / MINUTE_MS;
 
 // The retained inference-routing file executes two five-minute negative cases,
 // two runtime-identity cases and one compatible-route case. TC-INF-11 has its

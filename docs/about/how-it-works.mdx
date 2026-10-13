@@ -212,7 +212,7 @@ Refer to [Recover and Rebuild Sandboxes](../manage-sandboxes/operate-sandboxes/r
 
 NVIDIA Endpoints uses a sandbox-attached OpenShell provider for approved requests to `integrate.api.nvidia.com`.
 Fresh custom hosted endpoints also use sandbox-attached providers with issued credential references.
-HTTPS and Bedrock endpoints retain their host adapters.
+DNS-backed HTTPS and Bedrock Runtime endpoints retain their host adapters.
 Host-local and existing shared-route sandboxes use `inference.local`.
 During onboarding, NemoClaw validates the selected provider and model, configures the applicable OpenShell route or provider attachment, and writes the matching model reference into the managed agent configuration.
 In both paths, OpenShell keeps the provider credential outside the sandbox and sends only approved requests to the upstream endpoint.

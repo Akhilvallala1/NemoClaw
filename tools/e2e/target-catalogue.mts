@@ -22,6 +22,7 @@ import { FULL_E2E_STANDARD_PROFILE_JOB_TIMEOUT_MINUTES } from "./full-e2e-timeou
 import {
   ONBOARD_RESUME_TARGET_TIMEOUT_MINUTES,
   CUSTOM_HOSTED_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
+  NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
   INFERENCE_ROUTING_BASE_TARGET_TIMEOUT_MINUTES,
 } from "./onboard-timeout-contract.mts";
 import { HERMES_ACP_E2E_OWNING_PATHS } from "./hermes-acp-owning-paths.mts";
@@ -1049,10 +1050,9 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     targetId: "inference-routing",
     shard: "custom-hosted",
     displayName: "Inference: proves native custom hosted lifecycle and isolation",
-    agentRuntime: "openclaw + hermes + langchain-deepagents-code + pi",
-    agentRuntimeByRuntime: { podman: "openclaw + hermes + langchain-deepagents-code" },
-    environmentOrInferenceEndpoint:
-      "Ubuntu; native custom HTTPS, HTTP and Anthropic fixtures; protected Pi on Docker",
+    agentRuntime: "openclaw + hermes",
+    selector: "^TC-INF-11-custom-hosted",
+    environmentOrInferenceEndpoint: "Ubuntu; native custom HTTPS, HTTP and Anthropic fixtures",
     profile: "standard",
     timeoutMinutes: CUSTOM_HOSTED_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
     installMode: "none",
@@ -1071,6 +1071,28 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
       "test/e2e/live/inference-routing-helpers.ts",
       "test/e2e/live/https-pin-compatible-server.ts",
       "test/e2e/live/dns-rebinding-hosts-fixture.ts",
+    ],
+  }),
+  managedRuntimeTarget("inference-routing-native-terminals", {
+    targetId: "inference-routing",
+    shard: "native-terminals",
+    displayName: "Inference: proves native terminal credentials and policy after restart",
+    agentRuntime: "langchain-deepagents-code + pi",
+    agentRuntimeByRuntime: { podman: "langchain-deepagents-code" },
+    environmentOrInferenceEndpoint: "Ubuntu; native custom HTTP fixture; protected Pi on Docker",
+    profile: "standard",
+    testFile: "test/e2e/live/inference-routing-custom-hosted.test.ts",
+    selector: "^TC-INF-11-native-terminals",
+    timeoutMinutes: NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
+    installMode: "none",
+    restoreCli: true,
+    exposeCliBin: false,
+    owningPaths: [
+      "src/lib/inference/native-custom/",
+      "src/lib/inference/native-provider/",
+      "src/lib/agent/candidate.ts",
+      "tools/e2e/onboard-timeout-contract.mts",
+      "test/e2e/live/inference-routing-helpers.ts",
     ],
   }),
   dockerOnlyTarget("llama-cpp-generic-gpu", {

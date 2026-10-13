@@ -18,7 +18,7 @@ import { runInferenceSet } from "./inference-set";
 import { buildNativeCustomProfile } from "../inference/native-custom/profile";
 import { hostedNativeProvider } from "../inference/native-provider/hosted";
 import { buildHttpsPinRouteBaseUrl, computeHttpsPinRouteId } from "../inference/https-pin-runtime";
-import { createDeps, HERMES_TARGET } from "../../../test/helpers/inference-set";
+import { baseSession, createDeps, HERMES_TARGET } from "../../../test/helpers/inference-set";
 
 const hostLocalSelection = {
   provider: "compatible-endpoint",
@@ -490,6 +490,33 @@ it.each(["openclaw", "hermes"])(
     expect(f.adapter.createProvider).toHaveBeenCalledWith(
       expect.objectContaining({ name: "compatible-endpoint", type: "openai" }),
     );
+  },
+);
+
+it.each(["openclaw", "hermes"])(
+  "uses the matching session endpoint when switching %s from another provider (#12636)",
+  async (agent) => {
+    const f = await fixture(agent);
+    await runInferenceSet({ provider: "openai", model: "gpt-4o" }, f.deps);
+    f.entry.endpointUrl = "http://8.8.8.8/v1";
+    vi.mocked(f.adapter.createProvider).mockClear();
+    f.deps.loadSession = () =>
+      baseSession({
+        sandboxName: "alpha",
+        provider: hostLocalSelection.provider,
+        model: hostLocalSelection.model,
+        endpointUrl: hostLocalSelection.endpointUrl,
+        credentialEnv: hostLocalSelection.credentialEnv,
+        preferredInferenceApi: hostLocalSelection.inferenceApi,
+      });
+    await runInferenceSet(
+      { provider: hostLocalSelection.provider, model: hostLocalSelection.model },
+      f.deps,
+    );
+    expect(f.entry.endpointUrl).toBe(hostLocalSelection.endpointUrl);
+    expect(f.entry.nativeCustomProviderAttachment).toBeUndefined();
+    expect(f.deps.inferenceRouteMutator.setInferenceRoute).toHaveBeenCalled();
+    expect(f.adapter.createProvider).not.toHaveBeenCalled();
   },
 );
 

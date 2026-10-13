@@ -371,6 +371,23 @@ function matchingSessionMetadata(options: {
   };
 }
 
+/** Use the same durable/session precedence as route preparation before choosing its owner. */
+export function resolveInferenceSetEndpoint(options: {
+  entry: SandboxEntry;
+  provider: string;
+  model: string;
+  sandboxName: string;
+  session: Session | null;
+  explicitEndpoint: string | null | undefined;
+}): string | null | undefined {
+  return (
+    options.explicitEndpoint ??
+    (options.entry.provider === options.provider
+      ? options.entry.endpointUrl
+      : matchingSessionMetadata(options)?.endpointUrl)
+  );
+}
+
 function registryMetadataForProviderSwitch(options: {
   entry: SandboxEntry;
   provider: string;

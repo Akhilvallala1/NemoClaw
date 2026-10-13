@@ -136,6 +136,7 @@ import {
   type InferenceSetProviderBinding,
   isSandboxBridgeProviderBinding,
   prepareInferenceSetRoute,
+  resolveInferenceSetEndpoint,
   type RegistryInferenceMetadata,
   sandboxCustomCompatibleCredentialEnv,
   usesLoopbackNoAuthProxyRoute,
@@ -1346,7 +1347,14 @@ async function runInferenceSetWithoutHostLock(
     isNativeCustomProvider(provider) &&
     selectsNativeCustomSwitch(
       entry,
-      customRoute?.endpointUrl ?? entry.endpointUrl,
+      resolveInferenceSetEndpoint({
+        entry,
+        provider,
+        model,
+        sandboxName,
+        session,
+        explicitEndpoint: customRoute?.endpointUrl,
+      }),
       provider,
       Boolean(options.endpointUrl),
     )

@@ -26,6 +26,7 @@ import {
   isHttpsPinRuntimeEligible,
 } from "../https-pin-runtime";
 import {
+  NativeCustomEndpointAdmissionError,
   buildNativeCustomProfile,
   prepareNativeCustomProfile,
   type NativeCustomApi,
@@ -104,11 +105,13 @@ export async function prepareNativeCustomInference(
 }> {
   if (!isValidName(input.sandboxName) || !isValidName(input.gatewayName))
     throw new Error("Native custom inference requires a valid sandbox and named gateway.");
-  if (unsafeEndpointUrlViolation(input.endpointUrl))
-    throw new Error("Invalid native custom endpoint URL.");
+  if (!input.endpointUrl.trim() || unsafeEndpointUrlViolation(input.endpointUrl))
+    throw new NativeCustomEndpointAdmissionError("Invalid native custom endpoint URL.");
   const source = new URL(input.endpointUrl);
   if (source.username || source.password || source.search || source.hash)
-    throw new Error("Custom endpoint URL must not carry credentials, query, or fragment.");
+    throw new NativeCustomEndpointAdmissionError(
+      "Custom endpoint URL must not carry credentials, query, or fragment.",
+    );
   const classification =
     input.provider === "compatible-anthropic-endpoint"
       ? classifyCustomAnthropicEndpoint(input.endpointUrl)
