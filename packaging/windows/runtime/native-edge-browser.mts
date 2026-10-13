@@ -240,10 +240,13 @@ async function stopEdge(child: ChildProcess, endpoint?: { port: number; path: st
     throw new Error("The owned Microsoft Edge process did not close.");
 }
 
+export type NativeEdgeBrowserOwner = { close(): Promise<void> };
+
 export async function startNativeEdgeBrowser(options: {
   profileRoot: string;
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  onOwner(owner: NativeEdgeBrowserOwner): void;
 }) {
   const environment = options.environment ?? process.env;
   if (environment.NEMOCLAW_RUNTIME_JOB_OWNED !== "1")
@@ -305,7 +308,10 @@ export async function startNativeEdgeBrowser(options: {
   });
   void failure.catch(() => {});
   const closed = new Promise<void>((resolve, reject) => {
-    child.once("error", reject);
+    child.once("error", (error) => {
+      rejectFailure(error);
+      reject(error);
+    });
     child.once("close", (code) => {
       if (!expectedClose)
         rejectFailure(
@@ -314,10 +320,30 @@ export async function startNativeEdgeBrowser(options: {
       resolve();
     });
   });
+  void closed.catch(() => {});
   let endpoint: { port: number; path: string } | undefined;
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      options.signal?.removeEventListener("abort", abort);
+      expectedClose = true;
+      await stopEdge(child, endpoint);
+      fs.rmSync(options.profileRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 50,
+      });
+      if (fs.existsSync(options.profileRoot))
+        throw new Error("The Microsoft Edge profile was not removed.");
+    })());
+  const abort = () => {
+    void close().catch(() => {});
+  };
   const active = path.join(options.profileRoot, "DevToolsActivePort");
   const deadline = Date.now() + 15_000;
   try {
+    options.onOwner({ close });
     while (Date.now() < deadline) {
       options.signal?.throwIfAborted();
       if (child.exitCode !== null || child.signalCode !== null)
@@ -347,24 +373,7 @@ export async function startNativeEdgeBrowser(options: {
       throw new Error("Microsoft Edge process generation could not be bound.");
     if (hash(identity.path).sha256 !== identity.sha256)
       throw new Error("Microsoft Edge changed after startup.");
-    let closing: Promise<void> | undefined;
-    const close = () =>
-      (closing ??= (async () => {
-        options.signal?.removeEventListener("abort", abort);
-        expectedClose = true;
-        await stopEdge(child, endpoint);
-        fs.rmSync(options.profileRoot, {
-          recursive: true,
-          force: true,
-          maxRetries: 10,
-          retryDelay: 50,
-        });
-        if (fs.existsSync(options.profileRoot))
-          throw new Error("The Microsoft Edge profile was not removed.");
-      })());
-    const abort = () => {
-      void close().catch(() => {});
-    };
+    options.signal?.throwIfAborted();
     options.signal?.addEventListener("abort", abort, { once: true });
     return {
       identity,
@@ -376,14 +385,15 @@ export async function startNativeEdgeBrowser(options: {
       close,
     };
   } catch (error) {
-    expectedClose = true;
-    await stopEdge(child, endpoint).catch(() => {});
-    fs.rmSync(options.profileRoot, {
-      recursive: true,
-      force: true,
-      maxRetries: 10,
-      retryDelay: 50,
-    });
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Microsoft Edge startup failed and cleanup is unconfirmed.",
+        { cause: error },
+      );
+    }
     throw error;
   }
 }

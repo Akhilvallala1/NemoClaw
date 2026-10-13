@@ -39,7 +39,7 @@ import {
 import { nativeHermesConfiguration, readNativeServiceEnvironment } from "./native-options.mts";
 import { startNativeInferenceBroker } from "./native-inference-broker.mts";
 import { startNativeBrokerRelay } from "./native-broker-relay.mts";
-import { startNativeEdgeBrowser } from "./native-edge-browser.mts";
+import { startNativeEdgeBrowser, type NativeEdgeBrowserOwner } from "./native-edge-browser.mts";
 import { acquireNativeStateSession } from "./native-state.mts";
 
 import { resolveNativeConfiguredInference } from "./native-configured-inference.mts";
@@ -645,6 +645,7 @@ async function runNativeConsoleAgentInternal(
   let brokerRelay: Awaited<ReturnType<typeof startNativeBrokerRelay>> | undefined;
   let browserRelay: Awaited<ReturnType<typeof startNativeBrokerRelay>> | undefined;
   let edge: Awaited<ReturnType<typeof startNativeEdgeBrowser>> | undefined;
+  let edgeOwner: NativeEdgeBrowserOwner | undefined;
   let brokerRelayRoot: string | undefined;
   let browserRelayRoot: string | undefined;
   let runRoot;
@@ -740,6 +741,9 @@ async function runNativeConsoleAgentInternal(
         profileRoot: path.join(runRoot, "edge-profile"),
         environment: process.env,
         signal: webSession?.signal,
+        onOwner: (owner) => {
+          edgeOwner = owner;
+        },
       });
       diagnostics.capture(
         "edge.identity",
@@ -1398,7 +1402,7 @@ async function runNativeConsoleAgentInternal(
       if (browserRelay) await browserRelay.dispose();
     });
     await attempt("Microsoft Edge shutdown", async () => {
-      if (edge) await edge.close();
+      if (edgeOwner) await edgeOwner.close();
     });
     await attempt("inference broker shutdown", async () => {
       if (!broker) return;

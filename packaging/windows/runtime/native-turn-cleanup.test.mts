@@ -242,7 +242,7 @@ for (const failure of ["none", "gateway-stop", "gateway-cleanup", "file-owner"] 
         statusFiles: null,
         brokerRelay: null,
         browserRelay: null,
-        edge: null,
+        edgeOwner: null,
         broker: null,
         consoleAttachment: { async dispose() {} },
         gatewaySession: {
@@ -324,7 +324,7 @@ for (const failure of ["none", "edge", "broker", "browser", "status", "removal"]
           if (failure === "browser") throw new Error("browser owner remains");
         },
       },
-      edge: {
+      edgeOwner: {
         async close() {
           events.push("edge");
           assert(present.has("run"), "Edge profile must remain until its owner stops.");
@@ -407,6 +407,192 @@ for (const failure of ["none", "edge", "broker", "browser", "status", "removal"]
       );
     }
     assert.equal(failures.length === 0, failure === "none");
+  });
+}
+
+test("Edge startup cleanup keeps the caller owner when readiness rejects", async () => {
+  const source = fs
+    .readFileSync(new URL("./run-installed-native-console-agent.mts", import.meta.url), "utf8")
+    .replaceAll("\r\n", "\n");
+  const start = source.indexOf("      edge = await startNativeEdgeBrowser({");
+  const end = source.indexOf("      diagnostics.capture(", start);
+  assert(start >= 0 && end > start);
+  const cleanupError = new Error("Edge is still running");
+  const primary = new Error("Edge startup failed");
+  const owner = {
+    async close() {
+      throw cleanupError;
+    },
+  };
+  const result = await new Function(
+    "startNativeEdgeBrowser",
+    "path",
+    "process",
+    "return " +
+      stripTypeScriptTypes(
+        `(async () => {
+      let edge, edgeOwner; const runRoot = "run", webSession = undefined;
+      try { ${source.slice(start, end)} } catch (error) { return {edge, edgeOwner, error}; }
+      throw new Error("Fixture startup must fail.");
+    })();`,
+        { mode: "strip" },
+      ),
+  )(
+    async (options: { onOwner(value: typeof owner): void }) => {
+      options.onOwner(owner);
+      throw primary;
+    },
+    path,
+    { env: {} },
+  );
+  assert.equal(result.edge, undefined);
+  assert.equal(result.edgeOwner, owner);
+  assert.equal(result.error, primary);
+  const removed: string[] = [];
+  const failures = await runCleanupFragment(
+    "./run-installed-native-console-agent.mts",
+    "    const cleanupFailures: string[] = [];",
+    "    let released = false;",
+    {
+      diagnostics: { capture() {} },
+      relay: null,
+      statusFiles: null,
+      brokerRelay: null,
+      browserRelay: null,
+      edgeOwner: result.edgeOwner,
+      broker: null,
+      consoleAttachment: null,
+      gatewaySession: undefined,
+      consoleSessionEnded: false,
+      runRoot: "run",
+      runtimeRoot: "runtime",
+      dashboardRelayRoot: undefined,
+      statusRoot: undefined,
+      brokerRelayRoot: "broker",
+      browserRelayRoot: undefined,
+      removeDirectory: async (directory: string) => {
+        removed.push(directory);
+        return true;
+      },
+    },
+    "cleanupFailures",
+  );
+  assert.deepEqual(removed, []);
+  assert(failures.includes("Microsoft Edge shutdown"));
+  assert.equal(failures.filter((value: string) => value === "temporary runtime removal").length, 3);
+});
+
+for (const fault of [
+  "startup",
+  "stop",
+  "remove",
+  "success",
+  "identity-abort",
+  "owner",
+  "process-error",
+] as const) {
+  test(`Edge startup cleanup retains an owner through failure: ${fault}`, async () => {
+    const source = fs.readFileSync(new URL("./native-edge-browser.mts", import.meta.url), "utf8");
+    const start = source.indexOf("export async function startNativeEdgeBrowser(");
+    assert(start >= 0);
+    const profile = "owned-profile";
+    const present = new Set<string>();
+    const events: string[] = [];
+    const primary = new Error("owned startup failure");
+    const cleanupError = new Error("owned cleanup failure");
+    const abort = new AbortController();
+    let owner: { close(): Promise<void> } | undefined;
+    let stops = 0;
+    const child = Object.assign(new EventEmitter(), {
+      pid: 1234,
+      exitCode: null as number | null,
+      signalCode: null,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill() {},
+    });
+    const context = {
+      detectNativeEdge: async () => ({ path: "sealed-edge", sha256: "fixture" }),
+      spawn: () => child,
+      fs: {
+        existsSync: (file: string) => present.has(file),
+        mkdirSync: (file: string) => {
+          present.add(file);
+        },
+        rmSync: (file: string) => {
+          events.push("remove");
+          assert.equal(child.exitCode, 0, "Do not remove the profile before confirmed stop.");
+          if (fault === "remove") throw cleanupError;
+          present.delete(file);
+        },
+      },
+      path,
+      stopEdge: async () => {
+        stops++;
+        events.push("stop");
+        if (fault === "stop") throw cleanupError;
+        child.exitCode = 0;
+      },
+      readNativeEdgeEndpoint: () => {
+        if (fault !== "success" && fault !== "identity-abort" && fault !== "process-error")
+          throw primary;
+        return { port: 12345, path: "/devtools/browser/fixture" };
+      },
+      transientEdgeEndpointRead: () => false,
+      nativeProcessIdentity: async () => {
+        if (fault === "identity-abort") abort.abort(primary);
+        return { pid: 1234, path: "sealed-edge", creationFiletime: "123456789012345678" };
+      },
+      hash: () => ({ sha256: "fixture" }),
+    };
+    const controller = new Function(
+      ...Object.keys(context),
+      stripTypeScriptTypes(source.slice(start).replace("export ", ""), { mode: "strip" }) +
+        "\nreturn startNativeEdgeBrowser;",
+    )(...Object.values(context));
+    const operation = controller({
+      profileRoot: profile,
+      environment: { NEMOCLAW_RUNTIME_JOB_OWNED: "1" },
+      signal: abort.signal,
+      onOwner: (value: typeof owner) => {
+        owner = value;
+        events.push("owner");
+        if (fault === "owner") throw primary;
+      },
+    });
+    if (fault === "success" || fault === "process-error") {
+      const ready = await operation;
+      assert(owner, "Transfer cleanup ownership before returning readiness.");
+      assert.equal(ready.close, owner.close);
+      if (fault === "process-error") {
+        let reported: unknown;
+        void ready.failure.catch((error: unknown) => {
+          reported = error;
+        });
+        child.emit("error", primary);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(reported, primary, "The session monitor must receive child-process errors.");
+      }
+      const firstClose = owner.close();
+      assert.equal(owner.close(), firstClose, "Shutdown has one memoized owner.");
+      await firstClose;
+    } else {
+      await assert.rejects(operation, (error: unknown) => {
+        if (fault === "stop" || fault === "remove") {
+          assert(error instanceof AggregateError);
+          assert.deepEqual(error.errors, [primary, cleanupError]);
+          assert.equal(error.cause, primary);
+        } else assert.equal(error, primary);
+        return true;
+      });
+      assert(owner, "Startup failure must not discard the cleanup owner.");
+      if (fault === "stop" || fault === "remove") await assert.rejects(owner.close(), cleanupError);
+      else await owner.close();
+    }
+    assert.equal(stops, 1, "Outer cleanup must observe the same shutdown, not retry it.");
+    assert.equal(present.has(profile), fault === "stop" || fault === "remove");
+    assert.equal(events[0], "owner");
+    assert.equal(events.includes("remove"), fault !== "stop");
   });
 }
 
