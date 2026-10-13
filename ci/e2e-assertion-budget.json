@@ -30,11 +30,11 @@
       "expectCalls": 1673,
       "matcherAssertions": 1647,
       "nodeAssertions": 127,
-      "namedAssertionHelpers": 660,
+      "namedAssertionHelpers": 659,
       "failCalls": 1,
       "throwGuards": 526,
       "objectFieldAssertions": 245,
-      "assertionPoints": 3206,
+      "assertionPoints": 3205,
       "generatedProbeBlocks": 209,
       "generatedProbeConditions": 721
     },
