@@ -22,6 +22,45 @@ type Fixture = {
   script: string;
 };
 
+const setupSystemCommandAllowlist = [
+  "awk",
+  "basename",
+  "bash",
+  "cat",
+  "dirname",
+  "find",
+  "grep",
+  "mktemp",
+  "readlink",
+  "rm",
+  "sed",
+];
+
+function pathWithoutHostHadolint(fixture: Fixture): string {
+  const systemBin = path.join(path.dirname(fixture.fakeBin), "system-bin");
+  fs.mkdirSync(systemBin, { recursive: true });
+  const hostPath = [...(process.env.PATH ?? "").split(path.delimiter), "/usr/bin", "/bin"].filter(
+    Boolean,
+  );
+
+  for (const commandName of setupSystemCommandAllowlist) {
+    const executable = hostPath
+      .map((directory) => path.join(directory, commandName))
+      .find((candidate) => {
+        try {
+          fs.accessSync(candidate, fs.constants.X_OK);
+          return fs.statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      });
+    expect(executable, `Required test system command not found: ${commandName}`).toBeDefined();
+    fs.symlinkSync(fs.realpathSync(executable!), path.join(systemBin, commandName));
+  }
+
+  return [fixture.fakeBin, systemBin].join(path.delimiter);
+}
+
 function writeExecutable(filePath: string, contents = "#!/usr/bin/env bash\nexit 0\n"): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, contents, { mode: 0o755 });
@@ -171,6 +210,10 @@ elif [ "\${1:-}" = "--prefix" ] && [ "\${2:-}" = "nemoclaw" ] && [ "\${3:-}" = "
   echo "10.9.0"
 elif [ "\${1:-}" = "run" ] && [ "\${2:-}" = "build:cli" ]; then
   printf 'npm-cli-build NODE_OPTIONS=%s\\n' "\${NODE_OPTIONS-}" >>"\${FAKE_COMMAND_LOG}"
+  if [ "\${FAKE_NPM_CLI_BUILD_TERM:-}" = "1" ]; then
+    kill -TERM "$PPID"
+    exit 0
+  fi
   if [ "\${FAKE_NPM_CLI_BUILD_OOM:-}" = "1" ]; then
     printf '%s\\n' 'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory' >&2
     exit 134
@@ -588,7 +631,10 @@ describe("contributor environment doctor", () => {
     fs.rmSync(path.join(fixture.repo, "node_modules", ".bin", "tsc"));
     fs.rmSync(fixture.pluginArtifact);
 
-    const result = runDoctor(fixture, { FAKE_GIT_IDENTITY_MISSING: "1" });
+    const result = runDoctor(fixture, {
+      FAKE_GIT_IDENTITY_MISSING: "1",
+      PATH: pathWithoutHostHadolint(fixture),
+    });
 
     expect(result.status).toBe(1);
     expect(result.output).toContain("hadolint: not found");
@@ -604,7 +650,7 @@ describe("contributor environment doctor", () => {
     const fixture = createFixture();
     fs.rmSync(path.join(fixture.fakeBin, "hadolint"));
 
-    const result = runDoctor(fixture);
+    const result = runDoctor(fixture, { PATH: pathWithoutHostHadolint(fixture) });
 
     expect(result.status).toBe(0);
     expect(result.output).toContain("! hadolint: not found");
@@ -920,7 +966,7 @@ describe("contributor repository setup", () => {
     const fixture = createFixture();
     fs.rmSync(path.join(fixture.fakeBin, "hadolint"));
 
-    const result = runSetup(fixture);
+    const result = runSetup(fixture, [], { PATH: pathWithoutHostHadolint(fixture) });
 
     expect(result.status).toBe(0);
     expect(result.output).toContain("! hadolint: not found");
@@ -1046,6 +1092,21 @@ describe("contributor repository setup", () => {
       "npm-cli-build NODE_OPTIONS=--trace-warnings --max-old-space-size=4096",
     );
     expect(commands).toContain("NODE_OPTIONS=--trace-warnings --max-old-space-size=4096");
+  });
+
+  it("removes the setup heap-output file when a build is interrupted", () => {
+    const fixture = createFixture();
+    const tempDirectory = path.join(fixture.repo, "tmp");
+    fs.mkdirSync(tempDirectory);
+
+    const result = runSetup(fixture, [], {
+      TMPDIR: tempDirectory,
+      FAKE_NPM_CLI_BUILD_TERM: "1",
+    });
+
+    expect(result.status).toBe(143);
+    expect(readCommandLog(fixture)).toContain("npm run build:cli");
+    expect(fs.readdirSync(tempDirectory)).toEqual([]);
   });
 
   it("reports a heap-limit remedy when the CLI build exhausts Node.js heap", () => {

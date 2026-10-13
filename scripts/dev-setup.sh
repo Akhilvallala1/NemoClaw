@@ -359,16 +359,21 @@ run_setup_step() {
 run_setup_step_with_heap_hint() {
   local label="$1"
   local heap_remediation="$2"
-  local output_file
+  local output_file="" exit_status=0
   shift 2
 
   printf '\n==> %s\n' "${label}"
+  trap 'exit_status=$?; trap - EXIT INT TERM; if [ -n "${output_file}" ]; then rm -f -- "${output_file}"; fi; exit "${exit_status}"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   output_file="$(mktemp "${TMPDIR:-/tmp}/nemoclaw-dev-setup.XXXXXX")" || {
+    trap - EXIT INT TERM
     printf 'Setup stopped while attempting: %s\n' "${label}" >&2
     return 1
   }
   if run_with_default_node_heap "$@" >"${output_file}" 2>&1; then
-    rm -f "${output_file}"
+    rm -f -- "${output_file}"
+    trap - EXIT INT TERM
     return 0
   fi
   if is_node_heap_oom_output "${output_file}"; then
@@ -376,7 +381,8 @@ run_setup_step_with_heap_hint() {
   else
     cat "${output_file}" >&2
   fi
-  rm -f "${output_file}"
+  rm -f -- "${output_file}"
+  trap - EXIT INT TERM
   printf 'Setup stopped while attempting: %s\n' "${label}" >&2
   return 1
 }
