@@ -290,6 +290,36 @@ describe("destroySandbox retained recovery flow", () => {
   );
 
   it(
+    "rejects an ambient gateway endpoint override before identity-free recovery probing",
+    { timeout: 30_000 },
+    async () => {
+      vi.stubEnv("OPENSHELL_GATEWAY_ENDPOINT", "https://foreign.invalid");
+      const recovery = retainedRecoveryRecordWithoutIdentity();
+      const harness = createDestroyHarness({
+        sandboxPresent: false,
+        dockerRunResult: { status: 0, stdout: "" },
+        registryEntryOverrides: { lifecycleGeneration: recovery.lifecycleGeneration! },
+        retainedRecoveryRecords: [recovery],
+      });
+      harness.sessionState.cancellationRecovery = cancellationRecoveryFor(recovery);
+
+      await expect(harness.destroySandbox("alpha", { yes: true })).rejects.toThrow(
+        "OpenShell may bypass the gateway recorded for this sandbox",
+      );
+
+      expect(harness.captureOpenshellSpy).not.toHaveBeenCalled();
+      expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
+        ["gateway", "select", expect.any(String)],
+        expect.anything(),
+      );
+      expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
+        ["sandbox", "delete", "alpha"],
+        expect.anything(),
+      );
+    },
+  );
+
+  it(
     "retires identity-free recovery without requiring global gateway state",
     { timeout: 30_000 },
     async () => {
