@@ -667,44 +667,14 @@ describe("CLI dispatch", () => {
   });
 
   it.each([
-    ["--cleanup-gateway", true, false, false, false, false, "", 0, true, true],
-    ["--no-cleanup-gateway", false, false, false, false, false, "", 0, true, true],
-    ["--no-cleanup-gateway", false, true, false, false, false, "", 42, true, true],
-    ["--no-cleanup-gateway", false, false, true, false, false, "", 1, false, false],
-    ["--no-cleanup-gateway", false, false, false, true, false, "", 0, true, false],
-    ["--no-cleanup-gateway", false, false, false, false, true, "", 1, true, true],
-    ["--no-cleanup-gateway", false, true, false, false, true, "", 42, true, true],
-    ["--no-cleanup-gateway", false, false, false, false, false, "list-failure", 1, true, false],
-    ["--no-cleanup-gateway", false, false, false, false, false, "prior-missing", 1, true, false],
-    ["--no-cleanup-gateway", false, false, false, false, false, "marker-omitted", 1, true, false],
-    ["--no-cleanup-gateway", false, false, false, false, false, "already-restored", 0, true, false],
-    [
-      "--no-cleanup-gateway",
-      false,
-      false,
-      false,
-      false,
-      false,
-      "no-active-target-present",
-      1,
-      true,
-      false,
-    ],
+    ["--cleanup-gateway", true, false, false, 0],
+    ["--no-cleanup-gateway", false, false, false, 0],
+    ["--no-cleanup-gateway", false, true, false, 42],
+    ["--no-cleanup-gateway", false, false, true, 0],
   ] as const)(
-    "preserves active gateway during destroy %s (cleanup: %s, delete failure: %s, missing marker: %s, concurrent selection: %s, restore failure: %s, registry state: %s) (#11897)",
-    async (
-      cleanupFlag,
-      cleanupGateway,
-      failDelete,
-      missingActive,
-      concurrentSelection,
-      failRestoration,
-      postOperationState,
-      expectedExitCode,
-      mutationExpected,
-      restorationExpected,
-    ) => {
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-cli-destroy-restore-active-"));
+    "keeps destroy gateway-scoped %s (cleanup: %s, delete failure: %s, concurrent selection: %s) (#11897)",
+    async (cleanupFlag, cleanupGateway, failDelete, concurrentSelection, expectedExitCode) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-cli-destroy-gateway-scoped-"));
       const localBin = path.join(home, "bin");
       const registryDir = path.join(home, ".nemoclaw");
       const openshellLog = path.join(home, "openshell.log");
@@ -712,20 +682,11 @@ describe("CLI dispatch", () => {
       const removedGateway = path.join(home, "gateway-removed");
       const deletedSandbox = path.join(home, "sandbox-deleted");
       const failDeleteMarker = path.join(home, "fail-delete");
-      const missingActiveMarker = path.join(home, "missing-active");
-      const concurrentSelectionMarker = path.join(home, "concurrent-selection");
       const enableConcurrentSelectionMarker = path.join(home, "enable-concurrent-selection");
-      const targetSelectedMarker = path.join(home, "target-selected");
-      const failRestorationMarker = path.join(home, "fail-restoration");
-      const postOperationStateMarker = path.join(home, "post-operation-state");
       const survivorStarted = path.join(home, "survivor-started");
       const survivorForwarded = path.join(home, "survivor-forwarded");
       fs.writeFileSync(failDeleteMarker, failDelete ? "fail" : "");
-      fs.writeFileSync(missingActiveMarker, missingActive ? "missing" : "");
-      fs.writeFileSync(concurrentSelectionMarker, "");
       fs.writeFileSync(enableConcurrentSelectionMarker, concurrentSelection ? "yes" : "");
-      fs.writeFileSync(failRestorationMarker, failRestoration ? "fail" : "");
-      fs.writeFileSync(postOperationStateMarker, "");
       fs.mkdirSync(localBin, { recursive: true });
       fs.mkdirSync(registryDir, { recursive: true });
       fs.writeFileSync(activeGateway, "nemoclaw-9090\n");
@@ -770,71 +731,27 @@ describe("CLI dispatch", () => {
           `removed_gateway=${JSON.stringify(removedGateway)}`,
           `deleted_sandbox=${JSON.stringify(deletedSandbox)}`,
           `fail_delete=${JSON.stringify(failDeleteMarker)}`,
-          `missing_active=${JSON.stringify(missingActiveMarker)}`,
-          `concurrent_selection=${JSON.stringify(concurrentSelectionMarker)}`,
           `enable_concurrent_selection=${JSON.stringify(enableConcurrentSelectionMarker)}`,
-          `target_selected=${JSON.stringify(targetSelectedMarker)}`,
-          `fail_restoration=${JSON.stringify(failRestorationMarker)}`,
-          `post_operation_state=${JSON.stringify(postOperationStateMarker)}`,
-          `post_operation_state_value=${JSON.stringify(postOperationState)}`,
           `survivor_started=${JSON.stringify(survivorStarted)}`,
           `survivor_forwarded=${JSON.stringify(survivorForwarded)}`,
           'printf \'%s\\n\' "$*" >> "$log_file"',
-          'if [ "$1" = "gateway" ] && [ "$2" = "list" ]; then',
-          '  if [ -s "$missing_active" ]; then printf \'[{"name":"nemoclaw-8081"},{"name":"nemoclaw-9090"}]\\n\'; exit 0; fi',
-          '  active="$(cat "$active_gateway")"',
-          '  if [ -s "$concurrent_selection" ]; then printf \'[{"name":"nemoclaw-8081","active":false},{"name":"nemoclaw-9090","active":false},{"name":"new-gateway","active":true}]\\n\'; exit 0; fi',
-          '  if [ -s "$post_operation_state" ]; then',
-          '    case "$post_operation_state_value" in',
-
-          '      list-failure) echo "registry unavailable" >&2; exit 44 ;;',
-          '      prior-missing) printf \'[{"name":"nemoclaw-8081","active":true}]\\n\' ;;',
-          '      marker-omitted) printf \'[{"name":"nemoclaw-8081"},{"name":"nemoclaw-9090"}]\\n\' ;;',
-          '      already-restored) printf \'[{"name":"nemoclaw-8081","active":false},{"name":"nemoclaw-9090","active":true}]\\n\' ;;',
-          '      no-active-target-present) printf \'[{"name":"nemoclaw-8081","active":false},{"name":"nemoclaw-9090","active":false}]\\n\' ;;',
-          "    esac",
-          "    exit 0",
-          "  fi",
-          '  if [ -e "$target_selected" ] && [ ! -e "$removed_gateway" ]; then printf \'[{"name":"nemoclaw-8081","active":true},{"name":"nemoclaw-9090","active":false}]\\n\'; exit 0; fi',
-          '  if [ -n "$OPENSHELL_GATEWAY" ]; then active="$OPENSHELL_GATEWAY"; fi',
-          '  if [ -e "$removed_gateway" ]; then',
-          '    printf \'[{"name":"nemoclaw-9090","active":%s}]\\n\' "$( [ "$active" = "nemoclaw-9090" ] && printf true || printf false )"',
-          "  else",
-          '    printf \'[{"name":"nemoclaw-8081","active":%s},{"name":"nemoclaw-9090","active":%s}]\\n\' "$( [ "$active" = "nemoclaw-8081" ] && printf true || printf false )" "$( [ "$active" = "nemoclaw-9090" ] && printf true || printf false )"',
-          "  fi",
-          "  exit 0",
-          "fi",
-          'if [ "$1" = "gateway" ] && [ "$2" = "select" ]; then',
-          '  if [ "$3" = "nemoclaw-9090" ] && [ -s "$fail_restoration" ]; then echo "restore failed" >&2; exit 43; fi',
-          '  printf "%s\\n" "$3" > "$active_gateway"',
-          '  if [ "$3" = "nemoclaw-8081" ]; then : > "$target_selected"; fi',
-          "  exit 0",
-          "fi",
           'if [ "$1" = "gateway" ] && [ "$2" = "remove" ] && [ "$3" = "nemoclaw-8081" ]; then',
           '  : > "$removed_gateway"',
-          '  : > "$active_gateway"',
           "  exit 0",
           "fi",
           'if [ "$1" = "sandbox" ] && [ "$2" = "start" ] && [ "$3" = "beta" ]; then',
-          '  active="$(cat "$active_gateway")"',
-          '  if [ "$5" != "$active" ]; then echo "wrong active gateway: $active" >&2; exit 45; fi',
+          '  if [ "$5" != "nemoclaw-9090" ]; then echo "wrong scoped gateway: $5" >&2; exit 45; fi',
           '  : > "$survivor_started"',
           "  exit 0",
           "fi",
           'if [ "$1" = "forward" ] && [ "$2" = "service" ] && [ "$3" = "beta" ]; then',
-          '  active="$(cat "$active_gateway")"',
-          '  if [ "$5" != "$active" ] || [ ! -e "$survivor_started" ]; then echo "survivor forward refused" >&2; exit 46; fi',
+          '  if [ "$5" != "nemoclaw-9090" ] || [ ! -e "$survivor_started" ]; then echo "survivor forward refused" >&2; exit 46; fi',
           '  : > "$survivor_forwarded"',
           "  exit 0",
           "fi",
           'if [ "$1" = "sandbox" ] && [ "$2" = "delete" ]; then',
           '  if [ -s "$fail_delete" ]; then echo "delete failed" >&2; exit 42; fi',
-          '  if [ -s "$enable_concurrent_selection" ]; then printf "selected\\n" > "$concurrent_selection"; printf "new-gateway\\n" > "$active_gateway"; fi',
-          '  if [ -n "$post_operation_state_value" ]; then',
-          '    printf "%s\\n" "$post_operation_state_value" > "$post_operation_state"',
-          '    if [ "$post_operation_state_value" = "already-restored" ]; then printf "nemoclaw-9090\\n" > "$active_gateway"; fi',
-          '    if [ "$post_operation_state_value" = "no-active-target-present" ]; then : > "$active_gateway"; fi',
-          "  fi",
+          '  if [ -s "$enable_concurrent_selection" ]; then printf "new-gateway\\n" > "$active_gateway"; fi',
           '  : > "$deleted_sandbox"',
           "  exit 0",
           "fi",
@@ -868,62 +785,14 @@ describe("CLI dispatch", () => {
 
       const lines = fs.readFileSync(openshellLog, "utf8").trim().split("\n");
       expect(r.code, r.out).toBe(expectedExitCode);
-      expect(
-        r.out.includes(
-          "Could not preserve the active OpenShell gateway before destroying 'alpha':",
-        ),
-      ).toBe(missingActive);
-      expect(
-        r.out.includes(
-          "could not be restored: the gateway registry did not report its active selection",
-        ),
-      ).toBe(postOperationState === "marker-omitted");
-      expect(lines.includes("gateway select nemoclaw-8081")).toBe(mutationExpected);
-      expect(lines.includes("sandbox delete -g nemoclaw-8081 alpha")).toBe(mutationExpected);
-      expect(lines.includes("gateway remove nemoclaw-8081")).toBe(
-        cleanupGateway && !failDelete && !missingActive,
-      );
+      expect(lines).toContain("sandbox delete -g nemoclaw-8081 alpha");
+      expect(lines.filter((line) => line.startsWith("gateway select "))).toEqual([]);
+      expect(lines.includes("gateway remove nemoclaw-8081")).toBe(cleanupGateway && !failDelete);
       expect(fs.readFileSync(activeGateway, "utf8").trim()).toBe(
-        concurrentSelection
-          ? "new-gateway"
-          : postOperationState === "no-active-target-present"
-            ? ""
-            : failRestoration ||
-                (postOperationState !== "" && postOperationState !== "already-restored")
-              ? "nemoclaw-8081"
-              : "nemoclaw-9090",
-      );
-      expect(r.out.includes("openshell gateway select nemoclaw-9090")).toBe(
-        failRestoration ||
-          postOperationState === "marker-omitted" ||
-          postOperationState === "no-active-target-present",
+        concurrentSelection ? "new-gateway" : "nemoclaw-9090",
       );
       expect(r.out.includes("delete failed")).toBe(failDelete);
-      expect(fs.existsSync(removedGateway)).toBe(cleanupGateway && !failDelete && !missingActive);
-      const restoreIndex = lines.lastIndexOf("gateway select nemoclaw-9090");
-      const mutationIndex = Math.max(
-        lines.indexOf("sandbox delete -g nemoclaw-8081 alpha"),
-        lines.indexOf("gateway remove nemoclaw-8081"),
-      );
-      expect(restoreIndex > mutationIndex).toBe(restorationExpected);
-      expect(lines.includes("gateway select nemoclaw-9090")).toBe(
-        !concurrentSelection && !missingActive && postOperationState === "",
-      );
-      expect(r.out.includes("gateway registry could not be re-read:")).toBe(
-        postOperationState === "list-failure",
-      );
-      expect(r.out.includes("Check OpenShell connectivity")).toBe(
-        postOperationState === "list-failure",
-      );
-      expect(r.out.includes("previously active gateway is no longer registered")).toBe(
-        postOperationState === "prior-missing",
-      );
-      expect(r.out.includes("openshell gateway list")).toBe(
-        postOperationState === "prior-missing" || postOperationState === "list-failure",
-      );
-      expect(
-        r.out.includes("there is no active gateway while the temporary target remains registered"),
-      ).toBe(postOperationState === "no-active-target-present");
+      expect(fs.existsSync(removedGateway)).toBe(cleanupGateway && !failDelete);
 
       await (!cleanupGateway
         ? (async () => {
@@ -987,17 +856,15 @@ describe("CLI dispatch", () => {
               log: () => undefined,
             });
 
-            const expectedStartSuccess =
-              fs.readFileSync(activeGateway, "utf8").trim() === survivor.gatewayName;
-            expect(startResult.exitCode, startResult.message).toBe(expectedStartSuccess ? 0 : 1);
-            expect(fs.existsSync(survivorStarted)).toBe(expectedStartSuccess);
-            expect(fs.existsSync(survivorForwarded)).toBe(expectedStartSuccess);
+            expect(startResult.exitCode, startResult.message).toBe(0);
+            expect(fs.existsSync(survivorStarted)).toBe(true);
+            expect(fs.existsSync(survivorForwarded)).toBe(true);
           })()
         : Promise.resolve());
     },
   );
 
-  it("selects the sandbox persisted gateway before provider cleanup and delete", () => {
+  it("scopes the sandbox persisted gateway before provider cleanup and delete", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-cli-destroy-select-gateway-"));
     const localBin = path.join(home, "bin");
     const registryDir = path.join(home, ".nemoclaw");
@@ -1032,22 +899,16 @@ describe("CLI dispatch", () => {
         `log_file=${JSON.stringify(openshellLog)}`,
         `active_gateway=${JSON.stringify(activeGateway)}`,
         'printf \'%s\\n\' "$*" >> "$log_file"',
-        'if [ "$1" = "gateway" ] && [ "$2" = "select" ]; then',
-        '  printf "%s\\n" "$3" > "$active_gateway"',
-        "  exit 0",
-        "fi",
         'if [ "$1" = "sandbox" ] && [ "$2" = "delete" ]; then',
-        '  active="$(cat "$active_gateway")"',
-        '  if [ "$active" != "nemoclaw-8081" ]; then',
-        '    printf "wrong gateway: %s\\n" "$active" >&2',
+        '  if [ "$4" != "nemoclaw-8081" ]; then',
+        '    printf "wrong scoped gateway: %s\\n" "$4" >&2',
         "    exit 42",
         "  fi",
         "  exit 0",
         "fi",
         'if [ "$1" = "sandbox" ] && [ "$2" = "list" ]; then',
-        '  active="$(cat "$active_gateway")"',
-        '  if [ "$active" != "nemoclaw-8081" ]; then',
-        '    printf "wrong list gateway: %s\\n" "$active" >&2',
+        '  if [ "$4" != "nemoclaw-8081" ]; then',
+        '    printf "wrong list gateway: %s\\n" "$4" >&2',
         "    exit 43",
         "  fi",
         '  printf "NAME STATUS\\n"',
@@ -1069,19 +930,19 @@ describe("CLI dispatch", () => {
 
     expect(r.code, r.out).toBe(0);
     const lines = fs.readFileSync(openshellLog, "utf8").trim().split("\n");
-    const selectIndex = lines.indexOf("gateway select nemoclaw-8081");
     const wipeIndex = lines.findIndex(isPersistentStateWipeExec);
     const deleteIndex = lines.indexOf("sandbox delete -g nemoclaw-8081 alpha");
-    expect(selectIndex).toBeGreaterThanOrEqual(0);
-    expect(wipeIndex).toBeGreaterThan(selectIndex);
+    expect(lines).not.toContain("gateway select nemoclaw-8081");
+    expect(wipeIndex).toBeGreaterThanOrEqual(0);
     expect(deleteIndex).toBeGreaterThan(wipeIndex);
     expect(lines.slice(deleteIndex + 1)).toContain("sandbox get -g nemoclaw-8081 alpha");
+    expect(fs.readFileSync(activeGateway, "utf8").trim()).toBe("other-gateway");
   });
 
   // NemoClaw clears the native home before OpenShell deletes storage. Gateway
   // teardown still follows the completed delete.
   it(
-    "destroys with --cleanup-gateway and runs gateway-select -> delete -> gateway-destroy in order",
+    "destroys with --cleanup-gateway and runs scoped delete -> gateway removal in order",
     testTimeoutOptions(30_000),
     () => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-cli-destroy-cleanup-order-"));
@@ -1140,7 +1001,6 @@ describe("CLI dispatch", () => {
 
       expect(r.code, r.out).toBe(0);
       const lines = fs.readFileSync(openshellLog, "utf8").trim().split("\n");
-      const selectIndex = lines.indexOf("gateway select nemoclaw-8081");
       const wipeIndex = lines.findIndex(isPersistentStateWipeExec);
       const deleteIndex = lines.indexOf("sandbox delete -g nemoclaw-8081 alpha");
       const gatewayDestroyIndex = lines.findIndex(
@@ -1148,8 +1008,8 @@ describe("CLI dispatch", () => {
           line === "gateway remove nemoclaw-8081" || line === "gateway destroy -g nemoclaw-8081",
       );
 
-      expect(selectIndex, "gateway select did not run").toBeGreaterThanOrEqual(0);
-      expect(wipeIndex, "native-home cleanup did not run").toBeGreaterThan(selectIndex);
+      expect(lines).not.toContain("gateway select nemoclaw-8081");
+      expect(wipeIndex, "native-home cleanup did not run").toBeGreaterThanOrEqual(0);
       expect(deleteIndex, "sandbox delete did not run").toBeGreaterThan(wipeIndex);
       expect(gatewayDestroyIndex, "gateway teardown did not run").toBeGreaterThan(deleteIndex);
     },
@@ -1369,9 +1229,9 @@ describe("CLI dispatch", () => {
 
     expect(r.code, r.out).toBe(0);
     const log = fs.readFileSync(openshellLog, "utf8");
-    expect(log).toContain("provider delete alpha-telegram-bridge");
-    expect(log).toContain("provider delete alpha-discord-bridge");
-    expect(log).toContain("provider delete alpha-slack-bridge");
-    expect(log).toContain("provider delete alpha-slack-app");
+    expect(log).toContain("provider delete -g nemoclaw alpha-telegram-bridge");
+    expect(log).toContain("provider delete -g nemoclaw alpha-discord-bridge");
+    expect(log).toContain("provider delete -g nemoclaw alpha-slack-bridge");
+    expect(log).toContain("provider delete -g nemoclaw alpha-slack-app");
   });
 });

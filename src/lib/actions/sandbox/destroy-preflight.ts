@@ -624,17 +624,18 @@ export async function prepareSandboxDestroy(
   if (identityFreeRecovery && !runtimeSelection) {
     const environment = buildOpenShellCommandEnv();
     delete environment.OPENSHELL_GATEWAY;
-    const result = captureOpenshell(
-      ["sandbox", "list", "-g", cleanupGatewayName, "--output", "json"],
-      {
-        ignoreError: true,
-        includeStderr: true,
-        includeStreams: true,
-        timeout: OPENSHELL_PROBE_TIMEOUT_MS,
+    const identityFreeCaptureOpenshell = (args: string[], options: Record<string, unknown> = {}) =>
+      captureOpenshell(scopeDestroyCommand(args), {
+        ...options,
         env: environment,
         replaceEnv: true,
-      },
-    );
+      });
+    const result = identityFreeCaptureOpenshell(["sandbox", "list", "--output", "json"], {
+      ignoreError: true,
+      includeStderr: true,
+      includeStreams: true,
+      timeout: OPENSHELL_PROBE_TIMEOUT_MS,
+    });
     const sandboxPresence = classifyDestroySandboxPresence(sandboxName, {
       status: result.status,
       stdout: result.stdout ?? result.output,
@@ -644,6 +645,7 @@ export async function prepareSandboxDestroy(
       cleanupGatewayName,
       runOpenshell,
       selectedRunOpenshell,
+      selectedCaptureOpenshell: identityFreeCaptureOpenshell,
       sandbox,
       sandboxConfirmedAbsent: sandboxPresence === "absent",
       sandboxPresence,

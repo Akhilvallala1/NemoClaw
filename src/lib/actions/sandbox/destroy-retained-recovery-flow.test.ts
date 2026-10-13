@@ -320,7 +320,7 @@ describe("destroySandbox retained recovery flow", () => {
   );
 
   it(
-    "retires identity-free recovery without requiring global gateway state",
+    "preserves a live gateway during identity-free recovery without global gateway state",
     { timeout: 30_000 },
     async () => {
       const recovery = retainedRecoveryRecordWithoutIdentity();
@@ -332,16 +332,41 @@ describe("destroySandbox retained recovery flow", () => {
       });
       harness.sessionState.cancellationRecovery = cancellationRecoveryFor(recovery);
       configureFailedGatewayList(harness);
+      vi.stubEnv("OPENSHELL_GATEWAY", "");
 
-      harness.captureOpenshellSpy.mockReturnValue({
-        status: 0,
-        output: "[]",
-        stdout: "[]",
-        stderr: "",
-      });
+      harness.captureOpenshellSpy
+        .mockReturnValueOnce({
+          status: 0,
+          output: "[]",
+          stdout: "[]",
+          stderr: "",
+        })
+        .mockReturnValue({
+          status: 0,
+          output: sandboxListJson(["survivor"]),
+          stdout: sandboxListJson(["survivor"]),
+          stderr: "",
+        });
 
-      await expect(harness.destroySandbox("alpha", { yes: true })).resolves.toBeUndefined();
+      await expect(
+        harness.destroySandbox("alpha", { yes: true, cleanupGateway: true }),
+      ).rejects.toThrow("process.exit(1)");
 
+      expect(harness.captureOpenshellSpy).toHaveBeenNthCalledWith(
+        1,
+        ["sandbox", "list", "-g", recovery.gatewayName, "--output", "json"],
+        expect.objectContaining({ replaceEnv: true }),
+      );
+      expect(harness.captureOpenshellSpy).toHaveBeenNthCalledWith(
+        2,
+        ["sandbox", "list", "-g", recovery.gatewayName],
+        expect.objectContaining({ replaceEnv: true }),
+      );
+      const initialProbeOptions = harness.captureOpenshellSpy.mock.calls[0]?.[1];
+      const finalProbeOptions = harness.captureOpenshellSpy.mock.calls[1]?.[1];
+      expect(initialProbeOptions?.env).not.toHaveProperty("OPENSHELL_GATEWAY");
+      expect(finalProbeOptions?.env).not.toHaveProperty("OPENSHELL_GATEWAY");
+      expect(harness.cleanupGatewaySpy).not.toHaveBeenCalled();
       expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
         ["gateway", "list", "-o", "json"],
         expect.anything(),
