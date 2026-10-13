@@ -3549,10 +3549,10 @@ Each JSON sandbox row reports `agent` as a string, never `null`.
 The row reports `openclaw` when the registry records no agent for the sandbox.
 This command reads the registry without gateway recovery, so it never reports `unknown`.
 For each listed sandbox, text output includes the configured inference provider and model.
-When session detection is available, an `Active sessions:` line reports the number of SSH and interactive OpenShell `connect` sessions, or `none`.
-The line is omitted when the session probe is unavailable.
 That route line is labeled `Inference (configured):`.
 An unavailable recorded provider or model appears as `unknown`.
+When session detection is available, an `Active sessions:` line reports the number of SSH and interactive OpenShell `connect` sessions, or `none`.
+The `Active sessions:` line is omitted when the session probe is unavailable.
 When onboarding records a browser-facing dashboard URL from `CHAT_UI_URL`, text output adds a `Dashboard URL:` line for that sandbox.
 The port suffix beside the sandbox name remains the recorded local forwarding port.
 For the default sandbox, an `Inference (live):` line also appears when the shared gateway route differs from the recorded route.

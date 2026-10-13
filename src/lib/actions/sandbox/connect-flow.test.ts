@@ -238,20 +238,14 @@ describe("connectSandbox flow", () => {
   });
 
   it("runs the DCode route probe through its managed runtime boundary (#6191)", async () => {
+    vi.stubEnv("OPENSHELL_GATEWAY", "ambient-sibling");
     const harness = createConnectHarness({
       agentName: "langchain-deepagents-code",
+      registryEntry: { gatewayName: "nemoclaw-8091", gatewayPort: 8091 },
       sessionAgent: {
         name: "langchain-deepagents-code",
         runtime: { kind: "terminal", interactive_command: "dcode", headless_command: "dcode -n" },
       },
-    });
-    const registry = requireDist("../../src/lib/state/registry.js");
-    registry.getSandbox.mockReturnValue({
-      name: "alpha",
-      agent: "langchain-deepagents-code",
-      provider: "nvidia-prod",
-      model: "nvidia/nemotron-3-super-120b-a12b",
-      gpuEnabled: false,
     });
     const responses = new Map([
       ["sandbox list", { status: 0, output: "alpha Ready" }],
@@ -285,7 +279,7 @@ describe("connectSandbox flow", () => {
         HOME: "/usr/local/lib/nemoclaw",
       },
       sandboxName: "alpha",
-      target: { kind: "selected" },
+      target: { kind: "named", gatewayName: "nemoclaw-8091" },
       timeoutMilliseconds: expect.any(Number),
       tty: false,
     });
@@ -297,10 +291,15 @@ describe("connectSandbox flow", () => {
           "-c",
           expect.stringContaining("/v1/chat/completions"),
         ],
-        target: { kind: "named", gatewayName: "nemoclaw" },
+        target: { kind: "named", gatewayName: "nemoclaw-8091" },
         timeoutMilliseconds: 95_000,
       }),
     );
+    expect(harness.startSandboxSessionSpy).toHaveBeenCalledWith({
+      kind: "connect",
+      sandboxName: "alpha",
+      target: { kind: "named", gatewayName: "nemoclaw-8091" },
+    });
     expect(harness.sandboxRunBufferedSpy.mock.invocationCallOrder.at(-1)!).toBeLessThan(
       harness.startSandboxSessionSpy.mock.invocationCallOrder[0]!,
     );
