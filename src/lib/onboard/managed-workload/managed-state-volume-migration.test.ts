@@ -17,7 +17,6 @@ import {
   removeManagedStateVolumes,
 } from "./managed-state-volumes";
 import { MANAGED_STATE_COPY_IMAGE } from "./managed-state-volume-copy";
-import { createManagedStateVolumeOnboardLifecycle } from "./onboard-orchestration";
 import { materializeSandboxCreatePlan, resolveSandboxCreateIntent } from "../sandbox-create-plan";
 import type { RuntimeProviderBundle } from "../runtime-provider/contract";
 
@@ -75,9 +74,36 @@ describe("retained managed volume migration", () => {
   );
 
   it.each(["docker", "podman"])(
-    "defers %s copying until materialization after source deletion",
+    "defers %s copying and retains source data with a custom gateway directory",
     async (providerId) => {
       const h = harness();
+      vi.stubEnv("HOME", h.stateDir);
+      vi.stubEnv("NEMOCLAW_GATEWAY_PORT", "19080");
+      vi.stubEnv("NEMOCLAW_OPENSHELL_GATEWAY_STATE_DIR", path.join(h.stateDir, "openshell"));
+      vi.resetModules();
+      const [{ createManagedStateVolumeOnboardLifecycle }, { REGISTRY_FILE }, destroy] =
+        await Promise.all([
+          import("./onboard-orchestration"),
+          import("../../state/registry/persistence"),
+          import("../../actions/sandbox/destroy-preflight"),
+        ]);
+      fs.mkdirSync(path.dirname(REGISTRY_FILE), { recursive: true });
+      fs.writeFileSync(
+        REGISTRY_FILE,
+        JSON.stringify({
+          sandboxes: {
+            alpha: {
+              name: "alpha",
+              agent: "openclaw",
+              gatewayName: "nemoclaw-19080",
+              gatewayPort: 19080,
+            },
+          },
+        }),
+      );
+      const authority = destroy.resolveSandboxDestroyRegistryAuthority("alpha");
+      h.context.stateDir = authority.stateDir;
+      expect(authority.stateDir).toBe(path.join(path.dirname(REGISTRY_FILE), "state"));
       h.context.providerId = providerId;
       h.attached.add(h.source.Name);
       const provider = {
@@ -94,7 +120,6 @@ describe("retained managed volume migration", () => {
       const lifecycle = createManagedStateVolumeOnboardLifecycle(
         { roots: h.input.roots, runtimeProvider: provider },
         {
-          migrationStateDir: h.stateDir,
           registerExitCleanup: () => () => {},
         },
       );
@@ -181,6 +206,15 @@ describe("retained managed volume migration", () => {
             ],
       );
       expect(managedStateVolumeMigrationPhase(h.root, h.context)).toBe("verified");
+      expect(
+        removeManagedStateVolumes(h.input, {
+          ...h.deps,
+          runtimeProvider: provider,
+          migrationStateDir: authority.stateDir,
+        }),
+      ).toEqual([{ status: "removed", retainedVolumeName: h.source.Name }]);
+      expect([...h.volumes.keys()]).toEqual([h.source.Name]);
+      expect(h.source.bytes).toBe("retained user state");
     },
   );
 

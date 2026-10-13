@@ -426,7 +426,7 @@ def _validate_payload(action: str, payload: dict[str, object]) -> None:
     }
     if action == "add" and hostname in host_aliases:
         raise ValueError(
-            "Authenticated MCP OpenShell host aliases are unavailable with OpenShell v0.0.116"
+            "Authenticated MCP OpenShell host aliases require an attested driver gateway address"
         )
     # Host preflight owns destination trust and binds every accepted endpoint to
     # exact OpenShell address pins. This in-sandbox check revalidates canonical
