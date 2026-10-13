@@ -679,7 +679,7 @@ export async function prepareSandboxDestroy(
     sandbox,
     sandboxConfirmedAbsent: sandboxPresence === "absent",
     sandboxPresence,
-    ...(selectedCaptureOpenshell ? { selectedCaptureOpenshell } : {}),
+    selectedCaptureOpenshell,
     ...(runtimeSelection ? { runtimeSelection } : {}),
   };
 }
