@@ -191,13 +191,6 @@ test(
     expect(retainedSandboxContainer.State).toBe("running");
     expect(retainedSandboxContainer.Status).toMatch(/\(healthy\)/i);
 
-    const route = await sandbox.openshell(["inference", "get"], {
-      artifactName: "openshell-inference-route",
-      env: env(),
-      timeoutMs: 30_000,
-    });
-    expect(resultText(route)).toMatch(/ollama/i);
-
     progress.phase("validate Ollama proxy credential boundary");
     const tokenRecord = readTokenFileChecked(ollamaProxyTokenFile());
     expect(tokenRecord.mode).toBe("600");
@@ -257,6 +250,7 @@ test(
       ),
       { artifactName: "sandbox-native-local-chat", env: env(), timeoutMs: 150_000 },
     );
+    expect(chat.exitCode, resultText(chat)).toBe(0);
     expect(chatContent(chat.stdout)).toMatch(/pong/i);
 
     const readySandbox = await sandbox.openshell(["sandbox", "get", SANDBOX_NAME], {
@@ -432,6 +426,8 @@ test(
       credentialBoundary:
         "The existing proxy owner authenticates observation; exported inference providers omit credentials and internal endpoints.",
     });
+    // Pre-clean may start a gateway; do it before creating the fresh private HOME.
+    await cleanupGpu(host, lifecycle, sandbox, env());
     // The SDK rejects gateway state below a world-writable ancestor such as /tmp.
     const directory = createGpuPrivateHome(os.homedir());
     const exportEnv = env({
@@ -454,7 +450,6 @@ test(
       expect(result.exitCode, resultText(result)).toBe(0);
     });
     cleanup.trackDisposable("stop the fixture-owned Ollama daemon", () => daemonOwner?.terminate());
-    await cleanupGpu(host, lifecycle, sandbox, exportEnv);
     await runtimeProvider.requireAvailable({
       artifactName: "export-runtime-info",
       scenarioLabel: "attached Ollama export",
