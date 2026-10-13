@@ -42,12 +42,38 @@ describe("destroy preflight runtime selection", () => {
     );
     expect(process.env.OPENSHELL_GATEWAY).toBe("foreign");
     expect(harness.runOpenshellSpy).toHaveBeenCalledWith(
-      ["sandbox", "list", "-o", "json"],
+      ["sandbox", "list", "-g", "nemoclaw-19080", "-o", "json"],
       expect.objectContaining(frozenOptions),
     );
     const selectionOptions = harness.runOpenshellSpy.mock.lastCall?.[1] as {
       env: NodeJS.ProcessEnv;
     };
     expect(selectionOptions.env).not.toHaveProperty("OPENSHELL_GATEWAY_ENDPOINT");
+  }, 30_000);
+
+  it("keeps destroy commands gateway-scoped across a concurrent gateway selection", async () => {
+    const harness = createDestroyHarness({ callThroughGatewaySelection: true });
+    const preflight = await harness.prepareSandboxDestroy("alpha");
+    harness.runOpenshellSpy.mockClear();
+
+    // Model another NemoClaw operation changing the process-wide selection
+    // after destroy preflight. Destroy's sandbox and provider commands must
+    // still name their recorded gateway explicitly.
+    vi.stubEnv("OPENSHELL_GATEWAY", "gateway-other");
+    expect(() => preflight.selectedRunOpenshell(["status"])).toThrow(
+      /Refusing to run unscoped OpenShell destroy command/u,
+    );
+    preflight.selectedRunOpenshell(["sandbox", "exec", "--name", "alpha", "--", "true"]);
+    preflight.selectedRunOpenshell(["sandbox", "provider", "detach", "alpha", "github"]);
+    preflight.selectedCaptureOpenshell?.(["sandbox", "list"]);
+
+    expect(harness.runOpenshellSpy.mock.calls.map(([args]) => args)).toEqual([
+      ["sandbox", "exec", "-g", "nemoclaw-19080", "--name", "alpha", "--", "true"],
+      ["sandbox", "provider", "detach", "-g", "nemoclaw-19080", "alpha", "github"],
+    ]);
+    expect(harness.captureOpenshellSpy).toHaveBeenCalledWith(
+      ["sandbox", "list", "-g", "nemoclaw-19080"],
+      expect.any(Object),
+    );
   }, 30_000);
 });

@@ -50,7 +50,11 @@ import {
 } from "../../state/registry/cross-port";
 
 export { listInferenceRouteOwnersAcrossGatewayRoots };
-import { type DestroyRunOpenshell, selectGatewayForSandboxDestroy } from "./destroy-gateway";
+import {
+  type DestroyRunOpenshell,
+  scopeSandboxDestroyOpenShellArgs,
+  selectGatewayForSandboxDestroy,
+} from "./destroy-gateway";
 import { classifyDestroySandboxPresence, type DestroySandboxPresence } from "./destroy-presence";
 import {
   getPersistedSandboxTargetGatewayName,
@@ -598,22 +602,25 @@ export async function prepareSandboxDestroy(
       `Refusing to destroy sandbox '${sandboxName}': recorded MCP gateway '${runtimeSelection.gatewayName}' does not match destroy gateway '${cleanupGatewayName}'.`,
     );
   }
+  const scopeDestroyCommand = (args: string[]): string[] =>
+    scopeSandboxDestroyOpenShellArgs(args, cleanupGatewayName, true);
   const selectedRunOpenshell: DestroyRunOpenshell = runtimeSelection
     ? (args, options = {}) =>
-        runOpenshell(args, {
+        runOpenshell(scopeDestroyCommand(args), {
           ...options,
           env: buildSelectedOpenShellSubprocessEnv(runtimeSelection),
           replaceEnv: true,
         })
-    : runOpenshell;
+    : (args, options = {}) => runOpenshell(scopeDestroyCommand(args), options);
   const selectedCaptureOpenshell = runtimeSelection
     ? (args: string[], options: Record<string, unknown> = {}) =>
-        captureOpenshell(args, {
+        captureOpenshell(scopeDestroyCommand(args), {
           ...options,
           env: buildSelectedOpenShellSubprocessEnv(runtimeSelection),
           replaceEnv: true,
         })
-    : undefined;
+    : (args: string[], options: Record<string, unknown> = {}) =>
+        captureOpenshell(scopeDestroyCommand(args), options);
   if (identityFreeRecovery && !runtimeSelection) {
     if (process.env.OPENSHELL_GATEWAY_ENDPOINT?.trim()) {
       throw new Error(

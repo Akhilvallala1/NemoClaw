@@ -8,6 +8,7 @@ import {
   createCliOpenShellGatewayLifecycleFromRunner,
   createCliOpenShellGatewayLifecycleFromRunnerWithoutAmbientGateway,
 } from "../../adapters/openshell/gateway-lifecycle-cli";
+import { scopeGatewayOpenshellArgs } from "../../adapters/openshell/gateway-scope";
 import type { OpenShellGatewayLifecycle } from "../../adapters/openshell/gateway-lifecycle";
 import { dockerRemoveVolumesByPrefix } from "../../adapters/docker/volume";
 import { OPENSHELL_HEAVY_TIMEOUT_MS } from "../../adapters/openshell/timeouts";
@@ -43,6 +44,18 @@ export type DestroyRunOpenshell = (
   args: string[],
   opts?: Record<string, unknown>,
 ) => { error?: Error; status: number | null; stdout?: string; stderr?: string };
+
+export function scopeSandboxDestroyOpenShellArgs(
+  args: string[],
+  gatewayName: string,
+  allowGatewayLifecycle = false,
+): string[] {
+  if (allowGatewayLifecycle && args[0] === "gateway") return args;
+  if (!["sandbox", "provider", "inference"].includes(args[0] ?? "")) {
+    throw new Error(`Refusing to run unscoped OpenShell destroy command '${args[0] ?? ""}'.`);
+  }
+  return scopeGatewayOpenshellArgs(args, gatewayName);
+}
 
 export const SANDBOX_DESTROY_TIMEOUT_MS = OPENSHELL_HEAVY_TIMEOUT_MS;
 

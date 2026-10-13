@@ -856,11 +856,13 @@ describe("destroySandbox flow", () => {
       const harness = createDestroyHarness();
 
       await expect(harness.destroySandbox("alpha", options)).resolves.toBeUndefined();
-
       expect(harness.promptSpy).not.toHaveBeenCalled();
-      expect(harness.cleanupGatewaySpy.mock.calls).toEqual(
-        cleanupExpected ? [["nemoclaw-19080", harness.runOpenshellSpy]] : [],
-      );
+      expect(
+        harness.cleanupGatewaySpy.mock.calls.map(([gatewayName, runOpenshell]) => [
+          gatewayName,
+          typeof runOpenshell,
+        ]),
+      ).toEqual(cleanupExpected ? [["nemoclaw-19080", "function"]] : []);
     },
   );
 
@@ -951,7 +953,7 @@ describe("destroySandbox flow", () => {
 
     expect(harness.selectGatewaySpy).toHaveBeenCalledOnce();
     expect(harness.runOpenshellSpy).toHaveBeenCalledWith(
-      ["sandbox", "list", "-o", "json"],
+      ["sandbox", "list", "-g", "nemoclaw-19080", "-o", "json"],
       expect.any(Object),
     );
     expect(harness.events).toEqual([]);
