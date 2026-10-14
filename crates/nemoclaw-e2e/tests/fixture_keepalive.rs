@@ -68,6 +68,33 @@ async fn fixture_keeps_a_connection_open_between_requests_until_it_is_dropped() 
 }
 
 #[tokio::test]
+async fn fixture_answers_requests_sent_together_in_one_write_in_order() {
+    let fixture = Fixture::start_tcp(|request| {
+        let mut answer = format!("{} ", request.path).into_bytes();
+        answer.extend_from_slice(&request.body);
+        Some((200, answer))
+    })
+    .await;
+    let address = fixture.endpoint.strip_prefix("http://").unwrap().to_owned();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut stream = TcpStream::connect(&address).await.unwrap();
+        // One write, so the fixture's first read can return both requests;
+        // the second must not be lost with the first one's read buffer.
+        stream
+            .write_all(
+                b"POST /first HTTP/1.1\r\nContent-Length: 3\r\n\r\none\
+                  POST /second HTTP/1.1\r\nContent-Length: 3\r\n\r\ntwo",
+            )
+            .await
+            .unwrap();
+        assert_eq!(response(&mut stream).await.1, "/first one");
+        assert_eq!(response(&mut stream).await.1, "/second two");
+    })
+    .await
+    .expect("the fixture answered both requests");
+}
+
+#[tokio::test]
 async fn dropped_fixture_does_not_answer_a_request_waiting_on_a_kept_connection() {
     let served = Arc::new(Mutex::new(Vec::new()));
     let recorded = served.clone();

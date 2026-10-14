@@ -5,7 +5,7 @@
 // reuse does not create a crate dependency cycle. Each includer uses a subset.
 #![allow(dead_code)]
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 pub struct Request {
     pub method: String,
     pub path: String,
@@ -25,10 +25,11 @@ impl Request {
 /// connection without a response when the handler returns `None`. A
 /// connection stays open for further requests until the client closes it or
 /// sends `Connection: close`; the fixture also closes it after a 1xx, 204 or
-/// 304 status and after answering `HEAD`. Request bodies must be framed by
-/// `Content-Length`. The fixture never switches protocols: it answers an
-/// `Upgrade` request, such as a Kubernetes exec, like any other request.
-/// Dropping the fixture closes every connection.
+/// 304 status and after answering `HEAD`. Requests that a client sends before
+/// the previous answer arrives are answered in order. Request bodies must be
+/// framed by `Content-Length`. The fixture never switches protocols: it
+/// answers an `Upgrade` request, such as a Kubernetes exec, like any other
+/// request. Dropping the fixture closes every connection.
 pub struct Fixture {
     pub endpoint: String,
     _directory: Option<tempfile::TempDir>,
@@ -164,15 +165,20 @@ impl<H: FnMut(Request) -> Option<(u16, Vec<u8>)> + Send + 'static> Connections<H
 /// Answer requests on one connection until the client closes it, a request or
 /// response is the connection's last, or the handler returns `None`.
 async fn serve(
-    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    stream: impl AsyncRead + AsyncWrite + Unpin,
     handler: Arc<Mutex<impl FnMut(Request) -> Option<(u16, Vec<u8>)>>>,
 ) {
+    // Read through a buffer, not a byte per socket read. One buffer serves the
+    // whole connection: a read can return the start of the next request,
+    // which a buffer dropped after this request would lose. Writes bypass the
+    // buffer.
+    let mut stream = BufReader::new(stream);
     loop {
         let mut bytes = Vec::new();
         while !bytes.ends_with(b"\r\n\r\n") {
-            match stream.read_u8().await {
-                Ok(byte) => bytes.push(byte),
-                Err(_) => return,
+            match stream.read_until(b'\n', &mut bytes).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
             }
         }
         let header = String::from_utf8(bytes).unwrap();
