@@ -15,11 +15,8 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const powershell = process.platform === "win32" ? "pwsh.exe" : "pwsh";
-export const skipPreviewProcesses =
-  process.platform !== "win32" &&
-  spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
-    timeout: 10_000,
-  }).status !== 0;
+// The extracted workflow uses Windows paths and the Windows transfer contract.
+export const skipPreviewProcesses = process.platform !== "win32";
 export const previewSources = () => readWindowsInstallerWorkflowSources(repoRoot);
 export function previewStep(steps: WorkflowStep[], name: string) {
   const found = steps.find((step) => step.name === name);
