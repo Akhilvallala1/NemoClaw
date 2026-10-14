@@ -8,6 +8,7 @@ import { test } from "node:test";
 import {
   canonicalPathFromHandle,
   resolveMissingSqlitePath,
+  workspacePathFromHandle,
   type CanonicalPathApi,
 } from "./sqlite-canonical-path.mts";
 import { compileSqliteCanonicalRuntime } from "./sqlite-canonical-path-build.mts";
@@ -21,9 +22,10 @@ function nativeFixture(value = "\\Device\\HarddiskVolume4\\state\\agent.sqlite")
       return 42;
     },
     invalid: () => false,
-    finalPath: (_handle, output) => {
-      output.write(value, "utf16le");
-      return value.length;
+    finalPath: (_handle, output, volume = 2) => {
+      const name = volume === 4 ? value.replace(/^\\Device\\[^\\]+/u, "") : value;
+      output.write(name, "utf16le");
+      return name.length;
     },
     close: () => {
       closed += 1;
@@ -162,4 +164,62 @@ test("SQLite adaptation refuses a changed pinned source and leaves other modules
     /reviewed SQLite/u,
   );
   assert.equal(compileSqliteCanonicalRuntime("dist/unrelated.js", "unchanged"), "unchanged");
+});
+
+test("workspace canonical adaptation refuses changed upstream permission-root code", () => {
+  assert.throws(
+    () => compileSqliteCanonicalRuntime("dist/builtin-openclaw-B_H1oNzF.js", "changed"),
+    /reviewed SQLite/u,
+  );
+});
+
+test("workspace roots use volume-relative names only after verifying the drive handle", () => {
+  const fixture = nativeFixture("\\Device\\HarddiskVolume4\\workspace");
+  assert.equal(workspacePathFromHandle("C:\\alias", fixture.api), "C:\\workspace");
+  assert.deepEqual(fixture.counts(), { opened: 3, closed: 3 });
+  fixture.api.open = (pathname) => pathname;
+  fixture.api.invalid = (handle) => handle !== "C:\\junction" && handle !== "D:\\workspace";
+  assert.equal(workspacePathFromHandle("C:\\junction", fixture.api), "D:\\workspace");
+});
+
+test("workspace roots propagate original access denial and reject inaccessible drive candidates", () => {
+  const fixture = nativeFixture();
+  fixture.api.invalid = () => true;
+  assert.throws(() => workspacePathFromHandle("C:\\workspace", fixture.api), { code: "EPERM" });
+  let opened = 0;
+  fixture.api.open = () => ++opened;
+  fixture.api.invalid = (handle) => Number(handle) > 2;
+  assert.throws(() => workspacePathFromHandle("C:\\workspace", fixture.api), { code: "EIO" });
+  assert.equal(opened, 28);
+});
+
+test("workspace drive mapping rejects a changed target identity", () => {
+  const fixture = nativeFixture("\\Device\\HarddiskVolume4\\workspace");
+  let calls = 0;
+  fixture.api.finalPath = (_handle, output, volume = 2) => {
+    calls += 1;
+    const value =
+      volume === 4
+        ? "\\workspace"
+        : calls === 1
+          ? "\\Device\\HarddiskVolume4\\workspace"
+          : "\\Device\\HarddiskVolume4\\elsewhere";
+    output.write(value, "utf16le");
+    return value.length;
+  };
+  assert.throws(() => workspacePathFromHandle("C:\\workspace", fixture.api), { code: "EIO" });
+  assert.deepEqual(fixture.counts(), { opened: 28, closed: 28 });
+});
+
+test("volume-relative workspace names reject an unexpected namespace", () => {
+  const fixture = nativeFixture();
+  const original = fixture.api.finalPath;
+  for (const value of ["C:\\workspace", "\\\\server\\workspace", "\\workspace\0tail"]) {
+    fixture.api.finalPath = (handle, output, volume) => {
+      if (volume !== 4) return original(handle, output, volume);
+      output.write(value, "utf16le");
+      return value.length;
+    };
+    assert.throws(() => workspacePathFromHandle("C:\\workspace", fixture.api), { code: "EIO" });
+  }
 });

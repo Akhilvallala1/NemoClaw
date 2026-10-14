@@ -4,7 +4,12 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import type { PluginBuild } from "esbuild";
 
-const sources: Record<string, { hash: string; calls: number }> = {
+const sources: Record<string, { hash: string; calls: number; workspace?: boolean }> = {
+  "dist/builtin-openclaw-B_H1oNzF.js": {
+    hash: "18772e63fa42f6e774b692fee3e2ceb394870c03b9caaec02b155728bb75de77",
+    calls: 0,
+    workspace: true,
+  },
   "dist/openclaw-agent-db-maintenance-wTIy-jt-.js": {
     hash: "cb74fbb66177d98bfd2ad3a01362a0973db5d77af440875ac402bd2cafdc4521",
     calls: 2,
@@ -28,6 +33,16 @@ export function compileSqliteCanonicalRuntime(relative: string, text: string, or
   if ([...text.matchAll(expression)].length !== expected.calls)
     throw new Error("The SQLite canonical-path call boundary changed.");
   let result = text.replace(expression, "__nemoSqliteCanonicalPath(");
+  if (expected.workspace) {
+    const workspaceLookup = "await fs$1.realpath(resolvedWorkspace)";
+    if (result.split(workspaceLookup).length !== 2)
+      throw new Error("The workspace canonical-path call boundary changed.");
+    // File-tool guards require the handle-resolved root in the drive-letter namespace.
+    result = result.replace(
+      workspaceLookup,
+      '(process.platform === "win32" ? __nemoWorkspaceCanonicalPath(resolvedWorkspace) : await fs$1.realpath(resolvedWorkspace))',
+    );
+  }
   const marker = "function resolveDanglingSymlinkTargetPath(lexicalPath) {";
   if (relative === "dist/openclaw-agent-db-maintenance-wTIy-jt-.js") {
     if (result.split(marker).length !== 2)
@@ -40,8 +55,9 @@ export function compileSqliteCanonicalRuntime(relative: string, text: string, or
   }
   return (
     `import { createRequire as __nemoSqliteRequire } from "node:module";
-import { createSqliteCanonicalPath, resolveMissingSqlitePath as __nemoResolveMissingSqlitePath } from "nemoclaw:sqlite-canonical-path";
+import { createSqliteCanonicalPath, createWorkspaceCanonicalPath, resolveMissingSqlitePath as __nemoResolveMissingSqlitePath } from "nemoclaw:sqlite-canonical-path";
 const __nemoSqliteCanonicalPath = createSqliteCanonicalPath(() => __nemoSqliteRequire(import.meta.url)("koffi"));
+const __nemoWorkspaceCanonicalPath = createWorkspaceCanonicalPath(() => __nemoSqliteRequire(import.meta.url)("koffi"));
 ` + result
   );
 }
