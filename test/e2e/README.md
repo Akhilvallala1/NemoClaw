@@ -242,8 +242,23 @@ An approval comment refreshes only the commit status. If the native hash check
 failed before approval, rerun that job after approval.
 An interrupted refresh remains pending or fails; it cannot reuse an earlier success.
 
-This does not yet extend the protected runtime's source projection, approve a new
-SDK dependency graph, qualify Pi, or add ARM64 candidate catalogs. A data-admission
+For a new OpenShell TypeScript SDK version, the same approval also binds the root
+and plugin manifests, lockfiles, and SDK archive identity in `ci/reviewed-npm-audit.json`.
+The trusted producer accepts only official, integrity-pinned SDK archives. It keeps
+the base registry, npm, audit, and exception policy; candidate policy cannot relax them.
+The producer uses the base checkout, not candidate code, and disables npm scripts.
+Its package credential is available only during the package step.
+
+PR CI uses the existing `main` bundle for SDK versions already trusted by the base.
+A new version uses an artifact bound to the PR, candidate commit, base commit, and
+approval record. The locator checks the producing workflow and event. Each trusted
+installer then rechecks approval, local manifests and locks, and archive integrity.
+The API credential is limited to trusted preparation and removed before npm runs.
+If CI starts before the approved artifact exists, wait for the admission workflow's
+SDK job, then rerun CI. Changed or revoked approval cannot reuse the older artifact.
+
+This does not yet extend the protected runtime's source projection, permit a new
+SDK graph on protected E2E hosts, qualify Pi, or add ARM64 candidate catalogs. A data-admission
 comment is not permission to execute arbitrary candidate code on a protected
 host. Those boundaries require their own supported implementation and validation;
 passing the hash check is not full E2E qualification.

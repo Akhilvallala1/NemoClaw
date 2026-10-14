@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 import { readYaml, type WorkflowJob } from "../../helpers/e2e-workflow-contract";
 
 const workflow = readYaml<{ jobs: Record<string, WorkflowJob> }>(
@@ -14,6 +15,43 @@ const finish = steps.find((step) => step.name === "Report current candidate upgr
 const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor;
 const head = "a".repeat(40);
 const base = "b".repeat(40);
+
+function packagingFixture() {
+  const step = workflow.jobs["candidate-sdk-package"]!.steps!.find(
+    (item) => item.id === "package",
+  )!;
+  const script = step
+    .run!.split("\n")
+    .filter((line) => !line.startsWith("import ") && line !== "NODE" && !line.startsWith("node "))
+    .join("\n");
+  const append = vi.fn();
+  const request = vi.fn(async () => ({ authenticated: true }));
+  const packageSdk = vi.fn(
+    async (_output: string, _identity: unknown, fetch: (path: string) => Promise<unknown>) => {
+      await fetch("/repos/NVIDIA/NemoClaw/pulls/123");
+      return { required: true, bundleName: "approved-bundle", artifactName: "sdk.tgz" };
+    },
+  );
+  const run = () =>
+    new AsyncFunction(
+      "appendFileSync",
+      "join",
+      "packageCandidateOpenShellSdkIfRequired",
+      "githubRequest",
+      "process",
+      script,
+    )(append, join, packageSdk, request, {
+      env: {
+        UPGRADE_PR_NUMBER: "123",
+        CANDIDATE_SHA: head,
+        UPGRADE_BASE_SHA: base,
+        RUNNER_TEMP: "/fixture-temp",
+        GITHUB_OUTPUT: "/fixture-output",
+        GITHUB_TOKEN: "synthetic-read-token",
+      },
+    });
+  return { append, request, packageSdk, run };
+}
 
 function fixture() {
   const pr = {
@@ -62,6 +100,38 @@ function fixture() {
 }
 
 describe("candidate upgrade admission status", () => {
+  it("passes captured commits and the API credential to the trusted package producer", async () => {
+    const f = packagingFixture();
+    await f.run();
+    expect(f.packageSdk).toHaveBeenCalledExactlyOnceWith(
+      "/fixture-temp/candidate-sdk",
+      { prNumber: 123, candidateSha: head, baseSha: base },
+      expect.any(Function),
+    );
+    expect(f.request).toHaveBeenCalledExactlyOnceWith(
+      "/repos/NVIDIA/NemoClaw/pulls/123",
+      "synthetic-read-token",
+    );
+    expect(f.append.mock.calls).toEqual([
+      ["/fixture-output", "required=true\n"],
+      ["/fixture-output", "bundle_name=approved-bundle\nartifact_name=sdk.tgz\n"],
+    ]);
+  });
+
+  it("does not release upload outputs when the package producer rejects admission", async () => {
+    const f = packagingFixture();
+    f.packageSdk.mockRejectedValueOnce(new Error("revoked admission"));
+    await expect(f.run()).rejects.toThrow("revoked admission");
+    expect(f.append).not.toHaveBeenCalled();
+  });
+
+  it("does not request a candidate upload for a trusted SDK", async () => {
+    const f = packagingFixture();
+    f.packageSdk.mockResolvedValueOnce({ required: false, bundleName: "", artifactName: "" });
+    await f.run();
+    expect(f.append).toHaveBeenCalledExactlyOnceWith("/fixture-output", "required=false\n");
+  });
+
   it("does not admit a PR closed during verification", async () => {
     const f = fixture();
     await f.start();

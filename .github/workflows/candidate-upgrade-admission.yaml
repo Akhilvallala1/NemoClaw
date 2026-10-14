@@ -24,6 +24,10 @@ jobs:
       contents: read
       pull-requests: read
       statuses: write
+    outputs:
+      pr_number: ${{ steps.identity.outputs.pr_number }}
+      head_sha: ${{ steps.identity.outputs.head_sha }}
+      base_sha: ${{ steps.identity.outputs.base_sha }}
     steps:
       - name: Invalidate candidate upgrade admission
         id: identity
@@ -89,3 +93,55 @@ jobs:
               description: passed ? "Current candidate upgrade admission passed" : "Upgrade admission failed or did not complete",
               target_url: context.serverUrl + "/" + context.repo.owner + "/" + context.repo.repo + "/actions/runs/" + context.runId,
             });
+
+  candidate-sdk-package:
+    needs: candidate-upgrade-admission
+    if: ${{ needs.candidate-upgrade-admission.outputs.head_sha != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      packages: read
+    steps:
+      - name: Check out trusted SDK producer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: NVIDIA/NemoClaw
+          ref: ${{ needs.candidate-upgrade-admission.outputs.base_sha }}
+          persist-credentials: false
+      - name: Set up trusted package runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          registry-url: https://npm.pkg.github.com
+          scope: "@nvidia"
+      - name: Install reviewed npm
+        uses: ./.github/actions/setup-reviewed-npm
+      - name: Package a newly admitted SDK
+        id: package
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
+          UPGRADE_PR_NUMBER: ${{ needs.candidate-upgrade-admission.outputs.pr_number }}
+          CANDIDATE_SHA: ${{ needs.candidate-upgrade-admission.outputs.head_sha }}
+          UPGRADE_BASE_SHA: ${{ needs.candidate-upgrade-admission.outputs.base_sha }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { packageCandidateOpenShellSdkIfRequired } from './scripts/checks/package-openshell-sdk-for-pr.mts';
+          import { githubRequest } from './tools/e2e/base-image-publication.mts';
+          const identity = { prNumber: Number(process.env.UPGRADE_PR_NUMBER), candidateSha: process.env.CANDIDATE_SHA, baseSha: process.env.UPGRADE_BASE_SHA };
+          const result = await packageCandidateOpenShellSdkIfRequired(join(process.env.RUNNER_TEMP, 'candidate-sdk'), identity, path => githubRequest(path, process.env.GITHUB_TOKEN));
+          appendFileSync(process.env.GITHUB_OUTPUT, `required=${result.required}\n`);
+          if (result.required) appendFileSync(process.env.GITHUB_OUTPUT, `bundle_name=${result.bundleName}\nartifact_name=${result.artifactName}\n`);
+          NODE
+      - name: Upload the verified candidate SDK
+        if: steps.package.outputs.required == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.package.outputs.bundle_name }}
+          path: ${{ runner.temp }}/candidate-sdk/${{ steps.package.outputs.artifact_name }}
+          if-no-files-found: error
+          retention-days: 7

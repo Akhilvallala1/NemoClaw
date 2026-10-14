@@ -4,11 +4,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { packageReviewedOpenShellSdk } from "../../scripts/checks/package-openshell-sdk-for-pr.mts";
 import type { ReviewedNpmArchiveRequest } from "../../scripts/lib/reviewed-npm-archive.mts";
+import { sparseSdkWorkflowCheckout } from "../support/candidate-openshell-sdk.ts";
 
 const roots: string[] = [];
 
@@ -34,6 +36,48 @@ function fixture() {
 }
 
 describe("reviewed OpenShell SDK transition packaging", () => {
+  it("loads the ordinary producer from the main workflow sparse checkout", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-main-sdk-sparse-"));
+    roots.push(root);
+    sparseSdkWorkflowCheckout(root, ".github/workflows/main.yaml", "package-openshell-sdk");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "const producer = await import('./scripts/checks/package-openshell-sdk-for-pr.mts'); console.log(typeof producer.packageReviewedOpenShellSdk)",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("function");
+  });
+
+  it("loads the ordinary consumer from the PR workflow sparse checkouts", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-pr-sdk-sparse-"));
+    roots.push(root);
+    sparseSdkWorkflowCheckout(root, ".github/workflows/pr.yaml", "openshell-sdk-package");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "const consumer = await import('./scripts/checks/prepare-ci-npm-install.mts'); console.log(typeof consumer.prepareCiNpmInstall)",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("function");
+  });
+
   it("fails closed when replacement packaging lacks replacement metadata", () => {
     const source = fixture();
     const configPath = path.resolve("ci/reviewed-npm-audit.json");

@@ -818,6 +818,7 @@ jobs:
             scripts/check-dist-sourcemaps.mts
             scripts/audit-reviewed-npm-graph.mts
             scripts/checks/prepare-ci-npm-install.mts
+            scripts/lib/reviewed-ci-npm-install.mts
             scripts/lib/openclaw-npm-remediation.mts
             scripts/lib/reviewed-npm-archive.mts
             scripts/lib/reviewed-npm-cache.mts
