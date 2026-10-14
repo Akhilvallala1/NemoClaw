@@ -372,6 +372,9 @@ function mapOpenClawProfile(
 
   const configurationEnvironment: MutableEnvironment = {
     ...commonConfigurationEnvironment(profile),
+    ...(profile.inference?.nativeCustomCredentialEnv
+      ? { NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: profile.inference.nativeCustomCredentialEnv }
+      : {}),
     ...messagingEnvironment(profile, "openclaw"),
     CHAT_UI_URL: profile.dashboard.url,
     NEMOCLAW_AGENT_HEARTBEAT_EVERY: profile.agentConfig.heartbeatEvery ?? "",

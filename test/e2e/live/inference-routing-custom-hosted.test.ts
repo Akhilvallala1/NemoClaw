@@ -98,6 +98,7 @@ async function waitForNativeCredentialProjection(
 interface NativeTerminalCase {
   agent: "langchain-deepagents-code" | "pi";
   environment: (artifacts: E2ETargetFixtures["artifacts"]) => Promise<NodeJS.ProcessEnv>;
+  onboardArgs: (env: NodeJS.ProcessEnv) => string[];
   command: (model: string) => string[];
   responseText: (stdout: string) => string;
 }
@@ -106,6 +107,7 @@ const NATIVE_TERMINAL_CASES: Record<"dcode" | "pi", NativeTerminalCase> = {
   dcode: {
     agent: "langchain-deepagents-code",
     environment: async () => buildAvailabilityProbeEnv(),
+    onboardArgs: () => [],
     command: () => ["dcode", "-n", "Reply with the fixture response.", "--json"],
     responseText: (stdout) => {
       const response = JSON.parse(stdout).data;
@@ -129,6 +131,11 @@ const NATIVE_TERMINAL_CASES: Record<"dcode" | "pi", NativeTerminalCase> = {
       env.NEMOCLAW_E2E_MANAGED_IMAGE_REVISION = contract.source.revision;
       return env;
     },
+    onboardArgs: (env) => [
+      "--temp-managed-runtime",
+      "--temp-managed-runtime-catalog",
+      env.NEMOCLAW_E2E_MANAGED_IMAGE_CATALOG!,
+    ],
     command: (model) => [
       "pi",
       "--no-approve",
@@ -184,6 +191,7 @@ async function verifyFreshNativeTerminalEndpoint(
     `tc-inf-11-onboard-native-${label}`,
     progress,
     ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS,
+    selected.onboardArgs(env),
   );
   expectOnboardSuccess(onboard, `TC-INF-11 fresh native ${agent} onboard`);
   const receipt = normalizeNativeCustomProviderAttachment(

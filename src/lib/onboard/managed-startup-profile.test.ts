@@ -535,7 +535,15 @@ describe("managed startup profile", () => {
   });
 
   it.each([
-    OPENCLAW_PROFILE,
+    {
+      ...OPENCLAW_PROFILE,
+      inference: {
+        ...OPENCLAW_PROFILE.inference,
+        upstreamProvider: "compatible-endpoint",
+        routedBaseUrl: "https://api.example.com/v1",
+        nativeCustomCredentialEnv: "COMPATIBLE_API_KEY",
+      },
+    },
     {
       ...HERMES_PROFILE,
       inference: {

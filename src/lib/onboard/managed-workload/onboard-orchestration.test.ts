@@ -339,11 +339,13 @@ describe("managed workload onboard orchestration", () => {
   });
 
   it.each([
-    ["compatible-endpoint", "COMPATIBLE_API_KEY"],
-    ["compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
+    ["hermes", "compatible-endpoint", "COMPATIBLE_API_KEY"],
+    ["openclaw", "compatible-endpoint", "COMPATIBLE_API_KEY"],
+    ["hermes", "compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
+    ["openclaw", "compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
   ] as const)(
-    "derives managed Hermes %s authority from its attached route",
-    async (provider, key) => {
+    "derives managed %s %s authority from its attached route",
+    async (agent, provider, key) => {
       const prepared = await prepareNativeCustomProfile({
         sandboxName: "hermes-native",
         provider,
@@ -364,8 +366,8 @@ describe("managed workload onboard orchestration", () => {
           tempManagedRuntime: false,
           stockManagedRuntime: true,
           tempManagedRuntimeCatalog: null,
-          agentName: "hermes",
-          legacyDockerfilePath: "agents/hermes/Dockerfile",
+          agentName: agent,
+          legacyDockerfilePath: agent === "openclaw" ? "Dockerfile" : "agents/hermes/Dockerfile",
           customDockerfilePath: null,
           rootDir: releaseRoot,
           model: "test-model",

@@ -731,13 +731,13 @@ describe("buildManagedStartupProfile", () => {
         ...input,
         inference: { ...inference, upstreamProvider: "compatible-anthropic-endpoint" },
       }),
-    ).toThrow(/matching Hermes native route/);
+    ).toThrow(/matching native custom route/);
     expect(() =>
       buildManagedStartupProfile({
         ...input,
         inference: { ...inference, routedBaseUrl: "https://inference.local/v1" },
       }),
-    ).toThrow(/matching Hermes native route/);
+    ).toThrow(/matching native custom route/);
   });
 
   it("preserves the trusted Hermes E2E profile bytes without native authority", () => {
@@ -751,7 +751,7 @@ describe("buildManagedStartupProfile", () => {
   });
 
   it.each(["FOREIGN_KEY", "COMPATIBLE_API_KEY"])(
-    "rejects %s when no matching Hermes native route is attached",
+    "rejects %s when no matching native custom route is attached",
     (nativeCustomCredentialEnv) => {
       const input = hermesInput();
       expect(() =>
@@ -759,7 +759,7 @@ describe("buildManagedStartupProfile", () => {
           ...input,
           inference: { ...input.inference!, nativeCustomCredentialEnv },
         }),
-      ).toThrow(/matching Hermes native route/);
+      ).toThrow(/matching native custom route/);
     },
   );
 

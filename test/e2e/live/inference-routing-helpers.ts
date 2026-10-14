@@ -264,9 +264,10 @@ async function onboardSandbox(
   artifactName: string,
   progress: RawRunOptions["progress"],
   timeoutMs = 10 * 60_000,
+  extraArgs: readonly string[] = [],
 ): Promise<RawRunResult> {
   clearOnboardState();
-  return runNemoclawCli(ONBOARD_ARGS, {
+  return runNemoclawCli([...ONBOARD_ARGS, ...extraArgs], {
     artifactName,
     artifacts,
     env: onboardEnv({

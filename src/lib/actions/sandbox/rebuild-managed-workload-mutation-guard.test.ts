@@ -29,81 +29,100 @@ const handoff = {
 } as managedWorkload.ManagedWorkloadRebuildHandoff;
 
 describe("managed workload rebuild mutation guard", () => {
-  it("refreshes Hermes native custom route authority on rebuild and removes it for a shared route", async () => {
-    const previousProfile = managedStartupE2eProfile("hermes");
-    const catalogHandoff = {
+  it.each([
+    {
       agent: "hermes",
-      previousProfile,
-      previousReceipt: { credentialProxyReplayRequired: false },
-      corporateCa: null,
-    } as unknown as managedWorkload.ManagedWorkloadRebuildCatalogHandoff;
-    const recreateOptions = {
-      controlUiPort: 29_443,
-      toolDisclosure: "progressive",
-      dcodeAutoApprovalMode: "disabled",
-      observabilityEnabled: false,
-    } as unknown as RebuildRecreateOnboardOpts;
-    const attachmentFor = async (
-      provider: "compatible-endpoint" | "compatible-anthropic-endpoint",
-      endpointUrl: string,
-    ) => {
-      const prepared = await prepareNativeCustomProfile({
-        sandboxName: "alpha",
-        provider,
-        endpointUrl,
-        api: "openai-completions",
-        lookup: async () => [{ address: "8.8.8.8", family: 4 }],
-      });
-      return customAttachmentFromPrepared(prepared, {
-        schemaVersion: 1,
-        profileId: prepared.profile.id,
-        providerName: prepared.providerName,
-        providerId: "native-provider-id",
-      });
-    };
-    const replacement = (
-      provider: "compatible-endpoint" | "compatible-anthropic-endpoint",
-      nativeCustomProviderAttachment?: Awaited<ReturnType<typeof attachmentFor>>,
-      prior = previousProfile,
-    ) =>
-      prepareManagedRebuildProfileHandoff({
-        catalogHandoff: { ...catalogHandoff, previousProfile: prior },
-        targetConfig: {
-          agentDefinition: {},
-          resumeConfig: {
-            provider,
-            model: "test-model",
-            preferredInferenceApi:
-              provider === "compatible-endpoint" ? "openai-completions" : "anthropic-messages",
-            nativeCustomProviderAttachment,
-          },
-          durableConfig: { webSearchConfig: null },
-          hermesToolGateways: [],
-        } as unknown as RebuildTargetConfig,
-        recreateOptions,
-        messagingPlan: null,
-        environment: {},
-      }).replacementProfile.profile;
+      anthropicApi: "openai-completions",
+      anthropicBaseUrl: "https://messages.example.com/v1",
+    },
+    {
+      agent: "openclaw",
+      anthropicApi: "anthropic-messages",
+      anthropicBaseUrl: "https://messages.example.com",
+    },
+  ] as const)(
+    "refreshes $agent native custom route authority on rebuild and removes it for a shared route",
+    async ({ agent, anthropicApi, anthropicBaseUrl }) => {
+      const previousProfile = managedStartupE2eProfile(agent);
+      vi.spyOn(managedRebuildProfileDependencies, "resolveContextWindowForModel").mockReturnValue(
+        131_072,
+      );
+      const catalogHandoff = {
+        agent,
+        previousProfile,
+        previousReceipt: { credentialProxyReplayRequired: false },
+        corporateCa: null,
+      } as unknown as managedWorkload.ManagedWorkloadRebuildCatalogHandoff;
+      const recreateOptions = {
+        controlUiPort: 29_443,
+        toolDisclosure: "progressive",
+        dcodeAutoApprovalMode: "disabled",
+        observabilityEnabled: false,
+      } as unknown as RebuildRecreateOnboardOpts;
+      const attachmentFor = async (
+        provider: "compatible-endpoint" | "compatible-anthropic-endpoint",
+        endpointUrl: string,
+        api = "openai-completions",
+      ) => {
+        const prepared = await prepareNativeCustomProfile({
+          sandboxName: "alpha",
+          provider,
+          endpointUrl,
+          api,
+          lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+        });
+        return customAttachmentFromPrepared(prepared, {
+          schemaVersion: 1,
+          profileId: prepared.profile.id,
+          providerName: prepared.providerName,
+          providerId: "native-provider-id",
+        });
+      };
+      const replacement = (
+        provider: "compatible-endpoint" | "compatible-anthropic-endpoint",
+        nativeCustomProviderAttachment?: Awaited<ReturnType<typeof attachmentFor>>,
+        prior = previousProfile,
+      ) =>
+        prepareManagedRebuildProfileHandoff({
+          catalogHandoff: { ...catalogHandoff, previousProfile: prior },
+          targetConfig: {
+            agentDefinition: {},
+            resumeConfig: {
+              provider,
+              model: "test-model",
+              preferredInferenceApi:
+                provider === "compatible-endpoint" ? "openai-completions" : "anthropic-messages",
+              nativeCustomProviderAttachment,
+            },
+            durableConfig: { webSearchConfig: null },
+            hermesToolGateways: [],
+          } as unknown as RebuildTargetConfig,
+          recreateOptions,
+          messagingPlan: null,
+          environment: {},
+        }).replacementProfile.profile;
 
-    const openai = await attachmentFor("compatible-endpoint", "https://api.example.com/v1");
-    const anthropic = await attachmentFor(
-      "compatible-anthropic-endpoint",
-      "https://messages.example.com/v1",
-    );
-    const first = replacement("compatible-endpoint", openai);
-    expect(first.inference).toMatchObject({
-      routedBaseUrl: "https://api.example.com/v1",
-      nativeCustomCredentialEnv: "COMPATIBLE_API_KEY",
-    });
-    const changed = replacement("compatible-anthropic-endpoint", anthropic, first);
-    expect(changed.inference).toMatchObject({
-      routedBaseUrl: "https://messages.example.com/v1",
-      nativeCustomCredentialEnv: "COMPATIBLE_ANTHROPIC_API_KEY",
-    });
-    expect(replacement("compatible-endpoint", undefined, changed).inference).not.toHaveProperty(
-      "nativeCustomCredentialEnv",
-    );
-  });
+      const openai = await attachmentFor("compatible-endpoint", "https://api.example.com/v1");
+      const anthropic = await attachmentFor(
+        "compatible-anthropic-endpoint",
+        "https://messages.example.com/v1",
+        anthropicApi,
+      );
+      const first = replacement("compatible-endpoint", openai);
+      expect(first.inference).toMatchObject({
+        routedBaseUrl: "https://api.example.com/v1",
+        nativeCustomCredentialEnv: "COMPATIBLE_API_KEY",
+      });
+      const changed = replacement("compatible-anthropic-endpoint", anthropic, first);
+      expect(changed.inference).toMatchObject({
+        routedBaseUrl: anthropicBaseUrl,
+        nativeCustomCredentialEnv: "COMPATIBLE_ANTHROPIC_API_KEY",
+      });
+      expect(replacement("compatible-endpoint", undefined, changed).inference).not.toHaveProperty(
+        "nativeCustomCredentialEnv",
+      );
+    },
+  );
 
   it("blocks deletion when durable workload authority changes", () => {
     vi.spyOn(registry, "getSandbox").mockReturnValue(entry);
