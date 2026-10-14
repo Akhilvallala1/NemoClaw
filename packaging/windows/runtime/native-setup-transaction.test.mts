@@ -274,10 +274,11 @@ for (const included of ["openclaw", "hermes"] as const) {
       try {
         const page = await fetch(server.url, { signal: AbortSignal.timeout(5000) });
         assert.equal(page.status, 200);
+        assert.equal(readNativePackageAvailability(installed.root)[included], status);
         const html = await page.text();
         assert(
           html.includes(
-            `data-agent="${included}" data-package-selectable="${qualification || status === "qualified"}"`,
+            `data-agent="${included}" data-package-selectable="${included === "openclaw" || qualification || status === "qualified"}"`,
           ),
         );
         assert(html.includes(`data-agent="${absent}" data-package-selectable="false"`));
@@ -308,12 +309,13 @@ for (const included of ["openclaw", "hermes"] as const) {
           // A selectable normal agent still cannot use qualification inference.
           assert.match(
             (await selected.json()).message,
-            status === "qualified"
+            included === "openclaw" || status === "qualified"
               ? /Select a valid inference provider/u
               : /unavailable in this installer/u,
           );
           assert.equal(server.selection(), null);
         }
+        assert.equal(readNativePackageAvailability(installed.root)[included], status);
       } finally {
         server.server.closeAllConnections();
         await new Promise<void>((resolve, reject) =>

@@ -95,12 +95,36 @@ internal static class WindowRecoveryControls
                 availability.SetValue(window, parse.Invoke(null, new object[] { record }));
                 Invoke(window, "ApplyRuntimeAvailability");
                 Invoke(window, "ShowNativeOnboarding", "openclaw");
-                var enabled = status == "qualified";
-                var expected = status == "unqualified" ? "Unavailable: runtime qualification is pending." : "Unavailable in this preview";
-                if ((!enabled && ((TextBlock)window.FindName("AgentAvailabilityDetail")).Text != expected)
+                var enabled = status != "not-included";
+                var expected = status == "unqualified" ? "Preview: full runtime checks are pending." : status == "qualified" ? string.Empty : "Unavailable in this preview";
+                if (((TextBlock)window.FindName("AgentAvailabilityDetail")).Text != expected
                     || ((Button)window.FindName("ContinueAgentButton")).IsEnabled != enabled
                     || ((RadioButton)window.FindName("OpenClawChoice")).IsEnabled != enabled)
-                    throw new InvalidOperationException("Onboarding lost the OpenClaw availability reason or enabled an unqualified runtime.");
+                    throw new InvalidOperationException("Onboarding lost the OpenClaw preview warning or admitted an absent runtime.");
+                // Exercise the fresh-install handlers without attaching a native install/save owner.
+                typeof(MainWindow).GetField("packageInstalled", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
+                typeof(MainWindow).GetField("savedSettingsReady", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
+                Invoke(window, "ConfigureClicked", window, new RoutedEventArgs());
+                if ((((FrameworkElement)window.FindName("ConfigurationPanel")).Visibility == Visibility.Visible) != enabled)
+                    throw new InvalidOperationException("The OpenClaw preview could not enter configuration, or an absent runtime did.");
+                if (status == "unqualified" && !((TextBlock)window.FindName("ConfigurationDetail")).Text.StartsWith(expected, StringComparison.Ordinal))
+                    throw new InvalidOperationException("The OpenClaw preview warning disappeared during configuration.");
+                var providers = (ComboBox)window.FindName("ProviderChoice");
+                providers.SelectedItem = providers.Items.OfType<ComboBoxItem>().Single(value => value.Tag as string == "local");
+                ((TextBox)window.FindName("EndpointBox")).Text = "http://127.0.0.1:12345/v1";
+                ((TextBox)window.FindName("ModelBox")).Text = "preview-selected-model";
+                ((CheckBox)window.FindName("LicenseCheck")).IsChecked = false;
+                Invoke(window, "InstallClicked", window, new RoutedEventArgs());
+                var configuration = typeof(MainWindow).GetProperty("Configuration", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!;
+                if (configuration.GetValue(window) is not null)
+                    throw new InvalidOperationException("Preview setup bypassed software acceptance.");
+                ((CheckBox)window.FindName("LicenseCheck")).IsChecked = true;
+                Invoke(window, "InstallClicked", window, new RoutedEventArgs());
+                var submitted = configuration.GetValue(window);
+                if ((submitted is not null) != enabled
+                    || submitted is not null && (submitted.GetType().GetProperty("Model")!.GetValue(submitted) as string != "preview-selected-model"
+                        || submitted.GetType().GetProperty("Endpoint")!.GetValue(submitted) as string != "http://127.0.0.1:12345/v1"))
+                    throw new InvalidOperationException("Preview configuration lost the chosen model/endpoint or admitted an absent runtime.");
             }
         }
         finally { availability.SetValue(window, original); Invoke(window, "ApplyRuntimeAvailability"); }

@@ -24,7 +24,11 @@ static void Reject(byte[] bytes)
 }
 var selected = NativeRuntimeAvailability.Parse(Record());
 Require(selected.IsSelectedRuntimeBuild && selected.CanSelect("openclaw") && !selected.CanSelect("hermes") && !selected.CanSelect("pi"));
-Require(!NativeRuntimeAvailability.Parse(Record("unqualified")).CanSelect("openclaw") && NativeRuntimeAvailability.Parse(Record("unqualified")).IsUnqualified("openclaw"));
+var preview = NativeRuntimeAvailability.Parse(Record("unqualified"));
+Require(preview.CanSelect("openclaw") && preview.IsUnqualified("openclaw")
+    && preview.SelectionDetail("openclaw") == "Preview: full runtime checks are pending."
+    && !preview.CanSelect("hermes") && preview.SelectionDetail("hermes") == "Unavailable: runtime qualification is pending."
+    && selected.SelectionDetail("openclaw") == string.Empty);
 Require(NativeRuntimeAvailability.Parse(Record("qualified", "qualified")).CanSelect("hermes"));
 Require(!NativeRuntimeAvailability.Parse(Record("not-included", "not-included")).CanSelect("openclaw") && !NativeRuntimeAvailability.Parse(Record("not-included", "not-included")).CanSelect("hermes"));
 Require(!selected.CanSelect("../foreign") && selected.UnavailableText == "Unavailable in this preview");
@@ -48,4 +52,4 @@ Require(engine.BundledLocalInferenceAvailable && !engine.PrebuiltLocalModelAvail
 Require(engine.IsUnqualified("hermes") && !engine.CanSelect("hermes") && !engine.CanSelect("pi"));
 Reject(Encoding.UTF8.GetBytes(withEngine.Replace("\"bundledLocalInferenceAvailable\":true", "\"bundledLocalInferenceAvailable\":\"true\"", StringComparison.Ordinal)));
 Reject(Encoding.UTF8.GetBytes(withEngine.Replace("\"bundledLocalInferenceAvailable\":true", "\"bundledLocalInferenceAvailable\":true,\"bundledLocalInferenceAvailable\":false", StringComparison.Ordinal)));
-Console.WriteLine("17 availability controls passed; only reviewed qualified profiles can be selected.");
+Console.WriteLine("17 availability controls passed; included OpenClaw previews remain unqualified and selectable.");

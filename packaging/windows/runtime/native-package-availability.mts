@@ -92,5 +92,7 @@ export function nativePackageAgentSelectable(
 ): boolean {
   if (agent !== "openclaw" && agent !== "hermes") return false;
   const status = availability[agent];
-  return status === "qualified" || (qualification && status === "unqualified");
+  return (
+    status === "qualified" || ((agent === "openclaw" || qualification) && status === "unqualified")
+  );
 }

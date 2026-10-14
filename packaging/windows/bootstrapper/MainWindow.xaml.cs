@@ -127,8 +127,7 @@ public partial class MainWindow : Window
         choice.IsChecked = true;
         if (!choice.IsEnabled)
         {
-            this.AgentAvailabilityDetail.Text = this.runtimeAvailability.IsUnqualified(this.SelectedAgent)
-                ? this.runtimeAvailability.PreviewText : this.runtimeAvailability.UnavailableText;
+            this.AgentAvailabilityDetail.Text = this.runtimeAvailability.SelectionDetail(this.SelectedAgent);
             this.AgentAvailabilityDetail.Visibility = Visibility.Visible;
             this.ContinueAgentButton.IsEnabled = false;
             return;
@@ -474,6 +473,11 @@ public partial class MainWindow : Window
             this.RefreshProviderChoice();
             if (this.ContinueAgentButton is not null)
                 this.ContinueAgentButton.IsEnabled = this.runtimeAvailability.CanSelect(agent);
+            if (this.AgentAvailabilityDetail is not null)
+            {
+                this.AgentAvailabilityDetail.Text = this.runtimeAvailability.SelectionDetail(agent);
+                this.AgentAvailabilityDetail.Visibility = this.AgentAvailabilityDetail.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+            }
             choice.BringIntoView();
         }
     }
@@ -486,6 +490,8 @@ public partial class MainWindow : Window
         this.SetJourneyStage(2);
         this.ConfigurationPanel.Visibility = Visibility.Visible;
         this.ConfigurationDetail.Text = $"Choose a model for {AgentNames[this.SelectedAgent]} on this PC, a hosted provider, or an existing local server.";
+        if (this.runtimeAvailability.IsUnqualified(this.SelectedAgent))
+            this.ConfigurationDetail.Text = this.runtimeAvailability.SelectionDetail(this.SelectedAgent) + " " + this.ConfigurationDetail.Text;
         this.UpdateModelSetupAction();
         this.ProviderChoice.Focus();
         if (this.packageInstalled && this.SelectedAgent == "openclaw" && !this.savedChoicesLoaded.Contains(this.SelectedAgent))
@@ -577,16 +583,16 @@ public partial class MainWindow : Window
             var enabled = this.runtimeAvailability.CanSelect((string)choices[index].Tag);
             choices[index].IsEnabled = enabled;
             var preview = this.runtimeAvailability.IsUnqualified((string)choices[index].Tag);
-            details[index].Text = preview ? this.runtimeAvailability.PreviewText : !enabled ? this.runtimeAvailability.UnavailableText : "";
+            details[index].Text = this.runtimeAvailability.SelectionDetail((string)choices[index].Tag);
             details[index].Visibility = !enabled || preview ? Visibility.Visible : Visibility.Collapsed;
         }
         var first = choices.FirstOrDefault(choice => choice.IsEnabled);
         if (first is not null) first.IsChecked = true;
         this.ContinueAgentButton.IsEnabled = first is not null;
         this.AgentAvailabilityDetail.Text = first is null
-            ? "No agent has reviewed runtime qualification in this package. Use a qualified installer to configure an agent."
-            : "Only agents with reviewed runtime qualification can be configured here.";
-        this.AgentAvailabilityDetail.Visibility = Visibility.Visible;
+            ? "No agent is available in this package."
+            : this.runtimeAvailability.SelectionDetail((string)first.Tag);
+        this.AgentAvailabilityDetail.Visibility = this.AgentAvailabilityDetail.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void BackClicked(object sender, RoutedEventArgs args) => this.ShowReady(false);
@@ -666,7 +672,7 @@ public partial class MainWindow : Window
             if (!this.savedSettingsReady || this.readingSavedSettings)
                 throw new InvalidOperationException("Confirm the saved settings before saving changes.");
             if (!this.runtimeAvailability.CanSelect(this.SelectedAgent))
-                throw new InvalidOperationException("This agent requires reviewed runtime qualification before configuration.");
+                throw new InvalidOperationException("This agent is unavailable in this installer.");
             if (this.LicenseCheck.IsChecked != true) return;
             if (this.ProviderChoice.SelectedItem is not ComboBoxItem { Tag: string provider, IsEnabled: true }) throw new InvalidOperationException("Choose an available inference provider.");
             var selectedLocalModel = NativeDownloadedModelSetup.IsModel(provider) ? provider : NativeExpressSetup.Id;

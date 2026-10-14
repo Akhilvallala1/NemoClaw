@@ -22,10 +22,17 @@ internal sealed class NativeRuntimeAvailability
 
     internal bool IsSelectedRuntimeBuild => this.statuses is not null;
     internal bool CanSelect(string agent) => Agents.Contains(agent, StringComparer.Ordinal)
-        && this.statuses is not null && this.statuses[agent] == "qualified";
+        && this.statuses is not null
+        && (this.statuses[agent] == "qualified" || agent == "openclaw" && this.statuses[agent] == "unqualified");
     internal bool IsUnqualified(string agent) => this.statuses is not null && this.statuses.TryGetValue(agent, out var status) && status == "unqualified";
-    internal string PreviewText => "Unavailable: runtime qualification is pending.";
     internal string UnavailableText => "Unavailable in this preview";
+
+    internal string SelectionDetail(string agent)
+    {
+        if (this.IsUnqualified(agent))
+            return this.CanSelect(agent) ? "Preview: full runtime checks are pending." : "Unavailable: runtime qualification is pending.";
+        return this.CanSelect(agent) ? string.Empty : this.UnavailableText;
+    }
 
     internal static NativeRuntimeAvailability Load()
     {
