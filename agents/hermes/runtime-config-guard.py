@@ -3224,8 +3224,11 @@ def refresh_native_custom_inference(hermes_dir: str, hash_file: str, mode: str) 
     if not isinstance(provider, str):
         raise UnsafePathError("Native custom inference configuration has an invalid provider")
     key = {"compatible-endpoint": "COMPATIBLE_API_KEY", "compatible-anthropic-endpoint": "COMPATIBLE_ANTHROPIC_API_KEY"}.get(provider)
-    if not key:
+    native_custom_credential_env = upstream.get("native_custom_credential_env")
+    if native_custom_credential_env is None:
         return
+    if not key or native_custom_credential_env != key:
+        raise UnsafePathError("Native custom inference route authority is invalid")
     base_url = model.get("base_url", "")
     if not isinstance(base_url, str):
         raise UnsafePathError("Native custom inference configuration has an invalid base URL")
@@ -3234,7 +3237,7 @@ def refresh_native_custom_inference(hermes_dir: str, hash_file: str, mode: str) 
     except ValueError as exc:
         raise UnsafePathError("Native custom inference configuration has an invalid base URL") from exc
     if hostname == "inference.local":
-        return
+        raise UnsafePathError("Native custom inference route authority is invalid")
     issued = os.environ.get(key, "")
     if re.fullmatch(rf"openshell:resolve:env:(?:v[0-9]{{1,20}}|s[a-f0-9]{{64}})_{key}", issued) is None:
         raise UnsafePathError("Native custom inference requires its supervisor-issued credential placeholder")

@@ -211,6 +211,10 @@ Refer to [Recover and Rebuild Sandboxes](../manage-sandboxes/operate-sandboxes/r
 ## Inference Routing
 
 NVIDIA Endpoints uses a sandbox-attached OpenShell provider for approved requests to `integrate.api.nvidia.com`.
+Supported fixed hosted selections for OpenAI, Anthropic, Google Gemini, and OpenRouter also use sandbox-attached native providers.
+<AgentOnly variant="hermes">
+Hermes Provider's authenticated hosted endpoint also uses a sandbox-attached native provider.
+</AgentOnly>
 Fresh custom hosted endpoints also use sandbox-attached providers with issued credential references.
 DNS-backed HTTPS and Bedrock Runtime endpoints retain their host adapters.
 Host-local and existing shared-route sandboxes use `inference.local`.

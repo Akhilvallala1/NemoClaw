@@ -835,6 +835,7 @@ ARG NEMOCLAW_INFERENCE_PROVIDER_ID=custom
 # identifier ("inference" for proxied providers) needed at routing/runtime.
 ARG NEMOCLAW_UPSTREAM_PROVIDER=custom
 ARG NEMOCLAW_INFERENCE_BASE_URL=https://inference.local/v1
+ARG NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV=
 ARG NEMOCLAW_INFERENCE_API=openai-completions
 ARG NEMOCLAW_TOOL_DISCLOSURE=progressive
 # CHAT_UI_URL is a legacy name shared with the OpenClaw build arg. For

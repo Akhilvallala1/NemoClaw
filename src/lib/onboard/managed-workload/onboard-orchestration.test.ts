@@ -8,6 +8,11 @@ import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import { createHermesStateVolumeDockerHarness } from "../__test-helpers__/hermes-state-volume";
+import { getSandboxInferenceConfig, resolveAgentInferenceApi } from "../../inference/config";
+import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../../inference/native-custom";
 import type { PreparedSandboxBuildContext } from "../build-context-stage";
 import {
   managedStartupStateRoots,
@@ -332,6 +337,74 @@ describe("managed workload onboard orchestration", () => {
       mapManagedStartupProfileToAgentEnvironment(built!.profile).runtimeEnvironment.CHAT_UI_URL,
     ).toBe("https://hermes.example.test:19189");
   });
+
+  it.each([
+    ["compatible-endpoint", "COMPATIBLE_API_KEY"],
+    ["compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
+  ] as const)(
+    "derives managed Hermes %s authority from its attached route",
+    async (provider, key) => {
+      const prepared = await prepareNativeCustomProfile({
+        sandboxName: "hermes-native",
+        provider,
+        endpointUrl: "https://api.example.com/v1",
+        api: "openai-completions",
+        lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      });
+      const nativeCustomProviderAttachment = customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "native-provider-id",
+      });
+      const runtime = createManagedWorkloadOnboardRuntime(
+        {
+          computePlan: { driverName: "docker" },
+          managedWorkloadRebuild: null,
+          tempManagedRuntime: false,
+          stockManagedRuntime: true,
+          tempManagedRuntimeCatalog: null,
+          agentName: "hermes",
+          legacyDockerfilePath: "agents/hermes/Dockerfile",
+          customDockerfilePath: null,
+          rootDir: releaseRoot,
+          model: "test-model",
+          provider,
+          preferredInferenceApi: "openai-completions",
+          endpointUrl: prepared.endpointUrl,
+          nativeCustomProviderAttachment,
+          startupProfile: {
+            chatUiUrl: "http://127.0.0.1:19189",
+            effectiveDashboardPort: 19_189,
+            manageDashboard: true,
+            dashboardBindAddress: undefined,
+            wslExposure: false,
+            hermesDashboardState: { config: null, enabled: false },
+            webSearch: null,
+            toolDisclosure: "progressive",
+            hermesToolGateways: [],
+            messagingPlan: null,
+            dcodeAutoApprovalMode: "disabled",
+            observabilityEnabled: false,
+            environment: {},
+          },
+          note: vi.fn(),
+          fallbackBuildEstimate: () => null,
+        } as unknown as Parameters<typeof createManagedWorkloadOnboardRuntime>[0],
+        { getSandboxInferenceConfig, resolveAgentInferenceApi },
+      );
+      const built = runtime.ensurePreparedProfile({ source: { kind: "managed-image" } } as never);
+      expect(built?.profile.inference).toMatchObject({
+        upstreamProvider: provider,
+        routedBaseUrl: "https://api.example.com/v1",
+        nativeCustomCredentialEnv: key,
+      });
+      expect(
+        mapManagedStartupProfileToAgentEnvironment(built!.profile).configurationEnvironment
+          .NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV,
+      ).toBe(key);
+    },
+  );
 
   it("uses the Dockerfile when the stock managed-image catalog is unavailable", async () => {
     const { runtime } = createFreshOnboardingRuntime(

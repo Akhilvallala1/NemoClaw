@@ -439,6 +439,9 @@ function mapHermesProfile(
 
   const configurationEnvironment: MutableEnvironment = {
     ...commonConfigurationEnvironment(profile),
+    ...(profile.inference?.nativeCustomCredentialEnv
+      ? { NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: profile.inference.nativeCustomCredentialEnv }
+      : {}),
     ...messagingEnvironment(profile, "hermes"),
     CHAT_UI_URL: chatUiUrl,
     NEMOCLAW_CONTEXT_WINDOW:

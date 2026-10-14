@@ -1231,6 +1231,7 @@ export async function ensureHttpsPinRuntimeAdapter(options: {
     options.provider,
     options.endpointUrl,
     options.sandboxName,
+    options.providerType,
   );
   const allowedSourceCidrs = buildAllowedRouteSourceMatcher(
     options.discoverAllowedSourceCidrs(),

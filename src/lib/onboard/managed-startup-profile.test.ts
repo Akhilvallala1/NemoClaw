@@ -534,20 +534,30 @@ describe("managed startup profile", () => {
     });
   });
 
-  it.each(VALID_PROFILES)(
-    "maps every $agent inventory entry to an explicit profile field",
-    (profile) => {
-      MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY[profile.agent].forEach(({ profilePath }) => {
-        let current: unknown = profile;
-        profilePath.split(".").forEach((segment) => {
-          expect(current).not.toBeNull();
-          expect(typeof current).toBe("object");
-          expect(Object.hasOwn(current as object, segment)).toBe(true);
-          current = (current as Record<string, unknown>)[segment];
-        });
-      });
+  it.each([
+    OPENCLAW_PROFILE,
+    {
+      ...HERMES_PROFILE,
+      inference: {
+        ...HERMES_PROFILE.inference,
+        upstreamProvider: "compatible-endpoint",
+        routedBaseUrl: "https://api.example.com/v1",
+        nativeCustomCredentialEnv: "COMPATIBLE_API_KEY",
+      },
     },
-  );
+    DCODE_PROFILE,
+    PI_PROFILE,
+  ])("maps every $agent inventory entry to an explicit profile field", (profile) => {
+    MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY[profile.agent].forEach(({ profilePath }) => {
+      let current: unknown = profile;
+      profilePath.split(".").forEach((segment) => {
+        expect(current).not.toBeNull();
+        expect(typeof current).toBe("object");
+        expect(Object.hasOwn(current as object, segment)).toBe(true);
+        current = (current as Record<string, unknown>)[segment];
+      });
+    });
+  });
   it("rejects non-canonical transports instead of accepting ambiguous fingerprints", () => {
     const raw = JSON.stringify(OPENCLAW_PROFILE);
     expect(() => decodeManagedStartupProfile(Buffer.from(raw).toString("base64url"))).toThrow(

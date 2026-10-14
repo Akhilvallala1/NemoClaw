@@ -421,6 +421,27 @@ describe("rebindManagedStartupProfileForClone", () => {
     });
   });
 
+  it("refuses to reuse source-scoped native custom authority in a clone", () => {
+    const input = hermesInput();
+    const built = buildManagedStartupProfile({
+      ...input,
+      inference: {
+        ...input.inference!,
+        upstreamProvider: "compatible-endpoint",
+        routedBaseUrl: "https://api.example.com/v1",
+        nativeCustomCredentialEnv: "COMPATIBLE_API_KEY",
+      },
+    });
+    expect(() => rebind(built, "hermes", 21_189)).toThrow(
+      /native custom inference needs destination-scoped authority; re-onboard before cloning/,
+    );
+    expect(() =>
+      rebind(buildManagedStartupProfile(input), "hermes", 21_189, {
+        nativeCustomProviderAttachment: { schemaVersion: 1 },
+      }),
+    ).toThrow(/native custom inference needs destination-scoped authority/);
+  });
+
   it("refuses to clone an enabled Hermes dashboard without a recorded browser URL", () => {
     const input = hermesInput();
     const built = buildManagedStartupProfile(input);

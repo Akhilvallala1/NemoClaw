@@ -937,6 +937,9 @@ export function patchHermesInferenceConfig(
     upstreamProvider: provider,
     inferenceApi: route.inferenceApi,
     contextWindow,
+    ...(nativeCustomProviderAttachment
+      ? { nativeCustomCredentialEnv: nativeCustomProviderAttachment.credentialEnv }
+      : {}),
     ...(credentialReference ? { credentialReference } : {}),
   });
 

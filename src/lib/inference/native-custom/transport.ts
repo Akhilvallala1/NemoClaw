@@ -206,6 +206,7 @@ export async function prepareNativeCustomInference(
         input.provider,
         sourceProfile.endpointUrl,
         input.sandboxName,
+        input.api === "anthropic-messages" ? "anthropic" : "openai",
       ),
     );
     const bridgeEndpoint = input.api === "anthropic-messages" ? routeBase : `${routeBase}/v1`;
@@ -268,6 +269,7 @@ export async function rollbackNativeCustomAdapterRoute(
       : "compatible-anthropic-endpoint",
     prepared.transport.sourceEndpointUrl,
     prepared.sandboxName,
+    prepared.api === "anthropic-messages" ? "anthropic" : "openai",
   );
   if (
     retained?.transport?.kind === "https-pin" &&
@@ -279,6 +281,7 @@ export async function rollbackNativeCustomAdapterRoute(
           : "compatible-anthropic-endpoint",
         retained.transport.sourceEndpointUrl,
         retained.sandboxName,
+        retained.api === "anthropic-messages" ? "anthropic" : "openai",
       )
   )
     return;

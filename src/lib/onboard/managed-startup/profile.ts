@@ -148,6 +148,8 @@ export interface ManagedStartupInference {
   readonly routeProvider: string;
   /** User-selected provider upstream of the managed inference route. */
   readonly upstreamProvider: string;
+  /** Optional, attachment-derived Hermes native custom credential authority. */
+  readonly nativeCustomCredentialEnv?: "COMPATIBLE_API_KEY" | "COMPATIBLE_ANTHROPIC_API_KEY";
   /** Exact managed-inference catalog preset, when onboarding selected one. */
   readonly servingPreset?: string | null;
   readonly model: string;
@@ -478,6 +480,7 @@ export interface ManagedStartupAffordance {
   readonly profilePath: string;
   readonly source: ManagedStartupAffordanceSource;
   readonly representation: ManagedStartupAffordanceRepresentation;
+  readonly optional?: true;
 }
 
 function affordance(
@@ -485,8 +488,15 @@ function affordance(
   profilePath: string,
   source: ManagedStartupAffordanceSource = "docker-arg",
   representation: ManagedStartupAffordanceRepresentation = "value",
+  optional = false,
 ): ManagedStartupAffordance {
-  return { input, profilePath, source, representation };
+  return {
+    input,
+    profilePath,
+    source,
+    representation,
+    ...(optional ? { optional: true as const } : {}),
+  };
 }
 
 const HOST_PROXY_AFFORDANCES = [
@@ -547,6 +557,13 @@ export const MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY = {
     affordance("NEMOCLAW_MODEL", "inference.model"),
     affordance("NEMOCLAW_INFERENCE_PROVIDER_ID", "inference.routeProvider"),
     affordance("NEMOCLAW_UPSTREAM_PROVIDER", "inference.upstreamProvider"),
+    affordance(
+      "NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV",
+      "inference.nativeCustomCredentialEnv",
+      "docker-arg",
+      "value",
+      true,
+    ),
     affordance("NEMOCLAW_INFERENCE_BASE_URL", "inference.routedBaseUrl"),
     affordance("NEMOCLAW_INFERENCE_API", "inference.api"),
     affordance("NEMOCLAW_CONTEXT_WINDOW", "tuning.contextWindow"),
@@ -1005,6 +1022,7 @@ const PROFILE_KEYS = new Set([
 const INFERENCE_KEYS = new Set([
   "routeProvider",
   "upstreamProvider",
+  "nativeCustomCredentialEnv",
   "servingPreset",
   "model",
   "routedBaseUrl",
@@ -2067,6 +2085,14 @@ function validateInference(
     inference.upstreamProvider,
     "inference.upstreamProvider",
   );
+  const nativeCustomCredentialEnv =
+    inference.nativeCustomCredentialEnv === undefined
+      ? undefined
+      : requireStringEnum<"COMPATIBLE_API_KEY" | "COMPATIBLE_ANTHROPIC_API_KEY">(
+          inference.nativeCustomCredentialEnv,
+          new Set(["COMPATIBLE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY"]),
+          "inference.nativeCustomCredentialEnv",
+        );
   const servingPreset =
     inference.servingPreset === undefined
       ? undefined
@@ -2108,6 +2134,18 @@ function validateInference(
   ) {
     invalid(`inference.upstreamEndpointUrl must be null for ${agent}`);
   }
+  const routedBaseUrl = requireHttpUrl(inference.routedBaseUrl, "inference.routedBaseUrl");
+  if (
+    nativeCustomCredentialEnv !== undefined &&
+    (agent !== "hermes" ||
+      upstreamProvider !==
+        (nativeCustomCredentialEnv === "COMPATIBLE_API_KEY"
+          ? "compatible-endpoint"
+          : "compatible-anthropic-endpoint") ||
+      new URL(routedBaseUrl).hostname === "inference.local")
+  ) {
+    invalid("inference.nativeCustomCredentialEnv requires its matching Hermes native route");
+  }
 
   if (agent === "openclaw") {
     if (primaryModelRef === null || inputModalities === null) {
@@ -2130,9 +2168,10 @@ function validateInference(
   return {
     routeProvider,
     upstreamProvider,
+    ...(nativeCustomCredentialEnv === undefined ? {} : { nativeCustomCredentialEnv }),
     ...(servingPreset === undefined ? {} : { servingPreset }),
     model,
-    routedBaseUrl: requireHttpUrl(inference.routedBaseUrl, "inference.routedBaseUrl"),
+    routedBaseUrl,
     upstreamEndpointUrl,
     api,
     primaryModelRef,

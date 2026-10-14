@@ -32,6 +32,7 @@ function httpsAdapter() {
       options.provider,
       options.endpointUrl,
       options.sandboxName,
+      options.providerType,
     );
     return {
       baseUrl: buildHttpsPinRouteBaseUrl(routeId),
@@ -145,7 +146,13 @@ it("uses the bare HTTPS-pin route for Anthropic Messages while preserving the ex
     discoverAllowedSourceCidrs: () => ["172.18.0.0/16"],
   });
   const routeBase = buildHttpsPinRouteBaseUrl(
-    computeHttpsPinRouteId("nemoclaw", anthropic.provider, "https://api.example.com", "alpha"),
+    computeHttpsPinRouteId(
+      "nemoclaw",
+      anthropic.provider,
+      "https://api.example.com",
+      "alpha",
+      "anthropic",
+    ),
   );
   expect(selected.prepared.endpointUrl).toBe(routeBase);
   expect(selected.prepared.profile.endpoints[0].rules).toContainEqual({
@@ -226,6 +233,56 @@ it("restores only an exact recorded adapter selection for credential reuse witho
     /credential reuse/,
   );
 });
+
+it.each([
+  ["anthropic-messages", "openai-completions", "anthropic"],
+  ["openai-completions", "anthropic-messages", "openai"],
+])(
+  "preserves retained HTTPS %s credentials when %s registration rolls back (#12636)",
+  async (retainedApi, replacementApi, retainedType) => {
+    const registrations = new Map<string, string>();
+    const makeAdapter = httpsAdapter();
+    const deps = {
+      ensureHttpsAdapter: vi.fn(
+        async (options: Parameters<typeof ensureHttpsPinRuntimeAdapter>[0]) => {
+          const adapter = await makeAdapter(options);
+          registrations.set(adapter.routeId, options.providerType);
+          return adapter;
+        },
+      ),
+      admitProfile: async () => {},
+      discoverAllowedSourceCidrs: () => ["172.18.0.0/16"],
+    };
+    const selection = {
+      ...input,
+      provider: "compatible-anthropic-endpoint" as const,
+      endpointUrl: "https://api.example.com/custom",
+    };
+    const retained = await prepareNativeCustomInference({ ...selection, api: retainedApi }, deps);
+    const replacement = await prepareNativeCustomInference(
+      { ...selection, api: replacementApi },
+      deps,
+    );
+    const revoke = vi.fn(async (routeId: string) => registrations.delete(routeId));
+    await rollbackNativeCustomAdapterRoute(
+      replacement.prepared,
+      attachment(retained.prepared),
+      revoke,
+    );
+    expect(revoke).toHaveBeenCalledOnce();
+    expect([...registrations.values()]).toEqual([retainedType]);
+    revoke.mockClear();
+    await rollbackNativeCustomAdapterRoute(
+      retained.prepared,
+      attachment(retained.prepared),
+      revoke,
+    );
+    expect(revoke).not.toHaveBeenCalled();
+    expect(normalizeNativeCustomProviderAttachment(attachment(retained.prepared))).toEqual(
+      attachment(retained.prepared),
+    );
+  },
+);
 
 it("rejects unsupported APIs and private DNS answers before touching adapter state (#12636)", async () => {
   const ensure = httpsAdapter();

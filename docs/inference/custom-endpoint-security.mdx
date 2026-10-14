@@ -84,7 +84,13 @@ For those paths, use an HTTPS IP-literal endpoint with a certificate valid for t
 
 ## Use a DNS-Backed HTTPS Endpoint
 
-Fresh hosted onboarding and `$$nemoclaw inference set --endpoint-url <url>` support a DNS-backed HTTPS custom endpoint through the HTTPS Pin Runtime adapter.
+Fresh hosted onboarding supports a DNS-backed HTTPS custom endpoint through the HTTPS Pin Runtime adapter.
+<AgentOnly variant="openclaw,hermes">
+For OpenClaw and Hermes, `$$nemoclaw inference set --endpoint-url <url>` also supports this adapter.
+</AgentOnly>
+<AgentOnly variant="deepagents">
+To change a Deep Agents endpoint, re-onboard with the new selection; runtime `inference set` is unsupported.
+</AgentOnly>
 After SSRF validation passes, NemoClaw starts a local reverse-proxy adapter on the host that terminates a pinned, SNI-correct outbound TLS connection to the real upstream hostname, re-validating that the resolved peer IP is still public.
 The sandbox and its OpenShell provider configuration use the opaque local base `http://host.openshell.internal:<port>/route/<id>`.
 The host registry retains the admitted source endpoint and attachment identity for verification and recovery.

@@ -421,6 +421,9 @@ export function createManagedWorkloadOnboardRuntime(
           : {
               routeProvider: inference.providerKey,
               upstreamProvider: selectedProvider ?? inference.providerKey,
+              ...(input.agentName === "hermes" && input.nativeCustomProviderAttachment
+                ? { nativeCustomCredentialEnv: input.nativeCustomProviderAttachment.credentialEnv }
+                : {}),
               model: selectedModel,
               routedBaseUrl: inference.inferenceBaseUrl,
               upstreamEndpointUrl:

@@ -6,8 +6,12 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { managedStartupE2eProfile } from "../../../scripts/checks/generate-managed-startup-profile-fixture.mts";
 import { PEM } from "./__test-helpers__/corporate-ca-fixtures";
-import { decodeManagedStartupProfile } from "./managed-startup/profile";
+import {
+  decodeManagedStartupProfile,
+  serializeManagedStartupProfile,
+} from "./managed-startup/profile";
 import {
   assertManagedStartupProfileBuilderInventoryCoverage,
   buildManagedStartupProfile,
@@ -707,6 +711,57 @@ describe("buildManagedStartupProfile", () => {
       webSearch: { enabled: false, provider: "tavily" },
     });
   });
+
+  it("carries only attached Hermes native custom authority through the sealed profile", () => {
+    const input = hermesInput();
+    const inference = {
+      ...input.inference!,
+      upstreamProvider: "compatible-endpoint",
+      routedBaseUrl: "https://api.example.com/v1",
+      nativeCustomCredentialEnv: "COMPATIBLE_API_KEY" as const,
+    };
+    const built = buildManagedStartupProfile({ ...input, inference });
+    expect(built.profile.inference?.nativeCustomCredentialEnv).toBe("COMPATIBLE_API_KEY");
+    expect(decodeManagedStartupProfile(built.encodedProfile)).toEqual(built.profile);
+    expect(buildManagedStartupProfile(input).profile.inference).not.toHaveProperty(
+      "nativeCustomCredentialEnv",
+    );
+    expect(() =>
+      buildManagedStartupProfile({
+        ...input,
+        inference: { ...inference, upstreamProvider: "compatible-anthropic-endpoint" },
+      }),
+    ).toThrow(/matching Hermes native route/);
+    expect(() =>
+      buildManagedStartupProfile({
+        ...input,
+        inference: { ...inference, routedBaseUrl: "https://inference.local/v1" },
+      }),
+    ).toThrow(/matching Hermes native route/);
+  });
+
+  it("preserves the trusted Hermes E2E profile bytes without native authority", () => {
+    // Frozen from the dbd8ae7de7 serializer and the unchanged E2E fixture.
+    const serialized = serializeManagedStartupProfile(managedStartupE2eProfile("hermes"));
+    expect(Buffer.byteLength(serialized)).toBe(983);
+    expect(createHash("sha256").update(serialized).digest("hex")).toBe(
+      "3cffc778f6f288909d2c2b00cd5f4c788533a8f5d76f48c3b1f1eeeb5dbaec1c",
+    );
+    expect(serialized).not.toContain("nativeCustomCredentialEnv");
+  });
+
+  it.each(["FOREIGN_KEY", "COMPATIBLE_API_KEY"])(
+    "rejects %s when no matching Hermes native route is attached",
+    (nativeCustomCredentialEnv) => {
+      const input = hermesInput();
+      expect(() =>
+        buildManagedStartupProfile({
+          ...input,
+          inference: { ...input.inference!, nativeCustomCredentialEnv },
+        }),
+      ).toThrow(/matching Hermes native route/);
+    },
+  );
 
   it.each([
     ["DCode messaging", dcodeInput({ messagingPlan: messagingPlan("openclaw") }), /messagingPlan/],

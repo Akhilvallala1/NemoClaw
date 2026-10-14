@@ -73,6 +73,7 @@ export async function retireNativeCustomProviders(input: {
             : "compatible-anthropic-endpoint",
           receipt.transport.sourceEndpointUrl,
           receipt.sandboxName,
+          receipt.api === "anthropic-messages" ? "anthropic" : "openai",
         )
       : null;
   for (const receipt of validated.values()) {

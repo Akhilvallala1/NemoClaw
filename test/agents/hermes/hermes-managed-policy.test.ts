@@ -16,6 +16,13 @@ import {
   HERMES_MANAGED_POLICY_SCHEMA_VERSION,
 } from "../../../agents/hermes/config/managed-policy.ts";
 import { getSandboxInferenceConfig } from "../../../src/lib/inference/config";
+import { managedStartupE2eProfile } from "../../../scripts/checks/generate-managed-startup-profile-fixture.mts";
+import { mapManagedStartupProfileToAgentEnvironment } from "../../../src/lib/onboard/managed-startup/agent-environment";
+import {
+  decodeManagedStartupProfile,
+  encodeManagedStartupProfile,
+} from "../../../src/lib/onboard/managed-startup/profile";
+import { readHermesBuildSettings } from "../../../agents/hermes/config/build-env";
 import {
   customAttachmentFromPrepared,
   prepareNativeCustomProfile,
@@ -309,6 +316,49 @@ describe("Hermes managed policy", () => {
 
 describe("native custom Hermes policy (#12636)", () => {
   it.each([
+    ["compatible-endpoint", "COMPATIBLE_API_KEY"],
+    ["compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
+  ] as const)("carries sealed %s authority into the Python policy reader", (provider, key) => {
+    const base = managedStartupE2eProfile("hermes");
+    const sealed = decodeManagedStartupProfile(
+      encodeManagedStartupProfile({
+        ...base,
+        inference: {
+          ...base.inference!,
+          upstreamProvider: provider,
+          routedBaseUrl: "https://api.example.com/v1",
+          nativeCustomCredentialEnv: key,
+        },
+      }),
+    );
+    const environment = mapManagedStartupProfileToAgentEnvironment(sealed);
+    expect(environment.configurationEnvironment.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV).toBe(key);
+    const policy = buildHermesManagedPolicy(
+      readHermesBuildSettings(environment.configurationEnvironment),
+      {},
+    );
+    expect(policy.config.model?.api_key).toBe(`sk-OPENSHELL-RESOLVE-ENV-${key}`);
+    expect(loadWithPython(policy).status).toBe(0);
+  });
+
+  it("keeps an unowned compatible host-local route on the proxy sentinel", () => {
+    const policy = buildHermesManagedPolicy(
+      {
+        ...SETTINGS,
+        upstreamProvider: "compatible-endpoint",
+        baseUrl: "http://host.openshell.internal:11435/v1",
+      },
+      {},
+    );
+    expect(policy.config.model?.api_key).toBe("sk-OPENSHELL-PROXY-REWRITE");
+    expect(policy.config._nemoclaw_upstream?.native_custom_credential_env).toBeUndefined();
+    expect(loadWithPython(policy).status).toBe(0);
+    const forged = structuredClone(policy);
+    forged.config._nemoclaw_upstream!.native_custom_credential_env = "COMPATIBLE_API_KEY";
+    expect(loadWithPython(forged).status).toBe(1);
+  });
+
+  it.each([
     [
       "compatible-endpoint",
       "COMPATIBLE_API_KEY",
@@ -344,6 +394,7 @@ describe("native custom Hermes policy (#12636)", () => {
           upstreamProvider: provider,
           baseUrl: inference.inferenceBaseUrl,
           inferenceApi: inference.inferenceApi,
+          nativeCustomCredentialEnv: attachment.credentialEnv,
         },
         {},
       );
@@ -352,6 +403,7 @@ describe("native custom Hermes policy (#12636)", () => {
         base_url: baseUrl,
         api_key: `sk-OPENSHELL-RESOLVE-ENV-${key}`,
       });
+      expect(policy.config._nemoclaw_upstream?.native_custom_credential_env).toBe(key);
       const serialized = JSON.stringify(policy);
       expect(serialized).toContain(`sk-OPENSHELL-RESOLVE-ENV-${key}`);
       const malformed = {

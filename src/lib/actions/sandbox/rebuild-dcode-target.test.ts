@@ -7,6 +7,7 @@ import {
   prepareNativeCustomProfile,
   customAttachmentFromPrepared,
 } from "../../inference/native-custom";
+import { hostedNativeProvider } from "../../inference/native-provider/hosted";
 import { resolveDcodeRebuildTarget } from "./rebuild-dcode-target";
 
 describe("resolveDcodeRebuildTarget", () => {
@@ -69,4 +70,37 @@ it("carries the exact native custom endpoint authority into DCode rebuild probes
   expect(() => resolveDcodeRebuildTarget({ ...entry, name: "peer" }, selection)).toThrow(
     "malformed",
   );
+});
+
+it("preserves an endpoint-bound Hermes receipt in DCode rebuild probes (#12636)", () => {
+  const endpointUrl = "https://staging.nous.example/api/v1";
+  const definition = hostedNativeProvider("hermes-provider", endpointUrl)!;
+  const receipt = {
+    schemaVersion: 1 as const,
+    profileId: definition.profileId,
+    providerName: definition.providerName,
+    providerId: "owned-hermes-id",
+    endpointUrl,
+    allowedIps: ["8.8.8.8"],
+  };
+  const target = resolveDcodeRebuildTarget(
+    {
+      name: "dcode-workspace",
+      agent: "langchain-deepagents-code",
+      gatewayName: "nemoclaw",
+      gatewayPort: 8080,
+      nativeHostedProviderAttachment: receipt,
+    },
+    {
+      provider: "hermes-provider",
+      model: "test-model",
+      preferredInferenceApi: "openai-completions",
+    },
+    8080,
+  );
+  expect(target).toMatchObject({
+    nativeProvider: true,
+    nativeEndpointUrl: endpointUrl,
+    provider: "hermes-provider",
+  });
 });

@@ -89,13 +89,14 @@ export function prepareManagedRebuildProfileHandoff(input: {
       ? `http://127.0.0.1:${String(effectiveDashboardPort)}`
       : rebindLoopbackDashboardUrlPort(previousHermesBrowserUrl, effectiveDashboardPort)
     : "";
-  const nativeAttachment = recordedNativeProviderAttachment(resumeConfig);
+  const nativeAttachment =
+    resumeConfig.nativeCustomProviderAttachment ?? recordedNativeProviderAttachment(resumeConfig);
   const inference = managedRebuildProfileDependencies.resolveManagedStartupInferenceRoute(
     agent,
     resumeConfig.provider,
     resumeConfig.model,
     resumeConfig.preferredInferenceApi,
-    Boolean(nativeAttachment),
+    resumeConfig.nativeCustomProviderAttachment ?? Boolean(nativeAttachment),
     nativeAttachment?.endpointUrl,
   );
   const upstreamProvider =
@@ -125,6 +126,9 @@ export function prepareManagedRebuildProfileHandoff(input: {
       inference: {
         routeProvider: inference.providerKey,
         upstreamProvider,
+        ...(agent === "hermes" && resumeConfig.nativeCustomProviderAttachment
+          ? { nativeCustomCredentialEnv: resumeConfig.nativeCustomProviderAttachment.credentialEnv }
+          : {}),
         model: resumeConfig.model,
         routedBaseUrl: inference.inferenceBaseUrl,
         upstreamEndpointUrl:

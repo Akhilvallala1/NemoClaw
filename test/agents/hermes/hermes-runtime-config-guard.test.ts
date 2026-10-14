@@ -1210,7 +1210,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "model": {"base_url": "https://api.example.com/v1", "api_key": reference},
             "providers": {"compatible-endpoint": {"api": "https://api.example.com/v1", "api_key": reference}},
             "custom_providers": [{"name": "compatible-endpoint", "base_url": "https://api.example.com/v1", "api_key": reference}],
-            "_nemoclaw_upstream": {"provider": "compatible-endpoint", "provider_key": "compatible-endpoint"},
+            "_nemoclaw_upstream": {"provider": "compatible-endpoint", "provider_key": "compatible-endpoint", "native_custom_credential_env": "COMPATIBLE_API_KEY"},
         }
         (config["model"] if field == "base_url" else config["_nemoclaw_upstream"])[field] = value
         with open(config_path, "w") as handle: yaml.safe_dump(config, handle)
@@ -1285,7 +1285,7 @@ with tempfile.TemporaryDirectory() as tmp:
         "model": {"default": "model", "base_url": "https://api.example.com/v1", "api_key": reference},
         "providers": {"compatible-endpoint": {"api": "https://api.example.com/v1", "api_key": reference}},
         "custom_providers": [{"name": "compatible-endpoint", "base_url": "https://api.example.com/v1", "api_key": reference}],
-        "_nemoclaw_upstream": {"provider": "compatible-endpoint", "provider_key": "compatible-endpoint"},
+        "_nemoclaw_upstream": {"provider": "compatible-endpoint", "provider_key": "compatible-endpoint", "native_custom_credential_env": "COMPATIBLE_API_KEY"},
         "unowned": "preserved",
     }
     with open(config_path, "w") as handle: yaml.safe_dump(config, handle)

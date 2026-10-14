@@ -18,6 +18,7 @@ export type HermesBuildSettings = {
   baseUrl: string;
   providerKey: string;
   upstreamProvider: string;
+  nativeCustomCredentialEnv?: string;
   inferenceApi: string;
   /** Total context window (tokens); null lets Hermes auto-detect from /v1/models. */
   contextWindow: number | null;
@@ -49,6 +50,9 @@ export function readHermesBuildSettings(env: NodeJS.ProcessEnv): HermesBuildSett
       env.NEMOCLAW_INFERENCE_PROVIDER_ID ||
       env.NEMOCLAW_PROVIDER_KEY ||
       "custom",
+    ...(env.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV
+      ? { nativeCustomCredentialEnv: env.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV }
+      : {}),
     inferenceApi: env.NEMOCLAW_INFERENCE_API || "",
     contextWindow: readContextWindow(env),
     toolDisclosure: readToolDisclosureEnv(env),

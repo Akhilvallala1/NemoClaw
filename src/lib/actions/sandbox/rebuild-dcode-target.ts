@@ -34,6 +34,7 @@ export type DcodeRebuildResumeConfig = {
 export type ResolvedDcodeRebuildTarget = {
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
   nativeProvider?: boolean;
+  nativeEndpointUrl?: string;
   agent: typeof DCODE_AGENT_NAME;
   gatewayName: string;
   gatewayPort: number;
@@ -88,5 +89,6 @@ export function resolveDcodeRebuildTarget(
     model: requiredString(resumeConfig.model, "inference model"),
     preferredInferenceApi: resumeConfig.preferredInferenceApi,
     ...(fixed ? { nativeProvider: true } : {}),
+    ...(fixed?.endpointUrl ? { nativeEndpointUrl: fixed.endpointUrl } : {}),
   };
 }

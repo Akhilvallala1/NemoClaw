@@ -82,12 +82,13 @@ export function isHttpsPinRuntimeEligible(endpointUrl: string | URL | null | und
   return true;
 }
 
-/** Deterministic, stable identifier for one (gateway, provider, endpoint) route. Safe to persist and log. */
+/** Preserve shared route IDs; bind sandbox routes to their credential injection type. */
 export function computeHttpsPinRouteId(
   gatewayName: string,
   provider: string,
   endpointUrl: string,
   sandboxName?: string,
+  credentialProviderType: "openai" | "anthropic" = "openai",
 ): string {
   return crypto
     .createHash("sha256")
@@ -95,11 +96,12 @@ export function computeHttpsPinRouteId(
       sandboxName === undefined
         ? `nemoclaw:https-pin-route-id:v1\0${gatewayName}\0${provider}\0${endpointUrl}`
         : JSON.stringify([
-            "nemoclaw:https-pin-sandbox-route:v1",
+            "nemoclaw:https-pin-sandbox-route:v2",
             gatewayName,
             provider,
             endpointUrl,
             sandboxName,
+            credentialProviderType,
           ]),
     )
     .digest("hex");

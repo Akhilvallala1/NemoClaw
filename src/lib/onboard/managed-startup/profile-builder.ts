@@ -66,7 +66,7 @@ export const MANAGED_STARTUP_HOST_PROXY_URL_INPUTS = [
  */
 const EXPECTED_AFFORDANCE_INVENTORY_SHA256 = {
   openclaw: "b4a3fa7060c7b7f5654c271513398666ccf52e36dcc2ff4ac8064b1d801841cf",
-  hermes: "795c97be2dcb1921e06328a6d23b1f7389ebb2f6a085fa67b7aaa0f287ce88e0",
+  hermes: "680c0b55d0c3e7b573cc82db11e3fb65e497ef7776998eb1b626854e542fc346",
   "langchain-deepagents-code": "08c75cf22495ec93a090bc5b70544eac65970e658b10fba057dea5ffef502e4a",
   pi: "6302d387182c596fd67ad18577ecf82107bad6271aeeb5e69714115f91557abb",
 } as const satisfies Record<ManagedStartupAgent, string>;
@@ -80,6 +80,7 @@ const INVENTORY_INPUTS = new Set(
 export interface ManagedStartupResolvedInferenceInput {
   readonly routeProvider: string;
   readonly upstreamProvider: string;
+  readonly nativeCustomCredentialEnv?: string;
   readonly model: string;
   readonly routedBaseUrl: string;
   readonly upstreamEndpointUrl: string | null;
@@ -143,6 +144,16 @@ export class ManagedStartupProfileBuilderError extends Error {
 
 function fail(message: string): never {
   throw new ManagedStartupProfileBuilderError(message);
+}
+
+function requireNativeCustomCredentialEnv(
+  provider: string,
+  value: string,
+): "COMPATIBLE_API_KEY" | "COMPATIBLE_ANTHROPIC_API_KEY" {
+  if (provider === "compatible-endpoint" && value === "COMPATIBLE_API_KEY") return value;
+  if (provider === "compatible-anthropic-endpoint" && value === "COMPATIBLE_ANTHROPIC_API_KEY")
+    return value;
+  fail("inference.nativeCustomCredentialEnv requires its matching Hermes native route");
 }
 
 function presentEnvironmentValue(environment: NodeJS.ProcessEnv, name: string): string | null {
@@ -641,6 +652,7 @@ function profilePathExists(profile: ManagedStartupProfile, profilePath: string):
 function assertInventoryPathsResolved(profile: ManagedStartupProfile): void {
   for (const affordance of MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY[profile.agent]) {
     if (profile.inference === null && affordance.profilePath.startsWith("inference.")) continue;
+    if (affordance.optional && !profilePathExists(profile, affordance.profilePath)) continue;
     if (!profilePathExists(profile, affordance.profilePath)) {
       fail(`${affordance.input} has no resolved value at ${affordance.profilePath}`);
     }
@@ -683,6 +695,7 @@ function assertEnvironmentConsistency(
     NEMOCLAW_MODEL: profile.inference?.model ?? null,
     NEMOCLAW_INFERENCE_PROVIDER_ID: profile.inference?.routeProvider ?? null,
     NEMOCLAW_UPSTREAM_PROVIDER: profile.inference?.upstreamProvider ?? null,
+    NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: profile.inference?.nativeCustomCredentialEnv ?? null,
     NEMOCLAW_SERVING_PRESET: profile.inference?.servingPreset ?? null,
     NEMOCLAW_PRIMARY_MODEL_REF: profile.inference?.primaryModelRef ?? null,
     NEMOCLAW_INFERENCE_BASE_URL: profile.inference?.routedBaseUrl ?? null,
@@ -987,6 +1000,14 @@ function buildCandidate(input: ManagedStartupProfileBuilderInput): {
         : {
             routeProvider: inference.routeProvider,
             upstreamProvider: inference.upstreamProvider,
+            ...(inference.nativeCustomCredentialEnv === undefined
+              ? {}
+              : {
+                  nativeCustomCredentialEnv: requireNativeCustomCredentialEnv(
+                    inference.upstreamProvider,
+                    inference.nativeCustomCredentialEnv,
+                  ),
+                }),
             servingPreset: presentEnvironmentValue(input.environment, "NEMOCLAW_SERVING_PRESET"),
             model: inference.model,
             routedBaseUrl: inference.routedBaseUrl,

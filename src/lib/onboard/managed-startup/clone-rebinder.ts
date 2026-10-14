@@ -39,6 +39,7 @@ const MANAGED_INFERENCE_API_SET = new Set([
  * state before a clone handoff can be prepared.
  */
 export interface ManagedStartupCloneCurrentState {
+  readonly nativeCustomProviderAttachment?: unknown;
   readonly nativeNvidiaProviderAttachment?: unknown;
   readonly nativeHostedProviderAttachment?: unknown;
   readonly provider?: string | null;
@@ -132,6 +133,12 @@ function currentInference(
   profile: ManagedStartupProfile,
   current: ManagedStartupCloneCurrentState,
 ): NonNullable<ManagedStartupProfile["inference"]> {
+  if (
+    profile.inference?.nativeCustomCredentialEnv !== undefined ||
+    current.nativeCustomProviderAttachment !== undefined
+  ) {
+    fail("native custom inference needs destination-scoped authority; re-onboard before cloning");
+  }
   const provider = requireCurrentString(current.provider, "inference provider");
   const model = requireCurrentString(current.model, "inference model");
   const preferredApi = optionalCurrentString(

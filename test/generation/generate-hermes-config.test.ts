@@ -72,6 +72,28 @@ it("uses a resolvable credential in every native NVIDIA inference configuration"
   expect(config.custom_providers[0].api_key).toBe(placeholder);
 });
 
+it("requires the existing attachment build argument for a native custom Hermes route", () => {
+  const route = {
+    NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+    NEMOCLAW_INFERENCE_BASE_URL: "http://host.openshell.internal:11435/v1",
+  };
+  const shared = runConfigScript(route);
+  expect(shared.config.model.api_key).toBe(HERMES_PROXY_REWRITE_SENTINEL);
+  expect(shared.config._nemoclaw_upstream.native_custom_credential_env).toBeUndefined();
+
+  const native = runConfigScript({
+    ...route,
+    NEMOCLAW_INFERENCE_BASE_URL: "https://api.example.com/v1",
+    NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: "COMPATIBLE_API_KEY",
+  });
+  expect(native.config.model.api_key).toBe("sk-OPENSHELL-RESOLVE-ENV-COMPATIBLE_API_KEY");
+  expect(native.config._nemoclaw_upstream.native_custom_credential_env).toBe("COMPATIBLE_API_KEY");
+  expectGenerationError(
+    { ...route, NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: "FOREIGN_KEY" },
+    /matching attached route/,
+  );
+});
+
 const REMOTE_PLATFORM_TOOLSETS = [
   "web",
   "browser",

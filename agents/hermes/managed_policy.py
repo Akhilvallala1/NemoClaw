@@ -169,7 +169,10 @@ def load_managed_policy(path: Path = MANAGED_POLICY_PATH) -> dict:
         if upstream is not None and not isinstance(upstream, str):
             raise ManagedPolicyError("managed policy upstream provider must be a string")
         key = {"compatible-endpoint": "COMPATIBLE_API_KEY", "compatible-anthropic-endpoint": "COMPATIBLE_ANTHROPIC_API_KEY"}.get(upstream)
-        if key and url.hostname != "inference.local":
+        native_custom_credential_env = (upstream_record or {}).get("native_custom_credential_env")
+        if native_custom_credential_env is not None:
+            if not key or native_custom_credential_env != key or url.hostname == "inference.local":
+                raise ManagedPolicyError("managed policy native custom route authority is invalid")
             expected_key = f"sk-OPENSHELL-RESOLVE-ENV-{key}"
         api_key = policy_value(config, "model.api_key")
         hosted_placeholder = None if native_nvidia else _native_hosted_placeholder(config, base_url)

@@ -286,6 +286,7 @@ export function buildHermesManagedPolicy(
       model: settings.model,
       baseUrl: settings.baseUrl,
       upstreamProvider: settings.upstreamProvider,
+      nativeCustomCredentialEnv: settings.nativeCustomCredentialEnv,
       inferenceApi: settings.inferenceApi,
       contextWindow: settings.contextWindow,
     });

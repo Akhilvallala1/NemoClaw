@@ -82,6 +82,7 @@ export function normalizeNativeCustomAdapterTransport(
           input.provider,
           record.sourceEndpointUrl,
           input.sandboxName,
+          input.api === "anthropic-messages" ? "anthropic" : "openai",
         ),
       );
       if (input.endpointUrl !== (input.api === "anthropic-messages" ? expected : `${expected}/v1`))

@@ -130,35 +130,48 @@ it("keeps the current provider and rejects another sandbox's cleanup authority (
   expect(f.adapter.getProvider).not.toHaveBeenCalled();
 });
 
-it("retains cleanup authority after HTTPS adapter revocation fails and converges on retry (#12636)", async () => {
-  const source = "https://api.example.com/v1";
-  const endpoint = `${buildHttpsPinRouteBaseUrl(computeHttpsPinRouteId("nemoclaw", "compatible-endpoint", source, "alpha"))}/v1`;
-  const prepared = {
-    ...buildNativeCustomProfile({
-      sandboxName: "alpha",
-      provider: "compatible-endpoint",
-      endpointUrl: endpoint,
-      api: "openai-completions",
-      addresses: [],
-      transport: {
-        kind: "https-pin",
-        gatewayName: "nemoclaw",
-        sourceEndpointUrl: source,
-        sourceAddresses: ["8.8.8.8"],
-        trustedPrivateEndpoint: false,
-      },
-    }),
-    trustedPrivateEndpoint: false,
-  };
-  const f = await fixture(prepared);
-  const input = { ...f.input, receipts: [], attachment: f.receipt };
-  const revoke = vi.fn(async () => true).mockResolvedValueOnce(false);
-  await expect(retireNativeCustomProviders({ ...input, revokeRoute: revoke })).rejects.toThrow(
-    "authority is retained",
-  );
-  expect(f.clear).not.toHaveBeenCalled();
-  await retireNativeCustomProviders({ ...input, revokeRoute: revoke });
-  expect(f.adapter.deleteProvider).toHaveBeenCalledTimes(1);
-  expect(revoke).toHaveBeenCalledTimes(2);
-  expect(f.clear).toHaveBeenCalledTimes(1);
-});
+it.each(["openai-completions", "anthropic-messages"] as const)(
+  "retains %s cleanup authority after HTTPS revocation fails and converges on retry (#12636)",
+  async (api) => {
+    const source = "https://api.example.com/custom";
+    const routeId = computeHttpsPinRouteId(
+      "nemoclaw",
+      "compatible-endpoint",
+      source,
+      "alpha",
+      api === "anthropic-messages" ? "anthropic" : "openai",
+    );
+    const routeBase = buildHttpsPinRouteBaseUrl(routeId);
+    const endpoint = api === "anthropic-messages" ? routeBase : `${routeBase}/v1`;
+    const prepared = {
+      ...buildNativeCustomProfile({
+        sandboxName: "alpha",
+        provider: "compatible-endpoint",
+        endpointUrl: endpoint,
+        api,
+        addresses: [],
+        transport: {
+          kind: "https-pin",
+          gatewayName: "nemoclaw",
+          sourceEndpointUrl: source,
+          sourceAddresses: ["8.8.8.8"],
+          trustedPrivateEndpoint: false,
+        },
+      }),
+      trustedPrivateEndpoint: false,
+    };
+    const f = await fixture(prepared);
+    const input = { ...f.input, receipts: [], attachment: f.receipt };
+    const revoke = vi.fn(async () => true).mockResolvedValueOnce(false);
+    await expect(retireNativeCustomProviders({ ...input, revokeRoute: revoke })).rejects.toThrow(
+      "authority is retained",
+    );
+    expect(f.clear).not.toHaveBeenCalled();
+    await retireNativeCustomProviders({ ...input, revokeRoute: revoke });
+    expect(f.adapter.deleteProvider).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledTimes(2);
+    expect(revoke).toHaveBeenNthCalledWith(1, routeId);
+    expect(revoke).toHaveBeenNthCalledWith(2, routeId);
+    expect(f.clear).toHaveBeenCalledTimes(1);
+  },
+);

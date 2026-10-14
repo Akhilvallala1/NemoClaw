@@ -25,6 +25,7 @@ export type HermesManagedRouting = {
     provider: string;
     provider_key: string;
     model: string;
+    native_custom_credential_env?: string;
   };
   model: {
     default: string;
@@ -45,6 +46,8 @@ export type HermesManagedRoute = {
   inferenceApi: string;
   contextWindow?: number | null;
   credentialReference?: string;
+  /** Attachment-derived, non-secret native-route authority marker. */
+  nativeCustomCredentialEnv?: string;
 };
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -84,21 +87,34 @@ export function applyHermesManagedRoute(
   const providerName = route.upstreamProvider || "nemoclaw-inference";
   const providerKey = hermesProviderKey(providerName);
   const apiMode = hermesApiMode(route.inferenceApi);
+  const nativeCustomKey =
+    route.upstreamProvider === "compatible-endpoint"
+      ? "COMPATIBLE_API_KEY"
+      : route.upstreamProvider === "compatible-anthropic-endpoint"
+        ? "COMPATIBLE_ANTHROPIC_API_KEY"
+        : null;
   const nativeCustom =
-    new URL(route.baseUrl).hostname !== "inference.local" &&
-    ["compatible-endpoint", "compatible-anthropic-endpoint"].includes(route.upstreamProvider);
+    route.credentialReference !== undefined || route.nativeCustomCredentialEnv !== undefined;
+  if (
+    nativeCustom &&
+    (!nativeCustomKey ||
+      (route.nativeCustomCredentialEnv !== undefined &&
+        route.nativeCustomCredentialEnv !== nativeCustomKey) ||
+      new URL(route.baseUrl).hostname === "inference.local")
+  ) {
+    throw new Error("Hermes native custom inference requires its matching attached route.");
+  }
   const nativeHosted = nativeHostedAgentConfig(route.upstreamProvider, route.baseUrl);
   let apiKey = nativeCustom
-    ? `sk-OPENSHELL-RESOLVE-ENV-${route.upstreamProvider === "compatible-endpoint" ? "COMPATIBLE_API_KEY" : "COMPATIBLE_ANTHROPIC_API_KEY"}`
+    ? `sk-OPENSHELL-RESOLVE-ENV-${nativeCustomKey}`
     : nativeHosted
       ? `\${${nativeHosted.credentialEnv}}`
       : managedInferenceApiKey(route.baseUrl, HERMES_PROXY_REWRITE_SENTINEL);
   if (route.credentialReference !== undefined) {
-    const key =
-      route.upstreamProvider === "compatible-endpoint"
-        ? "COMPATIBLE_API_KEY"
-        : "COMPATIBLE_ANTHROPIC_API_KEY";
-    if (!nativeCustom || !isNativeCustomCredentialReference(route.credentialReference, key))
+    if (
+      !nativeCustomKey ||
+      !isNativeCustomCredentialReference(route.credentialReference, nativeCustomKey)
+    )
       throw new Error(
         "Hermes native custom inference requires its matching issued credential reference.",
       );
@@ -163,6 +179,7 @@ export function applyHermesManagedRoute(
     provider: providerName,
     provider_key: providerKey,
     model: route.model,
+    ...(nativeCustom ? { native_custom_credential_env: nativeCustomKey } : {}),
   };
   config.model = modelConfig;
   config.providers = providers;

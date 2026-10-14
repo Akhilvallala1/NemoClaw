@@ -7,6 +7,7 @@ import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 
 import { readHermesBuildSettings } from "../../../agents/hermes/config/build-env";
+import { buildHermesManagedPolicy } from "../../../agents/hermes/config/managed-policy";
 import { buildConfig as buildOpenClawConfig } from "../../../scripts/generate-openclaw-config.mts";
 import {
   type ManagedStartupAgentEnvironment,
@@ -441,6 +442,30 @@ describe("managed startup agent environment", () => {
     expect(() =>
       mapManagedStartupProfileToAgentEnvironment(openClawProfile(), { [name]: value }),
     ).toThrow(message);
+  });
+
+  it("feeds an attached Hermes route into the existing config generator", () => {
+    const profile = hermesProfile();
+    const attached = {
+      ...profile,
+      inference: {
+        ...profile.inference!,
+        upstreamProvider: "compatible-endpoint",
+        routedBaseUrl: "https://api.example.com/v1",
+        nativeCustomCredentialEnv: "COMPATIBLE_API_KEY" as const,
+      },
+    };
+    const environment = mapManagedStartupProfileToAgentEnvironment(attached);
+    const settings = readHermesBuildSettings(environment.configurationEnvironment);
+    const policy = buildHermesManagedPolicy(settings, {});
+    expect(policy.config.model?.api_key).toBe("sk-OPENSHELL-RESOLVE-ENV-COMPATIBLE_API_KEY");
+    expect(environment.configurationEnvironment.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV).toBe(
+      "COMPATIBLE_API_KEY",
+    );
+    expect(representedLegacyInputs(environment)).toContain("NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV");
+    expect(
+      mapManagedStartupProfileToAgentEnvironment(profile).configurationEnvironment,
+    ).not.toHaveProperty("NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV");
   });
 
   it.each(MANAGED_STARTUP_AGENTS)(
@@ -889,12 +914,17 @@ describe("managed startup agent environment", () => {
   it.each(MANAGED_STARTUP_AGENTS)(
     "represents the complete $0 Docker/start affordance inventory",
     (agent) => {
-      const result = mapManagedStartupProfileToAgentEnvironment(PROFILES[agent]());
+      const profile = PROFILES[agent]();
+      const result = mapManagedStartupProfileToAgentEnvironment(profile);
       expect(representedLegacyInputs(result)).toEqual(
         [
-          ...MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY[agent].map(
-            (affordance) => affordance.input,
-          ),
+          ...MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY[agent]
+            .filter((affordance) =>
+              affordance.optional
+                ? profile.inference?.nativeCustomCredentialEnv !== undefined
+                : true,
+            )
+            .map((affordance) => affordance.input),
           ...(agent === "hermes" ? HERMES_FIXED_RUNTIME_NAMES : []),
         ].sort(),
       );

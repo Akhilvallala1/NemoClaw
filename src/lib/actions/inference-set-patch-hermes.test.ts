@@ -3,10 +3,57 @@
 
 import { describe, expect, it } from "vitest";
 import { HERMES_PROXY_REWRITE_SENTINEL } from "../hermes-managed-route";
+import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../inference/native-custom";
 import type { ConfigObject } from "../security/credential-filter";
 import { patchHermesInferenceConfig } from "./inference-set";
 
 describe("patchHermesInferenceConfig", () => {
+  it("marks an attached native route and clears that authority on a shared switch", async () => {
+    const prepared = await prepareNativeCustomProfile({
+      sandboxName: "hermes-attached",
+      provider: "compatible-endpoint",
+      endpointUrl: "https://api.example.com/v1",
+      api: "openai-completions",
+      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    });
+    const attachment = customAttachmentFromPrepared(prepared, {
+      schemaVersion: 1,
+      profileId: prepared.profile.id,
+      providerName: prepared.providerName,
+      providerId: "owned-provider-id",
+    });
+    const config: ConfigObject = {};
+    patchHermesInferenceConfig(
+      config,
+      "compatible-endpoint",
+      "model",
+      "openai-completions",
+      undefined,
+      attachment,
+    );
+    expect(config._nemoclaw_upstream).toMatchObject({
+      native_custom_credential_env: "COMPATIBLE_API_KEY",
+    });
+    expect(config.model).toMatchObject({
+      api_key: "sk-OPENSHELL-RESOLVE-ENV-COMPATIBLE_API_KEY",
+    });
+    patchHermesInferenceConfig(
+      config,
+      "compatible-endpoint",
+      "model",
+      "openai-completions",
+      undefined,
+      undefined,
+      undefined,
+      false,
+    );
+    expect(config._nemoclaw_upstream).not.toHaveProperty("native_custom_credential_env");
+    expect(config.model).toMatchObject({ api_key: HERMES_PROXY_REWRITE_SENTINEL });
+  });
+
   it("replaces every credential when switching to native NVIDIA inference and back", () => {
     const config: ConfigObject = {};
     patchHermesInferenceConfig(config, "vllm-local", "local-model");

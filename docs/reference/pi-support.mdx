@@ -62,11 +62,18 @@ Pi reads a generated `/sandbox/.pi/agent/models.json` file. The file contains th
 
 Host-local and existing shared-route sandboxes give Pi the managed `inference.local` route. NVIDIA Endpoints uses the least-privilege OpenShell provider attached to the sandbox for `integrate.api.nvidia.com`. Its credential remains in OpenShell provider state across rebuild and sandbox destruction. When no sandbox needs that provider, remove it with `nemoclaw credentials reset <provider> --yes`.
 
-Fresh OpenAI-compatible hosted endpoints use the recorded native provider URL and a sandbox-issued credential reference. HTTPS endpoints retain the host pinning adapter, which holds the upstream credential; OpenShell receives a route-scoped adapter token. Native custom cleanup removes only resources whose ownership NemoClaw can prove. Direct unmanaged provider access is denied. NemoClaw rejects an unsupported API family, empty model, credential-bearing base URL, or malformed model tuning before Pi starts.
+Fresh OpenAI-compatible hosted endpoints use the recorded native provider URL and a sandbox-issued credential reference.
+DNS-backed HTTPS endpoints retain the host pinning adapter, which holds the upstream credential; OpenShell receives a route-scoped adapter token.
+Admitted HTTPS IP-literal endpoints use the sandbox-attached provider directly.
+Native custom cleanup removes only resources whose ownership NemoClaw can prove.
+Direct unmanaged provider access is denied.
+NemoClaw rejects an unsupported API family, empty model, credential-bearing base URL, or malformed model tuning before Pi starts.
 
-When Pi uses the recorded `openrouter-api` provider, `https://inference.local/v1/models` returns `HTTP 404` by design because NemoClaw's OpenRouter adapter serves Chat Completions without a model catalog.
+When Pi retains a shared route with `openrouter-api`, `https://inference.local/v1/models` returns `HTTP 404` by design.
+NemoClaw's shared-route OpenRouter adapter serves Chat Completions without a model catalog.
 NemoClaw reports the route ready only after a bounded inference request successfully serves the selected model.
 If that request fails, the expected catalog response does not make the route ready.
+Fresh OpenRouter selections verify the sandbox-attached provider and send the bounded request through its native endpoint without probing `inference.local`.
 
 The initial qualification requires streaming, a structured `read` tool call, a successful tool result, and an independently checked final response with `nvidia/nemotron-3-super-120b-a12b`.
 

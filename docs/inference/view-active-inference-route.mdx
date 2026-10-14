@@ -85,8 +85,8 @@ Unpublished sandbox rows do not participate in endpoint selection.
 Equivalent stored URL forms, such as a trailing slash difference, count as the same endpoint identity.
 NemoClaw omits the endpoint when participating registry metadata is absent, conflicting, invalid, too long, uses another path shape, or contains userinfo, a query, a fragment, control characters, or recognized credential material in any URL component.
 For shared routes, NemoClaw omits an internal HTTPS-pin adapter URL because it cannot be reused as an upstream endpoint.
-Native custom HTTPS-pin attachments retain the upstream endpoint for recovery.
-The command withholds the recorded adapter endpoint when its path is unsafe to display.
+For native custom adapter attachments, the command evaluates the recorded upstream source endpoint instead of the internal adapter URL.
+It displays that upstream URL when its path is safe and withholds it otherwise.
 When a compatible endpoint is omitted, text output reports `Endpoint: unavailable (<state>)` followed by a credential-free `Action`.
 JSON output adds `endpointStatus` and `endpointRecovery` instead of `endpointUrl`.
 The state is `unavailable` when durable registry metadata cannot be found or an unclassified registry read fails, `registry-corrupt` when the sandbox registry is not valid JSON, `registry-unreadable` when NemoClaw cannot read the registry because of its ownership or permissions, `invalid` when recorded metadata or URL validation cannot prove the live route, `conflicting` when eligible same-gateway rows disagree on endpoint, API family, or credential identity, `withheld` when a syntactically valid URL has an opaque path or recognized credential material that NemoClaw does not display, and `adapter-managed` for an internal HTTPS-pin adapter route.
