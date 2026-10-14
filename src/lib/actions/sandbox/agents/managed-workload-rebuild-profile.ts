@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { recordedNativeProviderAttachment } from "../../../inference/native-provider/recorded-selection";
-import { rebindLoopbackDashboardUrlPort } from "../../../dashboard/url";
+import {
+  rebindLoopbackDashboardUrlPort,
+  resolveRecordedDashboardUrlForPort,
+} from "../../../dashboard/url";
 import { resolveContextWindowForModel } from "../../../inference/context-window";
 import type { SandboxMessagingPlan } from "../../../messaging";
 import { shouldManageDashboardForAgent } from "../../../onboard/dashboard-runtime";
@@ -58,6 +61,11 @@ export function prepareManagedRebuildProfileHandoff(input: {
   readonly recreateOptions: RebuildRecreateOnboardOpts;
   readonly messagingPlan: SandboxMessagingPlan | null;
   readonly environment?: NodeJS.ProcessEnv;
+  /**
+   * The sandbox's registry `dashboardExternalUrl`. Rebuild replays this
+   * recorded origin and never reads `CHAT_UI_URL` from its own environment.
+   */
+  readonly recordedDashboardExternalUrl?: string | null;
 }): ManagedWorkloadRebuildHandoff {
   const { catalogHandoff, targetConfig, recreateOptions, messagingPlan } = input;
   const agent = catalogHandoff.agent;
@@ -84,11 +92,17 @@ export function prepareManagedRebuildProfileHandoff(input: {
       "Cannot rebuild the Hermes dashboard because its managed startup profile has no recorded browser URL. Rerun onboarding, then rebuild the sandbox.",
     );
   }
-  const chatUiUrl = manageDashboard
-    ? previousHermesBrowserUrl === undefined
-      ? `http://127.0.0.1:${String(effectiveDashboardPort)}`
-      : rebindLoopbackDashboardUrlPort(previousHermesBrowserUrl, effectiveDashboardPort)
-    : "";
+  const chatUiUrl = !manageDashboard
+    ? ""
+    : previousHermesBrowserUrl !== undefined
+      ? rebindLoopbackDashboardUrlPort(previousHermesBrowserUrl, effectiveDashboardPort)
+      : agent === "openclaw"
+        ? resolveRecordedDashboardUrlForPort({
+            recordedExternalUrl: input.recordedDashboardExternalUrl,
+            fallbackUrl: previousDashboard.agent === "openclaw" ? previousDashboard.url : null,
+            port: effectiveDashboardPort,
+          })
+        : `http://127.0.0.1:${String(effectiveDashboardPort)}`;
   const nativeAttachment = recordedNativeProviderAttachment(resumeConfig);
   const inference = managedRebuildProfileDependencies.resolveManagedStartupInferenceRoute(
     agent,

@@ -2222,6 +2222,7 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
         updateReusedSandboxMetadata,
         releaseDashboardPort: dashboardPortReservationScope.release,
         revalidateSandboxIdentity: (operation) => revalidateSandboxIdentity(true, operation),
+        cliName: cliName(),
       }));
     };
     if (recreateRuntime.acceptedTarget && !resumingVerifiedCreate) {

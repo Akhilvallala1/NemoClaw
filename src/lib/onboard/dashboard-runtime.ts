@@ -2,9 +2,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { isTerminalAgent } from "../agent/runtime-manifest";
+import { resolveRecordedDashboardUrlForPort } from "../dashboard/url";
 import { isRemoteDashboardBindRequested } from "./dockerfile-remote-dashboard-bind-contract";
 
 export type DashboardForwardBind = "127.0.0.1" | "0.0.0.0";
+
+/**
+ * Choose the dashboard URL that a rebuild bakes into an agent's replacement
+ * image. OpenClaw replays the recorded external origin (#13177); every other
+ * agent keeps its loopback dashboard URL.
+ */
+export function rebuildDashboardChatUiUrl(input: {
+  readonly agentName: string | null | undefined;
+  readonly recordedExternalUrl: string | null | undefined;
+  readonly port: number;
+}): string {
+  return (input.agentName ?? "openclaw") === "openclaw"
+    ? resolveRecordedDashboardUrlForPort({
+        recordedExternalUrl: input.recordedExternalUrl ?? null,
+        port: input.port,
+      })
+    : `http://127.0.0.1:${String(input.port)}`;
+}
 
 /** Preserve the persisted dashboard bind while honoring a current remote or WSL request. */
 export function resolveDashboardForwardBind(
