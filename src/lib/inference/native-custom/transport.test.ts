@@ -1,7 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import fs from "node:fs";
+import http from "node:http";
+import { Socket } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
+import * as probe from "../../adapters/http/probe";
+import * as forward from "../https-pin-runtime-adapter-forward";
+import { probeAnthropicEndpoint } from "../probe-anthropic";
+import { __test, createHttpsPinRuntimeAdapterServer } from "../https-pin-runtime-adapter";
 import { parseAndValidateSandboxPolicy } from "../../policy/sandbox-policy-validation";
 import { buildNativeCustomSandboxPolicy } from "./network-policy";
 import {
@@ -15,7 +22,10 @@ import { buildHttpsPinRouteBaseUrl, computeHttpsPinRouteId } from "../https-pin-
 import { BEDROCK_RUNTIME_ADAPTER_OPENAI_BASE_URL } from "../bedrock-runtime";
 import type { ensureHttpsPinRuntimeAdapter } from "../https-pin-runtime-adapter";
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 const input = {
   sandboxName: "alpha",
   gatewayName: "nemoclaw",
@@ -158,6 +168,59 @@ it("uses the bare HTTPS-pin route for Anthropic Messages while preserving the ex
   expect(selected.prepared.profile.endpoints[0].rules).toContainEqual({
     allow: { method: "POST", path: `${new URL(routeBase).pathname}/v1/messages` },
   });
+  const routeId = new URL(routeBase).pathname.split("/").at(-1)!;
+  const generation = "11111111111111111111111111111111";
+  const routeToken = __test.deriveRouteToken("test-control-token", routeId, generation);
+  const adapter = createHttpsPinRuntimeAdapterServer({
+    controlToken: "test-control-token",
+    logger: () => {},
+    initialRoutes: {
+      [routeId]: {
+        targetBaseUrl: "https://api.example.com",
+        pinnedAddresses: ["8.8.8.8"],
+        providerType: "anthropic",
+        credentialValue: anthropic.credentialValue,
+        generation,
+      },
+    },
+  });
+  const forwarded = vi.spyOn(forward, "forwardHttpsPinnedRequest").mockResolvedValue(200);
+  const socket = new Socket();
+  Object.defineProperty(socket, "remoteAddress", { value: "127.0.0.1" });
+  try {
+    vi.spyOn(probe, "runCurlProbe").mockImplementation((argv) => {
+      const auth = fs.readFileSync(argv[argv.indexOf("--config") + 1], "utf8");
+      const request = new http.IncomingMessage(socket);
+      request.method = "POST";
+      request.url = new URL(argv.at(-1)!).pathname;
+      request.headers["x-api-key"] = auth.match(/x-api-key: ([^"\n]+)/)?.[1];
+      // Exercise the real adapter's route parsing and authentication without opening a socket.
+      adapter.emit("request", request, new http.ServerResponse(request));
+      expect(forwarded).toHaveBeenCalledWith(
+        expect.objectContaining({
+          forwardPath: "/v1/messages",
+          target: expect.objectContaining({
+            credential: { name: "x-api-key", value: anthropic.credentialValue },
+          }),
+        }),
+      );
+      return {
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body: "{}",
+        stderr: "",
+        message: "HTTP 200",
+      };
+    });
+    expect(
+      probeAnthropicEndpoint(selected.prepared.endpointUrl, "claude-test", routeToken).ok,
+    ).toBe(true);
+    expect(forwarded).toHaveBeenCalledOnce();
+  } finally {
+    socket.destroy();
+    adapter.close();
+  }
   expect(
     normalizeNativeCustomAdapterTransport(selected.prepared.transport, {
       ...anthropic,

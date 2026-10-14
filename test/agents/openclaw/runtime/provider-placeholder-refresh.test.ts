@@ -102,16 +102,30 @@ describe.concurrent("native inference handle refresh", () => {
     ],
     [false, "COMPATIBLE_ANTHROPIC_API_KEY", "https://example.com/v1", `s${"b".repeat(64)}`],
     [true, "COMPATIBLE_ANTHROPIC_API_KEY", "https://example.com/v1", `s${"b".repeat(64)}`],
+    [
+      false,
+      "COMPATIBLE_ANTHROPIC_API_KEY",
+      "https://example.com",
+      `s${"b".repeat(64)}`,
+      "anthropic",
+    ],
+    [
+      true,
+      "COMPATIBLE_ANTHROPIC_API_KEY",
+      "https://example.com",
+      `s${"b".repeat(64)}`,
+      "anthropic",
+    ],
   ])(
     "refreshes only the selected native inference handle after supervisor restart (root=%s, key=%s)",
-    async (rootMode, key, endpoint, scope) => {
+    async (rootMode, key, endpoint, scope, providerKey = "inference") => {
       const oldHandle = `openshell:resolve:env:v42_${key}`;
       const currentHandle = `openshell:resolve:env:${scope}_${key}`;
       const run = await runRefresh(
         {
           models: {
             providers: {
-              inference: {
+              [providerKey]: {
                 baseUrl: endpoint,
                 apiKey: oldHandle,
               },
@@ -124,7 +138,7 @@ describe.concurrent("native inference handle refresh", () => {
       );
 
       expect(run.result.status, run.result.stderr).toBe(0);
-      expect(run.config.models.providers.inference.apiKey).toBe(currentHandle);
+      expect(run.config.models.providers[providerKey].apiKey).toBe(currentHandle);
       expect(run.config.channels.telegram.botToken).toBe(oldHandle);
       expect(run.result.stderr).toContain(
         `Refreshed provider placeholders from OpenShell runtime env: ${key}`,
@@ -172,18 +186,40 @@ describe.concurrent("native inference handle refresh", () => {
       runtime: "openshell:resolve:env:v43_COMPATIBLE_ANTHROPIC_API_KEY",
       rootMode: true,
     },
+    {
+      reason: "raw Anthropic credential in root environment",
+      providerKey: "anthropic",
+      key: "COMPATIBLE_ANTHROPIC_API_KEY",
+      endpoint: "https://example.com",
+      runtime: "nvapi-raw-secret",
+      rootMode: true,
+    },
+    {
+      reason: "wrong Anthropic credential key",
+      providerKey: "anthropic",
+      key: "COMPATIBLE_ANTHROPIC_API_KEY",
+      endpoint: "https://example.com",
+      runtime: "openshell:resolve:env:v43_COMPATIBLE_API_KEY",
+      rootMode: false,
+    },
   ])(
     "keeps the persisted native inference handle when refresh has $reason",
-    async ({ endpoint, runtime, rootMode, key = "NVIDIA_INFERENCE_API_KEY" }) => {
+    async ({
+      endpoint,
+      runtime,
+      rootMode,
+      key = "NVIDIA_INFERENCE_API_KEY",
+      providerKey = "inference",
+    }) => {
       const saved = `openshell:resolve:env:v42_${key}`;
       const run = await runRefresh(
-        { models: { providers: { inference: { baseUrl: endpoint, apiKey: saved } } } },
+        { models: { providers: { [providerKey]: { baseUrl: endpoint, apiKey: saved } } } },
         runtime ? { [key]: runtime } : {},
         rootMode,
       );
 
       expect(run.result.status, run.result.stderr).toBe(0);
-      expect(run.config.models.providers.inference.apiKey).toBe(saved);
+      expect(run.config.models.providers[providerKey].apiKey).toBe(saved);
       expect(JSON.stringify(run.config)).not.toContain("nvapi-raw-secret");
       expect(run.result.stderr).not.toContain("nvapi-raw-secret");
       expect(run.handoffEnv).not.toContain("nvapi-raw-secret");

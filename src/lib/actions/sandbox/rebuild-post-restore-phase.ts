@@ -375,28 +375,41 @@ export async function runRebuildPostRestorePhase(
         return;
       }
       if (recreatedEntry.nativeCustomProviderAttachment) {
-        const gatewayName =
-          mcpRuntimeSelection?.gatewayName ?? getPersistedSandboxTargetGatewayName(recreatedEntry);
-        if (
-          !gatewayName ||
-          (recreatedEntry.provider !== "compatible-endpoint" &&
-            recreatedEntry.provider !== "compatible-anthropic-endpoint") ||
-          !recreatedEntry.model
-        )
-          throw new Error(
-            "Native custom restore requires its selected gateway, provider, and model.",
+        try {
+          const gatewayName =
+            mcpRuntimeSelection?.gatewayName ??
+            getPersistedSandboxTargetGatewayName(recreatedEntry);
+          if (
+            !gatewayName ||
+            (recreatedEntry.provider !== "compatible-endpoint" &&
+              recreatedEntry.provider !== "compatible-anthropic-endpoint") ||
+            !recreatedEntry.model
+          )
+            throw new Error(
+              "Native custom restore requires its selected gateway, provider, and model.",
+            );
+          // Full-home restore contains the old supervisor's revision-bound reference.
+          // Resolve the replacement's reference while its gateway remains offline.
+          await rebuildOnboardDependencies.refreshRestoredOpenClawInference({
+            sandboxName,
+            model: recreatedEntry.model,
+            provider: recreatedEntry.provider,
+            preferredInferenceApi: recreatedEntry.preferredInferenceApi ?? null,
+            gatewayName,
+            environment: buildSandboxCommandEnvironment(mcpRuntimeSelection),
+            attachment: recreatedEntry.nativeCustomProviderAttachment,
+          });
+        } catch {
+          log("Native custom inference refresh failed; diagnostic details omitted.");
+          console.error("  OpenClaw native custom inference could not be refreshed after restore.");
+          if (backupManifest)
+            console.error(`  Backup is preserved at: ${backupManifest.backupPath}`);
+          console.error(
+            `  Restore the provider attachment, then rerun \`${CLI_NAME} ${sandboxName} rebuild --yes\`.`,
           );
-        // Full-home restore contains the old supervisor's revision-bound reference.
-        // Resolve the replacement's reference while its gateway remains offline.
-        await rebuildOnboardDependencies.refreshRestoredOpenClawInference({
-          sandboxName,
-          model: recreatedEntry.model,
-          provider: recreatedEntry.provider,
-          preferredInferenceApi: recreatedEntry.preferredInferenceApi ?? null,
-          gatewayName,
-          environment: buildSandboxCommandEnvironment(mcpRuntimeSelection),
-          attachment: recreatedEntry.nativeCustomProviderAttachment,
-        });
+          bail("OpenClaw native custom inference refresh failed during rebuild.");
+          return;
+        }
       }
       log("Releasing OpenClaw for one final start after all offline post-restore writes");
       const startResult = await finishUnregisteredOpenClawPostRestoreDoctor(openClawDoctorWindow);

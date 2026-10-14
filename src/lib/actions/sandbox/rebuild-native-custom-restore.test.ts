@@ -262,25 +262,59 @@ describe("native custom rebuild restoration", () => {
     expect(order.indexOf("route-written")).toBeLessThan(order.indexOf("native-start"));
   });
 
+  async function expectFailedRestoreRecovery() {
+    const args = {
+      ...input(),
+      backupManifest: { backupPath: "/private/alpha-backup" } as never,
+      mcpRuntimeSelection: { gatewayName: "nemoclaw-9090" } as never,
+    };
+    await runRebuildPostRestorePhase(args);
+    expect(args.bail).toHaveBeenCalledWith(
+      "OpenClaw native custom inference refresh failed during rebuild.",
+    );
+    const output = vi.mocked(console.error).mock.calls.flat().join("\n");
+    expect(output).toContain("Backup is preserved at: /private/alpha-backup");
+    expect(output).toContain("alpha rebuild --yes");
+    expect(output).not.toContain("nvapi-test-secret");
+    expect(args.log.mock.calls.flat().join("\n")).not.toContain("nvapi-test-secret");
+    expect(restoreWindow.finishUnregisteredOpenClawPostRestoreDoctor).not.toHaveBeenCalled();
+    expect(restoreWindow.abortUnregisteredOpenClawPostRestoreDoctor).toHaveBeenCalledOnce();
+  }
+
   it.each(["verify", "resolveReference"] as const)(
     "keeps restoration offline when %s verification fails (#12636)",
     async (failure) => {
       const fixture = nativeCustomRestore();
-      fixture[failure].mockRejectedValue(new Error("restored authority unavailable"));
-      await expect(
-        runRebuildPostRestorePhase({
-          ...input(),
-          mcpRuntimeSelection: { gatewayName: "nemoclaw-9090" } as never,
-        }),
-      ).rejects.toThrow();
+      fixture[failure].mockImplementation(() => {
+        throw new Error("restored authority unavailable: nvapi-test-secret");
+      });
+      await expectFailedRestoreRecovery();
       expect(fixture.write).not.toHaveBeenCalled();
-      expect(restoreWindow.finishUnregisteredOpenClawPostRestoreDoctor).not.toHaveBeenCalled();
-      expect(restoreWindow.abortUnregisteredOpenClawPostRestoreDoctor).toHaveBeenCalledOnce();
       expect(fixture.config.models.providers.inference.apiKey).toBe(
         "openshell:resolve:env:v1_COMPATIBLE_API_KEY",
       );
     },
   );
+
+  it("keeps restoration offline when writing the refreshed route fails (#12636)", async () => {
+    const fixture = nativeCustomRestore();
+    fixture.write.mockImplementation(() => {
+      throw new Error("restored authority unavailable: nvapi-test-secret");
+    });
+    await expectFailedRestoreRecovery();
+    expect(fixture.write).toHaveBeenCalledOnce();
+  });
+
+  it("keeps restoration offline when the selected model is missing (#12636)", async () => {
+    const fixture = nativeCustomRestore();
+    const entry = registry.getSandbox("alpha")!;
+    vi.mocked(registry.getSandbox).mockReturnValue({ ...entry, model: undefined });
+    await expectFailedRestoreRecovery();
+    expect(fixture.write).not.toHaveBeenCalled();
+    expect(fixture.config.models.providers.inference.apiKey).toBe(
+      "openshell:resolve:env:v1_COMPATIBLE_API_KEY",
+    );
+  });
 
   it("verifies native Anthropic inference after its restored gateway starts (#12636)", async () => {
     const fixture = nativeCustomRestore(
