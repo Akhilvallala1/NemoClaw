@@ -1285,11 +1285,12 @@ async function runInferenceSetWithoutHostLock(
   // Registered peers are compared exactly as recorded. In particular, a
   // stopped legacy Hermes row that still records the Anthropic frontend will
   // depend on that route when restarted and must not be normalized away.
+  const selectingLocalNimSharedRoute = keepsLocalNimSharedRoute(entry, provider);
   const selectingNativeLocal = usesNativeLocalInferenceForAgent(
     agentName,
     provider,
     options.endpointUrl ?? (entry.provider === provider ? entry.endpointUrl : null),
-    keepsLocalNimSharedRoute(entry, provider),
+    selectingLocalNimSharedRoute,
   );
   const selectingNative =
     selectingNativeLocal ||
@@ -1385,6 +1386,7 @@ async function runInferenceSetWithoutHostLock(
   // provider binding. Verify its model switches through the sandbox route too.
   const probeSandboxRoute =
     selectingNative ||
+    selectingLocalNimSharedRoute ||
     provider === "openrouter-api" ||
     isSandboxBridgeProviderBinding(directProviderBinding) ||
     loopbackNoAuthProxyRoute;

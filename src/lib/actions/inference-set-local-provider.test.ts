@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ConfigObject } from "../security/credential-filter";
 import { runInferenceSet } from "./inference-set";
 import { baseSession, createDeps } from "../../../test/helpers/inference-set";
@@ -37,6 +37,43 @@ describe("runInferenceSet local-provider verification", () => {
       }),
     );
     expect(deps.calls.ensureLocalProviderReachable).not.toHaveBeenCalled();
+  });
+
+  it("keeps an owned Local NIM selection on the shared route and probes it from the sandbox", async () => {
+    const deps = createDeps({
+      config: localConfig(),
+      entry: {
+        name: "alpha",
+        agent: "openclaw",
+        provider: "vllm-local",
+        model: "old-model",
+        endpointUrl: "http://host.openshell.internal:8000/v1",
+        endpointSource: "onboard",
+        preferredInferenceApi: "openai-completions",
+        nimContainer: "nemoclaw-nim-owned",
+      },
+      session: baseSession(),
+    });
+    const requireNativeProviderPolicy = vi.fn(async () => {});
+    const prepareNativeLocalSwitch = vi.fn(deps.prepareNativeLocalSwitch);
+    deps.requireNativeProviderPolicy = requireNativeProviderPolicy;
+    deps.prepareNativeLocalSwitch = prepareNativeLocalSwitch;
+
+    await runInferenceSet({ provider: "vllm-local", model: "new-model" }, deps);
+
+    expect(requireNativeProviderPolicy).not.toHaveBeenCalled();
+    expect(prepareNativeLocalSwitch).not.toHaveBeenCalled();
+    expect(deps.calls.captureOpenshell.mock.calls.some(([args]) => args[0] === "inference")).toBe(
+      true,
+    );
+    expect(deps.calls.probeSandboxRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxName: "alpha",
+        provider: "vllm-local",
+        model: "new-model",
+      }),
+    );
+    expect(deps.calls.probeSandboxRoute.mock.calls[0]?.[0]).not.toHaveProperty("nativeProvider");
   });
 
   it("normalizes the underscore provider spelling before the local-provider branch (#11369)", async () => {
