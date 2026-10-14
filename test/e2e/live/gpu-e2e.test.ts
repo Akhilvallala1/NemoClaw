@@ -427,8 +427,18 @@ test(
       credentialBoundary:
         "The existing proxy owner authenticates observation; exported inference providers omit credentials and internal endpoints.",
     });
+    await host.command("lsof", ["-nP", "-iTCP:8080", "-sTCP:LISTEN"], {
+      artifactName: "export-gateway-listener-before-preclean",
+      env: env(),
+      timeoutMs: 10_000,
+    });
     // Pre-clean may start a gateway; do it before creating the fresh private HOME.
     await cleanupGpu(host, lifecycle, sandbox, env());
+    await host.command("lsof", ["-nP", "-iTCP:8080", "-sTCP:LISTEN"], {
+      artifactName: "export-gateway-listener-after-preclean",
+      env: env(),
+      timeoutMs: 10_000,
+    });
     // The SDK rejects gateway state below a world-writable ancestor such as /tmp.
     const directory = createGpuPrivateHome(os.homedir());
     const exportEnv = env({
