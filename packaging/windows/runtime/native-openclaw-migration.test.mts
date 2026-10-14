@@ -292,6 +292,37 @@ test("migration keeps incomplete state when the lease is lost after import", asy
   await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
 });
 
+test("migration reports lease loss only after stopping the active importer and retains its archives", async (t) => {
+  const f = await fixture(
+    t,
+    migrationApp(
+      "",
+      `fs.writeFileSync(path.join(__dirname, 'importer.pid'), String(process.pid));
+      fs.renameSync(store, archive);
+      await new Promise(resolve => setTimeout(resolve, 60000));`,
+    ),
+  );
+  const original = fs.readFileSync(f.store);
+  const transcript = fs.readFileSync(f.transcript);
+  const revoked = new Error("lease revoked during import");
+  await assert.rejects(
+    migrateNativeOpenClawSessions({
+      ...f,
+      assertHeld() {
+        if (fs.existsSync(f.archive)) throw revoked;
+      },
+    }),
+    (error) => error === revoked,
+  );
+  const pid = Number(fs.readFileSync(path.join(f.runtimeRoot, "importer.pid"), "utf8"));
+  assert.ok(Number.isInteger(pid) && pid > 0);
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  assert.deepEqual(fs.readFileSync(f.archive), original);
+  assert.deepEqual(fs.readFileSync(f.transcript), transcript);
+  assert.equal(fs.existsSync(f.pending), true);
+  await assert.rejects(migrateNativeOpenClawSessions(f), /upgraded safely/u);
+});
+
 test("migration persists incomplete state before the importer starts", async (t) => {
   const f = await fixture(
     t,

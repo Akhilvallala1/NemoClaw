@@ -254,6 +254,7 @@ export async function migrateNativeOpenClawSessions(options: {
       let output = "";
       let bytes = 0;
       let stopped = false;
+      let leaseFailure: { error: unknown } | undefined;
       const stop = () => {
         stopped = true;
         child.kill();
@@ -262,7 +263,8 @@ export async function migrateNativeOpenClawSessions(options: {
       const guard = setInterval(() => {
         try {
           options.assertHeld();
-        } catch {
+        } catch (error) {
+          leaseFailure ??= { error };
           stop();
         }
       }, 250);
@@ -282,7 +284,8 @@ export async function migrateNativeOpenClawSessions(options: {
         clearTimeout(timeout);
         clearInterval(guard);
         options.signal?.removeEventListener("abort", stop);
-        if (stopped || code !== 0) reject(failure());
+        if (leaseFailure) reject(leaseFailure.error);
+        else if (stopped || code !== 0) reject(failure());
         else resolve(output);
       });
     });
