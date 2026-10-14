@@ -418,7 +418,7 @@ Refer to [Choose an Inference Provider](../inference/learn-and-choose/choose-inf
 Provider credentials live in OpenShell's credential store, not on the host filesystem.
 NemoClaw never writes them to host disk.
 The OpenShell L7 proxy injects values for shared routes.
-The sandbox-attached NVIDIA provider rewrites its placeholder credential at egress.
+Sandbox-attached NVIDIA, fixed hosted, and fresh custom hosted providers rewrite their placeholder credentials at egress.
 Refer to [Credential Storage](../security/credential-storage) for the inspection, rotation, and migration flow.
 
 ## Host-Side State and Config

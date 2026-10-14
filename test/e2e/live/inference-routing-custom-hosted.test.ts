@@ -990,7 +990,6 @@ test(
         ),
     ).toBe(true);
     await verifyFreshNativeAnthropicEndpoint(fixtures, { sandboxName, apiKey, publicHttpAddress });
-    await verifyFreshNativeHermesEndpoint(fixtures, { endpoint: publicHttp, apiKey, model });
     progress.phase("verify final native provider cleanup");
     await cleanupSandbox(host, sandbox, peerName, { strict: true });
     const peerProviderAfterDestroy = await sandbox.openshell(
@@ -1017,6 +1016,8 @@ test(
     expect(resultText(httpProviderAfterDestroy)).toMatch(
       /\bNotFound\b|\bnot\s+found\b|does\s+not\s+exist/iu,
     );
+    // Retire the Responses peer before Hermes selects Completions on the shared provider.
+    await verifyFreshNativeHermesEndpoint(fixtures, { endpoint: publicHttp, apiKey, model });
     await artifacts.target.complete({
       id: "https-pin-runtime-adapter-dns-backed-endpoint",
       sandboxName,
