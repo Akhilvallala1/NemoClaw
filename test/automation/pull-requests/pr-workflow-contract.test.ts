@@ -322,6 +322,8 @@ function runSdkPackageLocator(fixture: SdkPackageLocatorFixture): Readonly<{
         REPOSITORY_ID: "123",
         HEAD_REPOSITORY: fixture.headRepository ?? "NVIDIA/NemoClaw",
         CANDIDATE_SHA: "a".repeat(40),
+        UPGRADE_BASE_SHA: "b".repeat(40),
+        UPGRADE_PR_NUMBER: "123",
         PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
       },
       tempRoot,

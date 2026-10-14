@@ -74,6 +74,7 @@ describe("candidate SDK artifact provenance", () => {
     ["status", "in_progress"],
     ["conclusion", "failure"],
     ["head_sha", "f".repeat(40)],
+    ["head_sha", "b".repeat(40)],
   ] as const)("rejects producer %s=%s", (key, value) => {
     const f = fixture();
     f.run[key] = value;
@@ -85,6 +86,19 @@ describe("candidate SDK artifact provenance", () => {
   it.each(["repository", "head_repository"] as const)("rejects a different producer %s", (key) => {
     const f = fixture();
     f.run[key].full_name = "attacker/NemoClaw";
+    const result = f.execute();
+    expect(result.status).not.toBe(0);
+    expect(result.output).not.toContain("artifact_id=");
+  });
+
+  it.each([
+    [],
+    [{ number: 124, head: { sha: "a".repeat(40) }, base: { sha: "b".repeat(40) } }],
+    [{ number: 123, head: { sha: "f".repeat(40) }, base: { sha: "b".repeat(40) } }],
+    [{ number: 123, head: { sha: "a".repeat(40) }, base: { sha: "f".repeat(40) } }],
+  ])("rejects a target producer without the exact PR association: %j", (...associations) => {
+    const f = fixture();
+    f.run.pull_requests = associations;
     const result = f.execute();
     expect(result.status).not.toBe(0);
     expect(result.output).not.toContain("artifact_id=");

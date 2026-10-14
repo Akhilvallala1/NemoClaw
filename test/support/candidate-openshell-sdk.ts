@@ -179,6 +179,13 @@ export function candidateSdkLocatorFixture(
         : ".github/workflows/main.yaml",
     head_sha: sdkCandidateIdentity.candidateSha,
     head_branch: mode === "candidate" ? "upgrade" : "main",
+    pull_requests: [
+      {
+        number: sdkCandidateIdentity.prNumber,
+        head: { sha: sdkCandidateIdentity.candidateSha },
+        base: { sha: sdkCandidateIdentity.baseSha },
+      },
+    ],
     event: mode === "candidate" ? "pull_request_target" : "push",
     status: "completed",
     conclusion: "success",
@@ -228,6 +235,8 @@ else process.exit(97);
           HEAD_REPOSITORY: "NVIDIA/NemoClaw",
           REPOSITORY_ID: "888",
           CANDIDATE_SHA: sdkCandidateIdentity.candidateSha,
+          UPGRADE_BASE_SHA: sdkCandidateIdentity.baseSha,
+          UPGRADE_PR_NUMBER: String(sdkCandidateIdentity.prNumber),
           SDK_LOCATOR_DECISION: JSON.stringify(decision),
           SDK_LOCATOR_ARTIFACTS: JSON.stringify([{ artifacts: [artifact] }]),
           SDK_LOCATOR_RUN: JSON.stringify(run),

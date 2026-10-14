@@ -288,11 +288,13 @@ jobs:
           }
           run_id="$(jq -er '.workflow_run.id | select(type == "number" and . > 0 and . <= 9007199254740991)' <<<"$artifact")"
           artifact_id="$(jq -er '.id | select(type == "number" and . > 0 and . <= 9007199254740991)' <<<"$artifact")"
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" 2>/dev/null | jq -e --arg repo "$GITHUB_REPOSITORY" --arg candidate "$candidate" --arg sha "$CANDIDATE_SHA" '
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" 2>/dev/null | jq -e --arg repo "$GITHUB_REPOSITORY" --arg candidate "$candidate" --arg sha "$CANDIDATE_SHA" --arg base "$UPGRADE_BASE_SHA" --argjson pr "$UPGRADE_PR_NUMBER" '
             (if $candidate == "true" then
               (.path | split("@")[0]) == ".github/workflows/candidate-upgrade-admission.yaml"
               and .status == "completed" and .conclusion == "success"
-              and ((.event == "pull_request_target" and .head_sha == $sha) or (.event == "issue_comment" and .head_branch == "main"))
+              and ((.event == "pull_request_target" and .head_sha == $sha
+                and any(.pull_requests[]?; .number == $pr and .head.sha == $sha and .base.sha == $base))
+                or (.event == "issue_comment" and .head_branch == "main"))
             else
               (.path | split("@")[0]) == ".github/workflows/main.yaml" and .head_branch == "main"
               and (.event == "push" or .event == "workflow_dispatch")
