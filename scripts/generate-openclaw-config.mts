@@ -16,7 +16,7 @@
 //   NEMOCLAW_TOOL_DISCLOSURE,
 //   NEMOCLAW_AGENT_TIMEOUT, NEMOCLAW_AGENT_HEARTBEAT_EVERY,
 //   NEMOCLAW_INFERENCE_COMPAT_B64,
-//   NEMOCLAW_DASHBOARD_BIND, NEMOCLAW_WSL_DASHBOARD_EXPOSURE,
+//   NEMOCLAW_DASHBOARD_BIND, NEMOCLAW_WSL_DASHBOARD_EXPOSURE, NEMOCLAW_DASHBOARD_ORIGINS,
 //   NEMOCLAW_DISABLE_DEVICE_AUTH,
 //   NEMOCLAW_DEVICE_AUTH_OPT_OUT_SOURCE,
 //   NEMOCLAW_EXTRA_AGENTS_JSON_B64,
@@ -154,6 +154,50 @@ function resolveWebSearchProvider(env: Env): WebSearchProvider {
 
 function unique<T>(values: Iterable<T>): T[] {
   return [...new Set(values)];
+}
+
+const DASHBOARD_ORIGINS_ENV = "NEMOCLAW_DASHBOARD_ORIGINS";
+
+/**
+ * Read extra browser origins for the dashboard (#13177). Each entry must be a
+ * bare origin that keeps its own port. A remote origin must use https, so the
+ * list cannot widen the gateway to an unauthenticated plain-http page.
+ */
+function readDashboardOriginsEnv(env: Env): string[] {
+  const raw = env[DASHBOARD_ORIGINS_ENV] ?? "";
+  const origins: string[] = [];
+  for (const entry of raw.split(",")) {
+    const value = entry.trim();
+    if (!value) continue;
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error(
+        `${DASHBOARD_ORIGINS_ENV} entry is not an absolute URL: ${JSON.stringify(value)}`,
+      );
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new Error(
+        `${DASHBOARD_ORIGINS_ENV} entry must use http or https: ${JSON.stringify(value)}`,
+      );
+    }
+    if (url.username || url.password) {
+      throw new Error(`${DASHBOARD_ORIGINS_ENV} entry must not include user information`);
+    }
+    if (url.origin !== value.replace(/\/$/, "")) {
+      throw new Error(
+        `${DASHBOARD_ORIGINS_ENV} entry must be a bare origin without a path, query, or fragment: ${JSON.stringify(value)}`,
+      );
+    }
+    if (url.protocol === "http:" && !isLoopback(url.hostname)) {
+      throw new Error(
+        `${DASHBOARD_ORIGINS_ENV} entry must use https unless its host is loopback: ${JSON.stringify(value)}`,
+      );
+    }
+    origins.push(url.origin);
+  }
+  return origins;
 }
 
 function expandUser(pathValue: string): string {
@@ -904,7 +948,11 @@ export function buildConfig(env: Env = process.env): JsonObject {
     parsed.scheme && parsed.hostname && parsed.port !== null && !isLoopback(parsed.hostname)
       ? `${parsed.scheme}://${hostForOrigin(parsed.hostname)}`
       : null;
-  const origins = unique([loopbackOrigin, chatOrigin, portlessOrigin].filter(Boolean) as string[]);
+  const origins = unique(
+    [loopbackOrigin, chatOrigin, portlessOrigin, ...readDashboardOriginsEnv(env)].filter(
+      Boolean,
+    ) as string[],
+  );
 
   const isRemote = !isLoopback(parsed.hostname || "");
   const dashboardBind = readOptionalEnumEnv(
