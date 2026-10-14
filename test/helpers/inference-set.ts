@@ -280,6 +280,7 @@ export function createDeps(options: {
   rewriteConfigUrlsWithDnsPinning?: (value: ConfigValue) => Promise<ConfigValue>;
   resolveCredentialValue?: InferenceSetDeps["resolveCredentialValue"];
   resolveNativeNvidiaCredentialReference?: InferenceSetDeps["resolveNativeNvidiaCredentialReference"];
+  readNativeNvidiaCredentialHandle?: InferenceSetDeps["readNativeNvidiaCredentialHandle"];
   ensureHttpsPinRuntimeAdapter?: EnsureHttpsPinRuntimeAdapterFn;
   revokeHttpsPinRuntimeAdapterRoute?: InferenceSetDeps["revokeHttpsPinRuntimeAdapterRoute"];
   probeSandboxRoute?: InferenceSetDeps["probeSandboxRoute"];
@@ -306,6 +307,7 @@ export function createDeps(options: {
     prepareRunOpenshell: ReturnType<typeof vi.fn>;
     rewriteConfigUrlsWithDnsPinning: ReturnType<typeof vi.fn>;
     resolveCredentialValue: ReturnType<typeof vi.fn>;
+    readNativeNvidiaCredentialHandle: ReturnType<typeof vi.fn>;
     ensureHttpsPinRuntimeAdapter: ReturnType<typeof vi.fn>;
     revokeHttpsPinRuntimeAdapterRoute: ReturnType<typeof vi.fn>;
     probeSandboxRoute: ReturnType<typeof vi.fn>;
@@ -356,6 +358,10 @@ export function createDeps(options: {
     resolveCredentialValue: vi.fn(
       options.resolveCredentialValue ??
         ((credentialEnv: string) => process.env[credentialEnv] ?? "test-credential-value"),
+    ),
+    readNativeNvidiaCredentialHandle: vi.fn(
+      options.readNativeNvidiaCredentialHandle ??
+        (async () => "openshell:resolve:env:v1_NVIDIA_INFERENCE_API_KEY"),
     ),
     ensureHttpsPinRuntimeAdapter: vi.fn(
       options.ensureHttpsPinRuntimeAdapter ??
@@ -484,6 +490,7 @@ export function createDeps(options: {
     resolveNativeNvidiaCredentialReference:
       options.resolveNativeNvidiaCredentialReference ??
       vi.fn(async () => "openshell:resolve:env:v1_NVIDIA_INFERENCE_API_KEY"),
+    readNativeNvidiaCredentialHandle: calls.readNativeNvidiaCredentialHandle,
     ensureHttpsPinRuntimeAdapter:
       calls.ensureHttpsPinRuntimeAdapter as unknown as EnsureHttpsPinRuntimeAdapterFn,
     revokeHttpsPinRuntimeAdapterRoute:

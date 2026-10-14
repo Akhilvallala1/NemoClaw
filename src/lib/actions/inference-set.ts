@@ -115,6 +115,8 @@ import {
   completeInferenceSetTelemetry,
   probeInferenceSetSandboxRouteUntilConverged,
   providerCommitMayHaveChangedBinding,
+  readHermesNativeNvidiaCredentialHandleIfNeeded,
+  readNativeNvidiaCredentialHandle,
   type RuntimeProviderBundleRegistry,
   RuntimeProviderSelectionError,
   requireInferenceSetRuntimeAuthority,
@@ -248,6 +250,7 @@ export interface InferenceSetDeps extends InferenceGatewayRestartDeps {
   resolveContextWindowForModel: (provider: string, model: string) => number | null;
   rewriteConfigUrlsWithDnsPinning: (value: ConfigValue) => Promise<ConfigValue>;
   resolveCredentialValue: (credentialEnv: string) => string;
+  readNativeNvidiaCredentialHandle: (sandboxName: string, gatewayName: string) => Promise<string>;
   ensureHttpsPinRuntimeAdapter: EnsureHttpsPinRuntimeAdapterFn;
   revokeHttpsPinRuntimeAdapterRoute: (routeId: string) => Promise<boolean>;
   probeSandboxRoute: InferenceSetSandboxRouteProbe;
@@ -383,6 +386,7 @@ function defaultDeps(): InferenceSetDeps {
     resolveContextWindowForModel,
     rewriteConfigUrlsWithDnsPinning,
     resolveCredentialValue: (credentialEnv) => process.env[credentialEnv] ?? "",
+    readNativeNvidiaCredentialHandle,
     ensureHttpsPinRuntimeAdapter: (options) => {
       if (!options.discoverAllowedSourceCidrs) {
         throw new Error("HTTPS Pin Runtime adapter is missing runtime-provider network authority.");
@@ -922,6 +926,7 @@ export function patchHermesInferenceConfig(
   credentialReference?: string,
   nativeProvider = true,
   nativeEndpointUrl?: string,
+  nativeCredentialHandle?: string,
 ): { changed: boolean; route: SandboxInferenceConfig } {
   const before = JSON.stringify(config);
   const route = getSandboxInferenceConfig(
@@ -941,6 +946,7 @@ export function patchHermesInferenceConfig(
       ? { nativeCustomCredentialEnv: nativeCustomProviderAttachment.credentialEnv }
       : {}),
     ...(credentialReference ? { credentialReference } : {}),
+    nativeCredentialHandle,
   });
 
   return { changed: before !== JSON.stringify(config), route };
@@ -1615,6 +1621,7 @@ async function runInferenceSetWithoutHostLock(
   let providerMutation: Awaited<ReturnType<typeof prepareInferenceSetProviderBinding>> | null =
     null;
   let assertProviderCurrentBeforeSelection: (() => Promise<void>) | null = null;
+  let nativeNvidiaCredentialHandle: string | undefined;
   let nativeProviderAttachment: NativeProviderAttachment | undefined;
   let nativeNvidiaCredentialReference: string | undefined;
   let nativeAttachmentChanged = false;
@@ -1675,6 +1682,13 @@ async function runInferenceSetWithoutHostLock(
       },
       deps,
     );
+    nativeNvidiaCredentialHandle = await readHermesNativeNvidiaCredentialHandleIfNeeded({
+      agentName,
+      provider,
+      sandboxName,
+      gatewayName: preparedRoute.gatewayName,
+      read: deps.readNativeNvidiaCredentialHandle,
+    });
     const providerBinding = httpsPinProviderBinding ?? directProviderBinding;
     if (providerBinding) {
       providerMutation = await prepareInferenceSetProviderBinding({
@@ -1959,6 +1973,7 @@ async function runInferenceSetWithoutHostLock(
         undefined,
         selectingNative,
         nativeSelection.endpointUrl,
+        nativeNvidiaCredentialHandle,
       );
     } else {
       // Recompute the context window for the model being switched to, so it does

@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { isNativeCustomCredentialReference } from "./inference/native-custom/credential-reference.ts";
-import { managedInferenceApiKey } from "./inference-credential.ts";
 import { nativeHostedAgentConfig } from "./inference/native-provider/agent-config.ts";
+import {
+  NATIVE_NVIDIA_SCOPED_HANDLE_PATTERN,
+  managedInferenceApiKey,
+  NVIDIA_INFERENCE_PLACEHOLDER,
+} from "./inference-credential.ts";
 
 // The inference.local route replaces this non-secret sentinel at egress.
 // Native NVIDIA routing instead expands the supervisor-issued environment handle.
@@ -48,6 +52,7 @@ export type HermesManagedRoute = {
   credentialReference?: string;
   /** Attachment-derived, non-secret native-route authority marker. */
   nativeCustomCredentialEnv?: string;
+  nativeCredentialHandle?: string;
 };
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -121,6 +126,16 @@ export function applyHermesManagedRoute(
     apiKey =
       "sk-OPENSHELL-RESOLVE-ENV-" +
       route.credentialReference.slice("openshell:resolve:env:".length);
+  }
+  if (route.nativeCredentialHandle !== undefined) {
+    if (
+      route.upstreamProvider !== "nvidia-prod" ||
+      apiKey !== NVIDIA_INFERENCE_PLACEHOLDER ||
+      !NATIVE_NVIDIA_SCOPED_HANDLE_PATTERN.test(route.nativeCredentialHandle)
+    ) {
+      throw new Error("Hermes native NVIDIA route requires a provider-bound credential handle.");
+    }
+    apiKey = route.nativeCredentialHandle;
   }
   const previousUpstream = isObjectRecord(config._nemoclaw_upstream)
     ? config._nemoclaw_upstream
