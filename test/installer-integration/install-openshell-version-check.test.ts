@@ -29,14 +29,20 @@ const REQUIRED_OPENSHELL_VERSION = credentialBoundaryManifest.openshellVersion;
 const LEGACY_OPENSHELL_VERSION = "0.0.44";
 
 describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
-  it.each(["Linux", "Darwin"])(
-    "preserves the legacy gateway before component replacement on %s",
-    (os) => {
+  it.each([
+    ["Linux", "direct"],
+    ["Darwin", "direct"],
+    ["Linux", "wrapper"],
+    ["Darwin", "wrapper"],
+  ] as const)(
+    "preserves the legacy gateway before component replacement on %s through %s",
+    (os, entrypoint) => {
       const result = runCommandWithInstalledVersion(
         "0.0.116",
         {},
         {
           legacyGateway: true,
+          entrypoint,
           os,
           arch: "arm64",
         },
@@ -48,33 +54,37 @@ describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
     },
   );
 
-  it.each(["partial", "invalid", "unreachable", "stderr", "corrupt", "system"] as const)(
-    "does not replace components with %s legacy state",
-    (legacyGateway) => {
-      const result = runCommandWithInstalledVersion(
-        "0.0.116",
-        {
-          NEMOCLAW_OPENSHELL_UPGRADE_PREPARED: "1",
-          NEMOCLAW_RESTORE_LATEST_BACKUP_ON_RECREATE: "1",
-        },
-        { legacyGateway },
-      );
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("legacy gateway");
-      expect(result.downloads).toBe("");
-      expect(result.retainedFilesUnchanged).toBe(true);
-    },
-  );
+  it.each([
+    "partial",
+    "invalid",
+    "unreachable",
+    "stderr",
+    "corrupt",
+    "system",
+    "retired",
+    "metadata-link",
+    "metadata-directory",
+  ] as const)("does not replace components with %s legacy state", (legacyGateway) => {
+    const result = runCommandWithInstalledVersion(
+      "0.0.116",
+      {
+        NEMOCLAW_OPENSHELL_UPGRADE_PREPARED: "1",
+        NEMOCLAW_RESTORE_LATEST_BACKUP_ON_RECREATE: "1",
+      },
+      { legacyGateway },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("legacy gateway");
+    expect(result.downloads).toBe("");
+    expect(result.retainedFilesUnchanged).toBe(true);
+  });
 
-  it.each(["empty", "retired"] as const)(
-    "allows replacement with %s legacy registration state and preserves user mTLS",
-    (legacyGateway) => {
-      const result = runCommandWithInstalledVersion("0.0.116", {}, { legacyGateway });
-      expect(result.downloads, result.stderr).not.toBe("");
-      expect(result.stderr).not.toContain("Cannot replace OpenShell");
-      expect(result.retainedFilesUnchanged).toBe(true);
-    },
-  );
+  it("allows replacement with a verified empty legacy inventory and preserves user mTLS", () => {
+    const result = runCommandWithInstalledVersion("0.0.116", {}, { legacyGateway: "empty" });
+    expect(result.downloads, result.stderr).not.toBe("");
+    expect(result.stderr).not.toContain("Cannot replace OpenShell");
+    expect(result.retainedFilesUnchanged).toBe(true);
+  });
 
   it.each([
     ["missing", { missingCli: true }],
@@ -435,6 +445,8 @@ exit 0`,
         env: {
           ...process.env,
           HOME: tmp,
+          XDG_CONFIG_HOME: path.join(tmp, "config"),
+          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
           NEMOCLAW_OPENSHELL_CHANNEL: "stable",
           PATH: `${fakeBin}:/usr/bin:/bin`,
         },
@@ -582,6 +594,8 @@ exit 1`,
           env: {
             ...process.env,
             HOME: tmp,
+            XDG_CONFIG_HOME: path.join(tmp, "config"),
+            OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
             XDG_BIN_HOME: path.join(tmp, "local-bin"),
             NEMOCLAW_OPENSHELL_CHANNEL: "stable",
             PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -635,6 +649,8 @@ exit 1`,
         env: {
           ...process.env,
           HOME: tmp,
+          XDG_CONFIG_HOME: path.join(tmp, "config"),
+          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
           XDG_BIN_HOME: path.join(tmp, "local-bin"),
           NEMOCLAW_OPENSHELL_CHANNEL: "stable",
           NEMOCLAW_TEST_BREW_TRUST_STATUS: "1",
@@ -660,6 +676,8 @@ exit 1`,
         env: {
           ...process.env,
           HOME: tmp,
+          XDG_CONFIG_HOME: path.join(tmp, "config"),
+          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
           XDG_BIN_HOME: path.join(tmp, "local-bin"),
           NEMOCLAW_OPENSHELL_CHANNEL: "stable",
           NEMOCLAW_TEST_BREW_TRUST_HELP_STATUS: "1",
@@ -785,6 +803,8 @@ chmod 755 "$dest"`,
         env: {
           ...process.env,
           HOME: tmp,
+          XDG_CONFIG_HOME: path.join(tmp, "config"),
+          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
           XDG_BIN_HOME: path.join(tmp, "local-bin"),
           NEMOCLAW_OPENSHELL_CHANNEL: "stable",
           PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -936,6 +956,8 @@ exit 0`,
         env: {
           ...process.env,
           HOME: tmp,
+          XDG_CONFIG_HOME: path.join(tmp, "config"),
+          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
           NEMOCLAW_OPENSHELL_CHANNEL: "stable",
           PATH: `${fakeBin}:${activeBin}:/usr/bin:/bin`,
         },
@@ -1031,6 +1053,8 @@ exit 0`,
         env: {
           ...process.env,
           HOME: tmp,
+          XDG_CONFIG_HOME: path.join(tmp, "config"),
+          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
           NEMOCLAW_OPENSHELL_CHANNEL: "stable",
           PATH: `${fakeBin}:/usr/bin:/bin`,
         },

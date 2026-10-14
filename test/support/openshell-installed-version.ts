@@ -13,13 +13,7 @@ import {
   PINNED_OPEN_SHELL_SHA256,
 } from "../helpers/openshell-release-fixtures";
 
-const SCRIPT = path.join(
-  import.meta.dirname,
-  "../..",
-  "scripts",
-  "lib",
-  "install-openshell-for-nemoclaw.mts",
-);
+const SCRIPTS = path.join(import.meta.dirname, "../..", "scripts");
 type OpenShellFeaturePlacement = "openshell" | "gateway" | "split-mcp-gateway" | "none";
 
 export function writeExecutable(target: string, contents: string) {
@@ -39,6 +33,7 @@ export function runCommandWithInstalledVersion(
   version: string,
   extraEnv: NodeJS.ProcessEnv = {},
   options: {
+    entrypoint?: "direct" | "wrapper";
     capability?: boolean;
     curlExitCode?: number;
     featurePlacement?: OpenShellFeaturePlacement;
@@ -63,6 +58,8 @@ export function runCommandWithInstalledVersion(
       | "unreachable"
       | "stderr"
       | "retired"
+      | "metadata-link"
+      | "metadata-directory"
       | "corrupt"
       | "system";
     missingCli?: boolean;
@@ -103,9 +100,12 @@ export function runCommandWithInstalledVersion(
           : path.join(configHome, "openshell");
       const gatewayDir = path.join(gatewayRoot, "gateways", "nemoclaw");
       fs.mkdirSync(gatewayDir, { recursive: true });
-      if (options.legacyGateway !== "retired") {
+      if (!["retired", "metadata-directory"].includes(String(options.legacyGateway))) {
         retainedFiles.set(
-          path.join(gatewayDir, "metadata.json"),
+          path.join(
+            gatewayDir,
+            options.legacyGateway === "metadata-link" ? "metadata-target.json" : "metadata.json",
+          ),
           options.legacyGateway === "corrupt"
             ? "invalid metadata"
             : JSON.stringify({ name: "nemoclaw", gateway_endpoint: "https://127.0.0.1:8080" }),
@@ -113,6 +113,10 @@ export function runCommandWithInstalledVersion(
       }
       retainedFiles.set(path.join(gatewayDir, "client.key"), "synthetic retained mTLS sentinel");
       for (const [file, contents] of retainedFiles) fs.writeFileSync(file, contents);
+      if (options.legacyGateway === "metadata-link")
+        fs.symlinkSync("metadata-target.json", path.join(gatewayDir, "metadata.json"));
+      if (options.legacyGateway === "metadata-directory")
+        fs.mkdirSync(path.join(gatewayDir, "metadata.json"));
     }
 
     writeExecutable(
@@ -299,20 +303,32 @@ exit 0`,
             NEMOCLAW_OPENSHELL_SANDBOX_BIN: path.join(driverBin, "openshell-sandbox"),
           }
         : {};
-    const result = spawnSync(process.execPath, [SCRIPT], {
-      env: {
-        ...process.env,
-        NEMOCLAW_OPENSHELL_CHANNEL: "stable",
-        ...explicitDriverEnv,
-        ...extraEnv,
-        HOME: tmp,
-        TMPDIR: tmp,
-        XDG_CONFIG_HOME: configHome,
-        OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
-        PATH: `${fakeBin}:${driverBin}:/usr/bin:/bin`,
+    // Protected execution projects the installer without adjacent candidate helpers.
+    // Exercise that boundary for direct calls as well as the normal wrapper path.
+    const isolatedInstaller = path.join(tmp, "install-openshell.sh");
+    fs.copyFileSync(path.join(SCRIPTS, "install-openshell.sh"), isolatedInstaller);
+    const result = spawnSync(
+      options.entrypoint === "wrapper" ? process.execPath : "bash",
+      [
+        options.entrypoint === "wrapper"
+          ? path.join(SCRIPTS, "lib/install-openshell-for-nemoclaw.mts")
+          : isolatedInstaller,
+      ],
+      {
+        env: {
+          ...process.env,
+          NEMOCLAW_OPENSHELL_CHANNEL: "stable",
+          ...explicitDriverEnv,
+          ...extraEnv,
+          HOME: tmp,
+          TMPDIR: tmp,
+          XDG_CONFIG_HOME: configHome,
+          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
+          PATH: `${fakeBin}:${driverBin}:/usr/bin:/bin`,
+        },
+        encoding: "utf8",
       },
-      encoding: "utf8",
-    });
+    );
     return {
       ...result,
       downloads: fs.existsSync(downloads) ? fs.readFileSync(downloads, "utf8") : "",
