@@ -7,9 +7,9 @@
  * host, per-port OpenShell Docker-driver gateways, dashboard forward
  * allocation, port-scoped `nemoclaw list`, OpenShell sandbox discovery, host
  * socket probes, and selected-instance uninstall/health cleanup. This case also
- * owns cross-gateway destroy survival: destroy sandbox B with both gateway
- * cleanup policies, then use the ordinary NemoClaw CLI to stop/start A and verify
- * its dashboard forward. Unit and CLI tests cannot observe these real
+ * owns cross-gateway destroy survival: select gateway A, destroy sandbox B under
+ * both cleanup policies, then use unscoped OpenShell stop/start on A to verify
+ * active-gateway continuity and its dashboard forward. Unit tests cannot observe these real
  * gateway processes or host forwards.
  */
 
@@ -97,6 +97,23 @@ async function command(
     env: options.env ?? commandEnv(),
     timeoutMs: options.timeoutMs,
   });
+}
+
+function gatewayRegistryContains(result: ShellProbeResult, gatewayName: string): boolean {
+  try {
+    const gateways: unknown = JSON.parse(result.stdout);
+    return (
+      Array.isArray(gateways) &&
+      gateways.some(
+        (gateway) =>
+          gateway &&
+          typeof gateway === "object" &&
+          (gateway as { name?: unknown }).name === gatewayName,
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 function gatewayProcessEvidence(evidence: string, gateway: string): string | undefined {
@@ -259,6 +276,8 @@ interface SurvivorDashboardProbe {
 
 async function probeSurvivorDashboard(
   host: HostCliClient,
+  sandbox: SandboxClient,
+  gatewayName: string,
   gatewayPort: string,
   dashboardPort: string,
   artifactPrefix: string,
@@ -273,10 +292,10 @@ async function probeSurvivorDashboard(
       timeoutMs: 30_000,
     },
   );
-  const scopedList = await command(host, ["list"], {
+  const scopedList = await sandbox.openshell(["sandbox", "list", "-g", gatewayName], {
     artifactName: `${artifactPrefix}-registry`,
-    env: commandEnv({ NEMOCLAW_GATEWAY_PORT: gatewayPort }),
-    timeoutMs: 60_000,
+    env: commandEnv(),
+    timeoutMs: 30_000,
   });
   const dashboard: ShellProbeResult[] = [];
   for (let probe = 1; probe <= dashboardProbes; probe += 1) {
@@ -306,8 +325,38 @@ async function probeSurvivorDashboard(
   return { gatewayPort: gatewayPortProbe, scopedList, dashboard };
 }
 
+async function selectAndVerifyActiveGateway(
+  sandbox: SandboxClient,
+  gatewayName: string,
+  sandboxName: string,
+  siblingSandboxName: string,
+  artifactPrefix: string,
+): Promise<{
+  readonly select: ShellProbeResult;
+  readonly list: ShellProbeResult;
+  readonly containsOnlyTargetSandbox: boolean;
+}> {
+  const select = await sandbox.openshell(["gateway", "select", gatewayName], {
+    artifactName: `${artifactPrefix}-select`,
+    env: commandEnv(),
+    timeoutMs: 30_000,
+  });
+  const list = await sandbox.openshell(["sandbox", "list"], {
+    artifactName: `${artifactPrefix}-active-sandbox-list`,
+    env: commandEnv(),
+    timeoutMs: 30_000,
+  });
+  return {
+    select,
+    list,
+    containsOnlyTargetSandbox:
+      list.exitCode === 0 &&
+      outputIncludesSandbox(list.stdout, sandboxName) &&
+      !outputIncludesSandbox(list.stdout, siblingSandboxName),
+  };
+}
+
 async function stopStartSurvivor(
-  host: HostCliClient,
   sandbox: SandboxClient,
   sandboxName: string,
   gatewayName: string,
@@ -317,12 +366,12 @@ async function stopStartSurvivor(
   readonly start: ShellProbeResult;
   readonly phase: string;
 }> {
-  const stop = await command(host, [sandboxName, "stop"], {
+  const stop = await sandbox.openshell(["sandbox", "stop", sandboxName], {
     artifactName: `${artifactPrefix}-stop`,
     env: commandEnv(),
     timeoutMs: 120_000,
   });
-  const start = await command(host, [sandboxName, "start"], {
+  const start = await sandbox.openshell(["sandbox", "start", sandboxName], {
     artifactName: `${artifactPrefix}-start`,
     env: commandEnv(),
     timeoutMs: 120_000,
@@ -500,6 +549,8 @@ test(
         "both sandboxes, gateways, and dashboard forwards coexist without port collision",
         "each port-scoped registry lists only the sandbox owned by that gateway",
         "gc on gateway A preserves gateway B's registered image while removing a true orphan tag",
+        "destroy with gateway cleanup removes gateway B, preserves selected gateway A, and keeps A restartable and dashboard-reachable",
+        "destroy without gateway cleanup removes only B's sandbox, preserves gateway B and selected gateway A, and keeps A restartable and dashboard-reachable",
         "uninstalling gateway B removes only its scoped state and leaves gateway A plus the shared CLI healthy",
       ],
       gatewayA,
@@ -722,6 +773,20 @@ test(
       ),
       gatewayA,
     );
+    const gatewayASelectionBeforeCleanupDestroy = await selectAndVerifyActiveGateway(
+      sandbox,
+      gatewayA,
+      SANDBOX_A,
+      SANDBOX_B,
+      "phase-3-select-gateway-a-before-cleanup-destroy",
+    );
+    const gatewayASelectedBeforeCleanupDestroy =
+      gatewayASelectionBeforeCleanupDestroy.select.exitCode === 0 &&
+      gatewayASelectionBeforeCleanupDestroy.containsOnlyTargetSandbox;
+    expect(
+      gatewayASelectedBeforeCleanupDestroy,
+      `select=${resultText(gatewayASelectionBeforeCleanupDestroy.select)}; list=${resultText(gatewayASelectionBeforeCleanupDestroy.list)}`,
+    ).toBe(true);
     const destroyBWithGatewayCleanup = await command(
       host,
       [SANDBOX_B, "destroy", "--yes", "--cleanup-gateway"],
@@ -729,6 +794,14 @@ test(
         artifactName: "phase-3-destroy-b-with-gateway-cleanup",
         env: commandEnv({ NEMOCLAW_GATEWAY_PORT: GATEWAY_PORT_B }),
         timeoutMs: 5 * 60_000,
+      },
+    );
+    const gatewayRegistryAfterCleanupDestroy = await sandbox.openshell(
+      ["gateway", "list", "-o", "json"],
+      {
+        artifactName: "phase-3-gateway-registry-after-cleanup-destroy",
+        env: commandEnv(),
+        timeoutMs: 30_000,
       },
     );
     const gatewayBStoppedAfterCleanupDestroy = await host.command(
@@ -751,25 +824,35 @@ test(
     );
     const liveSurvivorAfterCleanupDestroy = await probeSurvivorDashboard(
       host,
+      sandbox,
+      gatewayA,
       GATEWAY_PORT_A,
       DASHBOARD_PORT_A,
       "phase-3-live-survivor-after-cleanup-destroy",
     );
-    expect(
+    const gatewayBDestroyedWithCleanup =
       destroyBWithGatewayCleanup.exitCode === 0 &&
-        gatewayBStoppedAfterCleanupDestroy.exitCode === 0 &&
-        Boolean(gatewayAProcessBeforeCleanupDestroy) &&
-        gatewayAProcessAfterCleanupDestroy === gatewayAProcessBeforeCleanupDestroy &&
-        liveSurvivorAfterCleanupDestroy.gatewayPort.exitCode === 0 &&
-        liveSurvivorAfterCleanupDestroy.scopedList.exitCode === 0 &&
-        outputIncludesSandbox(liveSurvivorAfterCleanupDestroy.scopedList.stdout, SANDBOX_A) &&
-        liveSurvivorAfterCleanupDestroy.dashboard.every(
-          (probe) => probe.exitCode === 0 && /^[23][0-9]{2}$/.test(probe.stdout.trim()),
-        ),
-      `destroy=${resultText(destroyBWithGatewayCleanup)}; gateway B=${resultText(gatewayBStoppedAfterCleanupDestroy)}; gateway A before=${gatewayAProcessBeforeCleanupDestroy}; gateway A after=${gatewayAProcessAfterCleanupDestroy}; survivor port=${resultText(liveSurvivorAfterCleanupDestroy.gatewayPort)}; list=${resultText(liveSurvivorAfterCleanupDestroy.scopedList)}; dashboard=${liveSurvivorAfterCleanupDestroy.dashboard.map(resultText).join("\\n")}`,
+      gatewayRegistryAfterCleanupDestroy.exitCode === 0 &&
+      !gatewayRegistryContains(gatewayRegistryAfterCleanupDestroy, gatewayB) &&
+      gatewayBStoppedAfterCleanupDestroy.exitCode === 0;
+    const gatewayAProcessPreservedWithCleanup =
+      Boolean(gatewayAProcessBeforeCleanupDestroy) &&
+      gatewayAProcessAfterCleanupDestroy === gatewayAProcessBeforeCleanupDestroy;
+    const gatewayAHealthyBeforeCleanupRestart =
+      liveSurvivorAfterCleanupDestroy.gatewayPort.exitCode === 0 &&
+      liveSurvivorAfterCleanupDestroy.scopedList.exitCode === 0 &&
+      outputIncludesSandbox(liveSurvivorAfterCleanupDestroy.scopedList.stdout, SANDBOX_A) &&
+      liveSurvivorAfterCleanupDestroy.dashboard.every(
+        (probe) => probe.exitCode === 0 && /^[23][0-9]{2}$/.test(probe.stdout.trim()),
+      );
+    expect(
+      gatewayASelectedBeforeCleanupDestroy &&
+        gatewayBDestroyedWithCleanup &&
+        gatewayAProcessPreservedWithCleanup &&
+        gatewayAHealthyBeforeCleanupRestart,
+      `selected A=${resultText(gatewayASelectionBeforeCleanupDestroy.select)}; active list=${resultText(gatewayASelectionBeforeCleanupDestroy.list)}; destroy=${resultText(destroyBWithGatewayCleanup)}; gateway B=${resultText(gatewayBStoppedAfterCleanupDestroy)}; gateway registry=${resultText(gatewayRegistryAfterCleanupDestroy)}; gateway A before=${gatewayAProcessBeforeCleanupDestroy}; gateway A after=${gatewayAProcessAfterCleanupDestroy}; survivor port=${resultText(liveSurvivorAfterCleanupDestroy.gatewayPort)}; list=${resultText(liveSurvivorAfterCleanupDestroy.scopedList)}; dashboard=${liveSurvivorAfterCleanupDestroy.dashboard.map(resultText).join("\\n")}`,
     ).toBe(true);
     const survivorRestartAfterCleanupDestroy = await stopStartSurvivor(
-      host,
       sandbox,
       SANDBOX_A,
       gatewayA,
@@ -777,21 +860,26 @@ test(
     );
     const survivorDashboardAfterCleanupDestroy = await probeSurvivorDashboard(
       host,
+      sandbox,
+      gatewayA,
       GATEWAY_PORT_A,
       DASHBOARD_PORT_A,
       "phase-3-survivor-after-cleanup-destroy",
       POST_UNINSTALL_HEALTH_PROBES,
     );
-    expect(
+    const sandboxARestartedWithCleanup =
       survivorRestartAfterCleanupDestroy.stop.exitCode === 0 &&
-        survivorRestartAfterCleanupDestroy.start.exitCode === 0 &&
-        ["Ready", "Running"].includes(survivorRestartAfterCleanupDestroy.phase) &&
-        survivorDashboardAfterCleanupDestroy.gatewayPort.exitCode === 0 &&
-        survivorDashboardAfterCleanupDestroy.scopedList.exitCode === 0 &&
-        outputIncludesSandbox(survivorDashboardAfterCleanupDestroy.scopedList.stdout, SANDBOX_A) &&
-        survivorDashboardAfterCleanupDestroy.dashboard.every(
-          (probe) => probe.exitCode === 0 && /^[23][0-9]{2}$/.test(probe.stdout.trim()),
-        ),
+      survivorRestartAfterCleanupDestroy.start.exitCode === 0 &&
+      ["Ready", "Running"].includes(survivorRestartAfterCleanupDestroy.phase);
+    const gatewayADashboardAvailableAfterCleanupRestart =
+      survivorDashboardAfterCleanupDestroy.gatewayPort.exitCode === 0 &&
+      survivorDashboardAfterCleanupDestroy.scopedList.exitCode === 0 &&
+      outputIncludesSandbox(survivorDashboardAfterCleanupDestroy.scopedList.stdout, SANDBOX_A) &&
+      survivorDashboardAfterCleanupDestroy.dashboard.every(
+        (probe) => probe.exitCode === 0 && /^[23][0-9]{2}$/.test(probe.stdout.trim()),
+      );
+    expect(
+      sandboxARestartedWithCleanup && gatewayADashboardAvailableAfterCleanupRestart,
       `stop=${resultText(survivorRestartAfterCleanupDestroy.stop)}; start=${resultText(survivorRestartAfterCleanupDestroy.start)}; phase=${survivorRestartAfterCleanupDestroy.phase}; port=${resultText(survivorDashboardAfterCleanupDestroy.gatewayPort)}; list=${resultText(survivorDashboardAfterCleanupDestroy.scopedList)}; dashboard=${survivorDashboardAfterCleanupDestroy.dashboard.map(resultText).join("\\n")}`,
     ).toBe(true);
 
@@ -817,6 +905,20 @@ test(
     progress.phase(
       "destroy alternate sandbox without gateway cleanup while restarting the survivor",
     );
+    const gatewayASelectionBeforeRetainedDestroy = await selectAndVerifyActiveGateway(
+      sandbox,
+      gatewayA,
+      SANDBOX_A,
+      SANDBOX_B,
+      "phase-3-select-gateway-a-before-retained-destroy",
+    );
+    const gatewayASelectedBeforeRetainedDestroy =
+      gatewayASelectionBeforeRetainedDestroy.select.exitCode === 0 &&
+      gatewayASelectionBeforeRetainedDestroy.containsOnlyTargetSandbox;
+    expect(
+      gatewayASelectedBeforeRetainedDestroy,
+      `select=${resultText(gatewayASelectionBeforeRetainedDestroy.select)}; list=${resultText(gatewayASelectionBeforeRetainedDestroy.list)}`,
+    ).toBe(true);
     const destroyBWithoutGatewayCleanup = await command(
       host,
       [SANDBOX_B, "destroy", "--yes", "--no-cleanup-gateway"],
@@ -824,6 +926,14 @@ test(
         artifactName: "phase-3-destroy-b-without-gateway-cleanup",
         env: commandEnv({ NEMOCLAW_GATEWAY_PORT: GATEWAY_PORT_B }),
         timeoutMs: 5 * 60_000,
+      },
+    );
+    const gatewayRegistryAfterRetainedDestroy = await sandbox.openshell(
+      ["gateway", "list", "-o", "json"],
+      {
+        artifactName: "phase-3-gateway-registry-after-retained-destroy",
+        env: commandEnv(),
+        timeoutMs: 30_000,
       },
     );
     const gatewayBRetainedAfterDestroy = await host.command(
@@ -854,26 +964,38 @@ test(
     );
     const liveSurvivorAfterRetainedDestroy = await probeSurvivorDashboard(
       host,
+      sandbox,
+      gatewayA,
       GATEWAY_PORT_A,
       DASHBOARD_PORT_A,
       "phase-3-live-survivor-after-retained-destroy",
     );
-    expect(
+    const sandboxBDestroyedWithoutGatewayCleanup =
       destroyBWithoutGatewayCleanup.exitCode === 0 &&
-        gatewayBRetainedAfterDestroy.exitCode === 0 &&
-        sandboxBAfterRetainedDestroy.exitCode === 0 &&
-        !outputIncludesSandbox(resultText(sandboxBAfterRetainedDestroy), SANDBOX_B) &&
-        gatewayAProcessAfterRetainedDestroy === gatewayAProcessBeforeCleanupDestroy &&
-        liveSurvivorAfterRetainedDestroy.gatewayPort.exitCode === 0 &&
-        liveSurvivorAfterRetainedDestroy.scopedList.exitCode === 0 &&
-        outputIncludesSandbox(liveSurvivorAfterRetainedDestroy.scopedList.stdout, SANDBOX_A) &&
-        liveSurvivorAfterRetainedDestroy.dashboard.every(
-          (probe) => probe.exitCode === 0 && /^[23][0-9]{2}$/.test(probe.stdout.trim()),
-        ),
-      `destroy=${resultText(destroyBWithoutGatewayCleanup)}; gateway B=${resultText(gatewayBRetainedAfterDestroy)}; sandbox B=${resultText(sandboxBAfterRetainedDestroy)}; gateway A=${gatewayAProcessAfterRetainedDestroy}; survivor port=${resultText(liveSurvivorAfterRetainedDestroy.gatewayPort)}; list=${resultText(liveSurvivorAfterRetainedDestroy.scopedList)}; dashboard=${liveSurvivorAfterRetainedDestroy.dashboard.map(resultText).join("\\n")}`,
+      sandboxBAfterRetainedDestroy.exitCode === 0 &&
+      !outputIncludesSandbox(resultText(sandboxBAfterRetainedDestroy), SANDBOX_B);
+    const gatewayBRetainedWithoutCleanup =
+      gatewayBRetainedAfterDestroy.exitCode === 0 &&
+      gatewayRegistryAfterRetainedDestroy.exitCode === 0 &&
+      gatewayRegistryContains(gatewayRegistryAfterRetainedDestroy, gatewayB);
+    const gatewayAProcessPreservedWithoutCleanup =
+      gatewayAProcessAfterRetainedDestroy === gatewayAProcessBeforeCleanupDestroy;
+    const gatewayAHealthyBeforeRetainedRestart =
+      liveSurvivorAfterRetainedDestroy.gatewayPort.exitCode === 0 &&
+      liveSurvivorAfterRetainedDestroy.scopedList.exitCode === 0 &&
+      outputIncludesSandbox(liveSurvivorAfterRetainedDestroy.scopedList.stdout, SANDBOX_A) &&
+      liveSurvivorAfterRetainedDestroy.dashboard.every(
+        (probe) => probe.exitCode === 0 && /^[23][0-9]{2}$/.test(probe.stdout.trim()),
+      );
+    expect(
+      gatewayASelectedBeforeRetainedDestroy &&
+        sandboxBDestroyedWithoutGatewayCleanup &&
+        gatewayBRetainedWithoutCleanup &&
+        gatewayAProcessPreservedWithoutCleanup &&
+        gatewayAHealthyBeforeRetainedRestart,
+      `selected A=${resultText(gatewayASelectionBeforeRetainedDestroy.select)}; active list=${resultText(gatewayASelectionBeforeRetainedDestroy.list)}; destroy=${resultText(destroyBWithoutGatewayCleanup)}; gateway B=${resultText(gatewayBRetainedAfterDestroy)}; gateway registry=${resultText(gatewayRegistryAfterRetainedDestroy)}; sandbox B=${resultText(sandboxBAfterRetainedDestroy)}; gateway A=${gatewayAProcessAfterRetainedDestroy}; survivor port=${resultText(liveSurvivorAfterRetainedDestroy.gatewayPort)}; list=${resultText(liveSurvivorAfterRetainedDestroy.scopedList)}; dashboard=${liveSurvivorAfterRetainedDestroy.dashboard.map(resultText).join("\\n")}`,
     ).toBe(true);
     const survivorRestartAfterRetainedDestroy = await stopStartSurvivor(
-      host,
       sandbox,
       SANDBOX_A,
       gatewayA,
@@ -881,21 +1003,26 @@ test(
     );
     const survivorDashboardAfterRetainedDestroy = await probeSurvivorDashboard(
       host,
+      sandbox,
+      gatewayA,
       GATEWAY_PORT_A,
       DASHBOARD_PORT_A,
       "phase-3-survivor-after-retained-destroy",
       POST_UNINSTALL_HEALTH_PROBES,
     );
-    expect(
+    const sandboxARestartedWithoutCleanup =
       survivorRestartAfterRetainedDestroy.stop.exitCode === 0 &&
-        survivorRestartAfterRetainedDestroy.start.exitCode === 0 &&
-        ["Ready", "Running"].includes(survivorRestartAfterRetainedDestroy.phase) &&
-        survivorDashboardAfterRetainedDestroy.gatewayPort.exitCode === 0 &&
-        survivorDashboardAfterRetainedDestroy.scopedList.exitCode === 0 &&
-        outputIncludesSandbox(survivorDashboardAfterRetainedDestroy.scopedList.stdout, SANDBOX_A) &&
-        survivorDashboardAfterRetainedDestroy.dashboard.every(
-          (probe) => probe.exitCode === 0 && /^[23][0-9]{2}$/.test(probe.stdout.trim()),
-        ),
+      survivorRestartAfterRetainedDestroy.start.exitCode === 0 &&
+      ["Ready", "Running"].includes(survivorRestartAfterRetainedDestroy.phase);
+    const gatewayADashboardAvailableAfterRetainedRestart =
+      survivorDashboardAfterRetainedDestroy.gatewayPort.exitCode === 0 &&
+      survivorDashboardAfterRetainedDestroy.scopedList.exitCode === 0 &&
+      outputIncludesSandbox(survivorDashboardAfterRetainedDestroy.scopedList.stdout, SANDBOX_A) &&
+      survivorDashboardAfterRetainedDestroy.dashboard.every(
+        (probe) => probe.exitCode === 0 && /^[23][0-9]{2}$/.test(probe.stdout.trim()),
+      );
+    expect(
+      sandboxARestartedWithoutCleanup && gatewayADashboardAvailableAfterRetainedRestart,
       `stop=${resultText(survivorRestartAfterRetainedDestroy.stop)}; start=${resultText(survivorRestartAfterRetainedDestroy.start)}; phase=${survivorRestartAfterRetainedDestroy.phase}; port=${resultText(survivorDashboardAfterRetainedDestroy.gatewayPort)}; list=${resultText(survivorDashboardAfterRetainedDestroy.scopedList)}; dashboard=${survivorDashboardAfterRetainedDestroy.dashboard.map(resultText).join("\\n")}`,
     ).toBe(true);
 
@@ -1040,6 +1167,21 @@ test(
         siblingGatewayImagePreservedByGc: siblingImagePreserved,
         gcRemovedOnlyOrphanTag: orphanTagAbsent,
         dashboardPortsDistinct: Boolean(dashboardA && dashboardB && dashboardA !== dashboardB),
+        gatewayASelectedBeforeCleanupDestroy: gatewayASelectedBeforeCleanupDestroy,
+        gatewayBDestroyedWithCleanup: gatewayBDestroyedWithCleanup,
+        gatewayAProcessPreservedWithCleanup: gatewayAProcessPreservedWithCleanup,
+        gatewayAHealthyBeforeCleanupRestart: gatewayAHealthyBeforeCleanupRestart,
+        sandboxARestartedWithCleanup: sandboxARestartedWithCleanup,
+        gatewayADashboardAvailableAfterCleanupRestart:
+          gatewayADashboardAvailableAfterCleanupRestart,
+        gatewayASelectedBeforeRetainedDestroy: gatewayASelectedBeforeRetainedDestroy,
+        sandboxBDestroyedWithoutGatewayCleanup: sandboxBDestroyedWithoutGatewayCleanup,
+        gatewayBRetainedWithoutCleanup: gatewayBRetainedWithoutCleanup,
+        gatewayAProcessPreservedWithoutCleanup: gatewayAProcessPreservedWithoutCleanup,
+        gatewayAHealthyBeforeRetainedRestart: gatewayAHealthyBeforeRetainedRestart,
+        sandboxARestartedWithoutCleanup: sandboxARestartedWithoutCleanup,
+        gatewayADashboardAvailableAfterRetainedRestart:
+          gatewayADashboardAvailableAfterRetainedRestart,
         gatewayBUninstalled: uninstallB.exitCode === 0 && scopedStateRemoved.exitCode === 0,
         sandboxAPreservedAfterUninstallB:
           survivorPhases.length === POST_UNINSTALL_HEALTH_PROBES &&
