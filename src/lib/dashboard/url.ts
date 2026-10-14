@@ -116,6 +116,30 @@ export function resolveRecordedDashboardUrlForPort(input: {
 /** Environment variable for extra OpenClaw dashboard browser origins (#13177). */
 export const DASHBOARD_ORIGINS_ENV = "NEMOCLAW_DASHBOARD_ORIGINS";
 
+/** Maximum number of extra dashboard origins one sandbox may record. */
+export const MAX_DASHBOARD_ORIGINS = 16;
+
+/**
+ * Return a recorded origin list when it is non-empty, small, and already
+ * normalized; otherwise return null. Readers use this so a hand-edited value
+ * cannot add a malformed or duplicate origin.
+ */
+export function readRecordedDashboardOrigins(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_DASHBOARD_ORIGINS) {
+    return null;
+  }
+  if (!value.every((entry) => typeof entry === "string")) return null;
+  let normalized: string[];
+  try {
+    normalized = parseDashboardOrigins(value);
+  } catch {
+    return null;
+  }
+  return normalized.length === value.length && normalized.every((origin, i) => origin === value[i])
+    ? normalized
+    : null;
+}
+
 /**
  * Parse extra dashboard browser origins from flag values or a comma-separated
  * environment value (#13177). Each entry must be a bare http(s) origin without

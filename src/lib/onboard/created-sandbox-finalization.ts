@@ -603,6 +603,7 @@ type OnboardCreateIntent = {
   readonly endpointSource?: RegistrationSeed["inferenceSelection"]["endpointSource"];
   readonly deferredN1xManagedVllmPreviewIntent?: RegistrationSeed["deferredN1xManagedVllmPreviewIntent"];
   readonly observabilityEnabled?: boolean;
+  readonly dashboardOrigins?: readonly string[];
 } | null;
 type OnboardResolvedCreateIntent = {
   readonly nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
@@ -798,6 +799,9 @@ export function createOnboardCreatedSandboxCompletion(
         hermesApiPort,
         ...gateway,
         hostMounts: resolvedCreateIntent.hostMounts,
+        ...(createIntent?.dashboardOrigins?.length
+          ? { dashboardOrigins: createIntent.dashboardOrigins }
+          : {}),
       },
       policy: {
         initialPolicyPath: preparedPolicy.initialSandboxPolicy.policyPath,

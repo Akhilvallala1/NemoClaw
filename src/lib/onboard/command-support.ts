@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Flags } from "@oclif/core";
+import { DASHBOARD_ORIGINS_ENV, parseDashboardOrigins } from "../dashboard/url";
 import { TOOL_DISCLOSURE_VALUES, type ToolDisclosure } from "../tool-disclosure";
 import { describeAgentFlag } from "./agent-flag-help";
 import { PORTABLE_EXPERIMENTAL_PROFILE } from "./docker-driver-platform";
@@ -47,7 +48,7 @@ function agentFlagDescription(): string {
 }
 
 export const onboardUsage = [
-  `onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository@sha256:digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [${NOTICE_ACCEPT_FLAG}]`,
+  `onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository@sha256:digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--observability | --no-observability] [--control-ui-port <N>] [--dashboard-origin <origin>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [${NOTICE_ACCEPT_FLAG}]`,
 ];
 
 export const onboardExamples = [
@@ -78,6 +79,7 @@ export type OnboardFlags = {
   "from-image"?: string;
   name?: string;
   "host-mount"?: string[];
+  "dashboard-origin"?: string[];
   "sandbox-gpu"?: boolean;
   "no-sandbox-gpu"?: boolean;
   "sandbox-gpu-device"?: string;
@@ -94,6 +96,17 @@ export type OnboardFlags = {
   profile?: string;
   [NOTICE_ACCEPT_FLAG_NAME]?: boolean;
 };
+
+/**
+ * Combine `--dashboard-origin` values with NEMOCLAW_DASHBOARD_ORIGINS into one
+ * normalized list. Throws with an operator-facing message on an invalid origin.
+ */
+export function resolveDashboardOriginInputs(
+  values: readonly string[] | undefined,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  return parseDashboardOrigins([...(values ?? []), env[DASHBOARD_ORIGINS_ENV] ?? ""]);
+}
 
 export function buildOnboardFlags(options: { includeEvents?: boolean } = {}): Record<string, any> {
   const flags = {
@@ -134,6 +147,11 @@ export function buildOnboardFlags(options: { includeEvents?: boolean } = {}): Re
     "host-mount": Flags.string({
       description:
         "Expose an existing absolute host directory read-only below /sandbox (repeatable)",
+      multiple: true,
+    }),
+    "dashboard-origin": Flags.string({
+      description:
+        "Allow an extra OpenClaw dashboard browser origin that keeps its own port, such as https://host:8443 (repeatable; managed OpenClaw image only)",
       multiple: true,
     }),
     "sandbox-gpu": Flags.boolean({

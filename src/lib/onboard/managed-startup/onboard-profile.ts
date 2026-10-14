@@ -65,6 +65,8 @@ export interface ManagedStartupOnboardProfileInput {
   readonly manageDashboard: boolean;
   readonly dashboardBindAddress: string | undefined;
   readonly wslExposure: boolean;
+  /** Extra OpenClaw dashboard browser origins, already validated (#13177). */
+  readonly dashboardOrigins?: readonly string[];
   readonly hermesDashboardState: HermesDashboardOnboardState;
   readonly webSearch: {
     readonly fetchEnabled: boolean;
@@ -162,6 +164,7 @@ function dashboardForInput(
       port: requireDashboardPort(input.effectiveDashboardPort),
       bindAddress,
       wslExposure: input.wslExposure,
+      ...(input.dashboardOrigins?.length ? { extraOrigins: [...input.dashboardOrigins] } : {}),
     };
   }
 
