@@ -94,6 +94,30 @@ describe("Docker preflight timeouts", () => {
   );
 
   it.each([
+    { length: 1024, displayed: true },
+    { length: 1025, displayed: false },
+  ])("bounds endpoint display at $length characters", ({ length, displayed }) => {
+    const endpoint = "unix:///" + "a".repeat(length - "unix:///".length);
+    const assessment = assessHost({
+      ...commonAssessmentOptions(),
+      env: { DOCKER_HOST: endpoint },
+      statSyncImpl: () => ({ isSocket: () => true }),
+      runCaptureExImpl: () => ({ stdout: "", stderr: "", exitCode: null, timedOut: true }),
+    });
+    const output = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    printRemediationActions(
+      planHostAdvisories(assessment).filter(({ id }) => id === "docker_probe_inconclusive"),
+    );
+
+    const text = output.mock.calls.map((args) => args.join(" ")).join("\n");
+    expect(text.includes(endpoint)).toBe(displayed);
+    expect(text).toContain("selected Docker authority");
+    expect(text).toContain("did not answer `docker info` within 15 seconds");
+    expect(text.length).toBeLessThan(1600);
+  });
+
+  it.each([
     "tcp://127.0.0.1:2375",
     "unix:///run/docker\u001b.sock",
     "unix:///run/docker\u202e.sock",

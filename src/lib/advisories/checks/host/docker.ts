@@ -24,6 +24,8 @@ const SUPPORTED_DOCKER_ENDPOINT_REASON =
   "The socket path cannot contain a single quote or line break. " +
   "TCP and SSH endpoints and relative paths are not supported, even when reachable. ";
 
+const MAX_DOCKER_ENDPOINT_DISPLAY_LENGTH = 1024;
+
 export function wslDockerBlocksRemainingChecks(host: HostAssessment): boolean {
   return (
     host.isWsl &&
@@ -154,9 +156,11 @@ export const retryDockerProbe: AdvisoryCheck<HostAssessment> = {
     if (!issue) return null;
     const command = issue.startsWith("version_") ? "docker version" : "docker info";
     const timedOut = issue.endsWith("_timeout");
-    const authority = host.dockerSelectedEndpoint
-      ? `selected Docker authority ${JSON.stringify(host.dockerSelectedEndpoint)}`
-      : "selected Docker authority";
+    const endpoint = host.dockerSelectedEndpoint;
+    const authority =
+      endpoint && endpoint.length <= MAX_DOCKER_ENDPOINT_DISPLAY_LENGTH
+        ? `selected Docker authority ${JSON.stringify(endpoint)}`
+        : "selected Docker authority";
     return hostAdvisory(retryDockerProbe, {
       title: "Retry the Docker readiness probe",
       kind: "manual",
