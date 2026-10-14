@@ -191,6 +191,14 @@ It requires every shipped agent once, one candidate revision, one release, and o
 No matching successful run, invalid or duplicated run metadata, or incomplete, duplicated, mixed, or substituted artifact evidence stops before any stock-onboarding consumer starts.
 Manual PR E2E does not fall back to local Dockerfile builds.
 
+PR image publication builds each shipped agent on native AMD64 and ARM64 runners.
+Each platform retains its own digest contract and runs the direct startup checks.
+Docker activation selects the matching platform catalog and runs the existing all-agent lifecycle test.
+Rootless Podman activation remains AMD64. The catalog reader accepts only one platform per catalog;
+it rejects missing agents, mixed platforms, revisions, releases, and cohorts.
+AMD64 artifact names remain unchanged. ARM64 artifacts use the `managed-pr-contract-arm64-` prefix.
+`MANAGED_IMAGE_PLATFORM=linux/arm64` selects them in the trusted catalog resolver and assembly command.
+
 Routine changes to existing dependency pins, lockfiles, and image digests use
 this path policy; they do not need a new dependency registry or per-version
 workflow edits. Regression cases exercise the real policy for OpenClaw, Hermes,
@@ -265,7 +273,7 @@ If CI starts before the approved artifact exists, wait for the admission workflo
 SDK job, then rerun CI. Changed or revoked approval cannot reuse the older artifact.
 
 This does not yet extend the protected runtime's source projection, permit a new
-SDK graph on protected E2E hosts, qualify Pi, or add ARM64 candidate catalogs. A data-admission
+SDK graph on protected E2E hosts, qualify Pi, or pass candidate catalogs to the Jetson operator. A data-admission
 comment is not permission to execute arbitrary candidate code on a protected
 host. Those boundaries require their own supported implementation and validation;
 passing the hash check is not full E2E qualification.
@@ -274,7 +282,7 @@ Unchanged runs pass the selected base revision and complete cohort receipt to ev
 Changed-input runs pass the authenticated candidate catalog separately to those consumers.
 The candidate CLI artifact cannot contain the catalog.
 The GitHub token remains available only to the trusted planner and is not included in the candidate CLI artifact.
-The candidate catalog qualifies `linux/amd64` only, so a changed-input manual PR run does not dispatch the Jetson target.
+The manual E2E planner still selects the AMD64 candidate catalog and does not dispatch changed-input PR runs to Jetson.
 The trusted publication job reports this exclusion before the Jetson job is skipped.
 
 The same-repository `Images / Build, Test, and Publish Managed Images` PR workflow also runs the
