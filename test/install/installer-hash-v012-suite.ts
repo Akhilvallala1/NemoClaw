@@ -11,7 +11,7 @@ import {
   prepareReleaseFixtureRuntime,
 } from "../helpers/openshell-installer-template";
 
-const GUARDED_INSTALLER_SHA256 = "3ac277104b411ea27963cbf9df41ce6f9e2d39b7c430781c73f88c5489ef4af5";
+const GUARDED_INSTALLER_SHA256 = "4d5970db104adeddcb90e38ff13f482c5e41e47897007c14b181c5ab2c3f9ff2";
 
 function guardedInstaller(repoRoot: string, source: string): string {
   const fixture = fs.readFileSync(
@@ -86,6 +86,10 @@ export function registerV012TemplateCases(
       ["constants.O_NOFOLLOW", "0"],
       ["  verify();", "  // verify();"],
       ["if (missing(error)) continue;", "continue;"],
+      [
+        '    if (!version) deny("the installed CLI version is unknown");',
+        '    if (!version) deny("the installed CLI version is unknown");\n    if (Number(version[1]) > 0 || Number(version[2]) > 0) return;',
+      ],
     ]) {
       const mutated = source.replace(original, replacement);
       expect(mutated).not.toBe(source);
@@ -98,4 +102,57 @@ export function registerV012TemplateCases(
       });
     }
   });
+
+  it.each(["0.1.2", "1.0.0"])(
+    "preserves registered legacy data after a partial CLI upgrade to %s",
+    (installedVersion) => {
+      const root = createFixture("0.1.2");
+      prepareReleaseFixtureRuntime(repoRoot, root);
+      const installer = path.join(root, "scripts/install-openshell.sh");
+      fs.writeFileSync(installer, guardedInstaller(repoRoot, fs.readFileSync(installer, "utf8")));
+      const config = path.join(root, "config");
+      const registration = path.join(config, "openshell/gateways/nemoclaw");
+      fs.mkdirSync(registration, { recursive: true });
+      const metadata = path.join(registration, "metadata.json");
+      const retained = path.join(registration, "retained-state");
+      const binary = path.join(root, "bin/openshell");
+      const calls = path.join(root, "calls");
+      const download = path.join(root, "download");
+      fs.writeFileSync(
+        metadata,
+        JSON.stringify({ name: "nemoclaw", gateway_endpoint: "https://localhost:8080" }),
+      );
+      fs.writeFileSync(retained, "legacy user data\n");
+      fs.writeFileSync(
+        binary,
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\ncase "$1" in\n  --version) printf 'openshell ${installedVersion}\\n' ;;\n  sandbox) printf '[{"name":"retained-sandbox"}]\\n' ;;\n  *) exit 99 ;;\nesac\n`,
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(path.join(root, "bin/curl"), `#!/bin/sh\ntouch '${download}'\nexit 99\n`, {
+        mode: 0o755,
+      });
+      const paths = [metadata, retained, binary];
+      const before = paths.map((file) => fs.readFileSync(file, "utf8"));
+      const result = spawnSync("bash", [installer], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: root,
+          XDG_CONFIG_HOME: config,
+          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(root, "system"),
+          OPENSHELL_GATEWAY_ENDPOINT: "",
+          PATH: `${path.join(root, "bin")}:${process.env.PATH}`,
+        },
+      });
+      expect(result).toMatchObject({
+        status: 1,
+        stderr: expect.stringContaining(
+          "a legacy gateway has sandboxes or an incomplete inventory",
+        ),
+      });
+      expect(fs.readFileSync(calls, "utf8")).toBe("--version\nsandbox list -g nemoclaw -o json\n");
+      expect(fs.existsSync(download)).toBe(false);
+      expect(paths.map((file) => fs.readFileSync(file, "utf8"))).toEqual(before);
+    },
+  );
 }

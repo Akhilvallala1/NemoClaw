@@ -92,7 +92,6 @@ function verify() {
       query(binary, ["--version"]),
     );
     if (!version) deny("the installed CLI version is unknown");
-    if (Number(version[1]) > 0 || Number(version[2]) > 0) return;
   }
   // Native gateway list silently omits corrupt metadata. Inspect registrations
   // before querying each gateway, rather than trusting an empty gateway list.
