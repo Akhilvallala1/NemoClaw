@@ -86,17 +86,26 @@ class AuthoringTests(unittest.TestCase):
             for item in sequence
             if item.get("Action")
         }
-        self.assertIn('REMOVE ~= "ALL"', conditions["NativeRuntimeBeginRemove"])
-        self.assertIn(
-            "NOT UPGRADINGPRODUCTCODE", conditions["NativeRuntimeBeginInstall"]
-        )
+        msi_owned = 'NEMOCLAW_BUNDLE_MANAGED_RUNTIME <> "1"'
+        installing = 'NOT UPGRADINGPRODUCTCODE AND NOT (REMOVE ~= "ALL") AND ' + msi_owned
+        removing = 'NOT UPGRADINGPRODUCTCODE AND REMOVE ~= "ALL" AND ' + msi_owned
+        for name in (
+            "NativeRuntimeBeginInstall",
+            "NativeRuntimeVerify",
+            "NativeRuntimeCommitInstall",
+        ):
+            with self.subTest(action=name):
+                self.assertEqual(conditions[name], installing)
+        for name in ("NativeRuntimeBeginRemove", "NativeRuntimeCommitRemove"):
+            with self.subTest(action=name):
+                self.assertEqual(conditions[name], removing)
         self.assertEqual(
             conditions["NativeRuntimeJoinRemoval"],
             'UPGRADINGPRODUCTCODE AND NEMOCLAW_BUNDLE_MANAGED_RUNTIME <> "1"',
         )
         self.assertEqual(
             conditions["NativeRuntimeRollback"],
-            "NOT UPGRADINGPRODUCTCODE",
+            "NOT UPGRADINGPRODUCTCODE AND " + msi_owned,
         )
         self.assertEqual(
             tree.find("{" + NAMESPACE + "}Launch").get("Condition"),

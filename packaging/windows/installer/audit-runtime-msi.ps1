@@ -207,6 +207,16 @@ try {
     $msiOwned = 'NEMOCLAW_BUNDLE_MANAGED_RUNTIME <> "1"'
     $installCommit = 'NOT UPGRADINGPRODUCTCODE AND NOT (REMOVE ~= "ALL") AND ' + $msiOwned
     $removeCommit = 'NOT UPGRADINGPRODUCTCODE AND REMOVE ~= "ALL" AND ' + $msiOwned
+    foreach ($name in @('NativeRuntimeBeginInstall','NativeRuntimeVerify','NativeRuntimeCommitInstall')) {
+        if ($sequence[$name].condition -cne $installCommit) {
+            throw 'MSI install actions must share ownership and leave bundle transactions to Burn.'
+        }
+    }
+    foreach ($name in @('NativeRuntimeBeginRemove','NativeRuntimeCommitRemove')) {
+        if ($sequence[$name].condition -cne $removeCommit) {
+            throw 'MSI removal actions must share ownership and leave bundle transactions to Burn.'
+        }
+    }
     if ($commits.Count -ne 2 -or $commits -cnotcontains 'NativeRuntimeCommitInstall' -or
         $commits -cnotcontains 'NativeRuntimeCommitRemove' -or
         $sequence.NativeRuntimeCommitInstall.condition -cne $installCommit -or
@@ -214,7 +224,7 @@ try {
         throw 'Runtime admission requires the sole applicable final commit action.'
     }
     if (($actions.NativeRuntimeRollback.type -band 0x500) -ne 0x500 -or
-        $sequence.NativeRuntimeRollback.condition -cne 'NOT UPGRADINGPRODUCTCODE' -or
+        $sequence.NativeRuntimeRollback.condition -cne ('NOT UPGRADINGPRODUCTCODE AND ' + $msiOwned) -or
         $sequence.NativeRuntimeJoinRemoval.condition -cne 'UPGRADINGPRODUCTCODE AND NEMOCLAW_BUNDLE_MANAGED_RUNTIME <> "1"') {
         throw 'The root rollback and guarded nested-uninstall conditions differ from the contract.'
     }

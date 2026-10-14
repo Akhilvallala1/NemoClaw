@@ -132,19 +132,21 @@ def author(identity, helper: Path, expected_sha256: str):
     installing = root + ' AND NOT (REMOVE ~= "ALL")'
     msi_installing = installing + " AND " + msi_owned
     removing = root + ' AND REMOVE ~= "ALL" AND ' + msi_owned
+    # Burn owns the whole image transaction, including rollback after MSI file
+    # restoration. The MSI must not reopen or roll back that journal itself.
     actions = [
         (
             "NativeRuntimeRollback",
             "rollback",
             "rollback " + identity["runtimeId"],
-            root,
+            root + " AND " + msi_owned,
             1501,
         ),
         (
             "NativeRuntimeBeginInstall",
             "deferred",
             "begin-install " + tuple_args + ' "[ProductCode]"',
-            installing,
+            msi_installing,
             1502,
         ),
         (
