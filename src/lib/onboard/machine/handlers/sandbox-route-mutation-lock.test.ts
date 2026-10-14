@@ -241,7 +241,7 @@ describe("sandbox registration route transaction", () => {
       const createIntent = calls.resolveCreateIntent.mock.calls[0]?.[0];
       expect(createIntent?.inferenceProvider).toBe("compatible-endpoint");
       expect(createIntent).not.toHaveProperty("nativeLocalProviderAttachment");
-      expect(createIntent?.hostLocalInferenceRouteOnly).toBe(false);
+      expect(createIntent).toMatchObject({ hostLocalInferenceRouteOnly: false });
     },
   );
 
