@@ -111,7 +111,7 @@ export function applyCloudFallbackSelection(
   state.onModelSelected?.(cloudConfig.defaultModel, "product_catalog");
   state.preferredInferenceApi = null;
   state.nimContainer = null;
-  state.localNimSelected = false;
+  delete state.localNimSelected;
   state.allowToolsIncompatible = false;
   state.skipHostInferenceSmoke = false;
   state.reuseGatewayCredentialWithoutLocalKey = false;

@@ -840,7 +840,8 @@ export function createSetupInference(
       provider,
       endpointUrl,
       options.localNimSelected ??
-        Boolean(sandboxName && deps.getSandbox?.(sandboxName)?.nimContainer),
+        (provider === "vllm-local" &&
+          Boolean(sandboxName && deps.getSandbox?.(sandboxName)?.nimContainer)),
     );
     if (selectingNativeLocal)
       await (deps.requireNativeProviderPolicy ?? requireNativeProviderPolicy)(gatewayName);

@@ -34,6 +34,7 @@ describe("setupNim selection state helpers", () => {
   it("applies a complete cloud fallback and clears stale local-provider state", () => {
     const state = makeState();
     state.allowToolsIncompatible = true;
+    state.localNimSelected = true;
 
     applyCloudFallbackSelection(state, {
       providerName: "nvidia-prod",
