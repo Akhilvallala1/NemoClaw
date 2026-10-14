@@ -88,12 +88,16 @@ import {
 import {
   withNativeCustomSelectionDrift,
   publishAttachedProvidersBeforeDockerSandboxCreation,
+  resolveProviderAdapter,
   usesNativeNvidiaProvider,
+  usesNativeHostedProvider,
+  validateAttachedNativeProfileBeforeSandboxCreation,
+  validateAttachedOwnedProfilesBeforeSandboxCreation,
+  validateAttachedHermesToolGatewayProfileBeforeSandboxCreation,
   validateAttachedMessagingProvidersBeforeSandboxCreation,
   verifyNativeNvidiaAttachmentAfterCreate,
   verifyNativeCustomAttachmentAfterCreate,
   verifyNativeHostedAttachmentAfterCreate,
-  usesNativeHostedProvider,
   retireRecreatedNativeCustomProviders,
 } from "./provider-publication";
 import {
@@ -1439,6 +1443,7 @@ type ProviderEffectBoundary = {
 
 export function createProviderEffectBoundary(input: {
   readonly deferred: boolean;
+  readonly resumingVerifiedCreate?: boolean;
   readonly sandboxName: string;
   readonly gatewayName: string;
   readonly expectedNativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
@@ -1452,17 +1457,54 @@ export function createProviderEffectBoundary(input: {
     | null;
   readonly revalidateSandboxIdentityBeforeCreate: () => void;
 }): ProviderEffectBoundary {
-  const validate = async () =>
-    validateAttachedMessagingProvidersBeforeSandboxCreation(
-      input.preparationInput,
-      input.preparationDeps,
-    );
+  const adapter = resolveProviderAdapter(input.preparationDeps);
+  const deps = { ...input.preparationDeps, providerAdapter: adapter };
+  let verifiedOwnedProfileIds: readonly string[] = [];
+  let verifiedHermesToolGatewayProfileId: string | null = null;
+  const validate = async () => {
+    await validateAttachedMessagingProvidersBeforeSandboxCreation(input.preparationInput, deps);
+    if (!input.deferred && !input.resumingVerifiedCreate) {
+      verifiedOwnedProfileIds = await validateAttachedOwnedProfilesBeforeSandboxCreation(
+        input.preparationInput,
+        deps,
+      );
+      await validateAttachedNativeProfileBeforeSandboxCreation(
+        input.preparationInput,
+        deps,
+        input.expectedNativeNvidiaProviderAttachment,
+        input.expectedNativeHostedProviderAttachment,
+      );
+      verifiedHermesToolGatewayProfileId =
+        await validateAttachedHermesToolGatewayProfileBeforeSandboxCreation(
+          input.preparationInput,
+          deps,
+        );
+    }
+  };
   const publish = async () =>
-    publishAttachedProvidersBeforeDockerSandboxCreation(
-      input.preparationInput,
-      input.preparationDeps,
-    );
-  const attachAndVerifyNativeNvidiaProvider = async (
+    publishAttachedProvidersBeforeDockerSandboxCreation(input.preparationInput, deps);
+  const verifiedDirectCreateProfileIds = () => {
+    const attachedNames = new Set([
+      ...(input.preparationInput.directCreateProviderNames ?? [
+        input.preparationInput.inferenceProvider,
+        ...input.preparationInput.messagingProviders,
+        ...input.preparationInput.extraProviders,
+      ]),
+    ]);
+    return [
+      ...verifiedOwnedProfileIds,
+      ...(input.expectedNativeNvidiaProviderAttachment &&
+      attachedNames.has(input.expectedNativeNvidiaProviderAttachment.providerName)
+        ? [input.expectedNativeNvidiaProviderAttachment.profileId]
+        : []),
+      ...(input.expectedNativeHostedProviderAttachment &&
+      attachedNames.has(input.expectedNativeHostedProviderAttachment.providerName)
+        ? [input.expectedNativeHostedProviderAttachment.profileId]
+        : []),
+      ...(verifiedHermesToolGatewayProfileId ? [verifiedHermesToolGatewayProfileId] : []),
+    ];
+  };
+  const attachAndVerifyNativeInferenceProvider = async (
     context: VerifiedSandboxCreateEffectsContext,
   ) => {
     if (input.expectedNativeCustomProviderAttachment) {
@@ -1474,7 +1516,7 @@ export function createProviderEffectBoundary(input: {
         gatewayName: input.gatewayName,
         inferenceProvider: input.preparationInput.inferenceProvider,
         expected: input.expectedNativeCustomProviderAttachment,
-        deps: input.preparationDeps,
+        deps,
       });
       return;
     }
@@ -1487,7 +1529,7 @@ export function createProviderEffectBoundary(input: {
         gatewayName: input.gatewayName,
         inferenceProvider: input.preparationInput.inferenceProvider,
         expected: input.expectedNativeHostedProviderAttachment,
-        deps: input.preparationDeps,
+        deps,
       });
       return;
     }
@@ -1500,7 +1542,7 @@ export function createProviderEffectBoundary(input: {
       gatewayName: input.gatewayName,
       inferenceProvider: input.preparationInput.inferenceProvider,
       expected: input.expectedNativeNvidiaProviderAttachment,
-      deps: input.preparationDeps,
+      deps,
     });
   };
   if (!input.deferred) {
@@ -1510,12 +1552,16 @@ export function createProviderEffectBoundary(input: {
         input.revalidateSandboxIdentityBeforeCreate();
         await publish();
       },
-      runAfterVerifiedCreate:
-        input.expectedNativeCustomProviderAttachment ||
-        usesNativeHostedProvider(input.preparationInput.inferenceProvider) ||
-        usesNativeNvidiaProvider(input.preparationInput.inferenceProvider)
-          ? attachAndVerifyNativeNvidiaProvider
-          : undefined,
+      runAfterVerifiedCreate: async (context) => {
+        await attachAndVerifyNativeInferenceProvider(context);
+        const profileIds = verifiedDirectCreateProfileIds();
+        if (!input.resumingVerifiedCreate && profileIds.length > 0) {
+          adapter.warnIfVerifiedProfilesChangedAfterSandboxCreate?.(
+            { target: { kind: "named", gatewayName: input.gatewayName } },
+            profileIds,
+          );
+        }
+      },
     };
   }
   return {
@@ -1738,6 +1784,29 @@ async function deleteJournaledRecreateSource(input: {
   ) {
     throw new Error(result.error.message);
   }
+}
+
+function directCreateHermesToolGatewayProfile(input: {
+  readonly enabled: boolean;
+  readonly sandboxName: string;
+  readonly providerNames: readonly string[];
+  readonly getBroker: () => {
+    getHermesToolGatewayProviderName(sandboxName: string): string;
+    HERMES_TOOL_GATEWAY_PROVIDER_PROFILE_TYPE: string;
+    HERMES_TOOL_GATEWAY_REFRESH_CREDENTIAL_ENV: string;
+  };
+}): { readonly hermesToolGateway?: ProviderPreparationInput["hermesToolGateway"] } {
+  if (!input.enabled) return {};
+  const broker = input.getBroker();
+  const providerName = broker.getHermesToolGatewayProviderName(input.sandboxName);
+  if (!input.providerNames.includes(providerName)) return {};
+  return {
+    hermesToolGateway: {
+      providerName,
+      profileType: broker.HERMES_TOOL_GATEWAY_PROVIDER_PROFILE_TYPE,
+      credentialEnv: broker.HERMES_TOOL_GATEWAY_REFRESH_CREDENTIAL_ENV,
+    },
+  };
 }
 
 export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrchestrationRuntime) {
@@ -3626,6 +3695,7 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
         },
       });
 
+    const directCreateProviderNames = createRequestPlan?.providers ?? [];
     const providerPreparationInput = {
       openshellDriver: sandboxRuntimeFields.openshellDriver,
       inferenceProvider: resolvedCreateIntent.inferenceProvider,
@@ -3636,7 +3706,14 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
       messagingProviders,
       messagingProviderRequests: resolvedCreateIntent.messagingProviderRequests,
       extraProviders: resolvedCreateIntent.extraProviders,
+      directCreateProviderNames,
       gatewayName: GATEWAY_NAME,
+      ...directCreateHermesToolGatewayProfile({
+        enabled: resolvedCreateIntent.hermesToolGateways.length > 0,
+        sandboxName,
+        providerNames: directCreateProviderNames,
+        getBroker: getHermesToolGatewayBroker,
+      }),
     };
     const providerPreparationDeps = {
       runOpenshell,
@@ -3644,6 +3721,7 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
     };
     const providerEffectBoundary = createProviderEffectBoundary({
       deferred: createIntent?.deferSandboxEffectsUntilIdentityVerification === true,
+      resumingVerifiedCreate: Boolean(resumeVerifiedCreateInput),
       sandboxName,
       gatewayName: GATEWAY_NAME,
       expectedNativeNvidiaProviderAttachment: resolvedCreateIntent.nativeNvidiaProviderAttachment,
