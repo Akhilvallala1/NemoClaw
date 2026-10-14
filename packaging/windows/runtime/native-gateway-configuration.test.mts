@@ -8,7 +8,6 @@ import path from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { createHash } from "node:crypto";
-import JSON5 from "json5";
 import { gatewaySource } from "./run-installed-native-web-ui.mts";
 import { nativeOpenClawModels } from "./native-openclaw-models.mts";
 import {
@@ -24,7 +23,7 @@ const template =
 const render = (options: NativeGatewayOptions = {}) =>
   renderNativeGatewayConfig(template, "C:\\NemoClaw", undefined, options);
 
-test("the actual worker preserves native JSON5 settings and distinguishes a restart from installer reconfiguration", async () => {
+test("the actual worker preserves native settings and distinguishes a restart from installer reconfiguration", async () => {
   const source = gatewaySource();
   const start = source.indexOf("const configurationPath = ");
   const end = source.indexOf("// Register sealed paths", start);
@@ -40,7 +39,7 @@ test("the actual worker preserves native JSON5 settings and distinguishes a rest
         readFileSync: (name: string) => files.get(name),
       },
       writeFileSync: (name: string, text: string) => files.set(name, text),
-      JSON5,
+      parsePackagedOpenClawConfiguration: async (text: string) => JSON.parse(text),
       join: path.win32.join,
       configDirectory: "owned-config",
       configured: true,
@@ -73,11 +72,10 @@ test("the actual worker preserves native JSON5 settings and distinguishes a rest
   assert.equal(JSON.parse(files.get(file)!).agents.defaults.model.primary, "nvidia/first");
   files.set(
     file,
-    `{
-    // Written through OpenClaw's native configuration surface.
-    agents: { defaults: { model: 'nvidia/second', thinkingDefault: 'medium', }, },
-    gateway: { bind: 'all' },
-  }`,
+    JSON.stringify({
+      agents: { defaults: { model: "nvidia/second", thinkingDefault: "medium" } },
+      gateway: { bind: "all" },
+    }),
   );
   await execute("original-setup");
   const restored = JSON.parse(files.get(file)!);

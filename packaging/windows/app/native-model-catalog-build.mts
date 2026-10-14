@@ -7,6 +7,14 @@ export function nativeModelCatalogSource(source: string) {
   const entry = (relative: string) =>
     JSON.stringify(path.join(source, "dist", relative).replaceAll("\\", "/"));
   return `
+export async function parseNativeConfiguration(text) {
+  __nemoPrepareAssetRoot();
+  const { l: parseConfigJson5 } = await import(${entry("io.read-helpers-ZKp-UiGx.js")});
+  const result = parseConfigJson5(text);
+  if (!result.ok || !result.parsed || typeof result.parsed !== "object" || Array.isArray(result.parsed))
+    throw Error("The saved OpenClaw configuration is invalid; it has not been overwritten.");
+  return result.parsed;
+}
 export async function buildNativeModelCatalog(inference, baseUrl, apiKey) {
   __nemoPrepareAssetRoot();
   const { t: modelKey } = await import(${entry("model-key-CMdQNkZf.js")});

@@ -20,6 +20,8 @@ test("the compiled adapter delegates provider discovery, metadata and references
     },
   ];
   const modules: Record<string, string> = {
+    "io.read-helpers-ZKp-UiGx.js":
+      "export function l(text) { return globalThis.nativeParse(text); }",
     "model-key-CMdQNkZf.js":
       'export function t(provider, id) { return "native-reference:" + provider + ":" + id; }',
     "extensions/nvidia/provider-catalog.js":
@@ -57,6 +59,7 @@ test("the compiled adapter delegates provider discovery, metadata and references
   });
   const module = {
     exports: {} as {
+      parseNativeConfiguration(text: string): Promise<unknown>;
       buildNativeModelCatalog(
         provider: string,
         url: string,
@@ -67,6 +70,10 @@ test("the compiled adapter delegates provider discovery, metadata and references
   runInNewContext(bundled.outputFiles[0]!.text, {
     module,
     exports: module.exports,
+    nativeParse: (text: string) => ({
+      ok: text !== "invalid",
+      parsed: text === "null" ? null : { native: text },
+    }),
     nativeProvider(provider: string, parameters: unknown) {
       calls.push({ provider, parameters });
       return {
@@ -77,6 +84,12 @@ test("the compiled adapter delegates provider discovery, metadata and references
       };
     },
   });
+  assert.equal(
+    ((await module.exports.parseNativeConfiguration("fixture")) as { native: string }).native,
+    "fixture",
+  );
+  for (const invalid of ["invalid", "null"])
+    await assert.rejects(module.exports.parseNativeConfiguration(invalid), /not been overwritten/);
   for (const inference of ["nvidia", "openrouter", "compatible", "local"]) {
     const result = await module.exports.buildNativeModelCatalog(
       inference,

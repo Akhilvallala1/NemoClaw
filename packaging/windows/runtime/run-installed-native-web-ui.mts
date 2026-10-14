@@ -138,7 +138,6 @@ export async function saveNativeOnboardingConfiguration(
 
 export function gatewaySource() {
   return String.raw`import fs, { mkdirSync, writeFileSync } from "node:fs";
-import JSON5 from "json5";
 import { startNativeUiTunnel } from "./native-ui-tunnel.mts";
 import { startNativeBrokerTunnel } from "./native-broker-tunnel.mts";
 import { nativeLocalPipeName, readNativeBrokerBootstrap } from "./native-local-pipe.mts";
@@ -364,7 +363,7 @@ if (configured) {
   }
 }
 const configurationPath = join(configDirectory, "openclaw.json");
-const previousConfiguration = fs.existsSync(configurationPath) ? JSON5.parse(fs.readFileSync(configurationPath, "utf8")) : {};
+const previousConfiguration = fs.existsSync(configurationPath) ? await parsePackagedOpenClawConfiguration(fs.readFileSync(configurationPath, "utf8")) : {};
 const selectionPath = join(configDirectory, "nemoclaw-model-selection");
 const previousSelection = fs.existsSync(selectionPath) ? fs.readFileSync(selectionPath, "utf8") : undefined;
 const catalog = configured ? await buildPackagedModelCatalog(inference, "http://127.0.0.1:" + modelPort + "/v1", modelToken) : {
