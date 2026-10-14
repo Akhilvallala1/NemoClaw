@@ -6,6 +6,34 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import type { SandboxEntry } from "./registry/types";
+
+it("keeps a llama.cpp attachment despite a stale Local NIM marker", async () => {
+  const { retainedNativeLocalProviderAttachment } = await import("./registry/route-reservation");
+  const binding = {
+    provider: "llama-cpp-local",
+    endpointUrl: "http://host.openshell.internal:8000/v1",
+    credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+    authMode: "sentinel",
+    gatewayName: "nemoclaw",
+    sandboxName: "alpha",
+  } as const;
+  const attachment = {
+    ...binding,
+    ...nativeLocalIdentity(binding),
+    schemaVersion: 1 as const,
+    providerId: "llama-provider",
+  };
+  const existing = {
+    name: "alpha",
+    model: "model-a",
+    ...binding,
+    nimContainer: "stale-nim-marker",
+    nativeLocalProviderAttachment: attachment,
+  } as SandboxEntry;
+
+  expect(retainedNativeLocalProviderAttachment(existing, binding)).toEqual(attachment);
+});
 
 it("admits a pending route reservation without per-sandbox provider authority", async () => {
   const { classifySandboxInferenceRouteReservation } = await import("./registry/route-reservation");

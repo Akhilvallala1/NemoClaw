@@ -162,7 +162,7 @@ export function usesNativeLocalInferenceForAgent(
   localNimSelected = false,
 ): boolean {
   return (
-    !localNimSelected &&
+    !(provider === "vllm-local" && localNimSelected) &&
     (agentName === "openclaw" || agentName === "langchain-deepagents-code") &&
     usesNativeLocalInference(provider, endpointUrl)
   );

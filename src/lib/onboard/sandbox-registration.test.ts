@@ -94,7 +94,7 @@ function createdRegistryEntryInput(
 }
 
 describe("buildCreatedSandboxRegistryEntry", () => {
-  it("keeps owned Local NIM on the shared create route despite a stale native attachment", () => {
+  it("limits the Local NIM create exclusion to its vllm-local route", () => {
     const { nativeLocalIdentity } = requireDist(
       "../inference/native-local/contract.ts",
     ) as typeof import("../inference/native-local/contract");
@@ -130,6 +130,27 @@ describe("buildCreatedSandboxRegistryEntry", () => {
     });
     expect(vllmIntent.inferenceProvider).toBe(attachment.providerName);
     expect(vllmIntent.nativeLocalProviderAttachment).toEqual(attachment);
+
+    const staleLlamaIntent = nativeInferenceCreateIntentFields("llama-cpp-local", {
+      ...entry,
+      provider: "llama-cpp-local",
+    });
+    expect(staleLlamaIntent).not.toHaveProperty("nativeLocalProviderAttachment");
+
+    const llamaBinding = { ...binding, provider: "llama-cpp-local" as const };
+    const llamaAttachment = {
+      ...llamaBinding,
+      ...nativeLocalIdentity(llamaBinding),
+      schemaVersion: 1 as const,
+      providerId: "llama-provider",
+    };
+    const llamaIntent = nativeInferenceCreateIntentFields("llama-cpp-local", {
+      ...entry,
+      provider: "llama-cpp-local",
+      nativeLocalProviderAttachment: llamaAttachment,
+    });
+    expect(llamaIntent.inferenceProvider).toBe(llamaAttachment.providerName);
+    expect(llamaIntent.nativeLocalProviderAttachment).toEqual(llamaAttachment);
   });
 
   it("does not inherit a native attachment from a different published route (#12558)", () => {

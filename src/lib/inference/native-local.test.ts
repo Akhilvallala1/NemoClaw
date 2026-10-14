@@ -163,6 +163,7 @@ describe("native local inference", () => {
     expect(
       usesNativeLocalInferenceForAgent("langchain-deepagents-code", "vllm-local", null, true),
     ).toBe(false);
+    expect(usesNativeLocalInferenceForAgent("openclaw", "llama-cpp-local", null, true)).toBe(true);
   });
 
   it("restricts the selected bridge to models and chat requests (#12558)", () => {
