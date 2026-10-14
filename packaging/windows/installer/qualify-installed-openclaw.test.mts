@@ -8,6 +8,8 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { reviewOpenClawAvailability } from "./review-openclaw-availability.mts";
 import {
   captureFailure,
   terminalAgentError,
@@ -27,6 +29,7 @@ import {
   assertRecordedOpenClawReply,
   assertRetainedOpenClawPrefix,
   validateOpenClawColdReceipt,
+  validateOpenClawWarmReceipt,
   validateOpenClawInspectionInputs,
   captureOpenClawArtifactSources,
   validateOpenClawArtifactSourceSnapshot,
@@ -229,6 +232,286 @@ test("OpenClaw restart rejects stale, failed, foreign or incomplete cold receipt
     mutate(candidate);
     assert.throws(() => validateOpenClawColdReceipt(candidate, expected));
   }
+});
+
+test("OpenClaw warm receipt binds a new real reply to the retained cold conversation and cleanup", () => {
+  const { expected, receipt: cold } = coldOpenClawFixture();
+  const warm = {
+    ...structuredClone(cold),
+    restart: {
+      ...structuredClone(cold.restart),
+      mode: "warm-reused",
+      configurationReused: true,
+      configurationPreserved: false,
+      cleanupDisposition: "removed-owned-state",
+      cleanupScope: "owned-configuration-state-and-credential",
+      restoredConversation: structuredClone(cold.restart.retainedConversation),
+      retainedConversation: {
+        ...cold.restart.retainedConversation,
+        messageCount: 4,
+        sha256: "5".repeat(64),
+      },
+    },
+  };
+  warm.results.response.visibleReply = "NEMOCLAW_NVIDIA_" + "6".repeat(24);
+  assert.equal(validateOpenClawWarmReceipt(warm, cold, expected), warm.restart);
+  const mutations: ((value: typeof warm) => void)[] = [
+    (v) => (v.verdict = "fail"),
+    (v) => (v.restart.mode = "cold-preserved"),
+    (v) => (v.restart.configurationReused = false),
+    (v) => (v.restart.configurationPreserved = true),
+    (v) => (v.restart.cleanupDisposition = "retained-for-warm-run"),
+    (v) => (v.restart.cleanupScope = "incomplete"),
+    (v) => (v.restart.controllerRun = "123:2"),
+    (v) => (v.restart.packageBuildSha256 = "7".repeat(64)),
+    (v) => (v.restart.configurationSha256 = "7".repeat(64)),
+    (v) => (v.restart.ownedState.inode = "99"),
+    (v) => (v.restart.restoredConversation.sha256 = "7".repeat(64)),
+    (v) => (v.restart.retainedConversation.sessionKey = "agent:main:other"),
+    (v) =>
+      (v.restart.retainedConversation.messageCount =
+        cold.restart.retainedConversation.messageCount),
+    (v) => (v.restart.retainedConversation.sha256 = cold.restart.retainedConversation.sha256),
+    (v) => (v.results.response.visibleReply = cold.results.response.visibleReply),
+    (v) => (v.results.response.deterministicModel = true),
+    (v) => (v.results.sessionCleanup.gatewayStopped = false),
+  ];
+  for (const mutate of mutations) {
+    const candidate = structuredClone(warm);
+    mutate(candidate);
+    assert.throws(() => validateOpenClawWarmReceipt(candidate, cold, expected));
+  }
+  assert.throws(() => validateOpenClawWarmReceipt(warm, { ...cold, verdict: "fail" }, expected));
+});
+
+function availabilityEvidenceFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-availability-"));
+  const { expected, receipt: cold } = coldOpenClawFixture();
+  const bytes = (value: unknown) => Buffer.from(JSON.stringify(value) + "\n");
+  const sha = (value: unknown) => createHash("sha256").update(bytes(value)).digest("hex");
+  const build = {
+    schemaVersion: 1,
+    classification: "finished-native-runtime-package-build",
+    sourceRevision: expected.runtime.sourceRevision,
+    runtime: expected.runtime,
+    status: "candidate-built-for-installed-qualification",
+    installedAcceptance: false,
+    activationAllowed: false,
+  };
+  const snapshot = {
+    schemaVersion: 1,
+    classification: "independent-openclaw-launcher-source-snapshot",
+    artifactSourceRevision: expected.runtime.sourceRevision,
+    controllerSourceRevision: expected.controllerSourceRevision,
+    controllerRun: expected.controllerRun,
+    sources: [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/main.rs",
+      "src/state_session.rs",
+      "src/runtime_lease.rs",
+    ].map((file) => ({
+      file: "packaging/windows/launcher/" + file,
+      bytes: 10,
+      sha256: "9".repeat(64),
+    })),
+  };
+  cold.restart.packageBuildSha256 = sha(build);
+  cold.restart.artifactSourceSnapshotSha256 = sha(snapshot);
+  const warm = {
+    ...structuredClone(cold),
+    restart: {
+      ...structuredClone(cold.restart),
+      mode: "warm-reused",
+      configurationReused: true,
+      configurationPreserved: false,
+      cleanupDisposition: "removed-owned-state",
+      cleanupScope: "owned-configuration-state-and-credential",
+      restoredConversation: structuredClone(cold.restart.retainedConversation),
+      retainedConversation: {
+        ...cold.restart.retainedConversation,
+        messageCount: 4,
+        sha256: "5".repeat(64),
+      },
+    },
+  };
+  warm.results.response.visibleReply = "NEMOCLAW_NVIDIA_" + "6".repeat(24);
+  const coldPath = "installed-acceptance/installed-openclaw-acceptance.json";
+  const warmPath = "installed-acceptance-warm/installed-openclaw-acceptance.json";
+  const timings = {
+    schemaVersion: 1,
+    sourceRevision: expected.runtime.sourceRevision,
+    artifactSourceRevision: expected.runtime.sourceRevision,
+    controllerSourceRevision: expected.controllerSourceRevision,
+    currentHeadQualification: false,
+    mode: "current-build",
+    measurement: "fresh-runner-installed-preview",
+    agent: "openclaw",
+    validationScope: "full-acceptance",
+    fullInstalledQualification: true,
+    hostPreparationRunBeforeInstall: false,
+    installTargetMilliseconds: 30000,
+    installTargetSatisfied: true,
+    primaryException: null,
+    nativeRuntimeFailure: null,
+    startupComparisonAvailable: true,
+    installationRootRemoved: true,
+    stages: Object.fromEntries(
+      ["-install", "-uninstall"].map((action) => [
+        action,
+        {
+          exitCode: 0,
+          transactionStopped: true,
+          elapsedMilliseconds: 20000,
+        },
+      ]),
+    ),
+    firstInstalledLaunch: { exitCode: 0, receipt: coldPath, agentStateResetPerCase: false },
+    warmInstalledLaunch: { exitCode: 0, receipt: warmPath, agentStateResetPerCase: false },
+    restartPersistence: {
+      qualified: true,
+      configurationRewritten: false,
+      credentialRecreated: false,
+      sameConversation: true,
+      sameOwnedState: true,
+      coldReceipt: coldPath,
+      warmReceipt: warmPath,
+    },
+    remainingInstallation: { entries: [], truncated: false },
+  };
+  const documents: Record<string, unknown> = {
+    "package/immutable-package-build.json": build,
+    "package/launcher-build-inputs.json": {
+      schemaVersion: 1,
+      classification: "package-selected-launcher-build-inputs",
+      sourceRevision: expected.runtime.sourceRevision,
+      workflowRunId: "123",
+      workflowRunAttempt: "1",
+      retainedLauncher: { sha256: expected.launcherSha256 },
+    },
+    "openclaw-artifact-source.json": snapshot,
+    [coldPath]: cold,
+    [warmPath]: warm,
+    "installed-stage-timings.json": timings,
+  };
+  const input = {
+    evidenceRoot: root,
+    evidenceManifestSha256: "",
+    sourceRevision: expected.runtime.sourceRevision,
+    controllerSourceRevision: expected.controllerSourceRevision,
+    controllerRun: expected.controllerRun,
+  };
+  function stage() {
+    const files = Object.entries(documents).map(([relative, value]) => {
+      const file = path.join(root, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, bytes(value));
+      return { path: relative, bytes: bytes(value).length, sha256: sha(value) };
+    });
+    const manifest = {
+      schemaVersion: 1,
+      classification: "accidental-runnable-free-windows-evidence",
+      files,
+    };
+    fs.writeFileSync(path.join(root, "evidence-manifest.json"), bytes(manifest));
+    input.evidenceManifestSha256 = sha(manifest);
+  }
+  stage();
+  return { root, input, documents, stage, cold, warm, timings, expected };
+}
+
+test("reviewed OpenClaw availability binds protected full acceptance without claiming final installer approval", (t) => {
+  const fixture = availabilityEvidenceFixture();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const result = reviewOpenClawAvailability(fixture.input);
+  assert.deepEqual(result, {
+    schemaVersion: 1,
+    classification: "reviewed-native-runtime-availability",
+    runtime: fixture.expected.runtime,
+    agents: [{ agent: "openclaw", evidenceSha256: fixture.input.evidenceManifestSha256 }],
+  });
+  const output = path.join(fixture.root, "reviewed-availability.json");
+  const command = [
+    "--experimental-strip-types",
+    "--no-warnings",
+    fileURLToPath(new URL("./review-openclaw-availability.mts", import.meta.url)),
+    "--evidence-root",
+    fixture.root,
+    "--evidence-manifest-sha256",
+    fixture.input.evidenceManifestSha256,
+    "--source-revision",
+    fixture.input.sourceRevision,
+    "--controller-source-revision",
+    fixture.input.controllerSourceRevision,
+    "--controller-run",
+    fixture.input.controllerRun,
+    "--output",
+    output,
+  ];
+  const child = spawnSync(process.execPath, command, { encoding: "utf8", timeout: 30000 });
+  assert.equal(child.status, 0, child.stdout + child.stderr);
+  assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")), result);
+  assert.equal(
+    child.stdout.trim(),
+    createHash("sha256").update(fs.readFileSync(output)).digest("hex"),
+  );
+  const repeated = spawnSync(process.execPath, command, { encoding: "utf8", timeout: 30000 });
+  assert.notEqual(repeated.status, 0, "A reviewed decision must never overwrite existing output.");
+  assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")), result);
+});
+
+test("availability review rejects startup-only, failed, slow, reset and incomplete-cleanup evidence even with a matching manifest", (t) => {
+  const fixture = availabilityEvidenceFixture();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const original = structuredClone(fixture.documents);
+  const changes: ((documents: Record<string, any>) => void)[] = [
+    (d) => (d["installed-stage-timings.json"].validationScope = "startup-only"),
+    (d) => (d["installed-stage-timings.json"].fullInstalledQualification = false),
+    (d) => (d["installed-stage-timings.json"].installTargetMilliseconds = 40000),
+    (d) => (d["installed-stage-timings.json"].stages["-install"].elapsedMilliseconds = 30000),
+    (d) => (d["installed-stage-timings.json"].stages["-uninstall"].transactionStopped = false),
+    (d) => (d["installed-stage-timings.json"].firstInstalledLaunch.exitCode = 1),
+    (d) => (d["installed-stage-timings.json"].warmInstalledLaunch.agentStateResetPerCase = true),
+    (d) => (d["installed-stage-timings.json"].remainingInstallation.entries = ["retained.exe"]),
+    (d) => (d["installed-stage-timings.json"].uninstallDeferredForRecovery = true),
+    (d) => (d["installed-stage-timings.json"].restartPersistence.configurationRewritten = true),
+    (d) => (d["installed-stage-timings.json"].primaryException = "failed"),
+    (d) => (d["installed-stage-timings.json"].controllerSourceRevision = "0".repeat(40)),
+    (d) =>
+      (d[
+        "installed-acceptance/installed-openclaw-acceptance.json"
+      ].results.response.deterministicModel = true),
+    (d) =>
+      (d[
+        "installed-acceptance-warm/installed-openclaw-acceptance.json"
+      ].restart.restoredConversation.sha256 = "0".repeat(64)),
+    (d) => (d["package/launcher-build-inputs.json"].workflowRunAttempt = "2"),
+    (d) => (d["package/immutable-package-build.json"].runtime.runtimeId = "0".repeat(64)),
+    (d) => (d["openclaw-artifact-source.json"].controllerSourceRevision = "0".repeat(40)),
+  ];
+  for (const change of changes) {
+    Object.assign(fixture.documents, structuredClone(original));
+    change(fixture.documents);
+    fixture.stage();
+    assert.throws(() => reviewOpenClawAvailability(fixture.input));
+  }
+});
+
+test("availability review refuses foreign run identity, changed receipt bytes and missing manifest entries", (t) => {
+  const fixture = availabilityEvidenceFixture();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  for (const change of [
+    { evidenceManifestSha256: "0".repeat(64) },
+    { sourceRevision: "0".repeat(40) },
+    { controllerSourceRevision: "0".repeat(40) },
+    { controllerRun: "123:2" },
+  ])
+    assert.throws(() => reviewOpenClawAvailability({ ...fixture.input, ...change }));
+  fs.appendFileSync(path.join(fixture.root, "installed-stage-timings.json"), " ");
+  assert.throws(() => reviewOpenClawAvailability(fixture.input));
+  delete fixture.documents["installed-stage-timings.json"];
+  fixture.stage();
+  assert.throws(() => reviewOpenClawAvailability(fixture.input));
 });
 
 test("OpenClaw cleanup retains ambiguous mutation, process, backend and lease ownership", () => {

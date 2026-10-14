@@ -121,6 +121,14 @@ export function validateOpenClawColdReceipt(
     model: string;
   },
 ) {
+  return validateOpenClawRestartReceipt(previous, expected, false);
+}
+
+function validateOpenClawRestartReceipt(
+  previous: any,
+  expected: Parameters<typeof validateOpenClawColdReceipt>[1],
+  warm: boolean,
+) {
   assert.match(expected.controllerRun, /^[1-9]\d*:[1-9]\d*$/u);
   assert.match(expected.handoff, /^[a-f0-9]{64}$/u);
   assert.match(expected.artifactSourceSnapshotSha256, /^[a-f0-9]{64}$/u);
@@ -133,7 +141,7 @@ export function validateOpenClawColdReceipt(
   assert.equal(previous.primaryFailure, null);
   const cold = previous.restart;
   assert.equal(cold?.schemaVersion, 1);
-  assert.equal(cold.mode, "cold-preserved");
+  assert.equal(cold.mode, warm ? "warm-reused" : "cold-preserved");
   for (const key of [
     "controllerRun",
     "handoff",
@@ -158,9 +166,10 @@ export function validateOpenClawColdReceipt(
   }
   assert.equal(cold.provider, "nvidia");
   assert.equal(cold.endpoint, "https://integrate.api.nvidia.com/v1");
-  assert.equal(cold.configurationReused, false);
-  assert.equal(cold.configurationPreserved, true);
-  assert.equal(cold.cleanupDisposition, "retained-for-warm-run");
+  assert.equal(cold.configurationReused, warm);
+  assert.equal(cold.configurationPreserved, !warm);
+  assert.equal(cold.cleanupDisposition, warm ? "removed-owned-state" : "retained-for-warm-run");
+  if (warm) assert.equal(cold.cleanupScope, "owned-configuration-state-and-credential");
   assert.equal(cold.processesStopped, true);
   assert.equal(cold.stateOwnerReleased, true);
   assert.equal(cold.backendCleanupConfirmed, true);
@@ -190,6 +199,24 @@ export function validateOpenClawColdReceipt(
   ])
     assert.equal(previous.results.sessionCleanup[flag], true);
   return cold;
+}
+
+export function validateOpenClawWarmReceipt(
+  receipt: any,
+  coldReceipt: any,
+  expected: Parameters<typeof validateOpenClawColdReceipt>[1],
+) {
+  const cold = validateOpenClawColdReceipt(coldReceipt, expected);
+  const warm = validateOpenClawRestartReceipt(receipt, expected, true);
+  assert.equal(warm.configurationSha256, cold.configurationSha256);
+  for (const field of ["stateRoot", "device", "inode"])
+    assert.equal(warm.ownedState[field], cold.ownedState[field]);
+  assert.deepEqual(warm.restoredConversation, cold.retainedConversation);
+  assert.equal(warm.retainedConversation.sessionKey, cold.retainedConversation.sessionKey);
+  assert(warm.retainedConversation.messageCount > cold.retainedConversation.messageCount);
+  assert.notEqual(warm.retainedConversation.sha256, cold.retainedConversation.sha256);
+  assert.notEqual(receipt.results.response.visibleReply, coldReceipt.results.response.visibleReply);
+  return warm;
 }
 
 export function openClawCleanupDisposition(input: {

@@ -157,7 +157,7 @@ export function environment(installRoot: string, source: NodeJS.ProcessEnv = pro
   };
 }
 
-export function smokeAgent(value: string = "openclaw") {
+export function smokeAgent(value: string = "openclaw"): "openclaw" {
   assert.ok(value === "openclaw", "Unsupported finished-package smoke agent.");
   return value;
 }

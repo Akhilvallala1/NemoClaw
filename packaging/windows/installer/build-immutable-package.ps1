@@ -18,6 +18,7 @@ param(
     [Parameter(Mandatory)][string]$SystemDriveBuildReceipt,
     [Parameter(Mandatory)][string]$SystemDriveProofDirectory,
     [string]$ReviewedAvailability = '',
+    [string]$UnqualifiedPackageDirectory = '',
     [string]$RuntimeImage = '',
     [string]$RuntimeImageReceipt = ''
 )
@@ -27,8 +28,18 @@ if ($env:OS -cne 'Windows_NT' -or $env:GITHUB_ACTIONS -cne 'true' -or
     $SourceRevision -cnotmatch '^[a-f0-9]{40}$' -or $ProductVersion -cnotmatch '^\d+\.\d+\.\d+$') {
     throw 'The finished runtime package requires explicit disposable Windows CI inputs.'
 }
+if ($UnqualifiedPackageDirectory -and (-not $ReviewedAvailability -or $RuntimeImage -or $RuntimeImageReceipt)) {
+    throw 'Reviewed recomposition requires an availability decision and the original OpenClaw package without replacement image inputs.'
+}
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'The immutable package output must be fresh.' }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+if ($UnqualifiedPackageDirectory) {
+    $originalDirectory = [IO.Path]::GetFullPath($UnqualifiedPackageDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if ($OutputDirectory.Equals($originalDirectory, [StringComparison]::OrdinalIgnoreCase) -or
+        $OutputDirectory.StartsWith($originalDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Reviewed recomposition must not write inside the original package.'
+    }
+}
 [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
 $work = Join-Path $OutputDirectory 'build'
 [IO.Directory]::CreateDirectory($work) | Out-Null
@@ -89,6 +100,41 @@ function Get-PackagedMxcProbeSha256 {
     return [string]$built[0].sha256
 }
 
+function Get-RecompositionBuild {
+    param([string]$Package, [string]$ExpectedSource, $ExpectedRuntime)
+    $buildPath = Join-Path $Package 'immutable-package-build.json'
+    $build = Get-Content -LiteralPath $buildPath -Raw | ConvertFrom-Json
+    if ($build.schemaVersion -ne 1 -or $build.classification -cne 'finished-native-runtime-package-build' -or
+        $build.sourceRevision -cne $ExpectedSource -or $build.status -cne 'candidate-built-for-installed-qualification' -or
+        $build.installedAcceptance -isnot [bool] -or $build.installedAcceptance -or
+        $build.activationAllowed -isnot [bool] -or $build.activationAllowed) {
+        throw 'Reviewed recomposition requires the exact original candidate build receipt.'
+    }
+    foreach ($field in @('runtimeId', 'manifestSha256', 'sourceRevision', 'nodeSha256', 'nodeVersion')) {
+        if ($build.runtime.$field -cne $ExpectedRuntime.$field) {
+            throw 'Reviewed recomposition cannot change the built runtime tuple.'
+        }
+    }
+    $capabilitiesPath = Join-Path $Package 'build\launcher-capabilities.json'
+    if ((Get-FileHash -LiteralPath $capabilitiesPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $build.launcherCapabilitiesSha256) {
+        throw 'The original launcher capability observation changed.'
+    }
+    $capabilities = Get-Content -LiteralPath $capabilitiesPath -Raw | ConvertFrom-Json
+    foreach ($artifact in @(
+        @{ path='build\compiled-native\NemoClaw.exe'; sha256=$capabilities.launcherSha256 },
+        @{ path='build\compiled-native\NemoClawRuntimeTransaction.exe'; sha256=$build.transactionHelperSha256 }
+    )) {
+        $file = Get-Item -LiteralPath (Join-Path $Package $artifact.path) -Force
+        if ($file -isnot [IO.FileInfo] -or $file.Length -le 0 -or
+            ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $artifact.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+            (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifact.sha256) {
+            throw 'An original compiled native artifact changed before recomposition.'
+        }
+    }
+    return $build
+}
+
 # Read only the two compiled tables; do not enumerate/hash customer runtime bytes.
 function Get-CompiledMsiCounts([string]$Path) {
     $installer = $null; $database = $null
@@ -144,6 +190,17 @@ try {
     if ($assembly.runtime.sourceRevision -cne $SourceRevision -or $assembly.buildCompleteForSelectedAgents -ne $true) {
         throw 'The selected runtime assembly differs from the package source.'
     }
+    $priorBuild = $null
+    if ($UnqualifiedPackageDirectory) {
+        $priorBuild = Get-RecompositionBuild $UnqualifiedPackageDirectory $SourceRevision $assembly.runtime
+        $receipt['reviewedRecomposition'] = @{
+            originalBuildSha256 = (Get-FileHash -LiteralPath (Join-Path $UnqualifiedPackageDirectory 'immutable-package-build.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+            decisionSha256 = (Get-FileHash -LiteralPath $ReviewedAvailability -Algorithm SHA256).Hash.ToLowerInvariant()
+            runtimeRebuilt = $false
+            nativeArtifactsRebuilt = $false
+            finalInstalledAcceptanceRequired = $true
+        }
+    }
     $sharedNodeVersion = (& (Join-Path $HostPayloadRoot 'bin\node.exe') --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $sharedNodeVersion -cne ('v' + [string]$assembly.runtime.nodeVersion)) {
         throw 'The actual shared Node version differs from the sealed runtime identity.'
@@ -165,10 +222,14 @@ try {
     $nativeArtifacts = Join-Path $work 'compiled-native'
     [IO.Directory]::CreateDirectory($nativeArtifacts) | Out-Null
     $materializer = Join-Path $owner 'materialize-compiled-executable.py'
-    Invoke-BuildTool 'rustup' @('run', '1.95.0-aarch64-pc-windows-msvc', 'cargo', 'rustc', '--locked', '--release',
+    if (-not $UnqualifiedPackageDirectory) {
+        Invoke-BuildTool 'rustup' @('run', '1.95.0-aarch64-pc-windows-msvc', 'cargo', 'rustc', '--locked', '--release',
         '--target', 'aarch64-pc-windows-msvc', '--features', 'immutable-runtime', '--manifest-path',
         (Join-Path $windows 'launcher\Cargo.toml'), '--target-dir', $launcherTarget, '--', '-C', 'target-feature=+crt-static') 'launcher-build'
-    $launcherBuilt = Join-Path $launcherTarget 'aarch64-pc-windows-msvc\release\NemoClaw.exe'
+        $launcherBuilt = Join-Path $launcherTarget 'aarch64-pc-windows-msvc\release\NemoClaw.exe'
+    } else {
+        $launcherBuilt = Join-Path $UnqualifiedPackageDirectory 'build\compiled-native\NemoClaw.exe'
+    }
     $launcher = Join-Path $nativeArtifacts 'NemoClaw.exe'
     $launcherCopyReceipt = Join-Path $OutputDirectory 'compiled-launcher.json'
     Invoke-BuildTool $PythonPath @($materializer, '--source', $launcherBuilt, '--output', $launcher,
@@ -196,9 +257,11 @@ try {
             Remove-Item Env:NEMOCLAW_RUNTIME_IMAGE_ID -ErrorAction SilentlyContinue
             Remove-Item Env:NEMOCLAW_RUNTIME_IMAGE_SHA256 -ErrorAction SilentlyContinue
         }
-        Invoke-BuildTool 'rustup' @('run', '1.95.0-aarch64-pc-windows-msvc', 'cargo', 'rustc', '--locked', '--release',
+        if (-not $UnqualifiedPackageDirectory) {
+            Invoke-BuildTool 'rustup' @('run', '1.95.0-aarch64-pc-windows-msvc', 'cargo', 'rustc', '--locked', '--release',
             '--target', 'aarch64-pc-windows-msvc', '--manifest-path', (Join-Path $owner 'Cargo.toml'),
             '--target-dir', $helperTarget, '--', '-C', 'target-feature=+crt-static') 'transaction-build'
+        }
     } finally {
         if ($null -eq $previousImageId) { Remove-Item Env:NEMOCLAW_RUNTIME_IMAGE_ID -ErrorAction SilentlyContinue }
         else { $env:NEMOCLAW_RUNTIME_IMAGE_ID = $previousImageId }
@@ -206,6 +269,9 @@ try {
         else { $env:NEMOCLAW_RUNTIME_IMAGE_SHA256 = $previousImageSha }
     }
     $helperBuilt = Join-Path $helperTarget 'aarch64-pc-windows-msvc\release\NemoClawRuntimeTransaction.exe'
+    if ($UnqualifiedPackageDirectory) {
+        $helperBuilt = Join-Path $UnqualifiedPackageDirectory 'build\compiled-native\NemoClawRuntimeTransaction.exe'
+    }
     $helper = Join-Path $nativeArtifacts 'NemoClawRuntimeTransaction.exe'
     $helperCopyReceipt = Join-Path $OutputDirectory 'compiled-transaction-helper.json'
     Invoke-BuildTool $PythonPath @($materializer, '--source', $helperBuilt, '--output', $helper,
@@ -217,9 +283,14 @@ try {
     $receipt.phase = 'selected-package-composition'
     $payload = Join-Path $work 'payload'
     $composer = Join-Path $owner 'package_runtime.py'
-    $compose = @($composer, 'compose', '--host', $HostPayloadRoot, '--assembled', $RuntimeAssemblyRoot,
-        '--launcher', $launcher, '--capabilities', $capabilityPath, '--output', $payload)
-    if ($ReviewedAvailability) { $compose += @('--reviewed-availability', $ReviewedAvailability) }
+    if ($UnqualifiedPackageDirectory) {
+        $compose = @($composer, 'recompose-reviewed', '--payload', (Join-Path $UnqualifiedPackageDirectory 'build\payload'),
+            '--assembly', (Join-Path $RuntimeAssemblyRoot 'assembly.json'), '--reviewed-availability', $ReviewedAvailability, '--output', $payload)
+    } else {
+        $compose = @($composer, 'compose', '--host', $HostPayloadRoot, '--assembled', $RuntimeAssemblyRoot,
+            '--launcher', $launcher, '--capabilities', $capabilityPath, '--output', $payload)
+        if ($ReviewedAvailability) { $compose += @('--reviewed-availability', $ReviewedAvailability) }
+    }
     if ([bool]$RuntimeImage -ne [bool]$RuntimeImageReceipt) { throw 'The runtime image and receipt must be supplied together.' }
     if ($RuntimeImage) { $compose += @('--runtime-image', $RuntimeImage, '--runtime-image-receipt', $RuntimeImageReceipt) }
     Invoke-BuildTool $PythonPath $compose 'compose'
@@ -260,7 +331,9 @@ try {
     if ((Test-Path -LiteralPath $cabinetRoot) -or (Test-Path -LiteralPath $runtimeCabinetRoot)) {
         throw 'A fixed CI cabinet source drive is already in use.'
     }
-    $imageDelivery = [bool]$RuntimeImage
+    # Reviewed recomposition retains the original image without a new image input.
+    $packageInputs = Get-Content -LiteralPath (Join-Path $payload 'immutable-package-inputs.json') -Raw | ConvertFrom-Json
+    $imageDelivery = $packageInputs.deliveryContract -ceq 'finished-native-image-v1'
     $cabinetFailure = $null
     $cabinetMapped = $false
     $runtimeMapped = $false
@@ -319,6 +392,15 @@ try {
     # Consume the same executed binary; the package builder never rebuilds it.
     if ((Get-FileHash -LiteralPath $SystemDrivePrepPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $systemDriveSha) {
         throw 'The proven system-drive helper changed before Burn composition.'
+    }
+    if ($UnqualifiedPackageDirectory) {
+        $unchangedBuild = Get-RecompositionBuild $UnqualifiedPackageDirectory $SourceRevision $assembly.runtime
+        if ($helperSha -cne $priorBuild.transactionHelperSha256 -or
+            $unchangedBuild.transactionHelperSha256 -cne $priorBuild.transactionHelperSha256 -or
+            (Get-FileHash -LiteralPath (Join-Path $UnqualifiedPackageDirectory 'immutable-package-build.json') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.reviewedRecomposition.originalBuildSha256 -or
+            (Get-FileHash -LiteralPath $ReviewedAvailability -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.reviewedRecomposition.decisionSha256) {
+            throw 'A reviewed recomposition input changed before final Burn composition.'
+        }
     }
     $setup = Join-Path $OutputDirectory "NemoClawSetup-$ProductVersion-windows-arm64.exe"
     $runtimeTuple = @($assembly.runtime.runtimeId, $assembly.runtime.manifestSha256, $assembly.runtime.sourceRevision,

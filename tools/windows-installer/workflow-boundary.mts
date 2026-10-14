@@ -20,6 +20,7 @@ export type WorkflowStep = {
 };
 export type WorkflowJob = {
   steps?: WorkflowStep[];
+  env?: Record<string, string>;
   needs?: string | string[];
   if?: string;
   uses?: string;
@@ -314,6 +315,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
           "scripts/checks/*windows-native*",
           "scripts/install-windows-native.ps1",
           "test/automation/pull-requests/windows-native-installer-workflow.test.ts",
+          "test/automation/pull-requests/windows-native-installer-review.test.ts",
           "test/automation/pull-requests/windows-native-installer-process.test.ts",
           "test/automation/pull-requests/windows-native-installer-process.support.ts",
           "test/security/windows-native-*.test.ts",
@@ -634,11 +636,11 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       const transferWorkflows = `${workflowSource}\n${trustedSource}`;
       assert.strictEqual(
         transferWorkflows.match(/^.*windows-native-transfer\.ps1.*$/gmu)?.length,
-        12,
+        14,
       );
       assert.strictEqual(
         transferWorkflows.match(/^.*= @\(& .*windows-native-transfer\.ps1.*$/gmu)?.length,
-        12,
+        14,
       );
       assert.doesNotMatch(transferWorkflows, /\$LASTEXITCODE[^\n]*transfer/iu);
       const evidenceRun =
@@ -748,7 +750,252 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     assert.deepStrictEqual(secretJobs, [
       "full-installed-acceptance",
       "publish-qualified-installer",
+      "review-runtime-availability",
     ]);
+    const bootstrap = requiredJob(workflow, "windows-finished-runtime-qualification");
+    const rebuilt = requiredJob(workflow, "windows-finished-reviewed-installer");
+    const initial = requiredJob(workflow, "windows-finished-installer");
+    const image = requiredStep(
+      initial,
+      "Build the selected runtime as one finished application image",
+    );
+    assert.strictEqual(image.if, undefined);
+    assert.ok(image.run?.includes("build-finished-runtime-image.ps1"));
+    assert.ok(
+      image.run?.includes('-RuntimeRoot "$work\\assembled\\runtimes\\$($identity.runtimeId)"'),
+    );
+    const initialBuild = requiredStep(
+      initial,
+      "Build the finished WPF, guarded launcher, transactional MSI and Burn preview",
+    );
+    assert.ok(
+      initialBuild.run?.includes(
+        'RuntimeImage = "$work\\runtime-image\\$($identity.runtimeId).vhdx"',
+      ),
+    );
+    assert.ok(
+      initialBuild.run?.includes(
+        'RuntimeImageReceipt = "$work\\runtime-image\\runtime-image.json"',
+      ),
+    );
+    assert.ok(initialBuild.run?.includes("@imageArguments"));
+    assert.ok(!initialBuild.run?.includes("$env:SELECTED_AGENT -ceq 'hermes'"));
+    assert.strictEqual(bootstrap.uses, call.uses);
+    assert.deepStrictEqual(jobNeeds(bootstrap), [
+      "windows-finished-request",
+      "windows-finished-installer",
+      "windows-compiled-application",
+    ]);
+    assert.strictEqual(bootstrap.with?.qualification_phase, "runtime-bootstrap");
+    assert.strictEqual(bootstrap.with?.agent, "openclaw");
+    assert.strictEqual(bootstrap.with?.candidate_migration_evidence_id, undefined);
+    assert.strictEqual(bootstrap.with?.candidate_migration_proof_sha256, undefined);
+    assert.strictEqual(call.with?.qualification_phase, "final");
+    for (const gate of [
+      "github.event_name == 'workflow_dispatch'",
+      "github.ref == 'refs/heads/main'",
+      "needs.windows-finished-request.outputs.agent == 'openclaw'",
+      "trusted_main == 'true'",
+      "exact_workflow == 'true'",
+      "exact_pr == 'true'",
+      "credential_authorized == 'true'",
+      "validation_scope == 'full-acceptance'",
+      "needs.windows-finished-installer.result == 'success'",
+      "needs.windows-compiled-application.result == 'success'",
+    ])
+      assert.ok(bootstrap.if?.includes(gate), "Missing bootstrap gate: " + gate);
+    assert.ok(!bootstrap.if?.includes("||"));
+    assert.deepStrictEqual(jobNeeds(rebuilt), [
+      "windows-finished-request",
+      "windows-finished-installer",
+      "windows-finished-runtime-qualification",
+    ]);
+    assert.strictEqual(
+      rebuilt.if,
+      "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-installer.result == 'success' && needs.windows-finished-runtime-qualification.result == 'success' }}",
+    );
+    assert.strictEqual(rebuilt.environment, undefined);
+    assert.ok(!JSON.stringify(rebuilt).includes("secrets."));
+    assert.deepStrictEqual(rebuilt.permissions, { actions: "read", contents: "read" });
+    assert.deepStrictEqual(
+      requiredStep(rebuilt, "Download independently reviewed runtime availability").with,
+      {
+        "artifact-ids":
+          "${{ needs.windows-finished-runtime-qualification.outputs.availability_id }}",
+        path: "${{ runner.temp }}/reviewed-runtime-availability",
+        "merge-multiple": true,
+      },
+    );
+    const rebuildInputs = requiredStep(
+      rebuilt,
+      "Verify original package and exact reviewed decision before executable use",
+    );
+    assert.deepStrictEqual(rebuildInputs.env, {
+      INSTALLER_MANIFEST:
+        "${{ needs.windows-finished-installer.outputs.installer_manifest_sha256 }}",
+      AVAILABILITY_SHA256:
+        "${{ needs.windows-finished-runtime-qualification.outputs.availability_sha256 }}",
+    });
+    for (const token of [
+      "-ExpectedManifestSha256 $env:INSTALLER_MANIFEST",
+      "$verified.Count -ne 1",
+      "$decision.Attributes -band [IO.FileAttributes]::ReparsePoint",
+      "$decision.Length -gt 65536",
+      "-cne $env:AVAILABILITY_SHA256",
+      "$env:GITHUB_WORKSPACE\\controller\\scripts\\checks\\windows-native-transfer.ps1",
+    ])
+      assert.ok(
+        rebuildInputs.run?.includes(token),
+        "Missing reviewed packaging input check: " + token,
+      );
+    const rebuild = requiredStep(
+      rebuilt,
+      "Rebuild native UI MSI and Burn without rebuilding the qualified runtime",
+    );
+    for (const token of [
+      "-UnqualifiedPackageDirectory",
+      "-ReviewedAvailability",
+      "-SystemDriveProofDirectory",
+      "build-immutable-package.ps1",
+      "migration-inputs.json",
+    ])
+      assert.ok(rebuild.run?.includes(token));
+    const seal = requiredStep(
+      rebuilt,
+      "Seal the rebuilt installer under a distinct same-run identity",
+    );
+    assert.ok(
+      seal.run?.includes(
+        "windows-finished-reviewed-installer-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_SHA-openclaw",
+      ),
+    );
+    assert.ok(seal.run?.includes("$manifest.Count -ne 1"));
+    const productCachePath = "${{ runner.temp }}/finished-windows-product-transfer";
+    assert.strictEqual(
+      requiredStep(rebuilt, "Retain rebuilt executables only in the same-run private cache").with
+        ?.path,
+      productCachePath,
+    );
+    for (const job of [
+      requiredJob(workflow, "windows-finished-candidate-migration"),
+      requiredJob(trusted, "full-installed-acceptance"),
+      requiredJob(trusted, "migration"),
+      requiredJob(trusted, "publish-qualified-installer"),
+    ]) {
+      const restores =
+        job.steps?.filter((step) => step.uses?.startsWith("actions/cache/restore@")) ?? [];
+      assert.strictEqual(restores.length, 1);
+      assert.strictEqual(restores[0].with?.path, productCachePath);
+    }
+    for (const token of [
+      "Move-Item -LiteralPath $product -Destination $original",
+      "Move-Item -LiteralPath $transfer -Destination $product",
+      "StartsWith($cacheRoot, [StringComparison]::OrdinalIgnoreCase)",
+    ])
+      assert.ok(seal.run?.includes(token));
+    assert.ok(
+      seal.run?.includes(
+        "-Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent openclaw",
+      ),
+    );
+    assert.ok(
+      (rebuilt.steps ?? []).indexOf(rebuildInputs) < (rebuilt.steps ?? []).indexOf(rebuild),
+    );
+    for (const name of ["installer_cache_key", "installer_manifest_sha256"]) {
+      const selected = `\${{ needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-reviewed-installer.outputs.${name} || needs.windows-finished-installer.outputs.${name} }}`;
+      assert.strictEqual(call.with?.[name], selected);
+      if (name === "installer_manifest_sha256")
+        assert.strictEqual(
+          requiredJob(workflow, "windows-finished-candidate-migration").env?.INSTALLER_MANIFEST,
+          selected,
+        );
+    }
+    assert.ok(jobNeeds(call).includes("windows-finished-reviewed-installer"));
+    const review = requiredJob(trusted, "review-runtime-availability");
+    assert.deepStrictEqual(jobNeeds(review), ["authorize", "full-installed-acceptance"]);
+    assert.strictEqual(review.environment, "windows-native-installer-availability");
+    assert.strictEqual(
+      review.if,
+      "${{ inputs.qualification_phase == 'runtime-bootstrap' && inputs.agent == 'openclaw' && needs.authorize.outputs.credential_authorized == 'true' && needs.full-installed-acceptance.result == 'success' }}",
+    );
+    assert.deepStrictEqual(
+      [...JSON.stringify(review).matchAll(/secrets\.([A-Z_]+)/gu)].map((match) => match[1]),
+      ["WINDOWS_NATIVE_INSTALLER_AVAILABILITY_READY"],
+    );
+    const reviewReady = requiredStep(
+      review,
+      "Require independently reviewed availability environment",
+    );
+    assert.ok(reviewReady.run?.includes("[[ \"$ENVIRONMENT_READY\" == 'reviewed-main-v1' ]]"));
+    const reviewCheckout = requiredStep(review, "Check out exact trusted availability controller");
+    assert.deepStrictEqual(reviewCheckout.with, {
+      repository: "NVIDIA/NemoClaw",
+      ref: "${{ inputs.workflow_sha }}",
+      "persist-credentials": false,
+    });
+    assert.deepStrictEqual(requiredStep(review, "Prepare pinned review Node").with, {
+      "node-version": "22.23.2",
+    });
+    assert.deepStrictEqual(
+      requiredStep(review, "Download this controller's completed runtime evidence").with,
+      {
+        "artifact-ids": "${{ needs.full-installed-acceptance.outputs.evidence_id }}",
+        path: "${{ runner.temp }}/runtime-availability-evidence",
+        "merge-multiple": true,
+      },
+    );
+    assert.deepStrictEqual(full.outputs, {
+      evidence_id: "${{ steps.full_artifact.outputs.artifact-id }}",
+      evidence_manifest_sha256: "${{ steps.full_evidence.outputs.manifest_sha256 }}",
+    });
+    assert.strictEqual(
+      requiredStep(full, "Preserve full installed acceptance evidence").id,
+      "full_artifact",
+    );
+    assert.ok(
+      protectedEvidence.run?.includes(
+        'finished-windows-full-evidence\\evidence-manifest.json" -Algorithm SHA256',
+      ),
+    );
+    const decision = requiredStep(
+      review,
+      "Bind reviewed availability to exact successful runtime evidence",
+    );
+    assert.deepStrictEqual(decision.env, {
+      EVIDENCE_SHA256: "${{ needs.full-installed-acceptance.outputs.evidence_manifest_sha256 }}",
+      CANDIDATE_SHA: "${{ inputs.candidate_sha }}",
+      CONTROLLER_SHA: "${{ inputs.workflow_sha }}",
+    });
+    for (const token of [
+      '[[ "$(git rev-parse HEAD)" == "$CONTROLLER_SHA" ]]',
+      "--test packaging/windows/installer/qualify-installed-openclaw.test.mts",
+      "packaging/windows/installer/review-openclaw-availability.mts",
+      '--evidence-manifest-sha256 "$EVIDENCE_SHA256"',
+      '--source-revision "$CANDIDATE_SHA"',
+      '--controller-source-revision "$CONTROLLER_SHA"',
+      '--controller-run "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"',
+    ])
+      assert.ok(decision.run?.includes(token), "Missing reviewed evidence binding: " + token);
+    assert.strictEqual(
+      requiredStep(review, "Preserve reviewed availability decision only").with?.path,
+      "${{ runner.temp }}/reviewed-availability.json",
+    );
+    for (const reviewStep of review.steps ?? []) {
+      assert.strictEqual(reviewStep.if, undefined);
+      assert.strictEqual(reviewStep["continue-on-error"], undefined);
+    }
+    assert.strictEqual(
+      requiredJob(trusted, "candidate-migration-proof").if,
+      "${{ inputs.qualification_phase == 'final' }}",
+    );
+    assert.strictEqual(
+      full.if,
+      "${{ always() && !cancelled() && needs.authorize.result == 'success' && needs.authorize.outputs.trusted_main == 'true' && needs.authorize.outputs.exact_workflow == 'true' && needs.authorize.outputs.exact_pr == 'true' && needs.authorize.outputs.credential_authorized == 'true' && ((inputs.qualification_phase == 'runtime-bootstrap' && inputs.agent == 'openclaw') || (inputs.qualification_phase == 'final' && needs.candidate-migration-proof.result == 'success')) }}",
+    );
+    for (const job of [requiredJob(trusted, "migration"), publication]) {
+      assert.ok(job.if?.startsWith("${{ inputs.qualification_phase == 'final' && "));
+      assert.ok(!job.if?.includes("||"));
+    }
     const verifyInputs = requiredStep(full, "Verify and materialize exact qualified inputs");
     const rebuildProof = requiredStep(
       full,
@@ -969,10 +1216,11 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     assert.deepStrictEqual(jobNeeds(candidate), [
       "windows-finished-request",
       "windows-finished-installer",
+      "windows-finished-reviewed-installer",
     ]);
     assert.strictEqual(
       candidate.if,
-      "${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' }}",
+      "${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && (needs.windows-finished-request.outputs.agent != 'openclaw' || needs.windows-finished-reviewed-installer.result == 'success') }}",
     );
     assert.deepStrictEqual(candidate.permissions, { actions: "read", contents: "read" });
     assert.strictEqual(candidate["runs-on"], "windows-11-vs2026-arm");
@@ -992,7 +1240,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     const restore = requiredStep(candidate, "Restore exact same-run installer cache");
     assert.strictEqual(
       restore.with?.key,
-      "${{ needs.windows-finished-installer.outputs.installer_cache_key }}",
+      "${{ needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-reviewed-installer.outputs.installer_cache_key || needs.windows-finished-installer.outputs.installer_cache_key }}",
     );
     assert.strictEqual(restore.with?.["fail-on-cache-miss"], true);
     assert.ok(!Object.hasOwn(restore.with ?? {}, "restore-keys"));
@@ -1053,10 +1301,33 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
         `\${{ needs.windows-finished-candidate-migration.outputs.${output} }}`,
       );
       assert.deepStrictEqual(trusted.on.workflow_call.inputs[input], {
-        required: true,
+        required: false,
+        default: "",
         type: "string",
       });
     }
+    assert.ok(
+      matchesFields(trusted.on.workflow_call.inputs.qualification_phase, {
+        required: false,
+        default: "final",
+        type: "string",
+      }),
+    );
+    const phaseAuthorization = requiredStep(
+      requiredJob(trusted, "authorize"),
+      "Require current main controller and exact internal PR identity",
+    );
+    assert.strictEqual(
+      phaseAuthorization.env?.QUALIFICATION_PHASE,
+      "${{ inputs.qualification_phase }}",
+    );
+    for (const token of [
+      "if [[ \"$QUALIFICATION_PHASE\" == 'runtime-bootstrap' ]]; then",
+      '[[ "$SELECTED_AGENT" == \'openclaw\' && -z "$CANDIDATE_MIGRATION_EVIDENCE_ID" && -z "$CANDIDATE_MIGRATION_PROOF_SHA256" ]]',
+      "[[ \"$QUALIFICATION_PHASE\" == 'final' ]]",
+      '[[ "$CANDIDATE_MIGRATION_EVIDENCE_ID" =~ ^[1-9][0-9]*$ && "$CANDIDATE_MIGRATION_PROOF_SHA256" =~ ^[a-f0-9]{64}$ ]]',
+    ])
+      assert.ok(phaseAuthorization.run?.includes(token), "Missing phase authorization: " + token);
     assert.deepStrictEqual(jobNeeds(proof), ["authorize"]);
     assert.ok(!JSON.stringify(proof).includes("secrets."));
     assert.strictEqual(proof.environment, undefined);

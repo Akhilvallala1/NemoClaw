@@ -7,7 +7,10 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 
 import test_assemble_runtime as fixtures
@@ -252,6 +255,217 @@ class PackageComposition(unittest.TestCase):
             "agent": "openclaw", "status": "unqualified",
         })
 
+    def reviewed_recomposition_inputs(self, image=False):
+        if image:
+            self.compose_image()
+        else:
+            self.compose()
+        (self.output / "native-ui").mkdir()
+        (self.output / "native-ui/fixture-bootstrapper.exe").write_bytes(b"old embedded availability")
+        decision = self.fixture.root / "reviewed-availability.json"
+        decision.write_text(json.dumps({
+            "schemaVersion": 1,
+            "classification": "reviewed-native-runtime-availability",
+            "runtime": self.assembly["runtime"],
+            "agents": [{"agent": "openclaw", "evidenceSha256": "d" * 64}],
+        }))
+        return decision, self.fixture.root / "reviewed-package"
+
+    def recompose_reviewed(self, decision, output):
+        return package.recompose_reviewed(
+            self.output, self.fixture.output / "assembly.json", decision, output
+        )
+
+    def test_reviewed_recomposition_preserves_every_runtime_and_host_byte(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        original = package.inventory(self.output)
+        result = self.recompose_reviewed(decision, output)
+        self.assertEqual(result, self.assembly["runtime"])
+        self.assertEqual(package.inventory(self.output), original)
+        self.assertFalse((output / "native-ui").exists())
+        mutable = {"agent-support.json", "runtime-package-availability.json", "immutable-package-inputs.json"}
+        self.assertEqual(
+            [row for row in package.inventory(output) if row["path"] not in mutable],
+            [row for row in original if row["path"] not in mutable and row["path"].split("/", 1)[0] != "native-ui"],
+        )
+        inputs = json.loads((output / "immutable-package-inputs.json").read_text())
+        self.assertEqual(inputs["availabilityEvidence"], json.loads(decision.read_text())["agents"])
+        self.assertIs(inputs["installedAcceptance"], False)
+        self.assertIs(inputs["completePackage"], False)
+        catalog = json.loads((output / "agent-support.json").read_text())
+        self.assertEqual([row["id"] for row in catalog["agents"] if row["selectable"]], ["openclaw"])
+        self.assertNotIn("limitation", catalog["agents"][0])
+        self.assertEqual(json.loads((self.output / "runtime-package-availability.json").read_text())["agents"][0]["status"], "unqualified")
+
+    def test_reviewed_recomposition_cli_produces_a_fresh_payload_not_an_installer_pass(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        result = subprocess.run([
+            sys.executable, package.__file__, "recompose-reviewed",
+            "--payload", str(self.output), "--assembly", str(self.fixture.output / "assembly.json"),
+            "--reviewed-availability", str(decision), "--output", str(output),
+        ], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), self.assembly["runtime"])
+        self.assertFalse((output / "native-ui").exists())
+        self.assertIs(json.loads((output / "immutable-package-inputs.json").read_text())["completePackage"], False)
+
+    def test_reviewed_recomposition_preserves_the_exact_finished_image(self):
+        decision, output = self.reviewed_recomposition_inputs(image=True)
+        original = package.inventory(self.output)
+        self.recompose_reviewed(decision, output)
+        self.assertEqual(package.inventory(self.output), original)
+        self.assertEqual(package.inventory(output / "images"), package.inventory(self.output / "images"))
+        inputs = json.loads((output / "immutable-package-inputs.json").read_text())
+        self.assertEqual(inputs["deliveryContract"], "finished-native-image-v1")
+        self.assertIs(inputs["completePackage"], False)
+        self.assertIs(inputs["installedAcceptance"], False)
+        self.assertFalse((output / "native-ui").exists())
+        self.assertEqual(list((output / "runtimes" / self.assembly["runtime"]["runtimeId"]).iterdir()), [])
+        authored = package.payload_authoring(output, self.fixture.root / "reviewed-image.wxs")
+        self.assertLess(authored["files"], 100)
+
+    def test_reviewed_recomposition_rejects_changed_image_and_image_receipt(self):
+        decision, output = self.reviewed_recomposition_inputs(image=True)
+        base = self.output / "images" / self.assembly["runtime"]["runtimeId"]
+        for suffix in (".vhdx", ".json"):
+            source = base.with_suffix(suffix)
+            original = source.read_bytes()
+            with self.subTest(suffix=suffix):
+                try:
+                    source.write_bytes(b"changed-image" if suffix == ".vhdx" else b"{}")
+                    with self.assertRaisesRegex(ValueError, "image differs"):
+                        self.recompose_reviewed(decision, output)
+                    self.assertFalse(output.exists())
+                finally:
+                    source.write_bytes(original)
+
+    def test_reviewed_recomposition_rejects_changed_image_binding_or_nonempty_mount(self):
+        decision, output = self.reviewed_recomposition_inputs(image=True)
+        path = self.output / "immutable-package-inputs.json"
+        original = path.read_bytes()
+        inputs = json.loads(original)
+        inputs["runtimeImage"]["sha256"] = "f" * 64
+        path.write_text(json.dumps(inputs))
+        with self.assertRaisesRegex(ValueError, "image binding changed"):
+            self.recompose_reviewed(decision, output)
+        self.assertFalse(output.exists())
+        path.write_bytes(original)
+        (self.output / "runtimes" / self.assembly["runtime"]["runtimeId"] / "unexpected").write_bytes(b"not empty")
+        with self.assertRaisesRegex(ValueError, "empty runtime mount point"):
+            self.recompose_reviewed(decision, output)
+        self.assertFalse(output.exists())
+
+    def test_reviewed_recomposition_refuses_missing_or_wrong_runtime_review(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        value = json.loads(decision.read_text())
+        original = package.inventory(self.output)
+        for change in (
+            {"runtime": {**value["runtime"], "runtimeId": "e" * 64}},
+            {"runtime": {**value["runtime"], "manifestSha256": "e" * 64}},
+            {"classification": "startup-only"},
+            {"agents": []},
+            {"agents": [{"agent": "hermes", "evidenceSha256": "d" * 64}]},
+            {"agents": [{"agent": "openclaw", "evidenceSha256": "invalid"}]},
+        ):
+            with self.subTest(change=change):
+                decision.write_text(json.dumps({**value, **change}))
+                with self.assertRaises(ValueError):
+                    self.recompose_reviewed(decision, output)
+                self.assertFalse(output.exists())
+                self.assertEqual(package.inventory(self.output), original)
+
+    def test_reviewed_recomposition_refuses_changed_assembly_receipt(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        assembly = self.fixture.output / "assembly.json"
+        assembly.write_text(assembly.read_text() + "\n")
+        with self.assertRaisesRegex(ValueError, "original unqualified OpenClaw"):
+            self.recompose_reviewed(decision, output)
+        self.assertFalse(output.exists())
+
+    def test_reviewed_recomposition_refuses_changed_runtime_node_or_launcher(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        paths = [
+            self.output / "runtimes" / self.assembly["runtime"]["runtimeId"] / "openclaw/LICENSE",
+            self.output / "bin/node.exe", self.output / "bin/NemoClaw.exe",
+        ]
+        for path in paths:
+            with self.subTest(path=path.name):
+                original = path.read_bytes()
+                path.write_bytes(original + b"changed")
+                try:
+                    with self.assertRaises(ValueError):
+                        self.recompose_reviewed(decision, output)
+                    self.assertFalse(output.exists())
+                finally:
+                    path.write_bytes(original)
+
+    def test_reviewed_recomposition_rejects_premature_acceptance_or_prior_qualification(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        path = self.output / "immutable-package-inputs.json"
+        value = json.loads(path.read_text())
+        for change in (
+            {"installedAcceptance": True}, {"completePackage": True},
+            {"customerBuildRequired": True}, {"runtimeLaunchCopiesRequired": True},
+            {"availabilityEvidence": [{"agent": "openclaw", "evidenceSha256": "a" * 64}]},
+        ):
+            with self.subTest(change=change):
+                path.write_text(json.dumps({**value, **change}))
+                with self.assertRaisesRegex(ValueError, "original unqualified OpenClaw"):
+                    self.recompose_reviewed(decision, output)
+                self.assertFalse(output.exists())
+        path.write_text(json.dumps(value))
+        availability = self.output / "runtime-package-availability.json"
+        document = json.loads(availability.read_text())
+        document["agents"][0]["status"] = "qualified"
+        availability.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, "availability is not unqualified"):
+            self.recompose_reviewed(decision, output)
+        self.assertFalse(output.exists())
+
+    def test_reviewed_recomposition_never_overwrites_or_nests_in_its_source(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        output.mkdir()
+        (output / "keep.txt").write_text("existing")
+        original = package.inventory(self.output)
+        for destination in (self.output, output, self.output / "nested-output"):
+            with self.subTest(destination=destination):
+                with self.assertRaisesRegex(ValueError, "fresh and separate"):
+                    self.recompose_reviewed(decision, destination)
+        self.assertEqual((output / "keep.txt").read_text(), "existing")
+        self.assertEqual(package.inventory(self.output), original)
+
+    def test_reviewed_recomposition_write_failure_removes_only_its_new_output(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        original = package.inventory(self.output)
+        with mock.patch.object(package, "write_json", side_effect=OSError("fixture write failure")):
+            with self.assertRaisesRegex(OSError, "fixture write failure"):
+                self.recompose_reviewed(decision, output)
+        self.assertFalse(output.exists())
+        self.assertEqual(package.inventory(self.output), original)
+
+    def test_reviewed_recomposition_copy_failure_removes_only_its_partial_output(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        original = package.inventory(self.output)
+        with mock.patch.object(package.shutil, "copy2", side_effect=OSError("fixture copy failure")):
+            with self.assertRaisesRegex(OSError, "fixture copy failure"):
+                self.recompose_reviewed(decision, output)
+        self.assertFalse(output.exists())
+        self.assertEqual(package.inventory(self.output), original)
+
+    def test_reviewed_recomposition_does_not_delete_a_concurrently_created_output(self):
+        decision, output = self.reviewed_recomposition_inputs()
+        copy = package.exact_copy
+
+        def raced_copy(source, destination, **kwargs):
+            destination.mkdir()
+            (destination / "keep.txt").write_text("not owned by recomposition")
+            return copy(source, destination, **kwargs)
+
+        with mock.patch.object(package, "exact_copy", side_effect=raced_copy):
+            with self.assertRaises(FileExistsError):
+                self.recompose_reviewed(decision, output)
+        self.assertEqual((output / "keep.txt").read_text(), "not owned by recomposition")
+
     def test_modified_sealed_file_is_refused_before_package_copy(self):
         content = (
             self.fixture.output / "runtimes" / self.assembly["runtime"]["runtimeId"]
@@ -261,7 +475,7 @@ class PackageComposition(unittest.TestCase):
             self.compose()
         self.assertFalse(self.output.exists())
 
-    def test_finished_image_replaces_the_per_file_runtime_payload(self):
+    def compose_image(self):
         identity = self.assembly["runtime"]
         image = self.fixture.root / "runtime.vhdx"
         image_bytes = b"fixture-finished-runtime-image"
@@ -297,6 +511,11 @@ class PackageComposition(unittest.TestCase):
             image,
             receipt,
         )
+        return image, image_bytes
+
+    def test_finished_image_replaces_the_per_file_runtime_payload(self):
+        identity = self.assembly["runtime"]
+        image, image_bytes = self.compose_image()
         inputs = json.loads((self.output / "immutable-package-inputs.json").read_text())
         installed_image = self.output / "images" / (identity["runtimeId"] + ".vhdx")
         self.assertEqual(inputs["deliveryContract"], "finished-native-image-v1")

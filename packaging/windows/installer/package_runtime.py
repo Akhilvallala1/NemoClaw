@@ -74,18 +74,26 @@ def validate_launcher_capabilities(native, launcher_sha256):
     return value.get("supportedCommands", []).copy()
 
 
-def exact_copy(source: Path, destination: Path):
+def exact_copy(source: Path, destination: Path, *, excluded_entries=frozenset()):
     before = inventory(source)
+    selected = [
+        row for row in before
+        if row["path"].split("/", 1)[0] not in excluded_entries
+    ]
     destination.mkdir()
-    for row in before:
-        output = destination / row["path"]
-        if row["kind"] == "directory":
-            output.mkdir(parents=True, exist_ok=True)
-        else:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source / row["path"], output)
-    if inventory(source) != before or inventory(destination) != before:
-        raise ValueError("A package input changed during its exact build copy.")
+    try:
+        for row in selected:
+            output = destination / row["path"]
+            if row["kind"] == "directory":
+                output.mkdir(parents=True, exist_ok=True)
+            else:
+                output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source / row["path"], output)
+        if inventory(source) != before or inventory(destination) != selected:
+            raise ValueError("A package input changed during its exact build copy.")
+    except BaseException:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
 
 
 def verify_seal(root: Path, identity):
@@ -191,6 +199,123 @@ def availability(assembly, selection):
     return document, references
 
 
+def update_support_catalog(support, document):
+    statuses = {row["agent"]: row["status"] for row in document["agents"]}
+    if {row.get("id") for row in support.get("agents", [])} != set(LAYOUT):
+        raise ValueError("The host agent catalog is incomplete.")
+    for row in support["agents"]:
+        row["selectable"] = statuses[row["id"]] == "qualified"
+        if statuses[row["id"]] == "not-included":
+            row["limitation"] = "Unavailable in this preview"
+        elif statuses[row["id"]] == "unqualified":
+            row["limitation"] = "Unavailable: runtime qualification is pending."
+        else:
+            row.pop("limitation", None)
+        if row["id"] == "hermes":
+            row["version"] = "0.21.1"
+            row["source"] = (
+                "https://github.com/NousResearch/hermes-agent/tree/2237be355906fbe6065ce1815711eee52b2d646e"
+            )
+    return support
+
+
+def validate_runtime_image(runtime_image: Path, receipt: Path, identity: dict):
+    ordinary(runtime_image, False)
+    image = read_json(receipt)
+    if (
+        image.get("classification") != "finished-runtime-application-image"
+        or image.get("status") != "built-detached-and-verified"
+        or image.get("runtimeId") != identity["runtimeId"]
+        or image.get("manifestSha256") != identity["manifestSha256"]
+        or image.get("customerExtractionRequired") is not False
+        or image.get("runtimeLaunchCopiesRequired") is not False
+        or image.get("mountedReadOnly") is not True
+        or image.get("payloadObjects") != 1
+        or image.get("image", {}).get("sha256") != hash_file(runtime_image)[1]
+        or image.get("image", {}).get("bytes") != runtime_image.stat().st_size
+    ):
+        raise ValueError("The finished runtime application image differs from its seal.")
+    return image
+
+
+def recompose_reviewed(payload: Path, assembly: Path, selection: Path, output: Path):
+    """Apply a trusted controller's reviewed decision without rebuilding runtime bytes.
+
+    As with compose(), authentication and independent review belong to the caller.
+    The new payload still needs a rebuilt native UI, MSI, Burn and final acceptance.
+    """
+    ordinary(payload, True)
+    ordinary(output.parent, True)
+    if output.exists() or output.is_symlink() or output.resolve().is_relative_to(payload.resolve()):
+        raise ValueError("The reviewed package payload must be fresh and separate.")
+    record = read_json(assembly)
+    inputs = read_json(payload / "immutable-package-inputs.json")
+    identity = validate_identity(record["runtime"])
+    if (
+        record.get("classification") != "windows-immutable-runtime-assembly"
+        or record.get("buildCompleteForSelectedAgents") is not True
+        or record.get("deliveryContract") != "finished-native-app-v1"
+        or record.get("agents") is None
+        or [row.get("agent") for row in record["agents"]] != ["openclaw"]
+        or inputs.get("schemaVersion") != 1
+        or inputs.get("classification") != "immutable-package-inputs"
+        or inputs.get("deliveryContract") not in {"finished-native-app-v1", "finished-native-image-v1"}
+        or inputs.get("runtime") != identity
+        or inputs.get("assemblyReceiptSha256") != hash_file(assembly)[1]
+        or inputs.get("availabilityEvidence") != []
+        or inputs.get("customerBuildRequired") is not False
+        or inputs.get("runtimeLaunchCopiesRequired") is not False
+        or inputs.get("installedAcceptance") is not False
+        or inputs.get("completePackage") is not False
+    ):
+        raise ValueError("Recomposition requires the original unqualified OpenClaw payload.")
+    unqualified, _ = availability(record, None)
+    if read_json(payload / "runtime-package-availability.json") != unqualified:
+        raise ValueError("The original runtime availability is not unqualified.")
+    document, references = availability(record, read_json(selection))
+    if [row["agent"] for row in references] != ["openclaw"]:
+        raise ValueError("The reviewed decision must qualify the included OpenClaw runtime.")
+    if inputs["deliveryContract"] == "finished-native-image-v1":
+        image_base = payload / "images" / identity["runtimeId"]
+        image = validate_runtime_image(image_base.with_suffix(".vhdx"), image_base.with_suffix(".json"), identity)
+        if inputs.get("runtimeImage") != image["image"]:
+            raise ValueError("The original package image binding changed before recomposition.")
+        runtime_root = payload / "runtimes" / identity["runtimeId"]
+        ordinary(runtime_root, True)
+        if any(runtime_root.iterdir()):
+            raise ValueError("An image package must retain an empty runtime mount point.")
+    else:
+        verify_seal(payload / "runtimes" / identity["runtimeId"], identity)
+    if hash_file(payload / "bin/node.exe")[1] != identity["nodeSha256"]:
+        raise ValueError("The package shared Node differs from the runtime seal.")
+    validate_launcher_capabilities(inputs.get("launcher"), hash_file(payload / "bin/NemoClaw.exe")[1])
+    support = update_support_catalog(read_json(payload / "agent-support.json"), document)
+    before = inventory(payload)
+    mutable = {
+        "agent-support.json", "runtime-package-availability.json", "immutable-package-inputs.json"
+    }
+    preserved = [
+        row for row in before
+        if row["path"] not in mutable and row["path"].split("/", 1)[0] != "native-ui"
+    ]
+    # The bootstrapper embeds availability; copying the old UI would retain
+    # its disabled selection even after the runtime was independently reviewed.
+    exact_copy(payload, output, excluded_entries=mutable | {"native-ui"})
+    try:
+        write_json(output / "runtime-package-availability.json", document)
+        write_json(output / "agent-support.json", support)
+        write_json(output / "immutable-package-inputs.json", {
+            **inputs, "availabilityEvidence": references,
+        })
+        after = [row for row in inventory(output) if row["path"] not in mutable]
+        if after != preserved or inventory(payload) != before:
+            raise ValueError("Reviewed recomposition changed immutable package bytes.")
+        return identity
+    except BaseException:
+        shutil.rmtree(output, ignore_errors=True)
+        raise
+
+
 def compose(
     host: Path,
     assembled: Path,
@@ -219,21 +344,7 @@ def compose(
         raise ValueError("The runtime image and its receipt must be supplied together.")
     image = None
     if runtime_image is not None:
-        ordinary(runtime_image, False)
-        image = read_json(runtime_image_receipt)
-        if (
-            image.get("classification") != "finished-runtime-application-image"
-            or image.get("status") != "built-detached-and-verified"
-            or image.get("runtimeId") != identity["runtimeId"]
-            or image.get("manifestSha256") != identity["manifestSha256"]
-            or image.get("customerExtractionRequired") is not False
-            or image.get("runtimeLaunchCopiesRequired") is not False
-            or image.get("mountedReadOnly") is not True
-            or image.get("payloadObjects") != 1
-            or image.get("image", {}).get("sha256") != hash_file(runtime_image)[1]
-            or image.get("image", {}).get("bytes") != runtime_image.stat().st_size
-        ):
-            raise ValueError("The finished runtime application image differs from its seal.")
+        image = validate_runtime_image(runtime_image, runtime_image_receipt, identity)
     else:
         verify_seal(assembled / relative, identity)
     if hash_file(host / "bin/node.exe")[1] != identity["nodeSha256"]:
@@ -284,23 +395,7 @@ def compose(
         if image is None:
             verify_seal(output / relative, identity)
         write_json(output / "runtime-package-availability.json", document)
-        support = read_json(host / "agent-support.json")
-        statuses = {row["agent"]: row["status"] for row in document["agents"]}
-        if {row.get("id") for row in support.get("agents", [])} != set(LAYOUT):
-            raise ValueError("The host agent catalog is incomplete.")
-        for row in support["agents"]:
-            row["selectable"] = statuses[row["id"]] == "qualified"
-            if statuses[row["id"]] == "not-included":
-                row["limitation"] = "Unavailable in this preview"
-            elif statuses[row["id"]] == "unqualified":
-                row["limitation"] = "Unavailable: runtime qualification is pending."
-            else:
-                row.pop("limitation", None)
-            if row["id"] == "hermes":
-                row["version"] = "0.21.1"
-                row["source"] = (
-                    "https://github.com/NousResearch/hermes-agent/tree/2237be355906fbe6065ce1815711eee52b2d646e"
-                )
+        support = update_support_catalog(read_json(host / "agent-support.json"), document)
         write_json(output / "agent-support.json", support)
         write_json(
             output / "immutable-package-inputs.json",
@@ -449,6 +544,9 @@ def main():
     prepare.add_argument("--reviewed-availability", type=Path)
     prepare.add_argument("--runtime-image", type=Path)
     prepare.add_argument("--runtime-image-receipt", type=Path)
+    reviewed = sub.add_parser("recompose-reviewed")
+    for name in ("payload", "assembly", "reviewed-availability", "output"):
+        reviewed.add_argument("--" + name, type=Path, required=True)
     build_parser = sub.add_parser("author")
     for name in ("payload", "output", "transaction-helper", "transaction-output"):
         build_parser.add_argument("--" + name, type=Path, required=True)
@@ -473,6 +571,10 @@ def main():
                 )
             )
         )
+    elif args.action == "recompose-reviewed":
+        print(json.dumps(recompose_reviewed(
+            args.payload, args.assembly, args.reviewed_availability, args.output
+        )))
     elif args.action == "bootstrapper":
         props = ET.parse(Path(__file__).parents[1] / "RequiredPayload.props")
         expected = {
