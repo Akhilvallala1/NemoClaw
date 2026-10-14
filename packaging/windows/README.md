@@ -18,7 +18,16 @@ status remains `unqualified`. Setup displays the pending-runtime-checks warning
 during agent selection and configuration. Missing or invalid availability records
 and `not-included` agents remain unavailable. Hermes selection still requires
 `qualified` status. Preview selection does not grant runtime admission, mark
-evidence qualified, authorize CI credentials, or satisfy publication gates.
+evidence qualified, authorize CI credentials, or satisfy qualified-publication gates.
+
+Same-repository OpenClaw pull requests publish a downloadable Actions artifact
+named `unqualified-openclaw-preview-<commit>-<run>-<attempt>` after the package
+build succeeds. It contains the exact setup EXE, build and runtime identities,
+and an explicit unqualified-preview label with the EXE hash. The same-run
+transfer and exact package inventory are verified before upload. This download
+does not wait for installed acceptance, does not use provider credentials, and
+is not a GitHub release. Full qualification and qualified publication retain
+their separate protected workflow and approval gates.
 
 ## Windows-tip migration in progress
 

@@ -636,11 +636,11 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       const transferWorkflows = `${workflowSource}\n${trustedSource}`;
       assert.strictEqual(
         transferWorkflows.match(/^.*windows-native-transfer\.ps1.*$/gmu)?.length,
-        14,
+        15,
       );
       assert.strictEqual(
         transferWorkflows.match(/^.*= @\(& .*windows-native-transfer\.ps1.*$/gmu)?.length,
-        14,
+        15,
       );
       assert.doesNotMatch(transferWorkflows, /\$LASTEXITCODE[^\n]*transfer/iu);
       const evidenceRun =
@@ -660,6 +660,61 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       assert.ok(!evidenceRun?.includes('"$work\\build\\diagnostics",'));
     })(scenario);
   }
+  (() => {
+    const installer = requiredJob(workflow, "windows-finished-installer");
+    const verify = requiredStep(installer, "Verify and label the unqualified OpenClaw preview");
+    const upload = requiredStep(installer, "Publish the unqualified OpenClaw preview download");
+    assert.strictEqual(verify.id, "unqualified_preview");
+    assert.strictEqual(
+      verify.if,
+      "${{ success() && github.event_name == 'pull_request' && needs.windows-finished-request.outputs.request_kind == 'pull-request' && needs.windows-finished-request.outputs.candidate_repository == github.repository && needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-request.outputs.credential_authorized == 'false' }}",
+    );
+    assert.strictEqual(verify.shell, "pwsh");
+    assert.strictEqual(verify["continue-on-error"], undefined);
+    assert.deepStrictEqual(verify.env, {
+      INSTALLER_MANIFEST: "${{ steps.product_manifest.outputs.manifest_sha256 }}",
+    });
+    for (const fragment of [
+      'windows-native-transfer.ps1" -Mode Verify',
+      "-Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent openclaw",
+      "-RunId $env:GITHUB_RUN_ID -RunAttempt $env:GITHUB_RUN_ATTEMPT",
+      "-ExpectedManifestSha256 $env:INSTALLER_MANIFEST",
+      "-ExpectedPackageRunnables @($expectedMsi, $expectedSetup)",
+      "$verifiedManifest.Count -ne 1",
+      "[string]$verifiedManifest[0] -cne $env:INSTALLER_MANIFEST",
+      "classification = 'unqualified-openclaw-installer-preview'",
+      "installedAcceptance = $false",
+      "windowsQualified = $false",
+      "release = $false",
+    ])
+      assert.ok(verify.run?.includes(fragment));
+    assert.strictEqual(
+      upload.if,
+      "${{ success() && steps.unqualified_preview.outcome == 'success' }}",
+    );
+    assert.strictEqual(upload["continue-on-error"], undefined);
+    assert.strictEqual(
+      upload.uses,
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    );
+    assert.deepStrictEqual(upload.with, {
+      name: "unqualified-openclaw-preview-${{ needs.windows-finished-request.outputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+      path: [
+        "${{ runner.temp }}/finished-windows-product-transfer/package/NemoClawSetup-${{ needs.windows-finished-request.outputs.product_version }}-windows-arm64.exe",
+        "${{ runner.temp }}/finished-windows-product-transfer/package/immutable-package-build.json",
+        "${{ runner.temp }}/finished-windows-product-transfer/package/compiled-msi.json",
+        "${{ runner.temp }}/finished-windows-product-transfer/assembled/runtime-identity.json",
+        "${{ runner.temp }}/finished-windows-product-transfer/transfer-manifest.json",
+        "${{ runner.temp }}/unqualified-openclaw-preview.json",
+        "",
+      ].join("\n"),
+      "if-no-files-found": "error",
+      "retention-days": 14,
+    });
+    const seal = requiredStep(installer, "Seal the installer for same-run private qualification");
+    assert.ok(installer.steps!.indexOf(seal) < installer.steps!.indexOf(verify));
+    assert.ok(installer.steps!.indexOf(verify) < installer.steps!.indexOf(upload));
+  })();
   for (const scenario of [
     {
       caseName: "candidate workflow authorization",
@@ -1199,8 +1254,13 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       const stages = (job.steps ?? []).filter((step) =>
         step.run?.includes("stage-windows-native-evidence.ps1"),
       );
-      const uploads = (job.steps ?? []).filter((step) =>
-        step.uses?.startsWith("actions/upload-artifact@"),
+      const uploads = (job.steps ?? []).filter(
+        (step) =>
+          step.uses?.startsWith("actions/upload-artifact@") &&
+          !(
+            jobName === "windows-finished-installer" &&
+            step === requiredStep(job, "Publish the unqualified OpenClaw preview download")
+          ),
       );
       assert.strictEqual(stages?.length, 1);
       assert.ok(stages[0].if?.includes("always()"));
