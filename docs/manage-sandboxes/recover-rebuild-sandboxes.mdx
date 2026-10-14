@@ -322,7 +322,7 @@ A valid credential stored in OpenShell does not bypass validation of a supplied 
 
 Use the recovery guidance that matches the reported check:
 
-- If an OpenClaw or Deep Agents Code local sandbox still records a shared route without a native provider attachment, back up its data and freshly re-onboard it with `--fresh --name <name> --recreate-sandbox`. Rebuild stops before backup or deletion; it cannot convert that legacy route. Complete the replacement before upgrading OpenShell beyond 0.0.116.
+- If an OpenClaw or Deep Agents Code local sandbox records a route that requires native attachment but lacks it, back up its data and freshly re-onboard it with `--fresh --name <name> --recreate-sandbox`. Rebuild stops before backup or deletion; it cannot convert that legacy route. Complete the replacement before upgrading OpenShell beyond 0.0.116. Local NVIDIA NIM keeps its shared route and can rebuild on the pinned release; migrate or retire that route before upgrading OpenShell.
 - Verify the sandbox name when its registry entry is missing.
 - Follow the printed OpenShell gateway recovery steps when the gateway schema is incompatible.
 - Correct the exported API key when rebuild reports `the host inference credential could not be validated`.
