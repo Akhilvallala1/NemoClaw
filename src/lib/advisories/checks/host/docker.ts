@@ -154,12 +154,15 @@ export const retryDockerProbe: AdvisoryCheck<HostAssessment> = {
     if (!issue) return null;
     const command = issue.startsWith("version_") ? "docker version" : "docker info";
     const timedOut = issue.endsWith("_timeout");
+    const authority = host.dockerSelectedEndpoint
+      ? `selected Docker authority ${JSON.stringify(host.dockerSelectedEndpoint)}`
+      : "selected Docker authority";
     return hostAdvisory(retryDockerProbe, {
       title: "Retry the Docker readiness probe",
       kind: "manual",
       reason: timedOut
-        ? `The selected Docker authority did not answer \`${command}\` within 15 seconds. NemoClaw kept that authority and did not classify the daemon as stopped.`
-        : `NemoClaw could not start the \`${command}\` readiness probe. It kept the selected Docker authority because no daemon verdict was available.`,
+        ? `The ${authority} did not answer \`${command}\` within 15 seconds. NemoClaw kept that authority and did not classify the daemon as stopped.`
+        : `NemoClaw could not start the \`${command}\` readiness probe. It kept the ${authority} because no daemon verdict was available.`,
       commands: [
         `${command}   # verify the selected Docker authority answers`,
         "Restart the selected Docker runtime if the command remains unresponsive, then rerun `nemoclaw onboard`.",
