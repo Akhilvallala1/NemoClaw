@@ -42,6 +42,24 @@ function fixture() {
   return { pr, approval, records, permission, source, blob, request, routes };
 }
 
+function mergeFixture() {
+  const f = fixture();
+  const mergeSha = "c".repeat(40);
+  const pr = Object.assign(f.pr, { merge_commit_sha: mergeSha });
+  const commit = {
+    sha: mergeSha,
+    parents: [{ sha: identity.baseSha }, { sha: identity.candidateSha }],
+  };
+  f.routes.set(`/repos/NVIDIA/NemoClaw/git/commits/${mergeSha}`, commit);
+  const mergeSource = '{"version":"9.8.7","merged":true}';
+  f.routes.set(`/repos/NVIDIA/NemoClaw/contents/${sourcePath}?ref=${mergeSha}`, {
+    ...f.blob,
+    size: Buffer.byteLength(mergeSource),
+    content: Buffer.from(mergeSource).toString("base64"),
+  });
+  return { ...f, pr, commit, mergeSha, mergeSource };
+}
+
 describe("candidate upgrade admission", () => {
   it("reads reviewed commit data and rechecks both PR identity and current maintainer authority", async () => {
     const f = fixture();
@@ -217,4 +235,66 @@ describe("candidate upgrade admission", () => {
       "API denied",
     );
   });
+
+  it("reads the GitHub merge sources when both parents match the approved commits", async () => {
+    const f = mergeFixture();
+    await expect(
+      readApprovedCandidateUpgrade(identity, [sourcePath], f.request, f.mergeSha),
+    ).resolves.toMatchObject({ sources: { [sourcePath]: f.mergeSource } });
+  });
+
+  it.each(["unrelated", "wrong-base", "wrong-head", "extra-parent", "wrong-sha", "mutable-ref"])(
+    "rejects the %s merge before reading its sources",
+    async (kind) => {
+      const f = mergeFixture();
+      const mutations = {
+        unrelated: () => {
+          f.pr.merge_commit_sha = "d".repeat(40);
+        },
+        "wrong-base": () => {
+          f.commit.parents[0]!.sha = "d".repeat(40);
+        },
+        "wrong-head": () => {
+          f.commit.parents[1]!.sha = "d".repeat(40);
+        },
+        "extra-parent": () => {
+          f.commit.parents.push({ sha: "d".repeat(40) });
+        },
+        "wrong-sha": () => {
+          f.commit.sha = "d".repeat(40);
+        },
+        "mutable-ref": () => {
+          f.mergeSha = "main";
+        },
+      };
+      mutations[kind as keyof typeof mutations]();
+      await expect(
+        readApprovedCandidateUpgrade(identity, [sourcePath], f.request, f.mergeSha),
+      ).rejects.toThrow(/merge/);
+      expect(f.request.mock.calls.some(([path]) => path.includes("/contents/"))).toBe(false);
+    },
+  );
+
+  it.each(["replaced", "revoked"])(
+    "rejects %s authority during merge source acquisition",
+    async (kind) => {
+      const f = mergeFixture();
+      const mutations = {
+        replaced: () => {
+          f.pr.merge_commit_sha = "d".repeat(40);
+        },
+        revoked: () => {
+          f.records.length = 0;
+        },
+      };
+      const request = async (path: string) => {
+        const value = await f.request(path);
+        path.includes("/contents/") && mutations[kind as keyof typeof mutations]();
+        return value;
+      };
+      await expect(
+        readApprovedCandidateUpgrade(identity, [sourcePath], request, f.mergeSha),
+      ).rejects.toThrow(/merge|independent maintainer/);
+    },
+  );
 });

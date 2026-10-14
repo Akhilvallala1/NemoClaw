@@ -123,6 +123,55 @@ export function afterCandidateSdkRead(
   };
 }
 
+export function candidateSdkMergeFixture(root: string) {
+  const f = candidateSdkFixture();
+  const mergeSha = "c".repeat(40);
+  const pr = Object.assign(f.pr, { merge_commit_sha: mergeSha });
+  const sources = Object.fromEntries(
+    Object.entries(f.sources).map(([path, source]) => [
+      path,
+      path === "ci/reviewed-npm-audit.json"
+        ? source
+        : JSON.stringify({ ...JSON.parse(source), description: "A change from the approved base" }),
+    ]),
+  );
+  const preparation = candidateSdkCheckout(root, { ...f, sources });
+  const commit = {
+    sha: mergeSha,
+    parents: [{ sha: sdkCandidateIdentity.baseSha }, { sha: sdkCandidateIdentity.candidateSha }],
+  };
+  const request = async (route: string): Promise<unknown> => {
+    if (route.endsWith(`/git/commits/${mergeSha}`)) return commit;
+    if (route.endsWith(`?ref=${mergeSha}`)) {
+      const path = route.split("/contents/")[1]!.split("?")[0]!;
+      const source = sources[path]!;
+      return {
+        type: "file",
+        path,
+        encoding: "base64",
+        size: Buffer.byteLength(source),
+        content: Buffer.from(source).toString("base64"),
+      };
+    }
+    return f.request(route);
+  };
+  const writeMerged = (path: string, source: string) => {
+    sources[path] = source;
+    writeFileSync(join(root, path), source);
+  };
+  return {
+    ...f,
+    pr,
+    preparation,
+    sources,
+    request: vi.fn(request),
+    commit,
+    identity: { ...sdkCandidateIdentity, mergeSha },
+    writeMerged,
+    stage: vi.fn(),
+  };
+}
+
 export function sparseSdkWorkflowCheckout(root: string, workflowPath: string, job: string) {
   const workflow = YAML.parse(readFileSync(workflowPath, "utf8"));
   const checkouts = workflow.jobs[job].steps.filter(

@@ -10,6 +10,7 @@ import {
   afterCandidateSdkRead,
   candidateSdkCheckout,
   candidateSdkFixture,
+  candidateSdkMergeFixture,
   sdkCandidateIdentity,
 } from "../support/candidate-openshell-sdk.ts";
 
@@ -20,11 +21,111 @@ function fixture() {
   const f = candidateSdkFixture();
   return { ...f, preparation: candidateSdkCheckout(root, f), stage: vi.fn() };
 }
+function mergeFixture() {
+  const root = mkdtempSync(join(tmpdir(), "nemoclaw-candidate-sdk-merge-"));
+  roots.push(root);
+  return candidateSdkMergeFixture(root);
+}
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("admitted candidate SDK installation", () => {
+  it("accepts merged dependency inputs that retain the approved SDK and trusted graph policy", async () => {
+    const f = mergeFixture();
+    await prepareApprovedCandidateOpenShellSdk(
+      f.preparation,
+      f.identity,
+      f.request,
+      f.trustedSource,
+      f.stage,
+    );
+    expect(f.stage).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a merge selecting another SDK listed in the candidate metadata", async () => {
+    const f = mergeFixture();
+    f.change("ci/reviewed-npm-audit.json", (value) => {
+      value.sourceRegistryPackageReplacement = JSON.parse(
+        JSON.stringify(f.sdk).replaceAll("9.8.7", "9.8.8"),
+      );
+    });
+    f.writeMerged("package.json", f.sources["package.json"]!.replaceAll("9.8.7", "9.8.8"));
+    f.writeMerged(
+      "nemoclaw/package.json",
+      f.sources["nemoclaw/package.json"]!.replaceAll("9.8.7", "9.8.8"),
+    );
+    f.writeMerged(
+      "package-lock.json",
+      f.sources["package-lock.json"]!.replaceAll("9.8.7", "9.8.8"),
+    );
+    f.writeMerged(
+      "nemoclaw/package-lock.json",
+      f.sources["nemoclaw/package-lock.json"]!.replaceAll("9.8.7", "9.8.8"),
+    );
+    await expect(
+      prepareApprovedCandidateOpenShellSdk(
+        f.preparation,
+        f.identity,
+        f.request,
+        f.trustedSource,
+        f.stage,
+      ),
+    ).rejects.toThrow(/identity changed in the merge/);
+    expect(f.stage).not.toHaveBeenCalled();
+  });
+
+  it("rejects a replacement approval between candidate and merge source reads", async () => {
+    const f = mergeFixture();
+    const request = afterCandidateSdkRead(f, () => {
+      f.records[0]!.id = 51;
+    });
+    await expect(
+      prepareApprovedCandidateOpenShellSdk(
+        f.preparation,
+        f.identity,
+        request,
+        f.trustedSource,
+        f.stage,
+      ),
+    ).rejects.toThrow(/admission changed during merge/);
+    expect(f.stage).not.toHaveBeenCalled();
+  });
+
+  it.each(["different-sdk", "untrusted-registry", "local-drift"])(
+    "rejects merged dependency inputs with %s before staging",
+    async (kind) => {
+      const f = mergeFixture();
+      const mutations = {
+        "different-sdk": () =>
+          f.writeMerged(
+            "package.json",
+            JSON.stringify({ optionalDependencies: { "@nvidia/openshell-sdk": "9.8.8" } }),
+          ),
+        "untrusted-registry": () =>
+          f.writeMerged(
+            "package-lock.json",
+            f.sources["package-lock.json"]!.replace(
+              "https://registry.npmjs.org/",
+              "https://attacker.invalid/",
+            ),
+          ),
+        "local-drift": () => writeFileSync(join(f.preparation.targetRoot, "package.json"), "{}"),
+      };
+      mutations[kind as keyof typeof mutations]();
+      await expect(
+        prepareApprovedCandidateOpenShellSdk(
+          f.preparation,
+          f.identity,
+          f.request,
+          f.trustedSource,
+          f.stage,
+        ),
+      ).rejects.toThrow(/one identity|reviewed registry|checkout differs/);
+      expect(f.stage).not.toHaveBeenCalled();
+    },
+  );
+
   it("stages verified bytes only after rechecking live admission", async () => {
     const f = fixture();
     await prepareApprovedCandidateOpenShellSdk(

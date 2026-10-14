@@ -34,11 +34,17 @@ function assertIdentity(identity: CandidateUpgradeIdentity): void {
     throw new Error("Upgrade admission requires a PR number and immutable candidate/base commits");
 }
 
-function assertPullRequest(value: unknown, identity: CandidateUpgradeIdentity): string {
+function assertPullRequest(
+  value: unknown,
+  identity: CandidateUpgradeIdentity,
+  mergeSha?: string,
+): string {
   const pr = record(value);
   const head = record(pr.head);
   const base = record(pr.base);
   const author = record(pr.user);
+  if (mergeSha !== undefined && pr.merge_commit_sha !== mergeSha)
+    throw new Error("Upgrade admission no longer matches the GitHub merge commit");
   if (
     pr.number !== identity.prNumber ||
     pr.state !== "open" ||
@@ -170,10 +176,13 @@ export async function readApprovedCandidateUpgrade(
   input: CandidateUpgradeIdentity,
   paths: readonly string[],
   request: UpgradeRequest,
+  mergeSha?: string,
 ): Promise<{ sources: Readonly<Record<string, string>>; reviewer: string; commentId: number }> {
   const identity = Object.freeze({ ...input });
   const selection = [...paths];
   assertIdentity(identity);
+  if (mergeSha !== undefined && !SHA.test(mergeSha))
+    throw new Error("Upgrade admission requires an immutable merge commit");
   if (
     selection.length === 0 ||
     selection.length > 32 ||
@@ -182,12 +191,29 @@ export async function readApprovedCandidateUpgrade(
     throw new Error("Upgrade admission requires a bounded, unique source selection");
   }
   const prPath = `${PREFIX}/pulls/${identity.prNumber}`;
-  const author = assertPullRequest(await request(prPath), identity);
+  const author = assertPullRequest(await request(prPath), identity, mergeSha);
   const before = await currentDecision(request, identity, author);
+  if (mergeSha !== undefined) {
+    const merge = record(await request(`${PREFIX}/git/commits/${mergeSha}`));
+    if (
+      merge.sha !== mergeSha ||
+      !Array.isArray(merge.parents) ||
+      merge.parents.length !== 2 ||
+      record(merge.parents[0]).sha !== identity.baseSha ||
+      record(merge.parents[1]).sha !== identity.candidateSha
+    )
+      throw new Error(
+        "Upgrade admission merge parents differ from the approved base and candidate; synchronize the PR and refresh its commit-bound approval",
+      );
+  }
   const sources: Record<string, string> = Object.create(null);
   for (const path of selection)
-    sources[path] = await readCandidateUpgradeSource(request, identity.candidateSha, path);
-  if (assertPullRequest(await request(prPath), identity) !== author) {
+    sources[path] = await readCandidateUpgradeSource(
+      request,
+      mergeSha ?? identity.candidateSha,
+      path,
+    );
+  if (assertPullRequest(await request(prPath), identity, mergeSha) !== author) {
     throw new Error("Upgrade admission PR author changed during source acquisition");
   }
   const after = await currentDecision(request, identity, author);

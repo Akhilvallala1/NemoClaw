@@ -74,6 +74,8 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         prNumber: Number(process.env.UPGRADE_PR_NUMBER),
         candidateSha: process.env.CANDIDATE_SHA ?? "",
         baseSha: process.env.UPGRADE_BASE_SHA ?? "",
+        mergeSha:
+          process.env.GITHUB_EVENT_NAME === "pull_request" ? process.env.GITHUB_SHA : undefined,
       };
       const request = (path: string) => githubRequest(path, token);
       if (mode === "inspect" && targetRoot) {

@@ -253,6 +253,13 @@ PR CI uses the existing `main` bundle for SDK versions already trusted by the ba
 A new version uses an artifact bound to the PR, candidate commit, base commit, and
 approval record. The locator checks the producing workflow and event. Each trusted
 installer then rechecks approval, local manifests and locks, and archive integrity.
+For merge-based PR CI, GitHub must identify the checkout as the PR's current merge
+commit, with the approved base and candidate as its two parents. The verifier reads
+that commit's manifests and locks and compares them with the local files. The merged
+dependency graph must retain the approved SDK identity and pass the trusted package
+policy. Direct candidate E2E continues to require the approved candidate's file bytes.
+If the merge uses a newer base, synchronize the PR and refresh its commit-bound
+approval before rerunning candidate SDK CI.
 The API credential is limited to trusted preparation and removed before npm runs.
 If CI starts before the approved artifact exists, wait for the admission workflow's
 SDK job, then rerun CI. Changed or revoked approval cannot reuse the older artifact.

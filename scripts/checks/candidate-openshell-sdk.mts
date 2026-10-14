@@ -39,6 +39,7 @@ const MANIFESTS = ["package.json", "nemoclaw/package.json"] as const;
 const LOCKS = ["package-lock.json", "nemoclaw/package-lock.json"] as const;
 type Config = ReturnType<typeof parseAuditConfig>;
 type Sdk = Config["sourceRegistryPackage"];
+type SdkInputIdentity = CandidateUpgradeIdentity & { mergeSha?: string };
 
 function sdkIdentity(value: unknown): Sdk {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -154,7 +155,7 @@ function selectPolicy(sources: Readonly<Record<string, string>>, trusted: Config
 
 /** Acquire candidate SDK inputs under live admission, then apply the trusted package policy. */
 export async function readApprovedOpenShellSdkConfig(
-  identity: CandidateUpgradeIdentity,
+  identity: SdkInputIdentity,
   request: UpgradeRequest,
   trustedConfigSource: string,
 ) {
@@ -164,9 +165,25 @@ export async function readApprovedOpenShellSdkConfig(
     [CONFIG, ...MANIFESTS, ...LOCKS],
     request,
   );
+  const policy = selectPolicy(admission.sources, trusted);
+  let sources = admission.sources;
+  if (identity.mergeSha !== undefined) {
+    const merged = await readApprovedCandidateUpgrade(
+      identity,
+      [...MANIFESTS, ...LOCKS],
+      request,
+      identity.mergeSha,
+    );
+    if (merged.commentId !== admission.commentId || merged.reviewer !== admission.reviewer)
+      throw new Error("Candidate SDK admission changed during merge verification");
+    sources = { ...sources, ...merged.sources };
+    // The merge can update other dependencies, but cannot select a different SDK or audit policy.
+    if (!isDeepStrictEqual(selectPolicy(sources, trusted), policy))
+      throw new Error("Candidate SDK identity changed in the merge commit");
+  }
   return {
-    configSource: JSON.stringify(selectPolicy(admission.sources, trusted)),
-    sources: admission.sources,
+    configSource: JSON.stringify(policy),
+    sources,
     reviewer: admission.reviewer,
     commentId: admission.commentId,
   };
@@ -207,7 +224,7 @@ function artifactDecision(
 
 export async function inspectApprovedCandidateOpenShellSdk(
   targetRoot: string,
-  identity: CandidateUpgradeIdentity,
+  identity: SdkInputIdentity,
   request: UpgradeRequest,
   trustedSource: string,
 ) {
@@ -235,7 +252,7 @@ export async function readCandidateSdkPackageDecision(
 /** Verify admitted sources and archive bytes before releasing them to the npm cache. */
 export async function prepareApprovedCandidateOpenShellSdk(
   preparation: Parameters<typeof prepareCiNpmInstallWithReviewedConfig>[0],
-  input: CandidateUpgradeIdentity,
+  input: SdkInputIdentity,
   request: UpgradeRequest,
   trustedConfigSource: string,
   stage: NpmCacheStager = stageReviewedArchiveWithNpm,

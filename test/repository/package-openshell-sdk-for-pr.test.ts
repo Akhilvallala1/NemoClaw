@@ -10,7 +10,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { packageReviewedOpenShellSdk } from "../../scripts/checks/package-openshell-sdk-for-pr.mts";
 import type { ReviewedNpmArchiveRequest } from "../../scripts/lib/reviewed-npm-archive.mts";
-import { sparseSdkWorkflowCheckout } from "../support/candidate-openshell-sdk.ts";
+import {
+  candidateSdkMergeFixture,
+  sparseSdkWorkflowCheckout,
+} from "../support/candidate-openshell-sdk.ts";
 
 const roots: string[] = [];
 
@@ -36,6 +39,70 @@ function fixture() {
 }
 
 describe("reviewed OpenShell SDK transition packaging", () => {
+  it.each([
+    ["pull_request", 0, /candidate-openshell-sdk/],
+    ["workflow_dispatch", 1, /checkout differs/],
+  ] as const)(
+    "uses merge identity only for the %s CLI entrypoint",
+    async (event, status, diagnostic) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-sdk-merge-cli-"));
+      roots.push(root);
+      const f = candidateSdkMergeFixture(path.join(root, "candidate"));
+      sparseSdkWorkflowCheckout(root, ".github/workflows/pr.yaml", "openshell-sdk-package");
+      const prefix = "/repos/NVIDIA/NemoClaw";
+      const routes = [
+        `${prefix}/pulls/123`,
+        `${prefix}/issues/123/comments?per_page=100&page=1`,
+        `${prefix}/collaborators/reviewer/permission`,
+        `${prefix}/git/commits/${f.identity.mergeSha}`,
+        ...Object.keys(f.sources).flatMap((file) => [
+          `${prefix}/contents/${file}?ref=${f.identity.candidateSha}`,
+          `${prefix}/contents/${file}?ref=${f.identity.mergeSha}`,
+        ]),
+      ];
+      const responses = Object.fromEntries(
+        await Promise.all(routes.map(async (route) => [route, await f.request(route)])),
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+      const responses = ${JSON.stringify(responses)};
+      globalThis.fetch = async (url) => {
+        const parsed = new URL(url);
+        const key = parsed.pathname + parsed.search;
+        return new Response(JSON.stringify(responses[key] ?? {}), { status: key in responses ? 200 : 404 });
+      };
+      process.argv[1] = ${JSON.stringify(path.join(root, "scripts/checks/prepare-ci-npm-install.mts"))};
+      await import('./scripts/checks/prepare-ci-npm-install.mts');
+    `,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            ...process.env,
+            GITHUB_EVENT_NAME: event,
+            GITHUB_SHA: f.identity.mergeSha,
+            CANDIDATE_SHA: f.identity.candidateSha,
+            UPGRADE_BASE_SHA: f.identity.baseSha,
+            UPGRADE_PR_NUMBER: "123",
+            NEMOCLAW_OPEN_SHELL_SDK_CANDIDATE: "1",
+            NEMOCLAW_CI_NPM_PACKAGE_MODE: "inspect",
+            NEMOCLAW_CI_TARGET_ROOT: f.preparation.targetRoot,
+            GITHUB_TOKEN: "fixture-token",
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(status);
+      expect(result.stdout + result.stderr).toMatch(diagnostic);
+      expect(result.stdout + result.stderr).not.toContain("fixture-token");
+    },
+  );
+
   it("loads the ordinary producer from the main workflow sparse checkout", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-main-sdk-sparse-"));
     roots.push(root);
