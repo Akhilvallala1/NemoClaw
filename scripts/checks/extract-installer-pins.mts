@@ -613,6 +613,8 @@ const TRUSTED_OPENSHELL_RELEASES: readonly OpenShellReleaseTrust[] = [
       ...V00116_INSTALLER_TEMPLATE_BASELINE_SHA256,
       // Exact 0.1.2 pinned-sandbox feature check; runtime policy checks remain required.
       "610fa58bc4242f23e6ce5e22444dd595995c5a9466bf406a34e5a548869377bc",
+      // Exact #12603 standalone legacy-state guard; no adjacent helper is projected.
+      "3ac277104b411ea27963cbf9df41ce6f9e2d39b7c430781c73f88c5489ef4af5",
     ],
     manifests: [
       {

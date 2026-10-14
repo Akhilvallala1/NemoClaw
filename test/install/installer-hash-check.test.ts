@@ -46,6 +46,7 @@ import {
 } from "../helpers/openshell-installer-template";
 
 import { selectPreparedGatewayRuntime } from "../helpers/prepared-gateway-runtime";
+import { registerV012TemplateCases } from "./installer-hash-v012-suite";
 
 const REPO_ROOT = path.join(import.meta.dirname, "../..");
 const INSTALLER_TEMPLATE = fs.readFileSync(
@@ -940,7 +941,7 @@ describe("installer hash verification", () => {
   it("verifies all installer and Brev pins from token-free checksum manifests", () => {
     const result = runFixture("complete");
 
-    expect(result.status, result.stdout).toBe(0);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toContain("All installer hashes are current");
   });
 
@@ -1052,14 +1053,7 @@ describe("installer hash verification", () => {
     ]);
   });
 
-  it("admits only the exact thread-group supervisor template with OpenShell 0.1.2", () => {
-    const root = createFixture("0.1.2");
-    prepareReleaseFixtureRuntime(REPO_ROOT, root, { currentProcessReader: true });
-    const run = () => spawnSync("node", preparedReleaseArgs(REPO_ROOT, root), { encoding: "utf8" });
-    expect(run().status).toBe(0);
-    fs.appendFileSync(path.join(root, "src/lib/onboard/docker-driver-gateway-runtime.ts"), "//x");
-    expect(run()).toMatchObject({ status: 1, stderr: expect.stringContaining("not base-trusted") });
-  });
+  registerV012TemplateCases(REPO_ROOT, createFixture);
   it.each(V012_TRUST_MUTATIONS)(
     "rejects an altered OpenShell 0.1.2 %s",
     (_label, name, value, diagnostic) => {
