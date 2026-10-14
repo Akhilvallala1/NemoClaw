@@ -139,6 +139,8 @@ describe("buildCreatedSandboxRegistryEntry", () => {
         gatewayName: "nemoclaw",
         entry: makeEntry(nimContainer),
       });
+    expect(makeEntry("nemoclaw-nim-owned").nativeLocalProviderAttachment).toBeUndefined();
+    expect(makeEntry(null).nativeLocalProviderAttachment).toEqual(attachment);
     expect(createIntent("nemoclaw-nim-owned").nativeLocalProviderAttachment).toBeUndefined();
     expect(createIntent(null).nativeLocalProviderAttachment).toEqual(attachment);
   });

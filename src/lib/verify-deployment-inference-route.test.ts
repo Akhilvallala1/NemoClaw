@@ -82,12 +82,26 @@ describe("verifyDeployment inference route model-catalog validation", () => {
       endpointUrl: "http://host.openshell.internal:8000/v1",
       preferredInferenceApi: "openai-completions",
     };
+    const binding = {
+      ...localBinding,
+      provider: "vllm-local" as const,
+      endpointUrl: "http://host.openshell.internal:8000/v1",
+    };
+    const staleAttachment = {
+      ...binding,
+      ...nativeLocalIdentity(binding),
+      schemaVersion: 1 as const,
+      providerId: "stale-provider",
+    };
     const nim = onboardInferenceVerificationContext("my-sandbox", "my-gateway", "openclaw", flow, {
       nimContainer: "nemoclaw-nim-owned",
+      nativeLocalProviderAttachment: staleAttachment,
     });
     const vllm = onboardInferenceVerificationContext("my-sandbox", "my-gateway", "openclaw", flow);
     expect(nim.route.nativeLocalExpected).toBe(false);
     expect(nim.invocation.nativeLocalExpected).toBe(false);
+    expect(nim.route.nativeLocalProviderAttachment).toBeUndefined();
+    expect(nim.invocation.nativeLocalProviderAttachment).toBeUndefined();
     expect(vllm.route.nativeLocalExpected).toBe(true);
   });
 

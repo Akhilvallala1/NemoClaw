@@ -349,6 +349,9 @@ export function buildCreatedSandboxRegistryEntry(
     ...(hostLocalInferenceReceipt !== undefined ? { hostLocalInferenceReceipt } : {}),
     ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
     ...(nativeLocalProviderAttachment &&
+    !(
+      input.inferenceSelection.provider === "vllm-local" && input.inferenceSelection.nimContainer
+    ) &&
     nativeLocalAttachmentMatchesSelection(nativeLocalProviderAttachment, {
       agentName: requestedAgent,
       sandboxName: input.sandboxName,

@@ -995,7 +995,10 @@ export function onboardInferenceVerificationContext(
     flow.endpointUrl,
     flow.provider === "vllm-local" && Boolean(attachment?.nimContainer),
   );
-  const nativeLocalProviderAttachment = attachment?.nativeLocalProviderAttachment;
+  const nativeLocalProviderAttachment =
+    flow.provider === "vllm-local" && attachment?.nimContainer
+      ? undefined
+      : attachment?.nativeLocalProviderAttachment;
   const nativeHostedProviderAttachment = attachment?.nativeHostedProviderAttachment;
   const recordedHostLocalRouteMatchesAttachment =
     nativeLocalProviderAttachment &&
