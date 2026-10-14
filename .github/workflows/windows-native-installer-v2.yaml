@@ -1488,7 +1488,7 @@ jobs:
           }
           New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\node_modules" `
             -Target "$work\inputs\tools\node_modules" | Out-Null
-          & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/app/runtime-external-packages.test.mts
+          & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/app/runtime-external-packages.test.mts packaging/windows/app/sqlite-canonical-path.test.mts
           if ($LASTEXITCODE -ne 0) { throw 'OpenClaw dependency-location controls failed.' }
           & "$work\node\node.exe" --experimental-strip-types --no-warnings --test packaging/windows/runtime/native-openclaw-migration.test.mts
           if ($LASTEXITCODE -ne 0) { throw 'OpenClaw session migration controls failed.' }

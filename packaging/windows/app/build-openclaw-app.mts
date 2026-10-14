@@ -21,6 +21,7 @@ import {
 
 const require = createRequire(import.meta.url);
 const external = [
+  "koffi",
   "@opentelemetry/api",
   "@lydell/node-pty",
   "@openclaw/fs-safe",

@@ -71,6 +71,7 @@ function resourceFixture(t: test.TestContext) {
   ])
     write("inputs/node_modules/openclaw/" + file, "published fixture: " + file);
   for (const name of [
+    "koffi",
     "@emnapi/core",
     "@emnapi/runtime",
     "@lydell/node-pty",

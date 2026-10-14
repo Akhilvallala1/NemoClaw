@@ -9,6 +9,10 @@ import type { Plugin, TransformOptions, TransformResult } from "esbuild";
 import type ts from "typescript";
 import { compilePrivateDirectoryRuntime } from "./sqlite-private-directory-build.mts";
 import { compileNativePipeTransport } from "./native-pipe-transport-build.mts";
+import {
+  compileSqliteCanonicalRuntime,
+  registerSqliteCanonicalModule,
+} from "./sqlite-canonical-path-build.mts";
 
 type Syntax = typeof ts;
 type Transformer = {
@@ -428,6 +432,7 @@ export function compiledModuleLocationPlugin(
   return {
     name: "compiled-openclaw-module-locations",
     setup(build) {
+      registerSqliteCanonicalModule(build, source);
       const canonical = createRequire(path.join(source, "package.json"));
       build.onResolve({ filter: /^openclaw(?:\/|$)/ }, (args) => ({
         path: canonical.resolve(args.path),
@@ -446,9 +451,13 @@ export function compiledModuleLocationPlugin(
               adaptationPath,
               compileAsyncProcessEntry(
                 adaptationPath,
-                compilePrivateDirectoryRuntime(
+                compileSqliteCanonicalRuntime(
                   adaptationPath,
-                  compileNativePipeTransport(adaptationPath, original, syntax),
+                  compilePrivateDirectoryRuntime(
+                    adaptationPath,
+                    compileNativePipeTransport(adaptationPath, original, syntax),
+                  ),
+                  original,
                 ),
               ),
             ),
@@ -545,6 +554,7 @@ function targetMatches(values: string[] | undefined, target: string) {
   );
 }
 const sidecarRoots = [
+  "koffi",
   "@emnapi/core",
   "@emnapi/runtime",
   "@lydell/node-pty",
