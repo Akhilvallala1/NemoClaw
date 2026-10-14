@@ -752,9 +752,25 @@ export async function executeSandboxDestroy({
       pendingCreateIdentity?.gatewayName ??
       destroyRuntimeSelection?.gatewayName ??
       deleteGatewayName;
-    const hasNativeCustomOwnership =
-      sandbox?.nativeCustomProviderAttachment !== undefined ||
-      listCustomAuthorities(effectiveDeleteGatewayName, sandboxName).length > 0;
+    let hasNativeCustomOwnership: boolean;
+    try {
+      hasNativeCustomOwnership =
+        sandbox?.nativeCustomProviderAttachment !== undefined ||
+        listCustomAuthorities(effectiveDeleteGatewayName, sandboxName).length > 0;
+    } catch (error) {
+      const mcpRecoveryFailure = sandboxConfirmedAbsent
+        ? undefined
+        : await restoreMcpAfterDeleteAbort(sandboxName, mcpPreparation);
+      return {
+        ok: false,
+        deleteOutput: `Native custom provider ownership could not be read: ${redactDestroyError(error)}. No sandbox deletion was attempted.`,
+        exitCode: 1,
+        gatewayUnreachable: false,
+        hostLocalInferenceOwnershipRequiresGateway: false,
+        mcpOwnershipRequiresGateway: false,
+        mcpRecoveryFailure,
+      };
+    }
     const selectedRunOpenshell: DestroyRunOpenshell = destroyRuntimeSelection
       ? (args, options = {}) =>
           runOpenshell(args, {

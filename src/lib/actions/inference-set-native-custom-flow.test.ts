@@ -266,28 +266,45 @@ it.each([
     operation: "createProvider",
     cleanupConfirmed: true,
     recoveryConfirmed: true,
+    expectedFailure: (original: Error, _routeId: string) => original,
   },
   {
     failure: "attachment",
     operation: "attachProvider",
     cleanupConfirmed: true,
     recoveryConfirmed: true,
+    expectedFailure: (original: Error, _routeId: string) => original,
   },
   {
     failure: "unconfirmed cleanup",
     operation: "createProvider",
     cleanupConfirmed: false,
     recoveryConfirmed: true,
+    expectedFailure: (original: Error, routeId: string) =>
+      expect.objectContaining({
+        constructor: AggregateError,
+        cause: original,
+        errors: [
+          original,
+          expect.objectContaining({
+            message: expect.stringContaining(`route '${routeId}' cleanup could not be confirmed`),
+          }),
+        ],
+      }),
   },
   {
     failure: "unconfirmed attachment recovery",
     operation: "attachProvider",
     cleanupConfirmed: true,
     recoveryConfirmed: false,
+    expectedFailure: (_original: Error, routeId: string) =>
+      expect.objectContaining({
+        message: expect.stringContaining(`HTTPS adapter route '${routeId}' is retained`),
+      }),
   },
 ] as const)(
   "preserves HTTPS rollback ownership after provider $failure fails (#12636)",
-  async ({ operation, cleanupConfirmed, recoveryConfirmed }) => {
+  async ({ operation, cleanupConfirmed, recoveryConfirmed, expectedFailure }) => {
     const f = await fixture();
     const endpointUrl = "https://api.example.com/v1";
     const routeId = computeHttpsPinRouteId("nemoclaw", "compatible-endpoint", endpointUrl, "alpha");
@@ -311,7 +328,8 @@ it.each([
     f.deps.revokeHttpsPinRuntimeAdapterRoute = vi.fn(
       async (id) => cleanupConfirmed && routes.delete(id),
     );
-    vi.mocked(f.adapter[operation]).mockRejectedValueOnce(new Error("provider operation failed"));
+    const originalFailure = new Error("provider operation failed");
+    vi.mocked(f.adapter[operation]).mockRejectedValueOnce(originalFailure);
     const detach = vi.mocked(f.adapter.detachProvider);
     const originalDetach = detach.getMockImplementation()!;
     detach.mockImplementationOnce(originalDetach).mockImplementationOnce(
@@ -321,24 +339,18 @@ it.each([
             throw new Error("private attachment recovery diagnostic");
           },
     );
-    await expect(
-      runInferenceSet(
-        {
-          provider: "compatible-endpoint",
-          model: "new-model",
-          endpointUrl,
-          credentialEnv: "COMPATIBLE_API_KEY",
-          inferenceApi: "openai-completions",
-        },
-        f.deps,
-      ),
-    ).rejects.toThrow(
-      !recoveryConfirmed
-        ? new RegExp(`HTTPS adapter route '${routeId}' is retained`)
-        : !cleanupConfirmed
-          ? new RegExp(`route '${routeId}' cleanup could not be confirmed`)
-          : "provider operation failed",
-    );
+    const failure = await runInferenceSet(
+      {
+        provider: "compatible-endpoint",
+        model: "new-model",
+        endpointUrl,
+        credentialEnv: "COMPATIBLE_API_KEY",
+        inferenceApi: "openai-completions",
+      },
+      f.deps,
+    ).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toEqual(expectedFailure(originalFailure, routeId));
     expect(f.deps.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledOnce();
     expect(vi.mocked(f.deps.revokeHttpsPinRuntimeAdapterRoute).mock.calls).toEqual(
       recoveryConfirmed ? [[routeId]] : [],

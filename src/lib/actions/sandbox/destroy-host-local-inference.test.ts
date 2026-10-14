@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./mcp-bridge", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./mcp-bridge")>()),
+  restoreMcpBridgesAfterDestroyAbort: vi.fn(async () => {}),
   prepareMcpBridgesForDestroy: async (
     _sandboxName: string,
     options: { runtimeSelection?: OpenShellRuntimeSelection } = {},
@@ -41,6 +42,7 @@ import {
 import type { SandboxEntry } from "../../state/registry";
 import { createSandboxHostLocalInferenceProvenance } from "../../state/registry/host-local-inference";
 import { executeSandboxDestroy } from "./destroy-execution";
+import { restoreMcpBridgesAfterDestroyAbort } from "./mcp-bridge";
 
 const AUTHORITY_ID = `mxc-endpoint:${"a".repeat(64)}`;
 const BINDING_SHA256 = "d".repeat(64);
@@ -319,9 +321,20 @@ describe("sandbox destroy host-local inference transaction", () => {
       throw new Error("native ownership unavailable");
     });
 
-    await expect(
-      runDestroy(runtimeProvider, { listNativeCustomProviderAuthorities }),
-    ).rejects.toThrow("native ownership unavailable");
+    vi.mocked(restoreMcpBridgesAfterDestroyAbort).mockClear();
+    const { result, runOpenshell, stopInferenceResources, onMutationStarted } = await runDestroy(
+      runtimeProvider,
+      { listNativeCustomProviderAuthorities },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.deleteOutput).toContain("native ownership unavailable");
+    expect(restoreMcpBridgesAfterDestroyAbort).toHaveBeenCalledWith(
+      "alpha",
+      expect.objectContaining({ entries: [] }),
+    );
+    expect(runOpenshell).not.toHaveBeenCalled();
+    expect(stopInferenceResources).not.toHaveBeenCalled();
+    expect(onMutationStarted).not.toHaveBeenCalled();
 
     expect(listNativeCustomProviderAuthorities).toHaveBeenCalledWith("nemoclaw", "alpha");
     expect(runtimeProvider.events).toEqual(["runtime prepare destroy"]);

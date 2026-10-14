@@ -563,11 +563,19 @@ export async function runNativeCustomInferenceSwitch(
             : ""),
       );
     }
-    await rollbackNativeCustomAdapterRoute(
-      admittedAdapterProfile,
-      retainedAdapterAuthority,
-      deps.revokeHttpsPinRuntimeAdapterRoute,
-    );
+    try {
+      await rollbackNativeCustomAdapterRoute(
+        admittedAdapterProfile,
+        retainedAdapterAuthority,
+        deps.revokeHttpsPinRuntimeAdapterRoute,
+      );
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "Native custom switch failed, and adapter route rollback was not confirmed.",
+        { cause: error },
+      );
+    }
     throw error;
   }
 }

@@ -89,7 +89,10 @@ describe("sandbox create intent machine boundary", () => {
     });
   });
 
-  async function nativeCustomCase(condition: "valid" | "malformed" | "another sandbox") {
+  async function nativeCustomCase(
+    condition: "valid" | "malformed" | "another sandbox",
+    selectedProvider = "compatible-endpoint",
+  ) {
     const prepared = await prepareNativeCustomProfile({
       sandboxName: condition === "another sandbox" ? "other" : "native-custom",
       provider: "compatible-endpoint",
@@ -120,7 +123,7 @@ describe("sandbox create intent machine boundary", () => {
       handleSandboxState({
         ...baseOptions(deps, session),
         sandboxName: "native-custom",
-        provider: "compatible-endpoint",
+        provider: selectedProvider,
         model: "custom-model",
       });
     return { run, calls, attachment };
@@ -138,6 +141,19 @@ describe("sandbox create intent machine boundary", () => {
     );
     expect(calls.createSandbox).toHaveBeenCalledOnce();
   });
+
+  it.each(["nvidia-prod", "openai", "compatible-anthropic-endpoint"])(
+    "does not reuse a custom attachment after selecting %s (#12636)",
+    async (selectedProvider) => {
+      const { run, calls, attachment } = await nativeCustomCase("valid", selectedProvider);
+      await run();
+      expect(calls.resolveCreateIntent).toHaveBeenCalledOnce();
+      const intent = calls.resolveCreateIntent.mock.calls[0][0];
+      expect(intent).not.toHaveProperty("nativeCustomProviderAttachment");
+      expect(intent.inferenceProvider).not.toBe(attachment.providerName);
+      expect(calls.createSandbox).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each(["malformed", "another sandbox"] as const)(
     "rejects %s recorded native custom authority before creation (#12636)",

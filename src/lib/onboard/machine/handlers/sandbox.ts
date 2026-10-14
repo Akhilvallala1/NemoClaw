@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { nativeInferenceCreateIntentFields } from "../../sandbox-registration";
-import { normalizeNativeCustomProviderAttachment } from "../../../inference/native-custom";
+import {
+  isNativeCustomProvider,
+  normalizeNativeCustomProviderAttachment,
+} from "../../../inference/native-custom";
 import {
   type CurrentGatewayRouteCompatibilityCheck,
   formatGatewayRouteConflict,
@@ -149,12 +152,17 @@ function nativeNvidiaCreateIntentFields(
     entry?.nativeNvidiaProviderAttachment,
   );
   const fixed = nativeInferenceCreateIntentFields(provider, entry);
+  const recordedCustom =
+    isNativeCustomProvider(provider) && entry?.provider === provider
+      ? entry.nativeCustomProviderAttachment
+      : undefined;
   const nativeCustomProviderAttachment = normalizeNativeCustomProviderAttachment(
-    entry?.nativeCustomProviderAttachment,
+    recordedCustom,
     entry?.name,
+    { provider },
   );
   if (
-    entry?.nativeCustomProviderAttachment !== undefined &&
+    recordedCustom !== undefined &&
     (!nativeCustomProviderAttachment ||
       fixed.nativeHostedProviderAttachment ||
       nativeNvidiaProviderAttachment)

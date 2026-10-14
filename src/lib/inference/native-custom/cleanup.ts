@@ -3,7 +3,7 @@
 
 import { isValidName } from "../../name-validation";
 import type { OpenShellProviderAdapter } from "../../adapters/openshell/provider-adapter";
-import { createCliOpenShellProviderAdapter } from "../../adapters/openshell/provider-adapter-cli";
+import { createManagedProviderAdapter } from "../../adapters/openshell/managed-provider-adapter";
 import {
   runOpenshellProviderCommand,
   type OpenShellRuntimeSelection,
@@ -23,9 +23,9 @@ import {
 
 /** Keep provider retirement on the runtime whose sandbox deletion was confirmed. */
 export function nativeCustomCleanupAdapter(runtimeSelection?: OpenShellRuntimeSelection) {
-  return createCliOpenShellProviderAdapter({
-    run: (args, options) => runOpenshellProviderCommand(args, { ...options, runtimeSelection }),
-  });
+  return createManagedProviderAdapter((args, options) =>
+    runOpenshellProviderCommand(args, { ...options, runtimeSelection }),
+  );
 }
 
 /** Bind native cleanup reads and retirement to the registry selected by destroy preflight. */
@@ -73,7 +73,7 @@ export async function retireNativeCustomProviders(input: {
       throw new Error("Native custom sandbox and gateway cleanup authority disagree.");
     validated.set(normalized.providerName, normalized);
   }
-  const adapter = input.adapter ?? createCliOpenShellProviderAdapter();
+  const adapter = input.adapter ?? createManagedProviderAdapter();
   const keep = input.keepProviderName ? validated.get(input.keepProviderName) : undefined;
   const routeId = (receipt: NativeCustomProviderAttachment | undefined): string | null =>
     receipt?.transport?.kind === "https-pin"
