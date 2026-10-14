@@ -110,12 +110,12 @@ export function buildPrivateDirectoryLibrary(source: string, app: string) {
 export function privateDirectoryLibraryIdentity(output: string) {
   const descriptor = fs.openSync(output, "r");
   try {
-    const opened = fs.fstatSync(descriptor);
-    const named = fs.lstatSync(output);
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const named = fs.lstatSync(output, { bigint: true });
     if (
       !opened.isFile() ||
-      opened.nlink !== 1 ||
-      opened.size === 0 ||
+      opened.nlink !== 1n ||
+      opened.size === 0n ||
       !named.isFile() ||
       named.isSymbolicLink() ||
       named.dev !== opened.dev ||
@@ -123,7 +123,7 @@ export function privateDirectoryLibraryIdentity(output: string) {
     )
       throw new Error("The compiled private-directory library is not an ordinary nonempty file.");
     const bytes = fs.readFileSync(descriptor);
-    if (bytes.length !== opened.size)
+    if (BigInt(bytes.length) !== opened.size)
       throw new Error("The compiled private-directory library changed size while reading.");
     return { sha256: digest(bytes), bytes: bytes.length };
   } finally {

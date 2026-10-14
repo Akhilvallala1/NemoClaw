@@ -21,9 +21,9 @@ export type HistoryFixture = {
 export function readHistoryFixtureFile(file: string) {
   const descriptor = fs.openSync(file, "r");
   try {
-    const opened = fs.fstatSync(descriptor);
-    const named = fs.lstatSync(file);
-    assert(opened.isFile() && opened.nlink === 1);
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const named = fs.lstatSync(file, { bigint: true });
+    assert(opened.isFile() && opened.nlink === 1n);
     assert(
       named.isFile() &&
         !named.isSymbolicLink() &&

@@ -573,7 +573,7 @@ for (const [name, read] of [
           const actual = originalStat(...args);
           return new Proxy(actual, {
             get(target, property) {
-              if (property === "ino" && kind === "replaced") return Number(target.ino) + 1;
+              if (property === "ino" && kind === "replaced") return BigInt(target.ino) + 1n;
               if (property === "isSymbolicLink" && kind === "symlink") return () => true;
               return Reflect.get(target, property);
             },
@@ -607,6 +607,30 @@ for (const [name, read] of [
     fs.writeFileSync(empty, "", { flag: "wx" });
     if (name === "private-directory library") assert.throws(() => read(empty));
     else assert.deepEqual(read(empty), Buffer.alloc(0));
+  });
+  test(`${name} distinguishes adjacent 64-bit file identities`, (context) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "large-identity-controls-"));
+    context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const file = path.join(root, "input.bin");
+    fs.writeFileSync(file, "fixture");
+    const identity = 2n ** 60n;
+    const originalFstat = fs.fstatSync;
+    const originalLstat = fs.lstatSync;
+    for (const [method, original, ino] of [
+      ["fstatSync", originalFstat, identity],
+      ["lstatSync", originalLstat, identity + 1n],
+    ] as const) {
+      context.mock.method(fs, method, (...args: Parameters<typeof original>) => {
+        const actual = Reflect.apply(original, fs, args);
+        return new Proxy(actual, {
+          get(target, property) {
+            if (property === "ino") return typeof target.ino === "bigint" ? ino : Number(ino);
+            return Reflect.get(target, property);
+          },
+        });
+      });
+    }
+    assert.throws(() => read(file));
   });
 }
 
