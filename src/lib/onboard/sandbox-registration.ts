@@ -32,6 +32,7 @@ import { withCurrentPortableHostFenceTry } from "../state/portable-uninstall-ret
 import {
   cloneSandboxHostLocalInferenceProvenance,
   cloneSandboxHostLocalInferenceReceipt,
+  nativeLocalAttachmentMatchesHostLocalReceipt,
   requireSandboxHostLocalInferenceProvenance,
 } from "../state/registry/host-local-inference";
 import { cloneSandboxHostMounts } from "../state/registry/host-mount";
@@ -204,6 +205,37 @@ export function sandboxCreateInferenceSelection(
   return normalizeInferenceSelection(input);
 }
 
+function nativeLocalAttachmentMatchesSelection(
+  attachment: NonNullable<SandboxEntry["nativeLocalProviderAttachment"]>,
+  selection: {
+    agentName: string;
+    sandboxName: string;
+    gatewayName: string;
+    provider: string | null | undefined;
+    endpointUrl: string | null;
+    hostLocalInferenceReceipt?: string | null;
+  },
+): boolean {
+  const endpointMatches =
+    attachment.endpointUrl === selection.endpointUrl ||
+    nativeLocalAttachmentMatchesHostLocalReceipt(
+      selection.endpointUrl,
+      attachment.endpointUrl,
+      selection.hostLocalInferenceReceipt,
+    );
+  return (
+    usesNativeLocalInferenceForAgent(
+      selection.agentName,
+      selection.provider,
+      selection.endpointUrl,
+    ) &&
+    attachment.sandboxName === selection.sandboxName &&
+    attachment.gatewayName === selection.gatewayName &&
+    attachment.provider === selection.provider &&
+    endpointMatches
+  );
+}
+
 export function buildCreatedSandboxRegistryEntry(
   input: CreatedSandboxRegistryEntryInput,
 ): SandboxEntry {
@@ -316,7 +348,17 @@ export function buildCreatedSandboxRegistryEntry(
     workload,
     ...(hostLocalInferenceReceipt !== undefined ? { hostLocalInferenceReceipt } : {}),
     ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
-    ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
+    ...(nativeLocalProviderAttachment &&
+    nativeLocalAttachmentMatchesSelection(nativeLocalProviderAttachment, {
+      agentName: requestedAgent,
+      sandboxName: input.sandboxName,
+      gatewayName: input.gatewayName,
+      provider: input.inferenceSelection.provider,
+      endpointUrl: input.inferenceSelection.endpointUrl,
+      hostLocalInferenceReceipt,
+    })
+      ? { nativeLocalProviderAttachment }
+      : {}),
     ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
     ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
     ...(deferredN1xManagedVllmAccepted ? { deferredN1xManagedVllmAccepted: true as const } : {}),
@@ -539,6 +581,14 @@ export function nativeLocalReservationStatus(input: {
     attachment.sandboxName === input.sandboxName &&
     attachment.gatewayName === input.gatewayName &&
     attachment.provider === input.provider &&
+    nativeLocalAttachmentMatchesSelection(attachment, {
+      agentName: input.agentName,
+      sandboxName: input.sandboxName,
+      gatewayName: input.gatewayName,
+      provider: input.provider,
+      endpointUrl: input.endpointUrl,
+      hostLocalInferenceReceipt: input.entry.hostLocalInferenceReceipt,
+    }) &&
     input.entry.provider === input.provider &&
     input.entry.model === input.model &&
     input.entry.endpointUrl === input.endpointUrl &&
@@ -549,36 +599,54 @@ export function nativeLocalReservationStatus(input: {
     : "changed";
 }
 
-export function nativeInferenceCreateIntentFields(
-  provider: string | null | undefined,
-  entry: SandboxEntry | null,
-): {
+export function nativeInferenceCreateIntentFields(input: {
+  agentName: string;
+  provider: string | null | undefined;
+  endpointUrl: string | null;
+  gatewayName: string;
+  entry: SandboxEntry | null;
+}): {
   inferenceProvider: string | null;
   nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
   nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
   nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
 } {
-  // Local NIM owns an existing shared route. A stale native-local receipt must
-  // never turn its sandbox creation into a native provider attachment.
-  const recordedNativeLocal = normalizeNativeLocalProviderAttachment(
-    entry?.nativeLocalProviderAttachment,
-  );
+  const retainedAttachment = input.entry
+    ? normalizeNativeLocalProviderAttachment(
+        retainedNativeLocalProviderAttachment(input.entry, {
+          provider: input.provider ?? null,
+          endpointUrl: input.endpointUrl,
+          gatewayName: input.gatewayName,
+        }),
+      )
+    : undefined;
+  // Local NIM keeps its shared route even if a stale vLLM attachment exists.
   const nativeLocalProviderAttachment =
-    (provider === "vllm-local" && entry?.nimContainer) || recordedNativeLocal?.provider !== provider
-      ? undefined
-      : recordedNativeLocal;
+    !(input.provider === "vllm-local" && input.entry?.nimContainer) &&
+    retainedAttachment &&
+    input.entry &&
+    nativeLocalAttachmentMatchesSelection(retainedAttachment, {
+      agentName: input.agentName,
+      sandboxName: input.entry.name,
+      gatewayName: input.gatewayName,
+      provider: input.provider,
+      endpointUrl: input.endpointUrl,
+      hostLocalInferenceReceipt: input.entry?.hostLocalInferenceReceipt,
+    })
+      ? retainedAttachment
+      : undefined;
   const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
-    entry?.nativeNvidiaProviderAttachment,
+    input.entry?.nativeNvidiaProviderAttachment,
   );
   const hostedAttachment = requireHostedProviderAttachment(
-    entry?.nativeHostedProviderAttachment,
-    provider,
+    input.entry?.nativeHostedProviderAttachment,
+    input.provider,
   );
   return {
     inferenceProvider:
       nativeLocalProviderAttachment?.providerName ??
       hostedAttachment?.providerName ??
-      nativeInferenceProviderForSandbox(provider),
+      nativeInferenceProviderForSandbox(input.provider),
     ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
     nativeHostedProviderAttachment: hostedAttachment,
     ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
