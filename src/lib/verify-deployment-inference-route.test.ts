@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from "vitest";
+import { serializedLlamaCppHostLocalInferenceReceipt } from "../../test/helpers/host-local-inference-receipt";
 import { buildChain } from "./dashboard/contract.js";
 import {
   nativeLocalIdentity,
@@ -190,6 +191,44 @@ describe("verifyDeployment inference route model-catalog validation", () => {
       expect(invocationProbe).toHaveBeenCalledOnce();
     },
   );
+
+  it("uses the published managed route when the provider phase still holds the host URL", async () => {
+    const binding = {
+      ...localBinding,
+      provider: "llama-cpp-local" as const,
+      endpointUrl: "http://host.openshell.internal:8081/v1",
+      authMode: "authenticated" as const,
+    };
+    const attachment = {
+      ...binding,
+      ...nativeLocalIdentity(binding),
+      schemaVersion: 1 as const,
+      providerId: "provider-1",
+    };
+    const context = onboardInferenceVerificationContext(
+      "my-sandbox",
+      "my-gateway",
+      "openclaw",
+      {
+        provider: "llama-cpp-local",
+        model: "test-model",
+        endpointUrl: "http://127.0.0.1:8081/v1",
+        preferredInferenceApi: "openai-completions",
+      },
+      {
+        provider: "llama-cpp-local",
+        model: "test-model",
+        endpointUrl: "https://inference.local/v1",
+        hostLocalInferenceReceipt: serializedLlamaCppHostLocalInferenceReceipt(),
+        nativeLocalProviderAttachment: attachment,
+      },
+    );
+    expect(context.route.endpointUrl).toBe("https://inference.local/v1");
+    expect(context.invocation.endpointUrl).toBe("https://inference.local/v1");
+    const probe = vi.fn(async () => ({ ok: true }) as const);
+    expect(await probeOnboardInferenceInvocation(context.invocation, probe)).toEqual({ ok: true });
+    expect(probe).toHaveBeenCalledOnce();
+  });
 
   it("rejects a native local attachment for a different selected endpoint in both probes", async () => {
     const context = onboardInferenceVerificationContext(

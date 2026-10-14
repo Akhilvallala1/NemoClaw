@@ -47,6 +47,7 @@ import {
 import { GATEWAY_PORT, resolveGatewayLogPathForPort } from "./onboard/gateway/state-dir";
 import { getMessagingProviderNamesForChannel } from "./onboard/messaging-reuse";
 import { HOST_LOCAL_INFERENCE_APPLICATION_BASE_URL } from "./onboard/runtime-provider/host-local-inference-routing";
+import { nativeLocalAttachmentMatchesHostLocalReceipt } from "./state/registry/host-local-inference";
 
 export { shouldDiagnoseCustomOpenClawRuntime } from "./onboard/custom-openclaw-runtime-diagnosis";
 
@@ -977,10 +978,15 @@ export function onboardInferenceVerificationContext(
   flow: Pick<InferenceInvocationContext, "model" | "provider" | "preferredInferenceApi"> & {
     endpointUrl?: string | null;
   },
-  attachment?: Pick<
-    InferenceRouteContext,
-    "nativeLocalProviderAttachment" | "nativeHostedProviderAttachment"
-  > | null,
+  attachment?:
+    | (Pick<
+        InferenceRouteContext,
+        "nativeLocalProviderAttachment" | "nativeHostedProviderAttachment"
+      > &
+        Partial<Pick<InferenceInvocationContext, "provider" | "model" | "endpointUrl">> & {
+          hostLocalInferenceReceipt?: string | null;
+        })
+    | null,
 ): { route: InferenceRouteContext; invocation: InferenceInvocationContext } {
   const nativeLocalExpected = usesNativeLocalInferenceForAgent(
     agentName,
@@ -989,10 +995,27 @@ export function onboardInferenceVerificationContext(
   );
   const nativeLocalProviderAttachment = attachment?.nativeLocalProviderAttachment;
   const nativeHostedProviderAttachment = attachment?.nativeHostedProviderAttachment;
+  const recordedHostLocalRouteMatchesAttachment =
+    nativeLocalProviderAttachment &&
+    nativeLocalAttachmentMatchesHostLocalReceipt(
+      attachment?.endpointUrl,
+      nativeLocalProviderAttachment.endpointUrl,
+      attachment?.hostLocalInferenceReceipt,
+    );
+  // The provider phase can still hold the host listener URL after publishing a
+  // managed local route. Verify the exact recorded application route instead.
+  const endpointUrl =
+    nativeLocalExpected &&
+    nativeLocalProviderAttachment &&
+    attachment?.provider === flow.provider &&
+    attachment?.model === flow.model &&
+    recordedHostLocalRouteMatchesAttachment
+      ? attachment.endpointUrl
+      : (flow.endpointUrl ?? null);
   return {
     route: {
       provider: flow.provider,
-      endpointUrl: flow.endpointUrl ?? null,
+      endpointUrl,
       gatewayName,
       nativeLocalExpected,
       nativeLocalProviderAttachment,
@@ -1004,7 +1027,7 @@ export function onboardInferenceVerificationContext(
       agentName,
       model: flow.model,
       provider: flow.provider,
-      endpointUrl: flow.endpointUrl ?? null,
+      endpointUrl,
       preferredInferenceApi: flow.preferredInferenceApi,
       nativeLocalExpected,
       nativeLocalProviderAttachment,

@@ -100,6 +100,77 @@ function createdRegistryEntryInput(
 }
 
 describe("buildCreatedSandboxRegistryEntry", () => {
+  it("retains the managed llama.cpp attachment for its published application route", () => {
+    const { nativeLocalIdentity } = requireDist(
+      "../inference/native-local/contract.ts",
+    ) as typeof import("../inference/native-local/contract");
+    const binding = {
+      provider: "llama-cpp-local" as const,
+      endpointUrl: "http://host.openshell.internal:8081/v1",
+      credentialEnv: "NEMOCLAW_LLAMACPP_LOCAL_TOKEN",
+      authMode: "authenticated" as const,
+      gatewayName: "nemoclaw",
+      sandboxName: "demo",
+    };
+    const attachment = {
+      ...binding,
+      ...nativeLocalIdentity(binding),
+      schemaVersion: 1 as const,
+      providerId: "provider-1",
+    };
+    const hostLocalInferenceReceipt = serializedLlamaCppHostLocalInferenceReceipt("docker");
+    const base = createdRegistryEntryInput();
+    const input = {
+      ...base,
+      agent: { name: "openclaw" } as AgentDefinition,
+      hostLocalInferenceReceipt,
+      nativeLocalProviderAttachment: attachment,
+      inferenceSelection: {
+        ...base.inferenceSelection,
+        provider: "llama-cpp-local",
+        endpointUrl: "https://inference.local/v1",
+      },
+    };
+    expect(buildCreatedSandboxRegistryEntry(input).nativeLocalProviderAttachment).toEqual(
+      attachment,
+    );
+    const staleBinding = { ...binding, endpointUrl: "http://host.openshell.internal:8082/v1" };
+    expect(
+      buildCreatedSandboxRegistryEntry({
+        ...input,
+        nativeLocalProviderAttachment: {
+          ...staleBinding,
+          ...nativeLocalIdentity(staleBinding),
+          schemaVersion: 1,
+          providerId: "stale-provider",
+        },
+      }).nativeLocalProviderAttachment,
+    ).toBeUndefined();
+    expect(
+      nativeInferenceCreateIntentFields({
+        agentName: "openclaw",
+        provider: "llama-cpp-local",
+        endpointUrl: "https://inference.local/v1",
+        gatewayName: "nemoclaw",
+        entry: buildCreatedSandboxRegistryEntry(input),
+      }).nativeLocalProviderAttachment,
+    ).toEqual(attachment);
+    expect(
+      nativeLocalReservationStatus({
+        entry: buildCreatedSandboxRegistryEntry(input),
+        agentName: "openclaw",
+        sandboxName: "demo",
+        gatewayName: "nemoclaw",
+        provider: "llama-cpp-local",
+        model: "llama",
+        endpointUrl: "https://inference.local/v1",
+        endpointSource: null,
+        credentialEnv: null,
+        preferredInferenceApi: null,
+      }),
+    ).toBe("exact");
+  });
+
   it("does not inherit a native attachment from a different published route (#12558)", () => {
     const registry = requireDist("../state/registry.js") as typeof import("../state/registry");
     const { nativeLocalIdentity } = requireDist(

@@ -32,6 +32,7 @@ import { withCurrentPortableHostFenceTry } from "../state/portable-uninstall-ret
 import {
   cloneSandboxHostLocalInferenceProvenance,
   cloneSandboxHostLocalInferenceReceipt,
+  nativeLocalAttachmentMatchesHostLocalReceipt,
   requireSandboxHostLocalInferenceProvenance,
 } from "../state/registry/host-local-inference";
 import { cloneSandboxHostMounts } from "../state/registry/host-mount";
@@ -212,8 +213,16 @@ function nativeLocalAttachmentMatchesSelection(
     gatewayName: string;
     provider: string | null | undefined;
     endpointUrl: string | null;
+    hostLocalInferenceReceipt?: string | null;
   },
 ): boolean {
+  const endpointMatches =
+    attachment.endpointUrl === selection.endpointUrl ||
+    nativeLocalAttachmentMatchesHostLocalReceipt(
+      selection.endpointUrl,
+      attachment.endpointUrl,
+      selection.hostLocalInferenceReceipt,
+    );
   return (
     usesNativeLocalInferenceForAgent(
       selection.agentName,
@@ -223,7 +232,7 @@ function nativeLocalAttachmentMatchesSelection(
     attachment.sandboxName === selection.sandboxName &&
     attachment.gatewayName === selection.gatewayName &&
     attachment.provider === selection.provider &&
-    attachment.endpointUrl === selection.endpointUrl
+    endpointMatches
   );
 }
 
@@ -346,6 +355,7 @@ export function buildCreatedSandboxRegistryEntry(
       gatewayName: input.gatewayName,
       provider: input.inferenceSelection.provider,
       endpointUrl: input.inferenceSelection.endpointUrl,
+      hostLocalInferenceReceipt,
     })
       ? { nativeLocalProviderAttachment }
       : {}),
@@ -564,7 +574,14 @@ export function nativeLocalReservationStatus(input: {
     attachment.sandboxName === input.sandboxName &&
     attachment.gatewayName === input.gatewayName &&
     attachment.provider === input.provider &&
-    attachment.endpointUrl === input.endpointUrl &&
+    nativeLocalAttachmentMatchesSelection(attachment, {
+      agentName: input.agentName,
+      sandboxName: input.sandboxName,
+      gatewayName: input.gatewayName,
+      provider: input.provider,
+      endpointUrl: input.endpointUrl,
+      hostLocalInferenceReceipt: input.entry.hostLocalInferenceReceipt,
+    }) &&
     input.entry.provider === input.provider &&
     input.entry.model === input.model &&
     input.entry.endpointUrl === input.endpointUrl &&
@@ -605,6 +622,7 @@ export function nativeInferenceCreateIntentFields(input: {
       gatewayName: input.gatewayName,
       provider: input.provider,
       endpointUrl: input.endpointUrl,
+      hostLocalInferenceReceipt: input.entry?.hostLocalInferenceReceipt,
     })
       ? retainedAttachment
       : undefined;
