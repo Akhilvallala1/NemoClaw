@@ -48,6 +48,10 @@
     {
       "pullRequest": 12889,
       "changeSha256": "07291e48a87dabdd4f4c0e03683c318e7bd13ff455db6b4ac76587111a82e3c0"
+    },
+    {
+      "pullRequest": 13055,
+      "changeSha256": "d0435766039881c9598d3740f650e3bffdbace9f5a3f29fdc70238522c521f79"
     }
   ]
 }

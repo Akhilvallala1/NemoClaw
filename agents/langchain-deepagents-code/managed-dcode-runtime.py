@@ -1085,14 +1085,27 @@ def managed_inference_api_key(base_url: str) -> str:
     if urlsplit(base_url).hostname == "inference.local":
         return "nemoclaw-managed-inference"
     upstream = _managed_upstream_provider()
-    name = {"compatible-endpoint": "COMPATIBLE_API_KEY", "compatible-anthropic-endpoint": "COMPATIBLE_ANTHROPIC_API_KEY"}.get(upstream)
+    name = {
+        "compatible-endpoint": "COMPATIBLE_API_KEY",
+        "compatible-anthropic-endpoint": "COMPATIBLE_ANTHROPIC_API_KEY",
+    }.get(upstream)
+    provider = "compatible"
     if name is None:
-        if base_url != "https://integrate.api.nvidia.com/v1":
+        if base_url == "https://integrate.api.nvidia.com/v1":
+            name = "NVIDIA_INFERENCE_API_KEY"
+            provider = "NVIDIA"
+        elif base_url == "https://openrouter.ai/api/v1" and (
+            upstream in _OPENROUTER_DISPLAY_PROVIDER_ALIASES
+        ):
+            name = "OPENROUTER_API_KEY"
+            provider = "OpenRouter"
+        else:
             return "nemoclaw-managed-inference"
-        name = "NVIDIA_INFERENCE_API_KEY"
     value = os.environ.get(name, "")
     if not _is_openshell_placeholder_for_name(name, value):
-        raise RuntimeError("native inference requires its OpenShell credential placeholder")
+        raise RuntimeError(
+            f"native {provider} inference requires an OpenShell credential placeholder"
+        )
     return value
 
 
