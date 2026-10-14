@@ -125,6 +125,89 @@ async fn operations(
     )
 }
 
+/// A deployment that each case of a table test starts from.
+///
+/// Deploying saves the service receipt 13 to 15 times, and each save
+/// flushes it to disk. Restoring puts back the fixture's objects and
+/// controls and copies the saved state into a new directory without a
+/// flush, so each case pays only for the operations it tests.
+struct Deployed {
+    objects: crate::kube_api::Objects,
+    snapshot: crate::kube_api::Snapshot,
+    state: tempfile::TempDir,
+    client: kube::Client,
+    server: String,
+    _fixture: crate::transport::Fixture,
+}
+
+impl Deployed {
+    /// Keep the objects and the state directory as `operations` left them.
+    fn new(
+        objects: &crate::kube_api::Objects,
+        state: tempfile::TempDir,
+        fixture: crate::transport::Fixture,
+        operations: nemoclaw_sdk::kubernetes::services::Operations,
+    ) -> Self {
+        Self {
+            objects: objects.clone(),
+            snapshot: objects.snapshot(),
+            state,
+            client: operations.client,
+            server: operations.server,
+            _fixture: fixture,
+        }
+    }
+
+    /// Put back the kept objects and fixture controls, and return operations
+    /// on a new copy of the kept state directory.
+    fn restore(
+        &self,
+    ) -> (
+        crate::kube_api::Objects,
+        tempfile::TempDir,
+        nemoclaw_sdk::kubernetes::services::Operations,
+    ) {
+        fn copy(from: &std::path::Path, to: &std::path::Path) {
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    std::fs::create_dir(&target).unwrap();
+                    copy(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), &target).unwrap();
+                }
+            }
+        }
+        self.objects.restore(&self.snapshot);
+        let directory = tempfile::tempdir().unwrap();
+        copy(self.state.path(), directory.path());
+        let operations = nemoclaw_sdk::kubernetes::services::Operations {
+            client: self.client.clone(),
+            server: self.server.clone(),
+            state: directory.path().into(),
+        };
+        (self.objects.clone(), directory, operations)
+    }
+}
+
+/// Deploy `spec`'s storage and workload on a new fixture, and return the
+/// workload's binding.
+async fn deploy(spec: &Spec) -> (Deployed, nemoclaw_sdk::kubernetes::services::Response) {
+    let objects = crate::kube_api::Objects::default();
+    let directory = tempfile::tempdir().unwrap();
+    let (fixture, operations) = operations(&objects, directory.path(), spec).await;
+    operations
+        .ensure_storage(&spec.storage(), None)
+        .await
+        .unwrap();
+    let bound = operations.ensure(spec, None).await.unwrap();
+    (
+        Deployed::new(&objects, directory, fixture, operations),
+        bound,
+    )
+}
+
 #[tokio::test]
 async fn apply_creates_both_backends_without_mutating_existing_retained_storage() {
     for backend in ["vllm", "ollama"] {
@@ -244,20 +327,14 @@ async fn running_pod_without_runtime_evidence_is_not_ready() {
 
 #[tokio::test]
 async fn retained_claim_loss_and_substitution_block_compute_mutation() {
+    let spec = spec("vllm", true);
+    let (deployed, compute) = deploy(&spec).await;
+    let claim = format!(
+        "/api/v1/namespaces/agents/persistentvolumeclaims/{}-auth",
+        spec.name
+    );
     for corrupt in ["missing", "uid", "generation"] {
-        let spec = spec("vllm", true);
-        let objects = crate::kube_api::Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        let compute = operations.ensure(&spec, None).await.unwrap();
-        let claim = format!(
-            "/api/v1/namespaces/agents/persistentvolumeclaims/{}-auth",
-            spec.name
-        );
+        let (objects, _directory, operations) = deployed.restore();
         match corrupt {
             "missing" => {
                 objects.0.lock().unwrap().remove(&claim);
@@ -637,16 +714,11 @@ async fn a_failed_first_create_does_not_bind_the_serving_port() {
 
 #[tokio::test]
 async fn missing_network_objects_refuse_updates_before_stopping_the_pod() {
+    let original = spec("ollama", false);
+    let (deployed, first) = deploy(&original).await;
     for (api, kind) in [("v1", "Service"), ("networking.k8s.io/v1", "NetworkPolicy")] {
-        let mut spec = spec("ollama", false);
-        let objects = crate::kube_api::Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        let first = operations.ensure(&spec, None).await.unwrap();
+        let (objects, _directory, operations) = deployed.restore();
+        let mut spec = original.clone();
         let path = format!(
             "{}/{}",
             crate::kube_api::collection(api, kind, "agents"),
@@ -662,6 +734,8 @@ async fn missing_network_objects_refuse_updates_before_stopping_the_pod() {
 
 #[tokio::test]
 async fn changed_network_specs_refuse_refresh_and_update_but_allow_explicit_removal() {
+    let original = spec("ollama", false);
+    let (deployed, first) = deploy(&original).await;
     for (api, kind, field, replacement) in [
         ("v1", "Service", "externalIPs", json!(["203.0.113.7"])),
         ("v1", "Service", "selector", json!({"foreign": "true"})),
@@ -672,15 +746,8 @@ async fn changed_network_specs_refuse_refresh_and_update_but_allow_explicit_remo
             json!([{}]),
         ),
     ] {
-        let mut spec = spec("ollama", false);
-        let objects = crate::kube_api::Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        let first = operations.ensure(&spec, None).await.unwrap();
+        let (objects, _directory, operations) = deployed.restore();
+        let mut spec = original.clone();
         let mut object = objects.get(api, kind, "agents", &spec.name).unwrap();
         object["spec"][field] = replacement;
         objects.insert(object);
@@ -809,16 +876,10 @@ async fn an_identity_without_get_on_pods_exec_is_refused_before_storage_or_a_pod
 #[tokio::test]
 async fn replacement_admission_rejection_preserves_the_running_model_and_its_receipt() {
     for backend in ["vllm", "ollama"] {
+        let original = spec(backend, backend == "vllm");
+        let (deployed, first) = deploy(&original).await;
         for rejected_kind in ["Pod", "ConfigMap"] {
-            let original = spec(backend, backend == "vllm");
-            let objects = crate::kube_api::Objects::default();
-            let directory = tempfile::tempdir().unwrap();
-            let (_fixture, operations) = operations(&objects, directory.path(), &original).await;
-            operations
-                .ensure_storage(&original.storage(), None)
-                .await
-                .unwrap();
-            let first = operations.ensure(&original, None).await.unwrap();
+            let (objects, directory, operations) = deployed.restore();
             let mut pod = objects.get("v1", "Pod", "agents", &original.name).unwrap();
             pod["status"] = json!({"phase":"Running"});
             objects.insert(pod);
@@ -963,16 +1024,10 @@ async fn replacement_admission_uses_temporary_names_without_changing_the_workloa
 
 #[tokio::test]
 async fn terminal_pods_are_replaced_only_by_explicit_apply_and_only_when_owned() {
+    let spec = spec("ollama", false);
+    let (deployed, first) = deploy(&spec).await;
     for foreign in [false, true] {
-        let spec = spec("ollama", false);
-        let objects = crate::kube_api::Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        let first = operations.ensure(&spec, None).await.unwrap();
+        let (objects, directory, operations) = deployed.restore();
         let mut pod = objects.get("v1", "Pod", "agents", &spec.name).unwrap();
         let old_uid = pod["metadata"]["uid"].clone();
         pod["status"] = json!({"phase":"Failed"});

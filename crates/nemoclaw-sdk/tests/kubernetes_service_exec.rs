@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Runtime-file results must remain bound to the same Pod and retained claims.
-use super::{operations, spec};
+use super::{Deployed, operations, spec};
 use crate::kube_api::Objects;
 use nemoclaw_sdk::{
     ObservationError,
@@ -17,7 +17,7 @@ struct Harness {
     objects: Objects,
     operations: Operations,
     _directory: tempfile::TempDir,
-    _fixture: crate::transport::Fixture,
+    deployed: Deployed,
 }
 impl Harness {
     async fn new(backend: &str, authenticated: bool) -> Self {
@@ -33,13 +33,20 @@ impl Harness {
         let mut pod = objects.get("v1", "Pod", "agents", &spec.name).unwrap();
         pod["status"] = json!({"phase": "Running", "containerStatuses": [{"name": "runtime", "state": {"running": {"startedAt": STARTED}}}]});
         objects.insert(pod);
+        let deployed = Deployed::new(&objects, directory, fixture, operations);
+        let (objects, directory, operations) = deployed.restore();
         Self {
             spec,
             objects,
             operations,
             _directory: directory,
-            _fixture: fixture,
+            deployed,
         }
+    }
+
+    /// Start another case from the running model that `new` deployed.
+    fn restore(&mut self) {
+        (self.objects, self._directory, self.operations) = self.deployed.restore();
     }
 
     fn executor(&self, steps: Vec<Step>) -> Exec {
@@ -188,13 +195,14 @@ async fn fresh_ready_status_establishes_readiness_for_each_backend() {
 
 #[tokio::test]
 async fn runtime_reads_reject_identity_changes_during_status_exec() {
+    let mut harness = Harness::new("vllm", true).await;
     for change in [
         Change::PodUid,
         Change::StartedAt,
         Change::CredentialMount,
         Change::CredentialPvcUid,
     ] {
-        let harness = Harness::new("vllm", true).await;
+        harness.restore();
         let mut step = Step::status("ready");
         step.change = Some(change);
         let executor = harness.executor(vec![step]);
@@ -210,12 +218,13 @@ async fn runtime_reads_reject_identity_changes_during_status_exec() {
 
 #[tokio::test]
 async fn refused_exec_upgrades_report_authentication_and_permission_without_retrying() {
+    let mut harness = Harness::new("ollama", false).await;
     for (code, expected) in [
         (401, ObservationError::Authentication),
         (403, ObservationError::Permission),
         (500, ObservationError::Transport),
     ] {
-        let harness = Harness::new("ollama", false).await;
+        harness.restore();
         let exec = format!("/api/v1/namespaces/agents/pods/{}/exec", harness.spec.name);
         let before = harness.objects.0.lock().unwrap().clone();
         harness.objects.reject_request("GET", &exec, false, code);

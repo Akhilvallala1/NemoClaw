@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{operations, spec};
+use super::{Deployed, deploy, operations, spec};
 use nemoclaw_sdk::ObservationError;
 use serde_json::json;
 use std::error::Error;
@@ -75,21 +75,15 @@ pub(super) fn assert_named_mismatch(
 
 #[tokio::test]
 async fn namespace_drift_names_the_live_or_retained_identity_without_its_value() {
+    let spec = spec("ollama", false);
+    let (deployed, _) = deploy(&spec).await;
     for change in [
         "live namespace",
         "live cluster",
         "retained namespace",
         "retained cluster",
     ] {
-        let spec = spec("ollama", false);
-        let objects = crate::kube_api::Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        operations.ensure(&spec, None).await.unwrap();
+        let (objects, directory, operations) = deployed.restore();
         let receipt_path = directory
             .path()
             .join("services")
@@ -139,6 +133,18 @@ async fn namespace_drift_names_the_live_or_retained_identity_without_its_value()
 
 #[tokio::test]
 async fn api_conflicts_name_the_requested_object_and_preserve_durable_bindings() {
+    let original = spec("ollama", false);
+    let storage = {
+        let objects = crate::kube_api::Objects::default();
+        let directory = tempfile::tempdir().unwrap();
+        let (fixture, operations) = operations(&objects, directory.path(), &original).await;
+        operations
+            .ensure_storage(&original.storage(), None)
+            .await
+            .unwrap();
+        Deployed::new(&objects, directory, fixture, operations)
+    };
+    let (workload, _) = deploy(&original).await;
     for operation in [
         "read",
         "create",
@@ -146,17 +152,13 @@ async fn api_conflicts_name_the_requested_object_and_preserve_durable_bindings()
         "replacement preflight",
         "delete",
     ] {
-        let mut spec = spec("ollama", false);
-        let objects = crate::kube_api::Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        if matches!(operation, "read" | "replacement preflight" | "delete") {
-            operations.ensure(&spec, None).await.unwrap();
-        }
+        let mut spec = original.clone();
+        let (objects, directory, operations) =
+            if matches!(operation, "read" | "replacement preflight" | "delete") {
+                workload.restore()
+            } else {
+                storage.restore()
+            };
         let receipt_path = directory
             .path()
             .join("services")
@@ -228,20 +230,14 @@ async fn api_conflicts_name_the_requested_object_and_preserve_durable_bindings()
 
 #[tokio::test]
 async fn object_read_failures_keep_authentication_permission_and_query_categories() {
+    let spec = spec("ollama", false);
+    let (deployed, _) = deploy(&spec).await;
     for (code, expected) in [
         (401, ObservationError::Authentication),
         (403, ObservationError::Permission),
         (500, ObservationError::Query),
     ] {
-        let spec = spec("ollama", false);
-        let objects = crate::kube_api::Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        operations.ensure(&spec, None).await.unwrap();
+        let (objects, _directory, operations) = deployed.restore();
         let before = objects.0.lock().unwrap().clone();
         objects.reject_request(
             "GET",
@@ -278,6 +274,8 @@ async fn missing_bound_configuration_names_the_absent_object_without_recreating_
 
 #[tokio::test]
 async fn tampered_model_objects_identify_the_object_and_field_without_values() {
+    let spec = spec("vllm", true);
+    let (deployed, _) = deploy(&spec).await;
     for (api, kind, field, pointer, replacement) in [
         (
             "v1",
@@ -430,15 +428,7 @@ async fn tampered_model_objects_identify_the_object_and_field_without_values() {
             json!({"private-key": "private-value"}),
         ),
     ] {
-        let spec = spec("vllm", true);
-        let objects = crate::kube_api::Objects::default();
-        let directory = tempfile::tempdir().unwrap();
-        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-        operations
-            .ensure_storage(&spec.storage(), None)
-            .await
-            .unwrap();
-        operations.ensure(&spec, None).await.unwrap();
+        let (objects, _directory, operations) = deployed.restore();
         let mut object = objects.get(api, kind, "agents", &spec.name).unwrap();
         let (parent, key) = pointer.rsplit_once('/').unwrap();
         object.pointer_mut(parent).unwrap()[key.replace("~1", "/")] = replacement;

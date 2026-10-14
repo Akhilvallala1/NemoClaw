@@ -1,23 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{operations, spec};
+use super::{deploy, spec};
 use nemoclaw_sdk::ObservationError;
 use serde_json::json;
 
 #[tokio::test]
 async fn unchanged_apply_preserves_running_and_pending_pods_and_saved_bindings() {
     for backend in ["vllm", "ollama"] {
+        let spec = spec(backend, backend == "vllm");
+        let (deployed, first) = deploy(&spec).await;
         for phase in ["Running", "Pending"] {
-            let spec = spec(backend, backend == "vllm");
-            let objects = crate::kube_api::Objects::default();
-            let directory = tempfile::tempdir().unwrap();
-            let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
-            operations
-                .ensure_storage(&spec.storage(), None)
-                .await
-                .unwrap();
-            let first = operations.ensure(&spec, None).await.unwrap();
+            let (objects, directory, operations) = deployed.restore();
             let mut pod = objects.get("v1", "Pod", "agents", &spec.name).unwrap();
             pod["status"] = json!({"phase": phase});
             objects.insert(pod);

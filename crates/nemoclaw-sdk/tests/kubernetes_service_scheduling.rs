@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{operations, spec};
+use super::{Deployed, operations, spec};
 use nemoclaw_sdk::kubernetes::services::{Operations, Spec};
 use serde_json::{Value, json};
 
@@ -148,6 +148,9 @@ async fn runtime_class_overhead_from_admission_must_fit_before_the_running_pod_i
 
 #[tokio::test]
 async fn equivalent_kubernetes_quantities_allow_a_sequential_update_on_one_gpu() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.cpu_request_millis = 2000;
     for (resource, quantity) in [
         ("cpu", "2.0"),
         ("cpu", "+2."),
@@ -163,8 +166,7 @@ async fn equivalent_kubernetes_quantities_allow_a_sequential_update_on_one_gpu()
         ("memory", "1.7179869184e10"),
         ("nvidia.com/gpu", "1e0"),
     ] {
-        let (mut desired, objects, _directory, _fixture, operations, id) = running("vllm").await;
-        desired.settings.cpu_request_millis = 2000;
+        let (objects, _directory, operations) = deployed.restore();
         let old_pod = objects.get("v1", "Pod", "agents", &desired.name).unwrap();
         let storage = objects
             .get(
@@ -199,12 +201,14 @@ async fn equivalent_kubernetes_quantities_allow_a_sequential_update_on_one_gpu()
 
 #[tokio::test]
 async fn unsupported_admission_resource_shapes_preserve_the_running_pod() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.cpu_request_millis = 2000;
     for overlay in [
         json!({"initContainers":[{"name":"init", "image":"example/init", "resources":{"requests":{"memory":"128Gi"}}}]}),
         json!({"resources":{"requests":{"memory":"128Gi"}}}),
     ] {
-        let (mut desired, objects, directory, _fixture, operations, id) = running("vllm").await;
-        desired.settings.cpu_request_millis = 2000;
+        let (objects, directory, operations) = deployed.restore();
         objects.admit_pod_dry_run_with(overlay);
         refuses_before_stopping(
             &operations,
@@ -220,6 +224,9 @@ async fn unsupported_admission_resource_shapes_preserve_the_running_pod() {
 
 #[tokio::test]
 async fn requests_above_allocatable_capacity_and_unreadable_quantities_preserve_the_running_pod() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.cpu_request_millis = 2000;
     for (resource, available, reason) in [
         ("cpu", "1999m", "cpu"),
         ("memory", "16383Mi", "memory"),
@@ -237,8 +244,7 @@ async fn requests_above_allocatable_capacity_and_unreadable_quantities_preserve_
             "cannot assess Node allocatable quantity",
         ),
     ] {
-        let (mut desired, objects, directory, _fixture, operations, id) = running("vllm").await;
-        desired.settings.cpu_request_millis = 2000;
+        let (objects, directory, operations) = deployed.restore();
         let mut node = objects.get("v1", "Node", "", "gpu-node").unwrap();
         node["status"]["allocatable"][resource] = json!(available);
         objects.insert(node);
@@ -296,9 +302,11 @@ async fn losing_node_read_permission_preserves_the_running_pod_and_receipt() {
 #[tokio::test]
 async fn image_and_runtime_only_updates_do_not_require_node_read_permission() {
     for backend in ["vllm", "ollama"] {
+        let (original, objects, directory, fixture, operations, id) = running(backend).await;
+        let deployed = Deployed::new(&objects, directory, fixture, operations);
         for change_image in [false, true] {
-            let (mut desired, objects, _directory, _fixture, operations, id) =
-                running(backend).await;
+            let (objects, _directory, operations) = deployed.restore();
+            let mut desired = original.clone();
             if change_image {
                 desired.image = format!("registry.example/runtime@sha256:{}", "b".repeat(64));
             } else {
@@ -329,6 +337,9 @@ async fn image_and_runtime_only_updates_do_not_require_node_read_permission() {
 
 #[tokio::test]
 async fn admitted_runtime_class_node_constraints_and_sidecar_requests_are_checked() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.runtime_class_name = Some("other-nvidia".into());
     for (overlay, reason) in [
         (
             json!({"nodeSelector":{"kubernetes.io/os":"linux", "gpu-pool":"missing-pool"}}),
@@ -340,8 +351,7 @@ async fn admitted_runtime_class_node_constraints_and_sidecar_requests_are_checke
             "memory",
         ),
     ] {
-        let (mut desired, objects, directory, _fixture, operations, id) = running("vllm").await;
-        desired.settings.runtime_class_name = Some("other-nvidia".into());
+        let (objects, directory, operations) = deployed.restore();
         objects.insert(json!({"apiVersion":"node.k8s.io/v1", "kind":"RuntimeClass", "metadata":{"name":"other-nvidia"}, "handler":"nvidia"}));
         objects.admit_pod_dry_run_with(overlay);
         refuses_before_stopping(
@@ -358,6 +368,9 @@ async fn admitted_runtime_class_node_constraints_and_sidecar_requests_are_checke
 
 #[tokio::test]
 async fn matching_tolerations_and_preferred_taints_allow_sequential_updates() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.cpu_request_millis = 2000;
     for (effect, toleration, cordoned) in [
         (
             "NoSchedule",
@@ -377,8 +390,7 @@ async fn matching_tolerations_and_preferred_taints_allow_sequential_updates() {
             true,
         ),
     ] {
-        let (mut desired, objects, _directory, _fixture, operations, id) = running("vllm").await;
-        desired.settings.cpu_request_millis = 2000;
+        let (objects, _directory, operations) = deployed.restore();
         let mut node = objects.get("v1", "Node", "", "gpu-node").unwrap();
         node["spec"] = json!({"unschedulable":cordoned, "taints":[{"key":"dedicated", "value":"inference", "effect":effect}]});
         objects.insert(node);
@@ -391,12 +403,14 @@ async fn matching_tolerations_and_preferred_taints_allow_sequential_updates() {
 
 #[tokio::test]
 async fn an_unassessable_node_does_not_hide_another_node_that_fits_the_replacement() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.cpu_request_millis = 2000;
     for unknown_capacity in [
         Value::Null,
         json!({"allocatable":{"cpu":"8", "memory":"invalid", "nvidia.com/gpu":"1"}}),
     ] {
-        let (mut desired, objects, _directory, _fixture, operations, id) = running("vllm").await;
-        desired.settings.cpu_request_millis = 2000;
+        let (objects, _directory, operations) = deployed.restore();
         let old_pod = objects.get("v1", "Pod", "agents", &desired.name).unwrap();
         let mut joining = objects.get("v1", "Node", "", "gpu-node").unwrap();
         joining["metadata"]["name"] = json!("0-joining-node");
@@ -424,6 +438,9 @@ fn node(
 
 #[tokio::test]
 async fn tolerations_must_match_the_taint_key_value_and_effect() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.cpu_request_millis = 2000;
     for (taint, toleration) in [
         (
             json!({"key":"dedicated", "value":"inference", "effect":"NoExecute"}),
@@ -450,8 +467,7 @@ async fn tolerations_must_match_the_taint_key_value_and_effect() {
             json!({"key":"other", "operator":"Exists"}),
         ),
     ] {
-        let (mut desired, objects, directory, _fixture, operations, id) = running("vllm").await;
-        desired.settings.cpu_request_millis = 2000;
+        let (objects, directory, operations) = deployed.restore();
         let mut node = objects.get("v1", "Node", "", "gpu-node").unwrap();
         node["spec"] = json!({"taints":[taint]});
         objects.insert(node);
@@ -472,6 +488,9 @@ async fn tolerations_must_match_the_taint_key_value_and_effect() {
 
 #[tokio::test]
 async fn every_requested_resource_must_fit_on_one_schedulable_node() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.cpu_request_millis = 2000;
     for (gpu_node, other_node) in [
         // A Node missing an extended resource offers none of it.
         (
@@ -490,8 +509,7 @@ async fn every_requested_resource_must_fit_on_one_schedulable_node() {
             (json!({}), json!({"cpu":"8", "memory":"64Gi"})),
         ),
     ] {
-        let (mut desired, objects, directory, _fixture, operations, id) = running("vllm").await;
-        desired.settings.cpu_request_millis = 2000;
+        let (objects, directory, operations) = deployed.restore();
         node(&objects, "gpu-node", &desired, gpu_node.0, gpu_node.1);
         node(&objects, "cpu-node", &desired, other_node.0, other_node.1);
         refuses_before_stopping(
@@ -554,6 +572,9 @@ async fn tolerations_and_architecture_alone_are_scheduling_changes() {
 
 #[tokio::test]
 async fn image_and_runtime_only_updates_refuse_when_no_node_can_run_the_unchanged_pod() {
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.image = format!("registry.example/runtime@sha256:{}", "b".repeat(64));
     for (node_spec, reason) in [
         (json!({"unschedulable":true}), "cordoned"),
         (
@@ -561,8 +582,7 @@ async fn image_and_runtime_only_updates_refuse_when_no_node_can_run_the_unchange
             "taint",
         ),
     ] {
-        let (mut desired, objects, directory, _fixture, operations, id) = running("vllm").await;
-        desired.image = format!("registry.example/runtime@sha256:{}", "b".repeat(64));
+        let (objects, directory, operations) = deployed.restore();
         let mut node = objects.get("v1", "Node", "", "gpu-node").unwrap();
         node["spec"] = node_spec;
         objects.insert(node);
@@ -602,6 +622,9 @@ async fn replacing_a_pod_that_is_not_serving_skips_the_node_check() {
         "reason":"Unschedulable", "message":"0/1 nodes are available: 1 node(s) didn't match Pod's node affinity/selector."}]});
     let oom = json!({"phase":"Failed", "containerStatuses":[{"name":"runtime",
         "state":{"terminated":{"reason":"OOMKilled", "exitCode":137}}}]});
+    let (mut desired, objects, directory, fixture, operations, id) = running("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
+    desired.settings.memory_request_gib = 24;
     // Each case would otherwise fail the check: the Node list is denied, or
     // admission injects an init container whose requests it cannot assess.
     for (status, scheduled, deny_nodes) in [
@@ -610,14 +633,13 @@ async fn replacing_a_pod_that_is_not_serving_skips_the_node_check() {
         (unschedulable.clone(), false, true),
         (unschedulable, false, false),
     ] {
-        let (mut desired, objects, _directory, _fixture, operations, id) = running("vllm").await;
+        let (objects, _directory, operations) = deployed.restore();
         let mut pod = objects.get("v1", "Pod", "agents", &desired.name).unwrap();
         if !scheduled {
             pod["spec"].as_object_mut().unwrap().remove("nodeName");
         }
         pod["status"] = status;
         objects.insert(pod.clone());
-        desired.settings.memory_request_gib = 24;
         if deny_nodes {
             objects.reject_request("GET", "/api/v1/nodes", false, 403);
         } else {

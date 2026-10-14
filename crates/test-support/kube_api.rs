@@ -26,7 +26,7 @@ pub struct Objects(
     Arc<Mutex<Controls>>,
 );
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Controls {
     request_failure: Option<RequestFailure>,
     rejected_requests: Vec<Value>,
@@ -39,12 +39,17 @@ struct Controls {
     admitted_pod_spec: Option<Value>,
 }
 
+#[derive(Clone)]
 struct RequestFailure {
     method: String,
     path: String,
     dry_run: bool,
     code: u16,
 }
+
+/// The stored objects and request controls at one moment, for
+/// `Objects::restore`.
+pub struct Snapshot(BTreeMap<String, Value>, Controls);
 
 fn plural(kind: &str) -> String {
     let kind = kind.to_ascii_lowercase();
@@ -164,6 +169,21 @@ impl Objects {
     pub fn admit_pod_dry_run_with(&self, spec: Value) {
         assert!(spec.is_object());
         self.2.lock().unwrap().admitted_pod_spec = Some(spec);
+    }
+    /// The stored objects and the request controls set so far.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot(
+            self.0.lock().unwrap().clone(),
+            self.2.lock().unwrap().clone(),
+        )
+    }
+    /// Put back the objects and request controls of `snapshot`, which also
+    /// puts back the rejected requests, dry runs and pending deletions it
+    /// recorded. UIDs keep counting from the last one assigned, so a later
+    /// create never reuses one.
+    pub fn restore(&self, snapshot: &Snapshot) {
+        *self.0.lock().unwrap() = snapshot.0.clone();
+        *self.2.lock().unwrap() = snapshot.1.clone();
     }
     /// Store `object`, giving it a UID if it has none.
     pub fn insert(&self, mut object: Value) {

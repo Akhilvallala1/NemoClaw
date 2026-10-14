@@ -1,23 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{operations, spec};
+use super::{Deployed, deploy, operations, spec};
 use nemoclaw_sdk::services::ServiceUpdatePolicy;
 use serde_json::{Value, json};
 
 #[tokio::test]
 async fn default_update_policy_preserves_nonterminal_pods_configuration_and_saved_receipts() {
     for backend in ["vllm", "ollama"] {
+        let original = spec(backend, backend == "vllm");
+        let (deployed, bound) = deploy(&original).await;
         for phase in [json!("Running"), json!("Pending"), Value::Null] {
-            let original = spec(backend, backend == "vllm");
-            let objects = crate::kube_api::Objects::default();
-            let directory = tempfile::tempdir().unwrap();
-            let (_fixture, operations) = operations(&objects, directory.path(), &original).await;
-            operations
-                .ensure_storage(&original.storage(), None)
-                .await
-                .unwrap();
-            let bound = operations.ensure(&original, None).await.unwrap();
+            let (objects, directory, operations) = deployed.restore();
             let mut pod = objects.get("v1", "Pod", "agents", &original.name).unwrap();
             // A scheduled Pod may be starting or serving, whatever its reported phase.
             pod["spec"]["nodeName"] = json!("gpu-node");
@@ -160,16 +154,11 @@ async fn changing_only_update_policy_keeps_compute_and_removing_it_restores_prot
 #[tokio::test]
 async fn default_policy_allows_changed_workload_recovery_after_pod_absence_or_termination() {
     for backend in ["vllm", "ollama"] {
+        let original = spec(backend, backend == "vllm");
+        let (deployed, bound) = deploy(&original).await;
         for phase in [None, Some("Failed"), Some("Succeeded")] {
-            let mut desired = spec(backend, backend == "vllm");
-            let objects = crate::kube_api::Objects::default();
-            let directory = tempfile::tempdir().unwrap();
-            let (_fixture, operations) = operations(&objects, directory.path(), &desired).await;
-            operations
-                .ensure_storage(&desired.storage(), None)
-                .await
-                .unwrap();
-            let bound = operations.ensure(&desired, None).await.unwrap();
+            let (objects, _directory, operations) = deployed.restore();
+            let mut desired = original.clone();
             let mut old_pod = objects.get("v1", "Pod", "agents", &desired.name).unwrap();
             if let Some(phase) = phase {
                 old_pod["status"] = json!({"phase":phase});
@@ -195,17 +184,12 @@ async fn default_policy_allows_changed_workload_recovery_after_pod_absence_or_te
 
 #[tokio::test]
 async fn update_policy_does_not_mask_or_authorize_owned_object_tampering() {
+    let original = spec("vllm", true);
+    let (deployed, bound) = deploy(&original).await;
     for policy in [ServiceUpdatePolicy::Preserve, ServiceUpdatePolicy::Recreate] {
         for kind in ["Pod", "ConfigMap"] {
-            let mut desired = spec("vllm", true);
-            let objects = crate::kube_api::Objects::default();
-            let directory = tempfile::tempdir().unwrap();
-            let (_fixture, operations) = operations(&objects, directory.path(), &desired).await;
-            operations
-                .ensure_storage(&desired.storage(), None)
-                .await
-                .unwrap();
-            let bound = operations.ensure(&desired, None).await.unwrap();
+            let (objects, _directory, operations) = deployed.restore();
+            let mut desired = original.clone();
             let mut object = objects.get("v1", kind, "agents", &desired.name).unwrap();
             if kind == "Pod" {
                 object["metadata"]["uid"] = json!("foreign-pod");
@@ -295,8 +279,10 @@ async fn default_policy_replaces_pods_that_never_served() {
         cases.push((reason, Some("gpu-node"), waiting(reason)));
     }
     for backend in ["vllm", "ollama"] {
+        let (original, objects, directory, fixture, operations, id) = created(backend).await;
+        let deployed = Deployed::new(&objects, directory, fixture, operations);
         for (case, node, status) in &cases {
-            let (original, objects, _directory, _fixture, operations, id) = created(backend).await;
+            let (objects, _directory, operations) = deployed.restore();
             set_pod(&objects, &original.name, *node, status.clone());
             let old_pod = objects.get("v1", "Pod", "agents", &original.name).unwrap();
             let claims: Vec<_> = objects
@@ -351,6 +337,8 @@ async fn default_policy_keeps_pods_that_started_or_may_be_serving() {
     let restarted = json!({"phase":"Pending", "containerStatuses":[{"name":"runtime",
         "state":{"waiting":{"reason":"ImagePullBackOff"}},
         "lastState":{"terminated":{"reason":"Error", "exitCode":1}}}]});
+    let (original, objects, directory, fixture, operations, id) = created("vllm").await;
+    let deployed = Deployed::new(&objects, directory, fixture, operations);
     for (case, node, status, terminating) in [
         (
             "running",
@@ -380,7 +368,7 @@ async fn default_policy_keeps_pods_that_started_or_may_be_serving() {
         ),
         ("terminating unscheduled", None, unschedulable(), true),
     ] {
-        let (original, objects, directory, _fixture, operations, id) = created("vllm").await;
+        let (objects, directory, operations) = deployed.restore();
         set_pod(&objects, &original.name, node, status);
         if terminating {
             let mut pod = objects.get("v1", "Pod", "agents", &original.name).unwrap();
