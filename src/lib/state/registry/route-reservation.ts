@@ -100,7 +100,11 @@ function validCarriedRouteMetadata(entry: SandboxEntry): boolean {
   }
   if (
     entry.nativeCustomProviderAttachment !== undefined &&
-    !normalizeNativeCustomProviderAttachment(entry.nativeCustomProviderAttachment, entry.name)
+    !normalizeNativeCustomProviderAttachment(
+      entry.nativeCustomProviderAttachment,
+      entry.name,
+      entry,
+    )
   )
     return false;
   return (

@@ -39,7 +39,7 @@ afterEach(() => {
   fs.rmSync(temporaryHome, { recursive: true, force: true });
 });
 
-async function fixture(attached = true, unreachable = false) {
+async function fixture(attached = true, unreachable = false, selectedRuntime = false) {
   const prepared = await prepareNativeCustomProfile({
     sandboxName: "alpha",
     provider: "compatible-endpoint",
@@ -53,6 +53,16 @@ async function fixture(attached = true, unreachable = false) {
     providerId: "owned-id",
   });
   const harness = createDestroyHarness({
+    ...(selectedRuntime
+      ? {
+          mcpServers: ["owned-mcp"],
+          mcpRuntimeSelection: {
+            gatewayName: "nemoclaw-19080",
+            workspace: "owned-workspace",
+            localTlsDir: "/owned/tls",
+          },
+        }
+      : {}),
     ...(unreachable
       ? { deleteStatus: 1, deleteOutput: "error trying to connect: connection refused" }
       : {}),
@@ -290,3 +300,29 @@ it.each([
     }
   },
 );
+
+it("uses the confirmed destroy runtime for native provider cleanup (#12636)", async () => {
+  vi.stubEnv("OPENSHELL_WORKSPACE", "ambient-workspace");
+  vi.stubEnv("OPENSHELL_LOCAL_TLS_DIR", "/ambient/tls");
+  const { harness, retire, receipt } = await fixture(true, false, true);
+  retire.mockImplementation(async (input) => {
+    expect(input.adapter).toBeDefined();
+    await input.adapter!.getProvider({
+      target: { kind: "named", gatewayName: input.gatewayName },
+      providerName: receipt.providerName,
+    });
+  });
+  await harness.destroySandbox("alpha", { yes: true, cleanupGateway: false });
+  const call = harness.runOpenshellSpy.mock.calls.find(
+    ([args]) => args[0] === "provider" && args[1] === "get",
+  );
+  expect(call).toBeDefined();
+  expect(call![1]).toMatchObject({
+    replaceEnv: true,
+    env: {
+      OPENSHELL_GATEWAY: "nemoclaw-19080",
+      OPENSHELL_WORKSPACE: "owned-workspace",
+      OPENSHELL_LOCAL_TLS_DIR: "/owned/tls",
+    },
+  });
+});

@@ -76,6 +76,7 @@ export function createNativeCustomSetupDependencies() {
             options.provider,
             options.endpointUrl,
             options.sandboxName,
+            options.providerType,
           );
           const pins = await options.lookup!(new URL(options.endpointUrl).hostname, { all: true });
           return {

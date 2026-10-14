@@ -503,6 +503,7 @@ export function registerSandbox(
     const nativeCustomProviderAttachment = normalizeNativeCustomProviderAttachment(
       entry.nativeCustomProviderAttachment,
       entry.name,
+      entry,
     );
     if (entry.nativeCustomProviderAttachment !== undefined && !nativeCustomProviderAttachment) {
       throw new Error(
@@ -680,6 +681,7 @@ export function reserveSandboxInferenceRoute(
     const nativeCustomProviderAttachment = normalizeNativeCustomProviderAttachment(
       route.nativeCustomProviderAttachment,
       name,
+      route,
     );
     if (route.nativeCustomProviderAttachment !== undefined && !nativeCustomProviderAttachment) {
       throw new Error("Cannot reserve invalid native custom provider attachment identity");

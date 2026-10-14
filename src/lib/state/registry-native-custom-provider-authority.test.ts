@@ -17,14 +17,18 @@ afterEach(async () => {
   await fs.rm(home, { recursive: true, force: true });
 });
 
-async function receipt(sandboxName: string, providerId = `${sandboxName}-provider`) {
+async function receipt(
+  sandboxName: string,
+  providerId = `${sandboxName}-provider`,
+  provider: "compatible-endpoint" | "compatible-anthropic-endpoint" = "compatible-endpoint",
+) {
   const { prepareNativeCustomProfile, customAttachmentFromPrepared } =
     await import("../inference/native-custom");
   const prepared = await prepareNativeCustomProfile({
     sandboxName,
-    provider: "compatible-endpoint",
+    provider,
     endpointUrl: "https://api.example.com/v1",
-    api: "openai-completions",
+    api: provider === "compatible-endpoint" ? "openai-completions" : "anthropic-messages",
     lookup: async () => [{ address: "8.8.8.8", family: 4 }],
   });
   return customAttachmentFromPrepared(prepared, {
@@ -295,4 +299,66 @@ it("keeps native resume authority in the process-selected gateway root (#12636)"
   expect(
     callerAuthority.getNativeCustomProviderAuthority("nemoclaw-19081", baseReceipt.providerName),
   ).toEqual(baseReceipt);
+});
+
+it.each([
+  { provider: "nvidia" },
+  { provider: "compatible-anthropic-endpoint" },
+  { provider: "compatible-endpoint", credentialEnv: "COMPATIBLE_ANTHROPIC_API_KEY" },
+  { provider: "compatible-endpoint", credentialEnv: "NEMOCLAW_OLLAMA_PROXY_TOKEN" },
+])(
+  "rejects custom attachment selection mismatch for $provider/$credentialEnv at registry boundaries (#12636)",
+  async (selection) => {
+    const registry = await import("./registry");
+    const attachment = await receipt("alpha");
+    const entry = {
+      name: "alpha",
+      provider: "compatible-endpoint",
+      model: "model-a",
+      nativeCustomProviderAttachment: attachment,
+    };
+    expect(() => registry.registerSandbox({ ...entry, ...selection })).toThrow(/native custom/i);
+    expect(registry.getSandbox("alpha")).toBeNull();
+    expect(() =>
+      registry.reserveSandboxInferenceRoute("alpha", {
+        gatewayName: "nemoclaw",
+        credentialEnv: attachment.credentialEnv,
+        endpointUrl: attachment.endpointUrl,
+        preferredInferenceApi: attachment.api,
+        ...selection,
+        model: "model-a",
+        nativeCustomProviderAttachment: attachment,
+      }),
+    ).toThrow(/native custom/i);
+    registry.registerSandbox(entry);
+    const before = await fs.readFile(registry.REGISTRY_FILE, "utf8");
+    expect(() => registry.updateSandbox("alpha", selection)).toThrow(/native custom/i);
+    expect(await fs.readFile(registry.REGISTRY_FILE, "utf8")).toBe(before);
+    const disk = JSON.parse(before);
+    Object.assign(disk.sandboxes.alpha, selection);
+    await fs.writeFile(registry.REGISTRY_FILE, JSON.stringify(disk));
+    expect(() => registry.getSandbox("alpha")).toThrow(/native custom/i);
+  },
+);
+
+it("round-trips matching Anthropic custom authority through register, update and reserve (#12636)", async () => {
+  const registry = await import("./registry");
+  const attachment = await receipt("alpha", "anthropic-provider", "compatible-anthropic-endpoint");
+  const route = {
+    gatewayName: "nemoclaw",
+    provider: "compatible-anthropic-endpoint",
+    model: "model-a",
+    credentialEnv: "COMPATIBLE_ANTHROPIC_API_KEY",
+    endpointUrl: attachment.endpointUrl,
+    preferredInferenceApi: attachment.api,
+    nativeCustomProviderAttachment: attachment,
+  };
+  registry.registerSandbox({ name: "alpha", ...route });
+  expect(registry.updateSandbox("alpha", { model: "model-b" })).toBe(true);
+  expect(registry.reserveSandboxInferenceRoute("alpha", { ...route, model: "model-b" })).toBe(true);
+  expect(registry.getSandbox("alpha")).toMatchObject({
+    ...route,
+    model: "model-b",
+    nativeCustomProviderAttachment: attachment,
+  });
 });

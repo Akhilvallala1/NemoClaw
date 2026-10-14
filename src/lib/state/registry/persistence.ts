@@ -203,6 +203,7 @@ function normalizeSandboxEntryForRuntime(entry: SandboxEntry): SandboxEntry {
   const nativeCustomProviderAttachment = normalizeNativeCustomProviderAttachment(
     entry.nativeCustomProviderAttachment,
     entry.name,
+    entry,
   );
   if (entry.nativeCustomProviderAttachment !== undefined && !nativeCustomProviderAttachment) {
     throw new Error("Cannot load a sandbox with invalid native custom provider authority");
@@ -282,6 +283,7 @@ function serializeSandboxEntryForDisk(entry: SandboxEntry): SandboxEntry {
   const nativeCustomProviderAttachment = normalizeNativeCustomProviderAttachment(
     durable.nativeCustomProviderAttachment,
     durable.name,
+    durable,
   );
   if (durable.nativeCustomProviderAttachment !== undefined && !nativeCustomProviderAttachment) {
     throw new Error("Cannot save a sandbox with invalid native custom provider authority");

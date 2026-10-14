@@ -4,6 +4,7 @@
 import {
   retireNativeCustomProviders,
   nativeCustomCleanupAuthority,
+  nativeCustomCleanupAdapter,
 } from "../../inference/native-custom/cleanup";
 import fs from "node:fs";
 import path from "node:path";
@@ -1163,6 +1164,7 @@ async function destroySandboxUnlocked(
   if (deleteSucceededOrAlreadyGone) {
     try {
       await retireNativeCustomProviders({
+        adapter: nativeCustomCleanupAdapter(destroyRuntimeSelection),
         gatewayName: cleanupGatewayName,
         sandboxName,
         attachment: sandbox?.nativeCustomProviderAttachment,

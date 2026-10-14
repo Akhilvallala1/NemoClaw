@@ -106,6 +106,7 @@ export function customAttachmentFromPrepared(
 export function normalizeNativeCustomProviderAttachment(
   value: unknown,
   sandboxName?: string,
+  selection?: { provider?: string | null; credentialEnv?: string | null },
 ): NativeCustomProviderAttachment | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
@@ -135,6 +136,12 @@ export function normalizeNativeCustomProviderAttachment(
       record.credentialEnv === "COMPATIBLE_API_KEY"
         ? "compatible-endpoint"
         : "compatible-anthropic-endpoint";
+    if (
+      selection &&
+      (selection.provider !== provider ||
+        (selection.credentialEnv != null && selection.credentialEnv !== record.credentialEnv))
+    )
+      return undefined;
     const transport =
       record.transport === undefined
         ? undefined
