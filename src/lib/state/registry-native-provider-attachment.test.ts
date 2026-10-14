@@ -195,6 +195,55 @@ it.each([
   },
 );
 
+it("drops a stale native attachment when reserving an owned Local NIM shared route", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "nemoclaw-nim-attachment-"));
+  vi.stubEnv("HOME", home);
+  vi.resetModules();
+  try {
+    const registry = await import("./registry");
+    const { nativeLocalIdentity } = await import("../inference/native-local/contract");
+    const binding = {
+      provider: "vllm-local",
+      endpointUrl: "http://host.openshell.internal:8000/v1",
+      credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+      authMode: "sentinel",
+      gatewayName: "nemoclaw",
+      sandboxName: "alpha",
+    } as const;
+    const attachment = {
+      ...binding,
+      ...nativeLocalIdentity(binding),
+      schemaVersion: 1 as const,
+      providerId: "stale-provider",
+    };
+    registry.registerSandbox({
+      name: "alpha",
+      provider: "vllm-local",
+      model: "model-a",
+      endpointUrl: "http://127.0.0.1:8000/v1",
+      gatewayName: "nemoclaw",
+      nimContainer: "nemoclaw-nim-owned",
+      nativeLocalProviderAttachment: attachment,
+    });
+
+    registry.reserveSandboxInferenceRoute("alpha", {
+      provider: "vllm-local",
+      model: "model-b",
+      endpointUrl: "http://127.0.0.1:8000/v1",
+      credentialEnv: null,
+      preferredInferenceApi: "openai-completions",
+      gatewayName: "nemoclaw",
+    });
+
+    const entry = registry.getSandbox("alpha");
+    expect(entry?.nimContainer).toBe("nemoclaw-nim-owned");
+    expect(entry?.nativeLocalProviderAttachment).toBeUndefined();
+  } finally {
+    await fs.rm(home, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  }
+});
+
 it("enumerates cleanup authority only for the exact sandbox and gateway (#12558)", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "nemoclaw-native-cleanup-"));
   vi.stubEnv("HOME", home);

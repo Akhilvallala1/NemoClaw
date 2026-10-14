@@ -11,7 +11,7 @@ import {
   serializedLlamaCppHostLocalInferenceReceipt,
 } from "../../../test/helpers/host-local-inference-receipt";
 import { createSandboxHostLocalInferenceProvenance } from "../state/registry/host-local-inference";
-import type { SandboxWorkloadReceipt } from "../state/registry/types";
+import type { SandboxEntry, SandboxWorkloadReceipt } from "../state/registry/types";
 import {
   MANAGED_IMAGE_CAPABILITY_CONTRACT_VERSION,
   MANAGED_IMAGE_REPOSITORIES,
@@ -28,6 +28,7 @@ const {
   registerCreatedSandbox,
   registerPreparedCreatedSandbox,
   revalidatePreparedCreatedSandboxRegistration,
+  nativeInferenceCreateIntentFields,
   selection,
 } = requireDist("./sandbox-registration.ts") as typeof import("./sandbox-registration");
 
@@ -93,6 +94,44 @@ function createdRegistryEntryInput(
 }
 
 describe("buildCreatedSandboxRegistryEntry", () => {
+  it("keeps owned Local NIM on the shared create route despite a stale native attachment", () => {
+    const { nativeLocalIdentity } = requireDist(
+      "../inference/native-local/contract.ts",
+    ) as typeof import("../inference/native-local/contract");
+    const binding = {
+      provider: "vllm-local",
+      endpointUrl: "http://host.openshell.internal:8000/v1",
+      credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+      authMode: "sentinel",
+      gatewayName: "nemoclaw",
+      sandboxName: "demo",
+    } as const;
+    const attachment = {
+      ...binding,
+      ...nativeLocalIdentity(binding),
+      schemaVersion: 1 as const,
+      providerId: "stale-provider",
+    };
+    const entry = {
+      name: "demo",
+      gatewayName: "nemoclaw",
+      provider: "vllm-local",
+      nimContainer: "nemoclaw-nim-owned",
+      nativeLocalProviderAttachment: attachment,
+    } as SandboxEntry;
+
+    const nimIntent = nativeInferenceCreateIntentFields("vllm-local", entry);
+    expect(nimIntent.inferenceProvider).toBe("vllm-local");
+    expect(nimIntent).not.toHaveProperty("nativeLocalProviderAttachment");
+
+    const vllmIntent = nativeInferenceCreateIntentFields("vllm-local", {
+      ...entry,
+      nimContainer: null,
+    });
+    expect(vllmIntent.inferenceProvider).toBe(attachment.providerName);
+    expect(vllmIntent.nativeLocalProviderAttachment).toEqual(attachment);
+  });
+
   it("does not inherit a native attachment from a different published route (#12558)", () => {
     const registry = requireDist("../state/registry.js") as typeof import("../state/registry");
     const { nativeLocalIdentity } = requireDist(

@@ -558,9 +558,11 @@ export function nativeInferenceCreateIntentFields(
   nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
   nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
 } {
-  const nativeLocalProviderAttachment = normalizeNativeLocalProviderAttachment(
-    entry?.nativeLocalProviderAttachment,
-  );
+  // Local NIM owns an existing shared route. A stale native-local receipt must
+  // never turn its sandbox creation into a native provider attachment.
+  const nativeLocalProviderAttachment = entry?.nimContainer
+    ? undefined
+    : normalizeNativeLocalProviderAttachment(entry?.nativeLocalProviderAttachment);
   const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
     entry?.nativeNvidiaProviderAttachment,
   );
