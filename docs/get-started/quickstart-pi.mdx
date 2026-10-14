@@ -53,6 +53,7 @@ Choose a provider and model that use the OpenAI Chat Completions API.
 NemoClaw keeps the upstream provider credential in OpenShell.
 Host-local and existing shared-route sandboxes give Pi the managed `https://inference.local/v1` route.
 NVIDIA Endpoints uses the sandbox-attached provider at `https://integrate.api.nvidia.com/v1`.
+Supported fixed hosted Chat Completions selections, such as OpenRouter, use sandbox-attached native providers.
 Fresh OpenAI-compatible custom hosted endpoints use their recorded native provider URL and an issued credential reference.
 DNS-backed HTTPS endpoints retain the host pinning adapter.
 The NVIDIA credential remains in OpenShell provider state across rebuild and sandbox destruction.

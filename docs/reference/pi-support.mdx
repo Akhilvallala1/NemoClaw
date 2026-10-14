@@ -33,7 +33,7 @@ Pi is a NemoClaw agent runtime. Docker is the initial compute runtime. Pi-specif
 | Host platform       | Linux AMD64 or Linux ARM64               |
 | Compute runtime     | Docker                                   |
 | Managed API         | OpenAI Chat Completions                  |
-| Sandbox route       | Shared: `https://inference.local/v1`; NVIDIA: `https://integrate.api.nvidia.com/v1`; fresh hosted custom: recorded native provider URL |
+| Sandbox route       | Shared: `https://inference.local/v1`; NVIDIA: `https://integrate.api.nvidia.com/v1`; supported fixed hosted: native provider endpoint; fresh hosted custom: recorded native provider URL |
 | Qualification model | `nvidia/nemotron-3-super-120b-a12b`      |
 | Interactive command | `pi`                                     |
 | Headless command    | `pi --no-approve --print`                |
@@ -61,6 +61,8 @@ Each receipt must match the protected inputs and an image digest in the candidat
 Pi reads a generated `/sandbox/.pi/agent/models.json` file. The file contains the model, selected route, API family, and a non-secret placeholder or issued credential reference. It does not contain the upstream provider credential.
 
 Host-local and existing shared-route sandboxes give Pi the managed `inference.local` route. NVIDIA Endpoints uses the least-privilege OpenShell provider attached to the sandbox for `integrate.api.nvidia.com`. Its credential remains in OpenShell provider state across rebuild and sandbox destruction. When no sandbox needs that provider, remove it with `nemoclaw credentials reset <provider> --yes`.
+
+Supported fixed hosted Chat Completions selections, such as OpenRouter, use sandbox-attached native providers.
 
 Fresh OpenAI-compatible hosted endpoints use the recorded native provider URL and a sandbox-issued credential reference.
 DNS-backed HTTPS endpoints retain the host pinning adapter, which holds the upstream credential; OpenShell receives a route-scoped adapter token.

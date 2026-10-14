@@ -168,23 +168,30 @@ for root_provider in ("openrouter-api", "openrouter", "compatible-endpoint"):
     managed._UPSTREAM_PROVIDER_FILE.chmod(0o644)
     managed._UPSTREAM_PROVIDER_FILE.write_text(root_provider + "\\n")
     managed._UPSTREAM_PROVIDER_FILE.chmod(0o444)
-    for value in (
-        "openshell:resolve:env:" + name,
+    valid_handles = [
         "openshell:resolve:env:v12_" + name,
         "openshell:resolve:env:s" + "a" * 64 + "_" + name,
-    ):
+    ]
+    canonical_handle = "openshell:resolve:env:" + name
+    if root_provider != "compatible-endpoint":
+        valid_handles.append(canonical_handle)
+    for value in valid_handles:
         os.environ[name] = value
         resolved = config._get_provider_kwargs("openrouter")
         assert resolved["api_key"] == value, root_provider
         assert resolved["base_url"] == "https://openrouter.ai/api/v1"
 
-    for value in (
+    invalid_handles = [
         "",
         "sk-or-" + "x" * 32,
         "nemoclaw-managed-inference",
         "openshell:resolve:env:v12_NVIDIA_INFERENCE_API_KEY",
         "openshell:resolve:env:v12_" + name + "\\n",
-    ):
+    ]
+    # Custom credentials must remain bound to their issued generation (#12636).
+    if root_provider == "compatible-endpoint":
+        invalid_handles.append(canonical_handle)
+    for value in invalid_handles:
         os.environ[name] = value
         try:
             config._get_provider_kwargs("openrouter")
