@@ -6,6 +6,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import { gatewaySource } from "./run-installed-native-web-ui.mts";
 import {
   NATIVE_NODE_UI_POLICY,
   nativeQualificationLoopbackConfig,
@@ -18,6 +20,77 @@ const template =
   '[openshell.drivers.mxc]\nwxc_exec_path = "stock.exe"\nbackend = "process_container"\n[other]\nretained = true\n';
 const render = (options: NativeGatewayOptions = {}) =>
   renderNativeGatewayConfig(template, "C:\\NemoClaw", undefined, options);
+
+test("OpenClaw allows the bound browser relay origin, not its private gateway pipe port", () => {
+  const host = fs.readFileSync(
+    new URL("./run-installed-native-web-ui.mts", import.meta.url),
+    "utf8",
+  );
+  const start = host.indexOf("      const sandboxEnvironment = {");
+  const end = host.indexOf("      const createArgs = [", start);
+  assert(start >= 0 && end > start);
+  const worker = gatewaySource();
+  const declarations = worker.indexOf("const required = ");
+  const declarationsEnd = worker.indexOf("let brokerTunnel = null;", declarations);
+  const writer = worker.indexOf('writeFileSync(join(configDirectory, "openclaw.json"),');
+  const writerEnd = worker.indexOf("Object.assign(process.env, {", writer);
+  assert(declarations >= 0 && declarationsEnd > declarations && writer >= 0 && writerEnd > writer);
+  for (const qualification of [false, true]) {
+    const env = runInNewContext(host.slice(start, end) + "sandboxEnvironment;", {
+      worker: { environment: {} },
+      home: "owned-home",
+      modelId: "test-model",
+      modelPort: 18790,
+      brokerRelay: null,
+      modelToken: "inert-fixture",
+      openClawEntry: "sealed-entry",
+      openClawRoot: "sealed-resources",
+      qualification,
+      relayRoot: "owned-relay",
+      relayToken: "inert-relay",
+      uiPort: 18789,
+      uiRelay: { browserPort: 60418 },
+      configuredIdentity: {},
+      systemRoot: "C:\\Windows",
+      systemDrive: "C:",
+      temp: "owned-temp",
+      path: path.win32,
+      process: { env: {} },
+    });
+    let config: { gateway: { controlUi: { allowedOrigins: string[] }; bind: string } } | undefined;
+    const execute = (environment: Record<string, string | undefined>) =>
+      runInNewContext(
+        worker.slice(declarations, declarationsEnd) + worker.slice(writer, writerEnd),
+        {
+          process: { env: environment },
+          serviceConfiguration: {},
+          configDirectory: "owned-config",
+          join: path.win32.join,
+          writeFileSync(_file: string, value: string) {
+            config = JSON.parse(value);
+          },
+        },
+      );
+    execute(env);
+    assert(config);
+    assert.equal(env.NEMOCLAW_MXC_BROWSER_PORT, "60418");
+    assert.deepEqual(config.gateway.controlUi.allowedOrigins, [
+      "http://127.0.0.1:60418",
+      "http://localhost:60418",
+    ]);
+    assert.equal(config.gateway.bind, "loopback");
+    assert.equal(env.NEMOCLAW_MXC_GATEWAY_PIPE_PORT, "18789");
+    assert.equal(env.NEMOCLAW_MXC_BROKER_PIPE_PORT, "18790");
+    for (const invalid of [undefined, "0", "65536", "1.5", "NaN"]) {
+      config = undefined;
+      assert.throws(
+        () => execute({ ...env, NEMOCLAW_MXC_BROWSER_PORT: invalid }),
+        /browser port|NEMOCLAW_MXC_BROWSER_PORT/u,
+      );
+      assert.equal(config, undefined);
+    }
+  }
+});
 
 test("supervised OpenClaw configuration uses the current driver schema without direct network grants", () => {
   const rendered = render({ network: { kind: "supervised" } });

@@ -199,6 +199,8 @@ const configured = required("NEMOCLAW_NATIVE_SERVICES") === "1";
 const relayRoot = required("NEMOCLAW_MXC_RELAY_ROOT");
 const relayToken = required("NEMOCLAW_MXC_RELAY_TOKEN");
 const uiPort = Number(required("NEMOCLAW_MXC_UI_PORT"));
+const browserPort = Number(required("NEMOCLAW_MXC_BROWSER_PORT"));
+if (!Number.isInteger(browserPort) || browserPort < 1 || browserPort > 65535) throw new Error("The native browser port is invalid.");
 const modelPort = Number(required("NEMOCLAW_MXC_MODEL_PORT"));
 Object.assign(process.env, {
   NEMOCLAW_MXC_GATEWAY_PIPE_PORT: String(uiPort),
@@ -355,7 +357,7 @@ writeFileSync(join(configDirectory, "openclaw.json"), JSON.stringify({
     mode: "local",
     bind: "loopback",
     auth: { mode: "none" },
-    controlUi: { root: join(process.env.OPENCLAW_COMPILED_ASSET_ROOT, "node_modules", "openclaw", "dist", "control-ui"), allowedOrigins: ["http://127.0.0.1:" + uiPort, "http://localhost:" + uiPort] },
+    controlUi: { root: join(process.env.OPENCLAW_COMPILED_ASSET_ROOT, "node_modules", "openclaw", "dist", "control-ui"), allowedOrigins: ["http://127.0.0.1:" + browserPort, "http://localhost:" + browserPort] },
   },
   models: { mode: "merge", providers: { nemoclawNative: {
     baseUrl: "http://127.0.0.1:" + modelPort + "/v1",
@@ -1492,6 +1494,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         NEMOCLAW_MXC_RELAY_ROOT: relayRoot,
         NEMOCLAW_MXC_RELAY_TOKEN: relayToken,
         NEMOCLAW_MXC_UI_PORT: String(uiPort),
+        NEMOCLAW_MXC_BROWSER_PORT: String(uiRelay.browserPort),
         NEMOCLAW_NATIVE_SERVICES: configuredIdentity === null ? "0" : "1",
         NODE_DISABLE_COMPILE_CACHE: "1",
         NUMBER_OF_PROCESSORS: process.env.NUMBER_OF_PROCESSORS ?? "1",
