@@ -381,7 +381,8 @@ Use these details when your first-run path needs more control.
 
   <Accordion title="Web Search Messaging and Network Policies">
     After confirmation, NemoClaw registers the selected provider with OpenShell.
-    NVIDIA Endpoints and fresh custom hosted endpoints use least-privilege providers attached to the sandbox.
+    NVIDIA Endpoints and supported fixed hosted providers use native endpoints through sandbox-attached OpenShell providers.
+    Fresh custom hosted endpoints also use least-privilege providers attached to the sandbox.
     DNS-backed HTTPS and Bedrock Runtime custom endpoints retain their host adapters.
     Host-local and existing shared-route sandboxes use `inference.local`.
     The wizard asks whether to enable web search and offers Brave Search or Tavily Search.

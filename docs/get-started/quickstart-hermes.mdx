@@ -352,7 +352,7 @@ Use these details when your first-run path needs more control.
 
     After you select a provider and model, review the summary and apply the configuration.
     NemoClaw writes Hermes configuration into `/sandbox/.hermes` and starts the Hermes gateway inside the sandbox.
-    NVIDIA Endpoints traffic uses the native NVIDIA endpoint through the least-privilege sandbox-attached OpenShell provider.
+    NVIDIA Endpoints, OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider use native endpoints through sandbox-attached OpenShell providers.
     Fresh custom hosted endpoints also use sandbox-attached providers with issued credential references.
     DNS-backed HTTPS and classified Bedrock endpoints retain their host adapters.
     Host-local and existing shared-route sandboxes use `inference.local`.
