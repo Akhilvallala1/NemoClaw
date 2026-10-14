@@ -222,6 +222,7 @@ async function showLegacySandboxStatus(sandboxName: string): Promise<void> {
   if (effectivePreflight.exitCode !== 0) {
     process.exitCode = effectivePreflight.exitCode;
   }
+  console.log(`  Recorded gateway: ${sb?.gatewayName ?? sb?.gatewayPort ?? "not recorded"}`);
   maybeEnsureHermesToolGatewayBroker(sb);
   if (rpcIssue) {
     printOpenShellStateRpcIssue(rpcIssue, {
