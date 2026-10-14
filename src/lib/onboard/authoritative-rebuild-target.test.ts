@@ -3,7 +3,12 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { OpenShellForwardObservation } from "../adapters/openshell/forward";
+import type {
+  OpenShellForwardAdapter,
+  OpenShellForwardObservation,
+} from "../adapters/openshell/forward";
+import * as forwardRuntime from "../adapters/openshell/forward-runtime";
+import type { SandboxEntry } from "../state/registry/types";
 import type { OpenShellForwardPortObserver } from "./dashboard-port";
 import {
   authoritativeRebuildSandboxFlowOptions,
@@ -15,6 +20,7 @@ import {
   rebuildProviderFlowOptions,
   resolveAuthoritativeOnboardGatewayBinding,
   resolveAuthoritativeRebuildDashboardBind,
+  runtimePreflightDependencies,
 } from "./authoritative-rebuild-target";
 import type { InferenceRouteState } from "./inference-route";
 import {
@@ -448,7 +454,7 @@ describe("authoritative rebuild target preflight", () => {
       providerName: NVIDIA_HOSTED_NATIVE_PROVIDER,
       providerId: "recorded-provider-id",
     },
-  };
+  } satisfies Omit<SandboxEntry, "name">;
   const openai = HOSTED_NATIVE_PROVIDERS[0];
   const hostedAttachment = {
     schemaVersion: 1 as const,
@@ -456,6 +462,54 @@ describe("authoritative rebuild target preflight", () => {
     providerName: openai.providerName,
     providerId: "recorded-provider-id",
   };
+
+  function nativeRuntime(selection: Omit<SandboxEntry, "name">) {
+    const sandboxes: Record<string, SandboxEntry> = {
+      [target.sandboxName]: {
+        ...selection,
+        name: target.sandboxName,
+        dashboardRemoteBindPrepared: true,
+      },
+    };
+    const getSandbox = vi.fn((name: string) => sandboxes[name] ?? null);
+    const forward = {
+      gatewayEndpoint: "https://127.0.0.1:12345",
+      gatewayName: target.targetGatewayName,
+      workspace: "default",
+      sandboxName: target.sandboxName,
+      localHost: "0.0.0.0" as const,
+      port: target.controlUiPort,
+    };
+    const observeForwards = vi
+      .fn<OpenShellForwardAdapter["observeForwards"]>()
+      .mockResolvedValue([{ state: "owned", forward }]);
+    const createAdapter = vi
+      .spyOn(forwardRuntime, "createOpenShellForwardAdapterForAuthority")
+      .mockReturnValue({
+        observeForwards,
+        startForward: vi.fn(),
+        retireLegacyForward: vi.fn(),
+        verifyForwardRelease: vi.fn(),
+      });
+    // Use the same CommonJS module as the production factory's lazy verifier import.
+    const inferenceRouteHealth: typeof import("../actions/sandbox/inference-route-health") = require("../actions/sandbox/inference-route-health");
+    const verify = vi
+      .spyOn(inferenceRouteHealth, "verifyNativeHostedStatusAttachment")
+      .mockResolvedValue(undefined);
+    const authority = {
+      gatewayEndpoint: forward.gatewayEndpoint,
+      localTlsDir: "/recorded/gateway/tls",
+    };
+    return {
+      dependencies: runtimePreflightDependencies(target, authority, { getSandbox }, {}),
+      getSandbox,
+      verify,
+      createAdapter,
+      observeForwards,
+      authority,
+      forward,
+    };
+  }
 
   it.each([
     {
@@ -472,8 +526,10 @@ describe("authoritative rebuild target preflight", () => {
   ])(
     "verifies the $selection.provider attachment instead of a shared route",
     async ({ selection, attachment }) => {
+      process.env.OPENSHELL_GATEWAY = "unrelated-gateway";
+      const runtime = nativeRuntime(selection);
       const targetDeps = deps({
-        getSandbox: vi.fn(() => selection),
+        ...runtime.dependencies,
         inferenceRouteState: vi.fn((): InferenceRouteState => "mismatched"),
       });
 
@@ -482,13 +538,20 @@ describe("authoritative rebuild target preflight", () => {
         targetDeps,
       );
 
-      expect(targetDeps.getSandbox).toHaveBeenCalledWith("alpha");
-      expect(targetDeps.verifyNativeProviderAttachment).toHaveBeenCalledWith({
+      expect(runtime.getSandbox).toHaveBeenCalledWith("alpha");
+      expect(runtime.verify).toHaveBeenCalledWith({
         gatewayName: target.targetGatewayName,
         sandboxName: "alpha",
         expected: attachment,
       });
+      expect(runtime.createAdapter).toHaveBeenCalledWith({
+        ...runtime.authority,
+        gatewayName: target.targetGatewayName,
+        workspace: "default",
+      });
+      expect(runtime.observeForwards).toHaveBeenCalledWith({ forwards: [runtime.forward] });
       expect(targetDeps.inferenceRouteState).not.toHaveBeenCalled();
+      expect(process.env.OPENSHELL_GATEWAY).toBe("unrelated-gateway");
     },
   );
 
@@ -519,11 +582,10 @@ describe("authoritative rebuild target preflight", () => {
 
   it("rejects failed native ownership verification without falling back to a healthy shared route", async () => {
     process.env.OPENSHELL_GATEWAY = "before";
+    const runtime = nativeRuntime(nvidiaSelection);
+    runtime.verify.mockRejectedValue(new Error("native provider identity changed"));
     const targetDeps = deps({
-      getSandbox: vi.fn(() => nvidiaSelection),
-      verifyNativeProviderAttachment: vi.fn(async () => {
-        throw new Error("native provider identity changed");
-      }),
+      ...runtime.dependencies,
     });
 
     await expect(preflightAuthoritativeRebuildTarget(target, targetDeps)).rejects.toThrow(
@@ -531,7 +593,7 @@ describe("authoritative rebuild target preflight", () => {
     );
 
     expect(targetDeps.inferenceRouteState).not.toHaveBeenCalled();
-    expect(targetDeps.observeForwardPorts).not.toHaveBeenCalled();
+    expect(runtime.observeForwards).not.toHaveBeenCalled();
     expect(process.env.OPENSHELL_GATEWAY).toBe("before");
   });
 
