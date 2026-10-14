@@ -10,6 +10,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testTimeoutOptions } from "../../../../../test/helpers/timeouts";
 import { nativeLocalIdentity } from "../../../inference/native-local/contract";
+import * as registry from "../../../state/registry";
 import { handleSandboxState } from "./sandbox";
 import { baseOptions, createDeps } from "./sandbox-test-fixtures";
 
@@ -48,6 +49,7 @@ describe("sandbox registration route transaction", () => {
   afterEach(() => {
     fs.rmSync(process.env.HOME!, { force: true, recursive: true });
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   it("allows valid peer-route drift after waiting for the gateway lock", async () => {
@@ -217,6 +219,31 @@ describe("sandbox registration route transaction", () => {
     expect(checkGatewayRouteCompatibility).toHaveBeenCalledOnce();
     expect(calls.createSandbox).not.toHaveBeenCalled();
   });
+
+  it.each(["pi", "hermes"])(
+    "does not carry OpenClaw's native local provider into %s sandbox creation (#12975)",
+    async (agentName) => {
+      vi.spyOn(registry, "getSandbox").mockReturnValue(null);
+      const { calls, deps } = createDeps({
+        getSandboxRegistryEntry: () => ({ ...nativeEntry }),
+      });
+
+      await handleSandboxState({
+        ...baseOptions(deps),
+        agent: { name: agentName },
+        provider: "compatible-endpoint",
+        model: "test-model",
+        endpointUrl: nativeEndpoint,
+        endpointSource: "onboard",
+        credentialEnv: "COMPATIBLE_API_KEY",
+      });
+
+      const createIntent = calls.resolveCreateIntent.mock.calls[0]?.[0];
+      expect(createIntent?.inferenceProvider).toBe("compatible-endpoint");
+      expect(createIntent).not.toHaveProperty("nativeLocalProviderAttachment");
+      expect(createIntent?.hostLocalInferenceRouteOnly).toBe(false);
+    },
+  );
 
   it("stages credentials, then holds sandbox, host dashboard, and gateway locks through creation", async () => {
     const events: string[] = [];

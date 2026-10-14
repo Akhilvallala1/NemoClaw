@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { managedStartupE2eProfile } from "../../../scripts/checks/generate-managed-startup-profile-fixture.mts";
+import type { AgentDefinition } from "../agent/defs";
 import {
   serializedHostLocalInferenceReceipt,
   serializedLlamaCppHostLocalInferenceReceipt,
@@ -24,12 +25,18 @@ const requireDist = createRequire(import.meta.url);
 const onboardSession = requireDist("../state/onboard-session.js");
 const {
   buildCreatedSandboxRegistryEntry,
+  nativeInferenceCreateIntentFields,
+  nativeLocalReservationStatus,
   prepareCreatedSandboxRegistration,
   registerCreatedSandbox,
   registerPreparedCreatedSandbox,
   revalidatePreparedCreatedSandboxRegistration,
   selection,
 } = requireDist("./sandbox-registration.ts") as typeof import("./sandbox-registration");
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const runtimeFields = {
   gpuEnabled: true,
@@ -130,6 +137,123 @@ describe("buildCreatedSandboxRegistryEntry", () => {
     });
     expect(entry.nativeLocalProviderAttachment).toBeUndefined();
   });
+
+  it.each(["pi", "hermes", "openclaw", "langchain-deepagents-code"])(
+    "keeps a native local attachment only for a supported %s target and exact route (#12975)",
+    (agentName) => {
+      const registry = requireDist("../state/registry.js") as typeof import("../state/registry");
+      const { nativeLocalIdentity } = requireDist(
+        "../inference/native-local/contract.ts",
+      ) as typeof import("../inference/native-local/contract");
+      const endpointUrl = "http://host.openshell.internal:11434/v1";
+      const binding = {
+        provider: "compatible-endpoint",
+        endpointUrl,
+        credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+        authMode: "authenticated",
+        gatewayName: "nemoclaw",
+        sandboxName: "demo",
+      } as const;
+      const attachment = {
+        ...binding,
+        ...nativeLocalIdentity(binding),
+        schemaVersion: 1 as const,
+        providerId: "previous-id",
+      };
+      vi.spyOn(registry, "getSandbox").mockReturnValue({
+        name: "demo",
+        gatewayName: "nemoclaw",
+        provider: "compatible-endpoint",
+        endpointUrl,
+        nativeLocalProviderAttachment: attachment,
+      });
+      const base = createdRegistryEntryInput();
+      const input = {
+        ...base,
+        agent: { name: agentName } as AgentDefinition,
+        inferenceSelection: {
+          ...base.inferenceSelection,
+          provider: "compatible-endpoint",
+          endpointUrl,
+        },
+      };
+      const expectedAttachment =
+        agentName === "openclaw" || agentName === "langchain-deepagents-code"
+          ? attachment
+          : undefined;
+      const createIntent = nativeInferenceCreateIntentFields({
+        agentName,
+        provider: "compatible-endpoint",
+        endpointUrl,
+        gatewayName: "nemoclaw",
+        entry: registry.getSandbox("demo"),
+      });
+      expect(createIntent.inferenceProvider).toBe(
+        expectedAttachment?.providerName ?? "compatible-endpoint",
+      );
+      expect(createIntent.nativeLocalProviderAttachment).toEqual(expectedAttachment);
+
+      expect(prepareCreatedSandboxRegistration(input).nativeLocalProviderAttachment).toEqual(
+        expectedAttachment,
+      );
+      expect(
+        prepareCreatedSandboxRegistration({
+          ...input,
+          nativeLocalProviderAttachment: attachment,
+        }).nativeLocalProviderAttachment,
+      ).toEqual(expectedAttachment);
+
+      const staleBinding = {
+        ...binding,
+        endpointUrl: "http://host.openshell.internal:8000/v1",
+      };
+      const staleAttachment = {
+        ...staleBinding,
+        ...nativeLocalIdentity(staleBinding),
+        schemaVersion: 1 as const,
+        providerId: "previous-id",
+      };
+      const staleEntry = {
+        ...registry.getSandbox("demo")!,
+        nativeLocalProviderAttachment: staleAttachment,
+      };
+      expect(
+        nativeInferenceCreateIntentFields({
+          agentName,
+          provider: "compatible-endpoint",
+          endpointUrl,
+          gatewayName: "nemoclaw",
+          entry: staleEntry,
+        }).nativeLocalProviderAttachment,
+      ).toBeUndefined();
+      expect(
+        prepareCreatedSandboxRegistration({
+          ...input,
+          nativeLocalProviderAttachment: staleAttachment,
+        }).nativeLocalProviderAttachment,
+      ).toBeUndefined();
+      expect(
+        nativeLocalReservationStatus({
+          entry: {
+            ...staleEntry,
+            model: "llama",
+            endpointSource: null,
+            credentialEnv: null,
+            preferredInferenceApi: null,
+          },
+          agentName,
+          sandboxName: "demo",
+          gatewayName: "nemoclaw",
+          provider: "compatible-endpoint",
+          model: "llama",
+          endpointUrl,
+          endpointSource: null,
+          credentialEnv: null,
+          preferredInferenceApi: null,
+        }),
+      ).toBe(expectedAttachment ? "changed" : "shared");
+    },
+  );
 
   it("records only an exact native NVIDIA provider identity", () => {
     const attachment = {

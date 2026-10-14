@@ -1894,7 +1894,13 @@ class SandboxStateFlow<
     const registeredEntry = this.deps.getSandboxRegistryEntry(sandboxName);
     const resolved = await this.deps.resolveSandboxCreateIntent({
       sandboxName,
-      ...nativeInferenceCreateIntentFields(this.options.provider, registeredEntry),
+      ...nativeInferenceCreateIntentFields({
+        agentName: (this.options.agent as { name?: string } | null)?.name ?? "openclaw",
+        provider: this.options.provider,
+        endpointUrl: this.options.endpointUrl,
+        gatewayName: this.options.gatewayName,
+        entry: registeredEntry,
+      }),
       hostLocalInferenceRouteOnly: this.options.hostLocalInferenceRouteOnly === true,
       enabledChannels: state.selectedMessagingChannels,
       webSearchConfig: state.webSearchConfig,
