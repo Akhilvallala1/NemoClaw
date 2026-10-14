@@ -8,21 +8,25 @@ import { isRemoteDashboardBindRequested } from "./dockerfile-remote-dashboard-bi
 export type DashboardForwardBind = "127.0.0.1" | "0.0.0.0";
 
 /**
- * Choose the dashboard URL that a rebuild bakes into an agent's replacement
- * image. OpenClaw replays the recorded external origin (#13177); every other
- * agent keeps its loopback dashboard URL.
+ * Choose the dashboard URL that a rebuild gives an agent's replacement.
+ * OpenClaw replays the recorded external origin (#13177); every other agent
+ * keeps its loopback dashboard URL. `fallbackUrl` applies only when the
+ * registry never recorded an origin.
  */
 export function rebuildDashboardChatUiUrl(input: {
   readonly agentName: string | null | undefined;
   readonly recordedExternalUrl: string | null | undefined;
+  readonly fallbackUrl?: string | null;
   readonly port: number;
 }): string {
-  return (input.agentName ?? "openclaw") === "openclaw"
-    ? resolveRecordedDashboardUrlForPort({
-        recordedExternalUrl: input.recordedExternalUrl ?? null,
-        port: input.port,
-      })
-    : `http://127.0.0.1:${String(input.port)}`;
+  if ((input.agentName ?? "openclaw") !== "openclaw") {
+    return `http://127.0.0.1:${String(input.port)}`;
+  }
+  return resolveRecordedDashboardUrlForPort({
+    recordedExternalUrl: input.recordedExternalUrl,
+    fallbackUrl: input.fallbackUrl,
+    port: input.port,
+  });
 }
 
 /** Preserve the persisted dashboard bind while honoring a current remote or WSL request. */
