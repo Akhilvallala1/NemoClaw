@@ -184,7 +184,7 @@ export function openOnboardRecreateJournal(
 export function shouldReconcileRestoredOpenClawSelection(
   agentName: string,
   customImage: boolean,
-  forcedRecreation: boolean,
+  preserveRestoredSelection: boolean,
   drift: Pick<
     import("./selection-drift").SelectionDrift,
     "unknown" | "providerChanged" | "modelChanged"
@@ -193,7 +193,7 @@ export function shouldReconcileRestoredOpenClawSelection(
   return (
     agentName === "openclaw" &&
     !customImage &&
-    !forcedRecreation &&
+    !preserveRestoredSelection &&
     !drift.unknown &&
     (drift.providerChanged || drift.modelChanged)
   );

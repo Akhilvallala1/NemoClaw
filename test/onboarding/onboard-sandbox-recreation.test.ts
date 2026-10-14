@@ -1067,7 +1067,7 @@ const { createSandbox } = require(${onboardPath});
       preopened: true,
       fresh: true,
       forced: true,
-      reconciliation: false,
+      reconciliation: true,
     },
     {
       mode: "forced recreation",
@@ -1075,7 +1075,7 @@ const { createSandbox } = require(${onboardPath});
       recreate: true,
       journalOnly: true,
       forced: true,
-      reconciliation: false,
+      reconciliation: true,
     },
   ])(
     "$mode drift recreation with answer '$answer' preserves confirmation and reconciliation authority (#12667)",
@@ -1223,7 +1223,7 @@ const { createSandbox } = require(${onboardPath});
 	    createFixture,
 	  );
   if (${preopened}) {
-    createArgs[15].recreateTransaction = { ...createArgs[15].recreateTransaction, ...(${fresh} ? { freshNonForced: true } : {}) };
+    createArgs[15].recreateTransaction = { ...createArgs[15].recreateTransaction, ...(${fresh} ? { freshOnboard: true } : {}) };
   }
   if (${journalOnly} && !${preopened}) {
     // Exercise a new lower-layer journal, with recreation planned but not necessarily forced.

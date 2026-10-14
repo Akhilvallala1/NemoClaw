@@ -2083,11 +2083,9 @@ class SandboxStateFlow<
 
   private freshSelectionReconciliationFields(
     owned: ReturnType<typeof ownSandboxRecreateTransaction> | null,
-  ): { readonly freshNonForced?: true } {
-    return owned?.openedWithoutPriorTransaction &&
-      !this.options.resume &&
-      !this.options.recreateSandbox(false)
-      ? { freshNonForced: true }
+  ): { readonly freshOnboard?: true } {
+    return owned?.openedWithoutPriorTransaction && !this.options.resume
+      ? { freshOnboard: true }
       : {};
   }
 

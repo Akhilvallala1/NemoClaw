@@ -2511,7 +2511,7 @@ async function preflightAuthoritativeRebuildTarget(
     throw new Error(message);
   };
   const forwardAuthority = getGatewayForwardRuntimeAuthority();
-  const forwardContext = { sandbox: registry.getSandbox(opts.sandboxName), wsl: isWsl() };
+  const runtimeContext = { getSandbox: registry.getSandbox, wsl: isWsl() };
   try {
     await rebuildTarget.preflightAuthoritativeRebuildTarget(
       { ...opts, controlUiPort: opts.controlUiPort ?? null },
@@ -2529,7 +2529,7 @@ async function preflightAuthoritativeRebuildTarget(
           ),
         assertGatewayReadiness: preflightGateway.collectGatewayReadiness,
         inferenceRouteState: (p, m) => readInferenceRouteState(authoritativeGateway.name, p, m),
-        observeForwardPorts: rebuildTarget.forwardObserver(opts, forwardAuthority, forwardContext),
+        ...rebuildTarget.runtimePreflightDependencies(opts, forwardAuthority, runtimeContext),
       },
     );
     return gatewayAuthorityCheckpoint.checkpointGatewayAuthority(getGatewayOwner());

@@ -18,6 +18,11 @@ import {
 } from "./authoritative-rebuild-target";
 import type { InferenceRouteState } from "./inference-route";
 import {
+  NVIDIA_HOSTED_NATIVE_PROFILE_ID,
+  NVIDIA_HOSTED_NATIVE_PROVIDER,
+} from "../inference/native-nvidia/contract";
+import { HOSTED_NATIVE_PROVIDERS } from "../inference/native-provider/hosted";
+import {
   mintProviderRecoveryReceipt,
   type ProviderRecoveryReceiptTarget,
 } from "./rebuild-route-handoff";
@@ -155,6 +160,8 @@ function deps(overrides: Partial<AuthoritativeRebuildTargetDeps> = {}) {
     runFatalRuntimePreflight: vi.fn(),
     ensureOpenshell: vi.fn(),
     assertGatewayReadiness: vi.fn(),
+    getSandbox: vi.fn(() => null),
+    verifyNativeProviderAttachment: vi.fn(async () => undefined),
     inferenceRouteState: vi.fn((): InferenceRouteState => "matched"),
     observeForwardPorts: forwardObserver(),
     ...overrides,
@@ -433,6 +440,101 @@ describe("authoritative rebuild target preflight", () => {
     ).rejects.toThrow("inference route does not match");
   });
 
+  const nvidiaSelection = {
+    provider: "nvidia-prod",
+    nativeNvidiaProviderAttachment: {
+      schemaVersion: 1 as const,
+      profileId: NVIDIA_HOSTED_NATIVE_PROFILE_ID,
+      providerName: NVIDIA_HOSTED_NATIVE_PROVIDER,
+      providerId: "recorded-provider-id",
+    },
+  };
+  const openai = HOSTED_NATIVE_PROVIDERS[0];
+  const hostedAttachment = {
+    schemaVersion: 1 as const,
+    profileId: openai.profileId,
+    providerName: openai.providerName,
+    providerId: "recorded-provider-id",
+  };
+
+  it.each([
+    {
+      selection: nvidiaSelection,
+      attachment: nvidiaSelection.nativeNvidiaProviderAttachment,
+    },
+    {
+      selection: {
+        provider: openai.logicalProvider,
+        nativeHostedProviderAttachment: hostedAttachment,
+      },
+      attachment: hostedAttachment,
+    },
+  ])(
+    "verifies the $selection.provider attachment instead of a shared route",
+    async ({ selection, attachment }) => {
+      const targetDeps = deps({
+        getSandbox: vi.fn(() => selection),
+        inferenceRouteState: vi.fn((): InferenceRouteState => "mismatched"),
+      });
+
+      await preflightAuthoritativeRebuildTarget(
+        { ...target, provider: selection.provider },
+        targetDeps,
+      );
+
+      expect(targetDeps.getSandbox).toHaveBeenCalledWith("alpha");
+      expect(targetDeps.verifyNativeProviderAttachment).toHaveBeenCalledWith({
+        gatewayName: target.targetGatewayName,
+        sandboxName: "alpha",
+        expected: attachment,
+      });
+      expect(targetDeps.inferenceRouteState).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      label: "malformed attachment",
+      selection: { provider: "nvidia-prod", nativeNvidiaProviderAttachment: {} },
+      provider: "nvidia-prod",
+      error: "Invalid native provider attachment",
+    },
+    {
+      label: "different target provider",
+      selection: nvidiaSelection,
+      provider: "openai-api",
+      error: "does not match the authoritative rebuild target",
+    },
+  ])("rejects a $label before using a shared route", async ({ selection, provider, error }) => {
+    const targetDeps = deps({ getSandbox: vi.fn(() => selection) });
+
+    await expect(
+      preflightAuthoritativeRebuildTarget({ ...target, provider }, targetDeps),
+    ).rejects.toThrow(error);
+
+    expect(targetDeps.verifyNativeProviderAttachment).not.toHaveBeenCalled();
+    expect(targetDeps.inferenceRouteState).not.toHaveBeenCalled();
+    expect(targetDeps.observeForwardPorts).not.toHaveBeenCalled();
+  });
+
+  it("rejects failed native ownership verification without falling back to a healthy shared route", async () => {
+    process.env.OPENSHELL_GATEWAY = "before";
+    const targetDeps = deps({
+      getSandbox: vi.fn(() => nvidiaSelection),
+      verifyNativeProviderAttachment: vi.fn(async () => {
+        throw new Error("native provider identity changed");
+      }),
+    });
+
+    await expect(preflightAuthoritativeRebuildTarget(target, targetDeps)).rejects.toThrow(
+      "native provider identity changed",
+    );
+
+    expect(targetDeps.inferenceRouteState).not.toHaveBeenCalled();
+    expect(targetDeps.observeForwardPorts).not.toHaveBeenCalled();
+    expect(process.env.OPENSHELL_GATEWAY).toBe("before");
+  });
+
   it("proceeds when the gateway cannot answer the route query (#9310)", async () => {
     const targetDeps = deps({
       inferenceRouteState: vi.fn((): InferenceRouteState => "unanswered"),
@@ -458,6 +560,8 @@ describe("authoritative rebuild target preflight", () => {
     expect(targetDeps.inferenceRouteState).not.toHaveBeenCalled();
     expect(targetDeps.runFatalRuntimePreflight).toHaveBeenCalledOnce();
     expect(targetDeps.ensureOpenshell).toHaveBeenCalledOnce();
+    expect(targetDeps.getSandbox).not.toHaveBeenCalled();
+    expect(targetDeps.verifyNativeProviderAttachment).not.toHaveBeenCalled();
   });
 
   it("rejects a dashboard forward owned by another sandbox", async () => {
