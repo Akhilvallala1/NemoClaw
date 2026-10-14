@@ -4,8 +4,12 @@ import { runOpenshell } from "../../adapters/openshell/runtime";
 import { D, R } from "../../cli/terminal-style";
 import { isBedrockRuntimeEndpoint } from "../../inference/bedrock-runtime";
 import { DEFAULT_ROUTE_CREDENTIAL_ENV } from "../../inference/config";
+import { NVIDIA_HOSTED_CREDENTIAL_ENV } from "../../inference/native-nvidia/contract";
+import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
+import { load } from "../../state/registry/persistence";
 import { validateNvidiaApiKeyValue } from "../../validation";
 import { hydrateCredentialEnv } from "../credential-env";
+import { resolveSandboxGatewayName } from "../gateway-binding/identity";
 import {
   matchesGatewayProviderBinding,
   readGatewayProviderMetadata,
@@ -50,7 +54,23 @@ export function createResumeProviderShim(deps: ResumeProviderShimDeps) {
       provider: string | null | undefined,
       credentialEnv: string | null | undefined,
       revalidateSandboxIdentity?: (operation: string) => void,
-    ): Promise<ResumeProviderRecoveryResult> {
+      recovery?: { sandboxName: string | null; recoverRecordedProvider: boolean },
+    ): Promise<ResumeProviderRecoveryResult & { nativeNvidiaRecovery?: boolean }> {
+      if (provider === "nvidia-prod" && recovery?.recoverRecordedProvider && recovery.sandboxName) {
+        const recorded = load().sandboxes[recovery.sandboxName];
+        if (recorded?.nativeNvidiaProviderAttachment !== undefined) {
+          recordedNativeProviderAttachment(recorded);
+          if (resolveSandboxGatewayName(recorded) !== gatewayName) {
+            throw new Error("Recorded native NVIDIA provider does not match the resume target.");
+          }
+          credentialEnv = NVIDIA_HOSTED_CREDENTIAL_ENV;
+          if (!hydrateCredentialEnv(credentialEnv)) {
+            // Re-enter setup to verify the recorded native identity under the
+            // mutation lock. Its logical name is not a gateway registration.
+            return { forceInferenceSetup: true, credentialEnv, nativeNvidiaRecovery: true };
+          }
+        }
+      }
       return ensureResumeProviderReadyImpl(provider, credentialEnv, {
         remoteProviderConfig: onboardProviders.REMOTE_PROVIDER_CONFIG,
         defaultRouteCredentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,

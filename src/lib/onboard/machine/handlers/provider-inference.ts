@@ -256,7 +256,12 @@ export interface ProviderInferenceStateOptions<Gpu, Agent, Host> {
       provider: string | null | undefined,
       credentialEnv: string | null | undefined,
       revalidateSandboxIdentity?: (operation: string) => void,
-    ): Promise<{ forceInferenceSetup: boolean; credentialEnv: string | null }>;
+      recovery?: { sandboxName: string | null; recoverRecordedProvider: boolean },
+    ): Promise<{
+      forceInferenceSetup: boolean;
+      credentialEnv: string | null;
+      nativeNvidiaRecovery?: boolean;
+    }>;
     ensureManagedLlamaCppResumeReady(
       provider: string | null | undefined,
       sandboxName: string | null | undefined,
@@ -1484,7 +1489,17 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         sandboxName,
         deps.ensureManagedLlamaCppResumeReady,
       );
-      const recovery = await deps.ensureResumeProviderReady(gatewayName, provider, credentialEnv);
+      const recovery = await deps.ensureResumeProviderReady(
+        gatewayName,
+        provider,
+        credentialEnv,
+        undefined,
+        {
+          sandboxName,
+          recoverRecordedProvider: provider === "nvidia-prod" && providerRecovery.shouldRecover(),
+        },
+      );
+      recoveredRecordedProvider = recovery.nativeNvidiaRecovery === true;
       forceInferenceSetup ||= recovery.forceInferenceSetup;
       credentialEnv = recovery.credentialEnv;
       // Rebuild may be resuming a legacy session whose step marker was never
@@ -1524,8 +1539,12 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         forceInferenceSetup: recovery.forceInferenceSetup,
         hydratedCredential,
       });
-      reuseGatewayCredentialWithoutLocalKey ||= reuseRetainedOpenRouterCredential;
-      skipHostInferenceSmoke ||= reuseRetainedOpenRouterCredential;
+      const reuseRetainedNativeNvidiaCredential =
+        recovery.nativeNvidiaRecovery === true && !hydratedCredential;
+      reuseGatewayCredentialWithoutLocalKey ||=
+        reuseRetainedOpenRouterCredential || reuseRetainedNativeNvidiaCredential;
+      skipHostInferenceSmoke ||=
+        reuseRetainedOpenRouterCredential || reuseRetainedNativeNvidiaCredential;
       // A rebuild recreate may leave `openshell inference get` reporting the
       // same provider/model while the newly created messaging sandbox's
       // `inference.local` route is not actually wired to the compatible
