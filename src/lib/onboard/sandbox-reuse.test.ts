@@ -140,6 +140,7 @@ describe("applyReusedSandboxDashboardState", () => {
       errors: [],
     };
 
+    /** Reuse a sandbox with the requested and recorded origins; return the note spy. */
     async function reuseWith(
       requested: string | undefined,
       recorded: string | null | undefined,

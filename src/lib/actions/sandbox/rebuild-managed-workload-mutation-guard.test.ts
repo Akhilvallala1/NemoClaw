@@ -274,6 +274,7 @@ describe("managed workload rebuild mutation guard", () => {
       observabilityEnabled: false,
     } as unknown as RebuildRecreateOnboardOpts;
 
+    /** Build the OpenClaw replacement profile from a previous dashboard and registry origin. */
     function prepare(
       dashboard: typeof loopbackDashboard,
       options: {

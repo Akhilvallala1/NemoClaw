@@ -609,6 +609,11 @@ function parseChatUiUrlPort(chatUiUrlEnv: string | null | undefined): number | n
   }
 }
 
+/**
+ * Build the dashboard URL for a new sandbox. `--control-ui-port` selects only
+ * the port; the `CHAT_UI_URL` host is kept (#13177). Without a usable
+ * `CHAT_UI_URL`, the URL is loopback on the effective port.
+ */
 function buildCreateSandboxChatUiUrl(
   chatUiUrlEnv: string | null | undefined,
   effectivePort: number,

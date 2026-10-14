@@ -133,6 +133,7 @@ function makeInput(overrides: Partial<RebuildRecreatePhaseInput> = {}): RebuildR
 
 let session: Session;
 
+/** Stub an onboard session whose recreate journal has already deleted the sandbox. */
 function stubJournaledRecreateSession(): void {
   session = onboardSession.createSession({ sandboxName: SANDBOX_NAME });
   session.checkpoint = {
@@ -179,6 +180,7 @@ describe("rebuild recreate OpenClaw dashboard origin (#13177)", () => {
     vi.restoreAllMocks();
   });
 
+  /** Record the `CHAT_UI_URL` that the inner onboard sees while it runs. */
   function observeInnerChatUiUrl(): () => string | undefined {
     let observed: string | undefined = "not-called";
     vi.spyOn(rebuildOnboardDependencies, "onboard").mockImplementation(async () => {

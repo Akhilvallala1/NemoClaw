@@ -140,6 +140,11 @@ export interface ReusedSandboxDashboardStateResult {
   hermesDashboardState: HermesDashboardOnboardState;
 }
 
+/**
+ * Restore the dashboard forward and registry state for a reused sandbox. For
+ * OpenClaw, a changed or removed external origin prints a note: the running
+ * gateway keeps its previous origins until the next rebuild.
+ */
 export async function applyReusedSandboxDashboardState(
   input: ReusedSandboxDashboardStateInput,
 ): Promise<ReusedSandboxDashboardStateResult> {
