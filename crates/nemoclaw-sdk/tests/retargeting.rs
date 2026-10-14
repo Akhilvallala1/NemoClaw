@@ -194,7 +194,10 @@ fn inputs() -> Vec<(String, Value)> {
         .collect();
     let mut proxy = inputs
         .iter()
-        .find(|(name, _)| name == "examples/managed-ollama.yaml")
+        // Compare paths, not strings: Windows separates components with `\`.
+        .find(|(name, _)| {
+            std::path::Path::new(name) == std::path::Path::new("examples/managed-ollama.yaml")
+        })
         .expect("the managed Ollama example")
         .1
         .clone();
