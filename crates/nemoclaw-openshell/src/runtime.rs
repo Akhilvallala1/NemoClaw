@@ -7,7 +7,9 @@ use crate::policy::{ExplicitPolicy, PolicyBinary, PolicyRule};
 use nemoclaw_backend::ObservationError;
 use openshell_sdk::raw::proto;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub type ClusterGrants = BTreeMap<String, Vec<String>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,14 +91,150 @@ pub struct RuntimeBinding {
     pub adapter_id: String,
 }
 
+/// How a sandbox starts and what its runtime needs from the policy, without
+/// knowledge of the agent runtime that produced it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Launch {
+    pub command: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+    /// The runtime's policy, used when no explicit policy is authored.
+    pub policy: ExplicitPolicy,
+    /// Executables that managed endpoint grants allow.
+    pub binaries: Vec<String>,
+    /// Opaque values for whoever produced the launch, kept with the sandbox.
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// Launch metadata naming the Fabric agent the sandbox runs.
+pub const LAUNCH_AGENT: &str = "nemoclaw.nvidia.com/agent";
+/// Launch metadata naming the agent runtime, such as `fabric`.
+pub const LAUNCH_AGENT_RUNTIME: &str = "nemoclaw.nvidia.com/agent-runtime";
+/// Launch metadata holding the Fabric runtime binding JSON.
+pub const LAUNCH_RUNTIME: &str = "nemoclaw.nvidia.com/runtime";
+
+impl Launch {
+    pub fn from_json(encoded: &str) -> Result<Self, ObservationError> {
+        let launch: Self =
+            serde_json::from_str(encoded).map_err(|_| ObservationError::Incomplete)?;
+        let valid = launch.command.first().is_some_and(|path| absolute(path))
+            && launch
+                .command
+                .iter()
+                .all(|part| !part.is_empty() && !part.contains('\0'))
+            && launch.environment.iter().all(|(key, value)| {
+                !key.is_empty() && !key.contains(['=', '\0']) && !value.contains('\0')
+            })
+            && !launch.binaries.is_empty()
+            && launch.binaries.iter().all(|path| absolute(path));
+        if !valid {
+            return Err(ObservationError::Incomplete);
+        }
+        Ok(launch)
+    }
+    /// The sandbox policy: the authored explicit policy or the runtime's,
+    /// plus managed grants that allow this launch's executables.
+    pub fn policy(&self, input: &PolicyInput) -> Result<proto::SandboxPolicy, ObservationError> {
+        let mut policy = input.explicit.as_ref().unwrap_or(&self.policy).clone();
+        for (name, rule) in &input.managed {
+            if policy.network_policies.contains_key(name) {
+                return Err(ObservationError::BindingMismatch);
+            }
+            let mut rule = rule.clone();
+            rule.binaries = self
+                .binaries
+                .iter()
+                .map(|path| PolicyBinary { path: path.clone() })
+                .collect();
+            policy.network_policies.insert(name.clone(), rule);
+        }
+        policy.to_proto().map_err(|_| ObservationError::Incomplete)
+    }
+    /// Resolve only marked Service rules; all other authored policy bytes stay intact.
+    pub fn granted_policy(
+        &self,
+        input: &PolicyInput,
+        grants: &ClusterGrants,
+    ) -> Result<proto::SandboxPolicy, ObservationError> {
+        if input.cluster_grants.len() != grants.len() {
+            return Err(ObservationError::BindingMismatch);
+        }
+        let mut policy = self.policy(input)?;
+        for name in &input.cluster_grants {
+            let addresses = grants.get(name).ok_or(ObservationError::BindingMismatch)?;
+            if addresses.is_empty()
+                || addresses.len() > 2
+                || addresses.iter().collect::<BTreeSet<_>>().len() != addresses.len()
+            {
+                return Err(ObservationError::BindingMismatch);
+            }
+            for address in addresses {
+                let (host, prefix) = address
+                    .split_once('/')
+                    .ok_or(ObservationError::BindingMismatch)?;
+                let ip: std::net::IpAddr = host
+                    .parse()
+                    .map_err(|_| ObservationError::BindingMismatch)?;
+                if prefix != if ip.is_ipv4() { "32" } else { "128" }
+                    || !crate::profile::service_address_allowed(&ip)
+                {
+                    return Err(ObservationError::BindingMismatch);
+                }
+            }
+            if !input.managed.contains_key(name) {
+                return Err(ObservationError::BindingMismatch);
+            }
+            let rule = policy
+                .network_policies
+                .get_mut(name)
+                .ok_or(ObservationError::BindingMismatch)?;
+            if rule.endpoints.len() != 1 || !rule.endpoints[0].allowed_ips.is_empty() {
+                return Err(ObservationError::BindingMismatch);
+            }
+            rule.endpoints[0].allowed_ips.clone_from(addresses);
+        }
+        Ok(policy)
+    }
+}
+
 /// Authored policy and deployment-owned endpoint grants before image resolution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyInput {
     pub explicit: Option<ExplicitPolicy>,
     pub managed: BTreeMap<String, PolicyRule>,
+    /// Managed rule names whose exact addresses must come from verified Services.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub cluster_grants: BTreeSet<String>,
 }
 impl RuntimeBinding {
+    /// The generic launch for `agent`: the bridge serving it, its runtime's
+    /// policy and executables, and this binding in metadata for Fabric.
+    pub fn launch(&self, agent: &str) -> Launch {
+        Launch {
+            command: self.command("serve", &["--agent", agent]),
+            environment: self.environment(agent),
+            policy: self.runtime.policy.clone(),
+            binaries: self.binaries().to_vec(),
+            metadata: [
+                (LAUNCH_AGENT.to_owned(), agent.to_owned()),
+                (LAUNCH_AGENT_RUNTIME.to_owned(), "fabric".to_owned()),
+                (
+                    LAUNCH_RUNTIME.to_owned(),
+                    serde_json::to_string(self).expect("runtime binding serializes"),
+                ),
+            ]
+            .into(),
+        }
+    }
+    /// Resolve only marked Service rules; all other authored policy bytes stay intact.
+    pub fn granted_policy(
+        &self,
+        input: &PolicyInput,
+        grants: &ClusterGrants,
+    ) -> Result<proto::SandboxPolicy, ObservationError> {
+        self.launch("").granted_policy(input, grants)
+    }
     pub fn from_json(encoded: &str) -> Result<Self, ObservationError> {
         let binding: Self =
             serde_json::from_str(encoded).map_err(|_| ObservationError::Incomplete)?;
@@ -125,28 +263,11 @@ impl RuntimeBinding {
         &self.runtime.binaries[&self.adapter_id]
     }
     pub fn policy(&self, input: &PolicyInput) -> Result<proto::SandboxPolicy, ObservationError> {
-        let mut policy = input
-            .explicit
-            .as_ref()
-            .unwrap_or(&self.runtime.policy)
-            .clone();
-        let binaries = self
-            .runtime
+        self.runtime
             .binaries
             .get(&self.adapter_id)
             .ok_or(ObservationError::Incomplete)?;
-        for (name, rule) in &input.managed {
-            if policy.network_policies.contains_key(name) {
-                return Err(ObservationError::BindingMismatch);
-            }
-            let mut rule = rule.clone();
-            rule.binaries = binaries
-                .iter()
-                .map(|path| PolicyBinary { path: path.clone() })
-                .collect();
-            policy.network_policies.insert(name.clone(), rule);
-        }
-        policy.to_proto().map_err(|_| ObservationError::Incomplete)
+        self.launch("").policy(input)
     }
 }
 

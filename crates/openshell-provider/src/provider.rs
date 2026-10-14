@@ -27,6 +27,16 @@ pub struct OpenShellProvider {
     destroying: Arc<AtomicBool>,
 }
 
+impl OpenShellProvider {
+    /// Serve resources using the deployment's managed service identity checks.
+    pub fn with_services(services: Arc<dyn crate::Services>) -> Self {
+        Self {
+            client: Arc::new(GatewayClient::with_services(services)),
+            destroying: Arc::default(),
+        }
+    }
+}
+
 #[async_trait]
 impl Provider for OpenShellProvider {
     type Config<'a> = GatewayConfig;
@@ -91,14 +101,11 @@ mod tests {
     use super::*;
     use tf_provider::value::Value;
 
-    // Connecting starts a lazy channel, which needs a runtime.
     #[tokio::test]
-    async fn rejected_reconfiguration_withdraws_teardown_permission() {
+    async fn reconfiguration_without_destroy_withdraws_teardown_permission() {
         let provider = OpenShellProvider::default();
         let permitted = GatewayConfig {
-            endpoint: Value::Value("http://127.0.0.1:1".into()),
             destroy: Value::Value(true),
-            ..Default::default()
         };
         let mut diagnostics = Diagnostics::default();
         provider
@@ -106,17 +113,11 @@ mod tests {
             .await
             .unwrap();
         assert!(provider.destroying.load(Ordering::Acquire));
-        // Teardown without an endpoint is refused.
-        let rejected = GatewayConfig {
-            destroy: Value::Value(true),
-            ..Default::default()
-        };
-        assert!(
-            provider
-                .configure(&mut diagnostics, String::new(), rejected)
-                .await
-                .is_none()
-        );
+        provider
+            .configure(&mut diagnostics, String::new(), GatewayConfig::default())
+            .await
+            .unwrap();
         assert!(!provider.destroying.load(Ordering::Acquire));
+        assert!(diagnostics.errors.is_empty());
     }
 }
