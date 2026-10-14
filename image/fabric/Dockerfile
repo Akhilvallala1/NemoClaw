@@ -39,7 +39,8 @@ HEALTHCHECK NONE
 # The deployed Hermes target continues to use its existing source and dependency
 # lock; promotion must deliberately copy this candidate into that target later.
 FROM base AS switchyard-candidate
-ADD --checksum=sha256:a88ae3f634a3fd45050d3418d80b30ee5af51c89b9de40ec1ea3039d3024d77a https://codeload.github.com/NousResearch/hermes-agent/tar.gz/71d34bad1045610252eda02ee79549436896e784 /candidate/hermes.tar.gz
+ADD --checksum=sha256:865992a77dd7be18ce8b2e63c87d2c6bd66a76cb0babaa84ad3de061f5bb5af8 https://raw.githubusercontent.com/NousResearch/hermes-agent/71d34bad1045610252eda02ee79549436896e784/pyproject.toml /candidate/hermes-pyproject.toml
+ADD --checksum=sha256:95a3082629ffecdabb1bad0880ccf5a237d47cd8fb67d86094f6d3d331f4eeac https://raw.githubusercontent.com/NousResearch/hermes-agent/71d34bad1045610252eda02ee79549436896e784/uv.lock /candidate/hermes-uv.lock
 ADD --checksum=sha256:e55023684543d1cdbfe127af5328481c436f730cc0b5e4d3ca283f4226696b73 https://github.com/NVIDIA/NeMo-Relay-Plugins/releases/download/switchyard-plugin-0.3.1/switchyard-plugin-0.3.1-linux-arm64.tar.gz /candidate/switchyard-plugin-0.3.1-linux-arm64.tar.gz
 ADD --checksum=sha256:32c5fd152c0c8c6dde8f058a975e6e3ee5f827add37a2d91c6fc54b6a432fb07 https://github.com/NVIDIA/NeMo-Relay-Plugins/releases/download/switchyard-plugin-0.3.1/switchyard-plugin-0.3.1-linux-arm64.tar.gz.json /candidate/switchyard-plugin-0.3.1-linux-arm64.tar.gz.json
 ADD --checksum=sha256:c3f46807d96deb1c057357a676f92be0f751f92d67571d3aa85240e78cfbd36a https://github.com/NVIDIA/NeMo-Relay-Plugins/releases/download/switchyard-plugin-0.3.1/switchyard-plugin-0.3.1-linux-x86_64.tar.gz /candidate/switchyard-plugin-0.3.1-linux-x86_64.tar.gz
@@ -47,7 +48,8 @@ ADD --checksum=sha256:03fc4258ff63462f1dbbc99ef15b8d22b45e951fd57e61f1bf2f0c59a6
 COPY image/fabric/switchyard-candidate.json image/fabric/switchyard_candidate.py /candidate/
 RUN python3 /candidate/switchyard_candidate.py \
     --lock /candidate/switchyard-candidate.json \
-    --hermes-source /candidate/hermes.tar.gz \
+    --hermes-pyproject /candidate/hermes-pyproject.toml \
+    --hermes-lock /candidate/hermes-uv.lock \
     --bundle linux/arm64=/candidate/switchyard-plugin-0.3.1-linux-arm64.tar.gz \
     --bundle linux/amd64=/candidate/switchyard-plugin-0.3.1-linux-x86_64.tar.gz \
     > /candidate/validated.json

@@ -39,9 +39,10 @@ class CandidateFixture:
             member.size = len(value)
             archive.addfile(member, io.BytesIO(value))
 
-    def hermes(self) -> Path:
+    def hermes(self) -> tuple[Path, Path]:
         candidate = self.lock["hermes"]
-        archive_path = self.root / "hermes.tar.gz"
+        project_path = self.root / "pyproject.toml"
+        resolved_path = self.root / "uv.lock"
         dependency = (
             f"nemo-relay{candidate['relay_requirement']}; "
             f"python_version >= '{candidate['relay_python_minimum']}'"
@@ -59,12 +60,11 @@ class CandidateFixture:
             f'version = "{candidate["relay_version"]}"\n'
             f"wheels = [\n{wheels}\n]\n"
         ).encode()
-        prefix = f"hermes-agent-{candidate['commit']}"
-        with tarfile.open(archive_path, "w:gz") as archive:
-            self.add(archive, f"{prefix}/pyproject.toml", project)
-            self.add(archive, f"{prefix}/uv.lock", resolved)
-        candidate["archive_sha256"] = digest(archive_path)
-        return archive_path
+        project_path.write_bytes(project)
+        resolved_path.write_bytes(resolved)
+        candidate["pyproject_sha256"] = digest(project_path)
+        candidate["uv_lock_sha256"] = digest(resolved_path)
+        return project_path, resolved_path
 
     def manifest(self, library_sha256: str) -> bytes:
         plugin = self.lock["plugin"]
@@ -164,47 +164,73 @@ symbol = "nemo_relay_register_plugin"
 class SwitchyardCandidate(unittest.TestCase):
     def fixture(self, root: Path, *, unsafe_platform: str | None = None):
         fixture = CandidateFixture(root)
-        hermes = fixture.hermes()
+        hermes_project, hermes_lock = fixture.hermes()
         for platform in fixture.lock["plugin"]["platforms"]:
             fixture.bundle(platform, unsafe=platform == unsafe_platform)
-        return fixture, hermes
+        return fixture, hermes_project, hermes_lock
 
     def test_released_tuple_is_structurally_compatible_but_remains_inactive(self):
         with tempfile.TemporaryDirectory() as directory:
-            fixture, hermes = self.fixture(Path(directory))
-            receipt = validate_candidate(fixture.write_lock(), hermes, fixture.bundles)
+            fixture, hermes_project, hermes_lock = self.fixture(Path(directory))
+            receipt = validate_candidate(
+                fixture.write_lock(), hermes_project, hermes_lock, fixture.bundles
+            )
         self.assertEqual(receipt["selection"], "candidate-only")
         self.assertFalse(receipt["activation_enabled"])
         self.assertEqual(receipt["plugin"]["platforms"], ["linux/amd64", "linux/arm64"])
 
     def test_activation_cannot_be_enabled_in_the_candidate_record(self):
         with tempfile.TemporaryDirectory() as directory:
-            fixture, hermes = self.fixture(Path(directory))
+            fixture, hermes_project, hermes_lock = self.fixture(Path(directory))
             fixture.lock["activation_enabled"] = True
             with self.assertRaisesRegex(ValueError, "unselected and inactive"):
-                validate_candidate(fixture.write_lock(), hermes, fixture.bundles)
+                validate_candidate(
+                    fixture.write_lock(), hermes_project, hermes_lock, fixture.bundles
+                )
+
+    def test_hermes_contract_file_drift_is_rejected(self):
+        for selected, message in [
+            ("project", "Hermes project digest"),
+            ("lock", "Hermes lock digest"),
+        ]:
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as directory:
+                fixture, hermes_project, hermes_lock = self.fixture(Path(directory))
+                path = hermes_project if selected == "project" else hermes_lock
+                path.write_bytes(path.read_bytes() + b"\n# drift\n")
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_candidate(
+                        fixture.write_lock(), hermes_project, hermes_lock, fixture.bundles
+                    )
 
     def test_archive_path_escape_is_rejected_before_files_are_used(self):
         with tempfile.TemporaryDirectory() as directory:
-            fixture, hermes = self.fixture(Path(directory), unsafe_platform="linux/arm64")
+            fixture, hermes_project, hermes_lock = self.fixture(
+                Path(directory), unsafe_platform="linux/arm64"
+            )
             with self.assertRaisesRegex(ValueError, "unsafe path"):
-                validate_candidate(fixture.write_lock(), hermes, fixture.bundles)
+                validate_candidate(
+                    fixture.write_lock(), hermes_project, hermes_lock, fixture.bundles
+                )
 
     def test_published_schema_digest_drift_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            fixture, hermes = self.fixture(Path(directory))
+            fixture, hermes_project, hermes_lock = self.fixture(Path(directory))
             changed = copy.deepcopy(fixture.lock)
             changed["plugin"]["config_schema_sha256"] = "0" * 64
             fixture.lock = changed
             with self.assertRaisesRegex(ValueError, "schema digest"):
-                validate_candidate(fixture.write_lock(), hermes, fixture.bundles)
+                validate_candidate(
+                    fixture.write_lock(), hermes_project, hermes_lock, fixture.bundles
+                )
 
     def test_plugin_range_must_include_the_hermes_locked_relay(self):
         with tempfile.TemporaryDirectory() as directory:
-            fixture, hermes = self.fixture(Path(directory))
+            fixture, hermes_project, hermes_lock = self.fixture(Path(directory))
             fixture.lock["plugin"]["relay_compatibility"] = ">=0.11.0, <1.0.0"
             with self.assertRaisesRegex(ValueError, "incompatible"):
-                validate_candidate(fixture.write_lock(), hermes, fixture.bundles)
+                validate_candidate(
+                    fixture.write_lock(), hermes_project, hermes_lock, fixture.bundles
+                )
 
 
 if __name__ == "__main__":

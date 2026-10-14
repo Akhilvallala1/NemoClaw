@@ -88,28 +88,15 @@ def member_bytes(archive: tarfile.TarFile, members: dict[str, tarfile.TarInfo], 
     return source.read()
 
 
-def hermes_member(archive: tarfile.TarFile, commit: str, name: str) -> bytes:
-    expected = f"hermes-agent-{commit}/{name}"
-    try:
-        member = archive.getmember(expected)
-    except KeyError as error:
-        raise ValueError(f"Hermes archive is missing {name}") from error
-    if not member.isfile():
-        raise ValueError(f"Hermes archive {name} is not a file")
-    source = archive.extractfile(member)
-    if source is None:
-        raise ValueError(f"Hermes archive cannot read {name}")
-    return source.read()
-
-
-def validate_hermes(lock: dict, source_path: Path) -> None:
+def validate_hermes(lock: dict, project_path: Path, resolved_path: Path) -> None:
     expected = {
         "version",
         "tag",
         "tag_object",
         "tag_verified",
         "commit",
-        "archive_sha256",
+        "pyproject_sha256",
+        "uv_lock_sha256",
         "relay_requirement",
         "relay_python_minimum",
         "relay_version",
@@ -117,11 +104,12 @@ def validate_hermes(lock: dict, source_path: Path) -> None:
     }
     require_keys(lock, expected, "Hermes candidate")
     require_keys(lock["relay_wheels"], {"linux/arm64", "linux/amd64"}, "Relay wheels")
-    if digest(source_path) != lock["archive_sha256"]:
-        raise ValueError("Hermes archive digest does not match the candidate")
-    with tarfile.open(source_path, "r:gz") as source:
-        project = tomllib.loads(hermes_member(source, lock["commit"], "pyproject.toml").decode())
-        resolved = tomllib.loads(hermes_member(source, lock["commit"], "uv.lock").decode())
+    if digest(project_path) != lock["pyproject_sha256"]:
+        raise ValueError("Hermes project digest does not match the candidate")
+    if digest(resolved_path) != lock["uv_lock_sha256"]:
+        raise ValueError("Hermes lock digest does not match the candidate")
+    project = tomllib.loads(project_path.read_text(encoding="utf-8"))
+    resolved = tomllib.loads(resolved_path.read_text(encoding="utf-8"))
     relay_dependencies = [
         item for item in project["project"]["dependencies"] if item.startswith("nemo-relay")
     ]
@@ -258,7 +246,12 @@ def validate_bundle(lock: dict, platform: str, archive_path: Path) -> str:
     return hashlib.sha256(schema).hexdigest()
 
 
-def validate_candidate(lock_path: Path, hermes_source: Path, bundles: dict[str, Path]) -> dict:
+def validate_candidate(
+    lock_path: Path,
+    hermes_project: Path,
+    hermes_lock: Path,
+    bundles: dict[str, Path],
+) -> dict:
     candidate = json.loads(lock_path.read_text(encoding="utf-8"))
     require_keys(
         candidate,
@@ -271,7 +264,7 @@ def validate_candidate(lock_path: Path, hermes_source: Path, bundles: dict[str, 
         or candidate["activation_enabled"] is not False
     ):
         raise ValueError("Switchyard candidate must remain unselected and inactive")
-    validate_hermes(candidate["hermes"], hermes_source)
+    validate_hermes(candidate["hermes"], hermes_project, hermes_lock)
     relay = candidate["relay"]
     require_keys(
         relay,
@@ -359,7 +352,8 @@ def parse_bundle(value: str) -> tuple[str, Path]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lock", type=Path, required=True)
-    parser.add_argument("--hermes-source", type=Path, required=True)
+    parser.add_argument("--hermes-pyproject", type=Path, required=True)
+    parser.add_argument("--hermes-lock", type=Path, required=True)
     parser.add_argument("--bundle", action="append", type=parse_bundle, required=True)
     arguments = parser.parse_args()
     bundles = dict(arguments.bundle)
@@ -367,7 +361,12 @@ def main() -> None:
         parser.error("duplicate bundle platform")
     print(
         json.dumps(
-            validate_candidate(arguments.lock, arguments.hermes_source, bundles),
+            validate_candidate(
+                arguments.lock,
+                arguments.hermes_pyproject,
+                arguments.hermes_lock,
+                bundles,
+            ),
             sort_keys=True,
         )
     )
