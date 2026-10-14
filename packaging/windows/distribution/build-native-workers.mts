@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { build, version as esbuildVersion } from "esbuild";
@@ -193,7 +194,7 @@ export function staticWorkerSource(mode: string, input: string, assets: Map<stri
     'import { nativeGuestAsset } from "./native-assets.mts";',
     ...(mode === "openclaw-web"
       ? [
-          'import { runPackagedOpenClaw, registerPackagedOpenClawPlugins } from "native-openclaw-api";',
+          'import { runPackagedOpenClaw, registerPackagedOpenClawPlugins, buildPackagedModelCatalog } from "native-openclaw-api";',
         ]
       : []),
     ...imports,
@@ -249,6 +250,9 @@ export async function buildNativeWorkers(
     {
       name: "reviewed-static-workers",
       setup(builder: import("esbuild").PluginBuild) {
+        builder.onResolve({ filter: /^json5$/ }, () => ({
+          path: createRequire(import.meta.url).resolve("json5"),
+        }));
         builder.onResolve({ filter: /^worker:/ }, (args) => ({
           path: args.path.slice(7),
           namespace: "native-worker",
@@ -266,10 +270,10 @@ export async function buildNativeWorkers(
           loader: "js" as const,
           resolveDir: runtimeSource,
           contents: openClawBundle
-            ? "export { runOpenClaw as runPackagedOpenClaw, registerPrebuiltPlugins as registerPackagedOpenClawPlugins } from " +
+            ? "export { runOpenClaw as runPackagedOpenClaw, registerPrebuiltPlugins as registerPackagedOpenClawPlugins, buildNativeModelCatalog as buildPackagedModelCatalog } from " +
               JSON.stringify(path.resolve(openClawBundle)) +
               ";"
-            : 'import { createRequire } from "node:module"; function packagedApi() { const entry = process.env.NEMOCLAW_MXC_OPENCLAW_ENTRY; if (!entry) throw new Error("Missing prebuilt OpenClaw entry"); return createRequire(entry)(entry); } export async function runPackagedOpenClaw(argv) { return await packagedApi().runOpenClaw(argv); } export async function registerPackagedOpenClawPlugins(config) { return await packagedApi().registerPrebuiltPlugins(config); }',
+            : 'import { createRequire } from "node:module"; function packagedApi() { const entry = process.env.NEMOCLAW_MXC_OPENCLAW_ENTRY; if (!entry) throw new Error("Missing prebuilt OpenClaw entry"); return createRequire(entry)(entry); } export async function runPackagedOpenClaw(argv) { return await packagedApi().runOpenClaw(argv); } export async function registerPackagedOpenClawPlugins(config) { return await packagedApi().registerPrebuiltPlugins(config); } export async function buildPackagedModelCatalog(...args) { return await packagedApi().buildNativeModelCatalog(...args); }',
         }));
       },
     },

@@ -6,6 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { buildPrivateDirectoryLibrary } from "./sqlite-private-directory-build.mts";
+import { nativeModelCatalogSource } from "./native-model-catalog-build.mts";
 
 import {
   compiledPluginPlan,
@@ -130,7 +131,7 @@ const syntaxApi = require(
   path.join(source, "node_modules", "typescript"),
 ) as typeof import("typescript");
 const pluginPlan = compiledPluginPlan(source, syntaxApi, compiler);
-const adapter = `${pluginPlan.prelude}${prebuiltPluginRegistrationSource(source)}export async function runCli(argv = process.argv) {
+const adapter = `${pluginPlan.prelude}${prebuiltPluginRegistrationSource(source)}${nativeModelCatalogSource(source)}export async function runCli(argv = process.argv) {
   __nemoPrepareAssetRoot();
   const upstream = await import(${JSON.stringify(entry.replaceAll("\\", "/"))});
   return await upstream.runCli(argv);

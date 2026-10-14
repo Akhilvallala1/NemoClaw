@@ -5,6 +5,8 @@ import type ts from "typescript";
 const listenerModule = "dist/server-start-yuOHTviK.js";
 const clientModule = "dist/client-I-RoP1Al.js";
 const providerModule = "dist/provider-transport-fetch-DGSx4u4m.js";
+const catalogModule = "dist/provider-catalog-live-runtime-EZZSw18v.js";
+const localCatalogModule = "dist/provider-setup-CQYNqo2d.js";
 const callModule = "dist/call-BWR5pPgw.js";
 const portHelper = String.raw`
 function __nemoPipePort() {
@@ -40,7 +42,8 @@ function __nemoGatewaySocketOptions(url, options) {
 const providerHelper = String.raw`
 function __nemoBrokerFetchOptions(model, options) {
   const value = process.env.NEMOCLAW_MXC_BROKER_PIPE_PORT;
-  if (value === undefined || typeof model.provider !== "string" || model.provider.toLowerCase() !== "nemoclawnative") return options;
+  const provider = process.env.NEMOCLAW_MXC_MODEL_PROVIDER ?? "nemoclawNative";
+  if (value === undefined || typeof model.provider !== "string" || model.provider.toLowerCase() !== provider.toLowerCase()) return options;
   if (process.platform !== "win32" || !/^[1-9][0-9]{0,4}$/.test(value) || Number(value) > 65535)
     throw Error("Invalid native broker pipe port");
   const base = new URL(model.baseUrl);
@@ -60,6 +63,40 @@ function __nemoBrokerFetchOptions(model, options) {
   return { ...options, dispatcherPolicy: selected, resolveDispatcherPolicy };
 }
 `;
+const catalogHelper = String.raw`
+import { request as __nemoCatalogRequest } from "node:http";
+import { Readable as __nemoCatalogReadable } from "node:stream";
+async function __nemoCatalogFetch(params, options) {
+  const port = process.env.NEMOCLAW_MXC_BROKER_PIPE_PORT;
+  if (port === undefined) return params.fetchGuard(options);
+  const provider = process.env.NEMOCLAW_MXC_MODEL_PROVIDER;
+  const token = process.env.NEMOCLAW_MXC_MODEL_TOKEN;
+  if (process.platform !== "win32" || !/^[1-9][0-9]{0,4}$/.test(port) || Number(port) > 65535 ||
+      !token || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) throw Error("Invalid native catalog transport");
+  const local = "http://127.0.0.1:" + port + "/v1/models";
+  const endpoints = provider === "nvidia"
+    ? [local, "https://integrate.api.nvidia.com/v1/models"]
+    : provider === "openrouter" ? [local, "https://openrouter.ai/api/v1/models"] : [local];
+  const featured = provider === "nvidia" && options.url === "https://assets.ngc.nvidia.com/products/api-catalog/featured-models.json";
+  if (params.providerId !== provider || (!featured && !endpoints.includes(options.url)))
+    throw Error("Native catalog request escaped the selected provider");
+  const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(options.timeoutMs ?? 10000)]);
+  const response = await new Promise((resolve, reject) => {
+    const request = __nemoCatalogRequest({
+      socketPath: __nemoPipeName(Number(port)), method: "GET",
+      path: featured ? "/native/nvidia-featured-models" : "/v1/models",
+      headers: { authorization: "Bearer " + token, accept: "application/json" }, signal,
+    }, resolve);
+    request.once("error", reject);
+    request.end();
+  });
+  return {
+    response: new Response(__nemoCatalogReadable.toWeb(response), { status: response.statusCode, headers: { "content-type": response.headers["content-type"] ?? "application/json" } }),
+    finalUrl: options.url,
+    release: async () => { response.destroy(); },
+  };
+}
+`;
 const identityHelper = String.raw`
 function __nemoPipeRequiresIdentity(url) {
   const selected = __nemoPipePort();
@@ -75,6 +112,8 @@ export function compileNativePipeTransport(relative: string, text: string, synta
     relative !== listenerModule &&
     relative !== clientModule &&
     relative !== providerModule &&
+    relative !== catalogModule &&
+    relative !== localCatalogModule &&
     relative !== callModule
   )
     return text;
@@ -88,6 +127,31 @@ export function compileNativePipeTransport(relative: string, text: string, synta
   );
   const edits: { start: number; end: number; replacement: string }[] = [];
   const visit = (node: ts.Node) => {
+    if (
+      relative === localCatalogModule &&
+      syntax.isCallExpression(node) &&
+      node.expression.getText(file) === "fetchWithSsrFGuard" &&
+      node.arguments.length === 1
+    )
+      edits.push({
+        start: node.getStart(file),
+        end: node.end,
+        replacement:
+          "__nemoCatalogFetch({ ...params, providerId: process.env.NEMOCLAW_MXC_MODEL_PROVIDER, fetchGuard: fetchWithSsrFGuard }, " +
+          node.arguments[0]!.getText(file) +
+          ")",
+      });
+    if (
+      relative === catalogModule &&
+      syntax.isCallExpression(node) &&
+      node.expression.getText(file) === "params.fetchGuard" &&
+      node.arguments.length === 1
+    )
+      edits.push({
+        start: node.getStart(file),
+        end: node.end,
+        replacement: "__nemoCatalogFetch(params, " + node.arguments[0]!.getText(file) + ")",
+      });
     if (
       relative === callModule &&
       syntax.isFunctionDeclaration(node) &&
@@ -155,7 +219,9 @@ export function compileNativePipeTransport(relative: string, text: string, synta
         ? clientHelper
         : relative === callModule
           ? identityHelper
-          : providerHelper) +
+          : relative === catalogModule || relative === localCatalogModule
+            ? catalogHelper
+            : providerHelper) +
     text.slice(0, edit.start) +
     edit.replacement +
     text.slice(edit.end)

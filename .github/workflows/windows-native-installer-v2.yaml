@@ -1438,6 +1438,8 @@ jobs:
           $log = Join-Path $output 'observer-cleanup-tests.log'
           $tests = @(
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/app/runtime-published-resources.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/app/native-model-catalog-build.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/app/native-pipe-transport-build.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/build-immutable-package-cleanup.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/control-installed-openclaw-input.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/qualify-installed-openclaw.test.mts'),
@@ -1445,6 +1447,8 @@ jobs:
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-ui-lifecycle.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-web-session.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-gateway-configuration.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-openclaw-models.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-inference-broker.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-turn-cleanup.test.mts')
           )
           try {

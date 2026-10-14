@@ -3,6 +3,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { Readable } from "node:stream";
+import { EventEmitter } from "node:events";
 import syntax from "typescript";
 import { transformSync } from "esbuild";
 import { compileNativePipeTransport } from "./native-pipe-transport-build.mts";
@@ -17,6 +19,12 @@ const providerPath = "dist/provider-transport-fetch-DGSx4u4m.js";
 const provider =
   "module.exports = function(model, guardedFetchOptions, useEnvProxy) { return fetchWithSsrFGuard(useEnvProxy ? withTrustedEnvProxyGuardedFetchMode(guardedFetchOptions) : guardedFetchOptions); };";
 const callPath = "dist/call-BWR5pPgw.js";
+const catalogPath = "dist/provider-catalog-live-runtime-EZZSw18v.js";
+const catalog =
+  "module.exports = async function(params, options) { return await params.fetchGuard(options); };";
+const localCatalogPath = "dist/provider-setup-CQYNqo2d.js";
+const localCatalog =
+  "module.exports = async function(params) { return await fetchWithSsrFGuard({ url: params.url }); };";
 const call =
   "function shouldOmitDeviceIdentityForGatewayCall(params) { return params.original; } module.exports = shouldOmitDeviceIdentityForGatewayCall;";
 function load(
@@ -25,6 +33,8 @@ function load(
   selected?: string,
   platform = "win32",
   broker?: string,
+  environment: Record<string, string> = {},
+  modules: Record<string, unknown> = {},
 ) {
   const code = transformSync(compileNativePipeTransport(relative, text, syntax), {
     format: "cjs",
@@ -34,6 +44,7 @@ function load(
     process: {
       platform,
       env: {
+        ...environment,
         ...(selected === undefined ? {} : { NEMOCLAW_MXC_GATEWAY_PIPE_PORT: selected }),
         ...(broker === undefined ? {} : { NEMOCLAW_MXC_BROKER_PIPE_PORT: broker }),
       },
@@ -44,7 +55,10 @@ function load(
       mode: "trusted_env_proxy",
     }),
     URL,
+    Response,
+    AbortSignal,
     require: (name: string) => {
+      if (name in modules) return modules[name];
       assert.equal(name, "node:net");
       return { connect: (pipe: string) => ({ pipe }) };
     },
@@ -65,6 +79,103 @@ test("declared gateway listener uses only its sandbox-local pipe", () => {
   assert.throws(() => listen(server, 18790, "127.0.0.1"), /declared loopback port/);
   assert.throws(() => listen(server, 18789, "0.0.0.0"), /declared loopback port/);
   assert.deepEqual(load(listenerPath, listener)(server, 18789, "127.0.0.1"), [18789, "127.0.0.1"]);
+});
+
+test("native provider identities use only their selected broker transport", () => {
+  for (const providerId of ["nvidia", "openrouter"]) {
+    const fetch = load(providerPath, provider, undefined, "win32", "18790", {
+      NEMOCLAW_MXC_MODEL_PROVIDER: providerId,
+    });
+    const options = { url: "http://127.0.0.1:18790/v1/chat/completions" };
+    const guarded = fetch(
+      { provider: providerId, baseUrl: "http://127.0.0.1:18790/v1" },
+      options,
+    ) as { dispatcherPolicy: unknown };
+    assert(guarded.dispatcherPolicy);
+    assert.equal(
+      fetch({ provider: "foreign", baseUrl: "https://foreign.invalid" }, options),
+      options,
+    );
+  }
+});
+
+test("native catalog parsing receives the provider response over the authenticated private pipe", async () => {
+  const requests: Record<string, any>[] = [];
+  const modules = {
+    "node:stream": { Readable },
+    "node:http": {
+      request(options: Record<string, unknown>, callback: (response: Readable) => void) {
+        requests.push(options);
+        const request = new EventEmitter() as EventEmitter & { end(): void };
+        request.end = () =>
+          callback(
+            Object.assign(Readable.from([Buffer.from('{"data":[{"id":"fixture"}]}')]), {
+              statusCode: 200,
+              headers: {},
+            }),
+          );
+        return request;
+      },
+    },
+  };
+  const environment = {
+    NEMOCLAW_MXC_MODEL_PROVIDER: "nvidia",
+    NEMOCLAW_MXC_MODEL_TOKEN: "fixture-token_".repeat(4),
+  };
+  const fetch = load(catalogPath, catalog, undefined, "win32", "18790", environment, modules);
+  const params = {
+    providerId: "nvidia",
+    fetchGuard: () => assert.fail("Direct network must not run"),
+  };
+  const url = "https://integrate.api.nvidia.com/v1/models";
+  const result = (await fetch(params, {
+    url,
+    timeoutMs: 2000,
+    init: { headers: { authorization: "untrusted-header" } },
+  })) as { response: Response; finalUrl: string; release(): Promise<void> };
+  assert.deepEqual(await result.response.json(), { data: [{ id: "fixture" }] });
+  assert.equal(result.finalUrl, url);
+  await result.release();
+  assert.equal(requests[0]?.socketPath, String.raw`\\.\pipe\LOCAL\OpenShell-Loopback-18790`);
+  assert.equal(requests[0]?.path, "/v1/models");
+  assert.equal(
+    requests[0]?.headers.authorization,
+    "Bearer " + environment.NEMOCLAW_MXC_MODEL_TOKEN,
+  );
+  assert.equal(requests[0]?.method, "GET");
+  const featured = (await fetch(params, {
+    url: "https://assets.ngc.nvidia.com/products/api-catalog/featured-models.json",
+  })) as typeof result;
+  await featured.release();
+  assert.equal(requests[1]?.path, "/native/nvidia-featured-models");
+  for (const target of [
+    url + "?next=other",
+    url + "#fragment",
+    "https://other.invalid/v1/models",
+    "http://127.0.0.1:18791/v1/models",
+    "http://127.0.0.1:18790/v1/chat/completions",
+  ]) {
+    await assert.rejects(async () => fetch(params, { url: target }), /escaped/);
+  }
+  await assert.rejects(
+    async () => fetch({ ...params, providerId: "openrouter" }, { url }),
+    /escaped/,
+  );
+  assert.equal(requests.length, 2);
+  const unmodified = load(catalogPath, catalog, undefined, "linux", undefined, {}, modules);
+  assert.equal(await unmodified({ fetchGuard: () => "native-fetch" }, { url }), "native-fetch");
+  const local = load(
+    localCatalogPath,
+    localCatalog,
+    undefined,
+    "win32",
+    "18790",
+    { ...environment, NEMOCLAW_MXC_MODEL_PROVIDER: "nemoclawNative" },
+    modules,
+  );
+  const localResult = (await local({ url: "http://127.0.0.1:18790/v1/models" })) as typeof result;
+  await localResult.release();
+  assert.equal(requests[2]?.path, "/v1/models");
 });
 
 test("provider pipe retains guarded fetch and refuses origin or transport changes", () => {
@@ -166,6 +277,8 @@ test("compiler rejects missing or duplicated pinned transport sites", () => {
     [clientPath, client],
     [providerPath, provider],
     [callPath, call],
+    [catalogPath, catalog],
+    [localCatalogPath, localCatalog],
   ]) {
     assert.throws(
       () => compileNativePipeTransport(relative!, "unrelated();", syntax),

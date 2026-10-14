@@ -56,7 +56,11 @@ export async function startNativeInferenceBroker(
     try {
       if (serviceBootstrap(request, response)) return;
       const operation = brokerOperationForRequest(request.method, request.url);
-      if (operation === null) {
+      const featured =
+        configuration.inference === "nvidia" &&
+        request.method === "GET" &&
+        request.url === "/native/nvidia-featured-models";
+      if (operation === null && !featured) {
         response.writeHead(404, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: { message: "not found" } }));
         return;
@@ -66,7 +70,9 @@ export async function startNativeInferenceBroker(
         response.end(JSON.stringify({ error: { message: "unauthorized" } }));
         return;
       }
-      const upstreamUrl = resolveBrokerUpstreamUrl(configuration.endpoint, operation);
+      const upstreamUrl = featured
+        ? new URL("https://assets.ngc.nvidia.com/products/api-catalog/featured-models.json")
+        : resolveBrokerUpstreamUrl(configuration.endpoint, operation!);
       const body =
         request.method === "GET" || request.method === "HEAD"
           ? undefined
@@ -76,7 +82,7 @@ export async function startNativeInferenceBroker(
       };
       if (request.headers["content-type"])
         headers["content-type"] = request.headers["content-type"];
-      if (credential) headers.authorization = `Bearer ${credential}`;
+      if (credential && !featured) headers.authorization = `Bearer ${credential}`;
       if (configuration.inference === "openrouter") {
         headers["http-referer"] = "https://www.nvidia.com/nemoclaw/";
         headers["x-openrouter-title"] = "NVIDIA NemoClaw";

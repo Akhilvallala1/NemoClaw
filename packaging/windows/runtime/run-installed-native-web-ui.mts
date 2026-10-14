@@ -138,9 +138,11 @@ export async function saveNativeOnboardingConfiguration(
 
 export function gatewaySource() {
   return String.raw`import fs, { mkdirSync, writeFileSync } from "node:fs";
+import JSON5 from "json5";
 import { startNativeUiTunnel } from "./native-ui-tunnel.mts";
 import { startNativeBrokerTunnel } from "./native-broker-tunnel.mts";
 import { nativeLocalPipeName, readNativeBrokerBootstrap } from "./native-local-pipe.mts";
+import { nativeOpenClawModels } from "./native-openclaw-models.mts";
 import { createServer } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import { join, resolve } from "node:path";
@@ -194,6 +196,8 @@ const launcher = required("NEMOCLAW_MXC_OPENCLAW_ENTRY");
 const home = required("NEMOCLAW_MXC_HOME");
 const modelId = required("NEMOCLAW_MXC_MODEL_ID");
 const modelToken = required("NEMOCLAW_MXC_MODEL_TOKEN");
+const inference = required("NEMOCLAW_MXC_INFERENCE");
+const setupSelection = required("NEMOCLAW_MXC_MODEL_SELECTION");
 const qualification = required("NEMOCLAW_MXC_QUALIFICATION") === "1";
 const configured = required("NEMOCLAW_NATIVE_SERVICES") === "1";
 const relayRoot = required("NEMOCLAW_MXC_RELAY_ROOT");
@@ -205,6 +209,7 @@ const modelPort = Number(required("NEMOCLAW_MXC_MODEL_PORT"));
 Object.assign(process.env, {
   NEMOCLAW_MXC_GATEWAY_PIPE_PORT: String(uiPort),
   NEMOCLAW_MXC_BROKER_PIPE_PORT: String(modelPort),
+  NEMOCLAW_MXC_MODEL_PROVIDER: ["nvidia", "openrouter"].includes(inference) ? inference : "nemoclawNative",
 });
 let brokerTunnel = null;
 let agentFailed = false;
@@ -340,6 +345,14 @@ patchedRealpath.native = patchedRealpath;
 fs.realpath = patchedRealpath;
 fs.realpathSync = patchedRealpathSync;
 syncBuiltinESMExports();
+Object.assign(process.env, {
+  HOME: home,
+  NODE_DISABLE_COMPILE_CACHE: "1",
+  OPENCLAW_HOME: home,
+  OPENCLAW_NO_RESPAWN: "1",
+  OPENCLAW_NO_AUTO_UPDATE: "1",
+  USERPROFILE: home,
+});
 let serviceConfiguration = {};
 if (configured) {
   const services = await readNativeBrokerBootstrap(modelPort, modelToken);
@@ -350,7 +363,21 @@ if (configured) {
     serviceConfiguration.plugins.load = { paths: prebuiltPlugins.map(id => join(required("OPENCLAW_COMPILED_ASSET_ROOT"), "plugins", id)) };
   }
 }
+const configurationPath = join(configDirectory, "openclaw.json");
+const previousConfiguration = fs.existsSync(configurationPath) ? JSON5.parse(fs.readFileSync(configurationPath, "utf8")) : {};
+const selectionPath = join(configDirectory, "nemoclaw-model-selection");
+const previousSelection = fs.existsSync(selectionPath) ? fs.readFileSync(selectionPath, "utf8") : undefined;
+const catalog = configured ? await buildPackagedModelCatalog(inference, "http://127.0.0.1:" + modelPort + "/v1", modelToken) : {
+  provider: "nemoclawNative",
+  configuration: {
+    baseUrl: "http://127.0.0.1:" + modelPort + "/v1", apiKey: modelToken, api: "openai-completions", timeoutSeconds: 180,
+    models: [{ id: modelId, name: modelId, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 131072, maxTokens: 4096 }],
+  },
+  references: { [modelId]: "nemoclawNative/" + modelId },
+};
+const modelConfiguration = nativeOpenClawModels(catalog, modelId, previousConfiguration, previousSelection !== undefined && previousSelection !== setupSelection);
 writeFileSync(join(configDirectory, "openclaw.json"), JSON.stringify({
+  ...previousConfiguration,
   ...serviceConfiguration,
   update: { checkOnStart: false, auto: { enabled: false } },
   gateway: {
@@ -359,23 +386,9 @@ writeFileSync(join(configDirectory, "openclaw.json"), JSON.stringify({
     auth: { mode: "none" },
     controlUi: { root: join(process.env.OPENCLAW_COMPILED_ASSET_ROOT, "node_modules", "openclaw", "dist", "control-ui"), allowedOrigins: ["http://127.0.0.1:" + browserPort, "http://localhost:" + browserPort] },
   },
-  models: { mode: "merge", providers: { nemoclawNative: {
-    baseUrl: "http://127.0.0.1:" + modelPort + "/v1",
-    apiKey: modelToken,
-    api: "openai-completions",
-    timeoutSeconds: 180,
-    models: [{ id: modelId, name: modelId, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 131072, maxTokens: 4096 }],
-  } } },
-  agents: { defaults: { model: { primary: "nemoclawNative/" + modelId }, timeoutSeconds: 180, skipBootstrap: true, thinkingDefault: "off" }, list: [{ id: "main", default: true }] },
+  ...modelConfiguration,
 }), "utf8");
-Object.assign(process.env, {
-  HOME: home,
-  NODE_DISABLE_COMPILE_CACHE: "1",
-  OPENCLAW_HOME: home,
-  OPENCLAW_NO_RESPAWN: "1",
-  OPENCLAW_NO_AUTO_UPDATE: "1",
-  USERPROFILE: home,
-});
+writeFileSync(selectionPath, setupSelection, "utf8");
 // Register sealed paths directly through the canonical guest-state record API
 // before CLI/loader initialization. No plugin installer or package manager runs.
 process.argv = [process.execPath, launcher, "gateway", "run", "--allow-unconfigured", "--port", String(uiPort), "--bind", "loopback", "--auth", "none"];
@@ -1480,6 +1493,16 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         LOCALAPPDATA: home,
         NEMOCLAW_MXC_HOME: home,
         NEMOCLAW_MXC_MODEL_ID: modelId,
+        NEMOCLAW_MXC_INFERENCE: configuredIdentity?.config.inference ?? "qualification",
+        NEMOCLAW_MXC_MODEL_SELECTION: createHash("sha256")
+          .update(
+            JSON.stringify([
+              configuredIdentity?.config.inference,
+              configuredIdentity?.config.localModel ?? configuredIdentity?.config.endpoint,
+              modelId,
+            ]),
+          )
+          .digest("hex"),
         NEMOCLAW_MXC_MODEL_PORT: String(modelPort),
         ...(brokerRelay === null
           ? {}

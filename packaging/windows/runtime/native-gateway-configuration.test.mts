@@ -7,7 +7,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { createHash } from "node:crypto";
+import JSON5 from "json5";
 import { gatewaySource } from "./run-installed-native-web-ui.mts";
+import { nativeOpenClawModels } from "./native-openclaw-models.mts";
 import {
   NATIVE_NODE_UI_POLICY,
   nativeQualificationLoopbackConfig,
@@ -21,6 +24,76 @@ const template =
 const render = (options: NativeGatewayOptions = {}) =>
   renderNativeGatewayConfig(template, "C:\\NemoClaw", undefined, options);
 
+test("the actual worker preserves native JSON5 settings and distinguishes a restart from installer reconfiguration", async () => {
+  const source = gatewaySource();
+  const start = source.indexOf("const configurationPath = ");
+  const end = source.indexOf("// Register sealed paths", start);
+  assert(start > 0 && end > start);
+  const files = new Map<string, string>();
+  const file = path.win32.join("owned-config", "openclaw.json");
+  let discoveries = 0;
+  let failDiscovery = false;
+  const execute = (setupSelection: string) =>
+    runInNewContext("(async () => {" + source.slice(start, end) + "})()", {
+      fs: {
+        existsSync: (name: string) => files.has(name),
+        readFileSync: (name: string) => files.get(name),
+      },
+      writeFileSync: (name: string, text: string) => files.set(name, text),
+      JSON5,
+      join: path.win32.join,
+      configDirectory: "owned-config",
+      configured: true,
+      process: { env: { OPENCLAW_COMPILED_ASSET_ROOT: "sealed-root" } },
+      browserPort: 60418,
+      modelPort: 18790,
+      modelToken: "fresh-token",
+      inference: "nvidia",
+      modelId: "nvidia/first",
+      setupSelection,
+      serviceConfiguration: {},
+      nativeOpenClawModels,
+      buildPackagedModelCatalog: async (inference: string, baseUrl: string, apiKey: string) => {
+        discoveries++;
+        assert.equal(inference, "nvidia");
+        if (failDiscovery) throw new Error("catalog unavailable");
+        return {
+          provider: "nvidia",
+          configuration: {
+            baseUrl,
+            apiKey,
+            api: "openai-completions",
+            models: [{ id: "nvidia/first" }, { id: "nvidia/second" }],
+          },
+          references: { "nvidia/first": "nvidia/first", "nvidia/second": "nvidia/second" },
+        };
+      },
+    });
+  await execute("original-setup");
+  assert.equal(JSON.parse(files.get(file)!).agents.defaults.model.primary, "nvidia/first");
+  files.set(
+    file,
+    `{
+    // Written through OpenClaw's native configuration surface.
+    agents: { defaults: { model: 'nvidia/second', thinkingDefault: 'medium', }, },
+    gateway: { bind: 'all' },
+  }`,
+  );
+  await execute("original-setup");
+  const restored = JSON.parse(files.get(file)!);
+  assert.equal(restored.agents.defaults.model.primary, "nvidia/second");
+  assert.equal(restored.agents.defaults.thinkingDefault, "medium");
+  assert.equal(restored.models.providers.nvidia.apiKey, "fresh-token");
+  assert.equal(restored.gateway.bind, "loopback");
+  await execute("changed-setup");
+  assert.equal(JSON.parse(files.get(file)!).agents.defaults.model.primary, "nvidia/first");
+  const before = Array.from(files);
+  failDiscovery = true;
+  await assert.rejects(execute("unavailable-setup"), /catalog unavailable/);
+  assert.deepEqual(Array.from(files), before);
+  assert.equal(discoveries, 4);
+});
+
 test("OpenClaw allows the bound browser relay origin, not its private gateway pipe port", () => {
   const host = fs.readFileSync(
     new URL("./run-installed-native-web-ui.mts", import.meta.url),
@@ -33,7 +106,7 @@ test("OpenClaw allows the bound browser relay origin, not its private gateway pi
   const declarations = worker.indexOf("const required = ");
   const declarationsEnd = worker.indexOf("let brokerTunnel = null;", declarations);
   const writer = worker.indexOf('writeFileSync(join(configDirectory, "openclaw.json"),');
-  const writerEnd = worker.indexOf("Object.assign(process.env, {", writer);
+  const writerEnd = worker.indexOf("// Register sealed paths", writer);
   assert(declarations >= 0 && declarationsEnd > declarations && writer >= 0 && writerEnd > writer);
   for (const qualification of [false, true]) {
     const env = runInNewContext(host.slice(start, end) + "sandboxEnvironment;", {
@@ -50,12 +123,13 @@ test("OpenClaw allows the bound browser relay origin, not its private gateway pi
       relayToken: "inert-relay",
       uiPort: 18789,
       uiRelay: { browserPort: 60418 },
-      configuredIdentity: {},
+      configuredIdentity: { config: { inference: "nvidia" } },
       systemRoot: "C:\\Windows",
       systemDrive: "C:",
       temp: "owned-temp",
       path: path.win32,
       process: { env: {} },
+      createHash,
     });
     let config: { gateway: { controlUi: { allowedOrigins: string[] }; bind: string } } | undefined;
     const execute = (environment: Record<string, string | undefined>) =>
@@ -64,10 +138,20 @@ test("OpenClaw allows the bound browser relay origin, not its private gateway pi
         {
           process: { env: environment },
           serviceConfiguration: {},
+          previousConfiguration: { gateway: { bind: "all" } },
+          modelConfiguration: nativeOpenClawModels(
+            {
+              provider: "nvidia",
+              configuration: { models: [{ id: "test-model" }] },
+              references: { "test-model": "nvidia/test-model" },
+            },
+            "test-model",
+          ),
           configDirectory: "owned-config",
+          selectionPath: "owned-selection",
           join: path.win32.join,
           writeFileSync(_file: string, value: string) {
-            config = JSON.parse(value);
+            if (_file !== "owned-selection") config = JSON.parse(value);
           },
         },
       );
