@@ -15,6 +15,7 @@ export function copyTrustedInstallerVerifier(repoRoot: string, targetRoot: strin
     "scripts/checks/openshell-trust-data.mts",
     "ci/openshell-upgrade-trust.json",
     "tools/e2e/candidate-openshell-trust.mts",
+    "tools/e2e/candidate-openshell-version.mts",
     "tools/e2e/candidate-upgrade-admission.mts",
     "tools/e2e/base-image-publication.mts",
   ].forEach((file) => {

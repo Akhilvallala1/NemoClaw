@@ -225,8 +225,11 @@ permissions before and after fetching the fixed source paths.
 The trusted installer checker compares local sources with the approved commit.
 It then verifies upstream checksum and formula records through the existing
 network-backed hash check. The E2E version selector uses the same admission.
-Unchanged registry data needs no additional approval; base-trusted template
-checks still apply. Neither reader executes candidate scripts or grants merge permission.
+Registry data already covered by trusted history needs no additional approval.
+The trusted checkout's current revocations and template checks still apply to older candidates.
+Candidates predating the registry can use only base-trusted records. The API reader
+requires a complete directory listing to establish absence; request failures never mean absence.
+Neither reader executes candidate scripts or grants merge permission.
 Missing permission evidence fails closed.
 
 After merge, the verifier reads the registry beside its trusted checkout, never
@@ -235,6 +238,8 @@ review govern that transition. An open PR's temporary admission is not merge aut
 `Security / Candidate Upgrade Admission` refreshes the `check-hash` commit status
 on upstream PR changes and approval-comment creation, editing, or deletion.
 When `check-hash` is required, both that status and the native hash check must pass.
+An approval comment refreshes only the commit status. If the native hash check
+failed before approval, rerun that job after approval.
 An interrupted refresh remains pending or fails; it cannot reuse an earlier success.
 
 This does not yet extend the protected runtime's source projection, approve a new
@@ -242,23 +247,6 @@ SDK dependency graph, qualify Pi, or add ARM64 candidate catalogs. A data-admiss
 comment is not permission to execute arbitrary candidate code on a protected
 host. Those boundaries require their own supported implementation and validation;
 passing the hash check is not full E2E qualification.
-
-### Accepted candidate-execution direction
-
-Decision: **Accept**, recorded October 14, 2026. Accountable maintainer:
-Prekshi Vyas, through the explicit task instruction accepting this design.
-The reason is to support routine upgrades in one PR, or two when a genuine
-trust/bootstrap prerequisite is required. Placement remains the existing trusted
-E2E controller and managed-image publication pipeline.
-
-Controllers stay trusted. Complete reviewed candidate code belongs in disposable
-isolated test environments, without shared protected-host authority or host
-credential mounts. Resources must remain run-owned, with verified cleanup or
-retained failure evidence. Existing data, mTLS and unrelated resources stay intact.
-Compatibility includes candidate pins, lockfiles, SDK graphs and platform contracts.
-Validation requires real-verifier denial tests, lifecycle and cleanup tests,
-independent review, and authorized live E2E. This acceptance does not establish
-that the remaining SDK, protected-runtime, Pi or ARM64 work is implemented.
 
 Unchanged runs pass the selected base revision and complete cohort receipt to every stock-onboarding consumer.
 Changed-input runs pass the authenticated candidate catalog separately to those consumers.

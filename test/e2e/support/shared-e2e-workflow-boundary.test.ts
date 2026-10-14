@@ -508,6 +508,7 @@ describe("pre-candidate execution environment identity", () => {
     "Install trusted E2E planner dependencies",
     "Generate E2E target matrix",
     "Stage immutable native Podman E2E toolchains",
+    "Resolve reviewed candidate OpenShell version",
   ];
   const owners = [
     { name: "workflow", select: (workflow: Workflow) => workflow },
@@ -563,6 +564,8 @@ describe("pre-candidate execution environment identity", () => {
     { owner: owners[6]!, bindingName: "GITHUB_TOKEN" },
     { owner: owners[11]!, bindingName: "NEMOCLAW_E2E_CREDENTIALS_ALLOWED" },
     { owner: owners[11]!, bindingName: "NEMOCLAW_E2E_INCLUDE_STAGING_BREV_LAUNCHABLE" },
+    { owner: owners[13]!, bindingName: "UPGRADE_PR_NUMBER" },
+    { owner: owners[13]!, bindingName: "UPGRADE_BASE_SHA" },
   ];
   const bindingChanges = [
     {

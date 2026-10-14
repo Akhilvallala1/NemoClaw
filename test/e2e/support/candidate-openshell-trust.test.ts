@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,112 +18,102 @@ import {
   reviewedCandidateOpenShellTrust,
   assertCandidateInstallerCheckout,
   verifyCandidateInstallerTrust,
+  readCandidateOpenShellRegistry,
 } from "../../../tools/e2e/candidate-openshell-trust.mts";
 import { parseOpenShellTrustRegistry } from "../../../scripts/checks/openshell-trust-data.mts";
 import { copyTrustedInstallerVerifier } from "../../helpers/openshell-installer-template";
 
-const identity = { prNumber: 123, candidateSha: "a".repeat(40), baseSha: "b".repeat(40) };
-const version = "9.8.7";
+import {
+  fixture,
+  runCoveredRegistry,
+  identity,
+  version,
+} from "../../helpers/candidate-openshell-trust";
 const temporaryRoots: string[] = [];
 afterEach(() =>
   temporaryRoots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
 );
 
-function fixture() {
-  const sources = Object.fromEntries(
-    Object.entries(CANDIDATE_OPENSHELL_SOURCES).map(([key, path]) => [
-      key,
-      readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8"),
-    ]),
-  ) as Record<keyof typeof CANDIDATE_OPENSHELL_SOURCES, string>;
-  const current = validateInstallerSources(sources);
-  const release = structuredClone(current.installerReleases[0]!);
-  const prior = release.version;
-  release.version = version;
-  release.formula.url = `https://github.com/NVIDIA/OpenShell/releases/download/v${version}/openshell.rb`;
-  release.sandboxBuilds = [{ required: false, sha256: "f".repeat(64) }];
-  sources.blueprintSource = sources.blueprintSource.replaceAll(`"${prior}"`, `"${version}"`);
-  sources.installerSource = sources.installerSource
-    .replaceAll(`v${prior}:`, `v${version}:`)
-    .replaceAll(`MIN_VERSION="${prior}"`, `MIN_VERSION="${version}"`)
-    .replaceAll(`MAX_VERSION="${prior}"`, `MAX_VERSION="${version}"`)
-    .replace(
-      '  case "$digest" in',
-      `  case "$digest" in\n    ${"f".repeat(64)})\n      printf '%s\\n' "${version}"\n      ;;`,
-    );
-  sources.brevInstallerSource = sources.brevInstallerSource
-    .replaceAll(`v${prior}:`, `v${version}:`)
-    .replaceAll(`OPENSHELL_VERSION="v${prior}"`, `OPENSHELL_VERSION="v${version}"`);
-  const supervisorHeader =
-    "const OPENSHELL_SUPERVISOR_MANIFEST_DIGESTS: Readonly<Record<string, string>> = {\n";
-  sources.supervisorRuntimeSource = sources.supervisorRuntimeSource
-    .replace(
-      supervisorHeader,
-      `${supervisorHeader}  "${version}": "${release.supervisor!.manifestDigest}",\n`,
-    )
-    .replace(
-      `QUALIFIED_STABLE_OPENSHELL_VERSION = "${prior}"`,
-      `QUALIFIED_STABLE_OPENSHELL_VERSION = "${version}"`,
-    );
-  const normalizedSupervisor = sources.supervisorRuntimeSource.replace(
-    /(?<=const OPENSHELL_SUPERVISOR_MANIFEST_DIGESTS: Readonly<Record<string, string>> = \{\n)[\s\S]*?(?=\n\};)/u,
-    "<normalized-supervisor-manifest-pins>",
-  );
-  release.supervisor!.runtimeTemplateSha256 = [
-    createHash("sha256").update(normalizedSupervisor).digest("hex"),
-  ];
-  const files: Record<string, string> = Object.fromEntries(
-    Object.entries(CANDIDATE_OPENSHELL_SOURCES).map(([key, path]) => [
-      path,
-      sources[key as keyof typeof sources],
-    ]),
-  );
-  files[CANDIDATE_OPENSHELL_TRUST_PATH] = JSON.stringify({
-    schemaVersion: 1,
-    releases: [release],
-    revokedTemplateSha256: [],
-  });
-  const repository = { full_name: "NVIDIA/NemoClaw" };
-  const approvals = [
-    {
-      id: 50,
-      user: { type: "User", login: "reviewer" },
-      created_at: "2026-10-14T00:00:00Z",
-      updated_at: "2026-10-14T00:00:00Z",
-      body: `NemoClaw-Upgrade-E2E: approve ${identity.candidateSha} ${identity.baseSha}`,
-    },
-  ];
-  const routes: Record<string, unknown> = {
-    "/repos/NVIDIA/NemoClaw/pulls/123": {
-      number: 123,
-      state: "open",
-      user: { login: "author" },
-      head: { sha: identity.candidateSha, repo: repository },
-      base: { sha: identity.baseSha, ref: "main", repo: repository },
-    },
-    "/repos/NVIDIA/NemoClaw/issues/123/comments?per_page=100&page=1": approvals,
-    "/repos/NVIDIA/NemoClaw/collaborators/reviewer/permission": { role_name: "maintain" },
-  };
-  const request = vi.fn(async (path: string): Promise<unknown> => {
-    const sourcePath = new URL(path, "https://api.github.com").pathname.replace(
-      "/repos/NVIDIA/NemoClaw/contents/",
-      "",
-    );
-    const content = files[sourcePath];
-    return content === undefined
-      ? routes[path]
-      : {
-          type: "file",
-          path: sourcePath,
-          encoding: "base64",
-          size: Buffer.byteLength(content),
-          content: Buffer.from(content).toString("base64"),
-        };
-  });
-  return { files, sources, release, approvals, request };
-}
-
 describe("reviewed candidate OpenShell trust", () => {
+  it.each(
+    (["installer", "version"] as const).flatMap((consumer) =>
+      (["older", "empty", "absent"] as const).map((scenario) => ({ consumer, scenario })),
+    ),
+  )(
+    "accepts $scenario candidate registry in $consumer using current trusted history",
+    ({ consumer, scenario }) => {
+      const result = runCoveredRegistry(consumer, scenario, temporaryRoots);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(version);
+    },
+  );
+
+  it.each(
+    (["installer", "version"] as const).flatMap((consumer) =>
+      (
+        [
+          "revoked",
+          "absent-revoked",
+          "absent-untrusted",
+          "symlink",
+          "new-template",
+          "changed-artifact",
+        ] as const
+      ).map((scenario) => ({
+        consumer,
+        scenario,
+      })),
+    ),
+  )(
+    "rejects $scenario candidate in $consumer despite older registry compatibility",
+    ({ consumer, scenario }) => {
+      const result = runCoveredRegistry(consumer, scenario, temporaryRoots);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(
+        scenario.endsWith("revoked")
+          ? "operational template"
+          : scenario === "absent-untrusted"
+            ? "not in the base-trusted release records"
+            : scenario === "symlink"
+              ? "regular file"
+              : "fresh approval required",
+      );
+    },
+  );
+
+  it.each([
+    { label: "non-directory", entries: {} },
+    {
+      label: "truncated",
+      entries: Array.from({ length: 1000 }, (_, index) => ({ path: `ci/${index}`, type: "file" })),
+    },
+    { label: "duplicate", entries: [{ path: "ci/other" }, { path: "ci/other" }] },
+    { label: "outside-directory", entries: [{ path: "other/manifest.json" }] },
+    { label: "null-entry", entries: [null] },
+    {
+      label: "submodule",
+      entries: [
+        { path: CANDIDATE_OPENSHELL_TRUST_PATH, type: "file", submodule_git_url: "untrusted" },
+      ],
+    },
+  ])("does not infer registry absence from $label listing", async ({ entries }) => {
+    await expect(
+      readCandidateOpenShellRegistry(identity.candidateSha, async () => entries),
+    ).rejects.toThrow(/listing|regular file/);
+  });
+
+  it.each(["403", "404", "500"])(
+    "does not infer registry absence from API failure %s",
+    async (status) => {
+      await expect(
+        readCandidateOpenShellRegistry(identity.candidateSha, async () => {
+          throw new Error(`GitHub API request failed with HTTP ${status}`);
+        }),
+      ).rejects.toThrow(`HTTP ${status}`);
+    },
+  );
+
   it("validates the merged registry without the old PR remaining open", () => {
     const f = fixture();
     const registry = parseOpenShellTrustRegistry(f.files[CANDIDATE_OPENSHELL_TRUST_PATH]!);

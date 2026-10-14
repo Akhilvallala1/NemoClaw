@@ -7,14 +7,13 @@ import {
   validateInstallerSources,
   readOpenShellTrustRegistry,
 } from "../../scripts/checks/extract-installer-pins.mts";
-import { parseOpenShellTrustRegistry } from "../../scripts/checks/openshell-trust-data.mts";
-import { isDeepStrictEqual } from "node:util";
 import { readCandidateUpgradeSource } from "./candidate-upgrade-admission.mts";
 import { githubRequest } from "./base-image-publication.mts";
 import {
   CANDIDATE_OPENSHELL_SOURCES as SOURCE_PATHS,
-  CANDIDATE_OPENSHELL_TRUST_PATH,
+  readCandidateOpenShellRegistry,
   reviewedCandidateOpenShellTrust,
+  registryCoveredByTrusted,
 } from "./candidate-openshell-trust.mts";
 
 // Runs from the trusted workflow checkout, before any candidate code executes.
@@ -37,10 +36,8 @@ export async function candidateOpenShellVersion(
     );
   }
   if (review) {
-    const registry = parseOpenShellTrustRegistry(
-      await readCandidateUpgradeSource(request, candidateSha, CANDIDATE_OPENSHELL_TRUST_PATH),
-    );
-    if (!isDeepStrictEqual(registry, readOpenShellTrustRegistry())) {
+    const registry = await readCandidateOpenShellRegistry(candidateSha, request);
+    if (!registryCoveredByTrusted(registry, readOpenShellTrustRegistry())) {
       const approved = await reviewedCandidateOpenShellTrust({ ...review, candidateSha }, request);
       return approved.selected.releaseVersion;
     }
