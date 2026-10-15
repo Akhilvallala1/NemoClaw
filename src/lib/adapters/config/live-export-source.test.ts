@@ -1398,6 +1398,7 @@ it.each(["matching", "wrong-key", "replacement", "broadened-profile", "missing-a
         ...startupInput.inference,
         upstreamProvider: "compatible-endpoint",
         routedBaseUrl: prepared.endpointUrl,
+        nativeCustomCredentialEnv: receipt.credentialEnv,
       },
     });
     mockSupportedLiveSource(3, 3, {
