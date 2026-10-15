@@ -694,7 +694,9 @@ Select the network policy tier for this onboarding run: `restricted`, `balanced`
 In interactive mode, the wizard skips the tier prompt and still shows the preset review screen.
 The flag works in interactive and non-interactive mode and takes precedence over `NEMOCLAW_POLICY_TIER`, which is then not used or validated.
 NemoClaw records the tier with the onboarding session, so a resumed session keeps it.
-When you pass `--policy-tier` while resuming, it must match the recorded tier; start with `--fresh` to choose a different tier.
+When you pass `--policy-tier` while resuming, it must match the recorded tier.
+To choose a different tier, run `$$nemoclaw onboard --fresh`, which starts a new onboarding session.
+A sandbox that already uses the Personal tier cannot move to another tier in place, because Personal replaces overlapping web routes; create a new sandbox with the other tier instead.
 For tier details, refer to [Network Policies](network-policies#policy-tiers).
 
 ```bash

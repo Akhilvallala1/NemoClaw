@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { POLICY_TIER_NAMES } from "../domain/policy-tier-names";
+import { isPolicyTierName } from "../policy/tiers";
 
 export {
   resolvePrimaryMessagingCredentialEnvKeys,
@@ -22,11 +22,6 @@ export {
   validateSandboxCreateIntentBindings,
 } from "./sandbox-create-plan-materialization";
 
-// Validate the env value against the lightweight canonical tier names, not
-// `../policy/tiers` (which transitively requires `runner.ts` and breaks vitest
-// source resolution for this module's tests).
-const KNOWN_POLICY_TIER_NAMES: ReadonlySet<string> = new Set(POLICY_TIER_NAMES);
-
 export function resolveSandboxCreatePolicyTier(requestedPolicyTier?: string | null): string | null {
   if (requestedPolicyTier !== undefined) return requestedPolicyTier;
   // Only trust the env value in non-interactive mode. Interactive flows let the
@@ -40,5 +35,5 @@ export function resolveSandboxCreatePolicyTier(requestedPolicyTier?: string | nu
   const raw = process.env.NEMOCLAW_POLICY_TIER;
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim().toLowerCase();
-  return KNOWN_POLICY_TIER_NAMES.has(trimmed) ? trimmed : null;
+  return isPolicyTierName(trimmed) ? trimmed : null;
 }

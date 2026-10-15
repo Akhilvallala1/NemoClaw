@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Flags } from "@oclif/core";
-import { POLICY_TIER_NAMES } from "../domain/policy-tier-names";
+import { listPolicyTierNames } from "../policy/tiers";
 import { TOOL_DISCLOSURE_VALUES, type ToolDisclosure } from "../tool-disclosure";
 import { describeAgentFlag } from "./agent-flag-help";
 import { PORTABLE_EXPERIMENTAL_PROFILE } from "./docker-driver-platform";
@@ -47,8 +47,22 @@ function agentFlagDescription(): string {
   }
 }
 
+// Resolve the tier names from tiers.yaml for `--policy-tier` help. If the tier
+// file cannot be read, the flag accepts any value and onboarding validates it.
+function policyTierFlagOptions(): string[] | undefined {
+  try {
+    return listPolicyTierNames();
+  } catch {
+    return undefined;
+  }
+}
+
+function policyTierUsage(): string {
+  return policyTierFlagOptions()?.join("|") ?? "tier";
+}
+
 export const onboardUsage = [
-  `onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository@sha256:digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--policy-tier <restricted|balanced|open|personal>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [${NOTICE_ACCEPT_FLAG}]`,
+  `onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository@sha256:digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--policy-tier <${policyTierUsage()}>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [${NOTICE_ACCEPT_FLAG}]`,
 ];
 
 export const onboardExamples = [
@@ -168,7 +182,7 @@ export function buildOnboardFlags(options: { includeEvents?: boolean } = {}): Re
     "policy-tier": Flags.string({
       description:
         "Select the network policy tier without the tier prompt (overrides NEMOCLAW_POLICY_TIER)",
-      options: [...POLICY_TIER_NAMES],
+      options: policyTierFlagOptions(),
     }),
     observability: Flags.boolean({
       allowNo: true,

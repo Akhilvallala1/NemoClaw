@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 
 import { resolveOnboardOptions, runOnboardCommand } from "./command";
-import { POLICY_TIER_NAMES } from "../domain/policy-tier-names";
+import { listPolicyTierNames } from "../policy/tiers";
 import type { OnboardFlags } from "./command-support";
 
 function exitWithCode(code: number): never {
@@ -19,7 +19,7 @@ function resolve(
     env: {},
     error: () => {},
     exit: exitWithCode,
-    listPolicyTiers: () => POLICY_TIER_NAMES,
+    listPolicyTiers: listPolicyTierNames,
     ...overrides,
   });
 }
@@ -49,7 +49,7 @@ describe("onboard --policy-tier (#13180)", () => {
     await runOnboardCommand({
       flags: { "policy-tier": "restricted" },
       env,
-      listPolicyTiers: () => POLICY_TIER_NAMES,
+      listPolicyTiers: listPolicyTierNames,
       runOnboard: async (options) => {
         seen.push(options.requestedPolicyTier);
         expect(env.NEMOCLAW_POLICY_TIER).toBe("open");

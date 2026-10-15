@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** Shared validation for operator selections persisted in an onboard session. */
-export { isPolicyTierName } from "../../domain/policy-tier-names";
+export { isPolicyTierName } from "../../policy/tiers";
 export {
   readModelSelectionProvenance,
   type ModelSelectionProvenance,
