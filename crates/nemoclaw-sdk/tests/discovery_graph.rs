@@ -19,8 +19,8 @@ use serde_json::{Value, json};
 
 const DATA_SOURCES: [&str; 4] = [
     "nemoclaw_engine_capabilities",
-    "fabric_capabilities",
-    "nemoclaw_inference_capabilities",
+    "openshell_gateway_prerequisites",
+    "fabric_harnesses",
     "nemoclaw_target_hardware",
 ];
 

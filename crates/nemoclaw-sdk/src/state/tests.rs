@@ -65,12 +65,19 @@ fn legacy_intent_is_rejected_without_rewriting_recovery_state() {
     )
     .unwrap();
     let mut record = Record::new(document).unwrap();
-    record.version = 6;
-    let bytes = serde_json::to_vec(&record).unwrap();
-    let path = dir.path().join("intent.json");
-    std::fs::write(&path, &bytes).unwrap();
-    assert!(store.load().is_err());
-    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    // Version 10 records bind fabric_agent_configuration resources, which no
+    // provider serves since typed Fabric agents; version 11 records bind
+    // nemoclaw_inference_storage and nemoclaw_ollama_proxy_storage, which moved
+    // to the vllm and ollama providers; version 12 records bind
+    // nemoclaw_ollama_external_model, which data.ollama_model replaced.
+    for version in [6, 10, 11, 12] {
+        record.version = version;
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let path = dir.path().join("intent.json");
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(store.load().is_err(), "version {version}");
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
 }
 
 #[test]
@@ -573,7 +580,7 @@ fn pending_recovery_requires_matching_current_bindings_and_retains_unknown_creat
     record.begin_apply(&document, pending);
     let mut bindings: BTreeMap<_, _> = targets
         .iter()
-        .filter(|target| target.kind != "agent_configuration")
+        .filter(|target| target.kind != "agent")
         .map(|target| {
             let get = |key: &str| target.values.get(key).cloned().unwrap_or_default();
             (
@@ -609,7 +616,7 @@ fn pending_recovery_requires_matching_current_bindings_and_retains_unknown_creat
         assert!(retained.pending(), "{field}");
         let unresolved = retained.pending_creations;
         assert!(unresolved.contains_key(sandbox));
-        assert!(unresolved.contains_key("fabric_agent_configuration.assistant"));
+        assert!(unresolved.contains_key("fabric_agent.assistant"));
     }
     let missing = bindings
         .keys()
@@ -716,7 +723,7 @@ fn typed_storage_bindings_compare_their_complete_identity() {
         "generation":"b".repeat(32),
         "engine":"unix:///var/run/docker.sock",
     });
-    let address = "nemoclaw_inference_storage.inference_qwen_auth";
+    let address = "vllm_credential_storage.inference_qwen_auth";
     let bindings = read(&state(serde_json::json!([
         {"address":address, "mode":"managed", "values":values}
     ])))
@@ -746,7 +753,7 @@ fn gateway_storage_bindings_record_their_typed_settings() {
         "image_pull_policy":null,
         "data_path":"/var/lib/docker/volumes/data/_data",
     });
-    let address = "nemoclaw_gateway_storage.runtime";
+    let address = "openshell_gateway_storage.runtime";
     let bindings = read(&state(serde_json::json!([
         {"address":address, "mode":"managed", "values":values}
     ])))

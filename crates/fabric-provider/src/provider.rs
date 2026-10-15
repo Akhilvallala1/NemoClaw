@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The `fabric` provider's configuration, resources, and data sources.
 
-use crate::{AgentConfigurationBackend, FabricCapabilitiesDataSource, SandboxReadinessDataSource};
+use crate::{
+    AgentBackend, AgentReadinessDataSource, FabricCapabilitiesDataSource, FabricHarnessDataSource,
+};
 use async_trait::async_trait;
 use nemoclaw_backend::{Backend, Error, Mutation, ObservationError, Row};
-use nemoclaw_tofu::ResourceAdapter;
+use nemoclaw_tofu::{ResourceAdapter, StructuredAdapter};
 use openshell_provider::{GatewayClient, GatewayConfig};
 use std::{
     collections::HashMap,
@@ -22,12 +24,7 @@ struct FabricBackend(Arc<GatewayClient>);
 #[async_trait]
 impl Backend for FabricBackend {
     async fn plan(&self, kind: &str, desired: &Row, prior: Option<&Row>) -> Result<(), Error> {
-        // Unknown provider inputs may be produced by an upstream resource.
-        // Only fresh-resource planning can defer its read.
-        if prior.is_none() && self.0.deferred()? {
-            return Ok(());
-        }
-        AgentConfigurationBackend(self.0.client()?)
+        AgentBackend(self.0.planning_client(desired)?)
             .plan(kind, desired, prior)
             .await
     }
@@ -37,17 +34,13 @@ impl Backend for FabricBackend {
         prior: &Row,
         removing: bool,
     ) -> Result<Option<Row>, ObservationError> {
-        AgentConfigurationBackend(self.0.client()?)
+        AgentBackend(self.0.client_for(prior)?)
             .read(kind, prior, removing)
             .await
     }
     async fn ensure(&self, kind: &str, desired: &Row) -> Mutation {
-        match self.0.client() {
-            Ok(client) => {
-                AgentConfigurationBackend(client)
-                    .ensure(kind, desired)
-                    .await
-            }
+        match self.0.client_for(desired) {
+            Ok(client) => AgentBackend(client).ensure(kind, desired).await,
             Err(error) => Mutation::failed(error),
         }
     }
@@ -57,7 +50,7 @@ impl Backend for FabricBackend {
         prior: &Row,
         destroying: bool,
     ) -> Result<(), ObservationError> {
-        AgentConfigurationBackend(self.0.client()?)
+        AgentBackend(self.0.client_for(prior)?)
             .remove(kind, prior, destroying)
             .await
     }
@@ -116,7 +109,10 @@ impl Provider for FabricProvider {
                     let name = definition.kind.to_owned();
                     let mut resource = ResourceAdapter::new(definition, backend.clone());
                     resource.destroying = self.destroying.clone();
-                    (name, Box::new(resource) as Box<dyn DynamicResource>)
+                    (
+                        name,
+                        Box::new(StructuredAdapter(resource)) as Box<dyn DynamicResource>,
+                    )
                 })
                 .collect(),
         )
@@ -128,13 +124,17 @@ impl Provider for FabricProvider {
     ) -> Option<HashMap<String, Box<dyn DynamicDataSource>>> {
         Some(HashMap::from([
             (
-                "sandbox_readiness".into(),
-                Box::new(SandboxReadinessDataSource(self.client.clone()))
+                "agent_readiness".into(),
+                Box::new(AgentReadinessDataSource(self.client.clone()))
                     as Box<dyn DynamicDataSource>,
             ),
             (
-                "capabilities".into(),
+                "harnesses".into(),
                 Box::new(FabricCapabilitiesDataSource::default()) as Box<dyn DynamicDataSource>,
+            ),
+            (
+                "harness".into(),
+                Box::new(FabricHarnessDataSource::default()) as Box<dyn DynamicDataSource>,
             ),
         ]))
     }
@@ -145,14 +145,11 @@ mod tests {
     use super::*;
     use tf_provider::value::Value;
 
-    // Connecting starts a lazy channel, which needs a runtime.
     #[tokio::test]
-    async fn rejected_reconfiguration_withdraws_teardown_permission() {
+    async fn reconfiguration_without_destroy_withdraws_teardown_permission() {
         let provider = FabricProvider::default();
         let permitted = GatewayConfig {
-            endpoint: Value::Value("http://127.0.0.1:1".into()),
             destroy: Value::Value(true),
-            ..Default::default()
         };
         let mut diagnostics = Diagnostics::default();
         provider
@@ -160,17 +157,10 @@ mod tests {
             .await
             .unwrap();
         assert!(provider.destroying.load(Ordering::Acquire));
-        // Teardown without an endpoint is refused.
-        let rejected = GatewayConfig {
-            destroy: Value::Value(true),
-            ..Default::default()
-        };
-        assert!(
-            provider
-                .configure(&mut diagnostics, String::new(), rejected)
-                .await
-                .is_none()
-        );
+        provider
+            .configure(&mut diagnostics, String::new(), GatewayConfig::default())
+            .await
+            .unwrap();
         assert!(!provider.destroying.load(Ordering::Acquire));
     }
 
@@ -232,13 +222,12 @@ mod tests {
         let fixture = Fixture::start().await;
         let services = Arc::new(FixtureServices::default());
         let creator = GatewayClient::with_services(services.clone());
-        creator
+        let creator = creator
             .connect(&nemoclaw_openshell::Connection {
                 endpoint: fixture.endpoint.clone(),
                 ..Default::default()
             })
             .unwrap();
-        let creator = creator.client().unwrap();
         let rows = contract_rows("fabric-openclaw");
         let row = |kind: &str| {
             rows.iter()
@@ -265,10 +254,7 @@ mod tests {
 
         let provider = FabricProvider::with_services(services.clone());
         let mut diagnostics = Diagnostics::default();
-        let config = GatewayConfig {
-            endpoint: Value::Value(fixture.endpoint.clone()),
-            ..Default::default()
-        };
+        let config = GatewayConfig::default();
         provider
             .configure(&mut diagnostics, String::new(), config)
             .await
@@ -279,7 +265,7 @@ mod tests {
         // this client, so it must keep the injected credential checks.
         let observed = provider
             .client
-            .client()
+            .client_for(&[("gateway_endpoint".to_owned(), fixture.endpoint.clone())].into())
             .unwrap()
             .read("provider", &saved, false)
             .await;
@@ -336,13 +322,12 @@ mod tests {
         let fixture = Fixture::start().await;
         let services = Arc::new(ClusterServices::default());
         let creator = GatewayClient::with_services(services.clone());
-        creator
+        let creator = creator
             .connect(&nemoclaw_openshell::Connection {
                 endpoint: fixture.endpoint.clone(),
                 ..Default::default()
             })
             .unwrap();
-        let creator = creator.client().unwrap();
         let rows = contract_rows("fabric-openclaw");
         let row = |kind: &str| {
             rows.iter()
@@ -370,10 +355,7 @@ mod tests {
 
         let provider = FabricProvider::with_services(services.clone());
         let mut diagnostics = Diagnostics::default();
-        let config = GatewayConfig {
-            endpoint: Value::Value(fixture.endpoint.clone()),
-            ..Default::default()
-        };
+        let config = GatewayConfig::default();
         provider
             .configure(&mut diagnostics, String::new(), config)
             .await
@@ -390,7 +372,7 @@ mod tests {
         // this client, so it must keep the injected cluster checks.
         let observed = provider
             .client
-            .client()
+            .client_for(&[("gateway_endpoint".to_owned(), fixture.endpoint.clone())].into())
             .unwrap()
             .read("provider_profile", &saved, false)
             .await;

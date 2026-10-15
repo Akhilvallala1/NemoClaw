@@ -16,9 +16,9 @@ The [accepted scope](scope.md) defines the invariants; this page explains the re
 | OpenTofu | Dependency ordering, concurrent resource reconciliation, and resource state |
 | Docker provider | Docker containers, images, model-cache volumes, and service networks |
 | Helm provider | The pinned OpenShell chart release on the authored Kubernetes cluster |
-| OpenShell provider | OpenShell workspaces, provider registrations and profiles, sandboxes, and gateway capability reads |
+| OpenShell provider | OpenShell workspaces, provider registrations and profiles, sandboxes, and gateway capability reads; Podman gateway processes, gateway storage, and Kubernetes gateway installation |
 | Fabric provider | Fabric runtime configuration and readiness in agent sandboxes |
-| NemoClaw provider | Podman gateway processes, durable storage contracts, and readiness observations |
+| NemoClaw provider | Inference service storage contracts and readiness observations |
 | Hosted runtime | Model preparation, startup, application health, and protective shutdown |
 | Fabric | Adapter and target discovery, native schemas, native configuration validation and mapping, and agent execution |
 
@@ -158,7 +158,7 @@ See [provider discovery](../provider.md#engine-and-fabric-discovery) for observa
 
 Native interface, tool-disclosure, and reasoning settings are authored through Fabric's configuration and adapter settings.
 Managed search credentials, endpoint protocols, and network grants remain SDK deployment behavior.
-The reconstructible `agent_configuration` resource applies canonical Fabric configuration after provider routes are established.
+The reconstructible `fabric_agent` resource applies canonical Fabric configuration after provider routes are established.
 It restarts the Fabric runtime inside its retained sandbox when configuration changes; it does not replace the sandbox.
 A restarted host waits for explicit apply before starting a runtime, because persisted intent does not prove that current gateway routes match.
 The host calls Fabric's public plan/start/invoke/stop APIs.
@@ -174,7 +174,7 @@ The native [bundle](../build.md#build-a-native-bundle) ships the matching CLI, s
 
 OpenShell needs a reachable gateway to refresh resources and plan changes.
 A managed deployment therefore establishes its runtime infrastructure before planning OpenShell resources.
-Deferred provider configuration supports fresh bootstrap, but an unavailable gateway still blocks refresh of existing OpenShell bindings before a combined graph can restore it.
+A gateway ref whose connection is unknown until apply defers planning during fresh bootstrap, but an unavailable gateway still blocks refresh of existing OpenShell bindings before a combined graph can restore it.
 The runtime stage preserves that recovery path.
 The SDK coordinates two graphs:
 

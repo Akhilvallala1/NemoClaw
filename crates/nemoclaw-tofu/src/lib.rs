@@ -23,6 +23,15 @@ pub type ValidateSpec = fn(kind: &str, encoded: &str) -> Result<(), nemoclaw_bac
 pub type ValidateAttribute =
     fn(attribute: &str, value: &str) -> Result<(), std::borrow::Cow<'static, str>>;
 
+/// Checks inputs that constrain each other: the known ones, and the names of
+/// those still unknown. Explains a rejection without echoing values.
+pub type ValidateInputs =
+    fn(known: &Row, unknown: &[&str]) -> Result<(), std::borrow::Cow<'static, str>>;
+
+/// Computes an attribute from the known inputs, given the names of those still
+/// unknown; `None` while the inputs it needs are unknown.
+pub type Derive = fn(known: &Row, unknown: &[&str]) -> Option<String>;
+
 /// Generates a value for an omitted identity attribute when a resource is created.
 pub type Generate = fn() -> Result<String, nemoclaw_backend::Error>;
 
@@ -69,9 +78,21 @@ pub struct Definition {
     pub replaces: Option<Replaces>,
     pub validate_spec: Option<ValidateSpec>,
     pub validate_attribute: Option<ValidateAttribute>,
+    pub validate_inputs: Option<ValidateInputs>,
+    /// Computed attributes that are functions of the inputs.
+    pub derived: Vec<(&'static str, Derive)>,
     pub describe: Option<Describe>,
     /// Typed inputs carried as JSON in row fields.
     pub structured: Vec<crate::Structured>,
+    /// The identity other resources take, exposed as the computed `ref`.
+    pub export: Option<crate::Export>,
+    /// Inputs that take another resource's `ref`.
+    pub references: Vec<crate::Reference>,
+    /// The OpenTofu schema version; state from an earlier version is rejected.
+    pub schema_version: i64,
+    /// Inputs the backend uses but does not observe, such as how to reach it.
+    /// Observations and mutations keep the recorded or desired value.
+    pub carried: Vec<&'static str>,
 }
 
 impl Definition {
@@ -91,8 +112,14 @@ impl Definition {
             replaces: None,
             validate_spec: None,
             validate_attribute: None,
+            validate_inputs: None,
+            derived: Vec::new(),
             describe: None,
             structured: Vec::new(),
+            export: None,
+            references: Vec::new(),
+            schema_version: 0,
+            carried: Vec::new(),
         }
     }
     pub fn optional(mut self, fields: &[&'static str]) -> Self {
@@ -139,6 +166,17 @@ impl Definition {
         self.validate_attribute = Some(validate);
         self
     }
+    pub fn validate_inputs(mut self, validate: ValidateInputs) -> Self {
+        self.validate_inputs = Some(validate);
+        self
+    }
+    /// Compute `name` from the inputs: known while planning once the inputs
+    /// it needs are, and recomputed from every observation.
+    pub fn derived(mut self, name: &'static str, derive: Derive) -> Self {
+        self.computed.push((name, carry_prior));
+        self.derived.push((name, derive));
+        self
+    }
     /// Expose row `field`, which holds JSON, as the typed input `attribute`.
     pub fn structured(
         mut self,
@@ -152,6 +190,63 @@ impl Definition {
             shape,
         });
         self
+    }
+    /// Expose `fields` as the computed object `ref` of type `kind`, which other
+    /// resources take to refer to this one.
+    pub fn exports(mut self, kind: &'static str, fields: &[&'static str]) -> Self {
+        self.export = Some(crate::Export {
+            kind,
+            fields: fields.to_vec(),
+        });
+        self
+    }
+    /// Take another resource's `ref` of type `kind` as the object input
+    /// `attribute`. Each `(ref attribute, row field)` pair carries one of its
+    /// attributes to the backend.
+    pub fn references(
+        mut self,
+        attribute: &'static str,
+        kind: &'static str,
+        fields: &[(&'static str, &'static str)],
+    ) -> Self {
+        self.references.push(crate::Reference {
+            attribute,
+            kind,
+            fields: fields.to_vec(),
+            list: false,
+        });
+        self
+    }
+    /// Take a list of another resource's `ref`s of type `kind` as the input
+    /// `attribute`; `field`'s row field holds a JSON list of their `ref` attribute.
+    pub fn references_list(
+        mut self,
+        attribute: &'static str,
+        kind: &'static str,
+        field: (&'static str, &'static str),
+    ) -> Self {
+        self.references.push(crate::Reference {
+            attribute,
+            kind,
+            fields: vec![field],
+            list: true,
+        });
+        self
+    }
+    /// Keep `fields` from the recorded or desired row, because the backend
+    /// uses them without observing them.
+    pub fn carried(mut self, fields: &[&'static str]) -> Self {
+        self.carried.extend_from_slice(fields);
+        self
+    }
+    /// Set the OpenTofu schema version after an incompatible schema change.
+    pub fn schema_version(mut self, version: i64) -> Self {
+        self.schema_version = version;
+        self
+    }
+    /// Whether the resource has typed attributes, which need the structured adapter.
+    pub fn is_structured(&self) -> bool {
+        !self.structured.is_empty() || self.export.is_some() || !self.references.is_empty()
     }
     pub fn describe(mut self, describe: Describe) -> Self {
         self.describe = Some(describe);
@@ -230,4 +325,6 @@ pub mod shape;
 mod structured;
 pub use nemoclaw_backend::{Backend, Mutation, Row};
 pub use resource::{ResourceAdapter, observation_message};
-pub use structured::{Structured, StructuredAdapter, StructuredState};
+pub use structured::{
+    Export, REF, REF_TYPE, Reference, Structured, StructuredAdapter, StructuredState,
+};

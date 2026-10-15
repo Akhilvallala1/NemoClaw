@@ -51,7 +51,7 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
         .unwrap();
     let health = observations
         .iter()
-        .find(|row| row["address"] == "data.fabric_sandbox_readiness.assistant")
+        .find(|row| row["address"] == "data.fabric_agent_readiness.assistant")
         .unwrap();
     assert_eq!(health["values"]["ready"], false);
     let failed_health: nemoclaw_sdk::RuntimeHealth =
@@ -123,7 +123,7 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["address"] == "data.fabric_sandbox_readiness.assistant")
+        .find(|row| row["address"] == "data.fabric_agent_readiness.assistant")
         .unwrap();
     assert_ne!(observation["values"]["read_trigger"], token);
     assert_eq!(observation["values"]["ready"], true);
@@ -151,7 +151,7 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["address"] == "data.fabric_sandbox_readiness.assistant")
+        .find(|row| row["address"] == "data.fabric_agent_readiness.assistant")
         .unwrap();
     let message = rejection["values"]["error_message"].as_str().unwrap();
     assert!(
@@ -165,7 +165,19 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
     assert!(!message.contains("PRIVATE_SENTINEL"), "{message}");
     assert_eq!(rejection["values"]["ready"], false);
     assert_eq!(fixture.state.lock().unwrap().effects, effects);
-    // Teardown omits observations so an unavailable runtime cannot block deletion.
+    // Teardown omits observations so an unavailable runtime cannot block
+    // deletion; retained objects name their gateway literally instead.
+    let current = &graph["data"]["openshell_gateway"]["current"];
+    let mut gateway = json!({"type": "openshell_gateway"});
+    for attribute in [
+        "endpoint",
+        "credential_env",
+        "tls_ca_env",
+        "tls_certificate_env",
+        "tls_key_env",
+    ] {
+        gateway[attribute] = json!(current[attribute].as_str().unwrap_or_default());
+    }
     graph.as_object_mut().unwrap().remove("data");
     graph.as_object_mut().unwrap().remove("output");
     for provider in ["nemoclaw", "openshell", "fabric"] {
@@ -177,6 +189,7 @@ async fn standalone_sandbox_completion_rejects_unknown_health_and_retains_bindin
         .unwrap()
         .remove("depends_on");
     workspace["deployment"]["lifecycle"] = json!({"prevent_destroy":true});
+    workspace["deployment"]["gateway"] = gateway;
     graph["resource"] = json!({"openshell_workspace":workspace});
     fs::write(root.join("main.tf.json"), graph.to_string()).unwrap();
     run(

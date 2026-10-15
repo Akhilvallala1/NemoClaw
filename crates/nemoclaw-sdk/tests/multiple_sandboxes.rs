@@ -132,7 +132,7 @@ fn adding_a_sandbox_preserves_existing_resource_addresses_and_values() {
             let mut prior = instance.clone();
             let mut next = after["resource"][kind][name].clone();
             // Adding an earlier sandbox changes the discovery expression; its resolved image metadata is identical.
-            for field in ["runtime_json", "binaries_json"] {
+            for field in ["launch_json", "binaries_json"] {
                 prior.as_object_mut().unwrap().remove(field);
                 next.as_object_mut().unwrap().remove(field);
             }
@@ -193,10 +193,10 @@ fn five_agent_example_compiles_to_five_independent_sandboxes_sharing_inference()
         let configuration = rows
             .iter()
             .find(|candidate| {
-                candidate.kind == "agent_configuration" && candidate.values["name"] == sandbox.name
+                candidate.kind == "agent" && candidate.values["sandbox"] == sandbox.name
             })
             .unwrap();
-        let settings: Value = serde_json::from_str(&configuration.values["config_json"]).unwrap();
+        let settings: Value = nemoclaw_fabric::agent::compose(&configuration.values).unwrap();
         assert_eq!(settings["metadata"]["name"], sandbox.agent.name);
         assert_eq!(row.values["agent_name"], sandbox.agent.name);
     }

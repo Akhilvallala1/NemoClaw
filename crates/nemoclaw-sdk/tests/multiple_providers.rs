@@ -64,14 +64,12 @@ fn a_sandbox_attaches_the_union_of_selected_providers_with_bound_credentials() {
         2
     );
     let sandbox = rows.iter().find(|row| row.kind == "sandbox").unwrap();
-    let settings: Value = serde_json::from_str(
+    let settings: Value = nemoclaw_fabric::agent::compose(
         &rows
             .iter()
-            .find(|row| {
-                row.kind == "agent_configuration" && row.values["name"] == sandbox.values["name"]
-            })
+            .find(|row| row.kind == "agent" && row.values["sandbox"] == sandbox.values["name"])
             .unwrap()
-            .values["config_json"],
+            .values,
     )
     .unwrap();
     assert!(sandbox.values["provider_names_json"].contains("hosted"));
@@ -91,12 +89,12 @@ fn a_sandbox_attaches_the_union_of_selected_providers_with_bound_credentials() {
         .iter()
         .find(|row| row.kind == "sandbox" && row.values["name"] == "other")
         .unwrap();
-    let other_settings: Value = serde_json::from_str(
+    let other_settings: Value = nemoclaw_fabric::agent::compose(
         &rows
             .iter()
-            .find(|row| row.kind == "agent_configuration" && row.values["name"] == "other")
+            .find(|row| row.kind == "agent" && row.values["sandbox"] == "other")
             .unwrap()
-            .values["config_json"],
+            .values,
     )
     .unwrap();
     assert_eq!(
@@ -301,7 +299,7 @@ fn managed_services_have_independent_storage_credentials_and_dependencies() {
             .as_array()
             .unwrap();
         assert!(dependencies.contains(&json!(format!(
-            "nemoclaw_inference_storage.inference_{name}_auth"
+            "vllm_credential_storage.inference_{name}_auth"
         ))));
     }
     // Duplicate bind ports must fail before creating either service.
