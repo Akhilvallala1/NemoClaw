@@ -166,6 +166,7 @@ export async function showSandboxStatus(sandboxName: string): Promise<void> {
       if (hermesPortable) {
         console.log(`  Sandbox: ${sandboxName}`);
         console.log("  Agent: Hermes");
+        console.log(`  Recorded gateway: ${hermesPortable.gatewayName}`);
         console.log(`  Saved Portable lifecycle phase: ${hermesPortable.phase}`);
         console.log("  Runtime and agent health: not probed");
         return;
