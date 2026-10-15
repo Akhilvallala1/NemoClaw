@@ -753,7 +753,9 @@ function runFixture(
 ) {
   const fixtureRoot = createFixture(openshellVersion, formatting);
   const targetChecker = path.join(fixtureRoot, "scripts", "check-installer-hash.sh");
-  const trustedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-trusted-hash-check-"));
+  const trustedRoot = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-trusted-hash-check-")),
+  );
   const trustedCheckerPath = path.join(trustedRoot, "scripts", "check-installer-hash.sh");
   const trustedParserPath = path.join(
     trustedRoot,
