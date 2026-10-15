@@ -206,6 +206,7 @@ const policies = require(${j("policy/index.js")});
 const removedPresets = [];
 policies.listPresets = () => ${JSON.stringify(presetNamesApplied.map((name) => ({ name })))};
 policies.getAppliedPresets = () => ${JSON.stringify(presetNamesApplied)};
+policies.getGatewayPresets = () => ${JSON.stringify(presetNamesApplied)};
 policies.removePreset = (sandboxName, presetName) => {
   removedPresets.push({ sandboxName, presetName });
   return true;

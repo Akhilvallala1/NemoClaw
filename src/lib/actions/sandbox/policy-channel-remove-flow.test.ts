@@ -90,6 +90,7 @@ describe("policy channel remove/enable flows", () => {
     vi.spyOn(openshellRuntime, "runOpenshell").mockImplementation(((args: string[]) =>
       args.includes("cat") ? { status: 1, stderr: "missing" } : { status: 0 }) as never);
     vi.spyOn(policies, "getAppliedPresets").mockResolvedValue([channel]);
+    vi.spyOn(policies, "getGatewayPresets").mockResolvedValue([channel]);
     vi.spyOn(policies, "listPresets").mockReturnValue([{ name: channel } as never]);
     const removePreset = vi.spyOn(policies, "removePreset").mockResolvedValue(true);
     const rebuildSandbox = vi
@@ -207,6 +208,7 @@ describe("policy channel remove/enable flows", () => {
       vi.mocked(registry.getSandbox).mockReturnValue(entry);
       vi.mocked(registry.getConfiguredMessagingChannelsFromEntry).mockRestore();
       vi.mocked(policies.getAppliedPresets).mockResolvedValue([]);
+      vi.mocked(policies.getGatewayPresets).mockResolvedValue([]);
       vi.spyOn(nonInteractive, "isNonInteractiveSession").mockReturnValue(!interactive);
       const prompt = vi.spyOn(credentials, "prompt").mockResolvedValue("n");
       const clearTokens = vi.spyOn(channels, "clearChannelTokens").mockImplementation(() => {});
@@ -246,6 +248,51 @@ describe("policy channel remove/enable flows", () => {
       );
     },
   );
+
+  it("refuses absent WhatsApp removal when the applied policy cannot be inspected", async () => {
+    const { current, rebuildSandbox, removePreset, updateSandbox } = await arrangeChannelRemoval(
+      "telegram",
+      "openclaw",
+    );
+    vi.mocked(registry.getConfiguredMessagingChannelsFromEntry).mockRestore();
+    vi.mocked(policies.getAppliedPresets).mockResolvedValue([]);
+    vi.mocked(policies.getGatewayPresets).mockResolvedValue(null);
+    const prompt = vi.spyOn(credentials, "prompt").mockResolvedValue("n");
+    const clearTokens = vi.spyOn(channels, "clearChannelTokens").mockImplementation(() => {});
+    const cleanup = vi.spyOn(policyChannelDependencies, "cleanupMessagingProviders");
+    vi.spyOn(telemetry, "isTelemetryOperationActive").mockReturnValue(true);
+    vi.spyOn(telemetry, "getTelemetryTarget").mockReturnValue(null);
+    const recordTarget = vi.spyOn(telemetry, "recordTelemetryTarget").mockImplementation(() => {});
+    const before = structuredClone(current);
+    logSpy.mockClear();
+
+    await expect(removeChannelNonInteractive()).rejects.toThrow("process.exit(1)");
+
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("Could not inspect the applied policy for 'alpha'"),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("nemoclaw alpha channels remove whatsapp"),
+    );
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("Nothing to do"));
+    expect(current).toEqual(before);
+    expect(updateSandbox).not.toHaveBeenCalled();
+    expect(removePreset).not.toHaveBeenCalled();
+    expect(clearTokens).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(commandTransport.executeSandboxExecCommand).not.toHaveBeenCalled();
+    expect(openshellRuntime.runOpenshell).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+    expect(rebuildSandbox).not.toHaveBeenCalled();
+    expect(recordTarget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "configuration",
+        sandboxName: "alpha",
+        outcome: "failed",
+        state: "unchanged",
+      }),
+    );
+  });
 
   it("does not report an absent WhatsApp channel when the sandbox is unknown", async () => {
     const { updateSandbox, rebuildSandbox } = await arrangeChannelRemoval("whatsapp", "openclaw");
