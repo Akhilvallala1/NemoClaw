@@ -230,7 +230,10 @@ legacy_openshell_state_is_absent() {
 # Every installation entrypoint must verify legacy state before downloading or
 # replacing components. The Homebrew service-control operation above remains
 # available so the installed legacy gateway can still be stopped and retired.
-if ! legacy_openshell_state_is_absent; then
+verify_legacy_openshell_state() {
+  if legacy_openshell_state_is_absent; then
+    return
+  fi
   command -v node >/dev/null 2>&1 || fail "Node.js is required to verify legacy OpenShell state."
   # Keep this guard in the installer: protected execution projects this file alone.
   # shellcheck disable=SC2016 # JavaScript template literals are evaluated by Node.js.
@@ -318,9 +321,6 @@ function verify() {
       query(binary, ["--version"]),
     );
     if (!version) deny("the installed CLI version is unknown");
-    // A gateway already on the selected release is outside the legacy cutover.
-    // The component checks below still verify the installed release artifacts.
-    if (version[0] === `openshell ${process.argv[1]}`) return;
   }
   // Native gateway list silently omits corrupt metadata. Inspect registrations
   // before querying each gateway, rather than trusting an empty gateway list.
@@ -350,8 +350,8 @@ try {
   );
   process.exitCode = 1;
 }
-' "$PIN_VERSION"
-fi
+'
+}
 
 # invalidState: a consumed OpenShell release asset differs from the digest
 # published for the selected immutable release, or a mutable registry tag moves.
@@ -1040,6 +1040,8 @@ if command -v openshell >/dev/null 2>&1; then
     warn "openshell $INSTALLED_VERSION is below minimum $MIN_VERSION — upgrading..."
   fi
 fi
+
+verify_legacy_openshell_state
 
 info "Installing OpenShell from release '$RELEASE_TAG'..."
 

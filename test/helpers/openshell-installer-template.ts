@@ -161,6 +161,7 @@ export function installerReleaseTemplate(source: string, version: string): strin
     );
     assert.ok(guardEnd > guardStart, "OpenShell 0.1.2 retirement guard fixture boundary");
     source = source.slice(0, guardStart) + source.slice(guardEnd);
+    source = source.replace("verify_legacy_openshell_state\n\n", "");
   }
   const v012Comment =
     "  # OpenShell 0.1.2 enforces MCP policy in its supervisor image. Recognize\n" +

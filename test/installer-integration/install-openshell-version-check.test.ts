@@ -229,6 +229,32 @@ describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
     expect(result.retainedFilesUnchanged).toBe(true);
   });
 
+  it.each(["Linux", "Darwin"] as const)(
+    "refuses component replacement with a current CLI and registered sandboxes on %s",
+    (os) => {
+      const result = runCommandWithInstalledVersion(
+        REQUIRED_OPENSHELL_VERSION,
+        {},
+        { legacyGateway: true, driverBins: false, os, arch: "arm64" },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("a legacy gateway has sandboxes");
+      expect(result.downloads).toBe("");
+      expect(result.retainedFilesUnchanged).toBe(true);
+    },
+  );
+
+  it("allows current-release component repair after verifying an empty gateway inventory", () => {
+    const result = runCommandWithInstalledVersion(
+      REQUIRED_OPENSHELL_VERSION,
+      {},
+      { legacyGateway: "empty", driverBins: false },
+    );
+    expect(result.downloads, result.stderr).not.toBe("");
+    expect(result.stderr).not.toContain("Cannot replace OpenShell");
+    expect(result.retainedFilesUnchanged).toBe(true);
+  });
+
   it("accepts MCP L7 support from the installed gateway sidecar", () => {
     const result = runCommandWithInstalledVersion(
       REQUIRED_OPENSHELL_VERSION,

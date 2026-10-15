@@ -96,6 +96,10 @@ After backup, the installer requires any existing OpenShell executable it will u
 Before it retires an out-of-range gateway, the installer retires every applicable registered legacy forward through its exact sandbox, bind, port, process, gateway, and workspace identity, including Hermes dashboard, active messaging, and declared agent forwards.
 If it cannot prove that retirement, it exits before retiring the gateway and preserves every completed backup.
 It retires the running gateway before replacing an out-of-range OpenShell installation, keeps the gateway when the installed version is supported, and stops without retiring it when the installed version or supported range cannot be validated.
+Reusing OpenShell also requires the installed components to pass identity and capability checks.
+Before replacing components, the installer requires a complete empty sandbox inventory from every registered OpenShell gateway.
+If that check fails, it stops before downloading replacement components.
+Preserve the gateway registrations and sandbox data while resolving the reported failure.
 If OpenShell lifecycle commands cannot retire the gateway, the installer can use verified service or PID-file evidence on Linux and macOS.
 For the default gateway on port `8080`, Linux first checks verified systemd service evidence for `nemoclaw-openshell-gateway.service`, while macOS first checks verified Homebrew gateway service evidence.
 On either platform, the installer can then use a verified NemoClaw-managed gateway PID file for the configured gateway port.
