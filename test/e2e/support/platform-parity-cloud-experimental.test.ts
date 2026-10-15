@@ -84,6 +84,37 @@ function writeDcodeApprovalTestDriver(driverPath: string, testEntrypoint: string
 }
 
 describe("P0-E cloud-experimental parity guardrails", () => {
+  it("captures only DCode consent and round outcomes after a TUI failure", () => {
+    const script = fs
+      .readFileSync(dcodeApprovalCheck, "utf8")
+      .split("capture_autorun_failure() {")[1]
+      ?.split("cat <<'PY'\n")[1]
+      ?.split("\nPY\n")[0];
+    expect(script).toBeDefined();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-auto-failure-"));
+    try {
+      fs.mkdirSync(path.join(root, ".deepagents/.state"), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, ".deepagents/.state/approval.json"),
+        JSON.stringify({ auto_notice_shown: true, privateValue: "secret-canary" }),
+      );
+      fs.writeFileSync(path.join(root, ".nemoclaw-e2e-autorun-shell-1"), "shell-round-1\n");
+      fs.writeFileSync(path.join(root, "private"), "secret-canary");
+      fs.symlinkSync(path.join(root, "private"), path.join(root, ".nemoclaw-e2e-autorun-write"));
+      const result = spawnSync("python3", ["-I", "-c", script!, root], { encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        observation: "after-tui-failure",
+        auto_notice_shown: true,
+        round_files_match: { "shell-1": true, write: null, "shell-3": null },
+      });
+      expect(result.stdout).not.toContain("secret-canary");
+      expect(fs.readFileSync(path.join(root, "private"), "utf8")).toBe("secret-canary");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ["https://inference.local/v1", "https://inference.local/v1", 0],
     ["https://native.example/v1", "https://native.example/v1", 0],

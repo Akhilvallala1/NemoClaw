@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./mcp-bridge", async (importOriginal) => ({
@@ -13,7 +17,87 @@ import { DEEP_AGENTS_CODE_SANDBOX_USER } from "../../agent/deep-agents-code-runt
 import type { SandboxEntry } from "../../state/registry";
 import { executeSandboxDestroy, wipeAgentNativeHome } from "./destroy-execution";
 
+function executeWipeWithDeniedEntry(command: readonly string[], root: string, denied: string) {
+  const args = command.slice(1).map((arg) => arg.replaceAll("/sandbox", root));
+  // Inject an identity's permission denial while executing the real wipe script.
+  args[1] = `rm() { case "$*" in *"/${denied}") return 1 ;; esac; command rm "$@"; }\n${args[1]}`;
+  const result = spawnSync(command[0]!, args, { encoding: "utf8" });
+  return {
+    ...result,
+    stdout: Buffer.from(result.stdout ?? ""),
+    stderr: Buffer.from(result.stderr ?? ""),
+  };
+}
+
 describe("native-home destroy fallback", () => {
+  it("removes later root-owned entries before handing remaining state to the sandbox user", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-mixed-owner-cleanup-"));
+    const sandboxOwned = path.join(root, ".a-sandbox");
+    const rootOwned = path.join(root, ".z-root");
+    try {
+      fs.mkdirSync(sandboxOwned);
+      fs.writeFileSync(path.join(sandboxOwned, "state"), "retained");
+      fs.mkdirSync(rootOwned);
+      fs.writeFileSync(path.join(rootOwned, "state"), "retained");
+      const execute = (command: readonly string[], denied: string) =>
+        executeWipeWithDeniedEntry(command, root, denied);
+      const runAsSandboxUser = vi.fn((command: readonly string[]) => execute(command, ".z-root"));
+      expect(() =>
+        wipeAgentNativeHome(
+          "alpha",
+          "langchain-deepagents-code",
+          () => ({ status: 255, stdout: "", stderr: "OpenShell execution unavailable" }),
+          undefined,
+          (command) => execute(command, ".a-sandbox"),
+          undefined,
+          runAsSandboxUser,
+        ),
+      ).not.toThrow();
+      expect(fs.readdirSync(root)).toEqual([]);
+      expect(runAsSandboxUser).toHaveBeenCalledOnce();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes OpenClaw user-owned entries before the root pass removes managed files", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openclaw-cleanup-"));
+    const nativeRoot = path.join(root, ".openclaw");
+    try {
+      fs.mkdirSync(path.join(nativeRoot, ".a-root"), { recursive: true });
+      fs.writeFileSync(path.join(nativeRoot, ".a-root", "state"), "retained");
+      fs.mkdirSync(path.join(nativeRoot, ".z-sandbox"));
+      fs.writeFileSync(path.join(nativeRoot, ".z-sandbox", "state"), "retained");
+      const runPrivileged = vi.fn((command: readonly string[]) =>
+        executeWipeWithDeniedEntry(command, root, ".z-sandbox"),
+      );
+      expect(() =>
+        wipeAgentNativeHome(
+          "alpha",
+          "openclaw",
+          (args) => {
+            const result = executeWipeWithDeniedEntry(
+              args.slice(args.indexOf("--") + 1),
+              root,
+              ".a-root",
+            );
+            return {
+              ...result,
+              stdout: result.stdout.toString(),
+              stderr: result.stderr.toString(),
+            };
+          },
+          undefined,
+          runPrivileged,
+        ),
+      ).not.toThrow();
+      expect(fs.readdirSync(nativeRoot)).toEqual([]);
+      expect(runPrivileged).toHaveBeenCalledOnce();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     {
       initial: "owner permission failure",

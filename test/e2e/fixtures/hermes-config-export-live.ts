@@ -21,11 +21,13 @@ import {
   cliOpenShellSandboxPolicyReader,
 } from "../../../src/lib/adapters/openshell/sandbox-policy-cli.ts";
 import { load, save } from "../../../src/lib/state/registry/persistence.ts";
+import { isSandboxPolicyCredentialFree } from "../../../src/lib/policy/sandbox-policy-validation.ts";
 import type { ArtifactSink } from "./artifacts.ts";
 import type { HostCliClient } from "./clients/host.ts";
 import { trustedSandboxShellScript, type SandboxClient } from "./clients/sandbox.ts";
 import type { CleanupRegistry } from "./cleanup.ts";
 import { CLI_ENTRYPOINT, REPO_ROOT } from "./paths.ts";
+import { redactString } from "./redaction.ts";
 import {
   expectedPinnedV1HermesNativeSettings,
   type PinnedV1ConsumerEvidence,
@@ -98,6 +100,35 @@ const CREDENTIAL_HTTP_REFUSAL =
 const PODMAN_REFUSAL =
   "V1alpha1 export currently supports the Docker runtime; Podman compatibility is deferred.";
 const MESSAGING_REFUSAL = "V1 export does not support messaging.";
+
+async function captureUnexpectedExportPolicy(
+  input: HermesConfigExportLiveInput,
+  gatewayName: string,
+): Promise<void> {
+  let evidence: Record<string, unknown> = { observation: "post-failure", state: "unavailable" };
+  try {
+    const policy = await cliOpenShellSandboxPolicyReader.readSandboxPolicy({
+      target: namedOpenShellGateway(gatewayName),
+      sandboxName: input.sandboxName,
+      scope: "effective",
+      timeoutMs: 10_000,
+    });
+    if (policy.ok) {
+      const document = policy.value.document;
+      const safe =
+        isSandboxPolicyCredentialFree(document) &&
+        redactString(document, input.redactionValues) === document;
+      evidence = {
+        observation: "post-failure",
+        state: safe ? "captured" : "omitted-sensitive-or-malformed",
+        ...(safe ? { document } : {}),
+      };
+    }
+  } catch {
+    // Diagnostic failure must not replace the original export assertion.
+  }
+  await input.artifacts.writeJson("hermes-config-export-failure-policy.json", evidence);
+}
 
 function normalizeCommandDiagnostics(stdout: string, stderr: string): string {
   return [stdout, stderr]
@@ -330,6 +361,13 @@ export async function verifyHermesConfigExportLive(
   const nemohermesRaw = nemohermes.exitCode === 0 ? fs.readFileSync(nemohermesPath, "utf8") : "";
   const nemoclawDiagnostics = normalizeCommandDiagnostics(nemoclaw.stdout, nemoclaw.stderr);
   const nemohermesDiagnostics = normalizeCommandDiagnostics(nemohermes.stdout, nemohermes.stderr);
+  if (
+    [nemoclawDiagnostics, nemohermesDiagnostics].some((text) =>
+      text.includes("policy-not-representable"),
+    )
+  ) {
+    await captureUnexpectedExportPolicy(input, entry.gatewayName ?? "");
+  }
   const containsCredential = input.redactionValues.some(
     (value) =>
       value.length > 0 &&

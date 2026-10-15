@@ -27,6 +27,27 @@ describe("rebuild filesystem restore", () => {
     vi.restoreAllMocks();
   });
 
+  it("reports maintenance failure detail without restoring state or exposing credentials", async () => {
+    vi.mocked(restoreWindow.beginUnregisteredOpenClawBackupQuiesce).mockResolvedValue({
+      ok: false,
+      stage: "abort",
+      detail: "last readiness probe=24; NVIDIA_API_KEY=private-test-key",
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const restore = vi.spyOn(snapshotRestore, "restoreRecreatedSandboxStateWithManagedAuthority");
+    const log = vi.fn();
+    const result = await runRebuildRestorePhase({
+      sandboxName: "alpha",
+      targetAgentType: "openclaw",
+      backupManifest,
+      log,
+    });
+    expect(result).toEqual({ restoreSucceeded: false });
+    expect(restore).not.toHaveBeenCalled();
+    expect(log.mock.calls.flat().join("\n")).toContain("last readiness probe=24");
+    expect(log.mock.calls.flat().join("\n")).not.toContain("private-test-key");
+  });
+
   it("restores complete native state through managed authority without replaying policy state", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const restore = vi

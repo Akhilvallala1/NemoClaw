@@ -160,9 +160,13 @@ function assertCreateAttemptNonce(createAttemptNonce: string): void {
 export class CreatedSandboxIdentityError extends Error {
   readonly diagnostic: string;
 
-  constructor(sandboxName: string, diagnostic = "settlement-incomplete") {
+  constructor(
+    sandboxName: string,
+    diagnostic = "settlement-incomplete",
+    timing?: { readonly elapsedMs: number; readonly timeoutMs: number },
+  ) {
     super(
-      `OpenShell did not return the exact created identity for sandbox '${sandboxName}'. Diagnostic class: ${diagnostic}.`,
+      `OpenShell did not return the exact created identity for sandbox '${sandboxName}'. Diagnostic class: ${diagnostic}.${timing ? ` Selector elapsed=${timing.elapsedMs}ms; command bound=${timing.timeoutMs}ms.` : ""}`,
     );
     this.diagnostic = diagnostic;
   }
@@ -343,7 +347,7 @@ export function settleCreatedOpenShellSandboxId(input: {
 
   let previousNowMs = startedAt;
   let pendingSandboxId: string | null = input.priorSandboxId ?? null;
-  let diagnostic = "settlement-incomplete";
+  const diagnostic = "settlement-incomplete";
   const readNow = (): number => {
     const currentNowMs = now();
     if (!Number.isFinite(currentNowMs) || currentNowMs < previousNowMs) {
@@ -354,7 +358,8 @@ export function settleCreatedOpenShellSandboxId(input: {
   };
 
   for (;;) {
-    const remainingMs = Math.floor(deadlineMs - readNow());
+    const probeStartedAt = readNow();
+    const remainingMs = Math.floor(deadlineMs - probeStartedAt);
     if (remainingMs <= 0) break;
 
     const observation = observeCreatedOpenShellSandboxId(input, remainingMs);
@@ -363,8 +368,10 @@ export function settleCreatedOpenShellSandboxId(input: {
       return observation.sandboxId;
     }
     if (observation.state === "invalid") {
-      diagnostic = observation.diagnostic;
-      break;
+      throw new CreatedSandboxIdentityError(input.sandboxName, observation.diagnostic, {
+        elapsedMs: Math.floor(readNow() - probeStartedAt),
+        timeoutMs: remainingMs,
+      });
     }
     if (observation.sandboxId === null) {
       if (pendingSandboxId) break;

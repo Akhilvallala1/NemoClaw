@@ -806,6 +806,7 @@ export async function beginOpenClawPostRestoreDoctor(
   );
 
   const reconciliationDeadlineMs = deps.now() + OPENCLAW_DOCTOR_READY_TIMEOUT_MS;
+  let lastProbeStatus: number | null = null;
   const ready = await waitUntilAsync(
     async () => {
       const remainingMs = reconciliationDeadlineMs - deps.now();
@@ -818,8 +819,10 @@ export async function beginOpenClawPostRestoreDoctor(
           Math.max(1, Math.min(15_000, Math.floor(remainingMs))),
           runtimeSelection,
         );
+        lastProbeStatus = result?.status ?? null;
         return result?.status === 0;
       } catch {
+        lastProbeStatus = null;
         return false;
       }
     },
@@ -863,7 +866,7 @@ export async function beginOpenClawPostRestoreDoctor(
   return {
     ok: false,
     stage: abort.ok ? stage : "abort",
-    detail: abort.ok ? detail : abort.detail,
+    detail: `${detail} (stop=${stop.status ?? "unavailable"}, start=${start.status ?? "unavailable"}, last readiness probe=${lastProbeStatus ?? "unavailable"}).${abort.ok ? "" : ` ${abort.detail}`}`,
   };
 }
 

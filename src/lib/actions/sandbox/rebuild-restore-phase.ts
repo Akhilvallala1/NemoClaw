@@ -7,6 +7,7 @@ import { G, R, YW } from "../../cli/terminal-style";
 import { load as loadRegistry } from "../../state/registry/persistence";
 import type { RebuildBackupManifest } from "./rebuild-backup-phase";
 import type { RebuildLog } from "./rebuild-credential-preflight";
+import { redactBoundedRebuildTerminalDiagnostic } from "./rebuild-preflight-confirmation";
 import {
   abortUnregisteredOpenClawPostRestoreDoctor,
   beginUnregisteredOpenClawBackupQuiesce,
@@ -50,6 +51,9 @@ export async function runRebuildRestorePhase(
     );
     log(`Pre-restore quiesce window: ${doctorWindow.ok ? "verified" : doctorWindow.stage}`);
     if (!doctorWindow.ok) {
+      log(
+        `Pre-restore quiesce failure: ${redactBoundedRebuildTerminalDiagnostic(doctorWindow.detail)}`,
+      );
       console.error(
         `  ${YW}OpenClaw state restore could not enter its gateway-down maintenance window.${R}`,
       );

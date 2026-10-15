@@ -327,7 +327,9 @@ describe("OpenShell sandbox identity reading", () => {
   ])(
     "refuses selector %s without retrying or disclosing its error (#10423)",
     (_case, error, diagnostic) => {
+      let nowMs = 0;
       const runCaptureOpenshell = vi.fn((): string => {
+        nowMs = 29_750;
         throw error;
       });
       const sleep = vi.fn();
@@ -339,12 +341,14 @@ describe("OpenShell sandbox identity reading", () => {
           gatewayName: "nemoclaw",
           createAttemptNonce: CREATE_ATTEMPT_NONCE,
           runCaptureOpenshell,
+          now: () => nowMs,
           sleep,
         });
       } catch (settlementError) {
         caught = settlementError;
       }
       expect(String(caught)).toContain(`Diagnostic class: ${diagnostic}.`);
+      expect(String(caught)).toContain("Selector elapsed=29750ms; command bound=30000ms.");
       expect(String(caught)).not.toContain("canary");
       expect(String(caught)).not.toContain("sandbox-alpha");
       expect(String(caught)).not.toContain(CREATE_ATTEMPT_NONCE);

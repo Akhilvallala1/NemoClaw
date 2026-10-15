@@ -206,6 +206,38 @@ async function runEnabledFixture(
 
 describe("Hermes config export live evidence", () => {
   it.each([
+    ["network_policies: {}\n", "captured"],
+    ["network_policies: {}\n# secret-value\n", "omitted-sensitive-or-malformed"],
+    ["network_policies: {}\ncredentials: secret-value\n", "omitted-sensitive-or-malformed"],
+  ])(
+    "retains safe failure policy evidence without accepting the refusal: %s",
+    async (document, state) => {
+      mocks.command.mockResolvedValue({
+        exitCode: 2,
+        stdout: "",
+        stderr: "Config export failed (policy-not-representable).",
+      });
+      mocks.readSandboxPolicy.mockResolvedValue({ ok: true, value: { document } });
+      await expect(runEnabledFixture(["secret-value"])).resolves.toEqual({
+        checked: true,
+        passed: false,
+      });
+      expect(mocks.writeJson).toHaveBeenCalledWith("hermes-config-export-failure-policy.json", {
+        observation: "post-failure",
+        state,
+        ...(state === "captured" ? { document } : {}),
+      });
+      expect(mocks.readSandboxPolicy).toHaveBeenCalledExactlyOnceWith({
+        target: { kind: "named", name: "nemoclaw" },
+        sandboxName: "hermes",
+        scope: "effective",
+        timeoutMs: 10_000,
+      });
+      expect(JSON.stringify(mocks.writeJson.mock.calls)).not.toContain("secret-value");
+    },
+  );
+
+  it.each([
     { label: "full", plan: EMPTY_MESSAGING_PLAN },
     { label: "compact", plan: compactSandboxMessagingPlanForPersistence(EMPTY_MESSAGING_PLAN) },
   ])("validates published exports with a $label empty messaging plan", async ({ plan }) => {

@@ -274,6 +274,44 @@ expect {
 EXPECT
 }
 
+capture_autorun_failure() {
+  local diagnostic_script
+  diagnostic_script="$(
+    cat <<'PY'
+import json, os, stat, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+def read_owned_fixture(relative):
+    try:
+        fd = os.open(root / relative, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4096:
+                return None
+            return os.read(fd, 4097)
+        finally:
+            os.close(fd)
+    except OSError:
+        return None
+notice = read_owned_fixture('.deepagents/.state/approval.json')
+try:
+    approval = json.loads(notice) if notice is not None else {}
+    notice_shown = None if notice is None else approval.get('auto_notice_shown') is True
+except (ValueError, AttributeError):
+    notice_shown = None
+rounds = {}
+for name, expected in [('shell-1', b'shell-round-1'), ('write', b'write-round-2'), ('shell-3', b'shell-round-3')]:
+    content = read_owned_fixture('.nemoclaw-e2e-autorun-' + name)
+    rounds[name] = None if content is None else content in (expected, expected + b'\n')
+print(json.dumps({'observation': 'after-tui-failure', 'auto_notice_shown': notice_shown, 'round_files_match': rounds}))
+PY
+  )"
+  # Read only the fixed consent/round fixtures; never emit their contents or change the failure.
+  timeout --signal=TERM --kill-after=2s 15s openshell sandbox exec --name "$SANDBOX_NAME" -- \
+    /opt/venv/bin/python3 -I -c "$diagnostic_script" /sandbox 2>&1 \
+    | node --no-warnings "${REPO}/test/e2e/fixtures/redaction.ts" || true
+}
+
 assert_autorun_evidence() {
   local marker_file="$1"
   local marker
@@ -379,6 +417,7 @@ main() {
   # Failure captures pass through the canonical redactor before reaching logs.
   if ! run_autorun_tui "$marker_file" \
     | node --no-warnings "${REPO}/test/e2e/fixtures/redaction.ts"; then
+    capture_autorun_failure
     fail "finite DCode autorun TUI harness failed: $(tr '\n' ' ' <"$marker_file")"
   fi
   assert_autorun_evidence "$marker_file"

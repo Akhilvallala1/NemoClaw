@@ -680,7 +680,8 @@ describe("OpenClaw post-upgrade recovery doctor", () => {
     ).resolves.toEqual({
       ok: false,
       stage: "doctor",
-      detail: "startup did not prove doctor completion with the gateway held down",
+      detail:
+        "startup did not prove doctor completion with the gateway held down (stop=0, start=0, last readiness probe=20).",
     });
     expect(currentMs).toBe(6 * 60_000);
   });
@@ -712,13 +713,37 @@ describe("OpenClaw post-upgrade recovery doctor", () => {
     ).resolves.toEqual({
       ok: false,
       stage: "doctor",
-      detail: "startup did not prove doctor completion with the gateway held down",
+      detail:
+        "startup did not prove doctor completion with the gateway held down (stop=0, start=0, last readiness probe=20).",
     });
     expect(capture.mock.calls.map((call) => call[0])).toEqual([
       ["sandbox", "stop", "alpha"],
       ["sandbox", "start", "alpha"],
       ["sandbox", "stop", "alpha"],
     ]);
+  });
+
+  it("preserves the original readiness failure when the abort marker also fails", async () => {
+    let currentMs = 0;
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 0, stdout: "", stderr: "" })
+      .mockResolvedValue({ status: 24, stdout: "private command output", stderr: "private error" });
+    const result = await beginOpenClawBackupQuiesce("alpha", undefined, {
+      captureOpenshell: vi.fn(() => ({ status: 0, output: "private lifecycle output" })) as never,
+      executeSandboxExecCommand: execute,
+      now: () => currentMs,
+      sleep: vi.fn(async (seconds: number) => {
+        currentMs += seconds * 1_000;
+      }),
+    });
+    expect(result).toEqual({
+      ok: false,
+      stage: "abort",
+      detail:
+        "startup did not prove backup quiescence with the gateway held down (stop=0, start=0, last readiness probe=24). sandbox stopped, but the maintenance abort marker was not reconciled",
+    });
+    expect(currentMs).toBe(9 * 60_000);
   });
 
   it("reconciles a nonzero abort stop from the observed stopped phase", async () => {
