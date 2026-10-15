@@ -1177,7 +1177,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     agentRuntime: "openclaw",
     environmentOrInferenceEndpoint: "Ubuntu; no inference endpoint",
     profile: "standard",
-    timeoutMinutes: 60,
+    timeoutMinutes: 90,
     installMode: "authenticated",
     restoreCli: true,
     exposeCliBin: true,

@@ -39,6 +39,7 @@ export function applyOnboardRuntimeControlRequests(
     | "observabilityEnabled"
     | "observabilityRequestedExplicitly"
     | "dcodeAutoApprovalMode"
+    | "requestedPolicyTier"
   >,
 ) {
   const observabilityIsExplicit = opts.observabilityRequestedExplicitly !== false;
@@ -51,6 +52,18 @@ export function applyOnboardRuntimeControlRequests(
     requestedDcodeAutoApprovalMode: isDcodeAutoApprovalMode(opts.dcodeAutoApprovalMode)
       ? opts.dcodeAutoApprovalMode
       : null,
+    requestedPolicyTier: opts.requestedPolicyTier ?? null,
+  };
+}
+
+/** Per-run requests consumed by the sandbox phase. */
+export function sandboxFlowRuntimeControlOptions(
+  requests: ReturnType<typeof applyOnboardRuntimeControlRequests>,
+) {
+  return {
+    requestedObservabilityEnabled: requests.requestedObservabilityEnabled,
+    requestedDcodeAutoApprovalMode: requests.requestedDcodeAutoApprovalMode,
+    requestedPolicyTier: requests.requestedPolicyTier,
   };
 }
 

@@ -35,8 +35,6 @@ export interface PolicySelectionPromptDeps {
   policyTierEnv: {
     resolvePolicyTierFromEnv(): string;
     readPolicyTierPreselectionFromEnv(): string | null;
-    /** Tier chosen with `onboard --policy-tier`; skips the tier prompt when set. */
-    readRequestedPolicyTier(): string | null;
   };
   isNonInteractive(): boolean;
   note(message: string): void;
@@ -126,7 +124,6 @@ export function createPolicySelectionPromptHelpers(deps: PolicySelectionPromptDe
   /**
    * Prompt the user to select a policy tier (restricted / balanced / open / personal).
    * Uses the same radio-style TUI as presetsCheckboxSelector (single-select).
-   * An explicit `--policy-tier` choice skips the prompt in every mode.
    * In non-interactive mode reads NEMOCLAW_POLICY_TIER (default: balanced).
    * In interactive mode a valid NEMOCLAW_POLICY_TIER pre-selects that tier.
    * Returns the tier name string.
@@ -137,16 +134,6 @@ export function createPolicySelectionPromptHelpers(deps: PolicySelectionPromptDe
 
     if (!balancedTier) {
       throw new Error("No policy tiers are configured.");
-    }
-
-    const explicitName = policyTierEnv.readRequestedPolicyTier();
-    if (explicitName) {
-      const explicitTier = tiers.getTier(explicitName);
-      if (!explicitTier) {
-        throw new Error(`Unknown policy tier from --policy-tier: ${explicitName}`);
-      }
-      note(`  Policy tier: ${explicitTier.label} (from --policy-tier)`);
-      return explicitTier.name;
     }
 
     if (isNonInteractive()) {

@@ -399,6 +399,20 @@ describe("policy tier selection", () => {
 
 describe("policy tier setup", () => {
   it.each([true, false])(
+    "applies an explicit --policy-tier without asking for the tier (nonInteractive=%s) (#13180)",
+    async (nonInteractive) => {
+      const { applied, notes } = await runPolicySetup(
+        { tierName: "open", nonInteractive },
+        { agent: "openclaw", tierName: "restricted" },
+      );
+
+      expect(notes).toContain("  Policy tier: Restricted (from --policy-tier)");
+      expect(applied).not.toContain("npm");
+      expect(applied).not.toContain("slack");
+    },
+  );
+
+  it.each([true, false])(
     "requests Open-tier messaging defaults for fresh OpenClaw without channels (nonInteractive=%s) (#11058)",
     async (nonInteractive) => {
       const expectedMessagingPresets = [

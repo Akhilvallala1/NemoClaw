@@ -26,18 +26,6 @@ export function resolvePolicyTierFromEnv(): string {
   return name;
 }
 
-// Tier selected with `onboard --policy-tier`. The onboard command sets it for
-// one run and clears it afterward; null means the wizard asks for the tier.
-let requestedPolicyTier: string | null = null;
-
-export function setRequestedPolicyTier(name: string | null): void {
-  requestedPolicyTier = name;
-}
-
-export function readRequestedPolicyTier(): string | null {
-  return requestedPolicyTier;
-}
-
 /**
  * Read NEMOCLAW_POLICY_TIER for interactive pre-selection. Returns the
  * normalized name, or null when the env var is unset or blank. Does not

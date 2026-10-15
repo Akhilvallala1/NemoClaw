@@ -32,6 +32,8 @@ export interface PolicyResumeSelection {
 export interface PoliciesStateOptions<Agent, WebSearchConfig> {
   resume: boolean;
   preserveRebuildLivePolicy?: boolean;
+  /** Operator-selected `--policy-tier`; skips the policy-tier prompt. */
+  requestedPolicyTier?: string | null;
   sandboxName: string;
   provider: string;
   hostLocalInferenceRouteOnly?: boolean;
@@ -132,6 +134,7 @@ export interface PoliciesStateResult {
 export async function handlePoliciesState<Agent, WebSearchConfig>({
   resume,
   preserveRebuildLivePolicy = false,
+  requestedPolicyTier = null,
   sandboxName,
   provider,
   hostLocalInferenceRouteOnly = false,
@@ -285,7 +288,7 @@ export async function handlePoliciesState<Agent, WebSearchConfig>({
       // Hermes runs keep their own name.
       agent: normalizeAgentNameForResumeState((agent as { name?: string } | null)?.name),
       observabilityEnabled,
-      tierName: null,
+      tierName: requestedPolicyTier,
       webSearchSupported,
       hermesToolGateways,
       onSelection: () => undefined,

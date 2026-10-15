@@ -82,6 +82,8 @@ export interface SandboxOnboardFlowPhaseOptions<
   resumeAgentChanged: boolean;
   requestedObservabilityEnabled?: boolean | null;
   requestedDcodeAutoApprovalMode?: DcodeAutoApprovalMode | null;
+  /** Operator-selected `--policy-tier` for this run. */
+  requestedPolicyTier?: string | null;
   rebuildPolicySourcePath?: string;
   hostMounts?: readonly import("../../state/registry/types").SandboxHostMount[];
   endpointProvenance: EndpointProvenanceOptions;
@@ -346,6 +348,7 @@ export function createSandboxOnboardFlowPhase<
       endpointSource: endpointProvenance.endpointSource,
       resumeAgentChanged: options.resumeAgentChanged,
       requestedObservabilityEnabled: options.requestedObservabilityEnabled,
+      requestedPolicyTier: options.requestedPolicyTier ?? null,
       requestedDcodeAutoApprovalMode: options.requestedDcodeAutoApprovalMode,
       rebuildPolicySourcePath: options.rebuildPolicySourcePath,
       hostMounts: options.hostMounts,

@@ -68,16 +68,12 @@ function createHarness({
   stdoutTTY = true,
   promptReplies = [],
   envTier = null,
-  explicitTier = null,
-  nonInteractive = false,
 }: {
   tiers?: TierDefinition[];
   stdinTTY?: boolean;
   stdoutTTY?: boolean;
   promptReplies?: string[];
   envTier?: string | null;
-  explicitTier?: string | null;
-  nonInteractive?: boolean;
 } = {}) {
   const stdin = new FakeInput(stdinTTY);
   const stdout = new FakeOutput(stdoutTTY);
@@ -94,9 +90,8 @@ function createHarness({
     policyTierEnv: {
       resolvePolicyTierFromEnv: () => envTier ?? "balanced",
       readPolicyTierPreselectionFromEnv: () => envTier,
-      readRequestedPolicyTier: () => explicitTier,
     },
-    isNonInteractive: () => nonInteractive,
+    isNonInteractive: () => false,
     note,
     prompt,
     selectFromNumberedMenuOrExit,
@@ -180,28 +175,6 @@ describe("createPolicySelectionPromptHelpers", () => {
     expect(note).toHaveBeenCalledWith(
       expect.stringContaining("Ignoring unknown NEMOCLAW_POLICY_TIER 'locked'"),
     );
-  });
-
-  it("selectPolicyTier uses --policy-tier without prompting (#13180)", async () => {
-    const { helpers, note, prompt, stdin } = createHarness({
-      explicitTier: "restricted",
-      envTier: "open",
-    });
-
-    await expect(helpers.selectPolicyTier()).resolves.toBe("restricted");
-    expect(prompt).not.toHaveBeenCalled();
-    expect(stdin.setRawMode).not.toHaveBeenCalled();
-    expect(note).toHaveBeenCalledWith("  Policy tier: Restricted (from --policy-tier)");
-  });
-
-  it("selectPolicyTier prefers --policy-tier over the non-interactive env tier (#13180)", async () => {
-    const { helpers } = createHarness({
-      explicitTier: "restricted",
-      envTier: "open",
-      nonInteractive: true,
-    });
-
-    await expect(helpers.selectPolicyTier()).resolves.toBe("restricted");
   });
 
   it("selectTierPresetsAndAccess honors comma-separated non-TTY allowlists", async () => {

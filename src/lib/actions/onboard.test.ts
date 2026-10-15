@@ -13,7 +13,6 @@ vi.mock("../agent/defs", () => ({ listAgents: mocks.listAgents }));
 vi.mock("../onboard", () => ({ onboard: mocks.onboard }));
 vi.mock("../onboard/command", () => ({ runOnboardCommand: mocks.runOnboardCommand }));
 
-import { readRequestedPolicyTier } from "../onboard/policy-tier-env";
 import { runOnboardAction } from "./onboard";
 
 describe("onboard action runtime composition", () => {
@@ -41,25 +40,26 @@ describe("onboard action runtime composition", () => {
     });
   });
 
-  it("scopes --policy-tier to one legacy onboarding run (#13180)", async () => {
-    let observed: string | null = null;
+  it("passes each run's --policy-tier on its own invocation without env state (#13180)", async () => {
     mocks.runOnboardCommand.mockImplementation(
       async (deps: {
+        flags: { "policy-tier"?: string };
         listPolicyTiers(): readonly string[];
         runOnboard(options: unknown): Promise<void>;
       }) => {
         expect(deps.listPolicyTiers()).toEqual(["restricted", "balanced", "open", "personal"]);
-        await deps.runOnboard({ requestedPolicyTier: "restricted" });
+        await deps.runOnboard({ requestedPolicyTier: deps.flags["policy-tier"] });
       },
     );
-    mocks.onboard.mockImplementationOnce(async () => {
-      observed = readRequestedPolicyTier();
-      throw new Error("boom");
-    });
+    const ambient = process.env.NEMOCLAW_POLICY_TIER;
 
-    await expect(runOnboardAction({ "policy-tier": "restricted" })).rejects.toThrow("boom");
+    await runOnboardAction({ "policy-tier": "restricted" });
+    await runOnboardAction({ "policy-tier": "open" });
 
-    expect(observed).toBe("restricted");
-    expect(readRequestedPolicyTier()).toBeNull();
+    expect(mocks.onboard.mock.calls.map(([options]) => options.requestedPolicyTier)).toEqual([
+      "restricted",
+      "open",
+    ]);
+    expect(process.env.NEMOCLAW_POLICY_TIER).toBe(ambient);
   });
 });

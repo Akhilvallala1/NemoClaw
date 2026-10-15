@@ -26,14 +26,7 @@ async function runOnboard(
   const { onboard } = (await import("../onboard")) as unknown as {
     onboard: (onboardOptions?: OnboardOptions) => Promise<void>;
   };
-  // An explicit --policy-tier makes the wizard skip its tier prompt for this run only.
-  const { setRequestedPolicyTier } = await import("../onboard/policy-tier-env");
-  setRequestedPolicyTier(options.requestedPolicyTier ?? null);
-  try {
-    await onboard({ ...options, googlechatTunnelRuntime: runtimeDeps.googlechatTunnelRuntime });
-  } finally {
-    setRequestedPolicyTier(null);
-  }
+  await onboard({ ...options, googlechatTunnelRuntime: runtimeDeps.googlechatTunnelRuntime });
 }
 
 function buildOnboardCommandDeps(flags: OnboardFlags, runtimeDeps: OnboardActionRuntimeDeps) {

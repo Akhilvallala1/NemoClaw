@@ -299,6 +299,22 @@ describe("sandbox create intent machine boundary", () => {
     },
   );
 
+  it("carries an explicit --policy-tier into create-time policy resolution (#13180)", async () => {
+    const session = createSession({ sandboxName: "tiered" });
+    const { deps, calls } = createDeps();
+
+    await handleSandboxState({
+      ...baseOptions(deps, session),
+      sandboxName: "tiered",
+      requestedPolicyTier: "restricted",
+    });
+
+    expect(calls.resolveCreateIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ policyTier: "restricted" }),
+    );
+    expect(calls.createSandbox.mock.calls[0]?.at(-2)).toMatchObject({ policyTier: "restricted" });
+  });
+
   it("carries an explicit recreate request through a fresh sandbox decision (#8847)", async () => {
     const session = createSession({ sandboxName: "same-sandbox" });
     const { deps, calls } = createDeps({ getSandboxReuseState: () => "ready" });

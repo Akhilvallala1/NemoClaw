@@ -3010,8 +3010,7 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
           recreateJournalTargetIntentFingerprint:
             opts.recreateJournalTargetIntentFingerprint ?? null,
           resumeAgentChanged,
-          requestedObservabilityEnabled: runtimeControlRequests.requestedObservabilityEnabled,
-          requestedDcodeAutoApprovalMode: runtimeControlRequests.requestedDcodeAutoApprovalMode,
+          ...runtimeControlFlow.sandboxFlowRuntimeControlOptions(runtimeControlRequests),
           hostMounts: effectiveHostMounts,
           endpointProvenance,
           recreateSandbox: isRecreateSandbox,
@@ -3140,6 +3139,7 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
         portableRuntimeContext:
           agent?.name === "hermes" ? lockedRuntime.portableRuntimeContext : null,
         preserveRebuildLivePolicy: opts.rebuildPolicySourcePath !== undefined,
+        requestedPolicyTier: runtimeControlRequests.requestedPolicyTier,
         agentSetupDeps: {
           handleAgentSetup: agentOnboard.handleAgentSetup,
           agentSetupContext: () => ({

@@ -62,6 +62,22 @@ describe("policy state handler", () => {
     );
   });
 
+  it("passes an explicit --policy-tier to fresh policy selection (#13180)", async () => {
+    const { deps, calls } = createPolicyHandlerDeps();
+    await handlePoliciesState({ ...basePolicyHandlerOptions(deps), requestedPolicyTier: "open" });
+    expect(calls.setupPolicies).toHaveBeenCalledWith(
+      "my-assistant",
+      expect.objectContaining({ selectedPresets: null, tierName: "open" }),
+    );
+
+    const unset = createPolicyHandlerDeps();
+    await handlePoliciesState(basePolicyHandlerOptions(unset.deps));
+    expect(unset.calls.setupPolicies).toHaveBeenCalledWith(
+      "my-assistant",
+      expect.objectContaining({ tierName: null }),
+    );
+  });
+
   it("does not reconcile presets after a rebuild consumed OpenShell's live policy", async () => {
     const { deps, calls } = createPolicyHandlerDeps();
 

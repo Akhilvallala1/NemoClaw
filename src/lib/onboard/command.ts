@@ -750,24 +750,6 @@ function restoreOnboardCommandEnvironment(
   }
 }
 
-// Scope `--policy-tier` to one run. The flag overrides an ambient
-// NEMOCLAW_POLICY_TIER so every non-interactive tier consumer sees the same
-// choice. The onboard action separately tells the wizard to skip its prompt.
-function applyRequestedPolicyTierEnvironment(
-  options: OnboardCommandOptions,
-  env: NodeJS.ProcessEnv,
-): () => void {
-  const tier = options.requestedPolicyTier;
-  if (!tier) return () => {};
-  const present = Object.prototype.hasOwnProperty.call(env, "NEMOCLAW_POLICY_TIER");
-  const previous = env.NEMOCLAW_POLICY_TIER;
-  env.NEMOCLAW_POLICY_TIER = tier;
-  return () => {
-    if (present) env.NEMOCLAW_POLICY_TIER = previous ?? "";
-    else delete env.NEMOCLAW_POLICY_TIER;
-  };
-}
-
 async function runOnboardCommandAttempt(
   deps: RunOnboardCommandDeps,
   env: NodeJS.ProcessEnv,
@@ -779,7 +761,6 @@ async function runOnboardCommandAttempt(
     resumeIntent,
   });
   let restoreServingProfileEnvironment = () => {};
-  let restorePolicyTierEnvironment = () => {};
   const environmentSnapshot: OnboardCommandEnvironmentSnapshot = {
     agentsManifest: env.NEMOCLAW_EXTRA_AGENTS_JSON,
     toolDisclosure: env[TOOL_DISCLOSURE_ENV],
@@ -808,13 +789,11 @@ async function runOnboardCommandAttempt(
     if (options.noOllamaAutostart && !options.experimentalProfile) {
       env.NEMOCLAW_OLLAMA_NO_AUTOSTART = "1";
     }
-    restorePolicyTierEnvironment = applyRequestedPolicyTierEnvironment(options, env);
     await withCredentialOverrides(activation.credentialOverrides, () => deps.runOnboard(options));
     return "complete";
   } catch (error) {
     return handleOnboardCommandAttemptError(error, deps, attempt);
   } finally {
-    restorePolicyTierEnvironment();
     restoreOnboardCommandEnvironment(
       env,
       options,

@@ -42,45 +42,20 @@ describe("onboard --policy-tier (#13180)", () => {
     ]);
   });
 
-  it("scopes --policy-tier over NEMOCLAW_POLICY_TIER for one onboarding run (#13180)", async () => {
+  it("carries --policy-tier on the run options without mutating the environment (#13180)", async () => {
     const env: NodeJS.ProcessEnv = { NEMOCLAW_POLICY_TIER: "open" };
-    let observed: string | undefined;
+    const seen: Array<string | null> = [];
     await runOnboardCommand({
       flags: { "policy-tier": "restricted" },
       env,
+      listPolicyTiers: () => ONBOARD_POLICY_TIER_VALUES,
       runOnboard: async (options) => {
-        observed = env.NEMOCLAW_POLICY_TIER;
-        expect(options.requestedPolicyTier).toBe("restricted");
+        seen.push(options.requestedPolicyTier);
+        expect(env.NEMOCLAW_POLICY_TIER).toBe("open");
       },
     });
-    expect(observed).toBe("restricted");
-    expect(env.NEMOCLAW_POLICY_TIER).toBe("open");
-
-    const unsetEnv: NodeJS.ProcessEnv = {};
-    await runOnboardCommand({
-      flags: { "policy-tier": "personal" },
-      env: unsetEnv,
-      runOnboard: async () => {
-        expect(unsetEnv.NEMOCLAW_POLICY_TIER).toBe("personal");
-      },
-    });
-    expect(Object.prototype.hasOwnProperty.call(unsetEnv, "NEMOCLAW_POLICY_TIER")).toBe(false);
-  });
-
-  it("restores NEMOCLAW_POLICY_TIER after a failed onboarding run", async () => {
-    const env: NodeJS.ProcessEnv = {};
-    await expect(
-      runOnboardCommand({
-        flags: { "policy-tier": "restricted" },
-        env,
-        runOnboard: async () => {
-          throw Object.assign(new Error("boom"), { code: "EOF" });
-        },
-        error: () => {},
-        exit: exitWithCode,
-      }),
-    ).rejects.toThrow("exit:");
-    expect(Object.prototype.hasOwnProperty.call(env, "NEMOCLAW_POLICY_TIER")).toBe(false);
+    expect(seen).toEqual(["restricted"]);
+    expect(env).toEqual({ NEMOCLAW_POLICY_TIER: "open" });
   });
 
   it("leaves the tier prompt in charge when the flag is absent", async () => {

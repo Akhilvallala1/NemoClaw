@@ -42,6 +42,8 @@ export interface FinalOnboardFlowPhaseOptions<
   branchState: "agent_setup" | "openclaw";
   managedOpenclawStartup?: boolean;
   preserveRebuildLivePolicy?: boolean;
+  /** Operator-selected `--policy-tier`; skips the policy-tier prompt. */
+  requestedPolicyTier?: string | null;
   agentSetupDeps: AgentSetupStateOptions<Context["agent"]>["deps"];
   policiesDeps: PoliciesStateOptions<Context["agent"], WebSearchConfig>["deps"];
   finalization: {
@@ -129,6 +131,7 @@ export function createFinalOnboardFlowPhases<
     const policiesResult = await handlePoliciesState({
       resume: context.resume,
       preserveRebuildLivePolicy: options.preserveRebuildLivePolicy,
+      requestedPolicyTier: options.requestedPolicyTier ?? null,
       sandboxName: context.sandboxName,
       provider: context.provider,
       hostLocalInferenceRouteOnly: context.hostLocalInferenceRouteOnly === true,
