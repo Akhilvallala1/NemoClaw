@@ -407,7 +407,7 @@ raise SystemExit(module.validate_env_file(sys.argv[3]))`,
     const result = validateHermesRootMode(0o750, 0o700);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(
-      `/sandbox does not match a trusted owner/group/mode posture (uid=${String(process.getuid())}, gid=${String(process.getgid())}, mode=0700)`,
+      `/sandbox does not match a trusted owner/group/mode posture (uid=${String(os.userInfo().uid)}, gid=${String(os.userInfo().gid)}, mode=0700)`,
     );
   });
 
