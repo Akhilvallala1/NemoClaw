@@ -94,6 +94,7 @@ assert_identity() {
   local output="$1"
   local model="$2"
   local phase="$3"
+  local expected_endpoint="$4"
   local route provider observed_model endpoint
   route="$(identity_field "$output" Route)"
   provider="$(identity_field "$output" Provider)"
@@ -102,7 +103,7 @@ assert_identity() {
   [ "$route" = "inference" ] || fail "$phase identity route is '${route:-missing}'"
   [ "$provider" = "compatible-endpoint" ] || fail "$phase identity provider is '${provider:-missing}'"
   [ "$observed_model" = "openai:${model}" ] || fail "$phase identity model is '${observed_model:-missing}'"
-  [ "$endpoint" = "https://inference.local/v1" ] || fail "$phase identity endpoint is '${endpoint:-missing}'"
+  [ -n "$expected_endpoint" ] && [ "$endpoint" = "$expected_endpoint" ] || fail "$phase identity endpoint is '${endpoint:-missing}'"
 }
 
 is_positive_integer() {
@@ -183,14 +184,14 @@ import sys
 import tomllib
 
 path = Path("/sandbox/.deepagents/config.toml")
-model, credential_canary = sys.argv[1:]
+model, credential_canary, expected_endpoint, expected_key_env = sys.argv[1:]
 text = path.read_text(encoding="utf-8")
 config = tomllib.loads(text)
 provider = config["models"]["providers"]["openai"]
 assert config["models"]["default"] == f"openai:{model}"
 assert provider["models"] == [model]
-assert provider["api_key_env"] == "DEEPAGENTS_CODE_OPENAI_API_KEY"
-assert provider["base_url"] == "https://inference.local/v1"
+assert provider["api_key_env"] == expected_key_env
+assert provider["base_url"] == expected_endpoint
 assert config["update"] == {"check": True, "auto_update": True}
 assert config["ui"] == {"show_scrollbar": True, "show_url_open_toast": False, "theme": "discard"}
 assert config["threads"] == {
@@ -228,6 +229,17 @@ fi
 [ -n "${COMPATIBLE_API_KEY:-}" ] || fail "COMPATIBLE_API_KEY is required"
 [ -x "$CLI" ] || fail "NemoClaw CLI is not executable at $CLI"
 
+# Read the independently owned route before checking mutable identity/config.
+expected_endpoint="$(
+  openshell sandbox exec --name "$SANDBOX_NAME" -- /opt/venv/bin/python3 -I -c \
+    'from deepagents_code._nemoclaw_managed import managed_inference_base_url; print(managed_inference_base_url())'
+)" || fail "could not read the root-owned DCode route"
+[ -n "$expected_endpoint" ] || fail "root-owned DCode route is empty"
+expected_key_env=COMPATIBLE_API_KEY
+if [ "$expected_endpoint" = "https://inference.local/v1" ]; then
+  expected_key_env=DEEPAGENTS_CODE_OPENAI_API_KEY
+fi
+
 if ! identity_before="$(dcode_identity)"; then
   # Surface the captured stdout+stderr (dcode_identity redirects 2>&1) before
   # failing. Without this the real reason `dcode identity` exits non-zero is
@@ -238,7 +250,7 @@ fi
 model_a="$(identity_field "$identity_before" Model)"
 model_a="${model_a#openai:}"
 [ -n "$model_a" ] || fail "initial dcode identity did not report a model"
-assert_identity "$identity_before" "$model_a" "initial"
+assert_identity "$identity_before" "$model_a" "initial" "$expected_endpoint"
 pass "initial live identity reports model A"
 
 # Exercise the installed /etc/profile.d hook in real sandbox login shells.
@@ -357,7 +369,7 @@ if ! identity_after="$(dcode_identity)"; then
   printf '%s: diagnostic: dcode identity output after re-onboard:\n%s\n' "$PREFIX" "${identity_after:-<no output captured>}"
   fail "could not read dcode identity after re-onboard"
 fi
-assert_identity "$identity_after" "$model_a" "fresh"
+assert_identity "$identity_after" "$model_a" "fresh" "$expected_endpoint"
 pass "live dcode identity preserves the selected model"
 
 config_model_after_json="$("$CLI" "$SANDBOX_NAME" config get --key models.default 2>&1)" || fail "keyed config get failed after re-onboard: $config_model_after_json"
@@ -414,7 +426,7 @@ pass "fresh re-onboard restores the complete native config byte-for-byte"
 verify_source="$(verify_config_source)"
 verify_output="$(
   openshell sandbox exec --name "$SANDBOX_NAME" -- \
-    /opt/venv/bin/python3 -I -c "$verify_source" "$model_a" "$CREDENTIAL_CANARY" 2>&1
+    /opt/venv/bin/python3 -I -c "$verify_source" "$model_a" "$CREDENTIAL_CANARY" "$expected_endpoint" "$expected_key_env" 2>&1
 )" || fail "live DCode config does not preserve the complete native-state boundary"
 printf '%s\n' "$verify_output" | grep -Fq "NEMOCLAW_DCODE_FRESH_CONFIG_VERIFIED" || fail "fresh config verification marker is missing"
 pass "config keeps declared and unrecognized native state"

@@ -12,8 +12,9 @@ import {
 
 describe("native custom onboarding inference verification", () => {
   it.each([
-    { agentName: "openclaw", command: "sh", home: undefined },
-    { agentName: "hermes", command: "sh", home: undefined },
+    { agentName: "openclaw", command: "/bin/bash", home: undefined },
+    { agentName: "hermes", command: "/bin/bash", home: undefined },
+    { agentName: "pi", command: "/bin/bash", home: undefined },
     {
       agentName: "langchain-deepagents-code",
       command: "/usr/local/lib/nemoclaw/dcode-managed-exec",
@@ -40,9 +41,12 @@ describe("native custom onboarding inference verification", () => {
         .mockResolvedValue(receipt);
       const adapterFactory = vi.spyOn(providerAdapterCli, "createCliOpenShellProviderAdapter");
       const executor = {
-        runBuffered: vi.fn(async (_request: OpenShellSandboxBufferedCommandRequest) => ({
+        runBuffered: vi.fn(async (request: OpenShellSandboxBufferedCommandRequest) => ({
           outcome: { kind: "completed" as const, exitCode: 0 },
-          stdout: '200\n{"choices":[{"message":{"content":"OK"}}]}',
+          stdout:
+            (request.command.join(" ").includes("__NEMOCLAW_SANDBOX_EXEC_STARTED__")
+              ? "__NEMOCLAW_SANDBOX_EXEC_STARTED__\n"
+              : "") + '200\n{"choices":[{"message":{"content":"OK"}}]}',
           stderr: "",
         })),
       };
@@ -73,6 +77,7 @@ describe("native custom onboarding inference verification", () => {
         expect(command?.command.join(" ")).not.toContain("inference.local");
         expect(command?.target).toEqual({ kind: "named", gatewayName: "gateway" });
         expect(command?.command[0]).toBe(expectedCommand);
+        expect(command?.command).not.toContain("-lc");
         expect(command?.sandboxEnvironment?.HOME).toBe(expectedHome);
         const environment = { HOME: "/rebuild-owner", NEMOCLAW_GATEWAY_PORT: "8642" };
         const smoke = createCompatibleEndpointSmoke(vi.fn(), executor, (value) => value);

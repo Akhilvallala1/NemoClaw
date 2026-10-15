@@ -5,6 +5,10 @@ import { runBoundedRetry, type RetryEvidence } from "../../../tools/e2e/retry-ev
 
 import { resolveMaxTokensField } from "../../../src/lib/inference/max-tokens-field.ts";
 import {
+  profileFromCustomAttachment,
+  type NativeCustomProviderAttachment,
+} from "../../../src/lib/inference/native-custom/index.ts";
+import {
   NATIVE_NVIDIA_AUTH_HEADER_SCRIPT,
   NVIDIA_HOSTED_LOGICAL_PROVIDER,
   NVIDIA_HOSTED_NATIVE_ENDPOINT,
@@ -26,14 +30,25 @@ const TRUNCATION_SUFFIX = "...[truncated]";
 export function buildFullE2eSandboxInferenceCommand(
   requestBody: string,
   logicalProvider: string,
+  nativeCustom?: NativeCustomProviderAttachment,
 ): [string, ...string[]] {
-  if (logicalProvider === NVIDIA_HOSTED_LOGICAL_PROVIDER) {
+  const custom =
+    logicalProvider === "compatible-endpoint"
+      ? profileFromCustomAttachment(nativeCustom!)
+      : undefined;
+  if (logicalProvider === NVIDIA_HOSTED_LOGICAL_PROVIDER || custom) {
+    const authScript = custom
+      ? NATIVE_NVIDIA_AUTH_HEADER_SCRIPT.replaceAll(
+          "NVIDIA_INFERENCE_API_KEY",
+          "COMPATIBLE_API_KEY",
+        )
+      : NATIVE_NVIDIA_AUTH_HEADER_SCRIPT;
     return [
       "bash",
       "-c",
-      `${NATIVE_NVIDIA_AUTH_HEADER_SCRIPT}; exec curl -fsS --max-time 90 "$1" -H 'Content-Type: application/json' -H "$AUTH_HEADER" --data-raw "$2"`,
+      `${authScript}; exec curl -fsS --max-time 90 "$1" -H 'Content-Type: application/json' -H "$AUTH_HEADER" --data-raw "$2"`,
       "full-e2e-native-inference",
-      `${NVIDIA_HOSTED_NATIVE_ENDPOINT}/chat/completions`,
+      `${custom?.endpointUrl ?? NVIDIA_HOSTED_NATIVE_ENDPOINT}/chat/completions`,
       requestBody,
     ];
   }

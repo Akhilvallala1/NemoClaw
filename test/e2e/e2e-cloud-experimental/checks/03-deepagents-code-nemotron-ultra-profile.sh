@@ -40,6 +40,8 @@ profile_contract_source() {
 import asyncio
 import hashlib
 import importlib.metadata
+import os
+import re
 import socket
 from pathlib import Path
 import tomllib
@@ -52,6 +54,10 @@ from deepagents.profiles.harness.harness_profiles import (
 )
 from deepagents_code import config as dcode_config
 from deepagents_code.model_config import ModelConfig
+from deepagents_code._nemoclaw_managed import (
+    _managed_upstream_provider,
+    managed_inference_base_url,
+)
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
@@ -125,8 +131,19 @@ assert configured_model_id in MANAGED_MODEL_IDS, default_model
 
 provider = config["models"]["providers"]["openai"]
 assert provider["models"] == [configured_model_id]
-assert provider["api_key_env"] == "DEEPAGENTS_CODE_OPENAI_API_KEY"
-assert provider["base_url"] == "https://inference.local/v1"
+MANAGED_BASE_URL = managed_inference_base_url()
+EXPECTED_API_KEY_ENV = "DEEPAGENTS_CODE_OPENAI_API_KEY"
+EXPECTED_API_KEY = "nemoclaw-managed-inference"
+if MANAGED_BASE_URL != "https://inference.local/v1":
+    assert _managed_upstream_provider() == "compatible-endpoint"
+    EXPECTED_API_KEY_ENV = "COMPATIBLE_API_KEY"
+    EXPECTED_API_KEY = os.environ.get(EXPECTED_API_KEY_ENV, "")
+    assert re.fullmatch(
+        r"openshell:resolve:env:(?:v[0-9]{1,20}|s[a-f0-9]{64})_COMPATIBLE_API_KEY",
+        EXPECTED_API_KEY,
+    ), "native custom route requires an issued credential reference"
+assert provider["api_key_env"] == EXPECTED_API_KEY_ENV
+assert provider["base_url"] == MANAGED_BASE_URL
 assert provider["enabled"] is True
 assert provider["params"] == {
     "use_responses_api": False,
@@ -160,12 +177,11 @@ from deepagents_code.model_config import ModelConfigError
 assert isinstance(_NEMOCLAW_NEMOTRON_ULTRA_MODEL_IDS, frozenset)
 assert set(_NEMOCLAW_NEMOTRON_ULTRA_MODEL_IDS) == set(MANAGED_MODEL_IDS)
 
-MANAGED_BASE_URL = managed_inference_base_url()
 assert MANAGED_BASE_URL == provider["base_url"], MANAGED_BASE_URL
-# The resolver supplies only the fixed synthetic credential. The provider
-# credential never reaches the constructor or appears in the returned settings.
+# The resolver supplies the shared-route synthetic credential or the native
+# route's issued reference. A provider secret must never reach the constructor.
 OPENAI_CONTRACT = {
-    "api_key": "nemoclaw-managed-inference",
+    "api_key": EXPECTED_API_KEY,
     "base_url": MANAGED_BASE_URL,
     "use_responses_api": False,
 }
@@ -179,7 +195,7 @@ MANAGED_ULTRA_EXTRA_BODY = {
     **EXPECTED_EXTRA_BODY,
 }
 OPENROUTER_CONTRACT = {
-    "api_key": "nemoclaw-managed-inference",
+    "api_key": EXPECTED_API_KEY,
     "base_url": MANAGED_BASE_URL,
 }
 # Deliberate near miss: a different Nemotron generation must not be shaped.

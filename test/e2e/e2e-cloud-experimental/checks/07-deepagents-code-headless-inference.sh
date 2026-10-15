@@ -8,6 +8,7 @@
 # must route through its configured provider contract: managed routes use
 # https://inference.local/v1 and the managed placeholder, while native NVIDIA
 # uses https://integrate.api.nvidia.com/v1 and the attached-provider placeholder.
+# Native custom routes use the independently recorded endpoint and custom key reference.
 # The login
 # shell path must reject an empty prompt with exit 2, then return a versioned
 # JSON success envelope containing PONG with exit 0 for a real prompt; provider,
@@ -383,8 +384,20 @@ references_attached_provider_placeholder_key() {
 }
 
 configured_inference_route_contract() {
-  local config
+  local config expected_endpoint="${1:-}"
   config="$(cat)"
+  if [ -n "$expected_endpoint" ] \
+    && [ "$expected_endpoint" != "https://inference.local/v1" ] \
+    && [ "$expected_endpoint" != "https://integrate.api.nvidia.com/v1" ]; then
+    if [ "$(printf '%s\n' "$config" | grep -Ec '^base_url[[:space:]]*=')" = 1 ] \
+      && [ "$(printf '%s\n' "$config" | grep -Ec '^api_key_env[[:space:]]*=')" = 1 ] \
+      && printf '%s\n' "$config" | grep -Fxq "base_url = \"$expected_endpoint\"" \
+      && printf '%s\n' "$config" | grep -Fxq 'api_key_env = "COMPATIBLE_API_KEY"'; then
+      printf '%s\n' native-custom
+      return 0
+    fi
+    return 1
+  fi
   if printf '%s\n' "$config" | references_native_nvidia_route \
     && printf '%s\n' "$config" | references_attached_provider_placeholder_key \
     && ! printf '%s\n' "$config" | references_managed_inference_route \
@@ -607,14 +620,24 @@ main() {
   fi
 
   # 1. config.toml matches exactly one supported inference route contract.
+  expected_endpoint="$(
+    openshell sandbox exec --name "$SANDBOX_NAME" -- /opt/venv/bin/python3 -I -c \
+      'from deepagents_code._nemoclaw_managed import managed_inference_base_url; print(managed_inference_base_url())'
+  )" || expected_endpoint=""
+  if [ -z "$expected_endpoint" ]; then
+    fail_test "could not read the root-owned DCode inference endpoint"
+  fi
   config_output="$(sandbox_exec "cat /sandbox/.deepagents/config.toml 2>/dev/null" || true)"
-  route_contract="$(printf '%s' "$config_output" | configured_inference_route_contract || true)"
+  route_contract="$(printf '%s' "$config_output" | configured_inference_route_contract "$expected_endpoint" || true)"
   if [ "$route_contract" = "native-nvidia" ]; then
     pass "config.toml routes through the native NVIDIA endpoint"
     pass "config.toml uses the attached-provider placeholder API key"
   elif [ "$route_contract" = "managed" ]; then
     pass "config.toml routes through the managed inference.local endpoint"
     pass "config.toml uses the managed Deep Agents Code placeholder API key"
+  elif [ "$route_contract" = "native-custom" ]; then
+    pass "config.toml matches the root-owned native custom endpoint"
+    pass "config.toml selects the custom provider credential reference"
   else
     fail_test "config.toml does not match a supported inference route and placeholder contract (captured config redacted from log)"
   fi
@@ -669,7 +692,7 @@ main() {
   fi
 
   # 4. The managed route is reachable through the normalized login-shell proxy.
-  # Native NVIDIA is proved through the attached-provider dcode PONG below.
+  # Native routes are proved through the attached-provider dcode PONG below.
   if [ "$route_contract" = "managed" ]; then
     route_output="$(sandbox_login_exec "curl -sS -o /dev/null -w 'HTTP_CODE:%{http_code}' --proxy \"\${HTTPS_PROXY}\" --noproxy \"\${NO_PROXY}\" --max-time 30 https://inference.local/v1/models" || true)"
     route_code="$(printf '%s' "$route_output" | sed -n 's/.*HTTP_CODE:\([0-9][0-9][0-9]\).*/\1/p' | tail -n1)"
@@ -805,14 +828,19 @@ DCODE_EXIT:${direct_exit}"
 
   # 8. Untrusted evidence from the image-installed helper must fail closed
   # before the user-facing connect path can invoke interactive session attach.
+  # Native invocation failures suppress upstream bytes; only the legacy probe
+  # reports its untrusted-evidence diagnostic.
   fail_closed_connect_output="$(dcode_connect_fail_closed_contract || true)"
   fail_closed_connect_exit="$(printf '%s\n' "$fail_closed_connect_output" | sed -n 's/^NEMOCLAW_DCODE_UNTRUSTED_CONNECT_EXIT:\([0-9][0-9]*\)$/\1/p' | tail -n1)"
   if [ -n "$fail_closed_connect_exit" ] \
     && [ "$fail_closed_connect_exit" -ne 0 ] \
     && grep -Fq NEMOCLAW_DCODE_IMAGE_PROBE_USED <<<"$fail_closed_connect_output" \
     && grep -Fq NEMOCLAW_DCODE_SESSION_ATTACH_NOT_INVOKED <<<"$fail_closed_connect_output" \
-    && grep -Fq "UNTRUSTED PREAMBLE" <<<"$fail_closed_connect_output" \
-    && grep -Fq "did not return a trusted result" <<<"$fail_closed_connect_output"; then
+    && { { { [ "$route_contract" = native-custom ] || [ "$route_contract" = native-nvidia ]; } \
+      && ! grep -Fq "UNTRUSTED PREAMBLE" <<<"$fail_closed_connect_output"; } \
+      || { [ "$route_contract" = managed ] \
+        && grep -Fq "UNTRUSTED PREAMBLE" <<<"$fail_closed_connect_output" \
+        && grep -Fq "did not return a trusted result" <<<"$fail_closed_connect_output"; }; }; then
     pass "connect rejects untrusted image-backed route evidence before session attach"
   else
     fail_test "connect did not fail closed before session attach for untrusted image-backed route evidence"

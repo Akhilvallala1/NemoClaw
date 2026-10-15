@@ -461,6 +461,8 @@ function mapHermesProfile(
     HERMES_LAZY_INSTALL_TARGET: "/sandbox/.hermes/lazy-packages",
   };
   delete runtimeEnvironment.NEMOCLAW_MESSAGING_PLAN_B64;
+  // The config generator consumes this metadata; the agent reads the sealed policy.
+  delete runtimeEnvironment.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV;
   runtimeEnvironment.NEMOCLAW_DASHBOARD_PORT =
     profile.dashboard.publicPort === null ? "" : String(profile.dashboard.publicPort);
   runtimeEnvironment.NEMOCLAW_HERMES_DASHBOARD =

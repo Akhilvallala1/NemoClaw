@@ -1582,7 +1582,7 @@ export function createProviderEffectBoundary(input: {
         `publishing deferred providers for sandbox '${input.sandboxName}'`,
       );
       await publish();
-      await attachAndVerifyNativeNvidiaProvider(context);
+      await attachAndVerifyNativeInferenceProvider(context);
       context.revalidateSandboxIdentity(
         `attaching deferred providers to sandbox '${input.sandboxName}'`,
       );

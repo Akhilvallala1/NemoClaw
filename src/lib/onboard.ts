@@ -2286,6 +2286,7 @@ function getSetupInferenceDeps(): SetupInferenceDeps {
     inferenceRouteMutator,
     inferenceRouteObserver,
     upsertProvider,
+    recordMigratedCredential: registration.recordMigratedCredential,
     verifyInferenceRoute,
     verifyOnboardInferenceSmoke,
     isNonInteractive,
@@ -3220,6 +3221,8 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
                 sandboxName: name,
                 gatewayName: GATEWAY_NAME,
                 agentName: agent?.name,
+                nativeHostedProviderAttachment:
+                  registry.getSandbox(name)?.nativeHostedProviderAttachment,
                 nativeCustomProviderAttachment:
                   registry.getSandbox(name)?.nativeCustomProviderAttachment,
               },

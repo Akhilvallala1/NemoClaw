@@ -15,6 +15,7 @@ function providerAdapter(
   Pick<CliOpenShellProviderAdapter, "warnIfVerifiedProfilesChangedAfterSandboxCreate"> {
   return {
     importProviderProfile: vi.fn(() => ({ ok: true })),
+    updateProvider: vi.fn(async () => ({ ok: true, value: undefined })),
     warnIfVerifiedProfilesChangedAfterSandboxCreate: vi.fn(),
     getProvider: vi.fn(async () => ({
       ok: true,
@@ -34,9 +35,9 @@ function providerAdapter(
     Pick<CliOpenShellProviderAdapter, "warnIfVerifiedProfilesChangedAfterSandboxCreate">;
 }
 
-function nativeProviderBoundary(adapter: OpenShellProviderAdapter) {
+function nativeProviderBoundary(adapter: OpenShellProviderAdapter, deferred = false) {
   return createProviderEffectBoundary({
-    deferred: false,
+    deferred,
     sandboxName: "alpha",
     gatewayName: "nemoclaw",
     expectedNativeNvidiaProviderAttachment: {
@@ -112,22 +113,25 @@ describe("native NVIDIA post-create provider verification", () => {
     expect(adapter.listProviderAttachments).not.toHaveBeenCalled();
   });
 
-  it("confirms the recorded provider is attached after sandbox identity is verified", async () => {
-    const adapter = providerAdapter(recordedProviderId);
-    const revalidateSandboxIdentity = vi.fn();
-    const boundary = nativeProviderBoundary(adapter);
+  it.each([false, true])(
+    "confirms the recorded attachment after verified creation (deferred=%s)",
+    async (deferred) => {
+      const adapter = providerAdapter(recordedProviderId);
+      const revalidateSandboxIdentity = vi.fn();
+      const boundary = nativeProviderBoundary(adapter, deferred);
 
-    await expect(
-      boundary.runAfterVerifiedCreate?.(verifiedCreateContext(revalidateSandboxIdentity)),
-    ).resolves.toBeUndefined();
+      await expect(
+        boundary.runAfterVerifiedCreate?.(verifiedCreateContext(revalidateSandboxIdentity)),
+      ).resolves.toBeUndefined();
 
-    expect(revalidateSandboxIdentity).toHaveBeenCalledWith(
-      "attaching and verifying native NVIDIA provider for sandbox 'alpha'",
-    );
-    expect(adapter.listProviderAttachments).toHaveBeenCalledWith(
-      expect.objectContaining({ sandboxName: "alpha" }),
-    );
-  });
+      expect(revalidateSandboxIdentity).toHaveBeenCalledWith(
+        "attaching and verifying native NVIDIA provider for sandbox 'alpha'",
+      );
+      expect(adapter.listProviderAttachments).toHaveBeenCalledWith(
+        expect.objectContaining({ sandboxName: "alpha" }),
+      );
+    },
+  );
 
   it("attaches the recorded provider after verified sandbox creation", async () => {
     const adapter = providerAdapter(recordedProviderId);

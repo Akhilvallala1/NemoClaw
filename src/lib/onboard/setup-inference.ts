@@ -256,6 +256,7 @@ export type SetupInferenceDeps = ProviderBranchDeps & {
     gatewayName: string,
     options?: { revalidateSandboxIdentity?(operation: string): void },
   ) => ReturnType<CommonDeps["upsertProvider"]>;
+  recordMigratedCredential?: (credentialEnv: string, storedValue: string) => void;
   verifyInferenceRoute: (gatewayName: string, provider: string, model: string) => void;
   providerExistsInGateway: (name: string, gatewayName: string) => Promise<boolean>;
   run: typeof import("../runner").run;
@@ -870,6 +871,7 @@ export function createSetupInference(
         let nativeHostedProviderAttachment: NativeProviderAttachment | undefined;
         let retainedNativeHostedCredential = false;
         let nativeCustomProviderAttachment: NativeCustomProviderAttachment | undefined;
+        let nativeCustomCredentialCustody: { key: string; value: string } | undefined;
         let admittedNativeCustomAdapter: NativeCustomProfile | undefined;
         let retainedNativeCustomAdapter: NativeCustomProviderAttachment | undefined;
         let nativeCustomHostSmoke: Awaited<
@@ -1134,6 +1136,11 @@ export function createSetupInference(
                 "Native custom setup is missing its OpenShell adapter or durable authority store.",
               );
             }
+            const nativeCustomCredentialEnv =
+              credentialEnv ||
+              (provider === "compatible-endpoint"
+                ? "COMPATIBLE_API_KEY"
+                : "COMPATIBLE_ANTHROPIC_API_KEY");
             const transportInput = {
               sandboxName: sandboxName || "",
               gatewayName,
@@ -1146,13 +1153,7 @@ export function createSetupInference(
               trustedPrivateHosts:
                 deps.trustedPrivateEndpointHosts ??
                 parseTrustedPrivateInferenceHostsFromEnv(process.env),
-              credentialValue:
-                deps.hydrateCredentialEnv(
-                  credentialEnv ||
-                    (provider === "compatible-endpoint"
-                      ? "COMPATIBLE_API_KEY"
-                      : "COMPATIBLE_ANTHROPIC_API_KEY"),
-                ) || null,
+              credentialValue: deps.hydrateCredentialEnv(nativeCustomCredentialEnv) || null,
             };
             const recorded = sandboxName ? deps.getSandbox?.(sandboxName) : null;
             const recordedAttachment = normalizeNativeCustomProviderAttachment(
@@ -1285,6 +1286,12 @@ export function createSetupInference(
                 return receipt;
               },
             );
+            if (transportInput.credentialValue) {
+              nativeCustomCredentialCustody = {
+                key: nativeCustomCredentialEnv,
+                value: transportInput.credentialValue,
+              };
+            }
             return null;
           }
 
@@ -1609,6 +1616,12 @@ export function createSetupInference(
             }
           }
           revalidateSandboxIdentity?.("report successful inference provider setup");
+          if (nativeCustomCredentialCustody) {
+            deps.recordMigratedCredential?.(
+              nativeCustomCredentialCustody.key,
+              nativeCustomCredentialCustody.value,
+            );
+          }
           shouldLogSuccessfulRoute = true;
           return { ok: true as const };
         } catch (error) {

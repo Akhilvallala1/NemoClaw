@@ -369,6 +369,16 @@ describe("native custom Hermes policy (#12636)", () => {
     );
     expect(policy.config.model?.api_key).toBe(`sk-OPENSHELL-RESOLVE-ENV-${key}`);
     expect(loadWithPython(policy).status).toBe(0);
+    const runtimeBoundary = spawnSync(
+      "python3",
+      [
+        "-I",
+        path.join(path.dirname(READER_PATH), "validate-env-secret-boundary.py"),
+        "runtime-env-json",
+      ],
+      { input: JSON.stringify(environment.runtimeEnvironment), encoding: "utf8", timeout: 5000 },
+    );
+    expect(runtimeBoundary.status, runtimeBoundary.stderr).toBe(0);
   });
 
   it("keeps an unowned compatible host-local route on the proxy sentinel", () => {

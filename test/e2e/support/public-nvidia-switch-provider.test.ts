@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from "vitest";
+import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../../../src/lib/inference/native-custom/index.ts";
 import type { SandboxClient } from "../fixtures/clients/sandbox.ts";
 import type { ShellProbeResult } from "../fixtures/shell-probe.ts";
 import {
@@ -10,9 +14,68 @@ import {
   PUBLIC_NVIDIA_SWITCH_PROVIDER,
   readPublicNvidiaSwitchAttachmentEvidence,
   requirePublicNvidiaSwitchKey,
+  readNativeCustomAttachmentEvidence,
+  NATIVE_CUSTOM_ATTACHMENT_EVIDENCE,
 } from "../live/public-nvidia-switch-provider.ts";
 
 describe("public NVIDIA inference switch provider", () => {
+  it.each(["matching", "replaced", "detached"])(
+    "checks native custom identity and attachment: %s",
+    async (state) => {
+      const prepared = await prepareNativeCustomProfile({
+        sandboxName: "e2e-full",
+        provider: "compatible-endpoint",
+        endpointUrl: "https://api.example.com/v1",
+        api: "openai-completions",
+        lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      });
+      const receipt = customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "provider-id",
+      });
+      const openshell = vi
+        .fn()
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: [
+            `Name: ${receipt.providerName}`,
+            `Id: ${state === "replaced" ? "other-id" : receipt.providerId}`,
+            `Type: ${receipt.profileId}`,
+            "Resource version: 1",
+            "Credential keys: COMPATIBLE_API_KEY",
+            "Config keys: <none>",
+          ].join("\n"),
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: state === "detached" ? "" : receipt.providerName,
+        });
+      const input = {
+        artifactName: "custom",
+        env: { OPENSHELL_GATEWAY: "owned-gateway" },
+        receipt,
+        sandbox: { openshell } as unknown as SandboxClient,
+        sandboxName: "e2e-full",
+      };
+      const evidence = await readNativeCustomAttachmentEvidence(input);
+      expect(evidence === NATIVE_CUSTOM_ATTACHMENT_EVIDENCE).toBe(state === "matching");
+      expect(openshell.mock.calls[0][0]).toEqual([
+        "provider",
+        "get",
+        "-g",
+        "owned-gateway",
+        receipt.providerName,
+      ]);
+      expect(await readNativeCustomAttachmentEvidence({ ...input, receipt: undefined })).not.toBe(
+        NATIVE_CUSTOM_ATTACHMENT_EVIDENCE,
+      );
+      expect(
+        await readNativeCustomAttachmentEvidence({ ...input, sandboxName: "another-sandbox" }),
+      ).not.toBe(NATIVE_CUSTOM_ATTACHMENT_EVIDENCE);
+    },
+  );
   it("inspects the declared Launchable gateway instead of the default gateway", async () => {
     const openshell = vi.fn().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "" });
     await readPublicNvidiaSwitchAttachmentEvidence({

@@ -42,6 +42,7 @@ import {
   buildSandboxCommandEnvironment,
   executeSandboxExecCommand,
   type SandboxCommandResult,
+  type SandboxExecCommandExecutionOptions,
   type SandboxExecCommandOptions,
 } from "../../adapters/sandbox/command-transport";
 import { DCODE_AGENT_NAME } from "./rebuild-dcode-target";
@@ -305,9 +306,12 @@ export async function probeSandboxInferenceInvocation(
     result = await executeDcodeSandboxInferenceInvocation(input, deps, timeoutMs);
   } else {
     const execute = deps.execute ?? executeSandboxExecCommand;
-    const execOptions: SandboxExecCommandOptions = {
+    const execOptions: SandboxExecCommandExecutionOptions = {
       ...(input.gatewayName ? { gatewayName: input.gatewayName } : {}),
       ...(input.runtimeSelection ? { runtimeSelection: input.runtimeSelection } : {}),
+      ...(deps.commandExecutor
+        ? { commandExecutor: deps.commandExecutor, honorCallerTimeout: true }
+        : {}),
     };
     result = await execute(
       input.sandboxName,

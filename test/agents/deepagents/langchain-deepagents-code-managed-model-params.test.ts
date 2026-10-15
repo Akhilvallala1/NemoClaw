@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -247,6 +247,75 @@ print("native-openrouter-constructor-handle-ok")
 });
 
 describe("native custom DCode constructor (#12636)", () => {
+  it.each([
+    [false, "", true],
+    [true, "openshell:resolve:env:v12_COMPATIBLE_API_KEY", true],
+    [true, "raw-secret", false],
+    [true, "", false],
+    [true, "openshell:resolve:env:v12_NVIDIA_INFERENCE_API_KEY", false],
+  ])(
+    "checks the live profile against generated routing (native=%s, credential=%s)",
+    (native, credential, accepted) => {
+      const root = createPackageFixture();
+      patchFixture(root);
+      const check = fs.readFileSync(e2eProfileCheckPath, "utf8");
+      const configurationAssertions = check.slice(
+        check.indexOf("config = tomllib.loads(CONFIG_PATH.read_text"),
+        check.indexOf("model_kwargs = ModelConfig.load"),
+      );
+      const resolverAssertions = check.slice(
+        check.indexOf("# A mutable allowlist"),
+        check.indexOf("class ProfileOnlyChatOpenAI"),
+      );
+      const model = "nvidia/nvidia/nemotron-3-ultra";
+      const endpoint = native
+        ? "https://inference-api.nvidia.com/v1"
+        : "https://inference.local/v1";
+      const routeFile = path.join(root, "managed-inference-base-url");
+      fs.chmodSync(routeFile, 0o644);
+      fs.writeFileSync(routeFile, `${endpoint}\n`);
+      fs.chmodSync(routeFile, 0o444);
+      const providerFile = path.join(root, "managed-upstream-provider");
+      fs.chmodSync(providerFile, 0o644);
+      fs.writeFileSync(providerFile, "compatible-endpoint\n");
+      fs.chmodSync(providerFile, 0o444);
+      execFileSync(process.execPath, ["agents/langchain-deepagents-code/generate-config.ts"], {
+        env: {
+          PATH: process.env.PATH,
+          HOME: root,
+          NEMOCLAW_MODEL: model,
+          NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+          NEMOCLAW_INFERENCE_BASE_URL: endpoint,
+        },
+      });
+      const validation = `
+import os, re, socket, tomllib
+from pathlib import Path
+from deepagents_code.config import _NEMOCLAW_NEMOTRON_ULTRA_MODEL_IDS, _get_provider_kwargs
+from deepagents_code.model_config import ModelConfigError
+from deepagents_code._nemoclaw_managed import managed_inference_base_url, managed_reasoning_effort, _managed_upstream_provider
+CONFIG_PATH = Path(${JSON.stringify(path.join(root, ".deepagents", "config.toml"))})
+MANAGED_MODEL_IDS = ("nvidia/nemotron-3-ultra-550b-a55b", ${JSON.stringify(model)})
+EXPECTED_EXTRA_BODY = {"chat_template_kwargs": {"force_nonempty_content": True}}
+${configurationAssertions}
+${resolverAssertions}
+`;
+      const result = spawnSync("python3", ["-c", validation], {
+        env: { PATH: process.env.PATH, PYTHONPATH: root, COMPATIBLE_API_KEY: credential },
+        encoding: "utf8",
+      });
+      expect(
+        {
+          native,
+          credential,
+          accepted: result.status === 0,
+          leaked: result.stderr.includes("raw-secret"),
+        },
+        result.stderr,
+      ).toEqual({ native, credential, accepted, leaked: false });
+    },
+  );
+
   it("uses the issued custom credential and preserves the legacy shared route", () => {
     const tempDir = createPackageFixture();
     patchFixture(tempDir);

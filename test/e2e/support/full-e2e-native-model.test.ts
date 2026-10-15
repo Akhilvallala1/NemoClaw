@@ -3,6 +3,10 @@
 
 import { expect, it } from "vitest";
 import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../../../src/lib/inference/native-custom/index.ts";
+import {
   buildNativeModelRestartFixture,
   withNativeModelCleanup,
 } from "../live/full-e2e-native-model.ts";
@@ -54,6 +58,29 @@ it("encodes model identifiers as JSON data without interpreting path or shell sy
   expect(patch.models.providers[fixture.provider].models[0].id).toBe(model);
   expect(patch.agents.defaults.model.primary).toBe(`${fixture.provider}/${model}`);
   expect(Object.keys(patch.agents.defaults.models)).toEqual([fixture.primary]);
+});
+
+it("keeps the sandbox's native custom route and resolver across a model edit", async () => {
+  const prepared = await prepareNativeCustomProfile({
+    sandboxName: "e2e-full",
+    provider: "compatible-endpoint",
+    endpointUrl: "https://api.example.com/v1",
+    api: "openai-completions",
+    lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+  });
+  const receipt = customAttachmentFromPrepared(prepared, {
+    schemaVersion: 1,
+    profileId: prepared.profile.id,
+    providerName: prepared.providerName,
+    providerId: "provider-id",
+  });
+  const fixture = buildNativeModelRestartFixture("vendor/model", "compatible-endpoint", receipt);
+  expect(JSON.parse(fixture.patch).models.providers[fixture.provider]).toMatchObject({
+    baseUrl: receipt.endpointUrl,
+    apiKey: "${COMPATIBLE_API_KEY}",
+    api: receipt.api,
+    models: [{ id: "vendor/model", name: "vendor/model" }],
+  });
 });
 
 it("returns the verification result after restoring and removing the native test provider", async () => {

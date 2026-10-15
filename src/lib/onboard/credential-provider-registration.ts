@@ -239,6 +239,15 @@ export function createCredentialProviderRegistration(deps: CredentialProviderReg
   const refreshReceipts = new Map<string, string>();
   const gatewayRunner = (gatewayName = deps.getGatewayName()) =>
     createGatewayScopedOpenshellRunner(deps.runOpenshell, gatewayName);
+  function recordMigratedCredential(credentialEnv: string, storedValue: string | null | undefined) {
+    for (const key of stagedMigrationKeys(credentialEnv, deps.stagedLegacyValues)) {
+      if (storedValue === deps.stagedLegacyValues.get(key)) {
+        deps.migratedLegacyKeys.add(key);
+      } else {
+        deps.migratedLegacyKeys.delete(key);
+      }
+    }
+  }
   async function upsertProvider(
     name: string,
     type: string,
@@ -268,14 +277,10 @@ export function createCredentialProviderRegistration(deps: CredentialProviderReg
         options.revalidateSandboxIdentity?.(
           `record migrated credential for provider ${JSON.stringify(name)}`,
         );
-        const upsertedValue = env[credentialEnv] ?? deps.getCredential(credentialEnv);
-        for (const key of migrationKeys) {
-          if (upsertedValue === deps.stagedLegacyValues.get(key)) {
-            deps.migratedLegacyKeys.add(key);
-          } else {
-            deps.migratedLegacyKeys.delete(key);
-          }
-        }
+        recordMigratedCredential(
+          credentialEnv,
+          env[credentialEnv] ?? deps.getCredential(credentialEnv),
+        );
       }
     }
     return result;
@@ -487,6 +492,7 @@ export function createCredentialProviderRegistration(deps: CredentialProviderReg
   }
 
   return {
+    recordMigratedCredential,
     inspectGatewayCredential,
     providerMatchesGatewayCredential,
     applyMessagingProviders,

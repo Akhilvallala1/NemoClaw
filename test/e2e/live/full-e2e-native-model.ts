@@ -3,6 +3,10 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  profileFromCustomAttachment,
+  type NativeCustomProviderAttachment,
+} from "../../../src/lib/inference/native-custom/index.ts";
+import {
   NVIDIA_HOSTED_LOGICAL_PROVIDER,
   NVIDIA_HOSTED_NATIVE_ENDPOINT,
 } from "../../../src/lib/inference/native-nvidia/contract.ts";
@@ -26,7 +30,15 @@ export async function withNativeModelCleanup<T>(
 
 // The preceding sandbox inference turn qualifies this model and route. A new
 // provider name makes a gateway that ignores the native edit distinguishable.
-export function buildNativeModelRestartFixture(model: string, logicalProvider?: string) {
+export function buildNativeModelRestartFixture(
+  model: string,
+  logicalProvider?: string,
+  nativeCustom?: NativeCustomProviderAttachment,
+) {
+  const custom =
+    logicalProvider === "compatible-endpoint"
+      ? profileFromCustomAttachment(nativeCustom!)
+      : undefined;
   const nativeNvidia = logicalProvider === NVIDIA_HOSTED_LOGICAL_PROVIDER;
   const provider = `nemoclaw-e2e-native-${randomUUID()}`;
   const primary = `${provider}/${model}`;
@@ -38,8 +50,16 @@ export function buildNativeModelRestartFixture(model: string, logicalProvider?: 
       models: {
         providers: {
           [provider]: {
-            baseUrl: nativeNvidia ? NVIDIA_HOSTED_NATIVE_ENDPOINT : "https://inference.local/v1",
-            apiKey: nativeNvidia ? "${NVIDIA_INFERENCE_API_KEY}" : "unused",
+            baseUrl: custom
+              ? custom.endpointUrl
+              : nativeNvidia
+                ? NVIDIA_HOSTED_NATIVE_ENDPOINT
+                : "https://inference.local/v1",
+            apiKey: custom
+              ? "${COMPATIBLE_API_KEY}"
+              : nativeNvidia
+                ? "${NVIDIA_INFERENCE_API_KEY}"
+                : "unused",
             api: "openai-completions",
             models: [{ id: model, name: model }],
           },

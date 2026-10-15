@@ -21,6 +21,7 @@ import {
   NO_PROXY_ENV_NAMES,
   PROXY_URL_ENV_NAMES,
   runHeadlessCheckHelper,
+  runHeadlessCheckSnippet,
   runStartScriptProxyProbe,
   TRACING_ENABLE_ENV_NAMES,
 } from "../../helpers/langchain-deepagents-code-headless.ts";
@@ -1096,6 +1097,45 @@ describe("LangChain Deep Agents Code image contracts", () => {
     expect(headlessCheck).toMatch(/headless_output=.*sandbox_login_exec.*\|\| true\)"/);
   });
 
+  const legacyProbeError = "UNTRUSTED PREAMBLE: did not return a trusted result";
+  it.each([
+    ["native-custom", "health", "1", "used", "not-invoked", "0:1"],
+    ["native-nvidia", "health", "1", "used", "not-invoked", "0:1"],
+    ["managed", legacyProbeError, "1", "used", "not-invoked", "0:1"],
+    ["native-custom", "UNTRUSTED PREAMBLE", "1", "used", "not-invoked", "1:0"],
+    ["native-custom", "health", "0", "used", "not-invoked", "1:0"],
+    ["native-custom", "health", "1", "missing", "not-invoked", "1:0"],
+    ["native-custom", "health", "1", "used", "invoked", "1:0"],
+    ["managed", "health", "1", "used", "not-invoked", "1:0"],
+  ])(
+    "checks fail-closed connect evidence [%s / %s / %s / %s / %s]",
+    (route, diagnostic, exit, probe, attach, expected) => {
+      const source = fs.readFileSync(headlessCheckPath, "utf8");
+      const check = source.slice(
+        source.indexOf("  fail_closed_connect_output="),
+        source.indexOf("  # 9."),
+      );
+      const output = runHeadlessCheckSnippet(
+        `
+      FAILED=0; PASSED=0; route_contract="$ROUTE"
+      dcode_connect_fail_closed_contract() { printf '%s\\n' "$EVIDENCE"; }
+      ${check}
+      printf '%s:%s\\n' "$FAILED" "$PASSED"
+    `,
+        {
+          ROUTE: route,
+          EVIDENCE: [
+            diagnostic,
+            `NEMOCLAW_DCODE_UNTRUSTED_CONNECT_EXIT:${exit}`,
+            `NEMOCLAW_DCODE_IMAGE_PROBE_${probe.toUpperCase()}`,
+            `NEMOCLAW_DCODE_SESSION_ATTACH_${attach.toUpperCase().replaceAll("-", "_")}`,
+          ].join("\n"),
+        },
+      );
+      expect(output.trim().split("\n").at(-1)).toBe(expected);
+    },
+  );
+
   it("binds the live rlimit probe to one exact managed entrypoint process (#6545)", () => {
     const procRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dcode-proc-"));
     const limits = [
@@ -1192,6 +1232,29 @@ describe("LangChain Deep Agents Code image contracts", () => {
     ],
   ])("rejects an inconsistent Deep Agents Code route contract: %s", (_case, config) => {
     expect(() => runHeadlessCheckHelper("inference-route-contract", { CONFIG: config })).toThrow();
+  });
+
+  it("accepts the custom headless route matching independent endpoint authority", () => {
+    expect(
+      runHeadlessCheckSnippet(
+        'printf "%s" "$CONFIG" | configured_inference_route_contract "https://native.example/v1"',
+        { CONFIG: 'base_url = "https://native.example/v1"\napi_key_env = "COMPATIBLE_API_KEY"' },
+      ),
+    ).toBe("native-custom\n");
+  });
+
+  it.each([
+    'base_url = "https://wrong.example/v1"\napi_key_env = "COMPATIBLE_API_KEY"',
+    'base_url = "https://native.example/v1"\napi_key_env = "DEEPAGENTS_CODE_OPENAI_API_KEY"',
+    'base_url = "https://inference.local/v1"\napi_key_env = "DEEPAGENTS_CODE_OPENAI_API_KEY"',
+    'base_url = "https://native.example/v1"\nbase_url = "https://inference.local/v1"\napi_key_env = "COMPATIBLE_API_KEY"',
+  ])("rejects a custom headless route inconsistent with its authority (%s)", (config) => {
+    expect(() =>
+      runHeadlessCheckSnippet(
+        'printf "%s" "$CONFIG" | configured_inference_route_contract "https://native.example/v1"',
+        { CONFIG: config },
+      ),
+    ).toThrow();
   });
 
   it("rejects unsafe headless timeout values before sandbox execution", () => {

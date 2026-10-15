@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from "vitest";
+import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../../../src/lib/inference/native-custom/index.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -94,8 +98,51 @@ describe("full E2E sandbox inference probe", () => {
     },
   );
 
-  it("retains the credential-free local probe for a compatible provider", () => {
-    expect(buildFullE2eSandboxInferenceCommand("{}", "compatible-endpoint")).toEqual([
+  it("probes the native custom endpoint using a resolver reference, never a host credential", async () => {
+    const prepared = await prepareNativeCustomProfile({
+      sandboxName: "e2e-full",
+      provider: "compatible-endpoint",
+      endpointUrl: "https://api.example.com/v1",
+      api: "openai-completions",
+      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    });
+    const receipt = customAttachmentFromPrepared(prepared, {
+      schemaVersion: 1,
+      profileId: prepared.profile.id,
+      providerName: prepared.providerName,
+      providerId: "provider-id",
+    });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "full-e2e-custom-probe-"));
+    try {
+      fs.writeFileSync(path.join(directory, "curl"), '#!/bin/sh\nprintf "%s\\n" "$@"\n', {
+        mode: 0o700,
+      });
+      const [command, ...args] = buildFullE2eSandboxInferenceCommand(
+        "{}",
+        "compatible-endpoint",
+        receipt,
+      );
+      const reference = "openshell:resolve:env:v1_COMPATIBLE_API_KEY";
+      const env = { PATH: `${directory}:/usr/bin:/bin`, COMPATIBLE_API_KEY: reference };
+      const result = spawnSync(command, args, { env, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(`${receipt.endpointUrl}/chat/completions`);
+      expect(result.stdout).toContain(`Authorization: Bearer ${reference}`);
+      expect(result.stdout).not.toContain("inference.local");
+      const rejected = spawnSync(command, args, {
+        env: { ...env, COMPATIBLE_API_KEY: "raw-secret" },
+        encoding: "utf8",
+      });
+      expect(rejected.status).not.toBe(0);
+      expect(rejected.stdout).toBe("");
+      expect(rejected.stderr).not.toContain("raw-secret");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("retains the credential-free local probe for Portable inference", () => {
+    expect(buildFullE2eSandboxInferenceCommand("{}", "portable")).toEqual([
       "curl",
       "-fsS",
       "--max-time",

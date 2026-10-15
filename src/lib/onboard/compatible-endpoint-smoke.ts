@@ -171,21 +171,6 @@ export async function verifyCompatibleEndpointSandboxSmoke(options: {
         },
         {
           commandExecutor: options.sandboxCommandExecutor,
-          execute: async (sandboxName, command, timeout) => {
-            const completed = await options.sandboxCommandExecutor.runBuffered({
-              sandboxName,
-              target,
-              command: ["sh", "-lc", command],
-              timeoutMilliseconds: timeout,
-            });
-            return completed.outcome.kind === "completed"
-              ? {
-                  status: completed.outcome.exitCode,
-                  stdout: completed.stdout,
-                  stderr: completed.stderr,
-                }
-              : null;
-          },
         },
       );
       if (!result.ok) throw new Error(result.detail);

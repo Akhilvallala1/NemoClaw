@@ -84,6 +84,30 @@ function writeDcodeApprovalTestDriver(driverPath: string, testEntrypoint: string
 }
 
 describe("P0-E cloud-experimental parity guardrails", () => {
+  it.each([
+    ["https://inference.local/v1", "https://inference.local/v1", 0],
+    ["https://native.example/v1", "https://native.example/v1", 0],
+    ["https://native.example/v1", "https://inference.local/v1", 1],
+  ])("binds fresh DCode identity to its recorded route (%s, %s)", (expected, actual, status) => {
+    const identity = `Route: inference\nProvider: compatible-endpoint\nModel: openai:test-model\nEndpoint: ${actual}\n`;
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        'source "$1"; assert_identity "$2" test-model initial "$3"',
+        "identity-check",
+        dcodeFreshReonboardCheck,
+        identity,
+        expected,
+      ],
+      {
+        encoding: "utf8",
+        env: { PATH: DEFAULT_TEST_PATH },
+      },
+    );
+    expect(result.status, result.stderr).toBe(status);
+  });
+
   it.each(["cloud-openclaw", "cloud-hermes", undefined])(
     "does not select Deep Agents checks for onboarding %s",
     (onboarding) => {

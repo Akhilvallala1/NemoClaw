@@ -5,6 +5,12 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { buildNativeCustomProfile } from "../../../src/lib/inference/native-custom/profile.ts";
+import { customAttachmentFromPrepared } from "../../../src/lib/inference/native-custom/index.ts";
+import {
+  buildHttpsPinRouteBaseUrl,
+  computeHttpsPinRouteId,
+} from "../../../src/lib/inference/https-pin-runtime.ts";
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 
@@ -572,6 +578,54 @@ describe("LifecyclePhaseFixture DCode invalid-credential rebuild", () => {
     });
   }
 
+  function nativeOptions() {
+    const sourceEndpointUrl = "https://api.example.com/v1";
+    const transport = {
+      kind: "https-pin" as const,
+      gatewayName: "nemoclaw",
+      sourceEndpointUrl,
+      sourceAddresses: ["8.8.8.8"],
+      trustedPrivateEndpoint: false,
+    };
+    const prepared = {
+      ...buildNativeCustomProfile({
+        sandboxName,
+        provider: "compatible-endpoint",
+        api: "openai-completions",
+        endpointUrl:
+          buildHttpsPinRouteBaseUrl(
+            computeHttpsPinRouteId(
+              "nemoclaw",
+              "compatible-endpoint",
+              sourceEndpointUrl,
+              sandboxName,
+              "openai",
+            ),
+          ) + "/v1",
+        addresses: [],
+        transport,
+      }),
+      trustedPrivateEndpoint: false,
+    };
+    const receipt = customAttachmentFromPrepared(prepared, {
+      schemaVersion: 1,
+      profileId: prepared.profile.id,
+      providerName: prepared.providerName,
+      providerId: "dcode-provider-id",
+    });
+    return dcodeInvalidCredentialRebuildOptionsFromRegistryEntry(
+      {
+        name: sandboxName,
+        agent: "langchain-deepagents-code",
+        gatewayName: "nemoclaw",
+        provider: "compatible-endpoint",
+        model: options.model,
+        nativeCustomProviderAttachment: receipt,
+      },
+      validCredential,
+    );
+  }
+
   function enqueuePreamble(runner: FakeRunner): void {
     runner.enqueue(shellResult(0, `${sandboxName}\n`));
     runner.enqueue(shellResult(0, `NAME PHASE\n${sandboxName} Ready\n`));
@@ -602,9 +656,39 @@ describe("LifecyclePhaseFixture DCode invalid-credential rebuild", () => {
       ["--url", "unix:///run/user/1001/podman/podman.sock", "ps"],
       "label=openshell.managed=true",
     ],
+    [
+      "native Docker",
+      { NEMOCLAW_GATEWAY_RUNTIME: "docker" },
+      "docker",
+      ["ps"],
+      "label=openshell.ai/managed-by=openshell",
+      true,
+    ],
+    [
+      "native Podman",
+      {
+        HOME: "/home/runner",
+        PATH: "/usr/bin",
+        NEMOCLAW_GATEWAY_RUNTIME: "podman",
+        OPENSHELL_PODMAN_SOCKET: "/run/user/1001/podman/podman.sock",
+        XDG_RUNTIME_DIR: "/run/user/1001",
+      },
+      "podman",
+      ["--url", "unix:///run/user/1001/podman/podman.sock", "ps"],
+      "label=openshell.managed=true",
+      true,
+    ],
   ] as const)(
     "proves rejected and successful state-preserving rebuilds through %s",
-    async (_displayName, runtimeEnvironment, runtimeCommand, runtimeArgsPrefix, managedLabel) => {
+    async (
+      _displayName,
+      runtimeEnvironment,
+      runtimeCommand,
+      runtimeArgsPrefix,
+      managedLabel,
+      native: boolean = false,
+    ) => {
+      const selectedOptions = native ? nativeOptions() : options;
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "dcode-lifecycle-home-"));
       const previousHome = process.env.HOME;
       process.env.HOME = home;
@@ -657,7 +741,7 @@ describe("LifecyclePhaseFixture DCode invalid-credential rebuild", () => {
         const result = await fixture(runner, cleanup, runtimeEnvironment).simulate(
           "dcode-rebuild-invalid-credential",
           dcodeInstance(),
-          options,
+          selectedOptions,
         );
 
         expect(result.profile).toBe("dcode-rebuild-invalid-credential");
@@ -680,9 +764,26 @@ describe("LifecyclePhaseFixture DCode invalid-credential rebuild", () => {
         );
         const providerUpdates = runner.calls.filter(
           (call) =>
-            call.command === "openshell" && call.args.slice(0, 2).join(" ") === "provider update",
+            call.options?.artifactName === "lifecycle-dcode-provider-invalid" ||
+            call.options?.artifactName === "lifecycle-dcode-provider-restore",
         );
         expect(providerUpdates).toHaveLength(2);
+        expect(providerUpdates.map((call) => call.command)).toEqual(
+          Array(2).fill(native ? process.execPath : "openshell"),
+        );
+        const recorded = selectedOptions.nativeCustomProviderAttachment;
+        expect(
+          JSON.parse(providerUpdates[0].options?.env?.NEMOCLAW_E2E_NATIVE_ATTACHMENT ?? "null"),
+        ).toEqual(recorded ?? null);
+        const baseline = runner.calls.find(
+          (call) => call.options?.artifactName === "lifecycle-dcode-route-baseline-1",
+        );
+        expect(baseline?.args.join(" ")).toContain(
+          recorded?.endpointUrl ?? "https://inference.local",
+        );
+        expect(baseline?.args.join(" ").includes("Authorization: Bearer $COMPATIBLE_API_KEY")).toBe(
+          native,
+        );
         const invalidCredential = providerUpdates[0].options?.env?.COMPATIBLE_API_KEY;
         expect(invalidCredential).toMatch(/^nvapi-e2e-invalid-/);
         expect(providerUpdates[0].args).not.toContain(invalidCredential);

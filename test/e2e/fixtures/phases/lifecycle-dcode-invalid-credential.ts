@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomUUID } from "node:crypto";
+import {
+  normalizeNativeCustomProviderAttachment,
+  type NativeCustomProviderAttachment,
+} from "../../../../src/lib/inference/native-custom/index.ts";
+import { shellQuote } from "../clients/command.ts";
+import { REPO_ROOT } from "../paths.ts";
 
 import { buildAvailabilityProbeEnv } from "../availability-env.ts";
 import { assertExitZero, outputContainsReadySandbox, resultText } from "../clients/command.ts";
@@ -42,6 +48,7 @@ export interface DcodeInvalidCredentialRebuildOptions {
   credentialEnv: string;
   model: string;
   validCredential: string;
+  nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
 }
 
 export interface DcodeInvalidCredentialLifecycleDeps {
@@ -89,12 +96,26 @@ export function dcodeInvalidCredentialRebuildOptionsFromRegistryEntry(
       `DCode invalid-credential lifecycle requires credential env '${HOSTED_INFERENCE_CREDENTIAL_ENV}'`,
     );
   }
+  const nativeCustom = normalizeNativeCustomProviderAttachment(
+    entry.nativeCustomProviderAttachment,
+    String(entry.name),
+    { provider: providerName, credentialEnv },
+  );
+  if (
+    entry.nativeCustomProviderAttachment !== undefined &&
+    (!nativeCustom ||
+      nativeCustom.api !== "openai-completions" ||
+      (nativeCustom.transport && nativeCustom.transport.gatewayName !== entry.gatewayName))
+  ) {
+    throw new Error("DCode lifecycle requires the exact recorded native custom chat attachment.");
+  }
   return {
     gatewayName: requiredString(entry, "gatewayName"),
     providerName,
     credentialEnv,
     model: requiredString(entry, "model"),
     validCredential,
+    ...(nativeCustom ? { nativeCustomProviderAttachment: nativeCustom } : {}),
   };
 }
 
@@ -204,23 +225,29 @@ async function probeRoute(
   });
   return await deps.sandbox.exec(
     sandboxName,
-    [
-      "curl",
-      "-sS",
-      "-o",
-      "/dev/null",
-      "-w",
-      "%{http_code}",
-      "--connect-timeout",
-      "5",
-      "--max-time",
-      "15",
-      "-H",
-      "Content-Type: application/json",
-      "--data-binary",
-      payload,
-      "https://inference.local/v1/chat/completions",
-    ],
+    options.nativeCustomProviderAttachment
+      ? [
+          "sh",
+          "-c",
+          `printf '%s' "\${COMPATIBLE_API_KEY:-}" | LC_ALL=C grep -Eq '^openshell:resolve:env:(v[0-9]{1,20}|s[a-f0-9]{64})_COMPATIBLE_API_KEY$' || exit 2; exec curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 -H 'Content-Type: application/json' -H "Authorization: Bearer $COMPATIBLE_API_KEY" --data-binary ${shellQuote(payload)} ${shellQuote(`${options.nativeCustomProviderAttachment.endpointUrl}/chat/completions`)}`,
+        ]
+      : [
+          "curl",
+          "-sS",
+          "-o",
+          "/dev/null",
+          "-w",
+          "%{http_code}",
+          "--connect-timeout",
+          "5",
+          "--max-time",
+          "15",
+          "-H",
+          "Content-Type: application/json",
+          "--data-binary",
+          payload,
+          "https://inference.local/v1/chat/completions",
+        ],
     {
       artifactName: `lifecycle-dcode-route-${phase}-${attempt}`,
       env: gatewayEnv(options.gatewayName),
@@ -256,6 +283,51 @@ async function updateProviderCredential(
   phase: string,
   redactionValues: string[],
 ): Promise<ShellProbeResult> {
+  const native = options.nativeCustomProviderAttachment;
+  if (native?.transport?.kind === "https-pin") {
+    // The adapter owns the upstream key; changing the OpenShell token would test
+    // a different failure and would not restore the recorded upstream credential.
+    const script = `
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { isDeepStrictEqual } = require('node:util');
+const { getSandbox } = require('./src/lib/state/registry.ts');
+const { normalizeNativeCustomProviderAttachment, verifyNativeCustomProviderAttachment } = require('./src/lib/inference/native-custom/index.ts');
+const { createCliOpenShellProviderAdapter } = require('./src/lib/adapters/openshell/provider-adapter-cli.ts');
+const { ensureHttpsPinRuntimeAdapter } = require('./src/lib/inference/https-pin-runtime-adapter.ts');
+const { resolveCurrentRuntimeProviderBundle } = require('./src/lib/onboard/runtime-provider/access.ts');
+const receipt = normalizeNativeCustomProviderAttachment(JSON.parse(process.env.NEMOCLAW_E2E_NATIVE_ATTACHMENT));
+if (!receipt || !receipt.sandboxName.startsWith('e2e-') || receipt.transport?.kind !== 'https-pin' || receipt.transport.gatewayName !== process.env.OPENSHELL_GATEWAY || !isDeepStrictEqual(getSandbox(receipt.sandboxName)?.nativeCustomProviderAttachment, receipt)) throw new Error('DCode native rotation authority changed');
+await verifyNativeCustomProviderAttachment({ adapter: createCliOpenShellProviderAdapter(), target: { kind: 'named', gatewayName: receipt.transport.gatewayName }, sandboxName: receipt.sandboxName, expected: receipt });
+const runtime = resolveCurrentRuntimeProviderBundle();
+const route = await ensureHttpsPinRuntimeAdapter({
+  gatewayName: receipt.transport.gatewayName, sandboxName: receipt.sandboxName,
+  provider: 'compatible-endpoint', providerType: 'openai',
+  endpointUrl: receipt.transport.sourceEndpointUrl, credentialValue: process.env.COMPATIBLE_API_KEY,
+  lookup: async () => receipt.transport.sourceAddresses.map(address => ({ address, family: address.includes(':') ? 6 : 4 })),
+  trustedPrivateHosts: receipt.transport.trustedPrivateEndpoint ? [new URL(receipt.transport.sourceEndpointUrl).hostname] : [],
+  discoverAllowedSourceCidrs: () => runtime.gateway.observeHostRuntime({ environment: process.env, platform: process.platform }).network.sandboxSourceCidrs(),
+});
+if (route.baseUrl + '/v1' !== receipt.endpointUrl) throw new Error('DCode native rotation changed route');
+`;
+    const result = await deps.host.command(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", script],
+      {
+        cwd: REPO_ROOT,
+        artifactName: `lifecycle-dcode-provider-${phase}`,
+        env: {
+          ...gatewayEnv(options.gatewayName),
+          NEMOCLAW_E2E_NATIVE_ATTACHMENT: JSON.stringify(native),
+          COMPATIBLE_API_KEY: credential,
+        },
+        redactionValues,
+        timeoutMs: 30_000,
+      },
+    );
+    assertExitZero(result, `${phase} DCode native adapter credential`);
+    return result;
+  }
   const result = await deps.host.command(
     "openshell",
     [
@@ -263,7 +335,7 @@ async function updateProviderCredential(
       "update",
       "-g",
       options.gatewayName,
-      options.providerName,
+      native?.providerName ?? options.providerName,
       "--credential",
       options.credentialEnv,
     ],
