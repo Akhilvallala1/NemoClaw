@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! Setup-only delivery through an owned, bounded, offline initializer.
+//! `protected_files`: publishes protected application files through an owned,
+//! bounded, offline setup container before the application starts.
 use crate::{Backend, Error, Mutation, ObservationError, Row};
 use async_trait::async_trait;
 use bollard::{
@@ -17,10 +18,9 @@ use nemoclaw_container_inputs::{
 };
 use nemoclaw_sdk::{
     managed::{GENERATION_LABEL, OWNER_LABEL},
-    services::installers::container::inputs::InputsSpec,
+    services::installers::container::inputs::{self as files, Files},
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeSet, HashMap},
     time::Duration,
@@ -29,10 +29,26 @@ use tokio::io::AsyncWriteExt;
 const INPUT_LABEL: &str = "nemoclaw.nvidia.com/input-spec";
 
 pub(crate) fn definition() -> crate::Definition {
-    super::schema_definition(nemoclaw_sdk::services::installers::container::inputs::INPUTS_KIND)
-        .validate_spec(nemoclaw_sdk::services::validate_resource_spec)
+    let fields = files::fields();
+    let mut definition = crate::Definition::new(files::FILES_KIND, &fields, &[])
+        .optional(&files::optional_fields())
         .computed("complete", crate::rerun_when_stopped)
         .computed("id", input_identity)
+        .validate_inputs(validate);
+    definition.structured = files::structured_inputs();
+    definition.references = files::references();
+    definition
+}
+
+/// Check known inputs offline; the agent's sandbox identity may still be unknown.
+fn validate(known: &Row, unknown: &[&str]) -> Result<(), std::borrow::Cow<'static, str>> {
+    if !unknown.is_empty() {
+        return Ok(());
+    }
+    Files::from_row(known)
+        .map_err(|error| error.to_string())?
+        .validate(false)
+        .map_err(|error| error.to_string().into())
 }
 
 fn input_identity(name: &str, prior: &crate::State) -> Option<tf_provider::value::Value<String>> {
@@ -44,13 +60,45 @@ fn input_identity(name: &str, prior: &crate::State) -> Option<tf_provider::value
     }
 }
 
-use crate::runtime_image::{setup_environment_is_safe, validate_input_image};
+/// Docker injects this PATH; no caller settings reach the fixed publisher.
+fn setup_environment_is_safe(environment: Option<&[String]>) -> bool {
+    environment.is_none_or(|values| {
+        values.is_empty()
+            || values.len() == 1
+                && values[0] == "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    })
+}
+fn validate_input_image(image: &ImageInspect, architecture: &str) -> Result<(), Error> {
+    use nemoclaw_container_inputs::{CONTRACT_LABEL, CONTRACT_VERSION};
+    let config = image.config.as_ref().ok_or(ObservationError::Incomplete)?;
+    if image.id.as_ref().is_none_or(String::is_empty)
+        || image.os.as_deref() != Some("linux")
+        || image.architecture.as_deref() != Some(architecture)
+        || config
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(CONTRACT_LABEL))
+            .map(String::as_str)
+            != Some(CONTRACT_VERSION)
+        || config
+            .entrypoint
+            .as_ref()
+            .is_none_or(|parts| parts != &[ENTRYPOINT.to_owned()])
+        || !setup_environment_is_safe(config.env.as_deref())
+        || config.volumes.as_ref().is_some_and(|v| !v.is_empty())
+    {
+        return Err(Error::Conflict(
+            "input setup image is incompatible; preload the pinned NemoClaw setup image for this platform",
+        ));
+    }
+    Ok(())
+}
 
-pub struct InputsBackend {
+pub struct FilesBackend {
     engine: crate::docker::Engine,
     secrets: std::sync::Arc<dyn nemoclaw_sdk::Secrets>,
 }
-impl InputsBackend {
+impl FilesBackend {
     pub fn new(engine: crate::docker::Engine) -> Self {
         Self {
             engine,
@@ -62,35 +110,27 @@ impl InputsBackend {
         self.secrets = secrets;
         self
     }
-    fn spec(&self, row: &Row) -> Result<InputsSpec, Error> {
-        let spec: InputsSpec = serde_json::from_str(
-            row.get("spec")
-                .ok_or(Error::State("missing application inputs"))?,
-        )
-        .map_err(|_| Error::State("invalid application inputs"))?;
-        spec.descriptor(
-            row.get("sandbox_id")
-                .ok_or(Error::State("missing application binding"))?,
-        )?;
-        if self.engine.endpoint() != spec.storage.engine {
+    fn spec(&self, row: &Row) -> Result<Files, Error> {
+        let spec = Files::from_row(row)?;
+        spec.descriptor()?;
+        if self.engine.endpoint() != spec.engine {
             return Err(ObservationError::BindingMismatch.into());
         }
         Ok(spec)
     }
-    fn payload(&self, spec: &InputsSpec, row: &Row) -> Result<Vec<u8>, Error> {
+    fn payload(&self, spec: &Files) -> Result<Vec<u8>, Error> {
         let (uid, gid) = owner(spec);
-        let root = &spec.root;
         let mut files = Vec::new();
-        for secret in spec.secrets.values() {
+        for credential in spec.credentials.values() {
             files.push(InputFile {
-                path: secret.target_path[root.len() + 1..].into(),
+                path: spec.relative(&credential.path).into(),
                 role: Role::Credential,
-                content: self.secrets.resolve(&secret.credential.env)?,
+                content: self.secrets.resolve(&credential.env)?,
             });
         }
-        if let Some((path, descriptor)) = spec.descriptor(&row["sandbox_id"])? {
+        if let Some((path, descriptor)) = spec.descriptor()? {
             files.push(InputFile {
-                path: path[root.len() + 1..].into(),
+                path,
                 role: Role::Descriptor,
                 content: serde_json::to_string(&descriptor)
                     .map_err(|_| Error::State("invalid application descriptor"))?,
@@ -99,7 +139,7 @@ impl InputsBackend {
         let request = Request {
             uid,
             gid,
-            completion: completion(spec, row),
+            completion: completion(spec),
             files,
         };
         request
@@ -112,10 +152,10 @@ impl InputsBackend {
         }
         Ok(bytes)
     }
-    async fn image(&self, spec: &InputsSpec) -> Result<ImageInspect, Error> {
+    async fn image(&self, spec: &Files) -> Result<ImageInspect, Error> {
         let image = self
             .engine
-            .image(&spec.setup.image)
+            .image(&spec.image)
             .await?
             .ok_or(Error::Conflict(
                 "input setup image is absent; preload the pinned image in the selected engine",
@@ -123,17 +163,17 @@ impl InputsBackend {
         validate_input_image(&image, &spec.architecture)?;
         Ok(image)
     }
-    async fn volume(&self, spec: &InputsSpec) -> Result<(), Error> {
+    async fn volume(&self, spec: &Files) -> Result<(), Error> {
         let volume = self
             .engine
-            .volume(&spec.storage.name)
+            .volume(&spec.volume)
             .await?
             .ok_or(Error::State("owned application input volume is absent"))?;
-        if volume.name != spec.storage.name
+        if volume.name != spec.volume
             || volume.driver != "local"
             || !volume.options.is_empty()
-            || volume.labels.get(OWNER_LABEL) != Some(&spec.storage.owner)
-            || volume.labels.get(GENERATION_LABEL) != Some(&spec.storage.generation)
+            || volume.labels.get(OWNER_LABEL) != Some(&spec.owner)
+            || volume.labels.get(GENERATION_LABEL) != Some(&spec.generation)
         {
             return Err(ObservationError::BindingMismatch.into());
         }
@@ -141,7 +181,7 @@ impl InputsBackend {
     }
     async fn container(
         &self,
-        spec: &InputsSpec,
+        spec: &Files,
         row: &Row,
         removing: bool,
     ) -> Result<Option<ContainerInspectResponse>, Error> {
@@ -157,15 +197,15 @@ impl InputsBackend {
         }
         Ok(Some(container))
     }
-    async fn application_stopped(&self, spec: &InputsSpec) -> Result<(), Error> {
-        if let Some(application) = self.engine.container(&spec.application_name()).await? {
+    async fn application_stopped(&self, spec: &Files) -> Result<(), Error> {
+        if let Some(application) = self.engine.container(&spec.application).await? {
             let labels = application
                 .config
                 .as_ref()
                 .and_then(|c| c.labels.as_ref())
                 .ok_or(ObservationError::Incomplete)?;
-            if labels.get(OWNER_LABEL) != Some(&spec.storage.owner)
-                || labels.get(GENERATION_LABEL) != Some(&spec.storage.generation)
+            if labels.get(OWNER_LABEL) != Some(&spec.owner)
+                || labels.get(GENERATION_LABEL) != Some(&spec.generation)
             {
                 return Err(ObservationError::BindingMismatch.into());
             }
@@ -181,7 +221,7 @@ impl InputsBackend {
         &self,
         id: &str,
         path: &str,
-        spec: &InputsSpec,
+        spec: &Files,
         limit: usize,
         directory: bool,
     ) -> Result<Option<Vec<u8>>, Error> {
@@ -202,8 +242,7 @@ impl InputsBackend {
     async fn complete(
         &self,
         container: &ContainerInspectResponse,
-        spec: &InputsSpec,
-        row: &Row,
+        spec: &Files,
     ) -> Result<bool, Error> {
         let state = container
             .state
@@ -225,17 +264,17 @@ impl InputsBackend {
         else {
             return Ok(false);
         };
-        if marker != serde_json::to_vec(&completion(spec, row)).expect("nonsecret completion") {
+        if marker != serde_json::to_vec(&completion(spec)).expect("nonsecret completion") {
             return Err(ObservationError::BindingMismatch.into());
         }
         let mut directories = BTreeSet::from([ROOT.to_owned()]);
         for path in spec
-            .secrets
+            .credentials
             .values()
-            .map(|s| s.target_path.as_str())
-            .chain(spec.connections.values().map(|c| c.target_path.as_str()))
+            .map(|c| c.path.as_str())
+            .chain(spec.connection.iter().map(|c| c.path.as_str()))
         {
-            let relative = &path[spec.root.len() + 1..];
+            let relative = spec.relative(path);
             let mut prefix = ROOT.to_owned();
             for part in relative.split('/').take(relative.split('/').count() - 1) {
                 prefix.push('/');
@@ -248,8 +287,8 @@ impl InputsBackend {
                 return Ok(false);
             }
         }
-        for secret in spec.secrets.values() {
-            let path = format!("{ROOT}/{}", relative(spec, &secret.target_path));
+        for credential in spec.credentials.values() {
+            let path = format!("{ROOT}/{}", spec.relative(&credential.path));
             let Some(value) = self
                 .file(id, &path, spec, MAX_CREDENTIAL_BYTES, false)
                 .await?
@@ -260,11 +299,11 @@ impl InputsBackend {
                 return Err(ObservationError::Authentication.into());
             }
         }
-        if let Some((path, descriptor)) = spec.descriptor(&row["sandbox_id"])? {
+        if let Some((path, descriptor)) = spec.descriptor()? {
             let Some(value) = self
                 .file(
                     id,
-                    &format!("{ROOT}/{}", relative(spec, &path)),
+                    &format!("{ROOT}/{path}"),
                     spec,
                     MAX_DESCRIPTOR_BYTES,
                     false,
@@ -279,8 +318,8 @@ impl InputsBackend {
         }
         Ok(true)
     }
-    async fn create(&self, spec: &InputsSpec, row: &Row) -> Result<String, Error> {
-        let config = configuration(spec, row)?;
+    async fn create(&self, spec: &Files) -> Result<String, Error> {
+        let config = configuration(spec)?;
         let created = self
             .engine
             .api
@@ -298,7 +337,7 @@ impl InputsBackend {
         }
         Ok(created.id)
     }
-    async fn delete(&self, id: &str, spec: &InputsSpec) -> Result<(), Error> {
+    async fn delete(&self, id: &str, spec: &Files) -> Result<(), Error> {
         self.engine
             .api
             .remove_container(
@@ -316,7 +355,7 @@ impl InputsBackend {
         }
         Ok(())
     }
-    async fn execute(&self, id: &str, spec: &InputsSpec, payload: &[u8]) -> Result<(), Error> {
+    async fn execute(&self, id: &str, spec: &Files, payload: &[u8]) -> Result<(), Error> {
         let mut attached = self
             .engine
             .api
@@ -406,51 +445,43 @@ impl InputsBackend {
         }
     }
 }
-fn relative<'a>(spec: &InputsSpec, path: &'a str) -> &'a str {
-    &path[spec.root.len() + 1..]
-}
-fn owner(spec: &InputsSpec) -> (u32, u32) {
+fn owner(spec: &Files) -> (u32, u32) {
     let (uid, gid) = spec.user.split_once(':').unwrap();
     (uid.parse().unwrap(), gid.parse().unwrap())
 }
-fn completion(spec: &InputsSpec, row: &Row) -> Completion {
+fn completion(spec: &Files) -> Completion {
     Completion {
-        revision: spec.revision.clone(),
-        sandbox_id: row["sandbox_id"].clone(),
+        revision: spec.revision(),
+        sandbox_id: spec
+            .agent
+            .as_ref()
+            .map_or_else(|| "none".into(), |agent| agent.sandbox_id.clone()),
     }
 }
-fn labels(spec: &InputsSpec, row: &Row) -> Result<HashMap<String, String>, Error> {
-    let bytes = serde_json::to_vec(&(spec, &row["sandbox_id"]))
-        .map_err(|_| Error::State("invalid application input identity"))?;
-    let hash: String = Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+fn labels(spec: &Files) -> Result<HashMap<String, String>, Error> {
+    let hash = spec.revision();
     Ok([
-        (OWNER_LABEL.into(), spec.storage.owner.clone()),
-        (GENERATION_LABEL.into(), spec.storage.generation.clone()),
+        (OWNER_LABEL.into(), spec.owner.clone()),
+        (GENERATION_LABEL.into(), spec.generation.clone()),
         (INPUT_LABEL.into(), hash),
     ]
     .into())
 }
-fn configuration(
-    spec: &InputsSpec,
-    row: &Row,
-) -> Result<bollard::models::ContainerCreateBody, Error> {
+fn configuration(spec: &Files) -> Result<bollard::models::ContainerCreateBody, Error> {
     let (uid, gid) = owner(spec);
     let config=serde_json::from_value(json!({
-            "Image":spec.setup.image,"User":"0:0","Env":[],"Entrypoint":[ENTRYPOINT],"Cmd":["install",uid.to_string(),gid.to_string()],
-            "Labels":labels(spec,row)?,"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"OpenStdin":true,"StdinOnce":true,"Tty":false,"Healthcheck":{"Test":["NONE"]},
+            "Image":spec.image,"User":"0:0","Env":[],"Entrypoint":[ENTRYPOINT],"Cmd":["install",uid.to_string(),gid.to_string()],
+            "Labels":labels(spec)?,"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"OpenStdin":true,"StdinOnce":true,"Tty":false,"Healthcheck":{"Test":["NONE"]},
             "HostConfig":{"NetworkMode":"none","IpcMode":"private","PidMode":"","ReadonlyRootfs":true,"Privileged":false,
                 "CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],
                 "RestartPolicy":{"Name":"no"},"LogConfig":{"Type":"none","Config":{}},"Memory":134217728,"PidsLimit":16,
-                "Mounts":[{"Type":"volume","Source":spec.storage.name,"Target":ROOT,"VolumeOptions":{"NoCopy":true}}]}
+                "Mounts":[{"Type":"volume","Source":spec.volume,"Target":ROOT,"VolumeOptions":{"NoCopy":true}}]}
         })).map_err(|_|Error::State("invalid setup container configuration"))?;
 
     Ok(config)
 }
 fn identity(
-    spec: &InputsSpec,
+    spec: &Files,
     row: &Row,
     container: &ContainerInspectResponse,
 ) -> Result<String, Error> {
@@ -465,8 +496,8 @@ fn identity(
             .ok_or(ObservationError::Incomplete)?,
     )
     .map_err(|_| ObservationError::Incomplete)?;
-    let expected = serde_json::to_value(configuration(spec, row)?)
-        .map_err(|_| ObservationError::Incomplete)?;
+    let expected =
+        serde_json::to_value(configuration(spec)?).map_err(|_| ObservationError::Incomplete)?;
     let actual_config = serde_json::to_value(config).map_err(|_| ObservationError::Incomplete)?;
     // Image labels are inherited; the ownership keys must match the fixed configuration.
     let owned_labels = expected["Labels"]
@@ -534,7 +565,7 @@ fn identity(
     if mounts.len() != 1
         || mounts[0].destination.as_deref() != Some(ROOT)
         || mounts[0].typ.as_deref() != Some("volume")
-        || mounts[0].name.as_deref() != Some(spec.storage.name.as_str())
+        || mounts[0].name.as_deref() != Some(spec.volume.as_str())
         || mounts[0].rw != Some(true)
     {
         return Err(ObservationError::BindingMismatch.into());
@@ -570,10 +601,10 @@ fn diagnostic(error: Error) -> ObservationError {
 }
 
 #[async_trait]
-impl Backend for InputsBackend {
+impl Backend for FilesBackend {
     async fn plan(&self, _: &str, desired: &Row, prior: Option<&Row>) -> Result<(), Error> {
         let spec = self.spec(desired)?;
-        self.payload(&spec, desired)?;
+        self.payload(&spec)?;
         tokio::time::timeout(Duration::from_secs(20), self.image(&spec))
             .await
             .map_err(|_| ObservationError::Transport)??;
@@ -597,7 +628,7 @@ impl Backend for InputsBackend {
             let complete = if removing {
                 false
             } else {
-                self.complete(&container, &spec, prior).await?
+                self.complete(&container, &spec).await?
             };
             Ok(Some(observed(
                 prior.clone(),
@@ -614,13 +645,13 @@ impl Backend for InputsBackend {
         let mut bound = None;
         let work = async {
             let spec = self.spec(desired)?;
-            let payload = self.payload(&spec, desired)?;
+            let payload = self.payload(&spec)?;
             self.image(&spec).await?;
             self.volume(&spec).await?;
             if let Some(container) = self.container(&spec, desired, false).await? {
                 let id = container.id.clone().ok_or(ObservationError::Incomplete)?;
                 bound = Some(observed(desired.clone(), id.clone(), false));
-                if self.complete(&container, &spec, desired).await? {
+                if self.complete(&container, &spec).await? {
                     return Ok(observed(desired.clone(), id, true));
                 }
                 if container.state.as_ref().and_then(|s| s.running) != Some(false) {
@@ -632,7 +663,7 @@ impl Backend for InputsBackend {
                 self.delete(&id, &spec).await?;
             }
             self.application_stopped(&spec).await?;
-            let id = self.create(&spec, desired).await?;
+            let id = self.create(&spec).await?;
             let fresh = observed(desired.clone(), id.clone(), false);
             bound = Some(fresh.clone());
             let container = self
@@ -647,7 +678,7 @@ impl Backend for InputsBackend {
                 .container(&spec, &fresh, false)
                 .await?
                 .ok_or(ObservationError::Incomplete)?;
-            if !self.complete(&container, &spec, &fresh).await? {
+            if !self.complete(&container, &spec).await? {
                 return Err(Error::State(
                     "input publication could not be verified; binding and volume retained",
                 ));
@@ -702,6 +733,66 @@ mod tests {
     use super::*;
     use tf_provider::value::Value;
     #[test]
+    fn publisher_image_contract_checks_platform_startup_environment_and_volumes() {
+        use nemoclaw_container_inputs::{CONTRACT_LABEL, CONTRACT_VERSION};
+        for architecture in ["arm64", "amd64"] {
+            let valid = json!({"Id":"sha256:publisher", "Os":"linux", "Architecture":architecture,
+                "Config":{"Entrypoint":[ENTRYPOINT], "Labels":{CONTRACT_LABEL:CONTRACT_VERSION}}});
+            for environment in [
+                serde_json::Value::Null,
+                json!([]),
+                json!(["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]),
+            ] {
+                let mut image = valid.clone();
+                image["Config"]["Env"] = environment;
+                validate_input_image(&serde_json::from_value(image).unwrap(), architecture)
+                    .unwrap();
+            }
+            for (pointer, bad) in [
+                ("/Id", json!("")),
+                ("/Os", json!("windows")),
+                (
+                    "/Architecture",
+                    json!(if architecture == "arm64" {
+                        "amd64"
+                    } else {
+                        "arm64"
+                    }),
+                ),
+                ("/Config/Entrypoint", json!(["/bin/sh"])),
+                ("/Config/Labels/io.nemoclaw.container-inputs", json!("2")),
+                ("/Config/Env", json!(["TOKEN=unexpected-image-content"])),
+                ("/Config/Env", json!(["PATH=/tmp"])),
+                ("/Config/Env", json!(["LD_PRELOAD=/tmp/injected.so"])),
+                (
+                    "/Config/Env",
+                    json!([
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "TOKEN=unexpected-image-content"
+                    ]),
+                ),
+                (
+                    "/Config/Env",
+                    json!([
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                    ]),
+                ),
+                ("/Config/Volumes", json!({"/outside":{}})),
+            ] {
+                let mut image = valid.clone();
+                let (parent, field) = pointer.rsplit_once('/').unwrap();
+                image.pointer_mut(parent).unwrap()[field] = bad;
+                assert!(
+                    validate_input_image(&serde_json::from_value(image).unwrap(), architecture)
+                        .is_err(),
+                    "accepted {pointer}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn incomplete_input_delivery_requires_an_explicit_apply_update() {
         let definition = definition();
         assert_eq!(
@@ -725,30 +816,18 @@ mod tests {
     }
     #[tokio::test]
     #[cfg(unix)]
-    async fn application_inputs_register_an_engine_backend_without_a_gateway_client() {
+    async fn protected_files_register_an_engine_backend_without_contacting_it() {
         let row = super::delivery_tests::row();
         let fixture = crate::docker::fixture::Fixture::start(|_| {
             panic!("backend registration must not query Docker")
         })
         .await;
-        let spec: InputsSpec = serde_json::from_str(&row["spec"]).unwrap();
-        for attribute in ["Owner", "Generation"] {
-            let mut invalid = serde_json::to_value(&spec).unwrap();
-            invalid["storage"][attribute] = json!("");
-            assert!(
-                nemoclaw_sdk::services::validate_resource_spec(
-                    definition().kind,
-                    &invalid.to_string()
-                )
-                .is_err(),
-                "input preparation requires the volume's {attribute}"
-            );
-        }
+        let spec = Files::from_row(&row).unwrap();
         let connections =
-            crate::docker::Connections::fixed([fixture.engine_for(&spec.storage.engine)]).unwrap();
+            crate::docker::Connections::fixed([fixture.engine_for(&spec.engine)]).unwrap();
         assert!(
-            super::super::BackendRegistry::new(&connections)
-                .resolve(definition().kind, &row)
+            crate::services::BackendRegistry::new(&connections)
+                .resolve(files::FILES_KIND, &row)
                 .unwrap()
                 .is_some()
         );
@@ -760,29 +839,23 @@ mod tests {
             panic!("invalid input must not contact the engine")
         })
         .await;
-        let backend =
-            InputsBackend::new(crate::docker::Engine::connect(&fixture.endpoint).unwrap());
+        let backend = FilesBackend::new(crate::docker::Engine::connect(&fixture.endpoint).unwrap());
         let obsolete = Row::from([
             ("spec".into(), json!({"process":{},"setup":{"image":"obsolete"},"service":"voice","workspace":"nc-0000000000000000","secrets":{},"connections":{}}).to_string()),
             ("sandbox_id".into(), "none".into()),
             ("id".into(), "retained-helper".into()),
         ]);
         for row in [Row::new(), obsolete] {
-            assert!(backend.plan("container_inputs", &row, None).await.is_err());
-            assert!(backend.read("container_inputs", &row, false).await.is_err());
-            let mutation = backend.ensure("container_inputs", &row).await;
+            assert!(backend.plan(files::FILES_KIND, &row, None).await.is_err());
+            assert!(backend.read(files::FILES_KIND, &row, false).await.is_err());
+            let mutation = backend.ensure(files::FILES_KIND, &row).await;
             assert!(mutation.state().is_none());
             assert!(mutation.error().is_some());
-            assert!(
-                backend
-                    .remove("container_inputs", &row, true)
-                    .await
-                    .is_err()
-            );
+            assert!(backend.remove(files::FILES_KIND, &row, true).await.is_err());
         }
     }
 }
 
 #[cfg(all(test, unix))]
-#[path = "inputs_tests.rs"]
+#[path = "protected_files_tests.rs"]
 mod delivery_tests;

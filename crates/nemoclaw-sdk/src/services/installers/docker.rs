@@ -70,8 +70,8 @@ pub(super) fn install(
     if let Some(policy) = policy {
         values.insert("image_pull_policy".into(), policy.as_str().into());
     }
-    let address = format!("nemoclaw_{}.{name}", spec.kind);
-    let storage_address = format!("nemoclaw_{storage_kind}.{name}");
+    let address = format!("{}.{name}", crate::compile::resource_type(&spec.kind));
+    let storage_address = format!("{}.{name}", crate::compile::resource_type(storage_kind));
     let storage = storage_target(&spec, storage_kind, storage_address.clone(), spec.volume())?;
     preparation
         .dependencies

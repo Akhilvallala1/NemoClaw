@@ -8,16 +8,16 @@ use std::sync::{Arc, Mutex};
 const SENTINEL: &str = "test-only-protected-token";
 
 fn live_spec(
-    mut spec: InputsSpec,
+    mut spec: Files,
     nonce: String,
     endpoint: String,
     image: String,
     architecture: String,
-) -> InputsSpec {
-    spec.setup.image = image;
-    spec.workspace = format!("nc-{}", &nonce[..16]);
-    spec.service = "input-check".into();
-    spec.storage.owner = format!(
+) -> Files {
+    spec.image = image;
+    spec.application = format!("nc-{}-container-input-check", &nonce[..16]);
+    spec.volume = format!("{}-data", spec.application);
+    spec.owner = format!(
         "{}-{}-{}-{}-{}",
         &nonce[..8],
         &nonce[8..12],
@@ -25,29 +25,24 @@ fn live_spec(
         &nonce[16..20],
         &nonce[20..]
     );
-    spec.storage.generation = nonce;
-    spec.storage.engine = endpoint;
+    spec.generation = nonce;
+    spec.engine = endpoint;
     spec.architecture = architecture;
-    spec.storage.name =
-        nemoclaw_sdk::managed::data_volume(&spec.application_name(), &spec.revision);
     spec
 }
 
 #[test]
-fn manual_test_resource_identity_matches_the_container_input_contract_on_both_platforms() {
+fn manual_test_resource_identity_matches_the_protected_files_contract_on_both_platforms() {
     for architecture in ["arm64", "amd64"] {
         let spec = live_spec(
-            serde_json::from_str(&row()["spec"]).unwrap(),
+            Files::from_row(&row()).unwrap(),
             "d".repeat(32),
             "unix:///var/run/docker.sock".into(),
             format!("inputs@sha256:{}", "b".repeat(64)),
             architecture.into(),
         );
-        spec.validate().unwrap();
-        assert_eq!(
-            spec.application_name(),
-            format!("{}-container-{}", spec.workspace, spec.service)
-        );
+        spec.validate(true).unwrap();
+        assert_eq!(spec.helper_name(), format!("{}-inputs", spec.application));
         assert_eq!(spec.architecture, architecture);
     }
 }
@@ -65,14 +60,13 @@ async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
         .expect("set NEMOCLAW_INPUT_TEST_IMAGE to a preloaded repository@sha256: manifest digest");
     let engine = crate::docker::Engine::connect(&endpoint).unwrap();
     let mut desired = row();
-    let mut spec: InputsSpec = serde_json::from_str(&desired["spec"]).unwrap();
-    spec.setup.image = image;
-    spec.setup.validate().unwrap();
-    let observed_image = engine.image(&spec.setup.image).await.unwrap().unwrap();
+    let mut spec = Files::from_row(&desired).unwrap();
+    spec.image = image;
+    let observed_image = engine.image(&spec.image).await.unwrap().unwrap();
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).unwrap();
     let nonce: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
-    let image = spec.setup.image.clone();
+    let image = spec.image.clone();
     spec = live_spec(
         spec,
         nonce,
@@ -80,16 +74,15 @@ async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
         image,
         observed_image.architecture.unwrap(),
     );
-    spec.validate().unwrap();
-    desired.insert("spec".into(), serde_json::to_string(&spec).unwrap());
-    desired.insert("sandbox_id".into(), "none".into());
-    let backend = InputsBackend::new(engine.clone()).with_secrets(Arc::new(TestSecrets(true)));
+    spec.validate(true).unwrap();
+    desired.extend(spec.row());
+    let backend = FilesBackend::new(engine.clone()).with_secrets(Arc::new(TestSecrets(true)));
     // All compatibility and credential checks precede even the test volume.
     backend
-        .plan("container_inputs", &desired, None)
+        .plan(files::FILES_KIND, &desired, None)
         .await
         .unwrap();
-    let volume = spec.storage.name.clone();
+    let volume = spec.volume.clone();
     assert!(engine.volume(&volume).await.unwrap().is_none());
     assert!(
         engine
@@ -109,8 +102,8 @@ async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
             driver: Some("local".into()),
             labels: Some(
                 [
-                    (OWNER_LABEL.into(), spec.storage.owner.clone()),
-                    (GENERATION_LABEL.into(), spec.storage.generation.clone()),
+                    (OWNER_LABEL.into(), spec.owner.clone()),
+                    (GENERATION_LABEL.into(), spec.generation.clone()),
                 ]
                 .into(),
             ),
@@ -119,7 +112,7 @@ async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
         .await
         .unwrap();
     let result: Result<(), ObservationError> = async {
-        let mutation = backend.ensure("container_inputs", &desired).await;
+        let mutation = backend.ensure(files::FILES_KIND, &desired).await;
         if let Some(error) = mutation.error() {
             return Err(error);
         }
@@ -140,10 +133,10 @@ async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
             return Err(ObservationError::Incomplete);
         }
         let refreshed = backend
-            .read("container_inputs", complete, false)
+            .read(files::FILES_KIND, complete, false)
             .await?
             .ok_or(ObservationError::Incomplete)?;
-        let second = backend.ensure("container_inputs", &refreshed).await;
+        let second = backend.ensure(files::FILES_KIND, &refreshed).await;
         if let Some(error) = second.error() {
             return Err(error);
         }
@@ -155,7 +148,7 @@ async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
     .await;
     // No panic assertions until owned cleanup has been attempted. Never force a
     // volume deletion or delete it after an uncertain helper-removal outcome.
-    let cleanup = backend.remove("container_inputs", &desired, false).await;
+    let cleanup = backend.remove(files::FILES_KIND, &desired, false).await;
     if cleanup.is_ok() {
         backend.volume(&spec).await.unwrap();
         tokio::time::timeout(
@@ -208,7 +201,7 @@ pub(super) fn row() -> Row {
 }
 fn connection_document() -> nemoclaw_sdk::config::Document {
     nemoclaw_sdk::config::Document::parse(
-        include_bytes!("../../../nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml")
+        include_bytes!("../../nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml")
             .as_slice(),
     )
     .unwrap()
@@ -226,7 +219,7 @@ fn input_row(document: &nemoclaw_sdk::config::Document) -> Row {
     nemoclaw_sdk::compile::targets(document, &generations)
         .unwrap()
         .into_iter()
-        .find(|t| t.kind == "container_inputs")
+        .find(|t| t.kind == files::FILES_KIND)
         .unwrap()
         .values
 }
@@ -248,17 +241,16 @@ async fn local_connection_payload_delivers_speech_and_descriptor_without_an_open
     }
     let mut desired = input_row(&connection_document());
     desired.insert(
-        "sandbox_id".into(),
+        "agent_sandbox_id".into(),
         "11111111-2222-3333-4444-555555555555".into(),
     );
     let fixture =
         Fixture::engine(|_| panic!("payload assembly must not contact Docker or the gateway"))
             .await;
-    let backend = InputsBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
+    let backend = FilesBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
         .with_secrets(Arc::new(SpeechOnly));
     let spec = backend.spec(&desired).unwrap();
-    let request: Request =
-        serde_json::from_slice(&backend.payload(&spec, &desired).unwrap()).unwrap();
+    let request: Request = serde_json::from_slice(&backend.payload(&spec).unwrap()).unwrap();
     request.validate().unwrap();
     assert_eq!(request.files.len(), 2);
     let speech = request
@@ -297,12 +289,9 @@ async fn protected_input_plan_checks_credentials_and_image_without_mutation() {
         Some((200, serde_json::to_vec(&image()).unwrap()))
     })
     .await;
-    let backend = InputsBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
+    let backend = FilesBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
         .with_secrets(Arc::new(TestSecrets(true)));
-    backend
-        .plan("container_inputs", &row(), None)
-        .await
-        .unwrap();
+    backend.plan(files::FILES_KIND, &row(), None).await.unwrap();
     assert!(!requests.lock().unwrap().is_empty());
 }
 
@@ -343,12 +332,9 @@ impl SetupFixture {
         let path = directory.path().join("engine.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let endpoint = format!("unix://{}", path.display());
-        let mut spec: InputsSpec = serde_json::from_str(&row["spec"]).unwrap();
-        spec.storage.engine = endpoint.clone();
-        if let Some(gateway) = &mut spec.local_gateway {
-            gateway.engine = endpoint.clone();
-        }
-        row.insert("spec".into(), serde_json::to_string(&spec).unwrap());
+        let mut spec = Files::from_row(&row).unwrap();
+        spec.engine = endpoint.clone();
+        row.extend(spec.row());
         let state = Arc::new(Mutex::new(State::default()));
         let shared = state.clone();
         let started = Arc::new(tokio::sync::Notify::new());
@@ -372,18 +358,12 @@ impl SetupFixture {
             task,
         }
     }
-    fn backend(&self, available: bool) -> InputsBackend {
-        InputsBackend::new(crate::docker::Engine::connect(&self.endpoint).unwrap())
+    fn backend(&self, available: bool) -> FilesBackend {
+        FilesBackend::new(crate::docker::Engine::connect(&self.endpoint).unwrap())
             .with_secrets(Arc::new(TestSecrets(available)))
     }
 }
-fn tar_file(
-    bytes: &[u8],
-    directory: bool,
-    name: &str,
-    spec: &InputsSpec,
-    omit_owner: bool,
-) -> Vec<u8> {
+fn tar_file(bytes: &[u8], directory: bool, name: &str, spec: &Files, omit_owner: bool) -> Vec<u8> {
     let (uid, gid) = owner(spec);
     let mut builder = tar::Builder::new(Vec::new());
     let mut header = tar::Header::new_gnu();
@@ -406,7 +386,7 @@ fn tar_file(
 async fn serve_setup(
     mut stream: tokio::net::UnixStream,
     state: Arc<Mutex<State>>,
-    spec: InputsSpec,
+    spec: Files,
     started: Arc<tokio::sync::Notify>,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -526,7 +506,7 @@ async fn serve_setup(
         let mut state = state.lock().unwrap();
         match (method.as_str(),route) {
             ("GET",route) if route.starts_with("/images/")=>(200,serde_json::to_vec(&image()).unwrap()),
-            ("GET",route) if route.starts_with("/volumes/")=>(200,serde_json::to_vec(&json!({"Name":spec.storage.name.clone(),"Driver":"local","Scope":"local","Mountpoint":"/var/lib/docker/volumes/owned/_data","Options":{},"CreatedAt":"created","Labels":{OWNER_LABEL:spec.storage.owner,GENERATION_LABEL:spec.storage.generation}})).unwrap()),
+            ("GET",route) if route.starts_with("/volumes/")=>(200,serde_json::to_vec(&json!({"Name":spec.volume.clone(),"Driver":"local","Scope":"local","Mountpoint":"/var/lib/docker/volumes/owned/_data","Options":{},"CreatedAt":"created","Labels":{OWNER_LABEL:spec.owner,GENERATION_LABEL:spec.generation}})).unwrap()),
             ("POST","/containers/create")=>{
                 assert!(!String::from_utf8_lossy(&body).contains(SENTINEL));let config:serde_json::Value=serde_json::from_slice(&body).unwrap();
                 assert_eq!(config["Env"],json!([]));assert_eq!(config["HostConfig"]["NetworkMode"],"none");assert_eq!(config["HostConfig"]["LogConfig"]["Type"],"none");
@@ -537,7 +517,7 @@ async fn serve_setup(
                 for (key, value) in image()["Config"]["Labels"].as_object().unwrap() {
                     observed_config["Labels"].as_object_mut().unwrap().entry(key.clone()).or_insert(value.clone());
                 }
-                state.helper=Some(json!({"Id":id,"Name":format!("/{}",spec.helper_name()),"Image":image()["Id"],"Config":observed_config,"HostConfig":config["HostConfig"],"Mounts":[{"Type":"volume","Name":spec.storage.name.clone(),"Destination":ROOT,"RW":true}],"State":{"Running":false,"Status":"created","ExitCode":0}}));
+                state.helper=Some(json!({"Id":id,"Name":format!("/{}",spec.helper_name()),"Image":image()["Id"],"Config":observed_config,"HostConfig":config["HostConfig"],"Mounts":[{"Type":"volume","Name":spec.volume.clone(),"Destination":ROOT,"RW":true}],"State":{"Running":false,"Status":"created","ExitCode":0}}));
                 (201,serde_json::to_vec(&json!({"Id":id,"Warnings":[]})).unwrap())
             }
             ("POST",route) if route.ends_with("/start")=>{state.starts+=1;state.helper.as_mut().unwrap()["State"]=json!({"Running":true,"Status":"running","ExitCode":0});started.notify_waiters();(204,vec![])},
@@ -551,7 +531,7 @@ async fn serve_setup(
                     if state.lose_observation&&state.helper.as_ref().is_some_and(|v|v["State"]["Status"]=="exited") {state.lose_observation=false;(503,b"{}".to_vec())}
                     else if let Some(helper)=&state.helper {let mut helper=helper.clone();if state.foreign{helper["Config"]["Labels"][OWNER_LABEL]=json!("foreign");}(200,serde_json::to_vec(&helper).unwrap())}
                     else{(404,b"{}".to_vec())}
-                }else if state.application_running{(200,serde_json::to_vec(&json!({"Config":{"Labels":{OWNER_LABEL:spec.storage.owner,GENERATION_LABEL:spec.storage.generation}},"State":{"Running":true}})).unwrap())}
+                }else if state.application_running{(200,serde_json::to_vec(&json!({"Config":{"Labels":{OWNER_LABEL:spec.owner,GENERATION_LABEL:spec.generation}},"State":{"Running":true}})).unwrap())}
                 else{(404,b"{}".to_vec())}
             }
             ("DELETE",_)=>{state.deletes+=1;state.helper=None;(204,vec![])},
@@ -569,16 +549,16 @@ async fn serve_setup(
 async fn setup_image_update_checks_the_existing_helpers_prior_spec_without_mutation() {
     let fixture = SetupFixture::new().await;
     let backend = fixture.backend(true);
-    let first = backend.ensure("container_inputs", &fixture.row).await;
+    let first = backend.ensure(files::FILES_KIND, &fixture.row).await;
     assert!(first.error().is_none());
     let prior = first.state().unwrap();
     let mut desired = fixture.row.clone();
-    let mut spec: InputsSpec = serde_json::from_str(&desired["spec"]).unwrap();
-    spec.setup.image = format!("voiceclaw@sha256:{}", "e".repeat(64));
-    desired.insert("spec".into(), serde_json::to_string(&spec).unwrap());
+    let mut spec = Files::from_row(&desired).unwrap();
+    spec.image = format!("voiceclaw@sha256:{}", "e".repeat(64));
+    desired.extend(spec.row());
     let requests = fixture.state.lock().unwrap().requests.len();
     backend
-        .plan("container_inputs", &desired, Some(prior))
+        .plan(files::FILES_KIND, &desired, Some(prior))
         .await
         .unwrap();
     {
@@ -597,7 +577,7 @@ async fn setup_image_update_checks_the_existing_helpers_prior_spec_without_mutat
     fixture.state.lock().unwrap().foreign = true;
     assert!(
         backend
-            .plan("container_inputs", &desired, Some(prior))
+            .plan(files::FILES_KIND, &desired, Some(prior))
             .await
             .is_err()
     );
@@ -613,10 +593,10 @@ async fn setup_image_update_checks_the_existing_helpers_prior_spec_without_mutat
     };
     fixture.state.lock().unwrap().foreign = false;
     backend
-        .remove("container_inputs", prior, false)
+        .remove(files::FILES_KIND, prior, false)
         .await
         .unwrap();
-    let replacement = backend.ensure("container_inputs", &desired).await;
+    let replacement = backend.ensure(files::FILES_KIND, &desired).await;
     assert!(replacement.error().is_none(), "{:?}", replacement.error());
     assert_eq!(replacement.state().unwrap()["complete"], "true");
     assert_ne!(replacement.state().unwrap()["id"], prior["id"]);
@@ -639,7 +619,7 @@ async fn setup_image_update_checks_the_existing_helpers_prior_spec_without_mutat
 async fn setup_transfers_only_after_admission_and_unchanged_apply_does_not_restart_or_rewrite() {
     let fixture = SetupFixture::new().await;
     let backend = fixture.backend(true);
-    let mutation = backend.ensure("container_inputs", &fixture.row).await;
+    let mutation = backend.ensure(files::FILES_KIND, &fixture.row).await;
     assert!(
         mutation.error().is_none(),
         "setup failed: {:?}; requests: {:?}",
@@ -650,22 +630,19 @@ async fn setup_transfers_only_after_admission_and_unchanged_apply_does_not_resta
     assert_eq!(row["complete"], "true");
     assert!(!serde_json::to_string(&row).unwrap().contains(SENTINEL));
     let read = backend
-        .read("container_inputs", &row, false)
+        .read(files::FILES_KIND, &row, false)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(read, row);
-    let again = backend.ensure("container_inputs", &row).await;
+    let again = backend.ensure(files::FILES_KIND, &row).await;
     assert!(again.error().is_none());
     assert_eq!(again.state().unwrap(), &row);
     {
         let state = fixture.state.lock().unwrap();
         assert_eq!((state.creates, state.starts, state.transfers), (1, 1, 1));
     }
-    backend
-        .remove("container_inputs", &row, true)
-        .await
-        .unwrap();
+    backend.remove(files::FILES_KIND, &row, true).await.unwrap();
     let state = fixture.state.lock().unwrap();
     assert_eq!(state.deletes, 1);
     assert!(state.files.contains_key("credentials/speech"));
@@ -681,7 +658,7 @@ async fn setup_transfers_only_after_admission_and_unchanged_apply_does_not_resta
 async fn setup_rejects_unexpected_container_environment_without_restart_transfer_or_cleanup() {
     let fixture = SetupFixture::new().await;
     let backend = fixture.backend(true);
-    let first = backend.ensure("container_inputs", &fixture.row).await;
+    let first = backend.ensure(files::FILES_KIND, &fixture.row).await;
     assert!(first.error().is_none());
     let row = first.state().unwrap();
     for environment in [
@@ -697,15 +674,15 @@ async fn setup_rejects_unexpected_container_environment_without_restart_transfer
         ]),
     ] {
         fixture.state.lock().unwrap().helper.as_mut().unwrap()["Config"]["Env"] = environment;
-        assert!(backend.read("container_inputs", row, false).await.is_err());
+        assert!(backend.read(files::FILES_KIND, row, false).await.is_err());
         assert!(
             backend
-                .ensure("container_inputs", row)
+                .ensure(files::FILES_KIND, row)
                 .await
                 .error()
                 .is_some()
         );
-        assert!(backend.remove("container_inputs", row, true).await.is_err());
+        assert!(backend.remove(files::FILES_KIND, row, true).await.is_err());
         let state = fixture.state.lock().unwrap();
         assert_eq!(
             (state.creates, state.starts, state.transfers, state.deletes),
@@ -723,7 +700,7 @@ async fn rejected_admission_and_missing_credentials_never_transfer_secret_bytes(
         fixture.state.lock().unwrap().reject_ready = true;
         let mutation = fixture
             .backend(!missing)
-            .ensure("container_inputs", &fixture.row)
+            .ensure(files::FILES_KIND, &fixture.row)
             .await;
         assert!(mutation.error().is_some());
         let state = fixture.state.lock().unwrap();
@@ -739,17 +716,17 @@ async fn interrupted_delivery_retains_binding_and_explicit_retry_reconciles_comp
     let fixture = SetupFixture::new().await;
     fixture.state.lock().unwrap().lose_observation = true;
     let backend = fixture.backend(true);
-    let mutation = backend.ensure("container_inputs", &fixture.row).await;
+    let mutation = backend.ensure(files::FILES_KIND, &fixture.row).await;
     assert!(mutation.error().is_some());
     let partial = mutation.state().unwrap().clone();
     assert_eq!(partial["complete"], "false");
     let actual = backend
-        .read("container_inputs", &partial, false)
+        .read(files::FILES_KIND, &partial, false)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(actual["complete"], "true");
-    let again = backend.ensure("container_inputs", &partial).await;
+    let again = backend.ensure(files::FILES_KIND, &partial).await;
     assert!(again.error().is_none());
     assert_eq!(again.state().unwrap()["id"], partial["id"]);
     let state = fixture.state.lock().unwrap();
@@ -760,11 +737,11 @@ async fn failed_setup_retries_only_when_stopped_and_never_adopts_a_foreign_bindi
     let fixture = SetupFixture::new().await;
     fixture.state.lock().unwrap().fail_publish = true;
     let backend = fixture.backend(true);
-    let first = backend.ensure("container_inputs", &fixture.row).await;
+    let first = backend.ensure(files::FILES_KIND, &fixture.row).await;
     assert!(first.error().is_some());
     let partial = first.state().unwrap().clone();
     fixture.state.lock().unwrap().foreign = true;
-    let denied = backend.ensure("container_inputs", &partial).await;
+    let denied = backend.ensure(files::FILES_KIND, &partial).await;
     assert!(denied.error().is_some());
     {
         let mut state = fixture.state.lock().unwrap();
@@ -773,11 +750,11 @@ async fn failed_setup_retries_only_when_stopped_and_never_adopts_a_foreign_bindi
         state.fail_publish = false;
         state.application_running = true;
     }
-    let denied = backend.ensure("container_inputs", &partial).await;
+    let denied = backend.ensure(files::FILES_KIND, &partial).await;
     assert!(denied.error().is_some());
     assert_eq!(fixture.state.lock().unwrap().creates, 1);
     fixture.state.lock().unwrap().application_running = false;
-    let recovered = backend.ensure("container_inputs", &partial).await;
+    let recovered = backend.ensure(files::FILES_KIND, &partial).await;
     assert!(recovered.error().is_none());
     assert_ne!(recovered.state().unwrap()["id"], partial["id"]);
     let state = fixture.state.lock().unwrap();
@@ -788,12 +765,12 @@ async fn failed_setup_retries_only_when_stopped_and_never_adopts_a_foreign_bindi
 async fn changed_target_identity_and_helper_configuration_refuse_all_mutations() {
     let mut row = input_row(&connection_document());
     row.insert(
-        "sandbox_id".into(),
+        "agent_sandbox_id".into(),
         "11111111-2222-3333-4444-555555555555".into(),
     );
     let fixture = SetupFixture::with_row(row).await;
     let backend = fixture.backend(true);
-    let first = backend.ensure("container_inputs", &fixture.row).await;
+    let first = backend.ensure(files::FILES_KIND, &fixture.row).await;
     assert!(first.error().is_none());
     let original = first.state().unwrap();
     let original_helper = fixture.state.lock().unwrap().helper.clone().unwrap();
@@ -813,20 +790,20 @@ async fn changed_target_identity_and_helper_configuration_refuse_all_mutations()
         fixture.state.lock().unwrap().helper = Some(changed);
         assert!(
             backend
-                .read("container_inputs", original, false)
+                .read(files::FILES_KIND, original, false)
                 .await
                 .is_err()
         );
         assert!(
             backend
-                .ensure("container_inputs", original)
+                .ensure(files::FILES_KIND, original)
                 .await
                 .error()
                 .is_some()
         );
         assert!(
             backend
-                .remove("container_inputs", original, true)
+                .remove(files::FILES_KIND, original, true)
                 .await
                 .is_err()
         );
@@ -834,25 +811,25 @@ async fn changed_target_identity_and_helper_configuration_refuse_all_mutations()
     fixture.state.lock().unwrap().helper = Some(original_helper);
     let mut changed = original.clone();
     changed.insert(
-        "sandbox_id".into(),
+        "agent_sandbox_id".into(),
         "11111111-2222-3333-4444-666666666666".into(),
     );
     assert!(
         backend
-            .read("container_inputs", &changed, false)
+            .read(files::FILES_KIND, &changed, false)
             .await
             .is_err()
     );
     assert!(
         backend
-            .ensure("container_inputs", &changed)
+            .ensure(files::FILES_KIND, &changed)
             .await
             .error()
             .is_some()
     );
     assert!(
         backend
-            .remove("container_inputs", &changed, true)
+            .remove(files::FILES_KIND, &changed, true)
             .await
             .is_err()
     );
@@ -867,13 +844,13 @@ async fn changed_target_identity_and_helper_configuration_refuse_all_mutations()
     );
     assert!(
         backend
-            .read("container_inputs", original, false)
+            .read(files::FILES_KIND, original, false)
             .await
             .is_err()
     );
     assert!(
         backend
-            .ensure("container_inputs", original)
+            .ensure(files::FILES_KIND, original)
             .await
             .error()
             .is_some()

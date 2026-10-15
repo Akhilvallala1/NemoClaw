@@ -14,9 +14,6 @@ use std::collections::HashMap;
 pub const GATEWAY_KIND: &str = "managed_gateway";
 use super::GATEWAY_STORAGE_KIND;
 pub use nemoclaw_docker::{GENERATION_LABEL, OWNER_LABEL};
-pub use nemoclaw_runtime::{
-    SPEC_VERSION as RUNTIME_SPEC_VERSION, SPEC_VERSION_LABEL as RUNTIME_SPEC_VERSION_LABEL,
-};
 pub const SPEC_LABEL: &str = "nemoclaw.nvidia.com/runtime-spec";
 pub use crate::artifact_pins::SANDBOX_RUNTIME_IMAGE;
 pub use crate::artifact_pins::SUPERVISOR_IMAGE;
@@ -62,6 +59,8 @@ pub struct Process {
     pub port: u16,
     pub shared_memory_bytes: u64,
     pub host_ipc: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_limit_millis: Option<u32>,
     pub memory_bytes: u64,
     pub gpu: bool,
 }
@@ -74,6 +73,28 @@ pub struct ImageLaunch {
     pub environment: std::collections::BTreeMap<String, String>,
     /// Nonsecret delivery revision used by the service's disposable storage policy.
     pub input_revision: String,
+}
+/// CFS period for container CPU limits, matching kubelet and `docker --cpus`.
+pub(crate) const CPU_PERIOD_MICROS: u64 = 100_000;
+/// The supervisor every managed vLLM and Ollama image runs.
+pub const RUNTIME_ENTRYPOINT: &str = "/usr/local/bin/nemoclaw-runtime";
+/// Where a runtime keeps its data, such as downloaded models.
+pub const RUNTIME_DATA_PATH: &str = "/data";
+/// The environment variable that carries a runtime's contract.
+pub const RUNTIME_SPEC_ENV: &str = "NEMOCLAW_RUNTIME_SPEC";
+/// Process limits a runtime needs: unlimited locked memory for GPU transfers,
+/// and a 64 MiB stack. `-1` means unlimited.
+pub const RUNTIME_ULIMITS: [(&str, i64); 2] = [("memlock", -1), ("stack", 67_108_864)];
+/// Shared memory a runtime gets unless its service sets its own.
+pub fn default_shared_memory_bytes() -> u64 {
+    crate::services::installers::vllm::ServiceContainer::resources(None).shared_memory_bytes
+}
+/// The kernel's minimum CFS quota; kubelet raises smaller CPU limits to it.
+const MIN_CPU_QUOTA_MICROS: u64 = 1000;
+
+/// CFS quota per [`CPU_PERIOD_MICROS`] for a CPU limit in millicores.
+pub(crate) fn cpu_quota_micros(limit_millis: u32) -> u64 {
+    (u64::from(limit_millis) * CPU_PERIOD_MICROS / 1000).max(MIN_CPU_QUOTA_MICROS)
 }
 /// Data source computing a Docker gateway container's launch.
 pub const GATEWAY_RUNTIME_DATA_SOURCE: &str = "gateway_runtime";
@@ -416,6 +437,7 @@ impl Spec {
                 && !process.mount_target.contains("..")
                 && !process.architecture.is_empty()
                 && process.memory_bytes > 0
+                && process.cpu_limit_millis != Some(0)
             {
                 return Ok(());
             }
@@ -606,7 +628,7 @@ impl Spec {
                 config["Entrypoint"] = json!(process.entrypoint);
                 config["Cmd"] = json!(process.command);
                 config["Env"] = json!([format!(
-                    "NEMOCLAW_RUNTIME_SPEC={}",
+                    "{RUNTIME_SPEC_ENV}={}",
                     self.runtime_configuration()?
                 )]);
             }
@@ -619,11 +641,20 @@ impl Spec {
             }
             host["Memory"] = json!(process.memory_bytes);
             host["MemorySwap"] = json!(process.memory_bytes);
+            if let Some(limit) = process.cpu_limit_millis {
+                host["CpuPeriod"] = json!(CPU_PERIOD_MICROS);
+                host["CpuQuota"] = json!(cpu_quota_micros(limit));
+            }
             if process.gpu {
                 host["DeviceRequests"] = json!([{"Driver":"","Count":-1,"Capabilities":[["gpu"]]}]);
             }
             if process.image_owned.is_none() {
-                host["Ulimits"] = json!([{"Name":"memlock","Soft":-1,"Hard":-1},{"Name":"stack","Soft":67108864,"Hard":67108864}]);
+                host["Ulimits"] = json!(
+                    RUNTIME_ULIMITS
+                        .iter()
+                        .map(|(name, limit)| json!({"Name": name, "Soft": limit, "Hard": limit}))
+                        .collect::<Vec<_>>()
+                );
             }
             if process.port != 0 {
                 host["PortBindings"] = json!({format!("{}/tcp",process.port):[{"HostIp":process.bind_address,"HostPort":process.port.to_string()}]});

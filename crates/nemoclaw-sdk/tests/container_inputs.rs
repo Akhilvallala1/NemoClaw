@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+use nemoclaw_sdk::services::installers::container::inputs::{FILES_KIND, Files};
 use nemoclaw_sdk::{
     compile::{Generations, compile},
     config::Document,
@@ -32,6 +33,20 @@ fn generations() -> Generations {
     .into()
 }
 
+/// The compiled `protected_files` inputs, with the agent sandbox resolved.
+fn files(document: &Document) -> Files {
+    let target = nemoclaw_sdk::compile::targets(document, &generations())
+        .unwrap()
+        .into_iter()
+        .find(|target| target.kind == FILES_KIND)
+        .unwrap();
+    let mut files = Files::from_row(&target.values).unwrap();
+    if let Some(agent) = &mut files.agent {
+        agent.sandbox_id = "11111111-2222-3333-4444-555555555555".into();
+    }
+    files
+}
+
 fn local_development() -> Value {
     let mut value = authored();
     value["spec"]["services"]["voice"]["secrets"]
@@ -54,7 +69,7 @@ fn launch_changes_preserve_preparation_and_input_references_replace_disposable_d
         let document = Document::parse(value.to_string().as_bytes()).unwrap();
         let graph = compile(&document, &generations(), "0.1.0").unwrap();
         (
-            graph["resource"]["nemoclaw_container_inputs"]["voice"].clone(),
+            graph["resource"]["protected_files"]["voice"].clone(),
             graph["resource"]["docker_volume"]["container_storage_voice"]["name"].clone(),
         )
     };
@@ -73,58 +88,32 @@ fn launch_changes_preserve_preparation_and_input_references_replace_disposable_d
 }
 
 #[test]
-fn local_container_connection_rejects_forged_managed_gateway_bindings() {
-    let value = local_development();
-    let document = Document::parse(value.to_string().as_bytes()).unwrap();
-    let targets = nemoclaw_sdk::compile::targets(&document, &generations()).unwrap();
-    let input = targets
-        .iter()
-        .find(|target| target.kind == "container_inputs")
-        .unwrap();
-    let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
-        serde_json::from_str(&input.values["spec"]).unwrap();
-    let nemoclaw_sdk::config::Gateway::Managed(gateway) = &document.spec.gateway else {
-        panic!("expected managed gateway")
-    };
-    let port = url::Url::parse(&gateway.endpoint).unwrap().port().unwrap();
-    let address = gateway
-        .network_cidr
-        .parse::<ipnet::Ipv4Net>()
-        .unwrap()
-        .hosts()
-        .nth(1)
-        .unwrap();
-    let expected = format!("http://{address}:{port}");
-    let mut explicit = value.clone();
-    explicit["spec"]["services"]["voice"]["agentConnections"]["primary"]["gatewayEndpoint"] =
-        json!(expected);
-    Document::parse(explicit.to_string().as_bytes()).unwrap();
-
-    // Provider specifications are untrusted too; a substituted private endpoint,
-    // engine or network must not bypass the compiler's managed-gateway binding.
-    for path in [
-        "/connections/primary/gatewayEndpoint",
-        "/storage/Engine",
-        "/local_gateway/network_cidr",
+fn protected_files_reject_forged_connection_profiles_and_foreign_agents() {
+    let document = Document::parse(local_development().to_string().as_bytes()).unwrap();
+    let local = files(&document);
+    local.validate(true).unwrap();
+    // The provider cannot tell which gateway the SDK bound; it still refuses
+    // every profile that is not explicit plaintext to a private IPv4 origin.
+    for endpoint in [
+        "http://8.8.8.8:8443",
+        "http://127.0.0.1:8443",
+        "http://gateway.example.test:8443",
+        "https://192.168.77.2:8443",
+        "http://192.168.77.2:8443/path",
     ] {
-        let mut forged = serde_json::to_value(&spec).unwrap();
-        *forged.pointer_mut(path).unwrap() = match path {
-            "/connections/primary/gatewayEndpoint" => json!("http://192.168.77.2:8443"),
-            "/storage/Engine" => json!("unix:///other/docker.sock"),
-            _ => json!("192.168.77.0/24"),
-        };
-        let mut forged: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
-            serde_json::from_value(forged).unwrap();
-        forged.revision = nemoclaw_sdk::services::installers::container::inputs::input_revision(
-            &forged.user,
-            &forged.root,
-            &forged.secrets,
-            &forged.connections,
-        );
-        forged.storage.name =
-            nemoclaw_sdk::managed::data_volume(&forged.application_name(), &forged.revision);
-        assert!(forged.validate().is_err(), "accepted {path}");
+        let mut forged = local.clone();
+        forged.connection.as_mut().unwrap().endpoint = endpoint.into();
+        assert!(forged.validate(false).is_err(), "accepted {endpoint}");
     }
+    let mut forged = local.clone();
+    forged.connection.as_mut().unwrap().credential = Some("speech".into());
+    assert!(forged.validate(false).is_err());
+    let mut forged = local.clone();
+    forged.agent.as_mut().unwrap().owner = "00000000-0000-0000-0000-000000000000".into();
+    assert!(forged.validate(false).is_err());
+    let mut forged = local;
+    forged.agent = None;
+    assert!(forged.validate(false).is_err());
 }
 
 #[test]
@@ -256,8 +245,8 @@ fn canonical_connection_profiles_bind_descriptors_and_order_protected_delivery()
         let restored = Document::parse(document.yaml().unwrap().as_bytes()).unwrap();
         assert_eq!(restored, document);
         assert_eq!(compile(&restored, &generations(), "0.1.0").unwrap(), graph);
-        let inputs = &graph["resource"]["nemoclaw_container_inputs"]["voice"];
-        assert_eq!(inputs["sandbox_id"], "${openshell_sandbox.assistant.id}");
+        let inputs = &graph["resource"]["protected_files"]["voice"];
+        assert_eq!(inputs["agent"], "${fabric_agent.assistant.ref}");
         assert!(
             inputs["depends_on"]
                 .as_array()
@@ -270,11 +259,10 @@ fn canonical_connection_profiles_bind_descriptors_and_order_protected_delivery()
             inputs.to_string().contains("APP_OPENSHELL_SERVICE_TOKEN"),
             authentication["mode"] == "oidcBearer"
         );
-        let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
-            serde_json::from_str(inputs["spec"].as_str().unwrap()).unwrap();
+        let spec = files(&document);
         let sandbox_id = "11111111-2222-3333-4444-555555555555";
-        let (path, descriptor) = spec.descriptor(sandbox_id).unwrap().unwrap();
-        assert_eq!(path, "/var/lib/application/config/agent-connection.json");
+        let (path, descriptor) = spec.descriptor().unwrap().unwrap();
+        assert_eq!(path, "config/agent-connection.json");
         assert_eq!(descriptor["schemaVersion"], "nemoclaw.agent-connection.v1");
         assert_eq!(descriptor["target"]["workspace"], document.workspace());
         assert_eq!(descriptor["target"]["sandboxId"], sandbox_id);
@@ -293,8 +281,8 @@ fn canonical_connection_profiles_bind_descriptors_and_order_protected_delivery()
         let app = &graph["resource"]["docker_container"]["container_service_voice"];
         assert_eq!(app["user"], "65532:65532");
         for dependency in [
-            "nemoclaw_container_inputs.voice",
-            "data.fabric_sandbox_readiness.assistant",
+            "protected_files.voice",
+            "data.fabric_agent_readiness.assistant",
         ] {
             assert!(
                 app["depends_on"]
@@ -305,11 +293,10 @@ fn canonical_connection_profiles_bind_descriptors_and_order_protected_delivery()
         }
         assert_eq!(
             app["lifecycle"]["replace_triggered_by"],
-            json!(["nemoclaw_container_inputs.voice"])
+            json!(["protected_files.voice"])
         );
         assert_eq!(
-            graph["data"]["fabric_sandbox_readiness"]["assistant"]["lifecycle"]["postcondition"][0]
-                ["condition"],
+            graph["data"]["fabric_agent_readiness"]["assistant"]["lifecycle"]["postcondition"][0]["condition"],
             "${self.ready}"
         );
         let environment = app["env"].as_array().unwrap();
@@ -329,7 +316,7 @@ fn canonical_connection_profiles_bind_descriptors_and_order_protected_delivery()
                 graph["resource"]["docker_network"].is_null(),
                 "application must not own a second gateway network"
             );
-            assert_eq!(spec.secrets.len(), 1);
+            assert_eq!(spec.credentials.len(), 1);
             assert!(!graph.to_string().contains("OPENSHELL_OPERATOR_TOKEN"));
             assert!(!graph.to_string().contains("APP_OPENSHELL_SERVICE_TOKEN"));
         }
@@ -343,23 +330,17 @@ fn protected_input_volume_labels_match_the_bound_process_generation() {
         let mut generations = generations();
         generations.insert("container_service".into(), "b".repeat(32));
         let graph = compile(&document, &generations, "0.1.0").unwrap();
-        let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
-            serde_json::from_str(
-                graph["resource"]["nemoclaw_container_inputs"]["voice"]["spec"]
-                    .as_str()
-                    .unwrap(),
-            )
-            .unwrap();
+        let inputs = &graph["resource"]["protected_files"]["voice"];
         let volume = &graph["resource"]["docker_volume"]["container_storage_voice"];
-        assert_eq!(volume["name"], spec.storage.name);
+        assert_eq!(volume["name"], inputs["volume"]);
         assert_eq!(
             volume["labels"],
             json!([
-                {"label":nemoclaw_sdk::managed::OWNER_LABEL,"value":spec.storage.owner},
-                {"label":nemoclaw_sdk::managed::GENERATION_LABEL,"value":spec.storage.generation}
+                {"label":nemoclaw_sdk::managed::OWNER_LABEL,"value":inputs["owner"]},
+                {"label":nemoclaw_sdk::managed::GENERATION_LABEL,"value":inputs["generation"]}
             ])
         );
-        assert_eq!(spec.storage.generation, "b".repeat(32));
+        assert_eq!(inputs["generation"], "b".repeat(32));
         assert!(volume.get("lifecycle").is_none());
         let runtime =
             nemoclaw_sdk::compile::compile_runtime(&document, &generations, "0.1.0").unwrap();
@@ -462,17 +443,14 @@ fn setup_image_is_not_allowed_without_any_protected_inputs() {
 #[test]
 fn application_descriptor_rejects_unresolved_binding_and_unknown_fields() {
     let document = Document::parse(authored().to_string().as_bytes()).unwrap();
-    let target = nemoclaw_sdk::compile::targets(&document, &generations())
-        .unwrap()
-        .into_iter()
-        .find(|t| t.kind == "container_inputs")
-        .unwrap();
-    let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
-        serde_json::from_str(&target.values["spec"]).unwrap();
-    assert!(spec.descriptor("unresolved").is_err());
-    assert!(serde_json::from_value::<nemoclaw_sdk::services::installers::container::inputs::InputsSpec>({
-        let mut value=serde_json::to_value(&spec).unwrap(); value["unexpected"]=json!("field"); value
-    }).is_err());
+    let mut spec = files(&document);
+    spec.agent.as_mut().unwrap().sandbox_id = "unresolved".into();
+    assert!(spec.descriptor().is_err());
+    let mut row = files(&document).row();
+    let mut connection: Value = serde_json::from_str(&row["connection_json"]).unwrap();
+    connection["unexpected"] = json!("field");
+    row.insert("connection_json".into(), connection.to_string());
+    assert!(Files::from_row(&row).is_err());
 }
 
 #[tokio::test]

@@ -20,11 +20,36 @@ use tf_provider::{Diagnostics, DynamicDataSource, DynamicResource, Provider, sch
 use nemoclaw_openshell::RESOURCE_TYPES;
 
 /// Serves workspaces, provider registrations and profiles, sandboxes, and the
-/// gateway data source through one configured gateway.
-#[derive(Default)]
+/// gateway data source, each through the gateway its `gateway` ref names, and,
+/// with the `installation` feature, the types that install a gateway.
 pub struct OpenShellProvider {
     client: Arc<GatewayClient>,
     destroying: Arc<AtomicBool>,
+    #[cfg(feature = "installation")]
+    installation: nemoclaw_provider::GatewayInstallation,
+}
+
+impl Default for OpenShellProvider {
+    fn default() -> Self {
+        Self::with_client(Arc::default())
+    }
+}
+
+impl OpenShellProvider {
+    /// Serve resources using the deployment's managed service identity checks.
+    pub fn with_services(services: Arc<dyn crate::Services>) -> Self {
+        Self::with_client(Arc::new(GatewayClient::with_services(services)))
+    }
+
+    fn with_client(client: Arc<GatewayClient>) -> Self {
+        let destroying = Arc::<AtomicBool>::default();
+        Self {
+            client,
+            #[cfg(feature = "installation")]
+            installation: nemoclaw_provider::GatewayInstallation::new(destroying.clone()),
+            destroying,
+        }
+    }
 }
 
 #[async_trait]
@@ -55,34 +80,47 @@ impl Provider for OpenShellProvider {
         _: &mut Diagnostics,
     ) -> Option<HashMap<String, Box<dyn DynamicResource>>> {
         let backend = Arc::new(OpenShellBackend(self.client.clone()));
-        Some(
-            crate::definitions()
-                .into_iter()
-                .map(|definition| {
-                    let name = RESOURCE_TYPES
-                        .iter()
-                        .find(|(kind, _)| *kind == definition.kind)
-                        .map_or(definition.kind, |(_, name)| *name)
-                        .to_owned();
-                    let mut resource = ResourceAdapter::new(definition, backend.clone());
-                    resource.destroying = self.destroying.clone();
-                    (
-                        name,
-                        Box::new(StructuredAdapter(resource)) as Box<dyn DynamicResource>,
-                    )
-                })
-                .collect(),
-        )
+        #[allow(unused_mut)]
+        let mut resources: HashMap<String, Box<dyn DynamicResource>> = crate::definitions()
+            .into_iter()
+            .map(|definition| {
+                let name = RESOURCE_TYPES
+                    .iter()
+                    .find(|(kind, _)| *kind == definition.kind)
+                    .map_or(definition.kind, |(_, name)| *name)
+                    .to_owned();
+                let mut resource = ResourceAdapter::new(definition, backend.clone());
+                resource.destroying = self.destroying.clone();
+                (
+                    name,
+                    Box::new(StructuredAdapter(resource)) as Box<dyn DynamicResource>,
+                )
+            })
+            .collect();
+        #[cfg(feature = "installation")]
+        resources.extend(self.installation.resources());
+        Some(resources)
     }
 
     fn get_data_sources(
         &self,
         _: &mut Diagnostics,
     ) -> Option<HashMap<String, Box<dyn DynamicDataSource>>> {
-        Some(HashMap::from([(
+        #[allow(unused_mut)]
+        let mut sources = HashMap::from([(
             "gateway".into(),
             Box::new(GatewayDataSource(self.client.clone())) as Box<dyn DynamicDataSource>,
-        )]))
+        )]);
+        #[cfg(feature = "installation")]
+        {
+            sources.extend(self.installation.data_sources());
+            sources.insert(
+                "external_inference_server".into(),
+                Box::new(crate::external_inference::ExternalInferenceServer)
+                    as Box<dyn DynamicDataSource>,
+            );
+        }
+        Some(sources)
     }
 }
 
@@ -91,14 +129,11 @@ mod tests {
     use super::*;
     use tf_provider::value::Value;
 
-    // Connecting starts a lazy channel, which needs a runtime.
     #[tokio::test]
-    async fn rejected_reconfiguration_withdraws_teardown_permission() {
+    async fn reconfiguration_without_destroy_withdraws_teardown_permission() {
         let provider = OpenShellProvider::default();
         let permitted = GatewayConfig {
-            endpoint: Value::Value("http://127.0.0.1:1".into()),
             destroy: Value::Value(true),
-            ..Default::default()
         };
         let mut diagnostics = Diagnostics::default();
         provider
@@ -106,17 +141,11 @@ mod tests {
             .await
             .unwrap();
         assert!(provider.destroying.load(Ordering::Acquire));
-        // Teardown without an endpoint is refused.
-        let rejected = GatewayConfig {
-            destroy: Value::Value(true),
-            ..Default::default()
-        };
-        assert!(
-            provider
-                .configure(&mut diagnostics, String::new(), rejected)
-                .await
-                .is_none()
-        );
+        provider
+            .configure(&mut diagnostics, String::new(), GatewayConfig::default())
+            .await
+            .unwrap();
         assert!(!provider.destroying.load(Ordering::Acquire));
+        assert!(diagnostics.errors.is_empty());
     }
 }

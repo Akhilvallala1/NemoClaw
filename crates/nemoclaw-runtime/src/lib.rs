@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /// Increment when the serialized runtime contract changes incompatibly.
 pub const SPEC_VERSION: &str = "v1";
-pub const SPEC_VERSION_LABEL: &str = "org.nemoclaw.runtime.spec";
 pub mod config;
 mod error;
 pub use error::Error;
@@ -13,6 +12,9 @@ pub mod schema;
 pub mod snapshot;
 pub mod vllm;
 pub use tokio_util::sync::CancellationToken;
+#[cfg(all(test, feature = "execution", target_os = "linux"))]
+#[path = "../../test-support/executable.rs"]
+mod executable;
 #[cfg(all(feature = "execution", target_os = "linux"))]
 mod execution;
 #[cfg(test)]

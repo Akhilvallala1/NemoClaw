@@ -69,6 +69,9 @@ pub struct State {
     pub active_sandbox_creates: usize,
     pub peak_sandbox_creates: usize,
     pub fail_read: Option<(&'static str, tonic::Code)>,
+    /// Reject one RPC before its handler can mutate fixture state.
+    pub reject_rpc: Option<(&'static str, tonic::Code, String)>,
+    pub rejected_rpcs: Vec<String>,
 }
 impl State {
     fn created(&mut self, kind: &str) {
@@ -192,6 +195,20 @@ impl tower::Service<http::Request<Body>> for Service {
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
         let state = self.0.clone();
         Box::pin(async move {
+            let rejection = {
+                let mut state = state.lock().unwrap();
+                let rejection = state
+                    .reject_rpc
+                    .clone()
+                    .filter(|(rpc, _, _)| request.uri().path().rsplit('/').next() == Some(*rpc));
+                rejection.map(|(rpc, code, detail)| {
+                    state.rejected_rpcs.push(rpc.into());
+                    Status::new(code, detail)
+                })
+            };
+            if let Some(rejection) = rejection {
+                return Ok(rejection.into_http());
+            }
             if state
                 .lock()
                 .unwrap()
@@ -978,14 +995,92 @@ pub fn contract_rows(
         .and_then(|body| body["name"].as_str())
         .unwrap()
         .to_owned();
+    let owner = fixture["resource"]["openshell_workspace"]
+        .as_object()
+        .and_then(|bodies| bodies.values().next())
+        .and_then(|body| body["owner"].as_str())
+        .unwrap_or_default()
+        .to_owned();
     let mut rows = Vec::new();
-    for kind in ["workspace", "provider_profile", "provider", "sandbox"] {
+    // Inference and web search resources expand to the profile and
+    // registration they own; registrations follow every profile.
+    let mut registrations = Vec::new();
+    for kind in [
+        "workspace",
+        "provider_profile",
+        "provider",
+        "inference",
+        "web_search",
+        "sandbox",
+    ] {
+        if kind == "sandbox" {
+            rows.append(&mut registrations);
+        }
         let resource = nemoclaw_openshell::resource_type(kind).unwrap();
         let structured = nemoclaw_openshell::structured_inputs(kind);
-        for body in fixture["resource"][&resource].as_object().unwrap().values() {
+        let references = nemoclaw_openshell::references(kind);
+        // A ref expression names another fixture resource; rows carry its name.
+        let referenced_name = |expression: &serde_json::Value| -> String {
+            let address = expression
+                .as_str()
+                .and_then(|text| text.strip_prefix("${"))
+                .and_then(|text| text.strip_suffix(".ref}"))
+                .unwrap_or_else(|| panic!("{name}: {expression} is not a ref"));
+            let (kind, label) = address.split_once('.').unwrap();
+            fixture["resource"][kind][label]["name"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        for body in fixture["resource"][&resource]
+            .as_object()
+            .into_iter()
+            .flat_map(|bodies| bodies.values())
+        {
             let mut row = std::collections::BTreeMap::new();
             for (attribute, value) in body.as_object().unwrap() {
                 if matches!(attribute.as_str(), "depends_on" | "lifecycle") {
+                    continue;
+                }
+                if let Some(reference) = references
+                    .iter()
+                    .find(|reference| reference.attribute == attribute)
+                {
+                    // Generated graphs pass a server as a literal ref.
+                    if reference.kind == nemoclaw_openshell::INFERENCE_SERVER_TYPE {
+                        for (attribute, field) in &reference.fields {
+                            let text = value[*attribute].as_str().unwrap_or_default();
+                            row.insert((*field).into(), text.replace("$${", "${"));
+                        }
+                        continue;
+                    }
+                    // These rows reach a gateway client directly, which never
+                    // sees the connection the resource adapter carries.
+                    if reference.kind == nemoclaw_openshell::GATEWAY_TYPE {
+                        assert!(
+                            value
+                                .as_str()
+                                .is_some_and(|text| text.starts_with("${data.openshell_gateway.")),
+                            "{name}: {value} is not a gateway ref"
+                        );
+                        continue;
+                    }
+                    let field = reference.fields[0].1;
+                    let carried = if reference.list {
+                        let names: Vec<_> = value
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(referenced_name)
+                            .collect();
+                        serde_json::to_string(&names).unwrap()
+                    } else {
+                        referenced_name(value)
+                    };
+                    row.insert(field.into(), carried);
+                    if reference.fields.iter().any(|(_, field)| *field == "owner") {
+                        row.insert("owner".into(), owner.clone());
+                    }
                     continue;
                 }
                 if let Some(input) = structured.iter().find(|input| input.attribute == attribute) {
@@ -1001,7 +1096,17 @@ pub fn contract_rows(
                     .replace("$${", "${");
                 row.insert(attribute.clone(), text);
             }
-            rows.push((kind, row));
+            let pair = match kind {
+                "inference" => nemoclaw_openshell::pairs::inference_rows(&row),
+                "web_search" => nemoclaw_openshell::pairs::web_search_rows(&row),
+                _ => {
+                    rows.push((kind, row));
+                    continue;
+                }
+            };
+            let (profile, registration) = pair.unwrap_or_else(|| panic!("{name}: invalid {kind}"));
+            rows.push(("provider_profile", profile));
+            registrations.push(("provider", registration));
         }
     }
     rows

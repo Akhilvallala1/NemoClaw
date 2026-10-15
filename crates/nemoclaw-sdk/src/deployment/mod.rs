@@ -5,6 +5,7 @@
 mod tests;
 
 mod apply;
+mod context_advisory;
 mod export;
 mod opentofu;
 mod plan;
@@ -37,6 +38,10 @@ pub use timing::StepOutcome;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Progress {
+    /// An authored deployment condition that requires operator attention.
+    Warning {
+        message: String,
+    },
     /// A mutating OpenTofu subprocess has launched. Emitted synchronously once
     /// per launch, before child output; this does not prove any change completed.
     MutationStarted,
@@ -223,6 +228,9 @@ impl Deployment {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
+        for message in context_advisory::context_warnings(&document)? {
+            (self.progress)(Progress::Warning { message });
+        }
         let (bundle, store) = self.open()?;
         let prior = store.load()?;
         let fresh = prior.is_none();
@@ -285,6 +293,10 @@ impl Deployment {
                 crate::inference_discovery::observe_credentials(&document, self.secrets.as_ref())?;
             append_credential_deferrals(&mut result.deferred, &discovery.credentials);
             discovery.gateway_target(&document);
+            discovery.endpoints(
+                crate::inference_discovery::observe_endpoints(&document, self.secrets.as_ref())
+                    .await?,
+            );
             result.unverified = discovery.unverified();
             result.unverified.sort();
             result.unverified.dedup();
@@ -305,7 +317,16 @@ impl Deployment {
             .await?;
         let bindings = store.bindings(&bundle.tofu(), cancel).await?;
         let allowed = allowed(&targets);
-        validate_root_bindings(&allowed, &bindings)?;
+        if bindings.iter().any(|(address, binding)| {
+            (!allowed.contains_key(address)
+                && !plan::disposable(address)
+                && !plan::reconstructible(address))
+                || !binding.spec.is_empty()
+        }) {
+            return Err(Error::Conflict(
+                "undeclared resource binding in deployment state",
+            ));
+        }
         (operation.progress)(Progress::Planning);
         let plan = operation
             .saved_plan(&bundle, &store, &document, "apply.plan", cancel)
@@ -353,6 +374,11 @@ impl Deployment {
             };
             append_credential_deferrals(&mut result.deferred, &discovery.credentials);
             discovery.gateway_target(&document);
+            // Catalog reads only inform `unverified`; `deferred` above ignores them.
+            discovery.endpoints(
+                crate::inference_discovery::observe_endpoints(&document, self.secrets.as_ref())
+                    .await?,
+            );
             result.unverified = discovery.unverified();
             result.unverified.sort();
             result.unverified.dedup();
@@ -457,23 +483,6 @@ impl Deployment {
         self.teardown_stages(cancel, preview).await
     }
 }
-fn validate_root_bindings(
-    allowed: &BTreeMap<String, Row>,
-    bindings: &BTreeMap<String, StateBinding>,
-) -> Result<(), Error> {
-    if bindings.iter().any(|(address, binding)| {
-        (!allowed.contains_key(address)
-            && !plan::disposable(address)
-            && !plan::reconstructible(address))
-            || (!binding.spec.is_empty() && !crate::services::binding_behavior(address).owns_spec)
-    }) {
-        return Err(Error::Conflict(
-            "undeclared resource binding in deployment state",
-        ));
-    }
-    Ok(())
-}
-
 fn allowed(targets: &[Target]) -> BTreeMap<String, Row> {
     targets
         .iter()

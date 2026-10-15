@@ -8,12 +8,12 @@
 //! not qualify a production adapter's health.
 
 use fabric_provider::AgentBridge as _;
-use nemoclaw_provider::openshell::{EnvironmentSecrets, OpenShell};
 use nemoclaw_sdk::{
     CancellationToken, Deployment, OperationResult, Outcome,
     backend::Row,
     config::{ComputeDriver, Document, Gateway},
 };
+use openshell_provider::{EnvironmentSecrets, OpenShell};
 use serde_json::Value;
 use std::{fs, path::Path, process::Command, sync::Arc};
 
@@ -34,9 +34,10 @@ fn sandbox_binding(directory: &Path) -> Row {
         });
     let sandbox = sandboxes.next().expect("one sandbox binding");
     assert!(sandboxes.next().is_none(), "expected one sandbox binding");
-    // A binding row holds the sandbox's scalar identity attributes; list
-    // attributes such as provider names are not part of it.
-    sandbox["instances"][0]["attributes"]
+    // Convert typed refs to the row fields the gateway client expects.
+    let mut attributes = sandbox["instances"][0]["attributes"].clone();
+    nemoclaw_openshell::flatten("openshell_sandbox", &mut attributes);
+    attributes
         .as_object()
         .unwrap()
         .iter()
@@ -152,7 +153,7 @@ async fn the_dummy_agent_completes_a_managed_docker_lifecycle() {
     assert!(
         plan.changes
             .iter()
-            .any(|change| change.resource == "nemoclaw_gateway_storage.runtime"),
+            .any(|change| change.resource == "openshell_gateway_storage.runtime"),
         "plan must create the gateway storage: {:?}",
         plan.changes
     );
@@ -191,7 +192,7 @@ async fn the_dummy_agent_completes_a_managed_docker_lifecycle() {
         Arc::new(EnvironmentSecrets),
     )
     .unwrap();
-    let binding = sandbox_binding(&state_path);
+    let binding = fabric_provider::fabric_binding(sandbox_binding(&state_path)).unwrap();
     let runtime = runtime_id(&client, &binding).await;
     let reply = invoke(&client, &binding, &sandbox.agent.name, "dummy-lifecycle").await;
     assert_eq!(reply["status"], "succeeded", "{reply}");
@@ -246,7 +247,7 @@ async fn the_dummy_agent_completes_a_managed_docker_lifecycle() {
     assert_eq!(
         retained,
         [
-            "nemoclaw_gateway_storage.runtime",
+            "openshell_gateway_storage.runtime",
             "openshell_workspace.deployment"
         ]
     );
@@ -259,5 +260,44 @@ async fn the_dummy_agent_completes_a_managed_docker_lifecycle() {
         )
         .is_empty(),
         "destroy removed the retained gateway storage"
+    );
+}
+
+#[test]
+fn sandbox_binding_preserves_the_workspace_from_its_typed_reference() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = serde_json::json!({
+        "resources": [{
+            "mode": "managed",
+            "type": "openshell_sandbox",
+            "instances": [{"attributes": {
+                "name": "assistant",
+                "id": "sandbox-id",
+                "owner": "owner",
+                "generation": "generation",
+                "workspace": {
+                    "type": "openshell_workspace",
+                    "name": "workspace",
+                    "id": "workspace-id",
+                    "owner": "owner",
+                    "generation": "workspace-generation"
+                }
+            }}]
+        }]
+    });
+    fs::write(
+        directory.path().join("terraform.tfstate"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        sandbox_binding(directory.path()),
+        Row::from([
+            ("name".into(), "assistant".into()),
+            ("id".into(), "sandbox-id".into()),
+            ("owner".into(), "owner".into()),
+            ("generation".into(), "generation".into()),
+            ("workspace".into(), "workspace".into()),
+        ])
     );
 }

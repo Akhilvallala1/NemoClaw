@@ -20,16 +20,14 @@ impl<'a> BackendRegistry<'a> {
         kind: &str,
         row: &Row,
     ) -> Result<Option<Box<dyn Backend>>, ObservationError> {
-        if kind == nemoclaw_sdk::services::installers::container::inputs::INPUTS_KIND {
-            let spec: nemoclaw_sdk::services::installers::container::inputs::InputsSpec =
-                serde_json::from_str(row.get("spec").ok_or(ObservationError::Incomplete)?)
-                    .map_err(|_| ObservationError::Incomplete)?;
-            spec.validate().map_err(|_| ObservationError::Incomplete)?;
+        if kind == nemoclaw_sdk::services::installers::container::inputs::FILES_KIND {
             let engine = self
                 .connections
-                .resolve(&spec.storage.engine)
+                .resolve(row.get("engine").ok_or(ObservationError::Incomplete)?)
                 .map_err(|_| ObservationError::Backend("engine connection unavailable"))?;
-            return Ok(Some(Box::new(super::inputs::InputsBackend::new(engine))));
+            return Ok(Some(Box::new(crate::protected_files::FilesBackend::new(
+                engine,
+            ))));
         }
         if matches!(
             kind,

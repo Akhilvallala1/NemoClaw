@@ -3,7 +3,6 @@
 terraform {
   required_version = "= 1.12.6"
   required_providers {
-    nemoclaw = { source = "registry.opentofu.org/nvidia/nemoclaw", version = "@PROVIDER_VERSION@" }
     openshell = { source = "registry.opentofu.org/nvidia/openshell", version = "@PROVIDER_VERSION@" }
     docker = { source = "registry.opentofu.org/kreuzwerker/docker", version = "4.6.0" }
   }
@@ -13,12 +12,9 @@ variable "owner" { type = string }
 variable "port" { type = number }
 variable "subnet" { type = string }
 provider "docker" { host = "@ENGINE@" }
-provider "nemoclaw" {}
-provider "openshell" {
-  endpoint = docker_container.gateway.id != "" ? "http://127.0.0.1:${var.port}" : ""
-}
+provider "openshell" {}
 data "docker_image" "gateway" { name = "@GATEWAY_IMAGE@" }
-resource "nemoclaw_gateway_storage" "gateway" {
+resource "openshell_gateway_storage" "gateway" {
   spec = jsonencode({
     layout = 1, kind = "managed_gateway", name = var.name, owner = var.owner,
     generation = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -33,8 +29,8 @@ resource "docker_container" "gateway" {
   image = data.docker_image.gateway.id
   user = "0:0"
   entrypoint = ["/usr/local/bin/openshell-gateway"]
-  command = ["--config", "${nemoclaw_gateway_storage.gateway.data_path}/gateway.toml", "--name", var.name, "--bind-address", "127.0.0.1", "--port", tostring(var.port)]
-  env = ["XDG_STATE_HOME=${nemoclaw_gateway_storage.gateway.data_path}/state", "OPENSHELL_DB_URL=sqlite:${nemoclaw_gateway_storage.gateway.data_path}/gateway.db"]
+  command = ["--config", "${openshell_gateway_storage.gateway.data_path}/gateway.toml", "--name", var.name, "--bind-address", "127.0.0.1", "--port", tostring(var.port)]
+  env = ["XDG_STATE_HOME=${openshell_gateway_storage.gateway.data_path}/state", "OPENSHELL_DB_URL=sqlite:${openshell_gateway_storage.gateway.data_path}/gateway.db"]
   network_mode = "host"
   restart = "no"
   must_run = true
@@ -50,7 +46,7 @@ resource "docker_container" "gateway" {
   mounts {
     type = "volume"
     source = "${var.name}-data"
-    target = nemoclaw_gateway_storage.gateway.data_path
+    target = openshell_gateway_storage.gateway.data_path
   }
   mounts {
     type = "bind"
@@ -59,6 +55,7 @@ resource "docker_container" "gateway" {
   }
 }
 data "openshell_gateway" "ready" {
+  endpoint = docker_container.gateway.id != "" ? "http://127.0.0.1:${var.port}" : ""
   required_compute_drivers = ["docker"]
   wait_timeout_seconds = 90
   depends_on = [docker_container.gateway]
@@ -70,6 +67,7 @@ data "openshell_gateway" "ready" {
   }
 }
 resource "openshell_workspace" "probe" {
+  gateway = data.openshell_gateway.ready.ref
   name = substr(var.name, 0, 19)
   owner = var.owner
   generation = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

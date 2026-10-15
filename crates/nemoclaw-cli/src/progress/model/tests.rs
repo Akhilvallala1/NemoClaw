@@ -2,6 +2,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+
+#[test]
+fn warnings_are_durable_without_marking_work_as_active() {
+    let mut model = Model::default();
+    let now = Instant::now();
+    let milestone = model
+        .observe(
+            Progress::Warning {
+                message: "Verify NetworkPolicy enforcement.".into(),
+            },
+            false,
+            now,
+        )
+        .unwrap();
+    assert!(milestone.durable);
+    assert!(milestone.text.contains("NetworkPolicy"));
+    assert!(model.lines(now).is_empty());
+}
 use crate::progress::tests::resource;
 use nemoclaw_sdk::ByteProgress;
 
@@ -106,8 +124,8 @@ fn default_progress_hides_known_supporting_reads_but_preserves_failures_and_unkn
     for address in [
         "data.docker_image.image_abcd",
         "data.openshell_gateway.current",
-        "data.nemoclaw_gateway_readiness.current",
-        "openshell_provider_profile.inference_hosted",
+        "data.openshell_docker_gateway_readiness.current",
+        "openshell_inference.inference_hosted",
     ] {
         let event = Progress::Resource {
             resource: "resource",

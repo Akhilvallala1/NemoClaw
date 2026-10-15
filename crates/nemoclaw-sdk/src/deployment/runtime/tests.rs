@@ -4,7 +4,135 @@
 use super::*;
 use crate::{deployment::tests::kubernetes_context, managed::GATEWAY_STORAGE_KIND};
 
-const GATEWAY: &str = "nemoclaw_managed_gateway.runtime";
+const GATEWAY: &str = "openshell_podman_gateway.runtime";
+
+#[test]
+fn docker_model_updates_preserve_running_containers_unless_recreation_is_explicit() {
+    for (source, name, kind) in [
+        (
+            include_str!("../../../../../examples/station/vllm.yaml"),
+            "qwen",
+            "inference_service",
+        ),
+        (
+            include_str!("../../../../../examples/managed-ollama.yaml"),
+            "ollama-server",
+            "ollama_service",
+        ),
+        // A Podman gateway with a model placed on a Docker engine over SSH.
+        (
+            include_str!("../../../../../examples/spark/remote-vllm.yaml"),
+            "qwen",
+            "inference_service",
+        ),
+    ] {
+        let document = Document::parse(source.as_bytes()).unwrap();
+        let mut recreate = serde_json::to_value(&document).unwrap();
+        recreate["spec"]["services"][name]["updatePolicy"] = json!("Recreate");
+        let recreate = Document::parse(recreate.to_string().as_bytes()).unwrap();
+        let record = Record::new(document.clone()).unwrap();
+        let targets = compile::runtime_targets(&document, &record.generations).unwrap();
+        let address = targets
+            .iter()
+            .find(|target| target.kind == kind)
+            .unwrap()
+            .address
+            .clone();
+        let plan = |actions: &Value, before: &Value, after: &Value| -> Plan {
+            serde_json::from_value(json!({"resource_changes": [{
+                "address": address,
+                "change": {"actions": actions, "before": before, "after": after}
+            }]}))
+            .unwrap()
+        };
+        let refused = |plan: &Plan| {
+            let message = runtime_observations(&document, &targets, &BTreeMap::new(), plan)
+                .err()
+                .expect("Preserve must refuse disrupting a running or unconfirmed model")
+                .to_string();
+            for expected in [
+                name,
+                "updatePolicy: Preserve",
+                "updatePolicy: Recreate",
+                "downtime",
+            ] {
+                assert!(message.contains(expected), "missing {expected}: {message}");
+            }
+            runtime_observations(&recreate, &targets, &BTreeMap::new(), plan).unwrap();
+        };
+        for actions in [
+            json!(["delete", "create"]),
+            json!(["create", "delete"]),
+            json!(["delete"]),
+        ] {
+            for before in [
+                json!({"id": "existing-model", "must_run": true}),
+                json!({"id": "existing-model"}),
+            ] {
+                refused(&plan(&actions, &before, &Value::Null));
+            }
+        }
+        // Docker lowers memory in place, and the kernel can OOM-kill a model
+        // whose usage exceeds the new limit.
+        for running in [
+            json!({"id": "running-model", "must_run": true}),
+            json!({"id": "running-model"}),
+        ] {
+            for (field, lowered) in [("memory", "memory_swap"), ("memory_swap", "memory")] {
+                let mut before = running.clone();
+                before["memory"] = json!(65536);
+                before["memory_swap"] = json!(65536);
+                let mut after = before.clone();
+                after["must_run"] = json!(true);
+                after[field] = json!(16384);
+                after[lowered] = before[lowered].clone();
+                refused(&plan(&json!(["update"]), &before, &after));
+            }
+        }
+        // Provider refresh reports a stopped container as must_run=false and a
+        // missing container with no prior value. A stopped model container is
+        // replaced because its published port also drifts (remote_service
+        // e2e). Neither requires downtime, and in-place updates that keep or
+        // raise memory do not stop the model.
+        let limits = |memory: u64, must_run: bool| json!({"id": "model", "must_run": must_run, "memory": memory, "memory_swap": memory});
+        for (actions, before, after) in [
+            (
+                json!(["delete", "create"]),
+                json!({"id": "stopped-model", "must_run": false}),
+                Value::Null,
+            ),
+            (json!(["create"]), Value::Null, limits(65536, true)),
+            (json!(["no-op"]), limits(65536, true), limits(65536, true)),
+            (json!(["update"]), limits(65536, true), limits(65536, true)),
+            (json!(["update"]), limits(16384, true), limits(65536, true)),
+            (json!(["update"]), limits(65536, false), limits(16384, true)),
+        ] {
+            runtime_observations(
+                &document,
+                &targets,
+                &BTreeMap::new(),
+                &plan(&actions, &before, &after),
+            )
+            .unwrap();
+        }
+        // Replacement cleanup is for a previous instance, not the current model.
+        let plan = serde_json::from_value(json!({"resource_changes": [{
+            "address": address, "deposed": "old-instance", "change": {
+                "actions": ["delete"], "before": {"id": "old-model", "must_run": true}
+            }
+        }, {
+            "address": "docker_container.managed_gateway_runtime", "change": {
+                "actions": ["delete", "create"], "before": {"id": "gateway", "must_run": true}
+            }
+        }, {
+            "address": "docker_container.ollama_proxy_proxy", "change": {
+                "actions": ["delete", "create"], "before": {"id": "proxy", "must_run": true}
+            }
+        }]}))
+        .unwrap();
+        runtime_observations(&document, &targets, &BTreeMap::new(), &plan).unwrap();
+    }
+}
 
 #[test]
 fn kubernetes_gateway_requires_storage_and_fresh_readiness_without_replacement() {
@@ -27,7 +155,7 @@ fn kubernetes_gateway_requires_storage_and_fresh_readiness_without_replacement()
     let gateway = plan
         .resource_changes
         .iter_mut()
-        .find(|change| change.address == "nemoclaw_kubernetes_gateway.runtime")
+        .find(|change| change.address == "openshell_kubernetes_gateway.runtime")
         .unwrap();
     gateway.change.before["running"] = json!("false");
     assert!(
@@ -42,7 +170,7 @@ fn kubernetes_gateway_requires_storage_and_fresh_readiness_without_replacement()
     drift.get_mut(KUBERNETES_STORAGE).unwrap().namespace = "elsewhere".into();
     assert!(runtime_bindings(&targets, &drift).is_err());
     for change in &mut plan.resource_changes {
-        if change.address == "nemoclaw_kubernetes_gateway.runtime" {
+        if change.address == "openshell_kubernetes_gateway.runtime" {
             change.change.actions = vec!["delete".into(), "create".into()];
         }
     }
@@ -288,7 +416,7 @@ async fn removing_the_last_runtime_cannot_orphan_retained_state() {
     let stage = directory.path().join("runtime");
     fs::create_dir(&stage).unwrap();
     let state = stage.join("terraform.tfstate");
-    let bytes = serde_json::to_vec(&json!({"resources":[{"type":"nemoclaw_inference_storage","name":"model","instances":[{"attributes":{"id":"daemon/volume/created","spec":"retained"}}]}]})).unwrap();
+    let bytes = serde_json::to_vec(&json!({"resources":[{"type":"vllm_credential_storage","name":"model","instances":[{"attributes":{"id":"daemon/volume/created","spec":"retained"}}]}]})).unwrap();
     fs::write(&state, &bytes).unwrap();
     let (document, _) = context();
     let mut record = Record::new(document).unwrap();
@@ -362,10 +490,10 @@ fn podman_gateway_replacement_depends_on_protected_storage_in_the_compiled_graph
             .unwrap();
     let generations = Record::new(document.clone()).unwrap().generations;
     let graph = compile::compile_runtime(&document, &generations, "0.1.0").unwrap();
-    let process = &graph["resource"]["nemoclaw_managed_gateway"]["runtime"];
+    let process = &graph["resource"]["openshell_podman_gateway"]["runtime"];
     assert_eq!(process["depends_on"], json!([GATEWAY_STORAGE]));
     assert_eq!(
-        graph["resource"]["nemoclaw_gateway_storage"]["runtime"]["lifecycle"]["prevent_destroy"],
+        graph["resource"]["openshell_gateway_storage"]["runtime"]["lifecycle"]["prevent_destroy"],
         true
     );
 }
@@ -396,7 +524,7 @@ fn kubernetes_helm_binding_requires_auth_and_the_same_release() {
     runtime_bindings(&targets, &bindings).unwrap();
     for prerequisite in [
         KUBERNETES_STORAGE,
-        "nemoclaw_kubernetes_auth.runtime",
+        "openshell_kubernetes_auth.runtime",
         crate::kubernetes::gateway::ADDRESS,
     ] {
         let mut missing = bindings.clone();
@@ -411,7 +539,7 @@ fn kubernetes_helm_binding_requires_auth_and_the_same_release() {
     assert!(runtime_bindings(&targets, &changed).is_err());
     // Interrupted initial installation can retain just storage and authentication.
     let mut partial = bindings;
-    partial.remove("nemoclaw_kubernetes_gateway.runtime");
+    partial.remove("openshell_kubernetes_gateway.runtime");
     partial.remove(crate::kubernetes::gateway::ADDRESS);
     runtime_bindings(&targets, &partial).unwrap();
 }

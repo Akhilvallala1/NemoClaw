@@ -16,9 +16,11 @@ NemoClaw provides a public desired-state SDK, CLI, and OpenTofu provider.
 | OpenTofu | Graph execution and resource state |
 | Docker provider | Docker gateway, inference, and proxy containers; images, model-cache volumes, and service-owned networks |
 | Helm provider | Installation, upgrade, and removal of the pinned OpenShell chart release |
-| OpenShell provider | OpenShell workspaces, provider registrations and profiles, sandboxes, and gateway capability reads |
+| OpenShell provider | OpenShell workspaces, provider registrations and profiles, sandboxes, and gateway capability reads; Podman gateway processes, gateway initialization and retained bridges, and Kubernetes gateway storage and development authentication |
 | Fabric provider | Fabric runtime configuration and readiness in agent sandboxes |
-| NemoClaw provider | Podman gateway processes, gateway initialization and retained bridges, Kubernetes storage and development authentication, readiness observations, and application-specific persistence |
+| vLLM and Ollama providers | Inference service storage, readiness observations, and application-specific persistence |
+| Host provider | Engine and image observations, and application container health |
+| Protected provider | Publication of protected application files into an owned volume |
 | Hosted runtime | Startup capacity checks, model preparation, and application health |
 | Fabric | Agent runtime health semantics and adapter checks |
 
@@ -85,6 +87,21 @@ Any process able to reach the gateway can use its API; use only for an isolated,
 No issuer, proxy, Docker socket grant to the application, operator credential copying, new lifecycle manager, or native-health claim is accepted.
 Protected speech input delivery, target/workspace binding, application health, owned removal, and dependency preservation remain unchanged.
 
-Validation: deterministic parser/schema, compilation, provider-side binding, descriptor, export/reapply, and negative transport/authentication/placement tests, followed by the separate manual Station installation and voice turn.
+The SDK enforces the managed-gateway binding. The `protected_files` resource enforces only the explicit profile: plaintext to a canonical private IPv4 origin, with no credential.
+
+Validation: deterministic parser/schema, compilation, binding, descriptor, export/reapply, and negative transport/authentication/placement tests, followed by the separate manual Station installation and voice turn.
 Local tests do not establish image or live qualification.
 Changing network exposure, authentication authority, supported platforms, or application transport requires a new joint decision.
+
+## Protected Files Provider Decision
+
+Decision: Accept, authorized by San Dang on October 15, 2026, after the provider reorganization in #13131.
+Accountable maintainer: San Dang.
+Reason: the pinned Docker provider can upload files into a container, but not with admission before credential transfer, completion verification, or recovery of an interrupted publication.
+Placement: one `protected_files` resource in a `protected` provider, built from `nemoclaw-provider`.
+It owns only the setup helper and the files it publishes; Docker keeps the application container and volume, and Fabric keeps the agent.
+No general container provider is added.
+
+Credential values pass only from the provider's environment to the helper's stdin.
+They never enter resource inputs, plans, state, Docker settings, or diagnostics.
+Validation: deterministic provider, compiler, and pinned OpenTofu contract tests; Linux Docker and ACL qualification and the joint VoiceClaw turn remain under #12570.

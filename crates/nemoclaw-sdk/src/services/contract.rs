@@ -25,7 +25,8 @@ pub(crate) enum InstallStage {
 pub(crate) struct InstallPlan {
     pub targets: Vec<crate::compile::Target>,
     pub dependencies: std::collections::BTreeMap<String, Vec<String>>,
-    /// Provider observation attributes, validated by the installer that owns them.
+    /// `host_image` inputs, validated by the installer that owns them. Every
+    /// Docker change waits for these checks.
     pub image_checks: std::collections::BTreeMap<String, serde_json::Value>,
     pub replacement_triggers: std::collections::BTreeMap<String, Vec<String>>,
 }
@@ -36,7 +37,7 @@ impl InstallPlan {
             let mut attributes = requirements.clone();
             literal(&mut attributes);
             attributes["allow_missing"] = serde_json::json!(false);
-            graph["data"]["nemoclaw_runtime_image"][name] = attributes;
+            graph["data"]["host_image"][name] = attributes;
         }
         for (address, triggers) in &self.replacement_triggers {
             let (kind, name) = address.split_once('.').ok_or(crate::Error::State(

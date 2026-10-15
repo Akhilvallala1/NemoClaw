@@ -7,6 +7,18 @@ use nemoclaw_sdk::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
+const CPU_LABEL: &str = "nemoclaw.nvidia.com/cpu-limit-millis";
+const MEMORY_LABEL: &str = "nemoclaw.nvidia.com/memory-limit-gib";
+
+fn label<'a>(container: &'a Value, name: &str) -> Option<&'a str> {
+    container["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|label| label["label"] == name)
+        .map(|label| label["value"].as_str().unwrap())
+}
+
 fn dependencies(resource: &Value) -> BTreeSet<&str> {
     resource["depends_on"]
         .as_array()
@@ -26,7 +38,188 @@ fn runtime_compilation_does_not_require_openshell_resource_generations() {
     let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
     assert!(graph["resource"]["docker_container"].is_object());
     assert!(graph["resource"].get("openshell_sandbox").is_none());
-    assert!(graph["data"].get("fabric_sandbox_readiness").is_none());
+    assert!(graph["data"].get("fabric_agent_readiness").is_none());
+}
+
+#[test]
+fn docker_model_limits_reach_opentofu_and_native_container_configuration() {
+    let gib = 1_i64 << 30;
+    for input in [
+        include_str!("fixtures/config/spark.yaml"),
+        include_str!("fixtures/config/managed-ollama.yaml"),
+    ] {
+        let baseline = Document::parse(input.as_bytes()).unwrap();
+        let generations = ["managed_gateway", "inference_service", "ollama_service"]
+            .map(|kind| (kind.into(), "b".repeat(32)))
+            .into();
+        // Kubernetes and `docker --cpus` use a 100 ms CFS period. The kernel
+        // rejects quotas below 1 ms, so limits below 10 millicores use 1 ms as
+        // kubelet does.
+        for (cpu, quota, memory_gib) in [
+            (1250, 125_000, 64),
+            (2000, 200_000, 128),
+            (10, 1000, 48),
+            (1, 1000, 32),
+        ] {
+            let mut value = serde_json::to_value(&baseline).unwrap();
+            for service in value["spec"]["services"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                service["container"] = json!({"cpuLimitMillis":cpu, "memoryLimitGiB":memory_gib});
+            }
+            let document = Document::parse(value.to_string().as_bytes()).unwrap();
+            let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
+            for target in runtime_targets(&document, &generations)
+                .unwrap()
+                .iter()
+                .filter(|target| {
+                    matches!(target.kind.as_str(), "inference_service" | "ollama_service")
+                })
+            {
+                let (_, name) = target.address.split_once('.').unwrap();
+                let container = &graph["resource"]["docker_container"][name];
+                assert_eq!(container["cpu_period"], 100_000, "{}", target.kind);
+                assert_eq!(container["cpu_quota"], quota);
+                assert!(container.get("cpus").is_none());
+                // The pinned provider updates memory in place and omits CFS quota
+                // from updates, so both limits force replacement through labels.
+                assert_eq!(label(container, CPU_LABEL), Some(cpu.to_string().as_str()));
+                assert_eq!(
+                    label(container, MEMORY_LABEL),
+                    Some(memory_gib.to_string().as_str())
+                );
+                assert_eq!(container["memory"], memory_gib * 1024);
+                assert_eq!(container["memory_swap"], memory_gib * 1024);
+                let spec: nemoclaw_sdk::managed::Spec =
+                    serde_json::from_str(&target.values["spec"]).unwrap();
+                let host = spec.container("/data").unwrap().host_config.unwrap();
+                assert_eq!(host.cpu_period, Some(100_000));
+                assert_eq!(host.cpu_quota, Some(quota));
+                assert!(host.nano_cpus.is_none());
+                assert_eq!(host.memory, Some(memory_gib * gib));
+                assert_eq!(host.memory_swap, host.memory);
+            }
+        }
+    }
+}
+
+#[test]
+fn omitted_docker_model_limits_keep_independent_legacy_defaults() {
+    for input in [
+        include_str!("fixtures/config/spark.yaml"),
+        include_str!("fixtures/config/managed-ollama.yaml"),
+    ] {
+        let baseline = Document::parse(input.as_bytes()).unwrap();
+        let generations = ["managed_gateway", "inference_service", "ollama_service"]
+            .map(|kind| (kind.into(), "b".repeat(32)))
+            .into();
+        let mut omitted = None;
+        for (limits, cpu, memory_gib) in [
+            (None, None, 104),
+            (Some(json!({"sharedMemoryGiB":4})), None, 104),
+            (Some(json!({"cpuLimitMillis":250})), Some(250), 104),
+            (Some(json!({"memoryLimitGiB":48})), None, 48),
+            (Some(json!({"memoryLimitGiB":104})), None, 104),
+        ] {
+            let mut value = serde_json::to_value(&baseline).unwrap();
+            for service in value["spec"]["services"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                let object = service.as_object_mut().unwrap();
+                object.remove("container");
+                if let Some(limits) = &limits {
+                    object.insert("container".into(), limits.clone());
+                }
+            }
+            let document = Document::parse(value.to_string().as_bytes()).unwrap();
+            let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
+            let targets = runtime_targets(&document, &generations).unwrap();
+            let services: Vec<_> = targets
+                .iter()
+                .filter(|target| {
+                    matches!(target.kind.as_str(), "inference_service" | "ollama_service")
+                })
+                .collect();
+            assert_eq!(services.len(), 1);
+            let target = services[0];
+            let (_, name) = target.address.split_once('.').unwrap();
+            let container = &graph["resource"]["docker_container"][name];
+            assert_eq!(container["memory"], memory_gib * 1024);
+            assert_eq!(container["memory_swap"], container["memory"]);
+            // Only a limit other than the 104 GiB default adds the replacement
+            // label, so containers created before memory limits stay unchanged.
+            if memory_gib == 104 {
+                assert_eq!(label(container, MEMORY_LABEL), None);
+                match &limits {
+                    None => omitted = Some(graph.clone()),
+                    Some(limits) if limits.get("memoryLimitGiB").is_some() => {
+                        assert_eq!(Some(&graph), omitted.as_ref());
+                    }
+                    Some(_) => {}
+                }
+            } else {
+                assert_eq!(
+                    label(container, MEMORY_LABEL),
+                    Some(memory_gib.to_string().as_str())
+                );
+            }
+            let spec: nemoclaw_sdk::managed::Spec =
+                serde_json::from_str(&target.values["spec"]).unwrap();
+            let process = spec.process.as_ref().unwrap();
+            assert_eq!(process.cpu_limit_millis, cpu);
+            let host = spec.container("/data").unwrap().host_config.unwrap();
+            assert_eq!(host.memory, Some(memory_gib * (1_i64 << 30)));
+            assert_eq!(host.memory_swap, host.memory);
+            if cpu.is_none() {
+                assert!(container.get("cpu_period").is_none());
+                assert!(container.get("cpu_quota").is_none());
+                assert!(container.get("cpus").is_none());
+                assert!(host.cpu_period.is_none());
+                assert!(host.cpu_quota.is_none());
+                assert!(host.nano_cpus.is_none());
+                assert_eq!(label(container, CPU_LABEL), None);
+                assert!(
+                    serde_json::to_value(process)
+                        .unwrap()
+                        .get("cpu_limit_millis")
+                        .is_none()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn docker_model_update_policy_does_not_change_runtime_resources() {
+    for input in [
+        include_str!("fixtures/config/spark.yaml"),
+        include_str!("fixtures/config/managed-ollama.yaml"),
+    ] {
+        let document = Document::parse(input.as_bytes()).unwrap();
+        let generations = ["managed_gateway", "inference_service", "ollama_service"]
+            .map(|kind| (kind.into(), "b".repeat(32)))
+            .into();
+        let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
+        let targets = runtime_targets(&document, &generations).unwrap();
+        let mut updated = serde_json::to_value(document).unwrap();
+        for service in updated["spec"]["services"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            service["updatePolicy"] = json!("Recreate");
+        }
+        let updated = Document::parse(updated.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            compile_runtime(&updated, &generations, "0.1.0").unwrap(),
+            graph
+        );
+        assert_eq!(runtime_targets(&updated, &generations).unwrap(), targets);
+    }
 }
 
 #[test]
@@ -44,9 +237,12 @@ fn multiple_services_share_image_acquisition_without_custom_capacity_gates() {
     .map(|kind| (kind.into(), "b".repeat(32)))
     .into();
     let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
-    assert!(graph["data"].get("nemoclaw_service_capacity").is_none());
     assert!(
-        graph["data"].get("fabric_sandbox_readiness").is_none(),
+        graph["data"].get("vllm_capacity").is_none()
+            && graph["data"].get("ollama_capacity").is_none()
+    );
+    assert!(
+        graph["data"].get("fabric_agent_readiness").is_none(),
         "the runtime graph cannot observe sandboxes owned by the deployment graph"
     );
     let readiness = &graph["data"]["openshell_gateway"]["current"];
@@ -56,7 +252,7 @@ fn multiple_services_share_image_acquisition_without_custom_capacity_gates() {
         readiness["depends_on"],
         json!([
             "docker_container.managed_gateway_runtime",
-            "data.nemoclaw_gateway_readiness.current"
+            "data.openshell_docker_gateway_readiness.current"
         ])
     );
     assert_eq!(
@@ -101,7 +297,7 @@ fn managed_graph_separates_retained_storage_from_replaceable_processes() {
     let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
     let targets = runtime_targets(&document, &generations).unwrap();
     for (kind, name) in [
-        ("nemoclaw_gateway_storage", "runtime"),
+        ("openshell_gateway_storage", "runtime"),
         ("docker_volume", "inference_storage_inference_qwen"),
     ] {
         assert_eq!(
@@ -112,14 +308,14 @@ fn managed_graph_separates_retained_storage_from_replaceable_processes() {
     assert_eq!(
         graph["resource"]["docker_container"]["managed_gateway_runtime"]["depends_on"],
         json!([
-            "nemoclaw_gateway_storage.runtime",
-            "data.nemoclaw_runtime_image.runtime_image_acquired_inference_service_inference_qwen"
+            "openshell_gateway_storage.runtime",
+            "data.host_image.runtime_image_acquired_inference_service_inference_qwen"
         ])
     );
     let gateway = &graph["resource"]["docker_container"]["managed_gateway_runtime"];
     let gateway_spec = nemoclaw_sdk::managed::Spec::from_gateway_row(
         nemoclaw_sdk::managed::GATEWAY_STORAGE_KIND,
-        &graph["resource"]["nemoclaw_gateway_storage"]["runtime"]
+        &graph["resource"]["openshell_gateway_storage"]["runtime"]
             .as_object()
             .unwrap()
             .iter()
@@ -127,10 +323,10 @@ fn managed_graph_separates_retained_storage_from_replaceable_processes() {
             .collect(),
     )
     .unwrap();
-    let launch = &graph["data"]["nemoclaw_gateway_runtime"]["managed_gateway_runtime"];
+    let launch = &graph["data"]["openshell_docker_gateway_runtime"]["managed_gateway_runtime"];
     assert_eq!(
         launch["data_path"],
-        "${nemoclaw_gateway_storage.runtime.data_path}"
+        "${openshell_gateway_storage.runtime.data_path}"
     );
     let gateway_port = launch["endpoint"]
         .as_str()
@@ -162,7 +358,7 @@ fn managed_graph_separates_retained_storage_from_replaceable_processes() {
         BTreeSet::from([
             "docker_container.managed_gateway_runtime",
             "docker_volume.inference_storage_inference_qwen",
-            "data.nemoclaw_runtime_image.runtime_image_acquired_inference_service_inference_qwen"
+            "data.host_image.runtime_image_acquired_inference_service_inference_qwen"
         ])
     );
     for target in targets
@@ -181,7 +377,7 @@ fn managed_graph_separates_retained_storage_from_replaceable_processes() {
     }
     assert_eq!(gateway_spec.layout, 1);
     assert!(
-        graph["resource"]["nemoclaw_gateway_storage"]["runtime"]
+        graph["resource"]["openshell_gateway_storage"]["runtime"]
             .get("endpoint")
             .is_none(),
         "Docker gateway storage does not depend on the listen port"
@@ -206,7 +402,7 @@ fn remote_service_is_independent_of_the_external_sandbox_gateway() {
         .map(|k| (k.into(), "b".repeat(32)))
         .collect();
     let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
-    assert!(graph["resource"].get("nemoclaw_managed_gateway").is_none());
+    assert!(graph["resource"].get("openshell_podman_gateway").is_none());
     let container = &graph["resource"]["docker_container"]["inference_service_inference_qwen"];
     let (network_name, _) = graph["resource"]["docker_network"]
         .as_object()
@@ -220,7 +416,7 @@ fn remote_service_is_independent_of_the_external_sandbox_gateway() {
         BTreeSet::from([
             "docker_volume.inference_storage_inference_qwen",
             network_address.as_str(),
-            "data.nemoclaw_runtime_image.runtime_image_acquired_inference_service_inference_qwen",
+            "data.host_image.runtime_image_acquired_inference_service_inference_qwen",
         ])
     );
     assert_eq!(
@@ -307,7 +503,10 @@ fn docker_provider_owns_disposable_compute_and_image_acquisition() {
             .unwrap()
             .starts_with("${docker_image.")
     );
-    assert!(graph["data"].get("nemoclaw_service_capacity").is_none());
+    assert!(
+        graph["data"].get("vllm_capacity").is_none()
+            && graph["data"].get("ollama_capacity").is_none()
+    );
     assert!(container.get("lifecycle").is_none());
     let targets = runtime_targets(&document, &generations).unwrap();
     assert!(targets.iter().any(|target| target.address
@@ -330,8 +529,7 @@ fn service_readiness_follows_provider_identity_and_is_fresh_on_unchanged_apply()
     .map(|kind| (kind.into(), "a".repeat(32)))
     .into();
     let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
-    let readiness =
-        &graph["data"]["nemoclaw_service_readiness"]["inference_service_inference_qwen"];
+    let readiness = &graph["data"]["vllm_readiness"]["inference_service_inference_qwen"];
     assert_eq!(
         readiness["container_id"],
         "${docker_container.inference_service_inference_qwen.id}"
@@ -339,7 +537,7 @@ fn service_readiness_follows_provider_identity_and_is_fresh_on_unchanged_apply()
     assert_eq!(readiness["read_trigger"], "${timestamp() != \"\"}");
     assert_eq!(
         readiness["contract"],
-        "${data.nemoclaw_vllm_runtime.inference_service_inference_qwen.spec}"
+        "${data.vllm_runtime.inference_service_inference_qwen.spec}"
     );
     let container = &graph["resource"]["docker_container"]["inference_service_inference_qwen"];
     assert_eq!(readiness["name"], container["name"]);
@@ -354,7 +552,7 @@ fn gateway_readiness_observes_the_exact_docker_provider_container() {
         .map(|kind| (kind.into(), "b".repeat(32)))
         .into();
     let graph = compile_runtime(&document, &generations, "0.1.0").unwrap();
-    let readiness = &graph["data"]["nemoclaw_gateway_readiness"]["current"];
+    let readiness = &graph["data"]["openshell_docker_gateway_readiness"]["current"];
     assert_eq!(
         readiness["container_id"],
         "${docker_container.managed_gateway_runtime.id}"
@@ -377,5 +575,37 @@ fn gateway_readiness_observes_the_exact_docker_provider_container() {
         Document::parse(include_bytes!("../../../examples/managed-podman.yaml").as_slice())
             .unwrap();
     let graph = compile_runtime(&podman, &generations, "0.1.0").unwrap();
-    assert!(graph["data"].get("nemoclaw_gateway_readiness").is_none());
+    assert!(
+        graph["data"]
+            .get("openshell_docker_gateway_readiness")
+            .is_none()
+    );
+}
+
+#[test]
+fn portable_container_memory_limits_cover_shared_memory_and_recipe_preparation_on_docker() {
+    for source in [
+        include_str!("../../../examples/spark/vllm.yaml"),
+        include_str!("../../../examples/managed-ollama-gpu.yaml"),
+        include_str!("../../../examples/spark/spark-inline.yaml"),
+    ] {
+        let mut input: Value = serde_saphyr::from_str(source).unwrap();
+        input["spec"]["services"]["qwen"]["container"] =
+            json!({"memoryLimitGiB": 7, "sharedMemoryGiB":8});
+        assert!(
+            Document::parse(input.to_string().as_bytes()).is_err(),
+            "the explicit memory limit must cover private shared memory"
+        );
+        input["spec"]["services"]["qwen"]["container"]["memoryLimitGiB"] = json!(64);
+        Document::parse(input.to_string().as_bytes()).unwrap();
+        if input["spec"]["services"]["qwen"].get("recipe").is_some() {
+            input["spec"]["services"]["qwen"]["container"]["memoryLimitGiB"] = json!(19);
+            assert!(
+                Document::parse(input.to_string().as_bytes()).is_err(),
+                "the recipe's 20 GiB preparation requirement must fit the explicit container limit"
+            );
+            input["spec"]["services"]["qwen"]["container"]["memoryLimitGiB"] = json!(20);
+            Document::parse(input.to_string().as_bytes()).unwrap();
+        }
+    }
 }

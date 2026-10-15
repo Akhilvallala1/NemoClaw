@@ -13,28 +13,45 @@ pub(crate) fn configure_readiness(
     {
         let container = crate::docker_compute::address(&target.address);
         let logical = container.split_once('.').unwrap().1;
-        let wait: u64 = target
-            .values
-            .get("wait_timeout_seconds")
-            .map_or(Ok(9 * 3600), |wait| wait.parse())
-            .map_err(|_| Error::State("invalid service readiness timeout"))?;
         let spec = crate::managed::Spec::from_values(&target.kind, &target.values)?;
         let literal = |value: &str| value.replace("${", "$${").replace("%{", "%%{");
-        let contract = match target.kind.as_str() {
-            "inference_service" => format!(
-                "${{data.nemoclaw_{}.{logical}.spec}}",
-                super::installers::vllm::RUNTIME_DATA_SOURCE
-            ),
-            "ollama_service" => format!(
-                "${{data.nemoclaw_{}.{logical}.spec}}",
-                ollama::RUNTIME_DATA_SOURCE
-            ),
-            _ => literal(&target.values["spec"]),
+        if target.kind == super::installers::container::SERVICE_KIND {
+            let wait: u64 = target
+                .values
+                .get("wait_timeout_seconds")
+                .ok_or(Error::State("missing application startup timeout"))?
+                .parse()
+                .map_err(|_| Error::State("invalid application startup timeout"))?;
+            // Labels bind the observation to this deployment's container and
+            // its compiled launch.
+            let labels: std::collections::BTreeMap<_, _> = spec
+                .labels()?
+                .into_iter()
+                .map(|(key, value)| (key, literal(&value)))
+                .collect();
+            graph["data"][super::installers::container::HEALTH_DATA_SOURCE][logical] = json!({
+                "engine":literal(spec.engine()), "name":literal(&spec.name),
+                "container_id":format!("${{{container}.id}}"), "labels":labels,
+                "read_trigger":"${timestamp() != \"\"}", "wait_timeout_seconds":wait
+            });
+            continue;
+        }
+        let source = if target.kind == super::installers::vllm::SERVICE_KIND {
+            super::installers::vllm::RUNTIME_DATA_SOURCE
+        } else {
+            ollama::RUNTIME_DATA_SOURCE
         };
-        graph["data"]["nemoclaw_service_readiness"][logical] = json!({
-            "engine":literal(spec.engine()), "name":literal(&spec.name), "contract":contract,
+        let readiness = super::provider_types::readiness_type(&target.kind)
+            .expect("service containers have readiness");
+        let source = crate::compile::data_source_type(source);
+        // Readiness checks the contract the container runs with.
+        graph["data"][readiness][logical] = json!({
+            "engine":literal(spec.engine()),
+            "name":literal(&spec.name),
+            "contract":format!("${{data.{source}.{logical}.spec}}"),
             "container_id":format!("${{{container}.id}}"),
-            "read_trigger":"${timestamp() != \"\"}", "wait_timeout_seconds":wait
+            "read_trigger":"${timestamp() != \"\"}",
+            "wait_timeout_seconds":9 * 3600
         });
     }
     for target in targets
@@ -43,17 +60,33 @@ pub(crate) fn configure_readiness(
     {
         let container = crate::docker_compute::address(&target.address);
         let logical = container.split_once('.').unwrap().1;
-        let address = format!("data.nemoclaw_service_readiness.{logical}");
+        let readiness = super::provider_types::readiness_type(ollama::proxy::PROXY)
+            .expect("the proxy has readiness");
+        let address = format!("data.{readiness}.{logical}");
+        let source = crate::compile::data_source_type(ollama::proxy::RUNTIME_DATA_SOURCE);
         let proxy = ollama::proxy::row_spec(&target.values)?;
         let literal = |value: &str| value.replace("${", "$${").replace("%{", "%%{");
         // Readiness checks the contract the container runs with.
-        graph["data"]["nemoclaw_service_readiness"][logical] = json!({
+        graph["data"][readiness][logical] = json!({
             "engine":literal(&target.values["engine"]),
             "name":literal(&proxy.name),
-            "contract":format!("${{data.nemoclaw_{}.{logical}.spec}}", ollama::proxy::RUNTIME_DATA_SOURCE),
+            "contract":format!("${{data.{source}.{logical}.spec}}"),
             "container_id":format!("${{{container}.id}}"),
             "read_trigger":"${timestamp() != \"\"}", "wait_timeout_seconds":30
         });
+        // The proxy starts only after its upstream model passes the digest check.
+        let model = crate::compile::data_source_type(ollama::proxy::MODEL);
+        let service = target.address.split_once('.').unwrap().1;
+        graph["data"][model.as_str()][service] = json!({
+            "upstream":literal(&target.values["upstream"]),
+            "name":literal(&target.values["model"]),
+            "digest":literal(&target.values["digest"]),
+        });
+        let (kind, label) = container.split_once('.').unwrap();
+        let started = &mut graph["resource"][kind][label]["depends_on"];
+        let mut dependencies = started.as_array().cloned().unwrap_or_default();
+        dependencies.push(json!(format!("data.{model}.{service}")));
+        *started = json!(dependencies);
         for instances in graph["resource"].as_object_mut().unwrap().values_mut() {
             for resource in instances.as_object_mut().unwrap().values_mut() {
                 if let Some(dependencies) = resource["depends_on"].as_array_mut()

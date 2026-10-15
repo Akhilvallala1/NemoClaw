@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# The protected provider's schema, rendered by nemoclaw-test-fixtures.
+# Regenerate it after an intended change:
+#   NEMOCLAW_REGENERATE_FIXTURES=1 cargo test -p nemoclaw-provider --test integration schema::
+# Lines starting with > quote descriptions; tf-provider's placeholder
+# description `empty` is omitted. Blocks are version 1 unless shown.
+
+provider protected (version 0)
+  destroy: bool, optional
+
+resource protected_files (version 0)
+  agent: object({ name = string, owner = string, sandbox = string, sandbox_id = string, type = string, workspace = string }), optional
+  application: string, required
+  architecture: string, required
+  complete: string, computed
+  engine: string, required
+  generation: string, required
+  id: string, computed
+  image: string, required
+  owner: string, required
+  root: string, required
+  user: string, required
+  volume: string, required
+  block connection: optional
+    authentication: string, required
+      > `oidcBearer` or `none`.
+    credential: string, optional
+      > The `credentials` entry holding the bearer token; required for oidcBearer.
+    endpoint: string, required
+      > OpenShell gateway origin the application reaches: HTTPS for oidcBearer, or a private IPv4 HTTP origin for none.
+    health_seconds: number, required
+      > Non-generative agent check deadline, 1–12 seconds.
+    invoke_seconds: number, required
+      > Agent invocation deadline, 1–120 seconds.
+    path: string, required
+      > Absolute descriptor path below `root`.
+    service: string, required
+      > Application service name written to the descriptor.
+    trust: string, required
+      > `system` for HTTPS, or `none` for development-only HTTP.
+  block credentials: map
+    env: string, required
+      > The provider's environment variable that holds the credential. Its value never enters state.
+    path: string, required
+      > Absolute file path below `root`.

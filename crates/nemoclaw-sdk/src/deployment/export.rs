@@ -220,7 +220,8 @@ pub(super) fn exported(
         let mut expected = target.values;
         expected.insert("id".into(), observed["id"].clone());
         match target.kind.as_str() {
-            "provider" => export_provider(&mut document, &expected, &observed)?,
+            "inference" => export_provider(&mut document, &expected, &observed)?,
+            "web_search" => export_web_search(&expected, &observed)?,
             "sandbox" => export_sandbox(&expected, &observed)?,
             _ => {}
         }
@@ -284,6 +285,10 @@ fn validate_projection(target: &Target, observed: &Value) -> Result<(), Error> {
                     observed[field].as_str().unwrap_or("").to_owned(),
                 ),
             };
+            // An omitted optional input is empty on both sides.
+            if expected.is_empty() && observed.is_empty() {
+                continue;
+            }
             let expected: Value = serde_json::from_str(&expected)
                 .map_err(|_| Error::State("invalid authored export configuration"))?;
             let actual: Value = serde_json::from_str(&observed)
@@ -307,7 +312,7 @@ fn consistent_provider_credentials(
     let mut credentials = BTreeMap::new();
     for target in compile::targets(document, generations)?
         .into_iter()
-        .filter(|target| target.kind == "provider")
+        .filter(|target| target.kind == "inference")
     {
         let Some(provider) = selected
             .iter()
@@ -331,25 +336,23 @@ fn consistent_provider_credentials(
     Ok(())
 }
 
-fn export_provider(document: &mut Document, expected: &Row, observed: &Row) -> Result<(), Error> {
-    // Search targets come from selected integrations, not inference definitions.
-    // Keep their authored scopes and credential references unchanged on export.
+/// Web search comes from selected integrations, not inference definitions:
+/// export keeps their authored scopes and credential references unchanged,
+/// and refuses when the deployed resource drifted from them.
+fn export_web_search(expected: &Row, observed: &Row) -> Result<(), Error> {
     if expected
-        .get("provider_type")
-        .and_then(|kind| crate::config::SearchProvider::from_name(kind))
-        .is_some()
+        .iter()
+        .any(|(key, value)| observed.get(key) != Some(value))
     {
-        if expected
-            .iter()
-            .any(|(key, value)| observed.get(key) != Some(value))
-        {
-            return Err(Error::Conflict(
-                "web search provider drift requires inspection",
-            ));
-        }
-        return Ok(());
+        return Err(Error::Conflict(
+            "web search provider drift requires inspection",
+        ));
     }
-    if observed["provider_type"] != expected["provider_type"]
+    Ok(())
+}
+
+fn export_provider(document: &mut Document, expected: &Row, observed: &Row) -> Result<(), Error> {
+    if observed.get("api") != expected.get("api")
         || observed["endpoint"] != expected["endpoint"]
         || observed["credential_env"].is_empty() != expected["credential_env"].is_empty()
     {
@@ -414,9 +417,7 @@ fn export_sandbox(expected: &Row, observed: &Row) -> Result<(), Error> {
     let value = |row: &Row, key: &str| row.get(key).map(String::as_str).unwrap_or("").to_owned();
     // JSON inputs compare as the provider records them.
     let json = |row: &Row, key: &str| recorded("sandbox", key, &value(row, key));
-    if ["image", "agent_name", "agent_runtime"]
-        .iter()
-        .any(|key| value(observed, key) != value(expected, key))
+    if value(observed, "image") != value(expected, "image")
         || ["policy_json", "provider_names_json"]
             .iter()
             .any(|key| json(observed, key) != json(expected, key))
@@ -554,7 +555,7 @@ mod tests {
         let mut observations: BTreeMap<String, Value> = compile::targets(&document, &generations)
             .unwrap()
             .into_iter()
-            .filter(|target| target.kind == "provider")
+            .filter(|target| target.kind == "inference")
             .map(|target| (target.address, json!({"credential_env":"SAME_KEY"})))
             .collect();
         assert_eq!(observations.len(), 2);
@@ -566,13 +567,18 @@ mod tests {
     #[test]
     fn export_rejects_configuration_and_intent_identity_drift_from_provider_observations() {
         let target = Target {
-            address: "fabric_agent_configuration.agent".into(),
-            kind: "agent_configuration".into(),
+            address: "fabric_agent.agent".into(),
+            kind: "agent".into(),
             values: Row::from([
                 ("owner".into(), "deployment".into()),
                 ("generation".into(), "generation".into()),
                 ("name".into(), "agent".into()),
-                ("config_json".into(), r#"{"model":"wanted"}"#.into()),
+                (
+                    "models_json".into(),
+                    r#"{"default":{"model":"wanted"}}"#.into(),
+                ),
+                // An omitted section is empty in the row and the observation.
+                ("tools_json".into(), String::new()),
             ]),
         };
         let observed = serde_json::to_value(&target.values).unwrap();
@@ -580,14 +586,15 @@ mod tests {
         for (key, value) in [
             ("owner", "foreign"),
             ("generation", "foreign"),
-            ("config_json", r#"{"model":"changed"}"#),
+            ("models_json", r#"{"default":{"model":"changed"}}"#),
+            ("tools_json", r#"{"enabled":["bash"]}"#),
         ] {
             let mut changed = observed.clone();
             changed[key] = json!(value);
             assert!(validate_projection(&target, &changed).is_err(), "{key}");
         }
         let mut reformatted = observed;
-        reformatted["config_json"] = json!(r#"{ "model": "wanted" }"#);
+        reformatted["models_json"] = json!(r#"{ "default": { "model": "wanted" } }"#);
         validate_projection(&target, &reformatted).unwrap();
     }
 
@@ -679,7 +686,7 @@ mod tests {
         compile::targets(document, &record.generations)
             .unwrap()
             .into_iter()
-            .find(|target| target.kind == "provider")
+            .find(|target| target.kind == "inference")
             .unwrap()
             .values
     }
@@ -712,16 +719,15 @@ mod tests {
                     .unwrap()
                     .into_iter()
                     .find(|target| {
-                        target.kind == "provider" && target.values["provider_type"] == provider
+                        target.kind == "web_search" && target.values["provider_type"] == provider
                     })
                     .unwrap()
                     .values;
-                let mut exported = document.clone();
-                export_provider(&mut exported, &expected, &expected).unwrap();
+                let exported = document.clone();
+                export_web_search(&expected, &expected).unwrap();
                 assert_eq!(exported, document, "{provider}/{scope}");
                 for field in [
                     "provider_type",
-                    "endpoint",
                     "credential_env",
                     "name",
                     "workspace",
@@ -736,7 +742,7 @@ mod tests {
                             observed.remove(field);
                         }
                         assert!(
-                            export_provider(&mut exported, &expected, &observed).is_err(),
+                            export_web_search(&expected, &observed).is_err(),
                             "{provider}/{scope}/{field}/{replacement:?}"
                         );
                         assert_eq!(exported, document);
@@ -793,7 +799,7 @@ mod tests {
         for (field, value) in [
             ("endpoint", "https://foreign.example/v1"),
             ("credential_env", "FOREIGN_KEY"),
-            ("provider_type", "anthropic"),
+            ("api", "anthropic-messages"),
         ] {
             let mut observed = expected.clone();
             observed.insert(field.into(), value.into());
@@ -826,7 +832,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .find(|target| {
-                target.kind == "provider"
+                target.kind == "inference"
                     && target.values["endpoint"] == "https://hosted.example/v1"
             })
             .unwrap()

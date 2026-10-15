@@ -1,12 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Pure selected-agent binding and connection projection.
-use crate::{
-    Error,
-    config::{ConfigError, Document, validation::require},
-};
+use crate::config::{ConfigError, Document, validation::require};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -80,94 +76,15 @@ pub struct ConnectionTimeouts {
 
 impl AgentConnection {
     pub(super) fn validate(&self) -> Result<(), ConfigError> {
-        let bearer = self.authentication.mode == AuthenticationMode::OidcBearer;
-        require(
-            bearer == self.authentication.secret_ref.is_some(),
-            "container connection requires an explicit static bearer or credential-free local development profile",
-        )?;
-        require(
-            self.tls.trust
-                == if bearer {
-                    TlsTrust::System
-                } else {
-                    TlsTrust::None
-                },
-            "container connection TLS trust must match its authentication profile",
-        )?;
-        require(
-            (1..=12).contains(&self.timeouts.health_seconds)
-                && (1..=120).contains(&self.timeouts.invoke_seconds),
-            "container connection deadlines exceed the supported bounds",
-        )?;
-        if !bearer && self.gateway_endpoint.is_empty() {
-            return Ok(());
-        }
-        let endpoint = url::Url::parse(&self.gateway_endpoint)
-            .map_err(|_| ConfigError::new("invalid container gateway endpoint"))?;
-        require(
-            self.gateway_endpoint.len() <= 2048
-                && endpoint.scheme() == if bearer { "https" } else { "http" }
-                && endpoint.username().is_empty()
-                && endpoint.password().is_none()
-                && endpoint.query().is_none()
-                && endpoint.fragment().is_none()
-                && endpoint.path() == "/"
-                && endpoint.host().is_some_and(|host| match host {
-                    url::Host::Domain(name) => {
-                        !name.eq_ignore_ascii_case("localhost") && !name.ends_with(".localhost")
-                    }
-                    url::Host::Ipv4(ip) => {
-                        !ip.is_loopback()
-                            && !ip.is_unspecified()
-                            && !ip.is_multicast()
-                            && !ip.is_broadcast()
-                            && !ip.is_link_local()
-                    }
-                    url::Host::Ipv6(ip) => {
-                        !ip.is_loopback()
-                            && !ip.is_unspecified()
-                            && !ip.is_multicast()
-                            && !ip.is_unicast_link_local()
-                    }
-                }),
-            "container gateway requires a valid origin for its explicit transport profile",
-        )?;
-        if !bearer {
-            require(
-                endpoint
-                    .host()
-                    .is_some_and(|host| matches!(host, url::Host::Ipv4(ip) if ip.is_private()))
-                    && endpoint.port().is_some()
-                    && self.gateway_endpoint == endpoint.origin().ascii_serialization(),
-                "local development gateway requires a canonical private IPv4 origin",
-            )?;
-        }
-        Ok(())
-    }
-    pub(super) fn descriptor(
-        &self,
-        owner: &str,
-        workspace: &str,
-        service: &str,
-        sandbox_id: &str,
-        credential_file: Option<&str>,
-    ) -> Result<(String, Value), Error> {
-        require(
-            matches(crate::config::constraints::UUID, sandbox_id),
-            "application sandbox identity is unresolved",
-        )?;
-        let descriptor = json!({
-            "schemaVersion":"nemoclaw.agent-connection.v1", "deploymentUid":owner, "service":service,
-            "gateway":{"endpoint":self.gateway_endpoint,"tls":{"trust":self.tls.trust,"caFile":null}},
-            "authentication":{"mode":self.authentication.mode,"credentialFile":credential_file,"refreshMode":self.authentication.refresh_mode},
-            "target":{"workspace":workspace,"sandbox":self.sandbox_ref,"sandboxId":sandbox_id,"agent":self.agent},
-            "bridge":{"interfaceVersion":1,"command":"fabric-agent"}, "timeouts":self.timeouts
-        });
-        require(
-            descriptor.to_string().len() <= nemoclaw_container_inputs::MAX_DESCRIPTOR_BYTES,
-            "application connection descriptor exceeds its size limit",
-        )?;
-        Ok((self.target_path.clone(), descriptor))
+        validate_profile(
+            self.authentication.mode,
+            self.authentication.secret_ref.is_some(),
+            self.tls.trust,
+            (self.authentication.mode == AuthenticationMode::OidcBearer
+                || !self.gateway_endpoint.is_empty())
+            .then_some(self.gateway_endpoint.as_str()),
+            &self.timeouts,
+        )
     }
     pub fn validate_binding(
         &self,
@@ -203,16 +120,89 @@ impl AgentConnection {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Check one explicit transport profile: HTTPS with a static OIDC bearer
+/// credential and system trust, or development-only plaintext HTTP to a
+/// canonical private IPv4 origin with neither. `endpoint` may be omitted only
+/// for HTTP, whose origin the SDK derives from the managed gateway.
+pub(super) fn validate_profile(
+    mode: AuthenticationMode,
+    credential: bool,
+    trust: TlsTrust,
+    endpoint: Option<&str>,
+    timeouts: &ConnectionTimeouts,
+) -> Result<(), ConfigError> {
+    let bearer = mode == AuthenticationMode::OidcBearer;
+    require(
+        bearer == credential,
+        "container connection requires an explicit static bearer or credential-free local development profile",
+    )?;
+    require(
+        trust
+            == if bearer {
+                TlsTrust::System
+            } else {
+                TlsTrust::None
+            },
+        "container connection TLS trust must match its authentication profile",
+    )?;
+    require(
+        (1..=12).contains(&timeouts.health_seconds) && (1..=120).contains(&timeouts.invoke_seconds),
+        "container connection deadlines exceed the supported bounds",
+    )?;
+    let Some(endpoint) = endpoint else {
+        return require(!bearer, "container gateway requires an HTTPS origin");
+    };
+    let origin = url::Url::parse(endpoint)
+        .map_err(|_| ConfigError::new("invalid container gateway endpoint"))?;
+    require(
+        endpoint.len() <= 2048
+            && origin.scheme() == if bearer { "https" } else { "http" }
+            && origin.username().is_empty()
+            && origin.password().is_none()
+            && origin.query().is_none()
+            && origin.fragment().is_none()
+            && origin.path() == "/"
+            && origin.host().is_some_and(|host| match host {
+                url::Host::Domain(name) => {
+                    !name.eq_ignore_ascii_case("localhost") && !name.ends_with(".localhost")
+                }
+                url::Host::Ipv4(ip) => {
+                    !ip.is_loopback()
+                        && !ip.is_unspecified()
+                        && !ip.is_multicast()
+                        && !ip.is_broadcast()
+                        && !ip.is_link_local()
+                }
+                url::Host::Ipv6(ip) => {
+                    !ip.is_loopback()
+                        && !ip.is_unspecified()
+                        && !ip.is_multicast()
+                        && !ip.is_unicast_link_local()
+                }
+            }),
+        "container gateway requires a valid origin for its explicit transport profile",
+    )?;
+    if !bearer {
+        require(
+            origin
+                .host()
+                .is_some_and(|host| matches!(host, url::Host::Ipv4(ip) if ip.is_private()))
+                && origin.port().is_some()
+                && endpoint == origin.origin().ascii_serialization(),
+            "local development gateway requires a canonical private IPv4 origin",
+        )?;
+    }
+    Ok(())
+}
+
 /// Only the local gateway placement needed to validate a development connection.
-pub struct LocalGateway {
-    pub engine: String,
-    pub network_cidr: String,
-    pub port: u16,
+struct LocalGateway {
+    engine: String,
+    network_cidr: String,
+    port: u16,
 }
 impl LocalGateway {
-    pub(super) fn from_document(document: &Document) -> Result<Self, ConfigError> {
+    fn from_document(document: &Document) -> Result<Self, ConfigError> {
         let gateway = document.spec.gateway.managed()?;
         gateway.validate_managed()?;
         require(
@@ -249,12 +239,6 @@ impl LocalGateway {
             crate::config::gateway_address(&self.network_cidr)?,
             self.port
         ))
-    }
-    pub(super) fn validate(&self, engine: &str, endpoint: &str) -> Result<(), ConfigError> {
-        require(
-            self.engine == engine && endpoint == self.endpoint()?,
-            "local development endpoint differs from its managed gateway binding",
-        )
     }
 }
 

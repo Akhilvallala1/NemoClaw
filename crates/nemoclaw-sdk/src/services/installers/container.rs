@@ -17,6 +17,8 @@ pub mod inputs;
 
 pub const SERVICE_KIND: &str = "container_service";
 pub const STORAGE_KIND: &str = "container_storage";
+/// Data source that waits for an application's Docker HEALTHCHECK.
+pub const HEALTH_DATA_SOURCE: &str = "host_container_health";
 
 /// Check the application policy on a compiled launch before installation or state reuse.
 pub(crate) fn validate_spec(spec: &Spec) -> Result<(), Error> {
@@ -342,10 +344,13 @@ impl Installer for Service {
         for dependency in &self.depends_on {
             match &document.spec.services[dependency] {
                 super::super::ServiceDefinition::Container(_) => dependencies.push(format!(
-                    "data.nemoclaw_service_readiness.{SERVICE_KIND}_{dependency}"
+                    "data.{HEALTH_DATA_SOURCE}.{SERVICE_KIND}_{dependency}"
                 )),
                 super::super::ServiceDefinition::OllamaProxy(_) => dependencies.push(format!(
-                    "data.nemoclaw_service_readiness.ollama_proxy_{dependency}"
+                    "data.{}.{}_{dependency}",
+                    crate::services::provider_types::readiness_type(super::ollama::proxy::PROXY)
+                        .expect("the proxy has readiness"),
+                    super::ollama::proxy::PROXY
                 )),
                 // Runtime-stage inference is ready before the deployment graph executes.
                 super::super::ServiceDefinition::Ollama(_)
@@ -358,68 +363,77 @@ impl Installer for Service {
         let mut replacement_triggers = BTreeMap::new();
         for connection in self.agent_connections.values() {
             dependencies.push(format!(
-                "data.fabric_sandbox_readiness.{}",
+                "data.fabric_agent_readiness.{}",
                 connection.sandbox_ref
             ));
         }
         if !self.secrets.is_empty() || !self.agent_connections.is_empty() {
-            let input_address = address(inputs::INPUTS_KIND, name);
-            let inputs = inputs::InputsSpec {
-                storage: docker::storage(&spec, spec.volume()),
+            let files_address = format!(
+                "{}.{name}",
+                crate::compile::resource_type(inputs::FILES_KIND)
+            );
+            let connection = connections.values().next();
+            let files = inputs::Files {
+                engine: spec.engine().into(),
+                volume: spec.volume(),
+                owner: spec.owner.clone(),
+                generation: spec.generation.clone(),
+                application: spec.name.clone(),
+                image: self
+                    .input_setup
+                    .as_ref()
+                    .ok_or(Error::State("missing protected input setup image"))?
+                    .image
+                    .clone(),
                 architecture: self.architecture.clone(),
                 user: self.user.clone(),
                 root: self.data.mount_path.clone(),
-                revision: spec
-                    .process
-                    .as_ref()
-                    .unwrap()
-                    .image_owned
-                    .as_ref()
-                    .unwrap()
-                    .input_revision
-                    .clone(),
-                local_gateway: connections
-                    .values()
-                    .any(|c| c.authentication.mode == connection::AuthenticationMode::None)
-                    .then(|| connection::LocalGateway::from_document(document))
-                    .transpose()?,
-                setup: self
-                    .input_setup
-                    .clone()
-                    .ok_or(Error::State("missing protected input setup image"))?,
-                service: name.into(),
-                workspace: document.workspace(),
-                secrets: self.secrets.clone(),
-                connections,
-            };
-            inputs.validate()?;
-            image_checks.insert(
-                format!("runtime_input_image_{name}"),
-                inputs.image_requirements(),
-            );
-            replacement_triggers.insert(address(SERVICE_KIND, name), vec![input_address.clone()]);
-            targets.push(Target {
-                kind: inputs::INPUTS_KIND.into(),
-                address: input_address.clone(),
-                values: crate::backend::Row::from([
-                    (
-                        "spec".into(),
-                        serde_json::to_string(&inputs)
-                            .map_err(|_| Error::State("invalid application inputs"))?,
-                    ),
-                    (
-                        "sandbox_id".into(),
-                        self.agent_connections.values().next().map_or_else(
-                            || "none".into(),
-                            |connection| {
-                                format!("${{openshell_sandbox.{}.id}}", connection.sandbox_ref)
+                credentials: self
+                    .secrets
+                    .iter()
+                    .map(|(key, secret)| {
+                        (
+                            key.clone(),
+                            inputs::CredentialFile {
+                                env: secret.credential.env.clone(),
+                                path: secret.target_path.clone(),
                             },
-                        ),
-                    ),
-                ]),
+                        )
+                    })
+                    .collect(),
+                connection: connection.map(|connection| inputs::ConnectionFile {
+                    path: connection.target_path.clone(),
+                    service: name.into(),
+                    endpoint: connection.gateway_endpoint.clone(),
+                    trust: connection.tls.trust,
+                    authentication: connection.authentication.mode,
+                    credential: connection.authentication.secret_ref.clone(),
+                    health_seconds: connection.timeouts.health_seconds,
+                    invoke_seconds: connection.timeouts.invoke_seconds,
+                }),
+                // The graph replaces these with the agent's ref; the sandbox
+                // name selects it.
+                agent: connection.map(|connection| inputs::AgentTarget {
+                    workspace: document.workspace(),
+                    sandbox: connection.sandbox_ref.clone(),
+                    owner: document.metadata.uid.clone(),
+                    name: connection.agent.clone(),
+                    ..Default::default()
+                }),
+            };
+            files.validate(false)?;
+            image_checks.insert(
+                format!("protected_files_{name}"),
+                files.image_requirements(),
+            );
+            replacement_triggers.insert(address(SERVICE_KIND, name), vec![files_address.clone()]);
+            targets.push(Target {
+                kind: inputs::FILES_KIND.into(),
+                address: files_address.clone(),
+                values: files.row(),
             });
-            edges.insert(input_address.clone(), vec![address(STORAGE_KIND, name)]);
-            dependencies.push(input_address);
+            edges.insert(files_address.clone(), vec![address(STORAGE_KIND, name)]);
+            dependencies.push(files_address);
         }
         edges.insert(address(SERVICE_KIND, name), dependencies);
         docker::install(

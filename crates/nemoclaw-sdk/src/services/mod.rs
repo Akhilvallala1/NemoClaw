@@ -11,9 +11,12 @@ pub mod authentication;
 mod contract;
 pub mod installers;
 pub mod placement;
+pub mod provider_types;
 mod readiness;
 mod registry;
+mod update_policy;
 pub(crate) use readiness::configure_readiness;
+pub use update_policy::ServiceUpdatePolicy;
 mod validation;
 pub use validation::validate_resource_spec;
 
@@ -27,8 +30,8 @@ pub use registry::{
     ResourceBehavior, ResourceSchema, ServiceDefinition, resource_behavior, resource_schemas,
 };
 pub(crate) use registry::{
-    binding_behavior, constrain_schema, credential_source_json, defaults, discovery_engines,
-    generation_kinds, has_runtime, install_plans, preflight, provider_authenticated, remove_plans,
+    constrain_schema, credential_source_json, defaults, discovery_engines, generation_kinds,
+    has_runtime, install_plans, preflight, provider_authenticated, remove_plans,
     required_storage_address, resolve, resource_label, supported_generation_kind, validate,
     validate_provider, validate_route,
 };

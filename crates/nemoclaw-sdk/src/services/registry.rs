@@ -47,8 +47,8 @@ pub enum ServiceDefinition {
 pub struct ResourceBehavior {
     pub retained_storage: bool,
     pub runtime_process: bool,
+    /// Apply may delete it outside teardown; it holds no retained data.
     pub disposable: bool,
-    pub owns_spec: bool,
 }
 
 /// Provider schema for one installer-owned OpenTofu resource.
@@ -92,11 +92,6 @@ const KUBERNETES_AUTH_FIELDS: [&str; 13] = [
 pub fn resource_schemas() -> Vec<ResourceSchema> {
     vec![
         ResourceSchema {
-            kind: installers::container::inputs::INPUTS_KIND,
-            fields: &["spec", "sandbox_id"],
-            mutable: &[],
-        },
-        ResourceSchema {
             kind: crate::kubernetes::STORAGE_KIND,
             fields: &KUBERNETES_FIELDS,
             mutable: &["running"],
@@ -117,24 +112,6 @@ pub fn resource_schemas() -> Vec<ResourceSchema> {
             mutable: &[],
         },
         ResourceSchema {
-            kind: "ollama_external_model",
-            fields: &[
-                "name",
-                "owner",
-                "generation",
-                "engine",
-                "upstream",
-                "model",
-                "digest",
-            ],
-            mutable: &[],
-        },
-        ResourceSchema {
-            kind: installers::ollama::STORAGE_KIND,
-            fields: &crate::managed::Storage::ATTRIBUTES,
-            mutable: &[],
-        },
-        ResourceSchema {
             kind: installers::vllm::STORAGE_KIND,
             fields: &crate::managed::Storage::ATTRIBUTES,
             mutable: &[],
@@ -144,8 +121,7 @@ pub fn resource_schemas() -> Vec<ResourceSchema> {
 
 pub fn resource_behavior(kind: &str) -> ResourceBehavior {
     ResourceBehavior {
-        disposable: kind == installers::container::inputs::INPUTS_KIND,
-        owns_spec: kind == installers::container::inputs::INPUTS_KIND,
+        disposable: kind == installers::container::inputs::FILES_KIND,
         retained_storage: matches!(
             kind,
             installers::ollama::STORAGE_KIND
@@ -192,10 +168,47 @@ pub(crate) fn constrain_schema(
             "imagePullPolicy",
             serde_json::json!({"enum":["IfNotPresent", "Never"]}),
         );
+        if matches!(
+            service["properties"]["kind"]["const"].as_str(),
+            Some("vllm" | "ollama")
+        ) {
+            crate::config::schema::validation::property(
+                service,
+                "updatePolicy",
+                serde_json::json!({"default": super::ServiceUpdatePolicy::default()}),
+            );
+        }
     }
 }
 
 impl ServiceDefinition {
+    /// Context tokens a managed model serves; none for a proxy or application.
+    pub(crate) fn context_tokens(&self) -> Option<i64> {
+        match self {
+            Self::Ollama(service) => Some(service.serving.context_tokens),
+            Self::Vllm(service) => Some(service.serving.context_tokens),
+            Self::OllamaProxy(_) | Self::Container(_) => None,
+        }
+    }
+
+    /// Update policy of a managed model; none for a proxy or application.
+    pub(crate) fn update_policy(&self) -> Option<super::ServiceUpdatePolicy> {
+        match self {
+            Self::Ollama(service) => Some(service.update_policy),
+            Self::Vllm(service) => Some(service.update_policy),
+            Self::OllamaProxy(_) | Self::Container(_) => None,
+        }
+    }
+
+    /// Address of a managed model's container resource; none for a proxy or application.
+    pub(crate) fn model_address(&self, name: &str) -> Option<String> {
+        match self {
+            Self::Ollama(_) => Some(installers::ollama::service_address(name)),
+            Self::Vllm(_) => Some(installers::vllm::service_address(name)),
+            Self::OllamaProxy(_) | Self::Container(_) => None,
+        }
+    }
+
     fn stage(&self) -> InstallStage {
         match self {
             Self::Ollama(_) | Self::Vllm(_) => InstallStage::Runtime,
@@ -213,12 +226,26 @@ impl ServiceDefinition {
     }
 
     fn validate_installation(&self, document: &Document) -> Result<(), ConfigError> {
-        if let Self::Container(service) = self {
-            let (engine, network) = service.location(document)?;
-            for connection in service.agent_connections.values() {
-                connection.validate_binding(document, &engine, &network)?;
+        let (container, preparation_memory) = match self {
+            Self::Container(service) => {
+                let (engine, network) = service.location(document)?;
+                for connection in service.agent_connections.values() {
+                    connection.validate_binding(document, &engine, &network)?;
+                }
+                return Ok(());
             }
-            return Ok(());
+            Self::Vllm(service) => (
+                service.container.as_ref(),
+                service
+                    .recipe
+                    .as_ref()
+                    .map_or(0, |recipe| recipe.resources.preparation_memory_gi_b),
+            ),
+            Self::Ollama(service) => (service.container.as_ref(), 0),
+            Self::OllamaProxy(_) => (None, 0),
+        };
+        if let Some(container) = container {
+            container.validate_memory(preparation_memory)?;
         }
         let gateway = &document.spec.gateway;
         let local_docker = gateway.as_managed().is_some_and(|gateway| {
@@ -713,13 +740,6 @@ pub(crate) fn required_storage_address(
         }))
 }
 
-pub(crate) fn binding_behavior(address: &str) -> ResourceBehavior {
-    address
-        .split_once('.')
-        .and_then(|(kind, _)| kind.strip_prefix("nemoclaw_"))
-        .map(resource_behavior)
-        .unwrap_or_default()
-}
 /// Resolve service-owned protected credentials before deployment state or runtime access.
 pub(crate) fn preflight(
     document: &Document,

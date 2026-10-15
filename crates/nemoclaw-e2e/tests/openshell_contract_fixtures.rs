@@ -39,23 +39,31 @@ fn fixture(mut document: Document) -> Option<String> {
             |harness| harness.kind.to_string(),
         );
         let binding = nemoclaw_e2e::image_runtime::binding(&kind);
-        let runtime = serde_json::to_string(&serde_json::to_string(&binding).unwrap()).unwrap();
+        let launch = serde_json::to_string(
+            &serde_json::to_string(&binding.launch(&sandbox.agent.name)).unwrap(),
+        )
+        .unwrap();
         encoded = encoded
             .replace(
                 &format!(
-                    "\"${{jsondecode(data.fabric_capabilities.sandbox_{index}.binaries_json)}}\""
+                    "\"${{jsondecode(data.fabric_harnesses.sandbox_{index}.binaries_json)}}\""
                 ),
                 &serde_json::to_string(&binding.binaries()).unwrap(),
             )
             .replace(
-                &format!("\"${{data.fabric_capabilities.sandbox_{index}.runtime_json}}\""),
-                &runtime.replace("${", "$${"),
+                &format!("\"${{data.fabric_harnesses.sandbox_{index}.launch_json}}\""),
+                &launch.replace("${", "$${"),
             );
     }
     let mut resources = Map::new();
     let compiled: Value = serde_json::from_str(&encoded).unwrap();
     for (kind, bodies) in compiled.as_object().unwrap() {
-        if !kind.starts_with("openshell_") {
+        // OpenShell objects; the gateway installation types have their own
+        // contract tests.
+        if !kind.starts_with("openshell_")
+            || nemoclaw_openshell::installation_type(nemoclaw_openshell::object_kind(kind))
+                .is_some()
+        {
             continue;
         }
         let mut bodies = bodies.clone();
@@ -68,7 +76,16 @@ fn fixture(mut document: Document) -> Option<String> {
             if let Some(depends) = body.get_mut("depends_on").and_then(Value::as_array_mut) {
                 depends.retain(|address| {
                     address.as_str().is_some_and(|address| {
-                        address.starts_with("openshell_") || address.starts_with("data.openshell_")
+                        let kind = address
+                            .trim_start_matches("data.")
+                            .split('.')
+                            .next()
+                            .unwrap_or_default();
+                        kind.starts_with("openshell_")
+                            && nemoclaw_openshell::installation_type(
+                                nemoclaw_openshell::object_kind(kind),
+                            )
+                            .is_none()
                     })
                 });
                 if depends.is_empty() {
@@ -84,6 +101,21 @@ fn fixture(mut document: Document) -> Option<String> {
         !text.contains("data.fabric_") && !text.contains("nemoclaw_"),
         "the fixture references types the openshell provider does not serve: {text}"
     );
+    // The fake gateway takes no credentials; fixtures reach it at var.endpoint.
+    let mut gateway_reads = graph["data"]["openshell_gateway"].clone();
+    for read in gateway_reads.as_object_mut().unwrap().values_mut() {
+        let read = read.as_object_mut().unwrap();
+        for attribute in [
+            "endpoint",
+            "credential_env",
+            "tls_ca_env",
+            "tls_certificate_env",
+            "tls_key_env",
+        ] {
+            read.remove(attribute);
+        }
+        read.insert("endpoint".into(), json!("${var.endpoint}"));
+    }
     let mut openshell = graph["terraform"]["required_providers"]["openshell"].clone();
     openshell.as_object_mut().unwrap().remove("version");
     let fixture = json!({
@@ -92,8 +124,8 @@ fn fixture(mut document: Document) -> Option<String> {
             "required_providers": {"openshell": openshell},
         },
         "variable": {"endpoint": {"type": "string"}, "destroying": {"default": false}},
-        "provider": {"openshell": {"endpoint": "${var.endpoint}", "destroy": "${var.destroying}"}},
-        "data": {"openshell_gateway": graph["data"]["openshell_gateway"]},
+        "provider": {"openshell": {"destroy": "${var.destroying}"}},
+        "data": {"openshell_gateway": gateway_reads},
         "resource": resources,
     });
     Some(serde_json::to_string_pretty(&fixture).unwrap() + "\n")

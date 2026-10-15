@@ -16,9 +16,11 @@ The [accepted scope](scope.md) defines the invariants; this page explains the re
 | OpenTofu | Dependency ordering, concurrent resource reconciliation, and resource state |
 | Docker provider | Docker containers, images, model-cache volumes, and service networks |
 | Helm provider | The pinned OpenShell chart release on the authored Kubernetes cluster |
-| OpenShell provider | OpenShell workspaces, provider registrations and profiles, sandboxes, and gateway capability reads |
+| OpenShell provider | OpenShell workspaces, provider registrations and profiles, sandboxes, and gateway capability reads; Podman gateway processes, gateway storage, and Kubernetes gateway installation |
 | Fabric provider | Fabric runtime configuration and readiness in agent sandboxes |
-| NemoClaw provider | Podman gateway processes, durable storage contracts, and readiness observations |
+| vLLM and Ollama providers | Inference service storage contracts and readiness observations |
+| Host provider | Engine and image observations, and application container health |
+| Protected provider | Publication of protected application files: credential files and the agent connection descriptor |
 | Hosted runtime | Model preparation, startup, application health, and protective shutdown |
 | Fabric | Adapter and target discovery, native schemas, native configuration validation and mapping, and agent execution |
 
@@ -38,13 +40,16 @@ Service callers supply resource identities, process settings, image acquisition 
 Ollama and vLLM supply model and supervisor settings; vLLM also supplies credential storage and source declarations.
 Applications retain image-owned startup and health, literal settings, publication, and protected-input projection.
 The existing Docker compiler maps these plans to OpenTofu resources; providers own mutations and readiness observations.
+The host provider reads application image requirements and Docker health without changing containers.
 Each service owns its storage retention requirements.
 
 Application preparation records owned storage, numeric user, data root, architecture, setup image, and input references.
 Application image, literal environment, publication, and runtime settings do not participate in preparation identity.
 The [connection module](../../crates/nemoclaw-sdk/src/services/installers/container/connection.rs) projects the selected sandbox identity, endpoint, authentication, trust, and deadlines into a nonsecret descriptor.
-The input provider resolves credentials and uses the fixed Rust publisher for private filesystem admission and atomic publication.
-The shared Docker client owns bounded archive transport and checked metadata; the input provider owns custody policy.
+The `protected_files` resource takes these as typed inputs and the selected `fabric_agent`'s `ref`, never a compiled document.
+Its provider resolves credentials and uses the fixed Rust publisher for private filesystem admission and atomic publication.
+The shared Docker client owns bounded archive transport and checked metadata; the protected provider owns custody policy.
+Docker still owns the application container and its volume.
 Image observations receive explicit platform and startup requirements, independently of application process identity.
 The service registry supplies credential preflight and resource behavior to deployment orchestration.
 
@@ -57,11 +62,11 @@ The native bundle includes the pinned Helm provider; no Helm CLI is required.
 |---|---|
 | SDK | Compile the graph, validate saved plans against deployment intent and retained bindings, and coordinate runtime and OpenShell stages |
 | OpenTofu | Execute dependencies and retain each provider's resource state |
-| NemoClaw provider | Create and retain the namespace and encryption key; prepare and remove the development issuer; verify object identities and gateway readiness |
+| OpenShell provider | Create and retain the namespace and encryption key; prepare and remove the development issuer; verify object identities and gateway readiness |
 | Helm provider | Install, upgrade, and remove the pinned OpenShell chart release, using the prepared namespace and credentials |
 | Platform operator | Install and maintain Agent Sandbox, the default StorageClass, and OpenShift security prerequisites |
 
-The NemoClaw provider does not install or remove the chart, and the Helm release cannot create or adopt the namespace or take ownership of existing resources.
+The OpenShell provider does not install or remove the chart, and the Helm release cannot create or adopt the namespace or take ownership of existing resources.
 Before Helm can change the release, NemoClaw verifies retained Kubernetes identities; after installation, it records the StatefulSet identity and observes readiness.
 For OpenShift, authentication preparation reads the owned namespace's UID and group ranges and supplies non-secret chart overrides through a computed resource output.
 Helm waits for that output, and subsequent refresh rejects a changed namespace identity.
@@ -173,7 +178,7 @@ See [provider discovery](../provider.md#engine-and-fabric-discovery) for observa
 
 Native interface, tool-disclosure, and reasoning settings are authored through Fabric's configuration and adapter settings.
 Managed search credentials, endpoint protocols, and network grants remain SDK deployment behavior.
-The reconstructible `agent_configuration` resource applies canonical Fabric configuration after provider routes are established.
+The reconstructible `fabric_agent` resource applies canonical Fabric configuration after provider routes are established.
 It restarts the Fabric runtime inside its retained sandbox when configuration changes; it does not replace the sandbox.
 A restarted host waits for explicit apply before starting a runtime, because persisted intent does not prove that current gateway routes match.
 The host calls Fabric's public plan/start/invoke/stop APIs.
@@ -189,7 +194,7 @@ The native [bundle](../build.md#build-a-native-bundle) ships the matching CLI, s
 
 OpenShell needs a reachable gateway to refresh resources and plan changes.
 A managed deployment therefore establishes its runtime infrastructure before planning OpenShell resources.
-Deferred provider configuration supports fresh bootstrap, but an unavailable gateway still blocks refresh of existing OpenShell bindings before a combined graph can restore it.
+A gateway ref whose connection is unknown until apply defers planning during fresh bootstrap, but an unavailable gateway still blocks refresh of existing OpenShell bindings before a combined graph can restore it.
 The runtime stage preserves that recovery path.
 The SDK coordinates two graphs:
 
