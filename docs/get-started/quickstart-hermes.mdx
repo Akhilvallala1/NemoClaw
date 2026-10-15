@@ -345,6 +345,10 @@ Use these details when your first-run path needs more control.
     NemoClaw validates the key, stores it in a sandbox-scoped OpenShell provider, writes `web.backend: tavily` into the Hermes configuration, and writes only an OpenShell resolver placeholder into the generated environment.
 
     When you authenticate through Nous Portal OAuth, the wizard can also prompt for managed Nous tool gateways such as web search, image generation, audio, browser automation, and managed code execution.
+    When it creates a tool-gateway provider, NemoClaw uses a dedicated credential-only OpenShell provider profile.
+    It uses an opaque broker token instead of the OAuth refresh token.
+    NemoClaw verifies the profile and provider binding before it creates or reuses the provider.
+    It updates a compatible legacy provider in place.
     Those choices add matching Hermes policy presets to the sandbox.
     If you select Tavily Search and the managed Nous web gateway, Tavily becomes the Hermes web search and extract backend.
     NemoClaw removes `nous-web` from the effective managed-tool selection while preserving selected Nous image, audio, browser, and code tools.
@@ -456,7 +460,11 @@ Use these details when your first-run path needs more control.
 
     `nemohermes inference set` changes the active model or provider without rebuilding the sandbox.
     It updates the selected inference route and patches `/sandbox/.hermes/config.yaml`.
-    Switching to or from a native sandbox-attached provider also restarts the managed Hermes gateway to activate the new configuration.
+    Shared routes do not restart Hermes; custom and local providers retain the shared OpenShell route.
+    A switch to or from a native sandbox-attached provider, including a native custom attachment or a live NVIDIA Build switch, restarts the managed Hermes gateway after configuration sync.
+    The restart can interrupt active agent requests.
+    If the restart fails, the route and configuration remain committed.
+    Run `nemohermes <sandbox-name> gateway restart` to apply the switch.
 
     ```bash
     nemohermes inference set --model <model> --provider <provider>
