@@ -7,7 +7,6 @@ RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml LICENSE ./
 COPY crates/ crates/
-COPY examples/onboarding-tui/ examples/onboarding-tui/
 # The check group builds this helper beside the proxy; Cargo caches need one writer.
 RUN --mount=type=cache,id=container-inputs-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=container-inputs-git,target=/usr/local/cargo/git,sharing=locked \
