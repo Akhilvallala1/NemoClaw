@@ -216,6 +216,13 @@ function buildConfig(settings: Settings): ManagedDeepAgentsConfig {
     "",
     "[models]",
     `default = ${tomlString(defaultModel)}`,
+    // The native custom route no longer rewrites the upstream default classifier
+    // model through inference.local. Retain the operator-selected model for it.
+    ...(provider === "openai" &&
+    settings.upstreamProvider === "compatible-endpoint" &&
+    new URL(settings.baseUrl).hostname !== "inference.local"
+      ? [`auto_classifier = ${tomlString(defaultModel)}`]
+      : []),
     "",
     ...providerConfigLines(
       provider,

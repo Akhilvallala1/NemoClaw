@@ -437,9 +437,16 @@ describe("inference selection validation", () => {
 
   it("carries a default-probe WSL timeout through non-interactive teardown (#10413)", async () => {
     let _requestIndex = 0;
+    let resolveRetryStarted!: () => void;
+    const retryStarted = new Promise<void>((resolve) => {
+      resolveRetryStarted = resolve;
+    });
     const reasoningResponse =
       '{"choices":[{"finish_reason":"length","message":{"content":"","reasoning_content":"Planning the tool call."}}]}';
-    const replies = [(response: http.ServerResponse) => response.end(reasoningResponse), () => {}];
+    const replies = [
+      (response: http.ServerResponse) => response.end(reasoningResponse),
+      () => resolveRetryStarted(),
+    ];
     const server = http.createServer((request, response) => {
       request.resume();
       (replies[_requestIndex++] ?? replies[1])(response);
@@ -470,8 +477,10 @@ describe("inference selection validation", () => {
         allowPrivateAddressesForTesting: true,
       },
     };
+    // Time out the reasoning retry, not the first response under runner load.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const failure = await helpers
+      const failurePromise = helpers
         .validateOpenAiLikeSelection(
           "Compatible endpoint",
           `http://provider.example.com:${port}/v1`,
@@ -482,6 +491,9 @@ describe("inference selection validation", () => {
           probeOptions,
         )
         .catch((caught) => caught);
+      await retryStarted;
+      await vi.advanceTimersByTimeAsync(10);
+      const failure = await failurePromise;
       expect({
         failure,
         output: error.mock.calls.map((args) => args.join(" ")),
@@ -497,6 +509,7 @@ describe("inference selection validation", () => {
         teardownCalls: 1,
       });
     } finally {
+      vi.useRealTimers();
       process.exitCode = originalExitCode;
       error.mockRestore();
     }

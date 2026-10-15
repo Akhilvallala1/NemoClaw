@@ -375,6 +375,20 @@ describe("LangChain Deep Agents Code config generator", () => {
 });
 
 describe("custom hosted DCode credential binding (#12636)", () => {
+  it("uses the selected custom model for Auto classification without gateway rewriting (#12636)", () => {
+    const native = runGenerator({
+      NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://api.example.com/v1",
+      NEMOCLAW_MODEL: "custom/selected-model",
+    });
+    expect(native).toContain('default = "openai:custom/selected-model"');
+    expect(native).toContain('auto_classifier = "openai:custom/selected-model"');
+    expect(native).toContain('api_key_env = "COMPATIBLE_API_KEY"');
+
+    const legacy = runGenerator({ NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint" });
+    expect(legacy).not.toContain("auto_classifier =");
+  });
+
   it.each([
     ["compatible-endpoint", "COMPATIBLE_API_KEY"],
     ["compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
