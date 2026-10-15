@@ -74,17 +74,22 @@ describe("generate-openclaw-config.mts: NEMOCLAW_DASHBOARD_ORIGINS (#13177)", ()
     );
   });
 
+  it("takes each origin from the validated startup profile without re-deciding its policy", () => {
+    const config = buildConfigDirect({
+      CHAT_UI_URL: "http://127.0.0.1:18789",
+      NEMOCLAW_DASHBOARD_ORIGINS: "https://launchpad.example.test:8443, http://localhost:9000",
+    });
+    expect(config.gateway.controlUi.allowedOrigins).toEqual([
+      "http://127.0.0.1:18789",
+      "https://launchpad.example.test:8443",
+      "http://localhost:9000",
+    ]);
+  });
+
   it.each([
     ["a path", "https://launchpad.example.test:8443/dashboard"],
-    ["a query", "https://launchpad.example.test?x=1"],
-    ["a fragment", "https://launchpad.example.test#x"],
-    ["an empty query", "https://launchpad.example.test?"],
-    ["an empty fragment", "https://launchpad.example.test#"],
-    ["user information", "https://user@launchpad.example.test"],
-    ["plain http for a remote host", "http://launchpad.example.test:8443"],
-    ["a non-http scheme", "ftp://launchpad.example.test"],
     ["a value that is not a URL", "launchpad.example.test"],
-  ])("rejects an origin with %s", (_case, origin) => {
+  ])("refuses an entry with %s instead of widening allowedOrigins", (_case, origin) => {
     expectBuildConfigError(
       { CHAT_UI_URL: "http://127.0.0.1:18789", NEMOCLAW_DASHBOARD_ORIGINS: origin },
       /NEMOCLAW_DASHBOARD_ORIGINS/,

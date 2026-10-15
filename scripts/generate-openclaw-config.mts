@@ -159,43 +159,27 @@ function unique<T>(values: Iterable<T>): T[] {
 const DASHBOARD_ORIGINS_ENV = "NEMOCLAW_DASHBOARD_ORIGINS";
 
 /**
- * Read extra browser origins for the dashboard (#13177). Each entry must be a
- * bare origin that keeps its own port. A remote origin must use https, so the
- * list cannot widen the gateway to an unauthenticated plain-http page.
+ * Read extra dashboard browser origins (#13177). The managed startup profile
+ * validates them with `parseDashboardOrigins` before mapping them here, so this
+ * only splits the list and refuses an entry that is not a bare origin.
  */
 function readDashboardOriginsEnv(env: Env): string[] {
-  const raw = env[DASHBOARD_ORIGINS_ENV] ?? "";
   const origins: string[] = [];
-  for (const entry of raw.split(",")) {
+  for (const entry of (env[DASHBOARD_ORIGINS_ENV] ?? "").split(",")) {
     const value = entry.trim();
     if (!value) continue;
-    let url: URL;
+    let origin: string | null = null;
     try {
-      url = new URL(value);
+      origin = new URL(value).origin;
     } catch {
+      origin = null;
+    }
+    if (origin !== value) {
       throw new Error(
-        `${DASHBOARD_ORIGINS_ENV} entry is not an absolute URL: ${JSON.stringify(value)}`,
+        `${DASHBOARD_ORIGINS_ENV} entry is not a bare origin: ${JSON.stringify(value)}`,
       );
     }
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      throw new Error(
-        `${DASHBOARD_ORIGINS_ENV} entry must use http or https: ${JSON.stringify(value)}`,
-      );
-    }
-    if (url.username || url.password) {
-      throw new Error(`${DASHBOARD_ORIGINS_ENV} entry must not include user information`);
-    }
-    if (url.origin !== value.replace(/\/$/, "")) {
-      throw new Error(
-        `${DASHBOARD_ORIGINS_ENV} entry must be a bare origin without a path, query, or fragment: ${JSON.stringify(value)}`,
-      );
-    }
-    if (url.protocol === "http:" && !isLoopback(url.hostname)) {
-      throw new Error(
-        `${DASHBOARD_ORIGINS_ENV} entry must use https unless its host is loopback: ${JSON.stringify(value)}`,
-      );
-    }
-    origins.push(url.origin);
+    origins.push(origin);
   }
   return origins;
 }
