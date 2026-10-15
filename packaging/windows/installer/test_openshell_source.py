@@ -101,7 +101,7 @@ class LockedOpenShellSource(unittest.TestCase):
 
     def test_checked_in_derivative_matches_its_lock(self):
         lock = MODULE.load_lock()
-        self.assertEqual(lock["baseRevision"], "901338dbd334feeb1436f4cb41533f6d592d3595")
+        self.assertEqual(lock["baseRevision"], "6f83bf13e4ec7f03ff20bfb716c2d02b52ed44ad")
 
     def test_rejects_invalid_lock_shape(self):
         for value in (None, [], "invalid", 1):

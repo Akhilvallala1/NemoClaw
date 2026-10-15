@@ -1,8 +1,8 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 9c54dc90f5b70e223155ac3c5588a9479cd651f9..5d63bd0b368495ca31b82461c5120c5e7b963c13 100644
+index a438d9a878e095fd3b9b5af23f1d4c0cd81d8b72..424f26b7a7f4cf8b8bcb260442a38207ce832402 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -4969,6 +4969,7 @@ dependencies = [
+@@ -4961,6 +4961,7 @@ dependencies = [
   "openshell-driver-vault",
   "openshell-extension-core",
   "openshell-gateway-interceptors",
@@ -10,7 +10,7 @@ index 9c54dc90f5b70e223155ac3c5588a9479cd651f9..5d63bd0b368495ca31b82461c5120c5e
   "openshell-ocsf",
   "openshell-otel",
   "openshell-policy",
-@@ -4976,6 +4977,7 @@ dependencies = [
+@@ -4968,6 +4969,7 @@ dependencies = [
   "openshell-providers",
   "openshell-supervisor-middleware",
   "openshell-supervisor-middleware-builtins",
@@ -19,21 +19,22 @@ index 9c54dc90f5b70e223155ac3c5588a9479cd651f9..5d63bd0b368495ca31b82461c5120c5e
   "opentelemetry_sdk",
   "petname",
 diff --git a/crates/openshell-cli/src/ssh.rs b/crates/openshell-cli/src/ssh.rs
-index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938d7ce168f 100644
+index a576d5a78835a4b93932f0edf3e38c614a2ff09d..e225634cd18fa1e56486630b02b4c28bfa221877 100644
 --- a/crates/openshell-cli/src/ssh.rs
 +++ b/crates/openshell-cli/src/ssh.rs
-@@ -12,8 +12,8 @@ use miette::{IntoDiagnostic, Report, Result, WrapErr};
- use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+@@ -14,8 +14,9 @@ use miette::{IntoDiagnostic, Report, Result, WrapErr};
+ use nix::sys::signal::Signal;
  use openshell_core::driver_mounts;
  use openshell_core::forward::{
--    ForwardSpec, build_proxy_command, format_gateway_url, resolve_ssh_gateway, shell_escape,
--    validate_ssh_session_response, write_forward_pid,
+-    ForwardSpec, build_proxy_command, format_gateway_url, resolve_ssh_gateway, sandbox_ssh_args,
+-    shell_escape, validate_ssh_session_response, write_forward_pid,
 +    ForwardSpec, build_named_proxy_command, build_proxy_command, format_gateway_url,
-+    resolve_ssh_gateway, shell_escape, validate_ssh_session_response, write_forward_pid,
++    resolve_ssh_gateway, sandbox_ssh_args, shell_escape, validate_ssh_session_response,
++    write_forward_pid,
  };
  use openshell_core::proto::{
      CreateSshSessionRequest, GetSandboxRequest, SandboxPhase, SshRelayTarget, TcpForwardFrame,
-@@ -196,12 +196,31 @@ async fn ssh_session_config(
+@@ -213,7 +214,20 @@ async fn ssh_session_config(
      })
  }
 
@@ -52,21 +53,21 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
 +}
 +
 +fn ssh_base_command(proxy_command: &str) -> Result<Command> {
-     // SSH log level follows the program's verbosity.  main() maps the `-v`
-     // count to OPENSHELL_SSH_LOG_LEVEL; an explicit env-var override wins.
-     let ssh_log_level =
-         std::env::var("OPENSHELL_SSH_LOG_LEVEL").unwrap_or_else(|_| "ERROR".to_string());
+     // An explicit environment override wins over the CLI verbosity default.
+     let ssh_log_level = std::env::var("OPENSHELL_SSH_LOG_LEVEL").unwrap_or_else(|_| {
+         DEFAULT_SSH_LOG_LEVEL
+@@ -223,6 +237,10 @@ fn ssh_base_command(proxy_command: &str) -> Command {
+             .to_string()
+     });
 
-+    // Windows quoting assumes native OpenSSH's process launcher. Git/MSYS ssh
-+    // uses a POSIX shell and cannot safely consume that command string. Do not
-+    // let PATH silently choose a different parser (or fall back when missing).
++    // ProxyCommand quoting requires native OpenSSH, not a PATH-selected MSYS parser.
 +    #[cfg(target_os = "windows")]
 +    let mut command = Command::new(native_windows_ssh_path(std::env::var_os("SystemRoot"))?);
 +    #[cfg(not(target_os = "windows"))]
      let mut command = Command::new("ssh");
-     command
-         .arg("-o")
-@@ -222,7 +241,7 @@ fn ssh_base_command(proxy_command: &str) -> Command {
+     // Nested ProxyCommand processes inherit the effective verbosity too.
+     command.env("OPENSHELL_SSH_LOG_LEVEL", &ssh_log_level);
+@@ -236,7 +254,7 @@ fn ssh_base_command(proxy_command: &str) -> Command {
          .arg("ServerAliveInterval=15")
          .arg("-o")
          .arg("ServerAliveCountMax=3");
@@ -74,9 +75,9 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
 +    Ok(command)
  }
 
- #[cfg(unix)]
-@@ -303,8 +322,8 @@ fn exec_or_wait(mut command: Command, replace_process: bool) -> Result<i32> {
-     Ok(status.code().unwrap_or(1))
+ async fn exec_or_wait(command: Command, replace_process: bool) -> Result<i32> {
+@@ -274,8 +292,8 @@ async fn exec_or_wait(command: Command, replace_process: bool) -> Result<i32> {
+     Ok(process_exit_code(child.wait().await.into_diagnostic()?))
  }
 
 -fn main_attach_command(session: &SshSessionConfig) -> Command {
@@ -86,7 +87,7 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
      if session.main_terminal {
          command.arg("-tt").arg("-o").arg("RequestTTY=force");
      } else {
-@@ -319,11 +338,11 @@ fn main_attach_command(session: &SshSessionConfig) -> Command {
+@@ -290,11 +308,11 @@ fn main_attach_command(session: &SshSessionConfig) -> Command {
          .stdin(Stdio::inherit())
          .stdout(Stdio::inherit())
          .stderr(Stdio::inherit());
@@ -97,10 +98,10 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
  async fn run_main_attach(session: &SshSessionConfig, replace_process: bool) -> Result<i32> {
 -    let command = main_attach_command(session);
 +    let command = main_attach_command(session)?;
-     tokio::task::spawn_blocking(move || exec_or_wait(command, replace_process))
-         .await
-         .into_diagnostic()?
-@@ -429,7 +448,7 @@ async fn run_main_attach_supervised(
+     exec_or_wait(command, replace_process).await
+ }
+
+@@ -401,7 +419,7 @@ async fn run_main_attach_supervised(
      #[cfg(not(unix))]
      let _ = cancellation;
 
@@ -109,7 +110,7 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
      command.kill_on_drop(true);
 
      let mut child = command.spawn().into_diagnostic()?;
-@@ -776,7 +795,7 @@ pub async fn sandbox_forward(
+@@ -748,7 +766,7 @@ pub async fn sandbox_forward(
          &session.proxy_command,
          &session.sandbox_id,
          spec,
@@ -118,10 +119,10 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
 
      if background {
          command
-@@ -847,8 +866,12 @@ pub async fn sandbox_forward(
+@@ -819,8 +837,12 @@ pub async fn sandbox_forward(
 
  /// A forward must stay owned by the process we spawn so it can be reaped or
- /// tracked by PID. User SSH config may otherwise move it into a persistent mux.
+ /// tracked by PID. User SSH config may otherwise fork it into the background.
 -fn ssh_forward_command(proxy_command: &str, sandbox_id: &str, spec: &ForwardSpec) -> Command {
 -    let mut command = ssh_base_command(proxy_command);
 +fn ssh_forward_command(
@@ -132,8 +133,8 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
 +    let mut command = ssh_base_command(proxy_command)?;
      command
          .arg("-o")
-         .arg("ControlMaster=no")
-@@ -866,7 +889,7 @@ fn ssh_forward_command(proxy_command: &str, sandbox_id: &str, spec: &ForwardSpec
+         .arg("ForkAfterAuthentication=no")
+@@ -832,7 +854,7 @@ fn ssh_forward_command(proxy_command: &str, sandbox_id: &str, spec: &ForwardSpec
          .arg("-L")
          .arg(spec.ssh_forward_arg())
          .arg("sandbox");
@@ -142,7 +143,7 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
  }
 
  /// Wait for the local listener, racing the probe against the `ssh` child
-@@ -1027,7 +1050,7 @@ async fn sandbox_exec_with_mode(
+@@ -993,7 +1015,7 @@ async fn sandbox_exec_with_mode(
      }
 
      let session = ssh_session_config(server, name, tls, workspace, None).await?;
@@ -151,16 +152,36 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
 
      if tty {
          ssh.arg("-tt")
-@@ -1395,7 +1418,7 @@ async fn ssh_tar_upload(
+@@ -1293,7 +1315,7 @@ async fn ssh_tar_upload(
          UploadSource::FileList { .. } => dest_dir.to_string(),
      };
 
--    let mut ssh = ssh_base_command(&session.proxy_command);
-+    let mut ssh = ssh_base_command(&session.proxy_command)?;
-     ssh.arg("-T")
+-    let ssh = ssh_upload_command(&session.proxy_command);
++    let ssh = ssh_upload_command(&session.proxy_command)?;
+     let plan = UploadPlan {
+         destination_directory: dest_dir.to_string(),
+         expected_destination: expected_destination.map(|(path, kind)| ExpectedDestination {
+@@ -1313,8 +1335,8 @@ async fn ssh_tar_upload(
+ /// Upload EOF marks a complete archive and the SSH exit status reports
+ /// extraction, so the session must stay in the process we spawn. User SSH
+ /// config may otherwise fork it into the background.
+-fn ssh_upload_command(proxy_command: &str) -> Command {
+-    let mut command = ssh_base_command(proxy_command);
++fn ssh_upload_command(proxy_command: &str) -> Result<Command> {
++    let mut command = ssh_base_command(proxy_command)?;
+     command
          .arg("-o")
-         .arg("RequestTTY=no")
-@@ -1687,7 +1710,7 @@ fn file_list_archive_prefix(local_path: &Path) -> Option<PathBuf> {
+         .arg("ForkAfterAuthentication=no")
+@@ -1324,7 +1346,7 @@ fn ssh_upload_command(proxy_command: &str) -> Command {
+         .arg("-s")
+         .arg("sandbox")
+         .arg(openshell_core::upload::SUBSYSTEM);
+-    command
++    Ok(command)
+ }
+
+ /// Split a sandbox path into (`parent_directory`, basename).
+@@ -1577,7 +1599,7 @@ fn file_list_archive_prefix(local_path: &Path) -> Option<PathBuf> {
  /// file or a directory before streaming the tar archive. Stderr is inherited
  /// so the user still sees any diagnostic output from ssh itself.
  async fn ssh_run_capture_stdout(session: &SshSessionConfig, command: &str) -> Result<String> {
@@ -169,7 +190,7 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
      ssh.arg("-T")
          .arg("-o")
          .arg("RequestTTY=no")
-@@ -1874,7 +1897,7 @@ async fn stream_sandbox_tar(
+@@ -1787,7 +1809,7 @@ async fn stream_sandbox_tar(
      tar_cmd: String,
      extract_into: &Path,
  ) -> Result<()> {
@@ -178,7 +199,7 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
      ssh.arg("-T")
          .arg("-o")
          .arg("RequestTTY=no")
-@@ -2213,14 +2236,7 @@ fn host_alias(name: &str, workspace: &str) -> String {
+@@ -2126,14 +2148,7 @@ fn host_alias(name: &str, workspace: &str) -> String {
 
  fn render_ssh_config(gateway: &str, name: &str, workspace: &str) -> String {
      let exe = std::env::current_exe().expect("failed to resolve OpenShell executable");
@@ -194,7 +215,16 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
      let host_alias = host_alias(name, workspace);
      format!(
          "Host {host_alias}\n    User sandbox\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n    GlobalKnownHostsFile /dev/null\n    LogLevel ERROR\n    ServerAliveInterval 15\n    ServerAliveCountMax 3\n    ProxyCommand {proxy_cmd}\n"
-@@ -2612,6 +2628,23 @@ mod tests {
+@@ -2340,7 +2355,7 @@ mod tests {
+             environment.run(|| {
+                 set_default_ssh_log_level("DEBUG");
+                 let expected = override_level.unwrap_or("DEBUG");
+-                let command = ssh_base_command("openshell ssh-tunnel");
++                let command = ssh_base_command("openshell ssh-tunnel").unwrap();
+                 assert!(
+                     command
+                         .get_args()
+@@ -2796,6 +2811,23 @@ mod tests {
          );
      }
 
@@ -218,21 +248,43 @@ index 8b13d6bcfab4caa638334d09716d59b1cd8b7800..68338daf5fdbc5ccae8d2216ea893938
      #[test]
      fn host_alias_includes_workspace() {
          assert_eq!(host_alias("demo", "default"), "openshell-demo.default");
-@@ -2684,7 +2717,8 @@ mod tests {
+@@ -2896,8 +2928,10 @@ mod tests {
+     #[cfg(unix)]
+     #[test]
+     fn ssh_base_command_overrides_user_connection_sharing() {
+-        let effective =
+-            effective_ssh_config(&ssh_base_command("openshell ssh-proxy"), &["-N", "sandbox"]);
++        let effective = effective_ssh_config(
++            &ssh_base_command("openshell ssh-proxy").unwrap(),
++            &["-N", "sandbox"],
++        );
+         assert_connection_sharing_disabled(&effective);
+     }
+
+@@ -2908,7 +2942,8 @@ mod tests {
              "openshell ssh-proxy --sandbox demo",
              "sandbox-id",
              &ForwardSpec::new(18080),
 -        );
 +        )
 +        .unwrap();
-         let output = Command::new("ssh")
-             .arg("-F")
-             .arg(&config)
+         let effective = effective_ssh_config(&forward, &[]);
+         assert_connection_sharing_disabled(&effective);
+         assert!(
+@@ -2921,7 +2956,7 @@ mod tests {
+     #[cfg(unix)]
+     #[test]
+     fn upload_ssh_command_overrides_user_multiplexing_and_forking() {
+-        let upload = ssh_upload_command("openshell ssh-proxy --sandbox demo");
++        let upload = ssh_upload_command("openshell ssh-proxy --sandbox demo").unwrap();
+         let effective = effective_ssh_config(&upload, &[]);
+         assert_connection_sharing_disabled(&effective);
+         for expected in [
 diff --git a/crates/openshell-core/src/forward.rs b/crates/openshell-core/src/forward.rs
-index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f761aa612a3 100644
+index c8e6c1013163ed19ed4f5ad125e7bb88f9581fe7..ec3ef5b0ae2e463648cbbdbc86da9b6739fe4dfc 100644
 --- a/crates/openshell-core/src/forward.rs
 +++ b/crates/openshell-core/src/forward.rs
-@@ -892,7 +892,7 @@ pub fn format_gateway_url(scheme: &str, host: &str, port: u16) -> String {
+@@ -906,7 +906,7 @@ pub fn format_gateway_url(scheme: &str, host: &str, port: u16) -> String {
      format!("{scheme}://{}:{port}", bracket_ipv6_host(host))
  }
 
@@ -241,7 +293,7 @@ index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f76
  pub fn shell_escape(value: &str) -> String {
      if value.is_empty() {
          return "''".to_string();
-@@ -909,11 +909,57 @@ pub fn shell_escape(value: &str) -> String {
+@@ -923,11 +923,57 @@ pub fn shell_escape(value: &str) -> String {
      format!("'{escaped}'")
  }
 
@@ -303,7 +355,7 @@ index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f76
  pub fn build_proxy_command(
      exe: &str,
      gateway_url: &str,
-@@ -924,19 +970,31 @@ pub fn build_proxy_command(
+@@ -938,12 +984,23 @@ pub fn build_proxy_command(
  ) -> String {
      format!(
          "{} ssh-proxy --gateway {} --sandbox {} --workspace {} --token {} --gateway-name {}",
@@ -322,8 +374,7 @@ index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f76
 +    )
 +}
 +
-+/// Build a persistent SSH config's proxy command; credentials are resolved by
-+/// the proxy at connection time, never persisted in the SSH config.
++/// Build a persistent proxy command without persisting session credentials.
 +pub fn build_named_proxy_command(exe: &str, gateway: &str, name: &str, workspace: &str) -> String {
 +    format!(
 +        "{} ssh-proxy --gateway-name {} --name {} --workspace {}",
@@ -334,16 +385,7 @@ index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f76
      )
  }
 
- /// Error returned when a `CreateSshSessionResponse` fails validation.
- ///
--/// The response fields flow into a `ProxyCommand` string executed by
--/// `/bin/sh -c`; any deviation from the documented charset is rejected at the
-+/// The response fields flow into a platform-specific `ProxyCommand` string;
-+/// any deviation from the documented charset is rejected at the
- /// gRPC trust boundary before escaping is attempted.
- #[derive(Debug, thiserror::Error)]
- pub enum SshSessionResponseError {
-@@ -1205,6 +1263,23 @@ mod tests {
+@@ -1240,6 +1297,23 @@ mod tests {
          assert_eq!(shell_escape("it's"), "'it'\"'\"'s'");
      }
 
@@ -367,7 +409,7 @@ index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f76
      fn valid_session_response() -> crate::proto::CreateSshSessionResponse {
          crate::proto::CreateSshSessionResponse {
              sandbox_id: "sb-1234".to_string(),
-@@ -1312,6 +1387,7 @@ mod tests {
+@@ -1347,6 +1421,7 @@ mod tests {
      }
 
      #[test]
@@ -375,7 +417,7 @@ index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f76
      fn build_proxy_command_escapes_shell_metacharacters() {
          // Attacker-controlled values in every escapable position.
          let cmd = build_proxy_command(
-@@ -1339,8 +1415,9 @@ mod tests {
+@@ -1374,8 +1449,9 @@ mod tests {
          // An empty value must become `''` rather than disappearing — otherwise
          // downstream argv splitting would misalign.
          let cmd = build_proxy_command("exe", "gw", "", "", "tok", "name");
@@ -387,7 +429,7 @@ index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f76
      }
 
      #[test]
-@@ -1361,6 +1438,7 @@ mod tests {
+@@ -1413,6 +1489,7 @@ mod tests {
 
      /// Helper: return the concatenation of characters that appear outside
      /// POSIX single-quoted runs. Used by the metacharacter assertions above.
@@ -396,7 +438,7 @@ index b96c52d9111a3933c08ffd53d8a6c67a6dc78431..bf01c0f87b9a7baae30c7f1f13dc0f76
          let mut out = String::new();
          let mut inside = false;
 diff --git a/crates/openshell-driver-mxc/src/driver.rs b/crates/openshell-driver-mxc/src/driver.rs
-index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd850206679 100644
+index 3d2bef6cefbc30ab9b5cd9bb7993984392a108fa..199b1bbf9160458f49153c75cf64551ccd256de6 100644
 --- a/crates/openshell-driver-mxc/src/driver.rs
 +++ b/crates/openshell-driver-mxc/src/driver.rs
 @@ -157,6 +157,31 @@ struct MxcSandboxConfig {
@@ -431,7 +473,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
  }
 
  #[derive(Debug, Clone, PartialEq, Eq)]
-@@ -686,6 +711,7 @@ async fn run_lifecycle_inner(
+@@ -695,6 +720,7 @@ async fn run_lifecycle_inner(
          proxy_url,
          workload_binary,
          child_env: sandbox_environment(&context.sandbox),
@@ -439,7 +481,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
      }
      .provision()
      .map_err(|error| error.to_string())?;
-@@ -747,6 +773,7 @@ async fn run_lifecycle_inner(
+@@ -756,6 +782,7 @@ async fn run_lifecycle_inner(
      let network = MxcNetwork {
          egress_default: "deny".to_string(),
          proxy: Some(proxy_addr),
@@ -447,7 +489,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
          allow_local_network: context.config.pc_allow_local_network,
      };
      drop(control_reservation);
-@@ -765,6 +792,8 @@ async fn run_lifecycle_inner(
+@@ -774,6 +801,8 @@ async fn run_lifecycle_inner(
          )
          .await
          .map_err(|error| format!("start MXC ProcessContainer: {error}"))?;
@@ -455,8 +497,8 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
 +    let control_input = boundary.stdin.take().ok_or("MXC control stdin missing")?;
      attach_child_logs(&context.sandbox.name, "sandbox", &mut boundary);
      attach_child_logs(&context.sandbox.name, "supervisor", &mut supervisor);
-     if context.config.etw_audit
-@@ -791,7 +820,13 @@ async fn run_lifecycle_inner(
+     if context.config.etw_audit {
+@@ -813,7 +842,13 @@ async fn run_lifecycle_inner(
          entry.phase_state = PhaseState::Running;
      }
      drop(startup_guard);
@@ -471,7 +513,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
      let _ = terminated_tx.send(true);
      if let Ok(mut attribution) = context.attribution.lock() {
          attribution.forget(&context.sandbox.id);
-@@ -876,6 +911,12 @@ fn mxc_main_process_config(
+@@ -898,6 +933,12 @@ fn mxc_main_process_config(
      // source when no canonical command was supplied by the CLI.
      if main.command.is_empty() {
          main.command = driver_command.to_vec();
@@ -484,7 +526,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
      }
      main
  }
-@@ -891,8 +932,28 @@ async fn monitor_runtime_pair(
+@@ -913,8 +954,28 @@ async fn monitor_runtime_pair(
      mut boundary: Child,
      mut supervisor: Child,
      mut shutdown: oneshot::Receiver<()>,
@@ -513,7 +555,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
          _ = &mut shutdown => {
              let _ = supervisor.kill().await;
              let _ = boundary.kill().await;
-@@ -962,6 +1023,8 @@ fn sandbox_config(sandbox: &DriverSandbox) -> Result<MxcSandboxConfig, tonic::St
+@@ -984,6 +1045,8 @@ fn sandbox_config(sandbox: &DriverSandbox) -> Result<MxcSandboxConfig, tonic::St
              "mxc driver_config.command must contain an executable",
          ));
      }
@@ -522,7 +564,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
      Ok(config)
  }
 
-@@ -1248,6 +1311,34 @@ fn platform_event(sandbox_id: String, reason: &str, message: String) -> WatchSan
+@@ -1270,6 +1333,34 @@ fn platform_event(sandbox_id: String, reason: &str, message: String) -> WatchSan
  // the driver. Keep lifecycle/security tests below during their migration.
  #[cfg(test)]
  mod tests {
@@ -557,7 +599,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
      #[test]
      fn mxc_driver_command_reaches_supervisor_without_generic_command() {
          let command = vec![
-@@ -1258,6 +1349,7 @@ mod tests {
+@@ -1280,6 +1371,7 @@ mod tests {
          let encoded = mxc_main_process_spec(&mxc_main_process_config(None, &command)).unwrap();
          let main = openshell_core::sandbox_env::MainProcessConfig::decode(&encoded).unwrap();
          assert_eq!(main.command, command);
@@ -565,7 +607,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
          assert!(!main.await_main_process_attachment);
          let spec = DriverSandboxSpec {
              command: vec!["explicit.exe".into()],
-@@ -1273,6 +1365,30 @@ mod tests {
+@@ -1295,6 +1387,30 @@ mod tests {
          );
      }
 
@@ -596,7 +638,7 @@ index 3ddddc1c9da9b95c908a75971ec01d92a1847a65..01e749989e1053573573ea950e830dd8
      #[test]
      fn proxy_identity_uses_the_canonical_workload_command() {
          let canonical = std::env::var("COMSPEC").unwrap();
-@@ -1637,7 +1753,7 @@ mod tests {
+@@ -1677,7 +1793,7 @@ mod tests {
          shutdown_tx.send(()).unwrap();
          let exit = tokio::time::timeout(
              Duration::from_secs(5),
@@ -840,17 +882,18 @@ index f39f20f2ce60e6145925e060632e8aa374851b67..8559a45849481d538a56328d0bd7496e
 
      #[test]
 diff --git a/crates/openshell-mxc-boundary/Cargo.toml b/crates/openshell-mxc-boundary/Cargo.toml
-index 300f6423da783c9db06776f577df732f31fab44c..48e6167dbb0b1f05a293e8158a379a4041786462 100644
+index 92c64ab77948d3274d51d7d5757013a99badde12..7539e4b7d1e503438f5761cfb0aa3fb965558c87 100644
 --- a/crates/openshell-mxc-boundary/Cargo.toml
 +++ b/crates/openshell-mxc-boundary/Cargo.toml
-@@ -35,10 +35,11 @@ serde = { workspace = true }
+@@ -35,11 +35,12 @@ serde = { workspace = true }
  sha2 = { workspace = true }
  tracing = { workspace = true }
  url = { workspace = true }
--windows = { workspace = true, features = ["Win32_Security_Authorization"] }
-+windows = { workspace = true, features = ["Win32_Security_Authorization", "Win32_System_Console", "Win32_System_Pipes", "Win32_System_JobObjects"] }
+-windows = { workspace = true, features = ["Win32_Security_Authorization", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
++windows = { workspace = true, features = ["Win32_Security_Authorization", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Console", "Win32_System_Pipes", "Win32_System_JobObjects"] }
 
  [target.'cfg(target_os = "windows")'.dev-dependencies]
+ base64 = { workspace = true }
  tempfile = "3"
 +windows = { workspace = true, features = ["Win32_System_Diagnostics_ToolHelp"] }
 
@@ -880,10 +923,10 @@ index 3a1cc5caefc0b0013bab2330f87886fc2a4ebc87..6faf605f1ecc1470f98d33998d5e3cd4
                  .unwrap(),
 diff --git a/crates/openshell-mxc-boundary/src/conpty.rs b/crates/openshell-mxc-boundary/src/conpty.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..620342c8f80a456e8a60f3512cd78237a1f55389
+index 0000000000000000000000000000000000000000..9daa20492e0ec6ae663ce0c76182d12bdd423032
 --- /dev/null
 +++ b/crates/openshell-mxc-boundary/src/conpty.rs
-@@ -0,0 +1,941 @@
+@@ -0,0 +1,975 @@
 +// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 +// SPDX-License-Identifier: Apache-2.0
 +
@@ -929,9 +972,16 @@ index 0000000000000000000000000000000000000000..620342c8f80a456e8a60f3512cd78237
 +    Ok(value.encode_utf16().chain(Some(0)).collect())
 +}
 +
-+// Quote for the Windows CRT argv decoder; never invoke a shell. Always quote,
-+// including empty arguments, and double trailing backslashes before the quote.
++// Quote for the Windows CRT argv decoder; never invoke a shell. Leave simple
++// arguments bare so cmd.exe recognizes switches such as /D and /C.
 +fn quote_argument(value: &str) -> String {
++    if !value.is_empty()
++        && !value.contains([
++            ' ', '\t', '\n', '\r', '"', '&', '|', '<', '>', '^', '(', ')', '%', '!',
++        ])
++    {
++        return value.to_string();
++    }
 +    let mut result = String::from("\"");
 +    let mut slashes = 0;
 +    for ch in value.chars() {
@@ -1451,6 +1501,29 @@ index 0000000000000000000000000000000000000000..620342c8f80a456e8a60f3512cd78237
 +    }
 +
 +    #[test]
++    fn native_cmd_switches_and_redirection_work() {
++        let directory = tempfile::tempdir().unwrap();
++        let result = directory.path().join("result.txt");
++        let (terminal, _input) = Terminal::spawn(
++            &std::env::var("COMSPEC").expect("Windows command interpreter"),
++            &[
++                "/D".into(),
++                "/C".into(),
++                "echo terminal-write>result.txt".into(),
++            ],
++            directory.path().to_str(),
++            &HashMap::new(),
++            |_| {},
++        )
++        .expect("launch cmd in a real terminal");
++        assert_eq!(wait_exit(&terminal), 0, "cmd switches must remain switches");
++        assert_eq!(
++            std::fs::read_to_string(result).unwrap().trim(),
++            "terminal-write"
++        );
++    }
++
++    #[test]
 +    fn native_console_accepts_multiline_unicode_input_and_resize() {
 +        let nonce = format!(
 +            "{}-{}",
@@ -1768,6 +1841,10 @@ index 0000000000000000000000000000000000000000..620342c8f80a456e8a60f3512cd78237
 +    #[test]
 +    fn quotes_empty_spaces_quotes_and_trailing_slashes() {
 +        assert_eq!(quote_argument(""), "\"\"");
++        assert_eq!(quote_argument("/C"), "/C");
++        for value in ["a&b", "a|b", "a>b", "a<b", "a^b", "(a)", "%PATH%", "!PATH!"] {
++            assert_eq!(quote_argument(value), format!("\"{value}\""));
++        }
 +        assert_eq!(quote_argument("two words"), "\"two words\"");
 +        assert_eq!(quote_argument("a\"b"), "\"a\\\"b\"");
 +        assert_eq!(quote_argument("C:\\a b\\"), "\"C:\\a b\\\\\"");
@@ -2239,7 +2316,7 @@ index 0000000000000000000000000000000000000000..1b63ffe2f761e372f8f7f4dbf73df608
 +    }
 +}
 diff --git a/crates/openshell-mxc-boundary/src/identity.rs b/crates/openshell-mxc-boundary/src/identity.rs
-index 609db7d026b0268892a187391258a353a9e59041..a3b7ccc83e0dc5520469f71cf950047cf5b267bb 100644
+index 1988a2b81ccd20edae7adcef36418e10e8c7e80c..56b8522074feaba1b9ad348970d3af0d4fa692ee 100644
 --- a/crates/openshell-mxc-boundary/src/identity.rs
 +++ b/crates/openshell-mxc-boundary/src/identity.rs
 @@ -105,6 +105,11 @@ fn process_appcontainer_sid(process_id: u32) -> Result<String, String> {
@@ -2255,7 +2332,7 @@ index 609db7d026b0268892a187391258a353a9e59041..a3b7ccc83e0dc5520469f71cf950047c
  mod tests {
      use super::*;
 diff --git a/crates/openshell-mxc-boundary/src/launch.rs b/crates/openshell-mxc-boundary/src/launch.rs
-index a5c79872764a11ebd5162862cf877f3d50d553b4..127f84a8848fd0fad6049d7a6b7860412a8541d0 100644
+index 3c133b4de275d1f4cd2cb449025d30442c4a1aea..fcd9dd992b37153c9a24768387fc7c0cbbb8bfb1 100644
 --- a/crates/openshell-mxc-boundary/src/launch.rs
 +++ b/crates/openshell-mxc-boundary/src/launch.rs
 @@ -25,6 +25,23 @@ pub struct MxcLaunchDescriptor {
@@ -2290,7 +2367,7 @@ index a5c79872764a11ebd5162862cf877f3d50d553b4..127f84a8848fd0fad6049d7a6b786041
              .finish()
      }
  }
-@@ -115,6 +133,19 @@ impl MxcProxyConfig {
+@@ -114,6 +132,19 @@ impl MxcProxyConfig {
  mod tests {
      use super::*;
 
@@ -2311,7 +2388,7 @@ index a5c79872764a11ebd5162862cf877f3d50d553b4..127f84a8848fd0fad6049d7a6b786041
          MxcProxyConfig {
              bind_addr: "127.0.0.1:3128".parse().unwrap(),
 diff --git a/crates/openshell-mxc-boundary/src/lib.rs b/crates/openshell-mxc-boundary/src/lib.rs
-index 003f9e2e5e98c8b27fa65a5477d03845e763412c..11025124aa4ceff07b66290e8df36ad39c09aa62 100644
+index d06070d79cd8006010a49cb4e370104d9aa3e80c..6decc627d2aa5e21df683e5ae4203bbb841bf223 100644
 --- a/crates/openshell-mxc-boundary/src/lib.rs
 +++ b/crates/openshell-mxc-boundary/src/lib.rs
 @@ -13,6 +13,10 @@ pub mod audit;
@@ -2326,7 +2403,7 @@ index 003f9e2e5e98c8b27fa65a5477d03845e763412c..11025124aa4ceff07b66290e8df36ad3
  #[cfg(target_os = "windows")]
  pub mod launch;
 diff --git a/crates/openshell-mxc-boundary/src/runtime.rs b/crates/openshell-mxc-boundary/src/runtime.rs
-index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96e670bcd1 100644
+index 9a75b4281fb06d2dea309a464dff2a48d74030a6..7b59d96d852334db2739c6e6930ce3dce924ed5e 100644
 --- a/crates/openshell-mxc-boundary/src/runtime.rs
 +++ b/crates/openshell-mxc-boundary/src/runtime.rs
 @@ -36,7 +36,7 @@ use openshell_sandbox_backend::sandbox_auth::{
@@ -2450,7 +2527,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
              Request::OpenMediation | Request::AcceptNetwork => guest_error(
                  BoundaryErrorKind::Invalid,
                  "MXC uses the supervisor-owned authenticated explicit proxy",
-@@ -869,13 +869,9 @@ impl BoundaryRuntime {
+@@ -872,13 +872,9 @@ impl BoundaryRuntime {
              ca_paths.as_ref(),
          );
          let process_id = format!("{}:main:0", self.config.generation);
@@ -2466,7 +2543,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
              environment,
          )
          .await
-@@ -904,12 +900,6 @@ impl BoundaryRuntime {
+@@ -907,12 +903,6 @@ impl BoundaryRuntime {
                  "MXC does not support shell exec intent or runtime helpers",
              );
          }
@@ -2479,7 +2556,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
          {
              let mut requests = lock(&self.exec_requests);
              if !requests.insert(envelope.request_id.clone()) {
-@@ -931,23 +921,35 @@ impl BoundaryRuntime {
+@@ -934,23 +924,35 @@ impl BoundaryRuntime {
              &self.proxy_url,
              lock(&self.ca_paths).as_ref(),
          );
@@ -2526,7 +2603,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
          }
      }
 
-@@ -1030,7 +1032,9 @@ async fn serve_one(
+@@ -1033,7 +1035,9 @@ async fn serve_one(
              write_response(
                  &mut stream,
                  &envelope.request_id,
@@ -2537,7 +2614,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
              )
              .await?;
              bridge_process(stream, process).await
-@@ -1074,7 +1078,14 @@ async fn serve_one(
+@@ -1077,7 +1081,14 @@ async fn serve_one(
              .await
          }
          Request::LoopbackConnect { host, port } => {
@@ -2553,7 +2630,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
          }
          _ => {
              let response = runtime.dispatch(&envelope);
-@@ -1091,6 +1102,7 @@ async fn forward_loopback(
+@@ -1094,6 +1105,7 @@ async fn forward_loopback(
      request_id: &str,
      host: std::net::IpAddr,
      port: u16,
@@ -2561,7 +2638,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
  ) -> Result<(), String> {
      if !host.is_loopback() || port == 0 {
          return write_response(
-@@ -1100,9 +1112,25 @@ async fn forward_loopback(
+@@ -1103,9 +1115,25 @@ async fn forward_loopback(
          )
          .await;
      }
@@ -2589,7 +2666,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
              write_response(&mut stream, request_id, Response::PortConnected).await?;
              tokio::io::copy_bidirectional(&mut stream, &mut target)
                  .await
-@@ -1228,16 +1256,35 @@ fn install_ca_material(
+@@ -1237,16 +1265,35 @@ fn install_ca_material(
      Ok(Some((certificate_path, bundle_path)))
  }
 
@@ -2627,7 +2704,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
  async fn drain_output(readers: &mut [tokio::task::JoinHandle<()>; 2]) {
      // A descendant can inherit the pipes after its parent exits. Bound the
      // drain, then stop readers before publishing EXIT so no data follows it.
-@@ -1260,6 +1307,34 @@ async fn drain_output(readers: &mut [tokio::task::JoinHandle<()>; 2]) {
+@@ -1269,6 +1316,34 @@ async fn drain_output(readers: &mut [tokio::task::JoinHandle<()>; 2]) {
  }
 
  impl ManagedProcess {
@@ -2662,7 +2739,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
      async fn spawn(
          id: String,
          kind: ProcessKindWire,
-@@ -1285,25 +1360,7 @@ impl ManagedProcess {
+@@ -1294,25 +1369,7 @@ impl ManagedProcess {
              .spawn()
              .map_err(|error| format!("spawn MXC workload executable {program:?}: {error}"))?;
          if matches!(kind, ProcessKindWire::Main) {
@@ -2689,7 +2766,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
          }
          let stdin = child.stdin.take();
          let stdout = child
-@@ -1323,8 +1380,10 @@ impl ManagedProcess {
+@@ -1332,8 +1389,10 @@ impl ManagedProcess {
          let process = Self {
              id,
              kind,
@@ -2702,7 +2779,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
              output,
              exit,
              attached: Arc::new(AtomicBool::new(false)),
-@@ -1338,7 +1397,10 @@ impl ManagedProcess {
+@@ -1347,7 +1406,10 @@ impl ManagedProcess {
          exit_tx: tokio::sync::watch::Sender<Option<ExitStatusWire>>,
          mut readers: [tokio::task::JoinHandle<()>; 2],
      ) {
@@ -2714,7 +2791,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
          let output = self.output.clone();
          tokio::spawn(async move {
              loop {
-@@ -1367,6 +1429,81 @@ impl ManagedProcess {
+@@ -1376,6 +1438,81 @@ impl ManagedProcess {
          });
      }
 
@@ -2796,7 +2873,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
      fn acquire_attachment(&self) -> Result<AttachmentGuard, String> {
          self.attached
              .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-@@ -1405,11 +1542,13 @@ impl ManagedProcess {
+@@ -1414,11 +1551,13 @@ impl ManagedProcess {
          if self.exit_status().is_some() {
              return Ok(());
          }
@@ -2815,7 +2892,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
      }
  }
 
-@@ -1642,6 +1781,27 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+@@ -1687,6 +1826,27 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
          .unwrap_or_else(std::sync::PoisonError::into_inner)
  }
 
@@ -2843,7 +2920,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -1869,6 +2029,7 @@ mod tests {
+@@ -1950,6 +2110,7 @@ mod tests {
                  "forward-1",
                  address.ip(),
                  address.port(),
@@ -2851,7 +2928,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
              ));
              let response: ResponseEnvelope = read_frame_async(&mut client)
                  .await
-@@ -1900,9 +2061,15 @@ mod tests {
+@@ -1981,9 +2142,15 @@ mod tests {
      async fn forwarding_rejects_non_loopback_and_zero_ports() {
          for (host, port) in [("192.0.2.1", 80), ("127.0.0.1", 0), ("::1", 0)] {
              let (mut client, server) = tokio::io::duplex(4096);
@@ -2870,7 +2947,7 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
              let response: ResponseEnvelope = read_frame_async(&mut client)
                  .await
                  .expect("denial response");
-@@ -1916,22 +2083,409 @@ mod tests {
+@@ -1997,22 +2164,409 @@ mod tests {
          }
      }
 
@@ -3290,10 +3367,10 @@ index 68703ba923b89531ca166f7d6d5fd819cb5e6d42..dfb95978989760f1a6844ca70f3b4a96
          assert!(process.acquire_attachment().is_err());
          drop(guard);
 diff --git a/crates/openshell-server/Cargo.toml b/crates/openshell-server/Cargo.toml
-index 0b34c233b7d3f5cdad5980112ca8d2fafce01f22..4eaba22582fd399a26ce578b4480dc80b8329c33 100644
+index d3bed5daffa3c023fd1af694fbf4f18fdde6e22f..d2cc6f7f360c8fc8522fb289e48f10ba619a4a5e 100644
 --- a/crates/openshell-server/Cargo.toml
 +++ b/crates/openshell-server/Cargo.toml
-@@ -145,5 +145,9 @@ wiremock = "0.6"
+@@ -146,5 +146,9 @@ wiremock = "0.6"
  # `testing` provides InMemorySpanExporter, so span assertions do not need a
  # collector, a network hop, or a flush barrier.
  opentelemetry_sdk = { workspace = true, features = ["testing"] }
@@ -3304,7 +3381,7 @@ index 0b34c233b7d3f5cdad5980112ca8d2fafce01f22..4eaba22582fd399a26ce578b4480dc80
  [lints]
  workspace = true
 diff --git a/crates/openshell-server/src/multiplex.rs b/crates/openshell-server/src/multiplex.rs
-index 972df8b96530bca7edf7578e3fa906d3d0e20e4a..bce56de7ff5da88a8b0ceff55e19a112be7a449a 100644
+index d1b26220b47fd491d4e00e22f58b87199fdde37e..d24153a96e551a4c1d6233d73a2c8e7dfe8580da 100644
 --- a/crates/openshell-server/src/multiplex.rs
 +++ b/crates/openshell-server/src/multiplex.rs
 @@ -6,6 +6,9 @@
@@ -4646,10 +4723,10 @@ index 80759131d1fa84221ead92b56faeca7a03d032ca..ec223fb66f69de667f5edc2b39f9b44e
          self.publish(MainOutput::Stdout(Bytes::from_static(data)));
      }
 diff --git a/crates/openshell-supervisor-process/src/ssh.rs b/crates/openshell-supervisor-process/src/ssh.rs
-index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e0eed6c7f 100644
+index 58b3941df101635ffec9ed4715c44cafd50548cb..2e276c7c147f469d6ac6567f88a774a4c7a8bc7b 100644
 --- a/crates/openshell-supervisor-process/src/ssh.rs
 +++ b/crates/openshell-supervisor-process/src/ssh.rs
-@@ -11,7 +11,9 @@ mod exec_input_tests;
+@@ -15,7 +15,9 @@ mod upload_tests;
  use crate::main_session::{MainOutput, MainSession};
  #[cfg(unix)]
  use libc;
@@ -4660,7 +4737,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
  use openshell_core::VERSION;
  use openshell_ocsf::{
      ActionId, ActivityId, DispositionId, SeverityId, SshActivityBuilder, StatusId, ocsf_emit,
-@@ -21,9 +23,11 @@ use russh::server::{Auth, ChannelOpenHandle, Handle, Session};
+@@ -25,9 +27,11 @@ use russh::server::{Auth, ChannelOpenHandle, Handle, Session};
  use russh::{ChannelId, ChannelOpenFailure, Sig};
  use std::borrow::Cow;
  use std::collections::HashMap;
@@ -4672,7 +4749,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
  use tokio::net::UnixListener;
  use tracing::warn;
 
-@@ -36,6 +40,9 @@ const SSH_PEER_TIMEOUT: Duration = Duration::from_mins(1);
+@@ -40,6 +44,9 @@ const SSH_PEER_TIMEOUT: Duration = Duration::from_mins(1);
 
  mod peer_stream;
 
@@ -4682,7 +4759,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
  #[cfg(test)]
  #[path = "ssh/reconnect_tests.rs"]
  mod reconnect_tests;
-@@ -66,6 +73,7 @@ fn filter_main_detach_sequence(prefix_pending: &mut bool, data: &[u8]) -> (Vec<u
+@@ -70,6 +77,7 @@ fn filter_main_detach_sequence(prefix_pending: &mut bool, data: &[u8]) -> (Vec<u
  /// Perform SSH server initialization: generate a host key, build the config,
  /// and bind the Unix socket listener. Extracted so that startup errors can be
  /// forwarded through the readiness channel rather than being silently logged.
@@ -4690,7 +4767,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
  type SshServerInit = (
      UnixListener,
      Arc<russh::server::Config>,
-@@ -87,12 +95,7 @@ pub fn parse_host_key(key: Option<&openshell_core::jwt::SecretSshHostKey>) -> Re
+@@ -91,12 +99,7 @@ pub fn parse_host_key(key: Option<&openshell_core::jwt::SecretSshHostKey>) -> Re
      Ok(key)
  }
 
@@ -4704,7 +4781,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
      let mut config = russh::server::Config {
          server_id: russh::SshId::Standard(Cow::Owned(format!("SSH-2.0-OpenShell_{VERSION}"))),
          auth_rejection_time: Duration::from_secs(1),
-@@ -103,7 +106,17 @@ fn ssh_server_init(
+@@ -107,7 +110,17 @@ fn ssh_server_init(
      };
      config.keys.push(host_key);
 
@@ -4723,7 +4800,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
      let ca_paths = ca_file_paths.as_ref().map(|p| Arc::new(p.clone()));
 
      // A driver may place the supervisor in another container, so an explicitly
-@@ -150,6 +163,7 @@ fn ssh_server_init(
+@@ -154,6 +167,7 @@ fn ssh_server_init(
  }
 
  #[allow(clippy::too_many_arguments, clippy::implicit_hasher)]
@@ -4731,7 +4808,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
  pub async fn run_ssh_server(
      listen_path: PathBuf,
      ready_tx: tokio::sync::oneshot::Sender<Result<()>>,
-@@ -237,8 +251,10 @@ pub async fn run_ssh_server(
+@@ -241,8 +255,10 @@ pub async fn run_ssh_server(
      }
  }
 
@@ -4742,7 +4819,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
  #[derive(Debug, PartialEq)]
  enum SshAcceptAction {
      Terminal,
-@@ -248,6 +264,7 @@ enum SshAcceptAction {
+@@ -252,6 +268,7 @@ enum SshAcceptAction {
      },
  }
 
@@ -4750,7 +4827,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
  fn classify_ssh_accept_error(
      error: &std::io::Error,
      consecutive_resource_errors: &mut u32,
-@@ -330,6 +347,7 @@ fn classify_ssh_accept_error(
+@@ -334,6 +351,7 @@ fn classify_ssh_accept_error(
  }
 
  #[allow(clippy::too_many_arguments)]
@@ -4758,7 +4835,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
  async fn handle_connection(
      stream: tokio::net::UnixStream,
      config: Arc<russh::server::Config>,
-@@ -352,6 +370,30 @@ async fn handle_connection(
+@@ -356,6 +374,30 @@ async fn handle_connection(
              .build()
      );
 
@@ -4789,7 +4866,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
      let handler = SshHandler::new(port_forward, boundary_exec, main_session);
      let stream = peer_stream::PeerStream::new(stream, peer_timeout);
      russh::server::run_stream(config, stream, handler)
-@@ -1339,13 +1381,15 @@ fn direct_tcpip_target(
+@@ -1535,13 +1577,15 @@ fn direct_tcpip_target(
      clippy::doc_markdown,
      reason = "Test documentation references protocol and API identifiers."
  )]
@@ -4806,7 +4883,7 @@ index b566f9c4ab763d0ef98b9bcce2d5f8c4a18118a4..d45ab37f1bf3ab1b9334fa499da0f87e
      impl russh::client::Handler for PinnedServerKey {
          type Error = russh::Error;
 
-@@ -1481,7 +1525,7 @@ mod tests {
+@@ -1677,7 +1721,7 @@ mod tests {
          }
      }
 
@@ -5579,10 +5656,10 @@ index 0000000000000000000000000000000000000000..f589e6234e77825df1e99312f4aebf19
 +    }
 +}
 diff --git a/crates/openshell-supervisor/src/lib.rs b/crates/openshell-supervisor/src/lib.rs
-index a75c9f760acef04ccecc1c9bbf76594647fd58ea..02c494962fd42d25b68a4461b44513f994cd77e2 100644
+index 4cf041a191b6f6e22f0205510b2bb3beb1c44249..ba26cc1e93d93e29f4ce17b99e0bfc822e4aa9ec 100644
 --- a/crates/openshell-supervisor/src/lib.rs
 +++ b/crates/openshell-supervisor/src/lib.rs
-@@ -800,7 +800,22 @@ async fn run_sandbox_with_backend(
+@@ -827,7 +827,22 @@ async fn run_sandbox_with_backend(
      } else {
          None
      };

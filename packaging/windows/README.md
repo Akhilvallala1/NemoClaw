@@ -32,10 +32,10 @@ their separate protected workflow and approval gates.
 ## Windows-tip migration in progress
 
 The finished-host build now pins OpenShell
-`901338dbd334feeb1436f4cb41533f6d592d3595` and source-built MXC
-`7cd00d1ee6af9208322c924ef64e5113f6704639`. These source revisions were used
-by the separate Windows-tip OpenClaw qualification. The build does not import
-that qualification as installer evidence. OpenShell also applies
+`6f83bf13e4ec7f03ff20bfb716c2d02b52ed44ad` from the current `windows` branch
+and source-built MXC `7cd00d1ee6af9208322c924ef64e5113f6704639`.
+The older `windows-0.0.x-backup` branch is not the build base. Upstream runtime
+qualification does not establish installer acceptance. OpenShell also applies
 `openshell-native-transport.patch`, bound to its SHA-256 and complete resulting
 Git tree in `openshell-native-transport.lock.json`. The build requires a clean
 pinned base, verifies the patched tree before and after compilation, and rejects

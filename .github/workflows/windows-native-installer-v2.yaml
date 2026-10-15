@@ -481,7 +481,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: NVIDIA/OpenShell
-          ref: 901338dbd334feeb1436f4cb41533f6d592d3595
+          ref: 6f83bf13e4ec7f03ff20bfb716c2d02b52ed44ad
           path: openshell
           persist-credentials: false
       - name: Build and test the pinned OpenShell host-supervisor stack
@@ -494,7 +494,7 @@ jobs:
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
           $work = "$env:RUNNER_TEMP\finished-windows"
           $revision = (& git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $revision -cne '901338dbd334feeb1436f4cb41533f6d592d3595') { throw 'Unexpected OpenShell source.' }
+          if ($LASTEXITCODE -ne 0 -or $revision -cne '6f83bf13e4ec7f03ff20bfb716c2d02b52ed44ad') { throw 'Unexpected OpenShell source.' }
           $status = & git status --porcelain
           if ($LASTEXITCODE -ne 0 -or $status) { throw 'The OpenShell checkout is not clean.' }
           $sourceHelper = "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\openshell_source.py"

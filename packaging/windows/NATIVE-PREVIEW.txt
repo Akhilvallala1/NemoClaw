@@ -49,7 +49,7 @@ agent's process environment. Keys are not written into setup JSON or passed as
 process arguments. Native state ownership and the UI relay's native file owner
 protect their filesystem boundaries through shutdown.
 
-The host build pins OpenShell 901338dbd334feeb1436f4cb41533f6d592d3595
+The host build pins OpenShell 6f83bf13e4ec7f03ff20bfb716c2d02b52ed44ad
 and source-built MXC 7cd00d1ee6af9208322c924ef64e5113f6704639.
 It includes the OpenShell supervisor, Windows sandbox executable, and Z3 DLL.
 The older launcher settings still require migration to that protocol.
