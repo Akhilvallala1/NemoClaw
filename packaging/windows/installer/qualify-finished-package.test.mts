@@ -125,6 +125,7 @@ for (const agent of ["hermes"] as const) {
         .replaceAll("import.meta.url", '"file:///qualification.mts"');
       const calls: string[][] = [];
       const receipts: Record<string, any> = {};
+      const evidenceDirectories: string[] = [];
       const bindings = {
         assert,
         path: path.win32,
@@ -160,6 +161,7 @@ for (const agent of ["hermes"] as const) {
           },
         },
         childEnvironment: () => ({}),
+        createHermesEvidenceDirectory: (output: string) => evidenceDirectories.push(output),
         randomBytes,
         acceptanceProcessesStopped,
         retainedAcceptance,
@@ -195,6 +197,7 @@ for (const agent of ["hermes"] as const) {
         `${stripTypeScriptTypes(body)}\nreturn main;`,
       )(...Object.values(bindings));
       await assert.rejects(main());
+      assert.deepEqual(evidenceDirectories, ["C:\\RunnerTemp\\Evidence"]);
       const expected = ["missing-receipt", "changed-settings"].includes(scenario)
         ? []
         : [["--state-session", agent]];

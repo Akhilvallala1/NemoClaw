@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import ts from "typescript";
 import {
+  adaptNativeTuiPipeFile,
   compileNativeTuiPipe,
   dashboardSocketHelper,
   gatewaySourceSha256,
@@ -187,6 +188,60 @@ test(
     );
     assert.throws(() => compileNativeTuiPipe(original + "\n", ts), /pinned/u);
     assert.throws(() => compileNativeTuiPipe(adapted, ts), /pinned/u);
+  },
+);
+
+for (const phase of ["before-validation", "before-write", "after-write"] as const) {
+  test(`build adapter refuses a replaced path ${phase} and closes its held file`, pinned, (t) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hermes-tui-race-")));
+    const target = path.join(root, "gatewayClient.ts");
+    const displaced = path.join(root, "held.ts");
+    const original = fs.readFileSync(path.join(dependencies!, "gatewayClient.ts"), "utf8");
+    fs.writeFileSync(target, original);
+    const lstat = fs.lstatSync;
+    const close = fs.closeSync;
+    let checks = 0;
+    const selectedCheck = { "before-validation": 1, "before-write": 2, "after-write": 3 }[phase];
+    try {
+      const closing = t.mock.method(fs, "closeSync", close);
+      t.mock.method(fs, "lstatSync", (file: fs.PathLike) => {
+        if (file === target && ++checks === selectedCheck) {
+          fs.renameSync(target, displaced);
+          fs.writeFileSync(target, "replacement must not be modified");
+        }
+        return lstat(file);
+      });
+      assert.throws(() => adaptNativeTuiPipeFile(target, ts), /ordinary owned build input/u);
+      assert.equal(closing.mock.callCount(), 1);
+      assert.equal(fs.readFileSync(target, "utf8"), "replacement must not be modified");
+      assert.equal(
+        fs.readFileSync(displaced, "utf8"),
+        phase === "after-write" ? compileNativeTuiPipe(original, ts) : original,
+      );
+    } finally {
+      t.mock.restoreAll();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test(
+  "build adapter rejects linked, oversized and changed inputs without rewriting them",
+  pinned,
+  (t) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hermes-tui-input-")));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const target = path.join(root, "gatewayClient.ts");
+    for (const original of ["changed source", "x".repeat(1024 * 1024 + 1)]) {
+      fs.writeFileSync(target, original);
+      assert.throws(() => adaptNativeTuiPipeFile(target, ts), /pinned|limit/u);
+      assert.equal(fs.readFileSync(target, "utf8"), original);
+    }
+    fs.writeFileSync(target, fs.readFileSync(path.join(dependencies!, "gatewayClient.ts")));
+    const linked = path.join(root, "linked.ts");
+    fs.linkSync(target, linked);
+    assert.throws(() => adaptNativeTuiPipeFile(target, ts), /ordinary owned build input/u);
+    assert.equal(fs.readFileSync(linked, "utf8"), fs.readFileSync(target, "utf8"));
   },
 );
 

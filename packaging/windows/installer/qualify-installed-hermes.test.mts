@@ -117,7 +117,10 @@ test("Hermes readiness rejects a replacement before identity validation and clos
     fs.writeFileSync(replacement, JSON.stringify({ ...ready, nodeProcessId: 99 }));
     const closing = t.mock.method(fs, "closeSync", close);
     t.mock.method(fs, "lstatSync", (target: fs.PathLike) => {
-      if (target === file) fs.renameSync(replacement, file);
+      if (target === file) {
+        fs.renameSync(file, path.join(root, "held.json"));
+        fs.renameSync(replacement, file);
+      }
       return lstat(target);
     });
     assert.throws(
@@ -137,15 +140,21 @@ test("Hermes readiness reads the held file when its path changes after validatio
   const replacement = path.join(root, "replacement.json");
   const ready = dashboardReadyFixture();
   const lstat = fs.lstatSync;
+  const close = fs.closeSync;
   try {
     fs.writeFileSync(file, JSON.stringify(ready));
     fs.writeFileSync(replacement, JSON.stringify({ ...ready, nodeProcessId: 99 }));
+    const closing = t.mock.method(fs, "closeSync", close);
     t.mock.method(fs, "lstatSync", (target: fs.PathLike) => {
       const info = lstat(target);
-      if (target === file) fs.renameSync(replacement, file);
+      if (target === file) {
+        fs.renameSync(file, path.join(root, "held.json"));
+        fs.renameSync(replacement, file);
+      }
       return info;
     });
     assert.deepEqual(readHermesDashboardReady(file, ready.agentRuntimeRoot, 42), ready);
+    assert.equal(closing.mock.callCount(), 1);
     assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).nodeProcessId, 99);
   } finally {
     t.mock.restoreAll();

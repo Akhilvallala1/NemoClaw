@@ -82,24 +82,67 @@ export function compileNativeTuiPipe(source: string, syntax: typeof TypeScript):
   );
 }
 
+export function adaptNativeTuiPipeFile(target: string, syntax: typeof TypeScript): string {
+  const descriptor = fs.openSync(target, "r+");
+  try {
+    const held = fs.fstatSync(descriptor);
+    const requireOwnedInput = () => {
+      const named = fs.lstatSync(target);
+      if (
+        !held.isFile() ||
+        held.nlink !== 1 ||
+        !named.isFile() ||
+        named.isSymbolicLink() ||
+        named.dev !== held.dev ||
+        named.ino !== held.ino ||
+        fs.realpathSync(target) !== target
+      )
+        throw new Error("The Hermes TUI source is not an ordinary owned build input.");
+    };
+    const readHeld = () => {
+      const data = Buffer.alloc(1024 * 1024 + 1);
+      let bytes = 0;
+      while (bytes < data.length) {
+        const count = fs.readSync(descriptor, data, bytes, data.length - bytes, bytes);
+        if (count === 0) return data.subarray(0, bytes);
+        bytes += count;
+      }
+      throw new Error("The Hermes TUI source exceeds its build input limit.");
+    };
+    requireOwnedInput();
+    const result = Buffer.from(compileNativeTuiPipe(readHeld().toString("utf8"), syntax));
+    requireOwnedInput();
+    let written = 0;
+    while (written < result.length) {
+      const count = fs.writeSync(descriptor, result, written, result.length - written, written);
+      if (count === 0) throw new Error("The Hermes TUI build input write did not progress.");
+      written += count;
+    }
+    fs.ftruncateSync(descriptor, result.length);
+    fs.fsyncSync(descriptor);
+    const actual = readHeld();
+    requireOwnedInput();
+    if (!actual.equals(result)) throw new Error("The Hermes TUI adapted build input changed.");
+    return createHash("sha256").update(actual).digest("hex");
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv.length !== 3 || !path.isAbsolute(process.argv[2]))
     throw new Error("The Hermes TUI build directory must be an absolute path.");
   const root = fs.realpathSync(process.argv[2]);
   const target = path.join(root, "ui-tui", "src", "gatewayClient.ts");
-  if (fs.realpathSync(target) !== target || !fs.lstatSync(target).isFile())
-    throw new Error("The Hermes TUI source is not an ordinary build input.");
   const require = createRequire(path.join(root, "package.json"));
-  const original = fs.readFileSync(target, "utf8");
-  const result = compileNativeTuiPipe(original, require("typescript"));
-  fs.writeFileSync(target, result, "utf8");
+  const adaptedSha256 = adaptNativeTuiPipeFile(target, require("typescript"));
   process.stdout.write(
     JSON.stringify({
       schemaVersion: 1,
       classification: "build-time-hermes-dashboard-pipe-client",
       path: "ui-tui/src/gatewayClient.ts",
       sourceSha256: gatewaySourceSha256,
-      adaptedSha256: createHash("sha256").update(fs.readFileSync(target)).digest("hex"),
+      adaptedSha256,
       adapterSha256: createHash("sha256")
         .update(fs.readFileSync(fileURLToPath(import.meta.url)))
         .digest("hex"),
