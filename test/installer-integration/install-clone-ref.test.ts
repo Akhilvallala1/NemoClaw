@@ -11,6 +11,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { INSTALLER_PAYLOAD } from "../helpers/installer-sourced-env";
+import { runSupervisedProcess } from "../helpers/supervised-process";
 import { testTimeoutOptions } from "../helpers/timeouts";
 
 const CURL_PIPE_INSTALLER = path.join(import.meta.dirname, "../..", "install.sh");
@@ -204,6 +205,13 @@ describe("installer version stamping", testTimeoutOptions(15_000), () => {
 
 describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
   const REPO_URL = "https://github.com/NVIDIA/NemoClaw.git";
+  const delayedConnectionFailure = `fatal: unable to access '${REPO_URL}/': Failed to connect to github.com port 443 after 132418 ms: Couldn't connect to server`;
+
+  function standaloneInstaller(installer: string, directory: string) {
+    const copy = path.join(directory, "installer-under-test.sh");
+    fs.copyFileSync(installer, copy);
+    return copy;
+  }
 
   const cloneWithGitConfig = (
     installer: string,
@@ -227,7 +235,7 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
               [`GIT_CONFIG_VALUE_${index}`, value],
             ]),
           ),
-          INSTALLER_UNDER_TEST: installer,
+          INSTALLER_UNDER_TEST: standaloneInstaller(installer, path.dirname(destination)),
           REF: ref,
         },
       },
@@ -302,15 +310,17 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
   );
 
   it.each([INSTALLER_PAYLOAD, CURL_PIPE_INSTALLER])(
-    "separates a timed-out connect from a refused one by the reported connect duration [case %#] (#11515)",
+    "distinguishes definitive timeout diagnostics from elapsed time [case %#] (#11515)",
     (installer) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-fetch-classifier-"));
+      const isolatedInstaller = standaloneInstaller(installer, root);
       const classify = (gitError: string) => {
         const result = spawnSync(
           "bash",
           ["-c", 'source "$INSTALLER_UNDER_TEST"\nclassify_install_ref_fetch_failure "$GIT_ERROR"'],
           {
             encoding: "utf8",
-            env: { ...process.env, GIT_ERROR: gitError, INSTALLER_UNDER_TEST: installer },
+            env: { ...process.env, GIT_ERROR: gitError, INSTALLER_UNDER_TEST: isolatedInstaller },
           },
         );
         expect(result.status, result.stderr).toBe(0);
@@ -318,27 +328,60 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
       };
       const unableToAccess = `fatal: unable to access '${REPO_URL}/': `;
 
-      expect(
-        classify(
-          `${unableToAccess}Failed to connect to github.com port 443 after 3 ms: Couldn't connect to server`,
-        ),
-      ).toBe("connect-failed");
-      expect(
-        classify(
-          `${unableToAccess}Failed to connect to github.com port 443 after 131512 ms: Couldn't connect to server`,
-        ),
-      ).toBe("connect-timeout");
-      expect(
-        classify(
-          `${unableToAccess}Failed to connect to github.com port 443 after 129003 ms: Connection timed out`,
-        ),
-      ).toBe("connect-timeout");
-      expect(classify(`${unableToAccess}Could not resolve host: github.com`)).toBe(
-        "connect-failed",
-      );
-      expect(classify("fatal: couldn't find remote ref refs/heads/does-not-exist")).toBe(
-        "missing-ref",
-      );
+      try {
+        expect(
+          classify(
+            `${unableToAccess}Failed to connect to github.com port 443 after 3 ms: Couldn't connect to server`,
+          ),
+        ).toBe("connect-failed");
+        expect(classify(delayedConnectionFailure)).toBe("connect-failed");
+        expect(
+          classify(
+            `${unableToAccess}Failed to connect to github.com port 443 after 129003 ms: Connection timed out`,
+          ),
+        ).toBe("connect-timeout");
+        expect(
+          classify(
+            `${unableToAccess}Operation too slow. Less than 1 bytes/sec transferred the last 1 seconds`,
+          ),
+        ).toBe("connect-timeout");
+        expect(classify(`${unableToAccess}Timeout was reached`)).toBe("connect-timeout");
+        expect(
+          classify("error: RPC failed; curl 28 Operation timed out after 1000 milliseconds"),
+        ).toBe("connect-timeout");
+        expect(
+          classify(
+            "error: RPC failed; curl 28 Operation too slow. Less than 1 bytes/sec transferred the last 1 seconds",
+          ),
+        ).toBe("connect-timeout");
+        expect(classify("error: RPC failed; curl 56 Recv failure: Connection reset by peer")).toBe(
+          "connect-failed",
+        );
+        expect(classify("fatal: invalid refspec '+timed out:refs/nemoclaw-install/target'")).toBe(
+          "missing-ref",
+        );
+        expect(
+          classify(
+            "fatal: invalid refspec '+error: RPC failed; curl 28 Operation timed out:refs/nemoclaw-install/target'",
+          ),
+        ).toBe("missing-ref");
+        expect(
+          classify(
+            "warning: redirecting to another URL\nerror: RPC failed; curl 28 Operation timed out after 1000 milliseconds",
+          ),
+        ).toBe("connect-timeout");
+        expect(
+          classify("fatal: unable to access 'https://timeout.example.test/': Connection refused"),
+        ).toBe("connect-failed");
+        expect(classify(`${unableToAccess}Could not resolve host: github.com`)).toBe(
+          "connect-failed",
+        );
+        expect(classify("fatal: couldn't find remote ref refs/heads/does-not-exist")).toBe(
+          "missing-ref",
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     },
   );
 
@@ -430,6 +473,98 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { caller: "bootstrap", failure: "stall" },
+    { caller: "payload", failure: "stall" },
+    { caller: "bootstrap", failure: "delayed failure" },
+    { caller: "payload", failure: "delayed failure" },
+  ] as const)(
+    "reports $failure through the $caller caller without replacing the installed CLI (#11515)",
+    async ({ caller, failure }) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-fetch-caller-"));
+      const installed = installedCliFixture(root);
+      const managedSource = path.join(root, ".nemoclaw", "source");
+      const marker = path.join(managedSource, "installed-marker");
+      fs.mkdirSync(managedSource, { recursive: true });
+      fs.writeFileSync(marker, "previous managed source\n");
+      const sockets = new Set<net.Socket>();
+      let acceptedConnections = 0;
+      const server = net.createServer((socket) => {
+        acceptedConnections++;
+        sockets.add(socket);
+        socket.once("close", () => sockets.delete(socket));
+      });
+      try {
+        const port = await new Promise<number>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", () => resolve((server.address() as net.AddressInfo).port));
+        });
+        failure === "delayed failure" &&
+          fs.writeFileSync(
+            path.join(installed.bin, "git"),
+            '#!/usr/bin/env bash\ncase " $* " in\n  *" fetch "*) printf "%s\\n" "$GIT_ERROR_FIXTURE" >&2; exit 128 ;;\n  *) exec /usr/bin/git "$@" ;;\nesac\n',
+            { mode: 0o755 },
+          );
+        const script =
+          caller === "bootstrap"
+            ? 'exec bash < "$BOOTSTRAP"'
+            : 'source "$INSTALLER_PAYLOAD" >/dev/null\nresolve_repo_root() { printf "%s" "$NON_SOURCE_ROOT"; }\ninstall_nemoclaw';
+        const result = await runSupervisedProcess("bash", ["-c", script], {
+          cwd: root,
+          env: {
+            HOME: root,
+            PATH: `${installed.bin}:/usr/bin:/bin`,
+            TMPDIR: root,
+            BOOTSTRAP: CURL_PIPE_INSTALLER,
+            INSTALLER_PAYLOAD,
+            NON_SOURCE_ROOT: path.join(root, "not-a-checkout"),
+            GIT_ERROR_FIXTURE: delayedConnectionFailure,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_TERMINAL_PROMPT: "0",
+            LC_ALL: "en_US.UTF-8",
+            LANGUAGE: "fr",
+            ...unreachableGitHubEnv(port),
+            GIT_CONFIG_COUNT: "4",
+            GIT_CONFIG_KEY_2: "http.lowSpeedLimit",
+            GIT_CONFIG_VALUE_2: "1",
+            GIT_CONFIG_KEY_3: "http.lowSpeedTime",
+            GIT_CONFIG_VALUE_3: "1",
+          },
+          timeoutMs: 10_000,
+          maxOutputBytesPerStream: 64 * 1024,
+        });
+
+        expect(result.error).toBeUndefined();
+        expect(result.timedOut).toBe(false);
+        expect(result.status, result.stderr).toBe(1);
+        expect(acceptedConnections > 0).toBe(failure === "stall");
+        expect(result.stderr).toContain(
+          failure === "stall"
+            ? `Timed out looking up install ref 'lkg' at ${REPO_URL}.`
+            : "Git reported 132418 ms elapsed before the connection failed.",
+        );
+        expect(result.stderr.includes("Timed out")).toBe(failure === "stall");
+        expect(result.stderr).toContain("The installed CLI was not changed.");
+        expect(result.stderr).not.toContain("is not available");
+        expect(sha256(installed.cli)).toBe(installed.digest);
+        expect(fs.readFileSync(marker, "utf8")).toBe("previous managed source\n");
+        expect(fs.readdirSync(path.dirname(managedSource))).toEqual(["source"]);
+      } finally {
+        sockets.forEach((socket) => socket.destroy());
+        try {
+          await (server.listening
+            ? new Promise<void>((resolve, reject) =>
+                server.close((error) => (error ? reject(error) : resolve())),
+              )
+            : Promise.resolve());
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      }
+    },
+  );
 
   it.each([
     ["before-retire", "failure", "previous", 42],

@@ -196,25 +196,23 @@ resolve_stamped_version() {
   printf "%s" "$version"
 }
 
-# Git reports a transport failure as "unable to access" before it can look up
-# the ref, so that text separates a missing ref from a failed connection. curl
-# prints the same "Couldn't connect to server" for a refused and a timed-out
-# connect; only the reported connect duration tells them apart.
-INSTALL_REF_CONNECT_TIMEOUT_HINT_MS=10000
-
+# Use explicit Git/libcurl timeout diagnostics. Elapsed time is not a timeout cause.
 classify_install_ref_fetch_failure() {
-  local git_error="$1" connect_ms=""
-  if [[ "$git_error" != *"unable to access"* ]]; then
-    printf 'missing-ref'
-    return 0
-  fi
-  [[ "$git_error" =~ after\ ([0-9]+)\ ms ]] && connect_ms="${BASH_REMATCH[1]}"
-  if [[ "$git_error" == *"timed out"* || "$git_error" == *"Timeout"* || "$git_error" == *"timeout"* ]] \
-    || [[ -n "$connect_ms" && "$connect_ms" -ge "$INSTALL_REF_CONNECT_TIMEOUT_HINT_MS" ]]; then
-    printf 'connect-timeout'
-    return 0
-  fi
-  printf 'connect-failed'
+  local line failure=missing-ref
+  while IFS= read -r line; do
+    case "$line" in
+      "fatal: unable to access "* | "error: RPC failed; "*)
+        failure=connect-failed
+        case "$line" in
+          *"timed out"* | *"Timeout was reached"* | *"Operation too slow."*)
+            printf 'connect-timeout'
+            return 0
+            ;;
+        esac
+        ;;
+    esac
+  done <<<"$1"
+  printf '%s' "$failure"
 }
 
 clone_nemoclaw_ref() {
@@ -225,15 +223,17 @@ clone_nemoclaw_ref() {
     umask 022
     git init --quiet "$dest"
     git -C "$dest" remote add origin https://github.com/NVIDIA/NemoClaw.git
-    local fetch_error=""
-    if ! fetch_error="$(git -C "$dest" fetch --quiet --depth 1 origin "+${ref}:refs/nemoclaw-install/target" 2>&1)"; then
+    local fetch_error="" elapsed_detail=""
+    if ! fetch_error="$(LC_ALL=C git -C "$dest" fetch --quiet --depth 1 origin "+${ref}:refs/nemoclaw-install/target" 2>&1)"; then
       [[ -z "$fetch_error" ]] || printf '%s\n' "$fetch_error" >&2
+      [[ "$fetch_error" =~ after\ ([0-9]+)\ ms ]] \
+        && elapsed_detail=" Git reported ${BASH_REMATCH[1]} ms elapsed before the connection failed."
       case "$(classify_install_ref_fetch_failure "$fetch_error")" in
         connect-timeout)
-          error "Timed out connecting to https://github.com/NVIDIA/NemoClaw.git while looking up install ref '$ref'. The installed CLI was not changed. Check network access to github.com and try again."
+          error "Timed out looking up install ref '$ref' at https://github.com/NVIDIA/NemoClaw.git. The installed CLI was not changed. Check network access to github.com and try again."
           ;;
         connect-failed)
-          error "Could not connect to https://github.com/NVIDIA/NemoClaw.git to look up install ref '$ref'. The installed CLI was not changed. Check network access to github.com and try again."
+          error "Could not connect to https://github.com/NVIDIA/NemoClaw.git to look up install ref '$ref'.$elapsed_detail The installed CLI was not changed. Check network access to github.com and try again."
           ;;
         *)
           error "Requested install ref '$ref' is not available from https://github.com/NVIDIA/NemoClaw.git. The installed CLI was not changed. Check NEMOCLAW_INSTALL_TAG/NEMOCLAW_INSTALL_REF and try again."
