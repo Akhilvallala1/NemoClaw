@@ -10,21 +10,12 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { redact, run, runCapture, runCaptureEx } from "../../src/lib/runner";
+import { PINNED_OPEN_SHELL_SHA256 } from "../helpers/openshell-release-fixtures";
 import { prepareInstallerBin } from "../support/openshell-installed-version";
 
 const require = createRequire(import.meta.url);
 const runnerPath = path.join(import.meta.dirname, "..", "..", "src", "lib", "runner.ts");
 const platformPath = path.join(import.meta.dirname, "..", "..", "src", "lib", "platform.ts");
-const PINNED_OPEN_SHELL_SHA256 = {
-  cliDarwinArm64: "cdde7e92bd7eac664031cf171cfe80d29e7f122a6674917b25a4ce0bcbc33466",
-  cliLinuxArm64: "9880c5776688231d5242deb046cdee361734f94901b9123949a0baf29fdadd9e",
-  cliLinuxX64: "7eb6917285331a09e3300266a0558616481a5e9927cae2612ea07c4045b6dd6f",
-  gatewayDarwinArm64: "640068efa16e446d5f4f9ffaec0af769dbab04d686473d2a7bd6bafeb4ef7f45",
-  gatewayLinuxArm64: "8ec1b6ca5b71ef5085fa51f3244d719a541e8f0d58cc569c7a0d6705b6204397",
-  gatewayLinuxX64: "218d887845b3a020ab7535c9985eb9c666d6938f144044957f8b82b42892aadb",
-  sandboxLinuxArm64: "4c68f2bc8e00a0a7d5d66d7bc2d836be6b255602a8f1b1650b4262c7935894b3",
-  sandboxLinuxX64: "f07ad7177f4c3ff7743f89531eda36bb784c56b45b166f49c5a51fbcfa5274a6",
-};
 
 type SpawnCallOptions = {
   stdio?: StdioOptions;
@@ -1144,7 +1135,7 @@ describe("regression guards", () => {
               shift || true
             done
             [ -n "$destination" ] || return 2
-            printf '%s\n' '#!/bin/sh' 'echo "0.1.2"' > "$destination/$expected"
+            printf '%s\n' '#!/bin/sh' 'echo "0.1.3"' > "$destination/$expected"
             chmod +x "$destination/$expected"
             ;;
           *) return 2 ;;
@@ -1261,7 +1252,7 @@ describe("regression guards", () => {
               shift || true
             done
             [ -n "$destination" ] || return 2
-            printf '%s\n' '#!/bin/sh' 'echo "0.1.2"' > "$destination/$expected"
+            printf '%s\n' '#!/bin/sh' 'echo "0.1.3"' > "$destination/$expected"
             chmod +x "$destination/$expected"
             ;;
           *) return 2 ;;
