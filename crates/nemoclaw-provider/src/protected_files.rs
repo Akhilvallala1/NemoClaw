@@ -72,7 +72,7 @@ impl FilesBackend {
             secrets: std::sync::Arc::new(nemoclaw_sdk::EnvironmentSecrets),
         }
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn with_secrets(mut self, secrets: std::sync::Arc<dyn nemoclaw_sdk::Secrets>) -> Self {
         self.secrets = secrets;
         self

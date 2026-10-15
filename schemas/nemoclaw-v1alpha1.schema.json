@@ -2954,7 +2954,7 @@
               "additionalProperties": {
                 "$ref": "#/$defs/Credential"
               },
-              "description": "Credential references. NemoClaw writes each value to a private file,\n/run/nemoclaw/secrets/<name>, before the application starts; values\nnever enter its environment, configuration, or state.",
+              "description": "Credential references. NemoClaw writes each value to a private file,\n`/run/nemoclaw/secrets/NAME`, before the application starts; values\nnever enter its environment, configuration, or state.",
               "propertyNames": {
                 "pattern": "^[a-z][a-z0-9-]{0,39}$"
               },

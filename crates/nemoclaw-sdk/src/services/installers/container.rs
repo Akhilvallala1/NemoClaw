@@ -42,7 +42,7 @@ pub struct Service {
     /// Disposable application data. Destroy removes this volume.
     pub data: ContainerData,
     /// Credential references. NemoClaw writes each value to a private file,
-    /// /run/nemoclaw/secrets/<name>, before the application starts; values
+    /// `/run/nemoclaw/secrets/NAME`, before the application starts; values
     /// never enter its environment, configuration, or state.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, Credential>,

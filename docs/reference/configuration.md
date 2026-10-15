@@ -1169,7 +1169,7 @@ Image-owned application with bounded Docker HEALTHCHECK observation.
 | `image` | string | Yes | — | Immutable application image. The image owns its entrypoint, CMD, and HEALTHCHECK. Constraints: pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. |
 | `kind` | string | Yes | — | Supported installer selected by this service definition. Constraints: `"container"`. |
 | `publication` | [ContainerPublication](#containerpublication) | No | — | Optional loopback or private IPv4 TCP publication. Omission publishes no port. |
-| `secrets` | map of [Credential](#credential) | No | — | Credential references. NemoClaw writes each value to a private file, /run/nemoclaw/secrets/<name>, before the application starts; values never enter its environment, configuration, or state. Constraints: keys: pattern `^[a-z][a-z0-9-]{0,39}$`. |
+| `secrets` | map of [Credential](#credential) | No | — | Credential references. NemoClaw writes each value to a private file, `/run/nemoclaw/secrets/NAME`, before the application starts; values never enter its environment, configuration, or state. Constraints: keys: pattern `^[a-z][a-z0-9-]{0,39}$`. |
 | `user` | string | No | `"65532:65532"` | Numeric non-root UID:GID. Omission selects 65532:65532. Constraints: pattern `^[1-9][0-9]{0,8}:[1-9][0-9]{0,8}$`. |
 
 ## ServiceHardware
