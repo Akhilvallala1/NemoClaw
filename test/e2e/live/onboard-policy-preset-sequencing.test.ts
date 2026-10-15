@@ -33,6 +33,11 @@ validateSandboxName(SANDBOX_NAME);
 const POLICY_TIER_FLAG_SANDBOX_NAME = "e2e-policy-tier";
 validateSandboxName(POLICY_TIER_FLAG_SANDBOX_NAME);
 const ONBOARD_TIMEOUT_MS = 40 * 60_000;
+// The #13180 journey runs second, on the gateway the first journey started,
+// and finishes in about a minute. Bounding it at 15 minutes keeps both
+// journeys (40 + 15) inside the trusted 60-minute target budget that
+// pre-merge E2E dispatch uses.
+const POLICY_TIER_FLAG_TIMEOUT_MS = 15 * 60_000;
 const MODEL = "test-model";
 // A Docker network namespace cannot reach host loopback directly; bind the
 // fake endpoint on all interfaces and advertise the OpenShell host alias so
@@ -199,7 +204,7 @@ test(
 test(
   "interactive onboard applies --policy-tier over NEMOCLAW_POLICY_TIER without the tier prompt (#13180)",
   {
-    timeout: ONBOARD_TIMEOUT_MS,
+    timeout: POLICY_TIER_FLAG_TIMEOUT_MS,
     meta: {
       e2ePhases: [
         "start the local compatible-endpoint fake server",
@@ -265,7 +270,7 @@ test(
         // The preset review still runs with the flag's tier defaults.
         { trigger: "Presets  (", response: "\r" },
       ],
-      timeoutMs: ONBOARD_TIMEOUT_MS - 5 * 60_000,
+      timeoutMs: POLICY_TIER_FLAG_TIMEOUT_MS - 3 * 60_000,
     });
     await artifacts.writeText("onboard-policy-tier-flag-transcript.txt", result.output);
 
