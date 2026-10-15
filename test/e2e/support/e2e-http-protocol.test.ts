@@ -48,8 +48,7 @@ describe("fake provider HTTP protocol", () => {
             path: scenario.path,
             method: scenario.method,
             headers: scenario.headers,
-            // These fixture-generated leaves are used only on the local test hop.
-            rejectUnauthorized: false,
+            ca: fixture.certificate,
           },
           (response) => {
             response.resume();

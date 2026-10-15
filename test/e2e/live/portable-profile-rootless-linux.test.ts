@@ -643,6 +643,7 @@ async function proveHistoricalHermesPortableLifecycle(input: {
     "--policy",
     qualifiedPolicyPath,
     "--no-tty",
+    "--detach",
     "--",
     ...startupArgv,
   ];
@@ -669,7 +670,9 @@ async function proveHistoricalHermesPortableLifecycle(input: {
         observedCreatePhase === "Error"
           ? "OpenShell Hermes sandbox entered Error during creation."
           : null,
-      readyCheckOutputPatterns: [/Setting up NemoClaw/u],
+      // A detached create has no startup stream to wait for. Terminating an
+      // attached create client also terminates its canonical main process.
+      readyCheckOutputPatterns: [],
       waitForReadyTermination: true,
     },
   );
@@ -823,13 +826,24 @@ async function proveHistoricalHermesPortableLifecycle(input: {
       } satisfies Parameters<typeof startSandbox>[1];
       const upgradeResult = await startSandbox(sandboxName, publicStartDeps);
       console.log("Historical Hermes public start:", JSON.stringify(upgradeResult));
-      const firstStop = await withMcpLifecycleLock(
-        sandboxName,
-        () =>
-          stopHermesPortableSandboxLifecycle(sandboxName, context, () => undefined, lifecycleDeps),
-        { stateDir: path.join(receiptStateDir, "state") },
+      const firstStop =
+        upgradeResult.exitCode === 0
+          ? await withMcpLifecycleLock(
+              sandboxName,
+              () =>
+                stopHermesPortableSandboxLifecycle(
+                  sandboxName,
+                  context,
+                  () => undefined,
+                  lifecycleDeps,
+                ),
+              { stateDir: path.join(receiptStateDir, "state") },
+            )
+          : null;
+      assert.ok(
+        firstStop?.kind === "stopped",
+        `Historical Hermes public start or first stop failed: upgrade=${JSON.stringify(upgradeResult)} stop=${firstStop?.kind ?? "not attempted"}`,
       );
-      assert.equal(firstStop.kind, "stopped", "Historical Hermes receipt did not stop");
       const firstStoppedContainerStatus = waitForReceiptOwnedContainerExit(activeContainerId);
       const firstTerminalPhase = waitForOpenShellTerminalPhase(
         input.openshellBin,

@@ -24,6 +24,7 @@ export interface FakeHttpsCompatibleRequest {
 }
 
 export interface FakeHttpsCompatibleServer extends StartedHttpServer {
+  readonly certificate: Buffer;
   requests(): readonly FakeHttpsCompatibleRequest[];
   setChatRedirect(location: string | null): void;
 }
@@ -51,6 +52,8 @@ function generateEphemeralTlsMaterial(): { dir: string; cert: Buffer; key: Buffe
       "1",
       "-subj",
       "/CN=nemoclaw-https-pin-e2e",
+      "-addext",
+      "subjectAltName=IP:127.0.0.1",
       "-keyout",
       keyPath,
       "-out",
@@ -135,6 +138,7 @@ export async function startFakeHttpsCompatibleServer(options: {
   const port = await listenOnRandomPort(server);
   return {
     port,
+    certificate: tls.cert,
     requests: () => requests,
     setChatRedirect: (location) => {
       chatRedirectLocation = location;
