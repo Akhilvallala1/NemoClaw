@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Bindings, observations, and the safe diagnostic categories backends report.
 
-use std::fmt;
+use regex::Regex;
+use std::{fmt, sync::LazyLock};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
@@ -51,9 +52,8 @@ pub enum Observation<T> {
     Absent,
 }
 
-/// Safe diagnostic categories. Raw backend messages can contain credentials and
-/// must not be copied into public errors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Diagnostic categories and explicitly bounded, redacted backend rejections.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObservationError {
     Authentication,
     Permission,
@@ -64,6 +64,11 @@ pub enum ObservationError {
     BindingMismatch,
     /// A fixed, non-secret diagnostic from an owning backend.
     Backend(&'static str),
+    Rejected {
+        operation: &'static str,
+        code: &'static str,
+        detail: Box<str>,
+    },
     Hardware(nemoclaw_runtime::hardware::HardwareDiagnostic),
     FabricConfiguration {
         stage: &'static str,
@@ -83,6 +88,11 @@ pub enum ObservationError {
 impl fmt::Display for ObservationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Rejected {
+                operation,
+                code,
+                detail,
+            } => write!(f, "OpenShell {operation} rejected ({code}): {detail}"),
             Self::SandboxConfigurationRejected { reason } => write!(
                 f,
                 "OpenShell configuration rejected: {reason}; resources retained"
@@ -121,6 +131,43 @@ impl fmt::Display for ObservationError {
 }
 
 impl std::error::Error for ObservationError {}
+
+static BEARER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+").expect("constant diagnostic bearer pattern")
+});
+static CREDENTIALS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)["']?(?:authorization|api[_-]?key|token|password|secret)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)"#)
+        .expect("constant diagnostic credential pattern")
+});
+static TOKENS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z0-9_+/=-]{32,}").expect("constant diagnostic token pattern")
+});
+
+impl ObservationError {
+    /// Bound backend diagnostics and remove credentials before they enter public errors.
+    pub fn sanitized_detail(detail: &str) -> Box<str> {
+        let printable: String = detail
+            .chars()
+            .map(|character| {
+                if character.is_ascii_graphic() || character == ' ' {
+                    character
+                } else {
+                    ' '
+                }
+            })
+            .collect();
+        // Redact Bearer first: a key/value match alone would consume only the scheme.
+        let hidden = BEARER.replace_all(&printable, "[REDACTED]");
+        let hidden = CREDENTIALS.replace_all(&hidden, "[REDACTED]");
+        let hidden = TOKENS.replace_all(&hidden, "[REDACTED]");
+        let mut result = hidden.split_whitespace().collect::<Vec<_>>().join(" ");
+        if result.len() > 1024 {
+            result.truncate(1021);
+            result.push_str("...");
+        }
+        result.into_boxed_str()
+    }
+}
 
 /// Validate an observation against retained state without consuming that state.
 ///

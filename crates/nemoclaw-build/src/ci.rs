@@ -136,7 +136,13 @@ impl Step {
                 "-D",
                 "warnings",
             ]],
-            Step::Build => &[&["build", "--locked", "--workspace", "--all-targets"]],
+            Step::Build => &[&[
+                "build",
+                "--locked",
+                "--workspace",
+                "--all-targets",
+                "--timings",
+            ]],
             // Nextest does not run doctests, so Cargo runs them separately.
             Step::Test => &[
                 &[
@@ -300,4 +306,17 @@ pub fn install_nextest(
         make_executable(&path)
     })?;
     Ok(destination.join(name))
+}
+
+/// Keep ordinary checks and select expensive steps from the shared plan.
+/// Without a plan, retain every step for callers that request full validation.
+pub fn planned_steps(plan: Option<&crate::changes::Plan>) -> Vec<Step> {
+    Step::ALL
+        .into_iter()
+        .filter(|step| match (plan, step) {
+            (Some(plan), Step::Bundle) => plan.bundle.run,
+            (Some(plan), Step::Lifecycle) => plan.lifecycle.run,
+            _ => true,
+        })
+        .collect()
 }

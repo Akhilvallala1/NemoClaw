@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 
 pub const SERVICE_KIND: &str = "container_service";
 pub const STORAGE_KIND: &str = "container_storage";
+/// Data source that waits for an application's Docker HEALTHCHECK.
+pub const HEALTH_DATA_SOURCE: &str = "host_container_health";
 
 /// Check the application policy on a compiled launch before installation or state reuse.
 pub(crate) fn validate_spec(spec: &Spec) -> Result<(), Error> {
@@ -298,10 +300,13 @@ impl Installer for Service {
         for dependency in &self.depends_on {
             match &document.spec.services[dependency] {
                 super::super::ServiceDefinition::Container(_) => dependencies.push(format!(
-                    "data.nemoclaw_service_readiness.{SERVICE_KIND}_{dependency}"
+                    "data.{HEALTH_DATA_SOURCE}.{SERVICE_KIND}_{dependency}"
                 )),
                 super::super::ServiceDefinition::OllamaProxy(_) => dependencies.push(format!(
-                    "data.nemoclaw_service_readiness.ollama_proxy_{dependency}"
+                    "data.{}.{}_{dependency}",
+                    crate::services::provider_types::readiness_type(super::ollama::proxy::PROXY)
+                        .expect("the proxy has readiness"),
+                    super::ollama::proxy::PROXY
                 )),
                 // Runtime-stage inference is ready before the deployment graph executes.
                 super::super::ServiceDefinition::Ollama(_)

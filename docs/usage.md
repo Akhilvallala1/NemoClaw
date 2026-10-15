@@ -68,7 +68,8 @@ Older APIs that omit this information fail during plan.
 The host must have a private IPv4 address on its default-route interface.
 OpenShell uses that address for sandbox-only callbacks while keeping its user API on loopback.
 Every managed gateway uses one compute driver; use separate deployments to select different drivers.
-Managed vLLM with Podman sandboxes still requires explicit SSH Docker placement and publication.
+Native managed inference on Podman remains unsupported.
+A Podman gateway can consume managed vLLM or Ollama through explicit SSH Docker placement and publication; see [remote services](remote-service.md).
 
 Podman's changing compatibility `/info.ID` is not a durable identity.
 Gateway bindings use the retained owned network UUID, volume creation identity, container ID, and persisted signing keys.
@@ -84,14 +85,14 @@ Plan and export read host snapshots through `check --live` without requiring pas
 Destroy does not run readiness checks.
 
 The provider requests `check --ready` through OpenShell.
-The pinned Fabric has no health API, so the bridge returns unsupported with its host snapshot and no health report.
+The pinned Fabric has no health API, so a production adapter image's bridge returns unsupported with its host snapshot and no health report.
 The SDK records `supported: false`, `report: null`, and `reason_code: fabric_health_unsupported`.
-Apply fails its health check at this pin, including on unchanged applies, while preserving completed resource changes, state, and agent files.
+**Apply fails its health check at this pin**, including on unchanged applies, while preserving completed resource changes, state, and agent files.
 A reachable bridge or remembered runtime handle does not establish agent health.
-Real adapters report health as unsupported until Fabric's health API is pinned ([#12443](https://github.com/NVIDIA/NemoClaw/issues/12443)).
+Real adapters report health as unsupported until Fabric's health API is pinned ([#13031](https://github.com/NVIDIA/NemoClaw/issues/13031)).
+The [reference dummy image](build.md#reference-contract-image) reports health without Fabric, so apply completes with it; it runs no agent and does not establish a production adapter's health.
 
-Use an [agent image built from this revision](build.md#build-agent-images); an older image missing the matching bridge metadata or stdin input support leaves compatibility unknown.
-Such an image rejects configuration from this provider before changing its runtime.
+Use an [agent image built from this revision](build.md#build-agent-images); an image without matching bridge metadata leaves compatibility unknown.
 Image changes require the [separate-deployment path](#choose-the-change-path); keep existing deployments' original bundles and state.
 
 Unexpected health reports, transport failures, and malformed responses fail apply and retain resources.
@@ -103,7 +104,9 @@ Keep state, diagnose the failure, and reapply after recovery.
 ### Run an Application Container
 
 Declare a `kind: container` service with an immutable image, Linux architecture, literal environment settings, and an owned data directory below `/var/lib`.
-The image owns startup and its Docker HEALTHCHECK; NemoClaw observes health within the configured startup timeout.
+The image owns startup and its Docker HEALTHCHECK.
+Before creating the container, the `host_image` check requires the image to define startup and a HEALTHCHECK.
+On every apply, including unchanged applies, `host_container_health` waits up to the configured startup timeout for that HEALTHCHECK to report healthy.
 Placement inherits a managed local Docker gateway or explicitly selects a local Docker engine and private network.
 Optional publication binds an unprivileged TCP port to loopback or a private IPv4 address; `dependsOn` orders declared services without injecting settings.
 Application storage is disposable: destroy removes the owned data volume.
@@ -234,15 +237,19 @@ Use separate deployments when you need independent teardown.
 
 | Proposed change | Current behavior and next step |
 |---|---|
-| Models, settings, or public Fabric configuration within the selected adapter | Reconciles the owned agent-configuration resource and restarts the runtime inside the existing sandbox when its image, provider attachments, and policy remain unchanged; in-memory conversations can be lost |
+| Models, settings, or public Fabric configuration within the selected adapter | After successful runtime observation, reconciles the owned agent-configuration resource and restarts the runtime inside the existing sandbox when its image, provider attachments, and policy remain unchanged; in-memory conversations can be lost |
 | External inference endpoint, provider implementation, or authenticated/anonymous mode | Changes a selected provider's profile and registration; changes to an existing sandbox's launch specification still require a separate deployment |
 | Harness adapter, sandbox image, agent identity, or provider attachments | Changes the immutable sandbox specification; apply refuses replacement; use a separate deployment with a fresh UID and state |
 | Sandbox network policy | Changes the sandbox specification; follow [policy change constraints](sandbox-network.md) and use a separate deployment when replacement is required |
-| Managed inference or proxy image or serving specification | Docker-provider reconciliation may replace the container while retaining its independently bound storage; review the plan and [model constraints](models.md) |
+| Managed vLLM or Ollama image, container limits, or serving specification | Replaces the Docker container. Service-level `updatePolicy: Preserve` blocks replacement of a running Docker container; set `Recreate` only when accepting sequential replacement and downtime. Review the plan, [container limits and update policy](inference.md#set-container-limits-and-update-policy), and [model constraints](models.md) |
+| Ollama proxy image or serving specification | Docker-provider reconciliation may replace the proxy container while retaining its independently bound credential storage |
 | Deployment UID, established gateway endpoint, or bound credential/gateway engine | Cannot retarget the existing state; create a separate deployment |
 | Remove an unused inference provider definition | Changes the desired document only; the SDK creates registrations for selected definitions, so unused definitions have no resources to delete |
 | Remove a sandbox, retained storage, or a protected gateway binding | Apply refuses removal; assess a separate deployment and explicit retirement of the original |
 | Change a credential value behind the same environment reference | Unchanged apply does not detect rotation; see [credential lifecycle](security.md#credentials-and-authentication) |
+
+Configuration edits do not recover a runtime whose bridge snapshot reports `runtime_state: unknown`.
+The provider rejects that observation before reconciling agent configuration; see [replacement after an unusable OpenClaw runtime](#replace-workloads-after-an-unusable-openclaw-runtime).
 
 For OpenClaw model and native-setting updates, use an [agent image built from this revision](build.md#build-agent-images).
 Rebuilding the CLI bundle alone does not update the adapter in an existing sandbox image; changing that image requires a separate deployment with a fresh UID and state.
@@ -301,6 +308,8 @@ With the current bundle and bridge image, configuration failures report a fixed 
 A failed restart retains the sandbox and its files.
 When Fabric cannot confirm that startup left no processes, the bridge reports `unknown` and refuses another lifecycle change; this protocol does not provide recovery for that state.
 An `unknown` runtime state does not establish that the old process stopped.
+An invocation failure can also leave the runtime `unknown`; apply cannot reach configuration reconciliation while that observation remains incomplete.
+For the operator-reported OpenClaw failure, see [workload replacement](#replace-workloads-after-an-unusable-openclaw-runtime).
 A sandbox in `Error` can still block apply, but its saved identity permits [teardown](#destroy) without a successful reapply.
 Changing a rejected sandbox policy or image does not authorize replacement; follow the [change constraints](#choose-the-change-path).
 
@@ -310,6 +319,8 @@ Older unfinished records without per-resource recovery evidence still require th
 If managed gateway or inference runtime apply fails, revised intent or teardown can proceed using recorded bindings and the existing ownership checks.
 The same applies when an OpenShell-graph apply only observes resources, updates or deletes established bindings, or changes disposable compute.
 Runtime recovery does not clear pending OpenShell creations.
+An OpenShell create rejection without a saved resource identity still leaves the pending-creation guard in place; automatic cleanup after a definitive rejection is not implemented.
+Preserve that record and its original bundle rather than deleting state or attempting adoption from another state directory.
 Export remains unavailable during pending creation recovery, unfinished managed-runtime apply, or unfinished teardown.
 If an OpenShell-stage apply planned no non-disposable resource creations, a later export can verify its established bindings without another successful apply; incomplete or inconsistent observations still fail export.
 If readiness fails after resource creation, provider state and persistent data remain recorded.
@@ -335,6 +346,45 @@ An explicit apply reconciles the resource graph and performs bounded readiness c
 The installer contract has no separate recovery operation and does not create an automatic restart loop.
 Export preserves retained intent and validates required resource bindings without another readiness or model-inventory check.
 Destroy uses native provider compute/cache state and separately verified credential and gateway storage; it does not inspect model inventories.
+
+### Replace Workloads After an Unusable OpenClaw Runtime
+
+Use this path when an OpenClaw runtime remains `unknown` after an invocation failure and you choose to replace its sandbox.
+The [reported malformed-request failure](agents.md#run-one-headless-openclaw-request) required sandbox replacement; the exact inputs that trigger it and recovery inside the existing sandbox remain unqualified ([#12642](https://github.com/NVIDIA/NemoClaw/issues/12642)).
+The CLI has no targeted sandbox replacement or runtime-reset command.
+Its supported replacement path is whole-deployment destroy followed by reapplying the original configuration.
+
+**Destroy deletes every bound sandbox's files and conversation history, including those of other agents in this deployment.**
+Preserve any native data you need before choosing removal; configuration export does not back it up and can fail while runtime observation is incomplete.
+Managed model and credential storage remain tracked; that storage does not preserve sandbox files.
+Keep the original YAML, matching bundle, credential references, and entire state directory.
+Do not replace the state directory or change the deployment UID to bypass the failure.
+
+From the directory containing the original `deployment.yaml`, with the matching bundle on `PATH`, preview the removal using the deployment's existing state path:
+
+```sh
+nemoclaw plan --destroy --state-dir .local/deployment
+```
+
+Teardown verifies the parent sandbox's identity without requiring a successful agent-runtime snapshot or health check.
+It still requires gateway access, matching ownership, and saved bindings for pending creations; if the preview fails, retain state and resolve that error before proceeding.
+After reviewing the whole-deployment removal and accepting its data loss, run:
+
+```sh
+nemoclaw destroy --state-dir .local/deployment
+```
+
+Destroy does not prompt for confirmation.
+If it fails or is interrupted, resolve the cause and resume destroy with the same state; do not reapply until destroy completes.
+After a successful destroy, request workload recreation with the original configuration and retained storage:
+
+```sh
+nemoclaw apply --state-dir .local/deployment deployment.yaml
+```
+
+This procedure follows the implemented CLI lifecycle; recovery from arbitrary malformed inputs remains unqualified.
+The [Fabric health limitation](#fabric-health-during-apply) still applies after recreation.
+Check the recreated runtime before using the [exact OpenClaw request](agents.md#run-one-headless-openclaw-request); do not replay an invocation whose effects are unknown merely to test recovery.
 
 ### Recover an Interrupted Helm Removal
 

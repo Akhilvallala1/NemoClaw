@@ -220,10 +220,10 @@ async fn exercise(fresh: bool) {
     assert_eq!(retained.len(), 3);
     for address in [
         "openshell_workspace.deployment",
-        "nemoclaw_gateway_storage.runtime",
+        "openshell_gateway_storage.runtime",
         before
             .keys()
-            .find(|address| address.starts_with("nemoclaw_inference_storage."))
+            .find(|address| address.starts_with("vllm_credential_storage."))
             .unwrap()
             .as_str(),
     ] {

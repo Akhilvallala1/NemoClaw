@@ -9,7 +9,6 @@ use k8s_openapi::api::{
     core::v1::{Namespace, PersistentVolumeClaim, Secret},
 };
 use kube::{Api, api::ListParams};
-use nemoclaw_provider::openshell::{OpenShell, Secrets};
 use nemoclaw_sdk::{
     ObservationError,
     bundle::Bundle,
@@ -20,6 +19,7 @@ use nemoclaw_sdk::{
         TOKEN_ENV, connect, operations::Operations, server,
     },
 };
+use openshell_provider::{OpenShell, Secrets};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -394,10 +394,10 @@ async fn the_gateway_installs_authenticates_and_is_removed_keeping_storage() {
         openshift_wait: nemoclaw_sdk::kubernetes::operations::OPENSHIFT_WAIT,
     };
     let all = [
-        "nemoclaw_kubernetes_storage.runtime",
-        "nemoclaw_kubernetes_auth.runtime",
+        "openshell_kubernetes_storage.runtime",
+        "openshell_kubernetes_auth.runtime",
         "helm_release.gateway",
-        "nemoclaw_kubernetes_gateway.runtime",
+        "openshell_kubernetes_gateway.runtime",
     ];
     let workloads = &all[1..];
     let storage = BTreeSet::from([all[0].to_owned()]);
@@ -479,7 +479,7 @@ async fn the_gateway_installs_authenticates_and_is_removed_keeping_storage() {
 /// A full deployment on a real cluster through the public SDK: the managed
 /// gateway, then an agent sandbox from an image built from this checkout.
 /// Apply stops at the agent's health check, which the pinned Fabric reports
-/// as unsupported (#12443); export must still recover the authored document,
+/// as unsupported (#13031); export must still recover the authored document,
 /// and destroy then removes everything but the gateway's storage.
 ///
 /// `cargo ci live-kind` also provides:
@@ -595,7 +595,7 @@ spec:
             ..
         } => assert_eq!(
             failures,
-            &["data.fabric_sandbox_readiness.assistant".to_owned()],
+            &["data.fabric_agent_readiness.assistant".to_owned()],
             "apply must stop only at the agent's health check"
         ),
         other => panic!("apply must stop at the agent's health check, not earlier: {other}"),

@@ -330,7 +330,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn collector_script_queries_compute_and_memory_and_parses_on_linux() {
-        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+        use std::{fs, process::Command};
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("bin");
         let docker_root = root.path().join("docker-root");
@@ -347,16 +347,13 @@ mod tests {
             ("nvidia-smi", "[ \"$2\" = --format=csv,noheader,nounits ] || exit 2\ncase \"$1\" in\n--query-gpu=name,driver_version) echo 'NVIDIA GB10, 580.0' ;;\n--query-gpu=compute_cap) echo 12.1 ;;\n--query-gpu=memory.total,memory.free) echo '[N/A], [N/A]' ;;\n--query-compute-apps=pid) ;;\n*) exit 2 ;;\nesac\n".into()),
         ];
         for (name, body) in fakes {
-            let path = bin.join(name);
-            fs::write(
-                &path,
+            crate::executable::write_executable(
+                &bin.join(name),
                 format!(
                     "#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> '{}'\n{body}",
                     calls.display()
                 ),
-            )
-            .unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            );
         }
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
         let result = Command::new("sh")

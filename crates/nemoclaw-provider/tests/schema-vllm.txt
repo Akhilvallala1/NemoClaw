@@ -1,261 +1,48 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# The nemoclaw provider's schema, rendered by nemoclaw-test-fixtures.
+# The vllm provider's schema, rendered by nemoclaw-test-fixtures.
 # Regenerate it after an intended change:
 #   NEMOCLAW_REGENERATE_FIXTURES=1 cargo test -p nemoclaw-provider --test integration schema::
 # Lines starting with > quote descriptions; tf-provider's placeholder
 # description `empty` is omitted. Blocks are version 1 unless shown.
 
-provider nemoclaw (version 0)
+provider vllm (version 0)
   destroy: bool, optional
 
-resource nemoclaw_gateway_storage (version 0)
-  compute_driver: string, required
-  data_path: string, computed
-  endpoint: string, optional, computed
-  engine: string, required
-  generation: string, optional, computed
-  id: string, computed
-  image: string, required
-  image_pull_policy: string, optional, computed
-  name: string, required
-  network_cidr: string, required
-  owner: string, optional, computed
-
-resource nemoclaw_inference_storage (version 0)
+resource vllm_credential_storage (version 0)
   engine: string, required
   generation: string, optional, computed
   id: string, computed
   name: string, required
   owner: string, optional, computed
 
-resource nemoclaw_kubernetes_auth (version 0)
-  authentication_profile: string, required
-  compute_driver: string, required
-  context: string, required
-  endpoint: string, required
-  environment: list(string), optional
-  gateway_values: string, computed
-  generation: string, optional, computed
-  id: string, computed
-  kubeconfig_env: string, required
-  name: string, required
-  namespace: string, required
-  owner: string, optional, computed
-  release_present: string, computed
-  running: string, computed
-
-resource nemoclaw_kubernetes_gateway (version 0)
-  authentication_profile: string, required
-  compute_driver: string, required
-  context: string, required
-  endpoint: string, required
-  environment: list(string), optional
-  generation: string, optional, computed
-  id: string, computed
-  kubeconfig_env: string, required
-  name: string, required
-  namespace: string, required
-  owner: string, optional, computed
-  running: string, computed
-
-resource nemoclaw_kubernetes_storage (version 0)
-  authentication_profile: string, required
-  compute_driver: string, required
-  context: string, required
-  endpoint: string, required
-  environment: list(string), optional
-  generation: string, optional, computed
-  id: string, computed
-  kubeconfig_env: string, required
-  name: string, required
-  namespace: string, required
-  owner: string, optional, computed
-  running: string, computed
-
-resource nemoclaw_managed_gateway (version 0)
-  compute_driver: string, required
-  endpoint: string, required
-  engine: string, required
-  generation: string, optional, computed
-  id: string, computed
-  image: string, required
-  image_pull_policy: string, optional, computed
-  name: string, required
-  network_cidr: string, required
-  owner: string, optional, computed
-  running: string, computed
-
-resource nemoclaw_ollama_external_model (version 0)
-  digest: string, required
-  engine: string, required
-  generation: string, optional, computed
-  id: string, computed
-  model: string, required
-  name: string, required
-  owner: string, optional, computed
-  upstream: string, required
-
-resource nemoclaw_ollama_proxy_storage (version 0)
-  engine: string, required
-  generation: string, optional, computed
-  id: string, computed
-  name: string, required
-  owner: string, optional, computed
-
-resource nemoclaw_ollama_service_storage (version 0)
-  engine: string, required
-  generation: string, optional, computed
-  id: string, computed
-  name: string, required
-  owner: string, optional, computed
-
-data nemoclaw_engine_capabilities (version 0)
-  available: bool, computed
-  compute_driver: string, required
-  engine: string, required
-  observation_json: string, computed
-  status: string, computed
-
-data nemoclaw_gateway_readiness (version 0)
-  > Waits for a managed Docker gateway container to run and answer its health call.
-  container_id: string, required
-    > ID of the gateway container.
-  endpoint: string, required
-    > Gateway API origin, called without credentials.
-  engine: string, required
-    > Docker engine endpoint that runs the gateway container.
-  name: string, required
-    > Expected name of the gateway container.
-  owner: string, required
-    > Expected value of the container's nemoclaw.nvidia.com/uid label.
-  read_trigger: bool, optional
-    > Defers the read until apply while unknown.
-  ready: bool, computed
-    > True once the running gateway answers its health call.
-  wait_timeout_seconds: number, optional
-    > Seconds to wait, from 0 to 300; omission checks once.
-
-data nemoclaw_gateway_runtime (version 0)
-  > Computes a Docker gateway container's launch from typed settings without contacting any host.
-  command: list(string), computed
-    > The container's command.
-  data_path: string, required
-    > Absolute data path returned by the gateway's storage.
-  endpoint: string, required
-    > Gateway HTTP origin with a loopback address and an unprivileged port.
-  entrypoint: list(string), computed
-    > The container's entrypoint.
-  env: list(string), computed
-    > The container's environment.
-  name: string, required
-    > Gateway name: nc-, 16 lowercase hexadecimal characters, a hyphen, and a lowercase name.
-
-data nemoclaw_inference_capabilities (version 0)
-  api: string, required
-  credential_env: string, optional
-  endpoint: string, required
-  observation_json: string, computed
-  status: string, computed
-
-data nemoclaw_ollama_proxy_runtime (version 0)
-  > Computes the Ollama proxy contract from typed settings without contacting any host.
-  bind_address: string, required
-    > Loopback or private address and port the proxy serves.
-  digest: string, required
-    > The model's 64-character SHA-256 digest.
-  model: string, required
-    > Ollama model name and tag.
-  spec: string, computed
-    > Validated value for the container's NEMOCLAW_OLLAMA_PROXY environment variable.
-  upstream: string, required
-    > Loopback HTTP Ollama endpoint, ending in /v1.
-
-data nemoclaw_ollama_runtime (version 0)
-  > Computes a runtime contract from typed settings without contacting any host.
-  spec: string, computed
-    > Validated runtime specification for the container's NEMOCLAW_RUNTIME_SPEC environment variable.
-  block hardware: optional
-    > Explicit supported GPU or system profile.
-    architecture: string, optional
-      > CPU architecture; this dedicated-memory contract requires amd64.
-    min_compute_capability: number, optional
-      > Minimum NVIDIA compute capability, encoded as major times ten plus minor; 90 means 9.0.
-    min_driver_major: number, optional
-      > Minimum installed NVIDIA driver major version.
-    min_gpu_memory_bytes: number, optional
-      > Minimum total dedicated GPU memory in bytes. Host RAM is measured separately.
-    profile: string, optional
-      > GPU family and memory architecture. Every profile requires observed compute capability and driver major 580 or newer. Unified-memory profiles budget host RAM; dedicated-memory profiles require GPU total/free counters.
-  block memory: optional
-    > GPU budget and resident memory-protection thresholds.
-    consecutive_samples: number, optional
-      > Consecutive low-memory samples before stopping the owned process.
-    free_gate_gib: number, optional
-      > Available-memory gate for the free-memory threshold.
-    gpu_memory_gib: number, optional
-      > Fixed serving budget in GiB when utilization is omitted. Omission or zero selects 16 GiB.
-    gpu_memory_utilization: number, optional
-      > Optional fraction of observed dedicated GPU memory.
-    host_reserve_gib: number, optional
-      > Host memory reserve excluded from serving.
-    min_available_gib: number, optional
-      > Available-memory threshold used by the bounded runtime watchdog.
-    min_free_gib: number, optional
-      > Free-memory threshold used below freeGateGiB.
-  block model: single
-    > Selected immutable Ollama registry model.
-    digest: string, required
-      > Lowercase SHA-256 of the registry manifest selected for that tag.
-    name: string, required
-      > Public library model name including its tag.
-  block serving: optional
-    > Ollama serving limits.
-    context_tokens: number, optional
-      > Maximum model context length.
-    max_sequences: number, optional
-      > Maximum concurrent sequences.
-    port: number, optional
-      > Inference listening port.
-    startup_timeout_seconds: number, optional
-      > Seconds allowed for model loading and readiness.
-
-data nemoclaw_runtime_image (version 0)
-  allow_missing: bool, optional
-  architecture: string, required
-  contract: string, optional
-  engine: string, required
-  image: string, required
-  image_id: string, optional
-  labels: map(string), optional
-  observation_json: string, computed
-
-data nemoclaw_service_capacity (version 0)
+data vllm_capacity (version 0)
   compatible: bool, computed
   contracts: list(string), required
   engine: string, required
   observed_bytes: number, computed
   required_bytes: number, computed
 
-data nemoclaw_service_readiness (version 0)
-  container_id: string, required
+data vllm_readiness (version 0)
+  container_id: string, optional
   contract: string, required
-  engine: string, required
-  name: string, required
+  endpoint: string, optional
+  engine: string, optional
+  name: string, optional
   read_trigger: bool, optional
   ready: bool, computed
+  ref: object({ credential_env = string, credential_source = string, endpoint = string, model = string, type = string }), computed
+  sandbox_endpoint: string, optional
   wait_timeout_seconds: number, optional
 
-data nemoclaw_target_hardware (version 0)
-  available: bool, computed
-  engine: string, required
-  observation_json: string, computed
-  status: string, computed
-
-data nemoclaw_vllm_runtime (version 0)
+data vllm_runtime (version 0)
   > Computes a runtime contract from typed settings without contacting any host.
   authentication: string, optional
     > Optional native bearer authentication. The runtime generates and retains the key; omission preserves unauthenticated serving.
+  launch: object({ command = list(string), data_path = string, entrypoint = list(string), environment = map(string), port = number }), computed
+    > What any platform runs: entrypoint, command, environment (including the contract), the port the server listens on, and the path for its data. Place it with any container platform.
+  requirements: object({ gpu = bool, shared_memory_bytes = number, ulimits = map(number) }), computed
+    > What the runtime needs from its platform: a GPU, shared memory (a recommended minimum), and process limits by name, where -1 is unlimited. Platforms that cannot set process limits leave them to the node.
   spec: string, computed
     > Validated runtime specification for the container's NEMOCLAW_RUNTIME_SPEC environment variable.
   block hardware: optional

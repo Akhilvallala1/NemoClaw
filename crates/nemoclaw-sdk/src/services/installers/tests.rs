@@ -34,7 +34,7 @@ fn inference_removal_retains_cache_and_requires_authenticated_storage() {
                 .remove(&document, name, &Default::default())
                 .unwrap();
             if authenticated {
-                let auth = format!("nemoclaw_inference_storage.inference_{name}_auth");
+                let auth = format!("vllm_credential_storage.inference_{name}_auth");
                 assert_eq!(removal.retained, [auth.clone(), data.into()]);
                 assert_eq!(
                     removal.required_storage,

@@ -126,8 +126,13 @@ impl OllamaProxy {
     }
 }
 
+/// The address of the service's model container resource.
+pub(crate) fn service_address(name: &str) -> String {
+    address(SERVICE_KIND, name)
+}
+
 fn address(kind: &str, name: &str) -> String {
-    format!("nemoclaw_{kind}.{name}")
+    format!("{}.{name}", crate::compile::resource_type(kind))
 }
 
 pub const SERVICE_KIND: &str = "ollama_service";
@@ -163,38 +168,27 @@ fn specification(
         &document.spec.gateway,
         service.serving.port,
     )?;
+    let resources = super::vllm::ServiceContainer::resources(service.container.as_ref());
     let process = Process {
         engine: placed.engine.clone(),
         image: service.image.clone(),
         network_cidr: placed.network_cidr.clone(),
         create_network: placed.explicit,
         architecture: service.architecture()?.into(),
-        image_labels: BTreeMap::from([
-            ("org.nemoclaw.backend".into(), "ollama".into()),
-            (
-                nemoclaw_runtime::SPEC_VERSION_LABEL.into(),
-                nemoclaw_runtime::SPEC_VERSION.into(),
-            ),
-        ]),
+        image_labels: BTreeMap::from([("org.nemoclaw.backend".into(), "ollama".into())]),
         pull_image: false,
         image_pull_policy: None,
         configuration: serde_json::to_string(&runtime)
             .map_err(|_| Error::State("cannot serialize Ollama runtime configuration"))?,
-        entrypoint: vec!["/usr/local/bin/nemoclaw-runtime".into()],
+        entrypoint: vec![crate::managed::RUNTIME_ENTRYPOINT.into()],
         command: Vec::new(),
-        mount_target: "/data".into(),
+        mount_target: crate::managed::RUNTIME_DATA_PATH.into(),
         bind_address: placed.bind_address,
         port: service.serving.port as u16,
-        shared_memory_bytes: service
-            .container
-            .as_ref()
-            .map_or(8, |container| container.shared_memory_gi_b)
-            * nemoclaw_runtime::hardware::GIB,
-        host_ipc: service
-            .container
-            .as_ref()
-            .is_some_and(|container| container.ipc == super::vllm::ServiceIpc::Host),
-        memory_bytes: 104 * nemoclaw_runtime::hardware::GIB,
+        shared_memory_bytes: resources.shared_memory_bytes,
+        host_ipc: resources.host_ipc,
+        cpu_limit_millis: resources.cpu_limit_millis,
+        memory_bytes: resources.memory_bytes,
         gpu: true,
         ..Process::default()
     };
@@ -221,7 +215,7 @@ impl Installer for ManagedOllama {
     ) -> Result<InstallPlan, Error> {
         let mut prerequisites = Vec::new();
         if document.spec.gateway.as_managed().is_some() && self.placement.is_none() {
-            prerequisites.push("nemoclaw_managed_gateway.runtime".into());
+            prerequisites.push("openshell_podman_gateway.runtime".into());
         }
         docker::install(
             specification(document, name, self, generations)?,
@@ -259,10 +253,7 @@ impl Installer for OllamaProxy {
         let service = address(proxy::PROXY, name);
         Ok(InstallPlan {
             targets: proxy::targets(document, name, self, generations)?,
-            dependencies: BTreeMap::from([(
-                service,
-                vec![address(proxy::STORAGE, name), address(proxy::MODEL, name)],
-            )]),
+            dependencies: BTreeMap::from([(service, vec![address(proxy::STORAGE, name)])]),
         })
     }
 

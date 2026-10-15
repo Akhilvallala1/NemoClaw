@@ -3,8 +3,13 @@
 //! SDK integration tests, linked into one binary so the SDK links once.
 //! Each file is a module; helpers under support/ are shared by all of them.
 
+#[path = "support/bundle.rs"]
+mod bundle;
 #[path = "support/examples.rs"]
 mod examples;
+#[cfg(unix)]
+#[path = "../../test-support/executable.rs"]
+mod executable;
 #[path = "../../test-support/kube_api.rs"]
 mod kube_api;
 #[path = "support/kube_client.rs"]
@@ -13,6 +18,8 @@ mod kube_client;
 mod kube_faults;
 #[path = "support/provider_scope.rs"]
 mod provider_scope;
+#[path = "support/scripted_tofu.rs"]
+mod scripted_tofu;
 #[path = "support/config.rs"]
 mod support;
 #[path = "../../test-support/http.rs"]
@@ -96,6 +103,8 @@ mod kubernetes_corrupt_receipt;
 mod kubernetes_expired_authentication;
 #[path = "kubernetes_gateway.rs"]
 mod kubernetes_gateway;
+#[path = "kubernetes_interruption.rs"]
+mod kubernetes_interruption;
 #[path = "kubernetes_lost_create_response.rs"]
 mod kubernetes_lost_create_response;
 #[path = "kubernetes_managed_compile.rs"]

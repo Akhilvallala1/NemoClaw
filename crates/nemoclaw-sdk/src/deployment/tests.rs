@@ -273,7 +273,7 @@ fn reconstructible_recreation_uses_opentofu_state_after_refresh_only() {
 
 #[test]
 fn reconstructible_resources_support_removal_replacement_and_confirmed_absence() {
-    for kind in ["provider", "provider_profile", "agent_configuration"] {
+    for kind in ["provider", "provider_profile", "agent"] {
         let address = format!("{}.example", crate::compile::resource_type(kind));
         let expected = [(address.clone(), Row::new())].into();
         let bindings = [(
@@ -347,7 +347,7 @@ fn teardown_delegates_reconstructible_and_disposable_recovery_to_opentofu() {
     for address in [
         "openshell_provider_registration.example",
         "openshell_provider_profile.example",
-        "fabric_agent_configuration.example",
+        "fabric_agent.example",
         "docker_container.runtime",
     ] {
         let allowed = BTreeMap::from([(address.into(), Row::new())]);
@@ -480,7 +480,6 @@ fn credential_references_cannot_override_helm_or_kubernetes_controls() {
 #[cfg(unix)]
 #[tokio::test]
 async fn schema_commands_do_not_require_inference_credentials() {
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -494,17 +493,21 @@ async fn schema_commands_do_not_require_inference_credentials() {
     let bundle_directory = tempfile::tempdir().unwrap();
     let bundle = fixture_bundle(bundle_directory.path());
     fs::create_dir_all(bundle.tofu().parent().unwrap()).unwrap();
-    fs::write(
-        bundle.tofu(),
-        b"#!/bin/sh\n[ \"$TF_IN_AUTOMATION\" = 1 ] && [ \"$TF_INPUT\" = 0 ] && [ \"$CHECKPOINT_DISABLE\" = 1 ] && [ \"$TF_CLI_CONFIG_FILE\" = \"$PWD/providers.tfrc\" ] || exit 1\nprintf '{}\\n'\n",
-    )
-    .unwrap();
-    fs::set_permissions(bundle.tofu(), fs::Permissions::from_mode(0o700)).unwrap();
+    // Execute an existing interpreter so inherited writable fixture descriptors
+    // cannot make a newly written script fail to launch with ETXTBSY.
+    std::os::unix::fs::symlink("/bin/sh", bundle.tofu()).unwrap();
     let state_directory = tempfile::tempdir().unwrap();
     // macOS temporary paths may traverse /var -> /private/var; the shell's PWD
     // uses the physical directory when checking the fixture's environment.
     let state_path = state_directory.path().canonicalize().unwrap();
     let store = Store::open(&state_path).unwrap();
+    for operation in ["init", "show"] {
+        fs::write(
+            state_path.join(operation),
+            b"#!/bin/sh\n[ \"$TF_IN_AUTOMATION\" = 1 ] && [ \"$TF_INPUT\" = 0 ] && [ \"$CHECKPOINT_DISABLE\" = 1 ] && [ \"$TF_CLI_CONFIG_FILE\" = \"$PWD/providers.tfrc\" ] || exit 1\nprintf '{}\\n'\n",
+        )
+        .unwrap();
+    }
     let secrets = Arc::new(Unavailable::default());
     let deployment =
         Deployment::new(&state_path, bundle_directory.path()).with_secrets(secrets.clone());
@@ -658,7 +661,7 @@ fn gateway_observation_resolves_only_gateway_credentials() {
 
 #[test]
 fn gateway_replacement_preserves_the_old_binding_and_rejects_other_actions() {
-    let address = "nemoclaw_managed_gateway.runtime";
+    let address = "openshell_podman_gateway.runtime";
     let expected = [(address.into(), Row::from([("spec".into(), "old".into())]))].into();
     let bindings = [(
         address.into(),
@@ -822,7 +825,7 @@ fn runtime_plans_accept_only_declared_local_image_observations_and_teardown_dele
             valid
         );
     }
-    let foreign = "data.nemoclaw_service_capacity.undeclared";
+    let foreign = "data.vllm_capacity.undeclared";
     for (address, valid) in [(address.as_str(), true), (foreign, false)] {
         let plan: Plan = serde_json::from_value(json!({"resource_changes":[{"mode":"data", "address":address, "change":{"actions":["delete"]}}]})).unwrap();
         assert_eq!(
@@ -854,7 +857,7 @@ fn disposable_docker_compute_reconciles_while_durable_storage_does_not_recreate(
         let plan: Plan = serde_json::from_value(json!({"resource_changes":[{"address":compute,"change":{"actions":actions,"before":{"id":"old-container"}}}]})).unwrap();
         assert_eq!(check_plan(&plan, &allowed, &bound).unwrap().len(), 1);
     }
-    let storage = "nemoclaw_inference_storage.model";
+    let storage = "vllm_credential_storage.model";
     let allowed = [(storage.into(), Row::new())].into();
     let bound = [(
         storage.into(),
@@ -1028,10 +1031,7 @@ fn replacement_cleanup_reports_opentofu_objects_within_deployment_scope() {
         .is_empty()
     );
     assert!(check_plan(&plan(json!([current])), &allowed, &bindings).is_ok());
-    for durable in [
-        "docker_volume.cache",
-        "nemoclaw_inference_storage.credentials",
-    ] {
+    for durable in ["docker_volume.cache", "vllm_credential_storage.credentials"] {
         let bound = BTreeMap::from([(durable.into(), bindings[address].clone())]);
         let mut forbidden = old.clone();
         forbidden["address"] = json!(durable);
@@ -1128,13 +1128,12 @@ fn creation_plan(expected: &BTreeMap<String, Row>, reads: &[&str]) -> Plan {
 const UNEXPECTED_OBSERVATION: &str = "plan contains an unexpected observation";
 
 // Observations a plan could name without the compiled graph reading them.
-const UNDECLARED_OBSERVATIONS: [&str; 6] = [
-    "data.fabric_capabilities.sandbox_99",
-    "data.nemoclaw_target_hardware.target_99",
-    "data.nemoclaw_inference_capabilities.endpoint_99",
-    "data.nemoclaw_engine_capabilities.current",
+const UNDECLARED_OBSERVATIONS: [&str; 5] = [
+    "data.fabric_harnesses.sandbox_99",
+    "data.host_engine.target_99",
+    "data.host_engine.current",
     compile::GATEWAY_APPLY_CAPABILITIES_ADDRESS,
-    "data.nemoclaw_runtime_image.runtime_image_present_managed_gateway_runtime",
+    "data.host_image.runtime_image_present_managed_gateway_runtime",
 ];
 
 #[test]

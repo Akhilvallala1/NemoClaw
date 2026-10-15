@@ -113,15 +113,13 @@ impl Runner for PackagedRecipe<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     #[tokio::test]
     async fn pinned_executable_receives_structured_input_and_tampering_stops_execution() {
         let service = crate::fixture();
         let mut recipe = service.recipe.clone().unwrap();
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("tool with spaces");
-        std::fs::write(&executable, b"#!/bin/sh\ncat\n").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::executable::write_executable(&executable, "#!/bin/sh\ncat\n");
         recipe.preparation.executable = executable.to_str().unwrap().into();
         recipe.preparation.sha256 = crate::files::hash_file(&executable).unwrap();
         recipe.verification = recipe.preparation.clone();
@@ -141,11 +139,13 @@ mod tests {
         let output: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(output["modelDirectory"], root.path().to_str().unwrap());
         std::fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
-        assert!(
+        assert!(matches!(
             runner
                 .run(Action::Prepare, &request, &CancellationToken::new())
-                .await
-                .is_err()
-        );
+                .await,
+            Err(Error::Conflict(
+                "recipe executable does not match its declared digest"
+            ))
+        ));
     }
 }

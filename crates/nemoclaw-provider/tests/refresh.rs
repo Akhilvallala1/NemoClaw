@@ -207,7 +207,7 @@ async fn failed_and_partial_observations_retain_protocol_state() {
         "provider_profile",
         "provider",
         "sandbox",
-        "agent_configuration",
+        "agent",
     ] {
         for observation in [
             Err(ObservationError::Transport),
@@ -236,7 +236,7 @@ async fn confirmed_absence_reconciles_registrations_but_preserves_stateful_bindi
         "provider_profile",
         "provider",
         "sandbox",
-        "agent_configuration",
+        "agent",
     ] {
         for destroying in [false, true] {
             let resource = ResourceAdapter::new(
@@ -251,10 +251,8 @@ async fn confirmed_absence_reconciles_registrations_but_preserves_stateful_bindi
             let result = resource
                 .read(&mut diagnostics, prior.clone(), Value::Null, Value::Null)
                 .await;
-            if matches!(
-                kind,
-                "provider_profile" | "provider" | "agent_configuration"
-            ) || (destroying && kind == "sandbox")
+            if matches!(kind, "provider_profile" | "provider" | "agent")
+                || (destroying && kind == "sandbox")
             {
                 assert!(result.is_none());
                 assert!(diagnostics.errors.is_empty());
@@ -391,7 +389,7 @@ async fn reconstructible_resources_plan_replacement_and_deletion_without_teardow
         "provider_profile",
         "provider",
         "sandbox",
-        "agent_configuration",
+        "agent",
     ] {
         let resource = ResourceAdapter::new(
             support::definition(kind, &["name", "owner", "generation"], &[]),
@@ -411,10 +409,7 @@ async fn reconstructible_resources_plan_replacement_and_deletion_without_teardow
                 Value::Null,
             )
             .await;
-        let reconstructible = matches!(
-            kind,
-            "provider_profile" | "provider" | "agent_configuration"
-        );
+        let reconstructible = matches!(kind, "provider_profile" | "provider" | "agent");
         assert_eq!(result.is_some(), reconstructible, "{kind}");
         assert_eq!(diagnostics.errors.is_empty(), reconstructible, "{kind}");
         if let Some((_, _, replacements)) = result {
@@ -481,6 +476,105 @@ async fn retained_replacement_refusal_names_the_resource_and_changed_fields() {
 }
 
 #[tokio::test]
+async fn profile_refresh_preserves_the_bound_cluster_source() {
+    let prior: Row = [
+        ("id", "profile/1"),
+        ("name", "model"),
+        ("workspace", "owned"),
+        ("cluster_source", "bound-service"),
+    ]
+    .map(|(key, value)| (key.into(), value.into()))
+    .into();
+    for source in ["bound-service", "substituted-service", ""] {
+        let mut observed = prior.clone();
+        observed.insert("cluster_source".into(), source.into());
+        let resource = ResourceAdapter::new(
+            support::definition(
+                "provider_profile",
+                &["name", "workspace", "cluster_source"],
+                &[],
+            ),
+            Arc::new(Fixture(Ok(Some(observed)))),
+        );
+        let mut diagnostics = Diagnostics::default();
+        let result = resource
+            .read(
+                &mut diagnostics,
+                state(prior.clone()),
+                Value::Null,
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.0, state(prior.clone()));
+        assert_eq!(diagnostics.errors.is_empty(), source == "bound-service");
+    }
+}
+
+#[tokio::test]
+async fn changing_from_cluster_to_external_inference_replaces_the_owned_profile() {
+    let resource = ResourceAdapter::new(
+        support::definition("provider_profile", &["endpoint", "cluster_source"], &[]),
+        Arc::new(Fixture(Ok(None))),
+    );
+    let prior = state(Row::from([
+        ("id".into(), "owned/profile/1".into()),
+        ("endpoint".into(), "http://model.agents.svc:8000/v1".into()),
+        ("cluster_source".into(), "owned-cluster-storage".into()),
+    ]));
+    for omit in [true, false] {
+        let mut proposed = prior.clone();
+        proposed.insert(
+            "endpoint".into(),
+            Value::Value("https://inference.example/v1".into()),
+        );
+        let mut config = proposed.clone();
+        if omit {
+            config.remove("cluster_source");
+        } else {
+            config.insert("cluster_source".into(), Value::Null);
+        }
+        let mut diagnostics = Diagnostics::default();
+        let (planned, _, replacements) = resource
+            .plan_update(
+                &mut diagnostics,
+                prior.clone(),
+                proposed,
+                config,
+                Value::Null,
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        assert!(diagnostics.errors.is_empty(), "{diagnostics:?}");
+        assert_eq!(planned["cluster_source"], Value::Value(String::new()));
+        assert_eq!(
+            replacements.len(),
+            2,
+            "endpoint and cluster provenance require profile replacement"
+        );
+    }
+    let mut diagnostics = Diagnostics::default();
+    let (planned, _, replacements) = resource
+        .plan_update(
+            &mut diagnostics,
+            prior.clone(),
+            prior.clone(),
+            prior.clone(),
+            Value::Null,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    assert!(diagnostics.errors.is_empty(), "{diagnostics:?}");
+    assert_eq!(
+        planned, prior,
+        "an explicit unchanged cluster source remains bound"
+    );
+    assert!(replacements.is_empty());
+}
+
+#[tokio::test]
 async fn removing_credential_reference_plans_unauthenticated_replacement() {
     let resource = ResourceAdapter::new(
         support::definition(
@@ -512,39 +606,4 @@ async fn removing_credential_reference_plans_unauthenticated_replacement() {
     assert!(diagnostics.errors.is_empty());
     assert_eq!(planned["credential_env"], Value::Value(String::new()));
     assert_eq!(replacements.len(), 1);
-}
-
-#[tokio::test]
-async fn external_ollama_observation_names_the_authored_upstream_without_url_credentials() {
-    for upstream in [
-        "http://127.0.0.1:11434/v1",
-        "http://[::1]:11434/v1",
-        "http://user:PRIVATE_URL@127.0.0.1:11434/v1",
-    ] {
-        let resource = ResourceAdapter::new(
-            support::definition(
-                "ollama_external_model",
-                &["name", "owner", "generation", "upstream"],
-                &[],
-            ),
-            Arc::new(Fixture(Err(ObservationError::Incomplete))),
-        );
-        let mut values = row();
-        values.insert(
-            "name".into(),
-            "nc-1234567890abcdef-ollama-proxy-local".into(),
-        );
-        values.insert("upstream".into(), upstream.into());
-        let mut diagnostics = Diagnostics::default();
-        resource
-            .read(&mut diagnostics, state(values), Value::Null, Value::Null)
-            .await;
-        let text = format!("{diagnostics:?}");
-        assert!(text.contains("services.local.upstream"), "{text}");
-        assert!(text.contains("observation is incomplete"), "{text}");
-        if !upstream.contains("PRIVATE_") {
-            assert!(text.contains(upstream), "{text}");
-        }
-        assert!(!text.contains("PRIVATE_"), "{text}");
-    }
 }

@@ -8,11 +8,15 @@ mod tests;
 
 pub mod agent;
 mod client;
+mod composite;
 mod connected;
+#[cfg(feature = "installation")]
+mod external_inference;
 mod gateway_source;
 mod network;
 mod profile;
 mod provider;
+pub use nemoclaw_openshell::pairs::{inference_rows, web_search_rows};
 pub use nemoclaw_openshell::{policy::policy_json, profile::definition as inference_profile};
 mod inference;
 use inference::{PROVIDERS_ENV, inference_environment};
@@ -29,6 +33,63 @@ use openshell_sdk::raw::proto;
 pub use provider::OpenShellProvider;
 use transport::ConnectedOpenShellGateway;
 pub use transport::{OpenShell, RESPONSE_LIMIT, SandboxPhase};
+
+/// Deployment-owned inference service identity and credential checks.
+#[async_trait::async_trait]
+pub trait Services: Send + Sync {
+    fn validate_credential_source(
+        &self,
+        source: &str,
+        owner: &str,
+        endpoint: &str,
+    ) -> Result<(), ObservationError>;
+    async fn resolve_credential_source(
+        &self,
+        source: &str,
+        owner: &str,
+        endpoint: &str,
+    ) -> Result<String, ObservationError>;
+    /// Verify the retained source owner, exact endpoint, and authentication mode.
+    fn validate_cluster_source(&self, row: &Row) -> Result<(), ObservationError>;
+    /// Observe addresses only after verifying the retained Service identity.
+    async fn cluster_addresses(&self, row: &Row)
+    -> Result<Vec<std::net::IpAddr>, ObservationError>;
+}
+
+/// Docker credentials for callers without managed cluster services.
+pub struct DockerServices;
+
+#[async_trait::async_trait]
+impl Services for DockerServices {
+    fn validate_credential_source(
+        &self,
+        source: &str,
+        owner: &str,
+        endpoint: &str,
+    ) -> Result<(), ObservationError> {
+        nemoclaw_docker::credentials::Source::parse(source, owner, endpoint).map(|_| ())
+    }
+
+    async fn resolve_credential_source(
+        &self,
+        source: &str,
+        owner: &str,
+        endpoint: &str,
+    ) -> Result<String, ObservationError> {
+        nemoclaw_docker::credentials::resolve(&nemoclaw_docker::credentials::Source::parse(
+            source, owner, endpoint,
+        )?)
+        .await
+    }
+
+    fn validate_cluster_source(&self, _: &Row) -> Result<(), ObservationError> {
+        Err(ObservationError::BindingMismatch)
+    }
+
+    async fn cluster_addresses(&self, _: &Row) -> Result<Vec<std::net::IpAddr>, ObservationError> {
+        Err(ObservationError::BindingMismatch)
+    }
+}
 
 pub const OWNER: &str = "nemoclaw.nvidia.com/uid";
 pub const GENERATION: &str = "nemoclaw.nvidia.com/generation";
@@ -101,6 +162,7 @@ fn provider_row(
     response: proto::ProviderResponse,
     name: &str,
     removing: bool,
+    services: &dyn Services,
 ) -> Result<Row, ObservationError> {
     let provider = response.provider.ok_or(ObservationError::Incomplete)?;
     if nemoclaw_openshell::search::SearchProvider::from_profile(&provider.r#type).is_some() {
@@ -143,7 +205,7 @@ fn provider_row(
         if !credential.is_empty() {
             return Err(ObservationError::BindingMismatch);
         }
-        nemoclaw_docker::credentials::Source::parse(&source, &row["owner"], endpoint)?;
+        services.validate_credential_source(&source, &row["owner"], endpoint)?;
     }
     row.insert("profile_name".into(), String::new());
     row.insert("credential_source".into(), source);
@@ -164,28 +226,19 @@ fn sandbox_row(
     response: proto::SandboxResponse,
     name: &str,
     removing: bool,
-) -> Result<(Row, bool), ObservationError> {
+) -> Result<(Row, bool, network::ClusterGrants), ObservationError> {
     let sandbox = response.sandbox.ok_or(ObservationError::Incomplete)?;
     let meta = sandbox
         .metadata
         .as_ref()
         .ok_or(ObservationError::Incomplete)?;
-    let agent = meta
-        .labels
-        .get(AGENT)
-        .filter(|v| !v.is_empty())
-        .ok_or(ObservationError::Incomplete)?;
-    let runtime = meta.labels.get(AGENT_RUNTIME).cloned().unwrap_or_default();
-    if runtime != "fabric" {
-        return Err(ObservationError::Incomplete);
-    }
     let spec = sandbox.spec.ok_or(ObservationError::Incomplete)?;
     let image = spec.template.ok_or(ObservationError::Incomplete)?.image;
     let environment: Row = spec.environment.into_iter().collect();
     let inference = environment.get(PROVIDERS_ENV).cloned().unwrap_or_default();
-    let runtime_json = meta
+    let launch_json = meta
         .annotations
-        .get(agent::RUNTIME)
+        .get(agent::LAUNCH)
         .ok_or(ObservationError::Incomplete)?
         .clone();
     let policy_input = meta
@@ -193,26 +246,23 @@ fn sandbox_row(
         .get(agent::POLICY)
         .ok_or(ObservationError::Incomplete)?
         .clone();
-    let binding = nemoclaw_openshell::runtime::RuntimeBinding::from_json(&runtime_json)?;
+    let launch = nemoclaw_openshell::runtime::Launch::from_json(&launch_json)?;
     let input: nemoclaw_openshell::runtime::PolicyInput =
         serde_json::from_str(&policy_input).map_err(|_| ObservationError::Incomplete)?;
-    let mut expected_environment = binding.environment(agent);
+    let mut expected_environment = launch.environment.clone();
     if !inference.is_empty() {
         expected_environment.insert(PROVIDERS_ENV.into(), inference.clone());
     }
-    if policy_json(spec.policy.as_ref().ok_or(ObservationError::Incomplete)?)?
-        != policy_json(&binding.policy(&input)?)?
-    {
+    let observed_policy = spec.policy.as_ref().ok_or(ObservationError::Incomplete)?;
+    let grants = network::recorded_grants(&input, observed_policy)?;
+    if policy_json(observed_policy)? != policy_json(&launch.granted_policy(&input, &grants)?)? {
         return Err(ObservationError::BindingMismatch);
     }
-    let expected_providers = inference::provider_names(&inference, &runtime)?;
+    let expected_providers = inference::provider_names(&inference)?;
     if spec.providers != expected_providers {
         return Err(ObservationError::BindingMismatch);
     }
-    if image.is_empty()
-        || spec.command != binding.command("serve", &["--agent", agent])
-        || environment != expected_environment
-    {
+    if image.is_empty() || spec.command != launch.command || environment != expected_environment {
         return Err(ObservationError::BindingMismatch);
     }
     let phase = sandbox.status.ok_or(ObservationError::Incomplete)?.phase;
@@ -222,14 +272,12 @@ fn sandbox_row(
     }
     let ready = phase == proto::SandboxPhase::Ready && meta.deletion_time.is_none();
     let mut row = base(sandbox.metadata.clone(), name, removing)?;
-    row.insert("agent_name".into(), agent.clone());
-    row.insert("agent_runtime".into(), runtime);
     row.insert("provider_names_json".into(), inference);
     row.insert("image".into(), image);
     row.insert("policy_json".into(), policy_input);
-    row.insert("runtime_json".into(), runtime_json);
+    row.insert("launch_json".into(), launch_json);
     // Phase is used by active checks, but is not a Terraform schema attribute.
-    Ok((row, ready))
+    Ok((row, ready, grants))
 }
 fn active_policy(
     response: proto::GetSandboxPolicyStatusResponse,
@@ -252,6 +300,24 @@ fn active_policy(
     Ok(())
 }
 
+async fn checked_sandbox_row_with<F>(
+    response: proto::SandboxResponse,
+    workspace: &str,
+    name: &str,
+    removing: bool,
+    check: impl FnOnce(Row) -> F,
+) -> Result<(Row, bool, network::ClusterGrants), ObservationError>
+where
+    F: std::future::Future<Output = Result<network::ClusterGrants, ObservationError>>,
+{
+    let (mut row, ready, grants) = sandbox_row(response, name, removing)?;
+    row.insert("workspace".into(), workspace.into());
+    if !removing && check(row.clone()).await? != grants {
+        return Err(ObservationError::BindingMismatch);
+    }
+    Ok((row, ready, grants))
+}
+
 mod mutation;
 pub fn verify_identity(expected: &Row, observed: &Row) -> Result<(), ObservationError> {
     for field in ["owner", "generation"] {
@@ -269,8 +335,25 @@ pub fn verify_identity(expected: &Row, observed: &Row) -> Result<(), Observation
     Ok(())
 }
 
+/// The registration a provider row registers: its name.
+fn provider_registration(known: &Row, unknown: &[&str]) -> Option<String> {
+    (!unknown.contains(&"name")).then(|| known.get("name").cloned().unwrap_or_default())
+}
+
+/// The registration a web search row registers, derived from the inputs that
+/// name it.
+fn web_search_registration(known: &Row, unknown: &[&str]) -> Option<String> {
+    if ["name", "provider_type", "credential_env"]
+        .iter()
+        .any(|field| unknown.contains(field))
+    {
+        return None;
+    }
+    nemoclaw_openshell::registration_name(composite::WEB_SEARCH, known)
+}
+
 /// OpenShell objects and their planning rules.
-pub fn definitions() -> [nemoclaw_tofu::Definition; 4] {
+pub fn definitions() -> [nemoclaw_tofu::Definition; 6] {
     use nemoclaw_tofu::Definition;
     [
         Definition::new("workspace", &["name", "owner", "generation"], &[]),
@@ -300,7 +383,58 @@ pub fn definitions() -> [nemoclaw_tofu::Definition; 4] {
         ])
         // Omission selects the default, not the previous selection.
         .reset_when_omitted(&["credential_env", "credential_source", "provider_type"])
-        .replaces(authentication_mode_changes),
+        .replaces(authentication_mode_changes)
+        .derived("registration", provider_registration),
+        // A web search provider's profile and registration, as one resource
+        // whose owner is its workspace's. Every input names them, so changes
+        // replace. `credential_env` and `binaries` are required by plans,
+        // not the schema: an observation reports them empty when their half
+        // of the pair is missing, which shows as drift.
+        Definition::new(
+            composite::WEB_SEARCH,
+            &[
+                "workspace",
+                "name",
+                "owner",
+                "generation",
+                "provider_type",
+                "credential_env",
+                "binaries_json",
+            ],
+            &[],
+        )
+        .optional(&["credential_env", "binaries_json"])
+        .derived("registration", web_search_registration),
+        // An inference server's profile and registration, as one resource
+        // whose owner is its workspace's and whose endpoint and credential
+        // come from the server's ref. Every input names them, so changes
+        // replace. The schema lists the server's fields and `binaries` as
+        // optional, and plans require them, for the same reason as web
+        // search's.
+        Definition::new(
+            composite::INFERENCE,
+            &[
+                "workspace",
+                "name",
+                "owner",
+                "generation",
+                "endpoint",
+                "credential_env",
+                "credential_source",
+                "api",
+                "binaries_json",
+                "cluster_source",
+            ],
+            &[],
+        )
+        .optional(&[
+            "endpoint",
+            "credential_env",
+            "credential_source",
+            "binaries_json",
+            "cluster_source",
+        ])
+        .derived("registration", provider_registration),
         Definition::new(
             "provider_profile",
             &[
@@ -312,11 +446,18 @@ pub fn definitions() -> [nemoclaw_tofu::Definition; 4] {
                 "provider_type",
                 "authenticated",
                 "binaries_json",
+                "cluster_source",
             ],
             &[],
         )
-        .optional(&["endpoint", "provider_type", "authenticated"])
-        .reset_when_omitted(&["provider_type"]),
+        .optional(&[
+            "endpoint",
+            "provider_type",
+            "authenticated",
+            "cluster_source",
+        ])
+        .reset_when_omitted(&["provider_type", "cluster_source"])
+        .bound_fields(&["cluster_source"]),
         Definition::new(
             "sandbox",
             &[
@@ -325,20 +466,32 @@ pub fn definitions() -> [nemoclaw_tofu::Definition; 4] {
                 "owner",
                 "generation",
                 "image",
-                "agent_name",
-                "agent_runtime",
+                "launch_json",
                 "policy_json",
-                "runtime_json",
                 "provider_names_json",
             ],
             &[],
         )
-        .optional(&["agent_runtime", "policy_json", "provider_names_json"]),
+        .optional(&["policy_json", "provider_names_json"]),
     ]
     .map(lifecycle_rules)
     .map(|mut definition| {
+        // Each object names the gateway that holds it; the gateway does not
+        // observe how it was reached, so rows carry the connection.
+        let gateway = nemoclaw_openshell::GATEWAY_FIELDS.map(|(_, field)| field);
+        definition.fields.extend(gateway);
+        // Credential and TLS references rotate in place; another endpoint is
+        // another gateway, which retained objects refuse.
+        definition.mutable.extend(&gateway[1..]);
+        definition.optional.extend(&gateway[1..]);
+        definition.carried.extend(gateway);
         definition.structured = nemoclaw_openshell::structured_inputs(definition.kind);
+        definition.export = nemoclaw_openshell::export(definition.kind);
+        definition.references = nemoclaw_openshell::references(definition.kind);
+        // Version 1 took refs instead of names; version 2 takes a generic
+        // launch instead of a Fabric runtime binding. Earlier state is rejected.
         definition
+            .schema_version(2)
             .generated("owner", nemoclaw_backend::generate_owner)
             .generated("generation", nemoclaw_backend::generate_generation)
     })

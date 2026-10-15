@@ -146,10 +146,117 @@ pub fn remote_error(status: &tonic::Status) -> ObservationError {
     }
 }
 
+/// Gateway operations whose requests contain no credentials, so a definitive
+/// rejection can report the gateway's bounded, sanitized message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RejectableOperation {
+    CreateWorkspace,
+    CreateSandbox,
+    DeleteProvider,
+    DeleteProviderProfile,
+}
+
+impl RejectableOperation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::CreateWorkspace => "CreateWorkspace",
+            Self::CreateSandbox => "CreateSandbox",
+            Self::DeleteProvider => "DeleteProvider",
+            Self::DeleteProviderProfile => "DeleteProviderProfile",
+        }
+    }
+}
+
+/// A definitive rejection of `operation` with the gateway's sanitized message;
+/// any other status is classified as by [`remote_error`].
+pub fn remote_rejection(
+    operation: RejectableOperation,
+    status: &tonic::Status,
+) -> ObservationError {
+    let code = match status.code() {
+        tonic::Code::FailedPrecondition => "FailedPrecondition",
+        tonic::Code::InvalidArgument => "InvalidArgument",
+        tonic::Code::AlreadyExists => "AlreadyExists",
+        tonic::Code::OutOfRange => "OutOfRange",
+        tonic::Code::ResourceExhausted => "ResourceExhausted",
+        _ => return remote_error(status),
+    };
+    ObservationError::Rejected {
+        operation: operation.name(),
+        code,
+        detail: ObservationError::sanitized_detail(status.message()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tonic::service::Interceptor;
+
+    #[test]
+    fn live_endpoint_ambiguity_keeps_its_conflict_kind() {
+        let detail = "network endpoint ambiguity validation failed: network policies 'nemoclaw-inference-qwen-example' endpoint[0] (nc-0123456789abcdef-model-0123456789abcdef.agents.svc.cluster.local:18888/v1/**) and '_provider_qwen_example' endpoint[0] (nc-0123456789abcdef-model-0123456789abcdef.agents.svc.cluster.local:18888/v1/**) overlap on port(s) 18888 with conflicting metadata: allowed_ips=[] vs [\"10.96.189.228/32\"]";
+        let error = remote_rejection(
+            RejectableOperation::CreateSandbox,
+            &tonic::Status::failed_precondition(detail),
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting metadata: allowed_ips=[]")
+        );
+        assert!(error.to_string().contains("CreateSandbox"));
+    }
+
+    #[test]
+    fn definitive_rejections_keep_bounded_gateway_text_and_other_statuses_stay_fixed() {
+        for operation in [
+            RejectableOperation::CreateWorkspace,
+            RejectableOperation::CreateSandbox,
+            RejectableOperation::DeleteProvider,
+            RejectableOperation::DeleteProviderProfile,
+        ] {
+            for code in [
+                tonic::Code::FailedPrecondition,
+                tonic::Code::InvalidArgument,
+                tonic::Code::AlreadyExists,
+                tonic::Code::OutOfRange,
+                tonic::Code::ResourceExhausted,
+            ] {
+                let status = tonic::Status::new(
+                    code,
+                    format!("validation failed\n{}", "detail ".repeat(300)),
+                );
+                let error = remote_rejection(operation, &status);
+                let ObservationError::Rejected { detail, .. } = error else {
+                    panic!("missing operation rejection");
+                };
+                assert!(detail.len() <= 1024);
+                assert!(detail.bytes().all(|byte| (b' '..=b'~').contains(&byte)));
+            }
+        }
+        for code in [
+            tonic::Code::Unknown,
+            tonic::Code::Internal,
+            tonic::Code::Unauthenticated,
+            tonic::Code::PermissionDenied,
+            tonic::Code::Unavailable,
+            tonic::Code::DeadlineExceeded,
+            tonic::Code::Cancelled,
+            tonic::Code::NotFound,
+        ] {
+            let status = tonic::Status::new(code, "credential-sentinel");
+            assert_eq!(
+                remote_rejection(RejectableOperation::CreateSandbox, &status),
+                remote_error(&status)
+            );
+            assert!(
+                !remote_rejection(RejectableOperation::CreateSandbox, &status)
+                    .to_string()
+                    .contains("credential-sentinel")
+            );
+        }
+    }
 
     #[test]
     fn authentication_keeps_the_bearer_sensitive_and_requests_bounded() {

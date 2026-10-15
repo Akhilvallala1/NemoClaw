@@ -25,18 +25,34 @@ pub struct TofuWorkspace {
 }
 
 impl TofuWorkspace {
-    /// A workspace whose OpenTofu is the bundle's and uses the `nemoclaw`
-    /// provider at `nemoclaw` and the bundle's `openshell` and `fabric`
-    /// providers.
-    pub fn new(bundle: &Bundle, nemoclaw: impl AsRef<Path>) -> Self {
-        Self::with_providers(
-            bundle.tofu(),
-            &[
-                ("nemoclaw", nemoclaw.as_ref()),
-                ("openshell", &bundle.provider("openshell")),
-                ("fabric", &bundle.provider("fabric")),
-            ],
-        )
+    /// A workspace whose OpenTofu and NVIDIA providers are the bundle's, so
+    /// compiled graphs find every provider they require.
+    pub fn new(bundle: &Bundle) -> Self {
+        Self::bundled(bundle, None)
+    }
+
+    /// A workspace like [`Self::new`] that also serves a test fixture
+    /// provider, `fixture`, as `registry.opentofu.org/nvidia/nemoclaw`.
+    pub fn with_fixture(bundle: &Bundle, fixture: impl AsRef<Path>) -> Self {
+        Self::bundled(bundle, Some(fixture.as_ref()))
+    }
+
+    fn bundled(bundle: &Bundle, fixture: Option<&Path>) -> Self {
+        let providers = [
+            ("openshell", bundle.provider("openshell")),
+            ("fabric", bundle.provider("fabric")),
+            ("vllm", bundle.provider("vllm")),
+            ("ollama", bundle.provider("ollama")),
+            ("host", bundle.provider("host")),
+        ];
+        let mut providers: Vec<(&str, &Path)> = providers
+            .iter()
+            .map(|(name, path)| (*name, path.as_path()))
+            .collect();
+        if let Some(fixture) = fixture {
+            providers.push(("nemoclaw", fixture));
+        }
+        Self::with_providers(bundle.tofu(), &providers)
     }
 
     /// A workspace whose OpenTofu uses only the given `(name, executable)`
@@ -105,7 +121,13 @@ mod tests {
             let staged = workspace
                 .path()
                 .join(crate::executable("terraform-provider-nemoclaw"));
-            let output = Command::new(&staged).output().unwrap();
+            // OpenTofu executes the staged provider, so staging must keep the
+            // executable bit even though this test runs it through /bin/sh.
+            assert_ne!(
+                fs::metadata(&staged).unwrap().permissions().mode() & 0o111,
+                0
+            );
+            let output = Command::new("/bin/sh").arg(&staged).output().unwrap();
             assert!(output.status.success());
             assert_eq!(output.stdout, selected.as_bytes());
             assert_eq!(fs::read_to_string(&provider).unwrap(), script);

@@ -48,6 +48,9 @@ pub mod services;
 mod state;
 pub use nemoclaw_backend::Error;
 pub mod bundle;
+#[cfg(all(test, unix))]
+#[path = "../../test-support/executable.rs"]
+mod executable;
 mod process;
 pub use tokio_util::sync::CancellationToken;
 mod deployment;
@@ -75,5 +78,6 @@ pub mod discovery;
 
 mod discovery_graph;
 
+mod inference_catalog;
 /// Read-only inference metadata and direct credential availability.
 pub mod inference_discovery;

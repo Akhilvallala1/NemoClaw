@@ -23,7 +23,8 @@ pub(crate) fn address(logical: &str) -> String {
         "ollama_service_storage",
         "container_storage",
     ] {
-        if let Some(name) = logical.strip_prefix(&format!("nemoclaw_{kind}."))
+        if let Some(name) =
+            logical.strip_prefix(&format!("{}.", crate::compile::resource_type(kind)))
             && !name.ends_with("_auth")
         {
             return format!("docker_volume.{kind}_{name}");
@@ -36,7 +37,9 @@ pub(crate) fn address(logical: &str) -> String {
         "managed_gateway",
         "container_service",
     ] {
-        if let Some(name) = logical.strip_prefix(&format!("nemoclaw_{kind}.")) {
+        if let Some(name) =
+            logical.strip_prefix(&format!("{}.", crate::compile::resource_type(kind)))
+        {
             return format!("docker_container.{kind}_{name}");
         }
     }
@@ -254,7 +257,33 @@ fn container(target: &Target) -> Result<Value, Error> {
     if process.gpu {
         attrs["gpus"] = json!("all");
     }
+    // Labels force replacement because Docker provider v4.6.0 updates limits in
+    // place: its Update omits CFS quota, and lowering memory on a running
+    // container can OOM-kill the model. Its `cpus` formatter also loses some
+    // fractions, so CPU uses an integer quota:
+    // https://github.com/kreuzwerker/terraform-provider-docker/blob/v4.6.0/internal/provider/resource_docker_container_funcs.go
+    if let Some(limit) = process.cpu_limit_millis {
+        attrs["cpu_period"] = json!(crate::managed::CPU_PERIOD_MICROS);
+        attrs["cpu_quota"] = json!(crate::managed::cpu_quota_micros(limit));
+        push_label(&mut attrs, "nemoclaw.nvidia.com/cpu-limit-millis", limit);
+    }
+    // Containers created before memory limits were configurable used the
+    // default and have no label; keep them unchanged.
+    let memory_gib = process.memory_bytes / nemoclaw_runtime::hardware::GIB;
+    if memory_gib != crate::services::installers::vllm::DEFAULT_MEMORY_LIMIT_GIB {
+        push_label(
+            &mut attrs,
+            "nemoclaw.nvidia.com/memory-limit-gib",
+            memory_gib,
+        );
+    }
     Ok(attrs)
+}
+fn push_label(attrs: &mut Value, label: &str, value: impl ToString) {
+    attrs["labels"]
+        .as_array_mut()
+        .expect("container attributes start with an owner label")
+        .push(json!({"label": label, "value": value.to_string()}));
 }
 pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> {
     let mut providers = BTreeMap::new();
@@ -375,15 +404,15 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
                 .1
                 .to_owned();
             literal(&mut settings);
-            graph["data"][format!("nemoclaw_{source}")][&logical] = settings;
-            attrs["env"] = json!([format!(
-                "{variable}=${{data.nemoclaw_{source}.{logical}.spec}}"
-            )]);
+            let source = crate::compile::data_source_type(source);
+            graph["data"][&source][&logical] = settings;
+            attrs["env"] = json!([format!("{variable}=${{data.{source}.{logical}.spec}}")]);
         }
         if target.kind == crate::managed::GATEWAY_KIND {
             // The launch comes from typed settings and the storage's data path.
             let gateway = spec(target)?;
-            let source = format!("nemoclaw_{}", crate::managed::GATEWAY_RUNTIME_DATA_SOURCE);
+            let source =
+                crate::compile::data_source_type(crate::managed::GATEWAY_RUNTIME_DATA_SOURCE);
             let logical = address(&target.address)
                 .split_once('.')
                 .ok_or(Error::State("invalid gateway address"))?
@@ -391,7 +420,7 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
                 .to_owned();
             let mut settings = json!({"name": gateway.name, "endpoint": gateway.gateway.endpoint});
             literal(&mut settings);
-            settings["data_path"] = json!("${nemoclaw_gateway_storage.runtime.data_path}");
+            settings["data_path"] = json!("${openshell_gateway_storage.runtime.data_path}");
             graph["data"][&source][&logical] = settings;
             for attribute in ["entrypoint", "command", "env"] {
                 attrs[attribute] = json!(format!("${{data.{source}.{logical}.{attribute}}}"));
@@ -401,7 +430,7 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
                     Value::String(text) => {
                         *text = text.replace(
                             "/NEMOCLAW_GATEWAY_DATA",
-                            "${nemoclaw_gateway_storage.runtime.data_path}",
+                            "${openshell_gateway_storage.runtime.data_path}",
                         )
                     }
                     Value::Array(items) => items.iter_mut().for_each(storage_path),
@@ -428,7 +457,7 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
         }
         let image = image(target)?;
         if target.kind == crate::managed::GATEWAY_KIND {
-            graph["resource"]["nemoclaw_gateway_storage"]["runtime"]["depends_on"] =
+            graph["resource"]["openshell_gateway_storage"]["runtime"]["depends_on"] =
                 json!([image.address]);
         }
         let attribute = if image.kind == "docker_image_data" {
@@ -502,12 +531,12 @@ fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
             "image": service.image(),
             "architecture": process.architecture,
             "labels": process.image_labels,
-            "contract": if process.image_owned.is_some() { "application" } else { "runtime" },
+            "require_healthcheck": process.image_owned.is_some(),
             "allow_missing": image.kind == "docker_image",
         });
         literal(&mut config);
-        graph["data"]["nemoclaw_runtime_image"][&present] = config.clone();
-        let present_address = format!("data.nemoclaw_runtime_image.{present}");
+        graph["data"]["host_image"][&present] = config.clone();
+        let present_address = format!("data.host_image.{present}");
         let attribute = if image.kind == "docker_image_data" {
             "id"
         } else {
@@ -515,7 +544,7 @@ fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
         };
         config["image_id"] = json!(format!("${{{}.{attribute}}}", image.address));
         config["allow_missing"] = json!(false);
-        graph["data"]["nemoclaw_runtime_image"][&acquired] = config;
+        graph["data"]["host_image"][&acquired] = config;
         if image.kind == "docker_image" {
             let name = image.address.split_once('.').unwrap().1;
             add_dependencies(
@@ -523,7 +552,7 @@ fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
                 &[json!(present_address)],
             );
         }
-        gates.push(json!(format!("data.nemoclaw_runtime_image.{acquired}")));
+        gates.push(json!(format!("data.host_image.{acquired}")));
     }
     if !gates.is_empty()
         && let Some(resources) = graph["resource"].as_object_mut()
@@ -573,7 +602,7 @@ mod tests {
         let cache = &graph["resource"]["docker_volume"]["inference_storage_inference_qwen"];
         assert!(cache["name"].as_str().unwrap().ends_with("-data"));
         assert_eq!(cache["lifecycle"]["prevent_destroy"], true);
-        assert!(graph["resource"]["nemoclaw_inference_storage"].is_null());
+        assert!(graph["resource"]["vllm_credential_storage"].is_null());
         let mounts =
             &graph["resource"]["docker_container"]["inference_service_inference_qwen"]["mounts"];
         assert_eq!(
@@ -602,7 +631,7 @@ mod tests {
         assert_eq!(mounts[0]["target"], "/data");
         assert_eq!(mounts[1]["target"], "/credentials");
         assert_ne!(mounts[0]["source"], mounts[1]["source"]);
-        let auth = &graph["resource"]["nemoclaw_inference_storage"]["inference_qwen_auth"];
+        let auth = &graph["resource"]["vllm_credential_storage"]["inference_qwen_auth"];
         assert!(auth["name"].as_str().unwrap().ends_with("-auth"));
         assert_eq!(auth["lifecycle"]["prevent_destroy"], true);
     }
@@ -618,7 +647,7 @@ mod tests {
         let gateway = &graph["resource"]["docker_container"]["managed_gateway_runtime"];
         let storage = Spec::from_values(
             crate::managed::GATEWAY_STORAGE_KIND,
-            &graph["resource"]["nemoclaw_gateway_storage"]["runtime"]
+            &graph["resource"]["openshell_gateway_storage"]["runtime"]
                 .as_object()
                 .unwrap()
                 .iter()
@@ -628,16 +657,16 @@ mod tests {
         .unwrap();
         let endpoint = document.spec.gateway.endpoint();
         let gateway_port = url::Url::parse(endpoint).unwrap().port().unwrap();
-        let launch = "data.nemoclaw_gateway_runtime.managed_gateway_runtime";
+        let launch = "data.openshell_docker_gateway_runtime.managed_gateway_runtime";
         for attribute in ["entrypoint", "command", "env"] {
             assert_eq!(gateway[attribute], format!("${{{launch}.{attribute}}}"));
         }
         assert_eq!(
-            graph["data"]["nemoclaw_gateway_runtime"]["managed_gateway_runtime"],
+            graph["data"]["openshell_docker_gateway_runtime"]["managed_gateway_runtime"],
             json!({
                 "name": gateway["name"],
                 "endpoint": endpoint,
-                "data_path": "${nemoclaw_gateway_storage.runtime.data_path}",
+                "data_path": "${openshell_gateway_storage.runtime.data_path}",
             })
         );
         assert!(gateway.get("network_mode").is_none());
@@ -652,7 +681,7 @@ mod tests {
         assert_eq!(gateway["user"], "0:0");
         assert_eq!(
             gateway["mounts"][0]["target"],
-            "${nemoclaw_gateway_storage.runtime.data_path}"
+            "${openshell_gateway_storage.runtime.data_path}"
         );
         assert_eq!(gateway["mounts"][1]["target"], "/var/run/docker.sock");
         assert_eq!(gateway["wait"], false);
@@ -660,13 +689,11 @@ mod tests {
         assert_eq!(
             gateway["depends_on"],
             json!([
-                "nemoclaw_gateway_storage.runtime",
-                "data.nemoclaw_runtime_image.runtime_image_acquired_inference_service_inference_qwen"
+                "openshell_gateway_storage.runtime",
+                "data.host_image.runtime_image_acquired_inference_service_inference_qwen"
             ])
         );
-        let gate = json!(
-            "data.nemoclaw_runtime_image.runtime_image_acquired_inference_service_inference_qwen"
-        );
+        let gate = json!("data.host_image.runtime_image_acquired_inference_service_inference_qwen");
         for (kind, resources) in graph["resource"].as_object().unwrap() {
             if kind != "docker_image" {
                 for resource in resources.as_object().unwrap().values() {
@@ -677,7 +704,7 @@ mod tests {
                 }
             }
         }
-        assert!(graph["resource"]["nemoclaw_managed_gateway"].is_null());
+        assert!(graph["resource"]["openshell_podman_gateway"].is_null());
         assert_eq!(storage.layout, 1);
         assert!(
             graph["resource"]["docker_network"].is_null(),
@@ -687,8 +714,8 @@ mod tests {
         *changed.spec.gateway.endpoint_mut() = "http://127.0.0.1:17682".into();
         let updated = crate::compile::compile_runtime(&changed, &generations, "0.1.0").unwrap();
         assert_eq!(
-            updated["resource"]["nemoclaw_gateway_storage"],
-            graph["resource"]["nemoclaw_gateway_storage"]
+            updated["resource"]["openshell_gateway_storage"],
+            graph["resource"]["openshell_gateway_storage"]
         );
     }
     #[test]
@@ -714,15 +741,15 @@ mod tests {
         assert!(graph["resource"]["docker_container"].is_null());
         assert_eq!(
             graph["data"]["openshell_gateway"]["current"]["depends_on"],
-            json!(["nemoclaw_managed_gateway.runtime"])
+            json!(["openshell_podman_gateway.runtime"])
         );
         assert_eq!(
-            graph["resource"]["nemoclaw_managed_gateway"]["runtime"]["image_pull_policy"],
+            graph["resource"]["openshell_podman_gateway"]["runtime"]["image_pull_policy"],
             "Always"
         );
         let storage = Spec::from_values(
             crate::managed::GATEWAY_STORAGE_KIND,
-            &graph["resource"]["nemoclaw_gateway_storage"]["runtime"]
+            &graph["resource"]["openshell_gateway_storage"]["runtime"]
                 .as_object()
                 .unwrap()
                 .iter()
@@ -796,7 +823,7 @@ mod tests {
         assert!(is_disposable(
             "docker_container.inference_service_inference_qwen"
         ));
-        assert!(!is_disposable("nemoclaw_inference_storage.inference_qwen"));
+        assert!(!is_disposable("vllm_credential_storage.inference_qwen"));
     }
     #[test]
     fn omitted_image_policy_uses_provider_acquisition_and_never_only_reads_local_images() {

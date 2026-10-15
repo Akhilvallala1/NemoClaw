@@ -42,10 +42,10 @@ fn declared_services_install_once_and_service_ref_selects_the_inference_connecti
             .any(|target| target.address == "docker_container.ollama_service_unused")
     );
     let graph = compile(&document, &generations, "0.1.0").unwrap();
-    assert_eq!(
-        provider_scope::resource(&graph["resource"]["openshell_provider_profile"], "local")["authenticated"],
-        "false"
-    );
+    let server =
+        &provider_scope::resource(&graph["resource"]["openshell_inference"], "local")["server"];
+    assert_eq!(server["credential_env"], "");
+    assert_eq!(server["credential_source"], "");
     assert_eq!(
         document.inference_endpoint().unwrap(),
         "http://172.20.0.1:18888/v1"
@@ -178,8 +178,20 @@ fn container_service_uses_shared_compute_without_an_inference_consumer() {
     assert!(!container.to_string().contains("NEMOCLAW_RUNTIME_SPEC"));
     let volume = &graph["resource"]["docker_volume"]["container_storage_voice"];
     assert_ne!(volume["lifecycle"]["prevent_destroy"], true);
-    let readiness = &graph["data"]["nemoclaw_service_readiness"]["container_service_voice"];
+    let readiness = &graph["data"]["host_container_health"]["container_service_voice"];
     assert_eq!(readiness["wait_timeout_seconds"], 300);
+    assert_eq!(
+        readiness["labels"][nemoclaw_sdk::managed::OWNER_LABEL],
+        document.metadata.uid
+    );
+    assert!(
+        graph["data"]["host_image"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|check| check["image"] == container_service()["image"]
+                && check["require_healthcheck"] == true)
+    );
     assert_eq!(
         readiness["container_id"],
         "${docker_container.container_service_voice.id}"
@@ -203,7 +215,7 @@ fn container_service_uses_shared_compute_without_an_inference_consumer() {
     let established = [
         "docker_container.container_service_voice",
         "docker_volume.container_storage_voice",
-        "nemoclaw_workspace.deployment",
+        "openshell_workspace.deployment",
     ]
     .map(String::from)
     .into();
@@ -292,9 +304,7 @@ fn container_dependencies_require_declared_services_and_reject_cycles() {
         graph["resource"]["docker_container"]["container_service_second"]["depends_on"]
             .as_array()
             .unwrap()
-            .contains(&json!(
-                "data.nemoclaw_service_readiness.container_service_first"
-            ))
+            .contains(&json!("data.host_container_health.container_service_first"))
     );
     for dependencies in [
         json!(["missing"]),
@@ -387,15 +397,14 @@ async fn resolved_backend_can_be_used_directly_and_preserves_explicit_destroy_gu
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
     let row = [("engine".into(), format!("unix://{}", socket.display()))].into();
-    for kind in ["ollama_proxy_storage", "ollama_external_model"] {
-        let backend: Box<dyn Backend> = registry.resolve(kind, &row).unwrap().unwrap();
-        assert_eq!(
-            backend.remove(kind, &row, false).await,
-            Err(ObservationError::Backend(
-                "proxy deletion requires explicit destroy"
-            ))
-        );
-    }
+    let kind = "ollama_proxy_storage";
+    let backend: Box<dyn Backend> = registry.resolve(kind, &row).unwrap().unwrap();
+    assert_eq!(
+        backend.remove(kind, &row, false).await,
+        Err(ObservationError::Backend(
+            "proxy deletion requires explicit destroy"
+        ))
+    );
     assert_eq!(
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock

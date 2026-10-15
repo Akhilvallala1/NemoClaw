@@ -7,7 +7,9 @@
 
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     fs,
+    io::Read,
     path::Path,
     process::{Command, Stdio},
     time::Duration,
@@ -62,14 +64,30 @@ fn status(command: &mut Command, what: &str) -> Result<()> {
 /// `platform`, and that manifest's config, each kept as its exact bytes.
 /// Layers and attestations are left out, so the bundle stays small.
 pub fn metadata_bundle(archive: &[u8], platform: &str) -> Result<Vec<u8>> {
-    use sha2::{Digest, Sha256};
-    use std::{collections::BTreeMap, io::Read};
-    let (os, architecture) = platform
-        .split_once('/')
-        .ok_or("platform must be os/architecture")?;
-    let mut files = BTreeMap::new();
     let mut tar = tar::Archive::new(archive);
-    for entry in tar.entries().map_err(|_| "invalid image archive")? {
+    let files = metadata_files(tar.entries().map_err(|_| "invalid image archive")?)?;
+    Ok(bundle_from_files(files, platform, None)?.1)
+}
+
+/// Read a named image's metadata from a saved OCI archive, seeking past layers.
+/// Returns its root digest and the verified metadata bundle.
+pub fn archived_image_metadata(
+    archive: &Path,
+    image: &str,
+    platform: &str,
+) -> Result<(String, Vec<u8>)> {
+    let file = fs::File::open(archive).map_err(|_| "cannot open image archive")?;
+    let mut tar = tar::Archive::new(file);
+    let files = metadata_files(
+        tar.entries_with_seek()
+            .map_err(|_| "invalid image archive")?,
+    )?;
+    bundle_from_files(files, platform, Some(image))
+}
+
+fn metadata_files<R: Read>(entries: tar::Entries<'_, R>) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut files = BTreeMap::new();
+    for entry in entries {
         let mut entry = entry.map_err(|_| "invalid image archive entry")?;
         let path = entry
             .path()
@@ -85,6 +103,18 @@ pub fn metadata_bundle(archive: &[u8], platform: &str) -> Result<Vec<u8>> {
             files.insert(path, bytes);
         }
     }
+    Ok(files)
+}
+
+fn bundle_from_files(
+    files: BTreeMap<String, Vec<u8>>,
+    platform: &str,
+    image: Option<&str>,
+) -> Result<(String, Vec<u8>)> {
+    use sha2::{Digest, Sha256};
+    let (os, architecture) = platform
+        .split_once('/')
+        .ok_or("platform must be os/architecture")?;
     let blob = |digest: &str| -> Result<String> {
         let hex = digest
             .strip_prefix("sha256:")
@@ -105,12 +135,21 @@ pub fn metadata_bundle(archive: &[u8], platform: &str) -> Result<Vec<u8>> {
             .get("index.json")
             .ok_or("image archive lacks index.json")?,
     ))?;
-    let [entry] = outer["manifests"]
+    let entries = outer["manifests"]
         .as_array()
         .map(Vec::as_slice)
-        .unwrap_or_default()
-    else {
-        return Err("image archive must hold exactly one image".into());
+        .unwrap_or_default();
+    let matching: Vec<_> = entries
+        .iter()
+        .filter(|entry| {
+            image.is_none_or(|name| entry["annotations"]["io.containerd.image.name"] == name)
+        })
+        .collect();
+    let [entry] = matching.as_slice() else {
+        return Err(match image {
+            Some(name) => format!("image archive must hold exactly one entry for {name}"),
+            None => "image archive must hold exactly one image".into(),
+        });
     };
     let root = entry["digest"]
         .as_str()
@@ -150,10 +189,11 @@ pub fn metadata_bundle(archive: &[u8], platform: &str) -> Result<Vec<u8>> {
         return Err(format!("image manifest config does not match {platform}"));
     }
     blobs.insert(config, config_raw);
-    serde_json::to_vec(
+    let bundle = serde_json::to_vec(
         &serde_json::json!({"schema_version": 1, "manifest_digest": manifest, "blobs": blobs}),
     )
-    .map_err(|_| "cannot encode the image metadata bundle".into())
+    .map_err(|_| "cannot encode the image metadata bundle")?;
+    Ok((root, bundle))
 }
 
 /// Save `image` from the local Docker engine and write its metadata bundle
@@ -173,6 +213,28 @@ pub fn export_metadata(image: &str, platform: &str, output: &Path) -> Result<()>
     Ok(())
 }
 
+/// Harness images Bake's `agents` matrix builds for `platform`, in name order.
+fn platform_harnesses(root: &Path, platform: &str) -> Result<Vec<String>> {
+    // Bake prints progress on stderr; show it only when listing fails.
+    let listed = docker()
+        .current_dir(root)
+        .env("AGENT_PLATFORM", platform)
+        .args(["buildx", "bake", "--print", "agents"])
+        .output()
+        .map_err(|_| "cannot run docker to list the agent images".to_owned())?;
+    if !listed.status.success() {
+        eprint!("{}", String::from_utf8_lossy(&listed.stderr));
+        return Err(format!("docker failed to list the {platform} agent images"));
+    }
+    let plan: Value = serde_json::from_slice(&listed.stdout).map_err(|_| "unreadable bake plan")?;
+    Ok(plan["target"]
+        .as_object()
+        .ok_or("bake plan has no targets")?
+        .keys()
+        .cloned()
+        .collect())
+}
+
 /// Bake targets for `selection`, each with the tags it should publish locally.
 pub fn plan(
     root: &Path,
@@ -181,6 +243,37 @@ pub fn plan(
 ) -> Result<Vec<(String, Vec<String>)>> {
     if !PLATFORMS.contains(&platform) {
         return Err(format!("choose --platform {}", PLATFORMS.join(" or ")));
+    }
+    // Bake reports a harness outside this platform's matrix only as an unknown
+    // target. Name the platforms that build it instead; other selections, such
+    // as groups or the reference image, keep Bake's own resolution.
+    let supported = platform_harnesses(root, platform)?;
+    let unsupported: Vec<&String> = selection
+        .iter()
+        .filter(|name| !supported.contains(name))
+        .collect();
+    let others = if unsupported.is_empty() {
+        Vec::new()
+    } else {
+        PLATFORMS
+            .into_iter()
+            .filter(|other| *other != platform)
+            .map(|other| Ok((other, platform_harnesses(root, other)?)))
+            .collect::<Result<Vec<_>>>()?
+    };
+    for name in unsupported {
+        let building: Vec<&str> = others
+            .iter()
+            .filter(|(_, harnesses)| harnesses.contains(name))
+            .map(|(other, _)| *other)
+            .collect();
+        if !building.is_empty() {
+            return Err(format!(
+                "{name} is built only for {}; {platform} builds {} (docs/build.md#build-agent-images)",
+                building.join(" and "),
+                supported.join(", ")
+            ));
+        }
     }
     let printed = output(
         docker()

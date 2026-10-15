@@ -134,13 +134,15 @@ async fn missing_selected_provider_reconciles_without_sandbox_changes() {
         initial
             .changes
             .iter()
-            .find(|change| change
-                .resource
-                .starts_with("openshell_provider_registration."))
+            .find(|change| change.resource.starts_with("openshell_inference."))
             .unwrap()
             .resource
     );
-    assert_eq!(recreated.changes[0].actions, ["create"]);
+    // The profile survived without its registration, so the inference
+    // resource is replaced: removal deletes the profile and creation
+    // recreates both, identically because the graph sets the generation.
+    // The sandbox is unaffected.
+    assert_eq!(recreated.changes[0].actions, ["delete", "create"]);
     assert_eq!(fixture.state.lock().unwrap().sandboxes, sandbox);
     assert_eq!(fixture.state.lock().unwrap().profiles, profile);
     assert_eq!(fixture.state.lock().unwrap().providers.len(), 1);
@@ -334,7 +336,7 @@ async fn interrupted_create_preserves_pending_targets_allows_unrelated_intent_an
     let effects = fixture.state.lock().unwrap().effects;
     assert_eq!(effects, 4);
     let preview = deployment.plan_destroy(&cancel).await.unwrap();
-    assert_eq!(preview.changes.len(), 4);
+    assert_eq!(preview.changes.len(), 3);
     assert_eq!(fixture.state.lock().unwrap().effects, effects);
     let destroyed = Command::new(
         bundle
@@ -367,7 +369,7 @@ async fn interrupted_create_preserves_pending_targets_allows_unrelated_intent_an
             .unwrap()
             .changes
             .len(),
-        4
+        3
     );
 }
 
@@ -715,11 +717,7 @@ impl Lifecycle {
             .await
             .unwrap();
         assert_eq!(plan.changes.len(), 1);
-        assert!(
-            plan.changes[0]
-                .resource
-                .starts_with("fabric_agent_configuration.")
-        );
+        assert!(plan.changes[0].resource.starts_with("fabric_agent."));
         assert_eq!(plan.changes[0].actions, ["update"]);
         self.fixture.state.lock().unwrap().exec_exit = 2;
         assert!(
@@ -807,7 +805,7 @@ impl Lifecycle {
         assert!(
             plan.changes
                 .iter()
-                .any(|change| change.resource.starts_with("fabric_agent_configuration."))
+                .any(|change| change.resource.starts_with("fabric_agent."))
         );
         assert_eq!(self.fixture.state.lock().unwrap().effects, effects);
         self.fixture
@@ -891,17 +889,17 @@ async fn readiness_and_observation_failures_retain_bindings_and_recover_without_
     }
     let recovery = deployment.apply(&document, &cancel).await.unwrap();
     assert_eq!(recovery.changes.len(), 1);
-    assert!(recovery.changes[0].resource.contains("agent_configuration"));
+    assert!(recovery.changes[0].resource.contains("agent"));
     let recovered = fs::read(&state_path).unwrap();
     let observed: serde_json::Value = serde_json::from_slice(&recovered).unwrap();
     let mut existing_resources = observed.clone();
     let resources = existing_resources["resources"].as_array_mut().unwrap();
     let configuration_count = resources
         .iter()
-        .filter(|resource| resource["type"] == "fabric_agent_configuration")
+        .filter(|resource| resource["type"] == "fabric_agent")
         .count();
     assert_eq!(configuration_count, 1);
-    resources.retain(|resource| resource["type"] != "fabric_agent_configuration");
+    resources.retain(|resource| resource["type"] != "fabric_agent");
     assert_same_managed_resources(
         &serde_json::to_vec(&existing_resources).unwrap(),
         &established,
@@ -910,7 +908,7 @@ async fn readiness_and_observation_failures_retain_bindings_and_recover_without_
         .as_array()
         .unwrap()
         .iter()
-        .find(|resource| resource["type"] == "fabric_sandbox_readiness")
+        .find(|resource| resource["type"] == "fabric_agent_readiness")
         .unwrap();
     assert_eq!(readiness["instances"][0]["attributes"]["ready"], true);
     assert!(readiness["instances"][0]["attributes"]["error_message"].is_null());
@@ -987,7 +985,7 @@ async fn destroy_does_not_require_the_inference_credential_or_rewrite_its_refere
             .unwrap()
             .changes
             .len(),
-        4
+        3
     );
     assert_eq!(fixture.state.lock().unwrap().effects, effects);
     // Teardown initializes the stage once to read its bindings and once for
@@ -1214,7 +1212,7 @@ async fn apply_health_failure_retains_resources_and_unchanged_apply_checks_again
         .as_array()
         .unwrap()
         .iter()
-        .find(|resource| resource["type"] == "fabric_sandbox_readiness")
+        .find(|resource| resource["type"] == "fabric_agent_readiness")
         .unwrap();
     let observation = &readiness["instances"][0]["attributes"];
     assert_eq!(observation["ready"], false);
@@ -1257,7 +1255,7 @@ async fn mixed_sandboxes_reorder_add_recover_export_and_destroy_independently() 
     let cancel = CancellationToken::new();
     let preview = deployment.plan(&document, &cancel).await.unwrap();
     // Each image/adapter scope owns its provider registration and executable grants.
-    assert_eq!(preview.changes.len(), 9);
+    assert_eq!(preview.changes.len(), 7);
     assert_eq!(fixture.state.lock().unwrap().effects, 0);
     let applied = deployment.apply(&document, &cancel).await.unwrap();
     assert_eq!(applied.health.len(), 2);
@@ -1295,7 +1293,7 @@ async fn mixed_sandboxes_reorder_add_recover_export_and_destroy_independently() 
         added
             .changes
             .iter()
-            .any(|change| change.resource == "fabric_agent_configuration.third")
+            .any(|change| change.resource == "fabric_agent.third")
     );
     fixture.state.lock().unwrap().sandbox_phase = Some(openshell_core::proto::SandboxPhase::Error);
     assert!(deployment.apply(&document, &cancel).await.is_err());
@@ -2059,14 +2057,14 @@ async fn scoped_provider_labels_and_stopped_runtime_plans_preserve_authored_iden
         } else {
             let result: serde_json::Value = serde_json::from_str(&text).unwrap();
             let sources = result["resourceSources"].as_object().unwrap();
-            assert_eq!(sources.len(), 2);
+            assert_eq!(sources.len(), 1);
             assert!(sources.values().all(|source| source["name"] == "responses"
                 && source["path"] == "spec.sandboxes[assistant].inferenceProviders[responses]"));
             let resource = result["discovery"]["resources"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|resource| resource["address"] == "fabric_agent_configuration.assistant")
+                .find(|resource| resource["address"] == "fabric_agent.assistant")
                 .unwrap();
             assert_eq!(resource["agentRunning"], false);
             assert_eq!(resource["plannedActions"], serde_json::json!(["update"]));
