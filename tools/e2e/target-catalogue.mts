@@ -20,6 +20,7 @@ import {
 } from "./gateway-runtime.mts";
 import { FULL_E2E_STANDARD_PROFILE_JOB_TIMEOUT_MINUTES } from "./full-e2e-timeout-contract.mts";
 import {
+  ONBOARD_REPAIR_TARGET_TIMEOUT_MINUTES,
   ONBOARD_RESUME_TARGET_TIMEOUT_MINUTES,
   CUSTOM_HOSTED_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
   NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES,
@@ -1221,10 +1222,11 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     agentRuntime: "openclaw",
     environmentOrInferenceEndpoint: "Ubuntu Docker host; local onboarding fixtures",
     profile: "standard",
-    timeoutMinutes: 75,
+    timeoutMinutes: ONBOARD_REPAIR_TARGET_TIMEOUT_MINUTES,
     installMode: "authenticated",
     restoreCli: true,
     exposeCliBin: true,
+    owningPaths: ["tools/e2e/onboard-timeout-contract.mts"],
     environment: { ...nonInteractive, NEMOCLAW_SANDBOX_NAME: "e2e-repair" },
   }),
   managedRuntimeTarget("onboard-policy-preset-sequencing", {

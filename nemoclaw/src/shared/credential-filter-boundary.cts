@@ -126,6 +126,7 @@ const SAFE_CREDENTIAL_PLACEHOLDER_PATTERNS: readonly RegExp[] = [
   // identity at startup. Admit only the native custom inference namespaces.
   /^sk-OPENSHELL-RESOLVE-ENV-(?:(?:v[0-9]{1,20}|s[a-f0-9]{64})_)?COMPATIBLE(?:_ANTHROPIC)?_API_KEY$/,
 ];
+const NVIDIA_INFERENCE_ENV_REFERENCE = "${NVIDIA_INFERENCE_API_KEY}";
 const SAFE_CREDENTIAL_PLACEHOLDER_LITERALS: ReadonlySet<string> = new Set([
   "unused",
   // Pi and Deep Agents use this public, fixed route sentinel when talking to
@@ -193,6 +194,7 @@ export function isConfigValue(value: unknown): value is ConfigValue {
 function scrubConfigValue(value: unknown): unknown {
   if (typeof value === "string") {
     if (isSafeCredentialPlaceholder(value)) return value;
+    if (value === NVIDIA_INFERENCE_ENV_REFERENCE) return CREDENTIAL_PLACEHOLDER;
     let hasUrlCredentials = false;
     try {
       const url = new URL(value);
@@ -213,6 +215,7 @@ function cliFlagName(token: string): string | null {
 function scrubArrayElement(value: unknown, previous: unknown): unknown {
   if (typeof value !== "string") return stripCredentials(value);
   if (isSafeCredentialPlaceholder(value)) return value;
+  if (value === NVIDIA_INFERENCE_ENV_REFERENCE) return CREDENTIAL_PLACEHOLDER;
 
   const eq = value.indexOf("=");
   if (eq > 0 && value.startsWith("-")) {
