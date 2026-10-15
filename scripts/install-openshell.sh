@@ -203,13 +203,38 @@ fi
 
 RELEASE_TAG="v${PIN_VERSION}"
 
+# Prove absence through searchable parents; an inaccessible or dangling path
+# cannot establish that gateway state is absent.
+gateway_registration_path_is_absent() {
+  local current="$1"
+  [[ "$current" = /* ]] || return 1
+  [ ! -e "$current" ] && [ ! -L "$current" ] || return 1
+  while [ "$current" != "/" ]; do
+    current="${current%/*}"
+    current="${current:-/}"
+    if [ -e "$current" ] || [ -L "$current" ]; then
+      [ -d "$current" ] && [ -r "$current" ] && [ -x "$current" ] || return 1
+    fi
+  done
+}
+
+legacy_openshell_state_is_absent() {
+  local config="${XDG_CONFIG_HOME:-${HOME:+$HOME/.config}}"
+  local system="${OPENSHELL_SYSTEM_GATEWAY_DIR-/etc/openshell}"
+  ! command -v openshell >/dev/null 2>&1 || return 1
+  [[ "$config" = /* && "$system" = /* ]] || return 1
+  gateway_registration_path_is_absent "$config/openshell/gateways" \
+    && gateway_registration_path_is_absent "$system/gateways"
+}
+
 # Every installation entrypoint must verify legacy state before downloading or
 # replacing components. The Homebrew service-control operation above remains
 # available so the installed legacy gateway can still be stopped and retired.
-command -v node >/dev/null 2>&1 || fail "Node.js is required to verify legacy OpenShell state."
-# Keep this guard in the installer: protected execution projects this file alone.
-# shellcheck disable=SC2016 # JavaScript template literals are evaluated by Node.js.
-node --input-type=module -e '
+if ! legacy_openshell_state_is_absent; then
+  command -v node >/dev/null 2>&1 || fail "Node.js is required to verify legacy OpenShell state."
+  # Keep this guard in the installer: protected execution projects this file alone.
+  # shellcheck disable=SC2016 # JavaScript template literals are evaluated by Node.js.
+  node --input-type=module -e '
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -326,6 +351,7 @@ try {
   process.exitCode = 1;
 }
 ' "$PIN_VERSION"
+fi
 
 # invalidState: a consumed OpenShell release asset differs from the digest
 # published for the selected immutable release, or a mutable registry tag moves.

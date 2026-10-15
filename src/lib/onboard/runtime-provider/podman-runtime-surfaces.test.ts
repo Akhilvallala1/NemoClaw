@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { PodmanBoundContainerEngine } from "../../adapters/podman";
+import { createPodmanPrivilegedSandboxControl } from "./podman-privileged-sandbox-control";
 import { createCurrentPodmanRuntimeProviderBundle } from "./podman";
 import {
   observePodmanManagedContainer,
@@ -371,5 +372,86 @@ describe("Podman split workload discovery", () => {
       "has 2 managed containers",
     );
     expect(engine.capture).toHaveBeenCalledTimes(1);
+  });
+});
+
+function workspaceFixture() {
+  const wanted = { uid: 998, gid: 998, mode: 0o755 };
+  const state = {
+    labels: exactLabels(),
+    metadata: { uid: 0, gid: 0, mode: 0o700, dev: 1, ino: 2, mtime: 100 },
+    copyStatus: 0,
+  };
+  const observe = vi.fn();
+  const engine = { ...runtimeEngine(() => state.labels), operation: "sandbox-lifecycle" as const };
+  const capture = engine.capture;
+  engine.capture = vi.fn((args, timeoutMs, input) => {
+    switch (args.slice(0, 2).join(" ")) {
+      case "container exec": {
+        const stdout = JSON.stringify(state.metadata);
+        observe();
+        return { status: 0, stdout, stderr: "" };
+      }
+      case "container cp":
+        state.metadata = { ...state.metadata, ...wanted };
+        return { status: state.copyStatus, stdout: "", stderr: "" };
+      default:
+        return capture(args, timeoutMs, input);
+    }
+  });
+  const control = createPodmanPrivilegedSandboxControl(engine);
+  const prepare = () =>
+    control.prepareManagedStartupWorkspace!({
+      sandbox: sandbox(),
+      sandboxName: SANDBOX_NAME,
+      registeredSandboxNames: [SANDBOX_NAME],
+      expectedResourceHandle: CONTAINER_ID,
+      timeoutMs: 2000,
+      workspace: wanted,
+    });
+  return { engine, state, wanted, prepare, observe };
+}
+
+describe("Podman managed workspace preparation", () => {
+  it("restores only directory metadata through the pinned provider engine", () => {
+    const { engine, state, wanted, prepare } = workspaceFixture();
+    prepare();
+    const copies = vi.mocked(engine.capture).mock.calls.filter(([args]) => args[1] === "cp");
+    expect(copies).toHaveLength(1);
+    expect(copies[0]?.[0]).toEqual([
+      "container",
+      "cp",
+      "--archive=false",
+      "-",
+      `${CONTAINER_ID}:/`,
+    ]);
+    expect(copies[0]?.[1]).toBe(2000);
+    const archive = copies[0]![2]!;
+    expect(archive.length).toBe(1536);
+    expect(archive.subarray(0, 8).toString()).toBe("sandbox/");
+    expect(archive.subarray(512).equals(Buffer.alloc(1024))).toBe(true);
+    expect(state.metadata).toEqual({ ...wanted, dev: 1, ino: 2, mtime: 100 });
+  });
+
+  it("leaves a workspace with matching metadata unchanged", () => {
+    const { engine, state, wanted, prepare } = workspaceFixture();
+    state.metadata = { ...state.metadata, ...wanted };
+    prepare();
+    expect(vi.mocked(engine.capture).mock.calls.some(([args]) => args[1] === "cp")).toBe(false);
+  });
+
+  it("rejects a failed metadata repair", () => {
+    const { state, prepare } = workspaceFixture();
+    state.copyStatus = 125;
+    expect(prepare).toThrow(/could not be restored/u);
+  });
+
+  it("rechecks runtime ownership before the directory write", () => {
+    const { engine, state, prepare, observe } = workspaceFixture();
+    observe.mockImplementationOnce(() => {
+      state.labels = { ...state.labels, [PODMAN_SANDBOX_WORKSPACE_LABEL]: "other" };
+    });
+    expect(prepare).toThrow();
+    expect(vi.mocked(engine.capture).mock.calls.some(([args]) => args[1] === "cp")).toBe(false);
   });
 });

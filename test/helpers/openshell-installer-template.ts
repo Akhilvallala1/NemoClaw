@@ -153,7 +153,7 @@ export function installerReleaseTemplate(source: string, version: string): strin
   }
   // Historical trust fixtures must use their own reviewed guard. Keep the
   // current guard only in the current-release fixture.
-  const guardStart = source.indexOf("# Every installation entrypoint must verify legacy state");
+  const guardStart = source.indexOf("# Prove absence through searchable parents;");
   if (version !== "0.1.3" && guardStart !== -1) {
     const guardEnd = source.indexOf(
       "# invalidState: a consumed OpenShell release asset",

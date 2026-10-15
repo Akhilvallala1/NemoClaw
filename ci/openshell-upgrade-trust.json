@@ -11,7 +11,8 @@
       "installerTemplateSha256": [
         "0b9c65bcc255d97d2fbfef638fbb4b374d7617fb2aaaf6cb76b898ded74e498f",
         "e3bb05b5287f3e1a9091efb9b7105647ac44e4c3ed86bc47d6b9db1ef5a52068",
-        "8776c0ec750a38156d7371301f298c4645ca6bcf97c8ec7c74166be16ea87b19"
+        "8776c0ec750a38156d7371301f298c4645ca6bcf97c8ec7c74166be16ea87b19",
+        "fed763911e32980302d32362888c51a984d49022f8b2382d29440ebc29f7139d"
       ],
       "manifests": [
         {
@@ -79,6 +80,7 @@
     }
   ],
   "revokedTemplateSha256": [
+    "8776c0ec750a38156d7371301f298c4645ca6bcf97c8ec7c74166be16ea87b19",
     "e3bb05b5287f3e1a9091efb9b7105647ac44e4c3ed86bc47d6b9db1ef5a52068",
     "0b9c65bcc255d97d2fbfef638fbb4b374d7617fb2aaaf6cb76b898ded74e498f"
   ]

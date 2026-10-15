@@ -603,7 +603,10 @@ export function applyProviderManagedStartupRootRequest(
     selectManagedStartupApplicationRuntimeEnvironment(input.environment ?? process.env),
   ).map(([name, value]) => `${name}=${value}`);
   const delegated = usesDelegatedStartup(runtime);
-  runtime.control.prepareManagedStartupWorkspace?.({
+  if (!runtime.control.prepareManagedStartupWorkspace) {
+    throw new Error("Runtime provider cannot prepare the managed startup workspace.");
+  }
+  runtime.control.prepareManagedStartupWorkspace({
     sandbox: runtime.sandbox,
     sandboxName: input.sandboxName,
     registeredSandboxNames: [input.sandboxName],

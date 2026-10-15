@@ -29,6 +29,79 @@ const REQUIRED_OPENSHELL_VERSION = credentialBoundaryManifest.openshellVersion;
 const LEGACY_OPENSHELL_VERSION = "0.0.44";
 
 describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
+  it("starts a fresh OpenShell install without Node.js when no gateway state exists", () => {
+    const result = runCommandWithInstalledVersion(
+      "",
+      {},
+      {
+        missingCli: true,
+        missingNode: true,
+        driverBins: false,
+      },
+    );
+    expect(result.downloads, `${result.stdout}\n${result.stderr}`).not.toBe("");
+    expect(result.stderr).not.toContain("Node.js is required");
+  });
+
+  it.each([undefined, true, "system"] as const)(
+    "requires Node.js to inspect existing CLI or gateway state %s",
+    (legacyGateway) => {
+      const result = runCommandWithInstalledVersion(
+        "0.0.116",
+        {},
+        {
+          missingCli: legacyGateway !== undefined,
+          missingNode: true,
+          legacyGateway,
+        },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Node.js is required to verify legacy OpenShell state");
+      expect(result.downloads).toBe("");
+      expect(result.retainedFilesUnchanged).toBe(true);
+    },
+  );
+
+  it("requires legacy inspection when the gateway configuration path is relative", () => {
+    const result = runCommandWithInstalledVersion(
+      "",
+      {},
+      {
+        missingCli: true,
+        missingNode: true,
+        driverBins: false,
+        systemGatewayDirectory: "relative",
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Node.js is required");
+    expect(result.downloads).toBe("");
+  });
+
+  it("requires legacy inspection when a gateway parent is a dangling symbolic link", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-gateway-parent-"));
+    try {
+      const parent = path.join(root, "linked-config");
+      fs.symlinkSync(path.join(root, "missing"), parent);
+      const result = runCommandWithInstalledVersion(
+        "",
+        {},
+        {
+          missingCli: true,
+          missingNode: true,
+          driverBins: false,
+          systemGatewayDirectory: parent,
+        },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Node.js is required");
+      expect(result.downloads).toBe("");
+      expect(fs.lstatSync(parent).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["Linux", "Darwin"] as const)(
     "preserves the legacy gateway before component replacement on %s",
     (os) => {

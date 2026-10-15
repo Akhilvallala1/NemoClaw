@@ -64,7 +64,7 @@ function createDockerRootApplyFixture(
     identity: { id: "docker" },
     lifecycle: {
       supported: true,
-      privilegedSandboxControl: { resolveTarget, execute },
+      privilegedSandboxControl: { resolveTarget, execute, prepareManagedStartupWorkspace: vi.fn() },
     },
     containerEngine: {
       supported: true,
@@ -304,6 +304,26 @@ describe("provider-owned managed startup root application", () => {
     },
   );
 
+  it("rejects a provider without workspace preparation before root application", () => {
+    const { request, runtimeProvider } = createDockerRootApplyFixture(() => ({
+      resourceHandle: CONTAINER_ID,
+    }));
+    const control = runtimeProvider.lifecycle.privilegedSandboxControl;
+    delete control.prepareManagedStartupWorkspace;
+    expect(() =>
+      applyProviderManagedStartupRootRequest({
+        runtimeProvider,
+        request,
+        sandboxName: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        bootstrapIdentity: "c".repeat(64),
+        environment: {},
+      }),
+    ).toThrow(/cannot prepare the managed startup workspace/u);
+    expect(control.execute).toHaveBeenCalledOnce();
+    expect(vi.mocked(control.execute).mock.calls[0]?.[0].command).toContain("--startup-protocol");
+  });
+
   it("does not start root application after workspace preparation fails", () => {
     const { request, runtimeProvider } = createDockerRootApplyFixture(() => ({
       resourceHandle: CONTAINER_ID,
@@ -434,6 +454,7 @@ describe("provider-owned managed startup root application", () => {
     const calls: Array<{ args: readonly string[]; input?: Buffer }> = [];
     let committed = false;
     let releaseAttempts = 0;
+    let workspace = { uid: 0, gid: 0, mode: 0o700, dev: 1, ino: 2, mtime: 100 };
     const inspect = JSON.stringify([
       {
         Id: CONTAINER_ID,
@@ -481,6 +502,11 @@ describe("provider-owned managed startup root application", () => {
           break;
       }
       switch (`${String(args[0])}:${String(args[1])}`) {
+        case "container:cp":
+          workspace = { ...workspace, uid: 998, gid: 998, mode: 0o755 };
+          return { status: 0, stdout: "", stderr: "" };
+        case "container:exec":
+          return { status: 0, stdout: JSON.stringify(workspace), stderr: "" };
         case "ps:--all":
           return { status: 0, stdout: `${CONTAINER_ID}\n`, stderr: "" };
         case "container:inspect":
@@ -520,6 +546,20 @@ describe("provider-owned managed startup root application", () => {
       environment: {},
     });
 
+    const copyIndex = calls.findIndex(({ args }) => args[1] === "cp");
+    expect(copyIndex).toBeGreaterThan(0);
+    expect(calls[copyIndex]?.args).toEqual([
+      "container",
+      "cp",
+      "--archive=false",
+      "-",
+      `${CONTAINER_ID}:/`,
+    ]);
+    expect(calls[copyIndex]?.input?.length).toBe(1536);
+    expect(copyIndex).toBeLessThan(
+      calls.findIndex(({ args }) => args.includes("--apply-root-stdin")),
+    );
+    expect(workspace).toEqual({ uid: 998, gid: 998, mode: 0o755, dev: 1, ino: 2, mtime: 100 });
     expect(transaction).toMatchObject({
       containerId: CONTAINER_ID,
       image: IMAGE_ID,
@@ -630,6 +670,7 @@ describe("provider-owned managed startup root application", () => {
         supported: true,
         privilegedSandboxControl: {
           resolveTarget: () => ({ resourceHandle: CONTAINER_ID }),
+          prepareManagedStartupWorkspace: vi.fn(),
           execute,
         },
       },

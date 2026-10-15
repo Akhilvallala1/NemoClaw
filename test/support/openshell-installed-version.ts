@@ -63,6 +63,8 @@ export function runCommandWithInstalledVersion(
       | "corrupt"
       | "system";
     missingCli?: boolean;
+    missingNode?: boolean;
+    systemGatewayDirectory?: string;
     versionExit?: number;
     os?: string;
     arch?: string;
@@ -90,6 +92,17 @@ export function runCommandWithInstalledVersion(
     const fakeBin = path.join(tmp, "bin");
     const driverBin = options.driverLocation ? path.join(tmp, "driver-bin") : fakeBin;
     prepareInstallerBin(fakeBin);
+    if (options.missingNode) {
+      fs.unlinkSync(path.join(fakeBin, "node"));
+      // Exclude system PATH entries that can contain Node.js on CI hosts.
+      for (const name of ["bash", "awk", "cat", "chmod", "dirname", "grep", "mkdir", "rm", "sed"]) {
+        const binary = ["/usr/bin", "/bin"]
+          .map((root) => path.join(root, name))
+          .find(fs.existsSync);
+        if (!binary) throw new Error(`Missing installer fixture tool: ${name}`);
+        fs.symlinkSync(binary, path.join(fakeBin, name));
+      }
+    }
     fs.mkdirSync(driverBin, { recursive: true });
     const configHome = path.join(tmp, "config");
     const retainedFiles = new Map<string, string>();
@@ -325,8 +338,9 @@ exit 0`,
         HOME: tmp,
         TMPDIR: tmp,
         XDG_CONFIG_HOME: configHome,
-        OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
-        PATH: `${fakeBin}:${driverBin}:/usr/bin:/bin`,
+        OPENSHELL_SYSTEM_GATEWAY_DIR:
+          options.systemGatewayDirectory ?? path.join(tmp, "system-openshell"),
+        PATH: `${fakeBin}:${driverBin}${options.missingNode ? "" : ":/usr/bin:/bin"}`,
       },
       encoding: "utf8",
     });

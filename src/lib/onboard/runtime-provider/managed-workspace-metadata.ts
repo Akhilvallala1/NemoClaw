@@ -71,7 +71,7 @@ function directoryArchive(workspace: Workspace, mtime: number): Buffer {
   return archive;
 }
 
-/** Docker's archive transport can restore ownership without workload capabilities. */
+/** Engine archive transport restores directory metadata without workload capabilities. */
 export function prepareManagedWorkspaceMetadata(
   workspace: Workspace,
   operations: {
