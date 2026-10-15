@@ -419,12 +419,11 @@ fn graph_base(document: &Document, version: &str) -> Result<Value, ConfigError> 
             "fabric":{"source":FABRIC_PROVIDER_ADDRESS,"version":format!("= {version}")},
             "vllm":{"source":VLLM_PROVIDER_ADDRESS,"version":format!("= {version}")},
             "ollama":{"source":OLLAMA_PROVIDER_ADDRESS,"version":format!("= {version}")},
-            "host":{"source":HOST_PROVIDER_ADDRESS,"version":format!("= {version}")},
-            "protected":{"source":PROTECTED_PROVIDER_ADDRESS,"version":format!("= {version}")}
+            "host":{"source":HOST_PROVIDER_ADDRESS,"version":format!("= {version}")}
         }},
         // Each provider reaches the engines, clusters, and gateways named on
         // its resources; providers take at most `destroy`.
-        "provider":{"openshell":{},"fabric":{},"vllm":{},"ollama":{},"host":{},"protected":{}}, "resource":{},
+        "provider":{"openshell":{},"fabric":{},"vllm":{},"ollama":{},"host":{}}, "resource":{},
         "data":{"openshell_gateway":{"current":gateway_data(&connection, json!(drivers))}}
     });
     crate::discovery_graph::populate(&mut graph, document)?;
@@ -718,6 +717,17 @@ fn compile_with_plans(
             (sandbox.name.clone(), readiness)
         })
         .collect();
+    // OpenTofu loads the schema of every declared provider on each command, so
+    // only graphs with protected files declare their provider. Removing the
+    // last one still works: state names the provider.
+    if resources
+        .get(crate::services::installers::container::inputs::FILES_KIND)
+        .is_some()
+    {
+        graph["terraform"]["required_providers"]["protected"] =
+            json!({"source":PROTECTED_PROVIDER_ADDRESS,"version":format!("= {version}")});
+        graph["provider"]["protected"] = json!({});
+    }
     graph["resource"] = resources;
     graph["data"]["fabric_agent_readiness"] = json!(agent_readiness);
     graph["data"]["openshell_gateway"]["apply"] = apply_readiness;

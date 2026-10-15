@@ -247,6 +247,10 @@ fn canonical_connection_profiles_bind_descriptors_and_order_protected_delivery()
         assert_eq!(compile(&restored, &generations(), "0.1.0").unwrap(), graph);
         let inputs = &graph["resource"]["protected_files"]["voice"];
         assert_eq!(inputs["agent"], "${fabric_agent.assistant.ref}");
+        assert_eq!(
+            graph["terraform"]["required_providers"]["protected"]["source"],
+            nemoclaw_sdk::compile::PROTECTED_PROVIDER_ADDRESS
+        );
         assert!(
             inputs["depends_on"]
                 .as_array()
@@ -437,7 +441,11 @@ fn setup_image_is_not_allowed_without_any_protected_inputs() {
         .as_object_mut()
         .unwrap()
         .remove("inputSetup");
-    Document::parse(value.to_string().as_bytes()).unwrap();
+    let document = Document::parse(value.to_string().as_bytes()).unwrap();
+    // Without protected files, the graph does not load their provider.
+    let graph = compile(&document, &generations(), "0.1.0").unwrap();
+    assert!(graph["terraform"]["required_providers"]["protected"].is_null());
+    assert!(graph["provider"]["protected"].is_null());
 }
 
 #[test]
