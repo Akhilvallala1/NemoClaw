@@ -2488,6 +2488,7 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
               preferredInferenceApi,
               createIntent,
               nativeProvider: Boolean(
+                existingSandboxEntry?.nativeLocalProviderAttachment ||
                 existingSandboxEntry?.nativeHostedProviderAttachment ||
                 existingSandboxEntry?.nativeNvidiaProviderAttachment,
               ),
@@ -2848,8 +2849,12 @@ export function createSandboxWithBaseImageResolution(runtime: SandboxCreateOrche
                 model,
                 chatUiUrl,
                 provider,
-                endpointUrl: createIntent?.endpointUrl ?? null,
+                endpointUrl:
+                  resolvedCreateIntent.nativeLocalProviderAttachment?.endpointUrl ??
+                  createIntent?.endpointUrl ??
+                  null,
                 nativeProvider: Boolean(
+                  resolvedCreateIntent.nativeLocalProviderAttachment ||
                   resolvedCreateIntent.nativeHostedProviderAttachment ||
                   resolvedCreateIntent.nativeNvidiaProviderAttachment,
                 ),

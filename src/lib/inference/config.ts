@@ -429,6 +429,7 @@ export function getSandboxInferenceConfig(
   }
 
   if (
+    useNativeProvider &&
     nativeEndpointUrl &&
     usesNativeLocalInference(provider, nativeEndpointUrl) &&
     nativeLocalCredentialReference(provider, nativeEndpointUrl)
