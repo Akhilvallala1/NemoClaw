@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { buildConfig } from "../../scripts/generate-openclaw-config.mts";
+import { parseDashboardOrigins } from "../../src/lib/dashboard/url";
 import { baseOpenClawGenerationEnv, buildOpenClawTestEnv } from "../helpers/openclaw-env-fixture";
 
 const BASE_ENV = baseOpenClawGenerationEnv();
@@ -84,6 +85,17 @@ describe("generate-openclaw-config.mts: NEMOCLAW_DASHBOARD_ORIGINS (#13177)", ()
       "https://launchpad.example.test:8443",
       "http://localhost:9000",
     ]);
+  });
+
+  it("normalizes an origin the way parseDashboardOrigins does", () => {
+    const value = " HTTPS://Launchpad.Example.Test:8443/,https://launchpad.example.test:443 ";
+    const config = buildConfigDirect({
+      CHAT_UI_URL: "http://127.0.0.1:18789",
+      NEMOCLAW_DASHBOARD_ORIGINS: value,
+    });
+    expect(config.gateway.controlUi.allowedOrigins.slice(1)).toEqual(
+      parseDashboardOrigins([value]),
+    );
   });
 
   it.each([

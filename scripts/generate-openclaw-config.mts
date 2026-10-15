@@ -179,16 +179,22 @@ function readDashboardOriginsEnv(env: Env): string[] {
     } catch {
       url = null;
     }
+    // Accept what parseDashboardOrigins accepts: URL parsing lowercases the
+    // scheme and host and drops a default port and a lone trailing slash, but
+    // a path, query, fragment, or user information changes the origin.
     const allowed =
       url !== null &&
-      url.origin === value &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname === "/" &&
+      !/[?#]/u.test(value) &&
       (url.protocol === "https:" || (url.protocol === "http:" && isLoopback(url.hostname)));
     if (!allowed) {
       throw new Error(
         `${DASHBOARD_ORIGINS_ENV} entry must be a bare https origin, or http on loopback: ${JSON.stringify(value)}`,
       );
     }
-    if (!origins.includes(value)) origins.push(value);
+    if (!origins.includes(url!.origin)) origins.push(url!.origin);
   }
   if (origins.length > MAX_DASHBOARD_ORIGINS) {
     throw new Error(

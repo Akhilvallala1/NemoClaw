@@ -990,7 +990,7 @@ Repeat the flag for more origins, or set `NEMOCLAW_DASHBOARD_ORIGINS` to a comma
 A sandbox accepts at most 16 distinct extra origins.
 Each value must be a bare origin: a scheme, a host, and an optional port, without a path, query, or user information.
 A remote origin must use `https`, and `http` is accepted only for a loopback host.
-The flag requires a managed OpenClaw image, so onboarding refuses it with `--from` or when it falls back to the Dockerfile build.
+The flag requires a NemoClaw-managed OpenClaw image, so onboarding refuses it with `--from` or `--from-image`, or when it falls back to the Dockerfile build.
 It does not change the dashboard bind address or the URL that NemoClaw reports.
 `$$nemoclaw <name> rebuild` replays the recorded origins.
 To remove them, unset `NEMOCLAW_DASHBOARD_ORIGINS`, run onboard again without `--dashboard-origin`, then rebuild the sandbox.
