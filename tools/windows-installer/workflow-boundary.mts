@@ -344,6 +344,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       assert.ok(prAdmission.run?.includes("validation_scope=startup-only"));
       assert.ok(prAdmission.run?.includes("credential_authorized=false"));
       assert.ok(jobNeeds(compiled)?.includes("windows-finished-request"));
+      assert.ok(installer.if?.startsWith("${{ always() && !cancelled() && "));
       assert.ok(
         containsItems(jobNeeds(installer), [
           "windows-finished-request",
@@ -1280,7 +1281,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     ]);
     assert.strictEqual(
       candidate.if,
-      "${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && (needs.windows-finished-request.outputs.agent != 'openclaw' || needs.windows-finished-reviewed-installer.result == 'success') }}",
+      "${{ always() && !cancelled() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && (needs.windows-finished-request.outputs.agent != 'openclaw' || needs.windows-finished-reviewed-installer.result == 'success') }}",
     );
     assert.deepStrictEqual(candidate.permissions, { actions: "read", contents: "read" });
     assert.strictEqual(candidate["runs-on"], "windows-11-vs2026-arm");

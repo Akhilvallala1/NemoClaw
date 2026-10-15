@@ -392,7 +392,7 @@ jobs:
     name: Finished Windows ${{ needs.windows-finished-request.outputs.agent }} candidate installer (ARM64)
     needs:
       [windows-finished-request, windows-compiled-application, windows-bash-compatibility-reuse]
-    if: ${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.build_allowed == 'true' && needs.windows-compiled-application.result == 'success' && (needs.windows-finished-request.outputs.agent != 'hermes' || needs.windows-bash-compatibility-reuse.result == 'success') }}
+    if: ${{ always() && !cancelled() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.build_allowed == 'true' && needs.windows-compiled-application.result == 'success' && (needs.windows-finished-request.outputs.agent != 'hermes' || needs.windows-bash-compatibility-reuse.result == 'success') }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: ${{ needs.windows-finished-request.outputs.agent == 'hermes' && 180 || 120 }}
     outputs:
@@ -1201,7 +1201,7 @@ jobs:
   windows-finished-candidate-migration:
     name: Credential-free candidate migration controllers (ARM64)
     needs: [windows-finished-request, windows-finished-installer, windows-finished-reviewed-installer]
-    if: ${{ always() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && (needs.windows-finished-request.outputs.agent != 'openclaw' || needs.windows-finished-reviewed-installer.result == 'success') }}
+    if: ${{ always() && !cancelled() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && (needs.windows-finished-request.outputs.agent != 'openclaw' || needs.windows-finished-reviewed-installer.result == 'success') }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 35
     permissions:

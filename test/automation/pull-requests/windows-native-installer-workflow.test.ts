@@ -127,6 +127,13 @@ const mutations: Mutation[] = [
       admission.if = admission.if!.replace("!inputs.build_windows_native_candidate && ", "");
     },
   })),
+  ...["windows-finished-installer", "windows-finished-candidate-migration"].map((name) => ({
+    name: "cancelled run starts " + name,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const job = value.workflow.jobs[name];
+      job.if = job.if!.replace("!cancelled() && ", "");
+    },
+  })),
   {
     name: "build-only request starts installed migration",
     mutate: (value) => {
