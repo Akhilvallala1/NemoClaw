@@ -826,6 +826,11 @@ async function proveHistoricalHermesPortableLifecycle(input: {
       } satisfies Parameters<typeof startSandbox>[1];
       const upgradeResult = await startSandbox(sandboxName, publicStartDeps);
       console.log("Historical Hermes public start:", JSON.stringify(upgradeResult));
+      recordPortableSandboxDiagnostics(
+        input.runtimeAuthority.socketPath,
+        sandboxName,
+        upgradeResult.exitCode,
+      );
       const firstStop =
         upgradeResult.exitCode === 0
           ? await withMcpLifecycleLock(

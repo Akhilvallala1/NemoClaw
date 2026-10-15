@@ -13,9 +13,9 @@ import { stripAnsi } from "./json-envelope.ts";
 export function recordPortableSandboxDiagnostics(
   socketPath: string,
   sandboxName: string,
-  createStatus: number | null,
+  failureStatus: number | null,
 ): void {
-  if (createStatus === 0) return;
+  if (failureStatus === 0) return;
   const capture = (args: string[]) =>
     spawnSync("podman", ["--url", `unix://${socketPath}`, ...args], {
       env: process.env,
