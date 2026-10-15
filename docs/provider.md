@@ -771,4 +771,13 @@ The Docker and Helm providers have fixed release versions and checksum-pinned na
 The providers are not published yet ([#12638](https://github.com/NVIDIA/NemoClaw/issues/12638)).
 Supported HCL examples, import, adoption, remote-state backends and compatibility across releases are tracked in [#12645](https://github.com/NVIDIA/NemoClaw/issues/12645).
 
-Every resource and data source takes inputs that can be written in HCL, but this guide does not recommend a direct-use workflow.
+Every resource and data source takes inputs that can be written in HCL.
+[`examples/hcl/travel`](../examples/hcl/travel/main.tf) is a complete hand-written configuration: a Pi agent in an OpenShell sandbox, answering with a local Ollama server placed with Docker, and allowed only HTTPS `GET` requests to one site.
+A system test applies it unchanged against the bundle's providers.
+Writing one by hand:
+
+- Install the providers from a bundle: name its `providers` directory as a filesystem mirror, and pin each NVIDIA provider to the bundle's version. Development bundles carry pre-release versions, which OpenTofu selects only when pinned exactly.
+- Place model servers with any platform from `vllm_runtime` or `ollama_runtime`'s [`launch` and `requirements`](#vllm-runtime-contract), confirm them with [endpoint readiness](#runtime-capacity-and-readiness), and register `ref.endpoint`. Registrations will take the `ref` itself ([#13228](https://github.com/NVIDIA/NemoClaw/issues/13228)).
+- Inference registrations accept plain HTTP only to a literal loopback or private IP address.
+- Name an inference profile `nemoclaw-inference-<registration name>`. Its registration finds it by that name, without a `profile` input, and must share its `owner` and `generation`; `profile` names search providers' profiles.
+- Workspaces are retained, so `tofu destroy` cannot tear such a configuration down yet ([#13230](https://github.com/NVIDIA/NemoClaw/issues/13230)).
