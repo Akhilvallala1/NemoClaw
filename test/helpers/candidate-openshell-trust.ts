@@ -8,7 +8,10 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { vi } from "vitest";
-import { validateInstallerSources } from "../../scripts/checks/extract-installer-pins.mts";
+import {
+  readOpenShellTrustRegistry,
+  validateInstallerSources,
+} from "../../scripts/checks/extract-installer-pins.mts";
 import {
   CANDIDATE_OPENSHELL_SOURCES,
   CANDIDATE_OPENSHELL_TRUST_PATH,
@@ -68,10 +71,10 @@ export function fixture() {
       sources[key as keyof typeof sources],
     ]),
   );
+  const registry = readOpenShellTrustRegistry();
   files[CANDIDATE_OPENSHELL_TRUST_PATH] = JSON.stringify({
-    schemaVersion: 1,
-    releases: [release],
-    revokedTemplateSha256: [],
+    ...registry,
+    releases: [...registry.releases, release],
   });
   const repository = { full_name: "NVIDIA/NemoClaw" };
   const approvals = [
@@ -155,11 +158,10 @@ export function runCoveredRegistry(
     }),
   );
   const candidateRegistry = structuredClone(oldRegistry);
+  const candidateRelease = candidateRegistry.releases.find((entry) => entry.version === version)!;
   if (scenario === "empty") candidateRegistry.releases = [];
-  if (scenario === "new-template")
-    candidateRegistry.releases[0]!.installerTemplateSha256 = ["0".repeat(64)];
-  if (scenario === "changed-artifact")
-    candidateRegistry.releases[0]!.formula.sha256 = "0".repeat(64);
+  if (scenario === "new-template") candidateRelease.installerTemplateSha256 = ["0".repeat(64)];
+  if (scenario === "changed-artifact") candidateRelease.formula.sha256 = "0".repeat(64);
   f.files[CANDIDATE_OPENSHELL_TRUST_PATH] = JSON.stringify(candidateRegistry);
   Object.entries(f.files).forEach(([path, source]) => {
     mkdirSync(dirname(join(candidate, path)), { recursive: true });

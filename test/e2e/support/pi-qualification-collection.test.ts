@@ -329,8 +329,8 @@ describe("Pi qualification collection", () => {
   it("prints a CLI patch without mutating the checkout or passing the API token to Git", async () => {
     const input = fixture();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-qualification-cli-"));
-    const git = (...args: string[]) =>
-      execFileSync("/usr/bin/git", args, { cwd: root, encoding: "utf8" });
+    const originalPath = process.env.PATH ?? "";
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
     try {
       git("init", "-q");
       const originals = {
@@ -393,7 +393,8 @@ describe("Pi qualification collection", () => {
       fs.mkdirSync(shim);
       fs.writeFileSync(
         path.join(shim, "git"),
-        '#!/bin/sh\n[ -z "${GITHUB_TOKEN+x}" ] || exit 87\nexec /usr/bin/git "$@"\n',
+        '#!/bin/sh\n[ -z "${GITHUB_TOKEN+x}" ] || exit 87\n' +
+          `PATH='${originalPath.replaceAll("'", "'\\''")}' exec git "$@"\n`,
         { mode: 0o700 },
       );
       const patch = execFileSync(
@@ -410,13 +411,13 @@ describe("Pi qualification collection", () => {
         {
           cwd: root,
           encoding: "utf8",
-          env: { PATH: `${shim}:${process.env.PATH}`, GITHUB_TOKEN: "test-token" },
+          env: { PATH: `${shim}:${originalPath}`, GITHUB_TOKEN: "test-token" },
         },
       );
       expect(git("status", "--porcelain")).toBe("");
       expect(patch).not.toContain("test-token");
       expect(patch.match(/^diff --git /gmu)).toHaveLength(3);
-      execFileSync("/usr/bin/git", ["apply", "--check", "-"], { cwd: root, input: patch });
+      execFileSync("git", ["apply", "--check", "-"], { cwd: root, input: patch });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

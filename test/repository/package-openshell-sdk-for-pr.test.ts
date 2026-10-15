@@ -174,62 +174,34 @@ describe("reviewed OpenShell SDK transition packaging", () => {
 
   it("packages exactly the active and replacement identities for PR selection", () => {
     const source = fixture();
-    const configPath = path.resolve("ci/reviewed-npm-audit.json");
-    const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-    const replacement = config.sourceRegistryPackage;
-    config.sourceRegistryPackage = {
-      artifactName: "nvidia-openshell-sdk-0.0.106.tgz",
-      label: "OpenShell TypeScript SDK 0.0.106",
-      packageSpec: "@nvidia/openshell-sdk@0.0.106",
-      integrity:
-        "sha512-dB4mLex23Pnw61caGMR2CMHQihy9bj7IK2elJJd718k3yevm+fOt/vG6dJg8/5us4la2BwcOdRwLvOia3tdwFw==",
-      tarballUrl:
-        "https://npm.pkg.github.com/download/@nvidia/openshell-sdk/0.0.106/dc32180ba1d658fc4ec309bdf89d2b162196928d",
-    };
-    config.sourceRegistryPackageReplacement = replacement;
-
-    const artifactDirectory = packageReviewedOpenShellSdk(source.output, "require", {
-      ...source,
-      readAuditConfig: () => JSON.stringify(config),
-    });
+    const artifactDirectory = packageReviewedOpenShellSdk(source.output, "require", source);
 
     expect(artifactDirectory).toBe(source.output);
     expect(fs.readdirSync(artifactDirectory).sort()).toEqual([
-      "nvidia-openshell-sdk-0.0.106.tgz",
       "nvidia-openshell-sdk-0.0.116.tgz",
+      "nvidia-openshell-sdk-0.1.3.tgz",
     ]);
     expect(source.requests.map(({ packageSpec }) => packageSpec)).toEqual([
-      "@nvidia/openshell-sdk@0.0.106",
       "@nvidia/openshell-sdk@0.0.116",
+      "@nvidia/openshell-sdk@0.1.3",
     ]);
+    expect(source.requests[1]).toMatchObject({
+      expectedIntegrity:
+        "sha512-JXWcEDIl/h8Pp6c2NrFMp0XLloDsLaDZvSVJzXvKUyGEulE64d/utiE1KtNh45JtiZXbVmB2PMJAWEmgZKW5kA==",
+      tarballUrl:
+        "https://npm.pkg.github.com/download/@nvidia/openshell-sdk/0.1.3/32e1b675af5ad8b8a8fe078a1a11d515a9f45571",
+    });
     expect(source.remove).toHaveBeenCalledTimes(2);
   });
 
   it("packages the replacement when available without requiring transition metadata", () => {
     const source = fixture();
-    const configPath = path.resolve("ci/reviewed-npm-audit.json");
-    const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-    const replacement = config.sourceRegistryPackage;
-    config.sourceRegistryPackage = {
-      artifactName: "nvidia-openshell-sdk-0.0.106.tgz",
-      label: "OpenShell TypeScript SDK 0.0.106",
-      packageSpec: "@nvidia/openshell-sdk@0.0.106",
-      integrity:
-        "sha512-dB4mLex23Pnw61caGMR2CMHQihy9bj7IK2elJJd718k3yevm+fOt/vG6dJg8/5us4la2BwcOdRwLvOia3tdwFw==",
-      tarballUrl:
-        "https://npm.pkg.github.com/download/@nvidia/openshell-sdk/0.0.106/dc32180ba1d658fc4ec309bdf89d2b162196928d",
-    };
-    config.sourceRegistryPackageReplacement = replacement;
-
-    const artifactDirectory = packageReviewedOpenShellSdk(source.output, "if-present", {
-      ...source,
-      readAuditConfig: () => JSON.stringify(config),
-    });
+    const artifactDirectory = packageReviewedOpenShellSdk(source.output, "if-present", source);
 
     expect(artifactDirectory).toBe(source.output);
     expect(source.requests.map(({ packageSpec }) => packageSpec)).toEqual([
-      "@nvidia/openshell-sdk@0.0.106",
       "@nvidia/openshell-sdk@0.0.116",
+      "@nvidia/openshell-sdk@0.1.3",
     ]);
   });
 

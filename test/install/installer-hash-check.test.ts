@@ -374,8 +374,8 @@ const removeFirstReleaseFormula = (source: string): string =>
   );
 const trustSyntheticSupervisorRuntimeTemplate = (source: string): string => {
   const marker = "      runtimeTemplateSha256: [\n";
-  const result = source.replaceAll(
-    marker,
+  const result = source.replace(
+    /^      runtimeTemplateSha256: \[\n/gmu,
     `${marker}        "${SYNTHETIC_SUPERVISOR_RUNTIME_TEMPLATE_SHA256}",\n`,
   );
   assert.notEqual(result, source, "synthetic supervisor runtime trust anchors");
