@@ -633,7 +633,7 @@ Each readiness data source requires its `contract`, the `spec` of the runtime co
 It reads readiness in one of two modes:
 
 - **Container mode:** `engine`, `name`, and `container_id` name a Docker container; the read follows the container's status as described above.
-- **Endpoint mode:** `endpoint` is the server's OpenAI-compatible base URL, ending in `/v1`, that the provider can reach. The read polls `<endpoint>/models`, without following redirects, until the response lists the contract's served model; it needs no engine and works for a server on any platform. It serves unauthenticated contracts only and reports neither startup phase nor failure reason. Optional `sandbox_endpoint` is the base URL gateways and sandboxes use, defaulting to `endpoint`. A successful read exports `ref = { type = "inference_server", endpoint, model }`, with `sandbox_endpoint` as `endpoint`; container mode exports no `ref`. `ollama_proxy_readiness` supports container mode only.
+- **Endpoint mode:** `endpoint` is the server's OpenAI-compatible base URL, ending in `/v1`, that the provider can reach. The read polls `<endpoint>/models`, without following redirects, until the response lists the contract's served model; it needs no engine and works for a server on any platform. It serves unauthenticated contracts only and reports neither startup phase nor failure reason. Optional `sandbox_endpoint` is the base URL gateways and sandboxes use, defaulting to `endpoint`; like an inference registration's endpoint, over plain HTTP its host must be a literal loopback or private IP address. A successful read exports `ref = { type = "inference_server", endpoint, model }`, with `sandbox_endpoint` as `endpoint`; container mode exports no `ref`. `ollama_proxy_readiness` supports container mode only.
 
 Setting both modes' inputs fails validation, as does endpoint mode with an authenticated contract.
 Until inference registrations take the `ref`, pass its endpoint: `endpoint = data.vllm_readiness.NAME.ref.endpoint`.
@@ -642,7 +642,7 @@ Until inference registrations take the `ref`, pass its endpoint: `endpoint = dat
 data "vllm_readiness" "qwen" {
   contract         = data.vllm_runtime.qwen.spec
   endpoint         = "http://127.0.0.1:18898/v1"
-  sandbox_endpoint = "http://host.openshell.internal:18898/v1"
+  sandbox_endpoint = "http://10.0.0.8:18898/v1"
   read_trigger     = docker_container.qwen.id != ""
 }
 ```
