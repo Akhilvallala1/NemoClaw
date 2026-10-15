@@ -144,8 +144,8 @@ export function readRecordedDashboardOrigins(value: unknown): string[] | null {
  * Parse extra dashboard browser origins from flag values or a comma-separated
  * environment value (#13177). Each entry must be a bare http(s) origin without
  * user information, path, query, or fragment, and a remote origin must use
- * https. The result is normalized and has no duplicates. The sandbox config
- * generator repeats these checks when it builds `allowedOrigins`.
+ * https. The result is normalized, has no duplicates, and holds at most
+ * `MAX_DASHBOARD_ORIGINS` origins.
  */
 export function parseDashboardOrigins(values: readonly string[]): string[] {
   const origins: string[] = [];
@@ -156,6 +156,11 @@ export function parseDashboardOrigins(values: readonly string[]): string[] {
       const origin = parseDashboardOrigin(candidate);
       if (!origins.includes(origin)) origins.push(origin);
     }
+  }
+  if (origins.length > MAX_DASHBOARD_ORIGINS) {
+    throw new Error(
+      `A sandbox accepts at most ${String(MAX_DASHBOARD_ORIGINS)} dashboard origins; got ${String(origins.length)}.`,
+    );
   }
   return origins;
 }

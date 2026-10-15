@@ -264,13 +264,20 @@ function resolveHostMounts(
 
 function resolveDashboardOrigins(
   values: readonly string[] | undefined,
+  agent: string | null,
   deps: ResolveOnboardOptionsDeps,
 ): string[] {
+  const requested = Boolean(values?.length || deps.env.NEMOCLAW_DASHBOARD_ORIGINS?.trim());
+  if (!requested) return [];
   if (!deps.resolveDashboardOrigins) {
-    if (values?.length || deps.env.NEMOCLAW_DASHBOARD_ORIGINS?.trim()) {
-      fail(deps, "  --dashboard-origin is not available in this onboarding context.");
-    }
-    return [];
+    fail(deps, "  --dashboard-origin is not available in this onboarding context.");
+  }
+  const selectedAgent = agent ?? deps.env.NEMOCLAW_AGENT?.trim() ?? "";
+  if (selectedAgent && !isOpenclawAgent(selectedAgent)) {
+    fail(
+      deps,
+      `  --dashboard-origin is supported only for OpenClaw sandboxes, not ${selectedAgent}. Remove --dashboard-origin (or NEMOCLAW_DASHBOARD_ORIGINS).`,
+    );
   }
   try {
     return deps.resolveDashboardOrigins(values, deps.env);
@@ -519,7 +526,7 @@ export function resolveOnboardOptions(
   validateObservabilityAgent(flags.observability, agent, deps);
   const toolDisclosure = resolveOnboardToolDisclosure(flags, experimentalProfile, resume, deps);
   const hostMounts = resolveHostMounts(flags["host-mount"], experimentalProfile, deps);
-  const dashboardOrigins = resolveDashboardOrigins(flags["dashboard-origin"], deps);
+  const dashboardOrigins = resolveDashboardOrigins(flags["dashboard-origin"], agent, deps);
   if (flags.from !== undefined && flags["from-image"] !== undefined) {
     fail(deps, "  --from and --from-image cannot both be set.");
   }

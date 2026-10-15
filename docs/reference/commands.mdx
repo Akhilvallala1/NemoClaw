@@ -987,6 +987,7 @@ Do not use a port from `8642` through `8652` for any agent. NemoClaw allocates e
 Use `--dashboard-origin <origin>` when a browser reaches the dashboard through a proxy on a different port than the dashboard, for example `https://launchpad.example.com:8443`.
 NemoClaw adds each origin to the OpenClaw dashboard's allowed origins and keeps its port.
 Repeat the flag for more origins, or set `NEMOCLAW_DASHBOARD_ORIGINS` to a comma-separated list for non-interactive onboarding.
+A sandbox accepts at most 16 distinct extra origins.
 Each value must be a bare origin: a scheme, a host, and an optional port, without a path, query, or user information.
 A remote origin must use `https`, and `http` is accepted only for a loopback host.
 The flag requires a managed OpenClaw image, so onboarding refuses it with `--from` or when it falls back to the Dockerfile build.
@@ -4244,7 +4245,7 @@ inference | | `NEMOCLAW_OLLAMA_PROXY_PORT` | 11435 | Ollama auth proxy | |
 </AgentOnly>
 <AgentOnly variant="openclaw">
   | `NEMOCLAW_DASHBOARD_ORIGINS` | *unset* | Comma-separated extra dashboard browser origins
-  for a managed OpenClaw image. Same rules as `--dashboard-origin`. |
+  for a managed OpenClaw image, at most 16. Same rules as `--dashboard-origin`. |
 </AgentOnly>
 New OpenRouter selections use the sandbox-attached native provider and do not use
 `NEMOCLAW_OPENROUTER_RUNTIME_ADAPTER_PORT`. The port remains reserved for legacy shared routes.

@@ -12,6 +12,7 @@ function resolve(flags: OnboardFlags, env: NodeJS.ProcessEnv = {}) {
     resolveOnboardOptions(flags, {
       env,
       resolveDashboardOrigins: resolveDashboardOriginInputs,
+      listAgents: () => ["openclaw", "hermes", "langchain-deepagents-code"],
       error,
       exit: (code: number): never => {
         throw new Error(`exit:${code}`);
@@ -42,5 +43,37 @@ describe("onboard --dashboard-origin (#13177)", () => {
 
     expect(options).toThrow("exit:1");
     expect(error).toHaveBeenCalledWith(expect.stringMatching(/Dashboard origin must use https/));
+  });
+
+  it.each(["hermes", "langchain-deepagents-code"])(
+    "refuses dashboard origins for %s before onboarding starts",
+    (agent) => {
+      const { options, error } = resolve({
+        agent,
+        "dashboard-origin": ["https://launchpad.example.test:8443"],
+      });
+
+      expect(options).toThrow("exit:1");
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/--dashboard-origin is supported only for OpenClaw sandboxes/),
+      );
+    },
+  );
+
+  it("refuses an exported NEMOCLAW_DASHBOARD_ORIGINS for another agent", () => {
+    const { options } = resolve(
+      { agent: "hermes" },
+      { NEMOCLAW_DASHBOARD_ORIGINS: "https://launchpad.example.test:8443" },
+    );
+
+    expect(options).toThrow("exit:1");
+  });
+
+  it("refuses more than 16 origins", () => {
+    const origins = Array.from({ length: 17 }, (_, i) => `https://o${i}.example.test:8443`);
+    const { options, error } = resolve({ "dashboard-origin": origins });
+
+    expect(options).toThrow("exit:1");
+    expect(error).toHaveBeenCalledWith(expect.stringMatching(/at most 16/));
   });
 });

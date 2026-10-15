@@ -89,9 +89,20 @@ describe("generate-openclaw-config.mts: NEMOCLAW_DASHBOARD_ORIGINS (#13177)", ()
   it.each([
     ["a path", "https://launchpad.example.test:8443/dashboard"],
     ["a value that is not a URL", "launchpad.example.test"],
+    ["plain http for a remote host", "http://launchpad.example.test:8443"],
+    ["a non-http scheme", "ftp://launchpad.example.test"],
+    ["user information", "https://user@launchpad.example.test"],
   ])("refuses an entry with %s instead of widening allowedOrigins", (_case, origin) => {
     expectBuildConfigError(
       { CHAT_UI_URL: "http://127.0.0.1:18789", NEMOCLAW_DASHBOARD_ORIGINS: origin },
+      /NEMOCLAW_DASHBOARD_ORIGINS/,
+    );
+  });
+
+  it("refuses more origins than one sandbox may record", () => {
+    const origins = Array.from({ length: 17 }, (_, i) => `https://o${i}.example.test:8443`);
+    expectBuildConfigError(
+      { CHAT_UI_URL: "http://127.0.0.1:18789", NEMOCLAW_DASHBOARD_ORIGINS: origins.join(",") },
       /NEMOCLAW_DASHBOARD_ORIGINS/,
     );
   });

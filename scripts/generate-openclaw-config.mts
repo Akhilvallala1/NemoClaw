@@ -157,29 +157,43 @@ function unique<T>(values: Iterable<T>): T[] {
 }
 
 const DASHBOARD_ORIGINS_ENV = "NEMOCLAW_DASHBOARD_ORIGINS";
+const MAX_DASHBOARD_ORIGINS = 16;
 
 /**
- * Read extra dashboard browser origins (#13177). The managed startup profile
- * validates them with `parseDashboardOrigins` before mapping them here, so this
- * only splits the list and refuses an entry that is not a bare origin.
+ * Read extra dashboard browser origins (#13177). Onboarding and the managed
+ * startup profile validate them with `parseDashboardOrigins`; this generator
+ * runs in the image without that module, so it enforces the same rules before
+ * it writes `allowedOrigins`: a bare http(s) origin, https unless the host is
+ * loopback, and at most `MAX_DASHBOARD_ORIGINS` entries.
+ * `test/generation/generate-openclaw-config-dashboard-origins.test.ts` keeps
+ * the two in step.
  */
 function readDashboardOriginsEnv(env: Env): string[] {
   const origins: string[] = [];
   for (const entry of (env[DASHBOARD_ORIGINS_ENV] ?? "").split(",")) {
     const value = entry.trim();
     if (!value) continue;
-    let origin: string | null = null;
+    let url: URL | null = null;
     try {
-      origin = new URL(value).origin;
+      url = new URL(value);
     } catch {
-      origin = null;
+      url = null;
     }
-    if (origin !== value) {
+    const allowed =
+      url !== null &&
+      url.origin === value &&
+      (url.protocol === "https:" || (url.protocol === "http:" && isLoopback(url.hostname)));
+    if (!allowed) {
       throw new Error(
-        `${DASHBOARD_ORIGINS_ENV} entry is not a bare origin: ${JSON.stringify(value)}`,
+        `${DASHBOARD_ORIGINS_ENV} entry must be a bare https origin, or http on loopback: ${JSON.stringify(value)}`,
       );
     }
-    origins.push(origin);
+    if (!origins.includes(value)) origins.push(value);
+  }
+  if (origins.length > MAX_DASHBOARD_ORIGINS) {
+    throw new Error(
+      `${DASHBOARD_ORIGINS_ENV} accepts at most ${String(MAX_DASHBOARD_ORIGINS)} origins; got ${String(origins.length)}`,
+    );
   }
   return origins;
 }

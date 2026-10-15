@@ -127,6 +127,11 @@ function dashboardForInput(
   agent: ManagedStartupAgent,
   input: ManagedStartupOnboardProfileInput,
 ): ManagedStartupDashboard {
+  if (agent !== "openclaw" && input.dashboardOrigins?.length) {
+    throw new ManagedStartupOnboardProfileError(
+      `dashboard origins are supported only for OpenClaw, not ${agent}`,
+    );
+  }
   if (agent === "langchain-deepagents-code") {
     if (input.manageDashboard) {
       throw new ManagedStartupOnboardProfileError("DCode must not enable a dashboard");

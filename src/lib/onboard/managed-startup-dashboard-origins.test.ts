@@ -106,6 +106,19 @@ describe("managed startup OpenClaw dashboard origins (#13177)", () => {
     ).toThrow(/dashboard\.extraOrigins/);
   });
 
+  it("refuses extra origins for another agent instead of dropping them", () => {
+    expect(() =>
+      buildManagedStartupOnboardProfile(
+        openClawInput({
+          agentName: "langchain-deepagents-code",
+          manageDashboard: false,
+          inference: null,
+          dashboardOrigins: EXTRA_ORIGINS,
+        }),
+      ),
+    ).toThrow(/dashboard origins are supported only for OpenClaw/);
+  });
+
   it("feeds the extra origins to the OpenClaw config generator", () => {
     const mapped = mapManagedStartupProfileToAgentEnvironment(profileWith(EXTRA_ORIGINS));
     const config = buildOpenClawConfig({
