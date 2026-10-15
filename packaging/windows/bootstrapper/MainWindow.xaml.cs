@@ -43,6 +43,8 @@ public partial class MainWindow : Window
     private bool packageInstalled;
     private bool configurationSaved;
     private bool preparingModel;
+    private bool replacementSetupAvailable;
+    internal bool ResumeSavedSetup { get; private set; }
 
     public MainWindow()
     {
@@ -91,6 +93,12 @@ public partial class MainWindow : Window
     public event EventHandler? UninstallRequested;
     public event EventHandler? ReplacePreviewRequested;
     public void SetDataRemovalAvailable(bool available) => this.RemovalOptions.SetAvailable(available);
+    internal void SetReplacementSetupAvailable(bool available)
+    {
+        this.replacementSetupAvailable = available;
+        this.KeepSavedSetup.IsChecked = available;
+        this.RefreshSavedSetupChoice();
+    }
     public void SetMaintenanceContext(bool relatedOnly)
     {
         this.ReplacePreviewButton.Visibility = relatedOnly ? Visibility.Visible : Visibility.Collapsed;
@@ -327,6 +335,8 @@ public partial class MainWindow : Window
 
     public void ShowConfigurationFailure(string? detail = null)
     {
+        this.ResumeSavedSetup = false;
+        this.SetReplacementSetupAvailable(false);
         this.busy = false;
         this.preparingModel = false;
         this.StopElapsed();
@@ -457,7 +467,29 @@ public partial class MainWindow : Window
     private void LicenseChanged(object sender, RoutedEventArgs args)
     {
         if (this.InstallButton is not null) this.InstallButton.IsEnabled = this.LicenseCheck.IsChecked == true
-            && this.savedSettingsReady && !this.readingSavedSettings && this.ProviderChoice?.SelectedItem is ComboBoxItem { IsEnabled: true };
+            && this.savedSettingsReady && !this.readingSavedSettings
+            && (this.UseSavedSetup || this.ProviderChoice?.SelectedItem is ComboBoxItem { IsEnabled: true });
+    }
+
+    private bool UseSavedSetup => this.replacementSetupAvailable && !this.packageInstalled
+        && this.SelectedAgent == "openclaw" && this.KeepSavedSetup?.IsChecked == true;
+
+    private void KeepSavedSetupChanged(object sender, RoutedEventArgs args) => this.RefreshSavedSetupChoice();
+
+    private void RefreshSavedSetupChoice()
+    {
+        if (this.KeepSavedSetup is null || this.ConfigurationFields is null) return;
+        this.KeepSavedSetup.Visibility = this.replacementSetupAvailable && !this.packageInstalled
+            && this.SelectedAgent == "openclaw" ? Visibility.Visible : Visibility.Collapsed;
+        this.ConfigurationFields.Visibility = this.UseSavedSetup ? Visibility.Collapsed : Visibility.Visible;
+        this.ConfigurationTitle.Text = this.UseSavedSetup ? "Keep your setup." : "Give your agent a model.";
+        this.ConfigurationDetail.Text = this.UseSavedSetup
+            ? "Your existing OpenClaw setup will be checked after installation."
+            : $"Choose a model for {AgentNames[this.SelectedAgent]} on this PC, a hosted provider, or an existing local server.";
+        if (this.runtimeAvailability.IsUnqualified(this.SelectedAgent))
+            this.ConfigurationDetail.Text = this.runtimeAvailability.SelectionDetail(this.SelectedAgent) + " " + this.ConfigurationDetail.Text;
+        this.UpdateModelSetupAction();
+        this.LicenseChanged(this, new RoutedEventArgs());
     }
 
     private void AgentSelected(object sender, RoutedEventArgs args)
@@ -485,15 +517,14 @@ public partial class MainWindow : Window
     private void ConfigureClicked(object sender, RoutedEventArgs args)
     {
         if (!this.runtimeAvailability.CanSelect(this.SelectedAgent)) return;
+        this.RefreshSavedSetupChoice();
         this.ServiceOptions.SetAgent(this.SelectedAgent);
         this.HidePanels();
         this.SetJourneyStage(2);
         this.ConfigurationPanel.Visibility = Visibility.Visible;
-        this.ConfigurationDetail.Text = $"Choose a model for {AgentNames[this.SelectedAgent]} on this PC, a hosted provider, or an existing local server.";
-        if (this.runtimeAvailability.IsUnqualified(this.SelectedAgent))
-            this.ConfigurationDetail.Text = this.runtimeAvailability.SelectionDetail(this.SelectedAgent) + " " + this.ConfigurationDetail.Text;
         this.UpdateModelSetupAction();
-        this.ProviderChoice.Focus();
+        if (this.UseSavedSetup) this.KeepSavedSetup.Focus();
+        else this.ProviderChoice.Focus();
         if (this.packageInstalled && this.SelectedAgent == "openclaw" && !this.savedChoicesLoaded.Contains(this.SelectedAgent))
             _ = this.LoadSavedSettingsAsync();
         else this.LicenseChanged(this, new RoutedEventArgs());
@@ -559,6 +590,30 @@ public partial class MainWindow : Window
         this.ModelBox.Text = configuration.Model;
         this.ConfigurationDetail.Text = "Your saved choices are loaded. Re-enter required API keys before saving changes.";
         if (!choice.IsEnabled) this.ShowConfigurationError("The saved on-device model is unavailable in this package. Choose another listed provider to change your settings.");
+    }
+
+    internal async Task<NativeSetupConfiguration> RestoreSavedSetupAsync()
+    {
+        if (!this.ResumeSavedSetup || !this.packageInstalled || this.SelectedAgent != "openclaw"
+            || !this.runtimeAvailability.CanSelect("openclaw"))
+            throw new InvalidOperationException("Saved OpenClaw setup cannot be restored before installation.");
+        this.ResumeSavedSetup = false;
+        this.SetReplacementSetupAvailable(false);
+        this.savedSettingsReady = false;
+        this.ProgressDetail.Text = "Checking your saved OpenClaw setup. Your settings and keys are not being changed.";
+        // Only the newly installed launcher reads the saved record under its state lease.
+        var saved = NativeSetupOperations.ReadSavedSettings(await this.readSavedSettings("openclaw"), "openclaw");
+        this.ApplySavedSettings(saved);
+        this.savedChoicesLoaded.Add("openclaw");
+        this.savedSettingsReady = true;
+        this.LicenseChanged(this, new RoutedEventArgs());
+        var configuration = saved.Configuration ?? throw new InvalidOperationException(saved.State == "needs-resave"
+            ? "The previous settings save is unfinished. Review your choices and re-enter required keys to recover it."
+            : "No saved OpenClaw setup was found. Choose a provider and model to finish setup.");
+        if (this.ProviderChoice.SelectedItem is not ComboBoxItem { IsEnabled: true })
+            throw new InvalidOperationException("The saved model is unavailable in this package. Choose an available provider to finish setup.");
+        this.Configuration = configuration;
+        return configuration;
     }
 
     private void AddModelChoice(ComboBoxItem choice)
@@ -655,6 +710,11 @@ public partial class MainWindow : Window
 
     private void UpdateModelSetupAction()
     {
+        if (this.UseSavedSetup)
+        {
+            this.InstallButton.Content = "Install NemoClaw";
+            return;
+        }
         var provider = (this.ProviderChoice.SelectedItem as ComboBoxItem)?.Tag as string;
         var download = NativeDownloadedModelSetup.IsModel(provider);
         this.ModelDownloadNotice.Text = download
@@ -674,6 +734,15 @@ public partial class MainWindow : Window
             if (!this.runtimeAvailability.CanSelect(this.SelectedAgent))
                 throw new InvalidOperationException("This agent is unavailable in this installer.");
             if (this.LicenseCheck.IsChecked != true) return;
+            if (this.UseSavedSetup)
+            {
+                this.Configuration = null;
+                this.ClearCredential();
+                this.ResumeSavedSetup = true;
+                this.InstallRequested?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+            this.ResumeSavedSetup = false;
             if (this.ProviderChoice.SelectedItem is not ComboBoxItem { Tag: string provider, IsEnabled: true }) throw new InvalidOperationException("Choose an available inference provider.");
             var selectedLocalModel = NativeDownloadedModelSetup.IsModel(provider) ? provider : NativeExpressSetup.Id;
             var express = provider == "n1x" || NativeDownloadedModelSetup.IsModel(provider);

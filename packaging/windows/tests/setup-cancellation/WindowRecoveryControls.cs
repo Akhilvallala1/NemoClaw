@@ -361,6 +361,7 @@ internal static class WindowRecoveryControls
             Invoke(window, "AgentSelected", new RadioButton {Tag = "openclaw"}, new RoutedEventArgs());
             loader.SetValue(window, (Func<string, Task<string>>)(_ => Task.FromResult(empty)));
             Finish((Task)Invoke(window, "LoadSavedSettingsAsync")!);
+            AssertReplacementSetup(window, loader, installed, Finish);
         }
         finally
         {
@@ -377,6 +378,163 @@ internal static class WindowRecoveryControls
                 window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
             if (!operation.IsCompleted) throw new TimeoutException("The saved-choice fixture did not finish.");
             operation.GetAwaiter().GetResult();
+        }
+    }
+
+    private static void AssertReplacementSetup(MainWindow window, FieldInfo loader, FieldInfo installed, Action<Task> finish)
+    {
+        const string saved = "{\"schemaVersion\":1,\"kind\":\"native-saved-settings\",\"agent\":\"openclaw\",\"state\":\"saved\",\"settings\":{\"inference\":\"nvidia\",\"endpoint\":\"https://integrate.api.nvidia.com/v1\",\"model\":\"saved-native-model\",\"credentialStored\":true,\"options\":{\"messaging\":{\"telegram\":{\"credentialStored\":true,\"allowedUsers\":[\"123456\"]}}}}}";
+        var choice = (CheckBox)window.FindName("KeepSavedSetup");
+        var fields = (StackPanel)window.FindName("ConfigurationFields");
+        var license = (CheckBox)window.FindName("LicenseCheck");
+        var key = (PasswordBox)window.FindName("CredentialBox");
+        var resume = typeof(MainWindow).GetProperty("ResumeSavedSetup", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var configuration = typeof(MainWindow).GetProperty("Configuration", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var reads = 0;
+        var installs = 0;
+        var hintRoot = Path.Combine(Path.GetTempPath(), "NemoClawSavedSetupHint-" + Guid.NewGuid().ToString("N"));
+        var hintFile = Path.Combine(hintRoot, "NVIDIA", "NemoClaw", "agents", "openclaw", "native-windows.json");
+        var hint = typeof(MainWindow).Assembly.GetType("Nvidia.NemoClaw.Bootstrapper.NativeSetupOperations")!
+            .GetMethod("HasSavedOpenClawSetup", BindingFlags.Static | BindingFlags.NonPublic)!;
+        EventHandler requested = (_, _) => installs++;
+        window.InstallRequested += requested;
+        try
+        {
+            installed.SetValue(window, false);
+            Invoke(window, "SetReplacementSetupAvailable", (bool)hint.Invoke(null, new object[] { hintRoot })!);
+            if (choice.Visibility != Visibility.Collapsed) throw new InvalidOperationException("Fresh setup offered replacement-only restore.");
+            Directory.CreateDirectory(Path.GetDirectoryName(hintFile)!);
+            File.WriteAllText(hintFile, "fixture metadata is deliberately not parsed before installation");
+            using (var held = new FileStream(hintFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                Invoke(window, "SetReplacementSetupAvailable", (bool)hint.Invoke(null, new object[] { hintRoot })!);
+            }
+            if (choice.Visibility != Visibility.Visible || choice.IsChecked != true || fields.Visibility != Visibility.Collapsed)
+                throw new InvalidOperationException("Replacement did not offer existing setup without editable defaults.");
+            Invoke(window, "ConfigureClicked", window, new RoutedEventArgs());
+            var evidence = Environment.GetEnvironmentVariable("NEMOCLAW_SETUP_PRESENTATION_EVIDENCE");
+            if (!string.IsNullOrWhiteSpace(evidence))
+            {
+                var output = Path.GetFullPath(evidence + "-replacement");
+                if (Directory.Exists(output) || File.Exists(output)) throw new InvalidOperationException("Replacement frames require a fresh directory.");
+                Directory.CreateDirectory(output);
+                var root = (FrameworkElement)window.Content;
+                foreach (var size in new[] { new Size(1080, 740), new Size(860, 600), new Size(640, 480) })
+                {
+                    window.MinWidth = 640;
+                    window.MinHeight = 480;
+                    window.Width = size.Width;
+                    window.Height = size.Height;
+                    window.UpdateLayout();
+                    window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+                    foreach (var control in new FrameworkElement[] { choice, license, (Button)window.FindName("InstallButton") })
+                        if (!control.IsVisible || !new Rect(root.RenderSize).Contains(control.TransformToAncestor(root).TransformBounds(new Rect(control.RenderSize))))
+                            throw new InvalidOperationException("Replacement setup hides a required control.");
+                    var bitmap = new RenderTargetBitmap((int)root.ActualWidth, (int)root.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+                    bitmap.Render(root);
+                    var pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
+                    bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
+                    if (!HasRenderedContent(pixels, bitmap.PixelWidth, bitmap.PixelHeight)) throw new InvalidOperationException("Replacement frame is blank.");
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                    using var image = new FileStream(Path.Combine(output, $"keep-setup-{size.Width}x{size.Height}.png"), FileMode.CreateNew);
+                    encoder.Save(image);
+                }
+                window.Width = 1080;
+                window.Height = 740;
+            }
+            choice.IsChecked = false;
+            if (fields.Visibility != Visibility.Visible) throw new InvalidOperationException("Replacement prevented choosing new settings.");
+            choice.IsChecked = true;
+            Invoke(window, "AgentSelected", new RadioButton { Tag = "hermes" }, new RoutedEventArgs());
+            Invoke(window, "ConfigureClicked", window, new RoutedEventArgs());
+            if (choice.Visibility != Visibility.Collapsed || fields.Visibility != Visibility.Visible)
+                throw new InvalidOperationException("OpenClaw replacement changed another agent's onboarding.");
+            Invoke(window, "AgentSelected", new RadioButton { Tag = "openclaw" }, new RoutedEventArgs());
+            Invoke(window, "ConfigureClicked", window, new RoutedEventArgs());
+            license.IsChecked = false;
+            Invoke(window, "InstallClicked", window, new RoutedEventArgs());
+            if (installs != 0) throw new InvalidOperationException("Restore bypassed license acceptance.");
+            license.IsChecked = true;
+            key.Password = "fixture-only-unused-key";
+            loader.SetValue(window, (Func<string, Task<string>>)(agent =>
+            {
+                if (agent != "openclaw") throw new InvalidOperationException("Restore read another agent's settings.");
+                reads++;
+                return Task.FromResult(saved);
+            }));
+            Invoke(window, "InstallClicked", window, new RoutedEventArgs());
+            if (installs != 1 || reads != 0 || resume.GetValue(window) is not true
+                || configuration.GetValue(window) is not null || key.SecurePassword.Length != 0)
+                throw new InvalidOperationException("Replacement read the old helper or retained a new credential before installation.");
+            var beforeInstallRejected = false;
+            try { finish((Task)Invoke(window, "RestoreSavedSetupAsync")!); }
+            catch (InvalidOperationException error) when (error.Message.Contains("before installation", StringComparison.Ordinal)) { beforeInstallRejected = true; }
+            if (!beforeInstallRejected || reads != 0) throw new InvalidOperationException("Pre-install restore touched the old launcher.");
+            installed.SetValue(window, true);
+            finish((Task)Invoke(window, "RestoreSavedSetupAsync")!);
+            if (reads != 1 || resume.GetValue(window) is not false || configuration.GetValue(window) is null
+                || ((TextBox)window.FindName("ModelBox")).Text != "saved-native-model"
+                || key.SecurePassword.Length != 0 || choice.Visibility != Visibility.Collapsed)
+                throw new InvalidOperationException("Installed replacement did not restore metadata without reentering credentials.");
+            var services = (UserControl)window.FindName("ServiceOptions");
+            if (((TextBox)services.FindName("TelegramUsers")).Text != "123456"
+                || ((PasswordBox)services.FindName("TelegramKey")).SecurePassword.Length != 0)
+                throw new InvalidOperationException("Restore lost integration choices or exposed a saved service key.");
+            foreach (var state in new[] { "unconfigured", "needs-resave" })
+            {
+                installed.SetValue(window, false);
+                Invoke(window, "SetReplacementSetupAvailable", true);
+                Invoke(window, "InstallClicked", window, new RoutedEventArgs());
+                installed.SetValue(window, true);
+                loader.SetValue(window, (Func<string, Task<string>>)(_ => Task.FromResult(
+                    "{\"schemaVersion\":1,\"kind\":\"native-saved-settings\",\"agent\":\"openclaw\",\"state\":\"" + state + "\",\"settings\":null}")));
+                var rejected = false;
+                try { finish((Task)Invoke(window, "RestoreSavedSetupAsync")!); }
+                catch (InvalidOperationException) { rejected = true; }
+                if (!rejected || configuration.GetValue(window) is not null || resume.GetValue(window) is not false)
+                    throw new InvalidOperationException("Absent or unfinished saved setup was accepted.");
+                window.ShowConfigurationFailure("Fixture requires configuration.");
+                if (fields.Visibility != Visibility.Visible || choice.Visibility != Visibility.Collapsed)
+                    throw new InvalidOperationException("Failed restore did not return to normal onboarding.");
+            }
+            installed.SetValue(window, false);
+            Invoke(window, "SetReplacementSetupAvailable", true);
+            Invoke(window, "InstallClicked", window, new RoutedEventArgs());
+            installed.SetValue(window, true);
+            loader.SetValue(window, (Func<string, Task<string>>)(_ => Task.FromException<string>(new IOException("fixture read failure"))));
+            var failedRead = false;
+            try { finish((Task)Invoke(window, "RestoreSavedSetupAsync")!); }
+            catch (IOException) { failedRead = true; }
+            window.ShowConfigurationFailure("Saved setup could not be read.");
+            if (!failedRead || ((Button)window.FindName("InstallButton")).IsEnabled || configuration.GetValue(window) is not null)
+                throw new InvalidOperationException("A failed restore read allowed overwriting settings with defaults.");
+            loader.SetValue(window, (Func<string, Task<string>>)(_ => Task.FromResult(saved)));
+            finish((Task)Invoke(window, "LoadSavedSettingsAsync")!);
+            if (!((Button)window.FindName("InstallButton")).IsEnabled)
+                throw new InvalidOperationException("A successful status retry did not recover normal configuration.");
+
+            var modelType = typeof(MainWindow).Assembly.GetType("Nvidia.NemoClaw.Bootstrapper.NativeExpressSetup")!;
+            var unavailable = System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, kind = "native-saved-settings", agent = "openclaw", state = "saved",
+                settings = new { inference = "local", model = modelType.GetProperty("Model", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null),
+                    localModel = modelType.GetProperty("Id", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null), credentialStored = false, options = new { } } });
+            installed.SetValue(window, false);
+            Invoke(window, "SetReplacementSetupAvailable", true);
+            Invoke(window, "InstallClicked", window, new RoutedEventArgs());
+            installed.SetValue(window, true);
+            loader.SetValue(window, (Func<string, Task<string>>)(_ => Task.FromResult(unavailable)));
+            var modelRejected = false;
+            try { finish((Task)Invoke(window, "RestoreSavedSetupAsync")!); }
+            catch (InvalidOperationException) { modelRejected = true; }
+            if (!modelRejected || configuration.GetValue(window) is not null)
+                throw new InvalidOperationException("Restore admitted a local model unavailable in this package.");
+            window.ShowConfigurationFailure("Saved model is unavailable.");
+        }
+        finally
+        {
+            window.InstallRequested -= requested;
+            Invoke(window, "SetReplacementSetupAvailable", false);
+            if (Directory.Exists(hintRoot)) Directory.Delete(hintRoot, true);
         }
     }
 

@@ -62,6 +62,9 @@ const config = {
   ...selected,
   plugins: { ...selected.plugins, load: { paths: [path.join(app, "plugins", choice)] } },
   update: { checkOnStart: false, auto: { enabled: false } },
+  // Plugin convergence does not exercise inference or the mutable public catalog.
+  // Keep the installed product's native catalog-refresh default unchanged.
+  models: { catalogRefresh: { enabled: false } },
   agents: { list: [{ id: "main", default: true }], defaults: { skipBootstrap: true } },
 };
 const env: NodeJS.ProcessEnv = {};
@@ -213,6 +216,7 @@ const result: Record<string, unknown> = {
   channelConnectionsStarted: false,
   liveSearchTested: false,
   modelTested: false,
+  remoteModelCatalogTested: false,
   windowsQualified: false,
 };
 try {

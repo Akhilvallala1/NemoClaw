@@ -226,6 +226,8 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
             this.Ui(() => {
                 this.window?.SetDataRemovalAvailable(inspection.Value.RemovalAvailable);
                 this.window?.SetMaintenanceContext(this.relatedOnly);
+                this.window?.SetReplacementSetupAvailable(!this.installed && !this.relatedOnly
+                    && (this.replacedPreviousPreview || NativeSetupOperations.HasSavedOpenClawSetup()));
                 this.window?.ShowReady(this.installed || this.relatedOnly);
             });
             if (this.command?.Action == LaunchAction.Uninstall && !this.replacedPreviousPreview)
@@ -516,10 +518,19 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
         this.modelSetupCancellation = cancellation;
         try
         {
-            var configuration = this.window?.Configuration ?? throw new InvalidOperationException("Agent configuration is missing.");
-            using var password = this.window.CopyCredential();
-            using var serviceCredentials = this.window.CopyServiceCredentials();
-            await NativeSetupOperations.SaveAsync(configuration, password, serviceCredentials, this.window.ShowModelProgress, cancellation.Token, this.window.ShowConfigurationUnconfirmed);
+            NativeSetupConfiguration configuration;
+            if (this.window.ResumeSavedSetup)
+            {
+                configuration = await this.window.RestoreSavedSetupAsync();
+                NativeDesktopIntegration.Ensure(configuration.Agent, NativeSetupOperations.InstalledLauncher());
+            }
+            else
+            {
+                configuration = this.window.Configuration ?? throw new InvalidOperationException("Agent configuration is missing.");
+                using var password = this.window.CopyCredential();
+                using var serviceCredentials = this.window.CopyServiceCredentials();
+                await NativeSetupOperations.SaveAsync(configuration, password, serviceCredentials, this.window.ShowModelProgress, cancellation.Token, this.window.ShowConfigurationUnconfirmed);
+            }
             this.result = 0;
             this.cancellation.ResetForRetry();
             this.window.ShowConfiguredSuccess();
