@@ -296,7 +296,7 @@ describe.concurrent("generic NVIDIA GPU PR selection", () => {
     );
     await expect(
       selectHermesRootEntrypoint([
-        "src/lib/actions/sandbox/openshell-child-visible-credentials.v0.1.2.json",
+        "src/lib/actions/sandbox/openshell-child-visible-credentials.v0.1.3.json",
       ]),
     ).resolves.toBe("selected=true");
   });

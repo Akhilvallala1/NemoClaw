@@ -38,14 +38,6 @@ export interface RuntimeIdentityOAuthServer extends StartedHttpServer {
   secretValues(): readonly string[];
 }
 
-function requireTcpPort(server: https.Server): number {
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("runtime identity OAuth fixture did not bind to a TCP port");
-  }
-  return address.port;
-}
-
 function generateEphemeralTlsMaterial(): {
   dir: string;
   cert: Buffer;
@@ -215,9 +207,9 @@ export async function startRuntimeIdentityOAuthServer(options: {
     writeJsonResponse(res, 404, { error: "not found" });
   });
 
-  await listenOnRandomPort(server);
+  const port = await listenOnRandomPort(server);
   return {
-    port: requireTcpPort(server),
+    port,
     tokenRequests: () => tokenRequests,
     resourceRequests: () => resourceRequests,
     secretValues: () => [options.clientId, options.clientSecret, ...accessTokens, ...refreshTokens],

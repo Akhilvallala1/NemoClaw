@@ -14,9 +14,9 @@ const TRANSACTION = path.join(
   "hermes",
   "mcp-config-transaction.py",
 );
-const MANIFEST_NAME = "openshell-child-visible-credentials.v0.1.2.json";
+const MANIFEST_NAME = "openshell-child-visible-credentials.v0.1.3.json";
 const validManifest: Record<string, unknown> = {
-  openshellVersion: "0.1.2",
+  openshellVersion: "0.1.3",
   rawChildValueKeys: ["RAW_CHILD_VALUE"],
   rewrittenChildValueKeys: ["REWRITTEN_CHILD_VALUE"],
   runtimeControlKeys: ["RUNTIME_CONTROL"],
@@ -78,7 +78,7 @@ describe("Hermes MCP credential boundary manifest (#6256)", () => {
 
   it("rejects the previous manifest version at the current installed path", () => {
     expect(
-      runEmbeddedTransactionImportWithManifest({ ...validManifest, openshellVersion: "0.0.116" }),
+      runEmbeddedTransactionImportWithManifest({ ...validManifest, openshellVersion: "0.1.2" }),
     ).toEqual({
       loaded: false,
       type: "RuntimeError",
@@ -90,7 +90,7 @@ describe("Hermes MCP credential boundary manifest (#6256)", () => {
     expect(
       runEmbeddedTransactionImport((helperDir) => {
         fs.writeFileSync(
-          path.join(helperDir, "openshell-child-visible-credentials.v0.0.116.json"),
+          path.join(helperDir, "openshell-child-visible-credentials.v0.1.2.json"),
           JSON.stringify(validManifest),
         );
       }),

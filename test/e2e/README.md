@@ -385,6 +385,15 @@ reject mixed cohorts, another run, a future attempt, and another candidate revis
 The managed-image scope does not claim trusted-private DNS-rebinding coverage: host and sandbox
 `/etc/hosts` fixtures do not control the OpenShell supervisor's egress resolver. Full MCP bridge E2E
 coverage retains that assertion for environments with supervisor-authoritative DNS.
+On OpenShell 0.1.3, the full-suite DNS fixture selects the workload's supervisor by
+sandbox ID and namespace. It backs up and updates that container's engine-owned
+hosts file on the Linux test host without changing the supervisor's read-only
+mounts. Remapping and restoration retain the selected container ID and hosts path;
+a replacement container never receives the old backup. Host DNS restoration is
+mandatory; a vanished ephemeral container is left to the sandbox cleanup owner.
+The trusted-private fixture uses its existing host HTTPS listener for the 0.1.3
+host-network supervisor. Its discovered interface address must be routed-private,
+not the Podman gateway's link-local alias. Legacy bridged workloads retain the relay.
 The trusted-private HTTPS fixture records bounded TLS, request-header, and completed-body counters
 before the status assertion and during final cleanup. TLS errors use fixed code buckets; these
 diagnostics contain no raw errors, request data, or credentials and do not establish successful
@@ -884,6 +893,15 @@ On an exact-revision manual PR run, `NEMOCLAW_E2E_RISK_SIGNAL_EXPECTED_SHA` carr
 The standard layout writes product evidence and `evidence-manifest.json` under `e2e-artifacts/live/<target-id>`.
 When `shard` is not `default`, the standard layout adds the shard directory.
 The security-posture matrix uses the reviewed flat-shard layout to preserve its existing artifact names.
+For OpenShell 0.1.3, its process report identifies the non-root workload boundary at PID 1 separately from the `nemoclaw-start` children.
+The probe runs as the managed image's declared sandbox owner and requires zero capabilities and `NoNewPrivs=1`.
+It records denied PID-1 executable-link access as `null`; it does not infer an executable path from the command line.
+Child executable links must remain readable and identify system Bash. Missing processes and denied child inspection fail the probe.
+The report's `processScope: workload-container` identifies the process census; it does not attest the PID-1 executable binary.
+Separate `containerPair` evidence binds engine launch metadata to that workload and its uniquely labelled supervisor before and after the census.
+It checks running identities, entrypoints, non-root users, capability drops, no-new-privileges, and provider-specific network settings.
+The supervisor must use the pinned 0.1.3 image and pass its native health command. Docker also requires its read-only root filesystem.
+The inspection selects metadata fields and excludes environments, supervisor arguments, credentials, and health logs.
 The `gpu-double-onboard`, `gpu-e2e`, and `llama-cpp-generic-gpu` targets keep the standard layout and select `linux-amd64-gpu-rtxpro6000-latest-1` through the catalogue.
 The llama.cpp target compares the selected model's authenticated `/v1/models` `meta.n_ctx`
 with the generated OpenClaw primary model's context window, with no explicit context override.

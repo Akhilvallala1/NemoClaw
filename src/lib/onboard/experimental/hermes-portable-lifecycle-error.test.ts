@@ -93,7 +93,7 @@ const restartable = [
   },
 ].flatMap((scenario) => [false, true].map((running) => ({ ...scenario, running })));
 
-describe("Hermes OpenShell 0.1.2 Error recovery", () => {
+describe("Hermes OpenShell error recovery", () => {
   it.each(restartable)(
     "recovers $name with running=$running through native start",
     async ({ fields, running }) => {

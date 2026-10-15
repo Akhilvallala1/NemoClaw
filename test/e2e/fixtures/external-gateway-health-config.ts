@@ -3,7 +3,7 @@
 
 import type { DockerDriverGatewayLocalTlsBundle } from "../../../src/lib/onboard/docker-driver-gateway-local-tls.ts";
 
-/** Public health uses server TLS; guest credentials configure the Docker driver, not client authentication. */
+/** Public health uses server TLS; sandboxes receive only the gateway CA, never user credentials. */
 export function externalGatewayHealthConfig(
   address: string,
   port: number,
@@ -18,8 +18,6 @@ export function externalGatewayHealthConfig(
     'compute_driver = "docker"',
     "disable_tls = false",
     `guest_tls_ca = ${JSON.stringify(tls.caPath)}`,
-    `guest_tls_cert = ${JSON.stringify(tls.clientCertPath)}`,
-    `guest_tls_key = ${JSON.stringify(tls.clientKeyPath)}`,
     "",
     "[openshell.gateway.tls]",
     `cert_path = ${JSON.stringify(tls.serverCertPath)}`,

@@ -706,11 +706,14 @@ function existingGatewayIdentityFromConfig(
     }
 
     const guestTlsOwner = schemaVersion === 1 ? driverConfig : gateway;
-    if (
-      !["guest_tls_ca", "guest_tls_cert", "guest_tls_key"].every((field) =>
-        isNonEmptyString(guestTlsOwner[field]),
-      )
-    ) {
+    const legacyGuestCredentials =
+      schemaVersion === 1 ||
+      guestTlsOwner.guest_tls_cert !== undefined ||
+      guestTlsOwner.guest_tls_key !== undefined;
+    const requiredGuestTlsFields = legacyGuestCredentials
+      ? ["guest_tls_ca", "guest_tls_cert", "guest_tls_key"]
+      : ["guest_tls_ca"];
+    if (!requiredGuestTlsFields.every((field) => isNonEmptyString(guestTlsOwner[field]))) {
       throw ambiguousGatewayConfig(configPath, "the guest TLS config is incomplete");
     }
 
@@ -775,6 +778,7 @@ function existingGatewayIdentityFromConfig(
       configuredRuntime,
       externalComponent,
       schemaVersion,
+      legacyGuestCredentials,
     );
     if (originalToml !== canonicalToml) {
       throw ambiguousGatewayConfig(
@@ -870,6 +874,7 @@ function buildDockerDriverGatewayConfigTomlForIdentity(
   projectedRuntime?: RuntimeProviderGatewayHostRuntime,
   externalComponent?: ExternalComponentGatewayConfiguration | null,
   schemaVersion: 1 | 2 = 2,
+  legacyGuestCredentials = schemaVersion === 1,
 ): string {
   const runtime = resolveGatewayRuntimeProjection(gatewayEnv, projectedRuntime);
   const driver = runtime.openShellDriver;
@@ -879,8 +884,13 @@ function buildDockerDriverGatewayConfigTomlForIdentity(
   const guestTlsConfig = localTlsDir
     ? [
         `guest_tls_ca = ${tomlString(path.join(localTlsDir, "ca.crt"))}`,
-        `guest_tls_cert = ${tomlString(path.join(localTlsDir, "client", "tls.crt"))}`,
-        `guest_tls_key = ${tomlString(path.join(localTlsDir, "client", "tls.key"))}`,
+        // Reconstruct old bytes only for ownership verification, never for a new config.
+        ...(legacyGuestCredentials
+          ? [
+              `guest_tls_cert = ${tomlString(path.join(localTlsDir, "client", "tls.crt"))}`,
+              `guest_tls_key = ${tomlString(path.join(localTlsDir, "client", "tls.key"))}`,
+            ]
+          : []),
       ]
     : [];
   const dockerEntries: [string, string | boolean | undefined][] = [

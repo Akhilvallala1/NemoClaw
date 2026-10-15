@@ -65,7 +65,20 @@ function podmanGatewayRuntime(env: Record<string, string>) {
   });
 }
 
-function schemaOneGatewayConfig(toml: string, driver: "docker" | "podman"): string {
+function withLegacyGuestCredentials(toml: string): string {
+  const tlsDir = path.dirname(parseTomlString(toml, "guest_tls_ca"));
+  return toml.replace(
+    /^(guest_tls_ca = .+)$/m,
+    [
+      "$1",
+      `guest_tls_cert = ${JSON.stringify(path.join(tlsDir, "client", "tls.crt"))}`,
+      `guest_tls_key = ${JSON.stringify(path.join(tlsDir, "client", "tls.key"))}`,
+    ].join("\n"),
+  );
+}
+
+function schemaOneGatewayConfig(source: string, driver: "docker" | "podman"): string {
+  const toml = withLegacyGuestCredentials(source);
   const guestTls = toml.match(/^guest_tls_.+$/gm) ?? [];
   const legacy =
     toml
@@ -131,16 +144,17 @@ function writePreScopedGatewayConfig(
 }
 
 describe("docker-driver-gateway config TOML", () => {
-  it.each([
-    ["docker", "guest_tls_ca"],
-    ["docker", "guest_tls_cert"],
-    ["docker", "guest_tls_key"],
-    ["podman", "guest_tls_ca"],
-    ["podman", "guest_tls_cert"],
-    ["podman", "guest_tls_key"],
-  ] as const)(
-    "preserves schema 1 %s identity and rejects altered %s without mutation",
-    (driver, field) => {
+  it.each(
+    (["docker", "podman"] as const).flatMap((driver) =>
+      ([1, 2] as const).flatMap((schema) =>
+        ["guest_tls_ca", "guest_tls_cert", "guest_tls_key"].flatMap((field) =>
+          (["altered", "missing"] as const).map((fault) => ({ driver, schema, field, fault })),
+        ),
+      ),
+    ),
+  )(
+    "migrates schema $schema $driver credentials and rejects $fault $field",
+    ({ driver, schema, field, fault }) => {
       const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-gateway-schema-one-"));
       try {
         const env: Record<string, string> = {
@@ -156,6 +170,12 @@ describe("docker-driver-gateway config TOML", () => {
         const before = fs.readFileSync(configPath, "utf-8");
         const bundle = jwtBundlePaths(stateDir);
         const keyBefore = fs.readFileSync(bundle.signingKeyPath, "utf-8");
+        const clientDir = path.join(stateDir, "tls", "client");
+        fs.mkdirSync(clientDir, { recursive: true, mode: 0o700 });
+        const clientCert = path.join(clientDir, "tls.crt");
+        const clientKey = path.join(clientDir, "tls.key");
+        fs.writeFileSync(clientCert, "retained-user-certificate", { mode: 0o600 });
+        fs.writeFileSync(clientKey, "retained-user-key", { mode: 0o600 });
         const parsed = parseToml(before) as {
           openshell: {
             gateway: Record<string, unknown>;
@@ -164,13 +184,19 @@ describe("docker-driver-gateway config TOML", () => {
         };
         expect(parsed.openshell.gateway).toMatchObject({
           guest_tls_ca: path.join(stateDir, "tls", "ca.crt"),
-          guest_tls_cert: path.join(stateDir, "tls", "client", "tls.crt"),
-          guest_tls_key: path.join(stateDir, "tls", "client", "tls.key"),
+          mtls_auth: { enabled: true },
+          auth: { allow_unauthenticated_users: false },
         });
+        expect(parsed.openshell.gateway).not.toHaveProperty("guest_tls_cert");
+        expect(parsed.openshell.gateway).not.toHaveProperty("guest_tls_key");
         expect(parsed.openshell.drivers[driver]).not.toHaveProperty("guest_tls_ca");
         expect(parsed.openshell.drivers[driver]).not.toHaveProperty("guest_tls_cert");
         expect(parsed.openshell.drivers[driver]).not.toHaveProperty("guest_tls_key");
-        fs.writeFileSync(configPath, schemaOneGatewayConfig(before, driver), { mode: 0o600 });
+        const legacy =
+          schema === 1
+            ? schemaOneGatewayConfig(before, driver)
+            : withLegacyGuestCredentials(before);
+        fs.writeFileSync(configPath, legacy, { mode: 0o600 });
         prepareDockerDriverGatewayConfigEnv(env, stateDir, "/usr/bin/openshell-sandbox", {
           gatewayRuntime,
         });
@@ -179,10 +205,8 @@ describe("docker-driver-gateway config TOML", () => {
         expect(env[NEMOCLAW_OPENSHELL_SANDBOX_NAMESPACE_ENV]).toBe(
           driver === "docker" ? gatewayIdForStateDir(stateDir) : undefined,
         );
-        const invalid = before.replace(
-          new RegExp("^" + field + " = .+$", "m"),
-          field + ' = "/unowned.pem"',
-        );
+        const replacement = fault === "altered" ? field + ' = "/unowned.pem"\n' : "";
+        const invalid = legacy.replace(new RegExp("^" + field + " = .+\\n", "m"), replacement);
         fs.writeFileSync(configPath, invalid, { mode: 0o600 });
         expect(() =>
           prepareDockerDriverGatewayConfigEnv(env, stateDir, "/usr/bin/openshell-sandbox", {
@@ -191,6 +215,10 @@ describe("docker-driver-gateway config TOML", () => {
         ).toThrow(GatewayStateConflictError);
         expect(fs.readFileSync(configPath, "utf-8")).toBe(invalid);
         expect(fs.readFileSync(bundle.signingKeyPath, "utf-8")).toBe(keyBefore);
+        expect(fs.readFileSync(clientCert, "utf8")).toBe("retained-user-certificate");
+        expect(fs.readFileSync(clientKey, "utf8")).toBe("retained-user-key");
+        expect(fs.statSync(clientCert).mode & 0o777).toBe(0o600);
+        expect(fs.statSync(clientKey).mode & 0o777).toBe(0o600);
       } finally {
         fs.rmSync(stateDir, { recursive: true, force: true });
       }
@@ -324,12 +352,8 @@ describe("docker-driver-gateway config TOML", () => {
       expect(toml).toContain('compute_driver = "docker"');
       expect(toml).toContain('grpc_endpoint = "https://127.0.0.1:8080"');
       expect(toml).toContain(`guest_tls_ca = "${path.join(stateDir, "tls", "ca.crt")}"`);
-      expect(toml).toContain(
-        `guest_tls_cert = "${path.join(stateDir, "tls", "client", "tls.crt")}"`,
-      );
-      expect(toml).toContain(
-        `guest_tls_key = "${path.join(stateDir, "tls", "client", "tls.key")}"`,
-      );
+      expect(toml).not.toContain("guest_tls_cert");
+      expect(toml).not.toContain("guest_tls_key");
       expect(toml).toContain('supervisor_bin = "/usr/bin/openshell-sandbox"');
       expect(env[NEMOCLAW_OPENSHELL_SANDBOX_NAMESPACE_ENV]).toBe(gatewayIdForStateDir(stateDir));
       expect(env.OPENSHELL_DISABLE_GATEWAY_AUTH).toBeUndefined();

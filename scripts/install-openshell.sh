@@ -117,10 +117,10 @@ info "Detected $OS_LABEL ($ARCH_LABEL)"
 # round-trippable base policies: WebSocket text frames, provider-shaped
 # aliases, REST request bodies, MCP/JSON-RPC L7 enforcement, and
 # `policy get --base` for MCP/JSON-RPC-safe read-modify-write operations.
-MIN_VERSION="0.1.2"
+MIN_VERSION="0.1.3"
 # Maximum version validated for this NemoClaw release. Newer OpenShell builds
 # may change sandbox semantics; upgrade NemoClaw before upgrading past this.
-MAX_VERSION="0.1.2"
+MAX_VERSION="0.1.3"
 # Pin fresh installs to this version. The TS installer normally overrides this
 # via NEMOCLAW_OPENSHELL_PIN_VERSION after resolving the highest published
 # OpenShell release that satisfies the blueprint's max_openshell_version
@@ -128,7 +128,7 @@ MAX_VERSION="0.1.2"
 PIN_VERSION="$MAX_VERSION"
 # Keep the base-trusted template selector aligned with the immutable release;
 # the dev channel is rejected below and cannot consume it.
-DEV_MIN_VERSION="0.1.2"
+DEV_MIN_VERSION="0.1.3"
 
 CHANNEL="${NEMOCLAW_OPENSHELL_CHANNEL:-auto}"
 case "$CHANNEL" in
@@ -338,41 +338,41 @@ try {
 openshell_pinned_sha256() {
   local release_tag="$1" asset="$2"
   case "${release_tag}:${asset}" in
-    v0.1.2:openshell-x86_64-unknown-linux-musl.tar.gz)
-      printf '%s\n' "7eb6917285331a09e3300266a0558616481a5e9927cae2612ea07c4045b6dd6f"
+    v0.1.3:openshell-x86_64-unknown-linux-musl.tar.gz)
+      printf '%s\n' "ed08ea7874c47f22d6e5dcc4b27d9ef1ef5d2060f83035b35ff725d5160830a3"
       ;;
-    v0.1.2:openshell-aarch64-unknown-linux-musl.tar.gz)
-      printf '%s\n' "9880c5776688231d5242deb046cdee361734f94901b9123949a0baf29fdadd9e"
+    v0.1.3:openshell-aarch64-unknown-linux-musl.tar.gz)
+      printf '%s\n' "07687dacefc52bc73b01943f5b58f7a5082c1ceaa228461b9a2a78023b8057c0"
       ;;
-    v0.1.2:openshell-aarch64-apple-darwin.tar.gz)
-      printf '%s\n' "cdde7e92bd7eac664031cf171cfe80d29e7f122a6674917b25a4ce0bcbc33466"
+    v0.1.3:openshell-aarch64-apple-darwin.tar.gz)
+      printf '%s\n' "2eda3676aa85ff60551b403847090942e119c89f37c84d1635ac166c6b879826"
       ;;
-    v0.1.2:openshell-gateway-x86_64-unknown-linux-gnu.tar.gz)
-      printf '%s\n' "218d887845b3a020ab7535c9985eb9c666d6938f144044957f8b82b42892aadb"
+    v0.1.3:openshell-gateway-x86_64-unknown-linux-gnu.tar.gz)
+      printf '%s\n' "da8dce943fe01cce90243b2bf2587c71a243e4d641a4b616528829b681ced198"
       ;;
-    v0.1.2:openshell-gateway-aarch64-unknown-linux-gnu.tar.gz)
-      printf '%s\n' "8ec1b6ca5b71ef5085fa51f3244d719a541e8f0d58cc569c7a0d6705b6204397"
+    v0.1.3:openshell-gateway-aarch64-unknown-linux-gnu.tar.gz)
+      printf '%s\n' "801214322227f64f2d3faa6989daaa5e6cd9ef1ab768b5860496deeb1158c27b"
       ;;
-    v0.1.2:openshell-gateway-aarch64-apple-darwin.tar.gz)
-      printf '%s\n' "640068efa16e446d5f4f9ffaec0af769dbab04d686473d2a7bd6bafeb4ef7f45"
+    v0.1.3:openshell-gateway-aarch64-apple-darwin.tar.gz)
+      printf '%s\n' "a0cff0699f4a608a644805dbbf898c42caa59856274ff3cc2cdd6b3af4bacabe"
       ;;
-    v0.1.2:openshell-sandbox-x86_64-unknown-linux-musl.tar.gz)
-      printf '%s\n' "f07ad7177f4c3ff7743f89531eda36bb784c56b45b166f49c5a51fbcfa5274a6"
+    v0.1.3:openshell-sandbox-x86_64-unknown-linux-musl.tar.gz)
+      printf '%s\n' "8ab28e18e425f4160e99744ba74bb2a2d32a7f158ca55a2536e79f11ea1a8cf5"
       ;;
-    v0.1.2:openshell-sandbox-aarch64-unknown-linux-musl.tar.gz)
-      printf '%s\n' "4c68f2bc8e00a0a7d5d66d7bc2d836be6b255602a8f1b1650b4262c7935894b3"
+    v0.1.3:openshell-sandbox-aarch64-unknown-linux-musl.tar.gz)
+      printf '%s\n' "47fb89fee5997f5dfb1911ec95201346690b46580df0220458f418e4c3c6782b"
       ;;
-    v0.1.2:openshell-checksums-sha256.txt)
-      printf '%s\n' "13ed9929ef1a9bc0dbbbbddfd13f14870cea2f64bee3786d848c7b1836785dc7"
+    v0.1.3:openshell-checksums-sha256.txt)
+      printf '%s\n' "a7bc832c2e777e43e373bcdfa2f3d6180f2e83efb491d81d4299e181697444eb"
       ;;
-    v0.1.2:openshell-gateway-checksums-sha256.txt)
-      printf '%s\n' "df589be474d16af9cd38b22ab6738241d9a45a9caa5fa4847c3aa51de8b7c8aa"
+    v0.1.3:openshell-gateway-checksums-sha256.txt)
+      printf '%s\n' "414dc38f465086532077429a5d652ebad4d28fc384077c54c70139209568f8c6"
       ;;
-    v0.1.2:openshell-sandbox-checksums-sha256.txt)
-      printf '%s\n' "8475250201e4f72180c0d49b7898c7b33c28412f0373ef002a58c87c734255ae"
+    v0.1.3:openshell-sandbox-checksums-sha256.txt)
+      printf '%s\n' "1320a57cc9fd3ce8ad4bb9e1f8e225241f2d8b35ae3ceb1ae69992670211d576"
       ;;
-    v0.1.2:openshell.rb)
-      printf '%s\n' "a8ceb321f3d397a7ff9d07b0ffd6c06ad5d78021b9e477f5aca898ba98aa9bb8"
+    v0.1.3:openshell.rb)
+      printf '%s\n' "e760d5c41f5d3fd7a430a87e1efdf813c44848689c76a10029c8f65ed4f4eb4b"
       ;;
     *)
       return 1
@@ -519,6 +519,11 @@ pinned_sandbox_build_version() {
     5b2178f3b64a6c96eff9ed61bd7feeada4b4a4b3c68f3664e3b8f4f2b264a9b1 | \
       9b527c257e7917d11cee34075369cdfb69a57764198da6e72cc0847cb9b427aa)
       printf '%s\n' "0.1.2"
+      ;;
+    # OpenShell v0.1.3 standalone sandbox binaries.
+    38fe063f19c72680a1bc4b0c343a3ec5b7a5cb087a627faab5b2aefd9d50d094 | \
+      23147b42d31bd0b13e1a9ed7b3834b8e6075836cba0872fffa9e7d481f6dd281)
+      printf '%s\n' "0.1.3"
       ;;
     *)
       return 1
@@ -728,8 +733,8 @@ openshell_has_required_messaging_features() {
     return 1
   fi
 
-  # OpenShell 0.1.2 enforces MCP policy in its supervisor image. Recognize
-  # only its exact pinned sandbox artifacts here, not version text alone.
+  # OpenShell 0.1.2 and 0.1.3 enforce MCP policy in their supervisor images.
+  # Require a pinned sandbox digest matching the CLI, not version text alone.
   # Runtime policy verification still precedes credential/provider changes.
   if [ -z "$sandbox_bin" ] || [ ! -f "$sandbox_bin" ]; then
     # VM drivers embed a compressed supervisor, so scanning the host driver is
@@ -742,11 +747,15 @@ openshell_has_required_messaging_features() {
   fi
   sandbox_strings="$(strings "$sandbox_bin" 2>/dev/null || true)"
   if [[ "$sandbox_strings" != *"$OPENSHELL_SANDBOX_MCP_FEATURE"* ]]; then
-    local sandbox_digest
+    local sandbox_digest sandbox_version openshell_version
     sandbox_digest="$(file_sha256 "$sandbox_bin")" || return 1
-    if [ "$(pinned_sandbox_build_version "$sandbox_digest")" = "0.1.2" ]; then
-      return 0
-    fi
+    sandbox_version="$(pinned_sandbox_build_version "$sandbox_digest")" || return 1
+    openshell_version="$(component_build_version "$openshell_bin" cli)" || return 1
+    case "$sandbox_version" in
+      0.1.2 | 0.1.3)
+        [ "$sandbox_version" = "$openshell_version" ] && return 0
+        ;;
+    esac
     OPENSHELL_FEATURE_CHECK_ERROR="OpenShell sandbox runtime is missing MCP/JSON-RPC L7 policy support."
     return 1
   fi

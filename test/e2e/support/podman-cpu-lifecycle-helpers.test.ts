@@ -69,13 +69,8 @@ describe("Podman CPU lifecycle helper", () => {
           "openshell.ai/sandbox-id": "sandbox-id",
           "openshell.ai/sandbox-namespace": namespace,
         },
-        Cmd: [
-          "launch-capability-free",
-          "1000",
-          "1000",
-          "/.openshell/channel/sandbox/bootstrap.json",
-          "/sandbox",
-        ],
+        User: "1000:1000",
+        Cmd: ["--bootstrap", "/.openshell/channel/sandbox/bootstrap.json"],
         Entrypoint: ["/opt/openshell/bin/openshell-sandbox"],
       },
     };
@@ -107,6 +102,31 @@ describe("Podman CPU lifecycle helper", () => {
       ],
       [["container", "inspect", container.Id]],
     ]);
+  });
+
+  test.each([
+    ["root identity", { User: "0:0" }],
+    ["another group", { User: "1000:0" }],
+    [
+      "legacy launcher",
+      {
+        Cmd: [
+          "launch-capability-free",
+          "1000",
+          "1000",
+          "/.openshell/channel/sandbox/bootstrap.json",
+          "/sandbox",
+        ],
+      },
+    ],
+  ])("rejects a workload with %s", (_reason, config) => {
+    const container = inspectedContainer();
+    Object.assign(container.Config, config);
+    const capture = vi
+      .fn()
+      .mockReturnValueOnce({ status: 0, stderr: "", stdout: container.Id + "\n" })
+      .mockReturnValueOnce({ status: 0, stderr: "", stdout: JSON.stringify([container]) });
+    expect(() => inspectContainer({ capture } as never, "candidate")).toThrow();
   });
 
   test.each([

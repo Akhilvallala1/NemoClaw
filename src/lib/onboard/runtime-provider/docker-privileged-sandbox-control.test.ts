@@ -15,7 +15,7 @@ import { createDockerPrivilegedSandboxControl } from "./docker-privileged-sandbo
 
 const CONTAINER_ID = "a".repeat(64);
 
-function exactInspect(running = true, sandboxName = "alpha"): string {
+function exactInspect(running = true, sandboxName = "alpha", role?: string): string {
   return [
     CONTAINER_ID,
     `/openshell-default--${sandboxName}-sandbox-id`,
@@ -23,6 +23,7 @@ function exactInspect(running = true, sandboxName = "alpha"): string {
     JSON.stringify({
       "openshell.ai/managed-by": "openshell",
       "openshell.ai/sandbox-name": sandboxName,
+      ...(role === undefined ? {} : { "openshell.ai/isolation-role": role }),
     }),
   ].join("\t");
 }
@@ -93,7 +94,10 @@ describe("Docker privileged exact target", () => {
   });
 
   it("bounds direct target discovery by the caller's remaining deadline", () => {
-    mocks.dockerCapture.mockReturnValue(`${CONTAINER_ID}\topenshell-default--alpha-sandbox-id`);
+    mocks.dockerCapture.mockReturnValue(
+      `${CONTAINER_ID}\topenshell-default--alpha-sandbox-id\tsandbox\n` +
+        `${"b".repeat(64)}\topenshell-default--alpha-sandbox-id-supervisor\tsupervisor`,
+    );
     const control = createDockerPrivilegedSandboxControl();
 
     expect(
@@ -104,32 +108,43 @@ describe("Docker privileged exact target", () => {
         timeoutMs: 1_250,
       }),
     ).toEqual({ providerId: "docker", resourceHandle: CONTAINER_ID });
-    expect(mocks.dockerCapture).toHaveBeenCalledWith(expect.any(Array), { timeout: 1_250 });
-  });
-
-  it("executes in the pinned running replacement without mutable-name discovery (#11905)", () => {
-    mocks.dockerCapture.mockReturnValue(exactInspect());
-    const control = createDockerPrivilegedSandboxControl();
-
-    expect(
-      control.buildLegacyDockerArgv?.({
-        sandbox: { name: "alpha", openshellDriver: "docker" },
-        sandboxName: "alpha",
-        registeredSandboxNames: ["alpha"],
-        command: ["true"],
-        expectedResourceHandle: CONTAINER_ID,
-        sanitizeEnvironment: false,
-      }),
-    ).toEqual(["exec", "--user", "root", CONTAINER_ID, "true"]);
     expect(mocks.dockerCapture).toHaveBeenCalledWith(
-      expect.arrayContaining(["inspect", CONTAINER_ID]),
-      expect.any(Object),
+      expect.arrayContaining([
+        "--format",
+        '{{.ID}}\t{{.Names}}\t{{.Label "openshell.ai/isolation-role"}}',
+      ]),
+      { timeout: 1_250 },
     );
   });
+
+  it.each([undefined, "sandbox"])(
+    "executes in the pinned workload with role %s (#11905)",
+    (role) => {
+      mocks.dockerCapture.mockReturnValue(exactInspect(true, "alpha", role));
+      const control = createDockerPrivilegedSandboxControl();
+
+      expect(
+        control.buildLegacyDockerArgv?.({
+          sandbox: { name: "alpha", openshellDriver: "docker" },
+          sandboxName: "alpha",
+          registeredSandboxNames: ["alpha"],
+          command: ["true"],
+          expectedResourceHandle: CONTAINER_ID,
+          sanitizeEnvironment: false,
+        }),
+      ).toEqual(["exec", "--user", "root", CONTAINER_ID, "true"]);
+      expect(mocks.dockerCapture).toHaveBeenCalledWith(
+        expect.arrayContaining(["inspect", CONTAINER_ID]),
+        expect.any(Object),
+      );
+    },
+  );
 
   it.each([
     ["stopped", exactInspect(false)],
     ["wrong sandbox", exactInspect(true, "replacement")],
+    ["supervisor", exactInspect(true, "alpha", "supervisor")],
+    ["unknown role", exactInspect(true, "alpha", "other")],
   ])("rejects a %s pinned target", (_label, inspect) => {
     mocks.dockerCapture.mockReturnValue(inspect);
     const control = createDockerPrivilegedSandboxControl();
@@ -211,24 +226,25 @@ describe("Docker privileged exact target", () => {
     },
   );
 
-  it.each([exactInspect(false), exactInspect(true, "replacement")])(
-    "refuses sandbox-user execution after target identity changes",
-    (inspect) => {
-      mocks.dockerCapture.mockReturnValue(inspect);
-      const control = createDockerPrivilegedSandboxControl();
-      expect(() =>
-        control.executeAsSandboxUser?.({
-          sandbox: { name: "alpha", openshellDriver: "docker" },
-          sandboxName: "alpha",
-          registeredSandboxNames: ["alpha"],
-          expectedResourceHandle: CONTAINER_ID,
-          sandboxUser: "999:999",
-          command: ["true"],
-          sanitizeEnvironment: true,
-          timeoutMs: 1000,
-        }),
-      ).toThrow(/identity changed/u);
-      expect(mocks.dockerSpawnSync).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    exactInspect(false),
+    exactInspect(true, "replacement"),
+    exactInspect(true, "alpha", "supervisor"),
+  ])("refuses sandbox-user execution after target identity changes", (inspect) => {
+    mocks.dockerCapture.mockReturnValue(inspect);
+    const control = createDockerPrivilegedSandboxControl();
+    expect(() =>
+      control.executeAsSandboxUser?.({
+        sandbox: { name: "alpha", openshellDriver: "docker" },
+        sandboxName: "alpha",
+        registeredSandboxNames: ["alpha"],
+        expectedResourceHandle: CONTAINER_ID,
+        sandboxUser: "999:999",
+        command: ["true"],
+        sanitizeEnvironment: true,
+        timeoutMs: 1000,
+      }),
+    ).toThrow(/identity changed/u);
+    expect(mocks.dockerSpawnSync).not.toHaveBeenCalled();
+  });
 });

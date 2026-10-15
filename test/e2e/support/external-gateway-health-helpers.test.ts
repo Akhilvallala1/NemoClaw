@@ -8,7 +8,7 @@ import { externalGatewayHealthConfig } from "../fixtures/external-gateway-health
 import { getDockerDriverGatewayLocalTlsBundle } from "../../../src/lib/onboard/docker-driver-gateway-local-tls.ts";
 
 describe("external gateway release qualification", () => {
-  it("renders v2 public-health TLS and the driver's separate guest identity (#12603)", () => {
+  it("renders v2 public-health TLS without sandbox user credentials (#12603)", () => {
     const tls = getDockerDriverGatewayLocalTlsBundle('/private/health "fixture"');
     expect(externalGatewayHealthConfig("192.0.2.10", 4433, tls)).toBe(
       String.raw`[openshell]
@@ -19,8 +19,6 @@ bind_address = "192.0.2.10:4433"
 compute_driver = "docker"
 disable_tls = false
 guest_tls_ca = "/private/health \"fixture\"/tls/ca.crt"
-guest_tls_cert = "/private/health \"fixture\"/tls/client/tls.crt"
-guest_tls_key = "/private/health \"fixture\"/tls/client/tls.key"
 
 [openshell.gateway.tls]
 cert_path = "/private/health \"fixture\"/tls/server/tls.crt"
@@ -33,6 +31,10 @@ allow_unauthenticated_users = true
   });
 
   it.each([
+    ["openshell-gateway 0.1.3\n", "0.1.3"],
+    ["openshell-gateway v0.1.3\n", "0.1.3"],
+    ["openshell-gateway 0.1.3-dev.1\n", "0.1.3-dev.1"],
+    ["diagnostic 0.1.2\nopenshell-gateway 0.1.3\n", null],
     ["openshell-gateway 0.1.2\n", "0.1.2"],
     ["openshell-gateway v0.1.2\n", "0.1.2"],
     ["openshell-gateway 0.1.2-dev.1\n", "0.1.2-dev.1"],

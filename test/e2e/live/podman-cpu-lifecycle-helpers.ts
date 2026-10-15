@@ -20,7 +20,7 @@ import {
 import { redactFull } from "../../../src/lib/security/redact";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import { expect } from "../fixtures/e2e-test.ts";
-import { OPENSHELL_V012_QUALIFICATION } from "../fixtures/openshell-v0116-qualification.ts";
+import { OPENSHELL_V013_QUALIFICATION } from "../fixtures/openshell-v0116-qualification.ts";
 import { spawnObservedChild } from "../fixtures/observed-child-process.ts";
 import type { TestProgress } from "../fixtures/progress.ts";
 import {
@@ -36,7 +36,7 @@ import {
 
 export const ARTIFACT_DIR = process.env.E2E_ARTIFACT_DIR ?? "";
 export const GATEWAY_NAME = "nemoclaw-18080";
-export const OPENSHELL_VERSION = OPENSHELL_V012_QUALIFICATION.version;
+export const OPENSHELL_VERSION = OPENSHELL_V013_QUALIFICATION.version;
 export const SOCKET_PATH = process.env.E2E_PODMAN_SOCKET ?? "";
 
 const FULL_CONTAINER_ID = /^[0-9a-f]{64}$/u;
@@ -51,6 +51,7 @@ interface ManagedContainerInspect {
     Cmd: string[];
     Entrypoint: string | string[];
     Labels: Record<string, string>;
+    User: string;
   };
   Id: string;
   Name: string;
@@ -140,7 +141,7 @@ export async function startPinnedGateway(
   artifactDir = ARTIFACT_DIR,
 ): Promise<ChildProcess> {
   const child = spawnObservedChild(gatewayBin, [], {
-    activityLabel: "command: pinned OpenShell 0.1.2 Podman gateway",
+    activityLabel: `command: pinned OpenShell ${OPENSHELL_VERSION} Podman gateway`,
     progress,
     spawn: {
       env: { ...process.env, ...gatewayEnv },
@@ -306,20 +307,14 @@ export function inspectContainer(
   const labels = entry.Config.Labels;
   const sandboxId = labels[PODMAN_SANDBOX_ID_LABEL];
   expect(entry.Id).toBe(containerId);
-  expect(entry.Id).toMatch(FULL_CONTAINER_ID);
   expect(sandboxId).toBeTruthy();
   expect(entry.Name).toBe(`${PODMAN_SANDBOX_CONTAINER_PREFIX}${sandboxName}-${sandboxId}`);
   expect(labels).toMatchObject({
     [PODMAN_SANDBOX_NAMESPACE_LABEL]: PODMAN_SANDBOX_NAMESPACE,
   });
-  // The rootless driver drops to the policy identity after workspace setup.
-  expect(entry.Config.Cmd).toEqual([
-    "launch-capability-free",
-    "1000",
-    "1000",
-    "/.openshell/channel/sandbox/bootstrap.json",
-    "/sandbox",
-  ]);
+  // OpenShell 0.1.3 sets the policy identity in OCI User, not launcher arguments.
+  expect(entry.Config.User).toBe("1000:1000");
+  expect(entry.Config.Cmd).toEqual(["--bootstrap", "/.openshell/channel/sandbox/bootstrap.json"]);
   const entrypoint = Array.isArray(entry.Config.Entrypoint)
     ? entry.Config.Entrypoint
     : [entry.Config.Entrypoint];

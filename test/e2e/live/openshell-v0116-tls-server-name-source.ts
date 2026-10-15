@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 
-import { OPENSHELL_V012_QUALIFICATION } from "../fixtures/openshell-v0116-qualification.ts";
+import { OPENSHELL_V013_QUALIFICATION } from "../fixtures/openshell-v0116-qualification.ts";
 
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
 const TLS_SERVER_NAME_REMOVE = "remove(openshell_core::sandbox_env::GATEWAY_TLS_SERVER_NAME);";
@@ -170,6 +170,28 @@ export const OPENSHELL_V012_TLS_SERVER_NAME_SOURCES: readonly OpenShellTlsServer
     },
   ]);
 
+// OpenShell 0.1.3 retains these environment boundaries and regression predicates.
+// Bind them to the new release blobs without replacing historical source evidence.
+export const OPENSHELL_V013_TLS_SERVER_NAME_SOURCES: readonly OpenShellTlsServerNameSource[] =
+  Object.freeze([
+    {
+      ...OPENSHELL_V012_TLS_SERVER_NAME_SOURCES[0]!,
+      blobSha: "7a8935ff2908580e2fbadacb01fd78bbef05e93d",
+    },
+    {
+      ...OPENSHELL_V012_TLS_SERVER_NAME_SOURCES[1]!,
+      blobSha: "3d8968f2dbcb35922a6f90a8f3282fdce0c77528",
+    },
+    {
+      ...OPENSHELL_V012_TLS_SERVER_NAME_SOURCES[2]!,
+      blobSha: "3091ac978c8c2d9ea481b4f7bf2d405458f04c01",
+    },
+    {
+      ...OPENSHELL_V012_TLS_SERVER_NAME_SOURCES[3]!,
+      blobSha: "ab1aca902bc1a705366685750ecb32332077452a",
+    },
+  ]);
+
 function gitBlobSha(source: string): string {
   const content = Buffer.from(source, "utf8");
   const header = Buffer.from(`blob ${String(content.byteLength)}\0`, "utf8");
@@ -227,11 +249,11 @@ type VerificationResult = {
 
 export async function verifyOpenShellTlsServerNameSourceBoundary(
   fetchSource: typeof fetch = fetch,
-  reviewedSources: readonly OpenShellTlsServerNameSource[] = OPENSHELL_V012_TLS_SERVER_NAME_SOURCES,
+  reviewedSources: readonly OpenShellTlsServerNameSource[] = OPENSHELL_V013_TLS_SERVER_NAME_SOURCES,
   qualification: Readonly<{
     sourceRevision: string;
     version: string;
-  }> = OPENSHELL_V012_QUALIFICATION,
+  }> = OPENSHELL_V013_QUALIFICATION,
 ): Promise<{
   drivers: VerificationResult[];
   regressions: VerificationResult[];

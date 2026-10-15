@@ -14,6 +14,10 @@ content:
 The direct OpenClaw blueprint runner can attach a provider-neutral runtime identity to a sandbox.
 The shipped blueprint and normal `nemoclaw onboard` do not enable or configure this experimental capability.
 
+<Warning>
+The direct runner's identity apply path is not qualified for OpenShell 0.1.3. It still invokes `openshell inference set`, which the 0.1.3 CLI rejects before contacting the gateway. Keep this experimental flow disabled until the inference compatibility work in [NemoClaw#12558](https://github.com/NVIDIA/NemoClaw/issues/12558) and its conformance tests are complete.
+</Warning>
+
 The bundled Okta and Microsoft Entra profiles are data-only implementations of the component.
 The blueprint schema describes the OpenShell provider binding and OAuth refresh inputs without using the identity provider as a schema discriminator.
 
@@ -35,7 +39,7 @@ Runtime identity profiles may use DNS-backed HTTPS only within a provider type's
 NemoClaw resolves every destination before import and rejects private or internal addresses.
 OpenShell performs connect-time server-side request forgery (SSRF) and L7 enforcement before it injects the provider credential.
 
-OpenShell 0.1.2's gateway refresh client verifies the HTTPS hostname but does not pin the address that NemoClaw resolved during import.
+OpenShell 0.1.3's gateway refresh client verifies the HTTPS hostname but does not pin the address that NemoClaw resolved during import. The 0.1.3 identity apply path remains unqualified.
 Only identity-platform-controlled DNS namespaces such as `okta.com`, `login.microsoftonline.com`, and `graph.microsoft.com` belong in this trust table.
 An attacker-controlled or customer-controlled suffix requires a pinning-capable upstream refresh boundary and new conformance evidence.
 </Warning>

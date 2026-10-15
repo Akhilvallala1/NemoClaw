@@ -9,6 +9,7 @@ import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 
 import { REQUIRED_OPENSHELL_MCP_FEATURES } from "../../../src/lib/onboard/openshell-feature-gate.ts";
+import { getDockerDriverGatewayLocalTlsBundle } from "../../../src/lib/onboard/docker-driver-gateway-local-tls.ts";
 import type { ArtifactSink } from "../fixtures/artifacts.ts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import type { CleanupRegistry } from "../fixtures/cleanup.ts";
@@ -238,14 +239,11 @@ function readRenderedGatewayConfig(proof: ExactMainDriverConfigProof): ParsedGat
     requireString(gateway.guest_tls_ca, "gateway guest_tls_ca"),
     "gateway guest_tls_ca",
   );
-  assertReadableRegularFile(
-    requireString(gateway.guest_tls_cert, "gateway guest_tls_cert"),
-    "gateway guest_tls_cert",
-  );
-  assertRestrictedRegularFile(
-    requireString(gateway.guest_tls_key, "gateway guest_tls_key"),
-    "gateway guest_tls_key",
-  );
+  // OpenShell 0.1.3 authenticates sandboxes with JWT. User mTLS files remain
+  // private on the host and must still support the CLI's authenticated list.
+  const userTls = getDockerDriverGatewayLocalTlsBundle(stateDir);
+  assertReadableRegularFile(userTls.clientCertPath, "host user mTLS certificate");
+  assertRestrictedRegularFile(userTls.clientKeyPath, "host user mTLS private key");
 
   return {
     configSha256: createHash("sha256").update(raw).digest("hex"),

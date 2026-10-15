@@ -32,7 +32,7 @@ export interface OpenShellCompatibilityRange {
   readonly maxVersion: string;
 }
 
-export const EXTERNAL_OPENSHELL_RELEASE = "0.1.2" as const;
+export const EXTERNAL_OPENSHELL_RELEASE = "0.1.3" as const;
 
 export interface SanitizedExternalOpenShellTargetPlan {
   readonly endpoint: string;

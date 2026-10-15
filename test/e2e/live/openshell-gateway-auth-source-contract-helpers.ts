@@ -20,7 +20,10 @@ import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import type { CleanupRegistry } from "../fixtures/cleanup.ts";
 import type { HostCliClient } from "../fixtures/clients/index.ts";
 import { expect } from "../fixtures/e2e-test.ts";
-import { OPENSHELL_V012_QUALIFICATION } from "../fixtures/openshell-v0116-qualification.ts";
+import {
+  exactGatewayRelease,
+  OPENSHELL_V013_QUALIFICATION,
+} from "../fixtures/openshell-v0116-qualification.ts";
 import { spawnObservedChild } from "../fixtures/observed-child-process.ts";
 import type { TestProgress } from "../fixtures/progress.ts";
 import { redactString } from "../fixtures/redaction.ts";
@@ -34,7 +37,7 @@ import { verifyOpenShellTlsServerNameSourceBoundary } from "./openshell-v0116-tl
 export { buildSandboxTokenContainerProbeInvocation } from "./openshell-gateway-auth-probe.ts";
 
 // Only reads the launch bundle produced inside this test's private state directory.
-// A handwritten legacy JWT cannot establish a 0.1.2 persisted sandbox session.
+// A handwritten legacy JWT cannot establish a persisted sandbox session.
 export function createGatewayAuthSandbox(options: {
   cleanup: Pick<CleanupRegistry, "add">;
   configPath: string;
@@ -537,9 +540,7 @@ async function runOpenShellGatewayAuthSourceContractScenarioUnchecked(
 
   const version = run(gatewayBin, ["--version"]);
   expect(version.status, commandOutput(version)).toBe(0);
-  expect(commandOutput(version)).toContain(
-    process.env.NEMOCLAW_CANDIDATE_VERSION || OPENSHELL_V012_QUALIFICATION.version,
-  );
+  expect(exactGatewayRelease(commandOutput(version))).toBe(OPENSHELL_V013_QUALIFICATION.version);
 
   await requireDockerDaemon({ dockerBin, host, skip });
 
@@ -574,7 +575,7 @@ async function runOpenShellGatewayAuthSourceContractScenarioUnchecked(
     OPENSHELL_BIND_ADDRESS: "127.0.0.1",
     OPENSHELL_DB_URL: `sqlite:${path.join(stateDir, "openshell.db")}`,
     OPENSHELL_DOCKER_NETWORK_NAME: networkName,
-    OPENSHELL_DOCKER_SUPERVISOR_IMAGE: OPENSHELL_V012_QUALIFICATION.supervisorImage,
+    OPENSHELL_DOCKER_SUPERVISOR_IMAGE: OPENSHELL_V013_QUALIFICATION.supervisorImage,
     OPENSHELL_DRIVERS: "docker",
     OPENSHELL_GRPC_ENDPOINT: `https://127.0.0.1:${port}`,
     OPENSHELL_LOCAL_TLS_DIR: certBundle.localTlsDir,

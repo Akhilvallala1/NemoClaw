@@ -34,6 +34,8 @@ import {
 const OPENSHELL_MANAGED_BY_LABEL = "openshell.ai/managed-by";
 const OPENSHELL_MANAGED_BY_VALUE = "openshell";
 const OPENSHELL_SANDBOX_NAME_LABEL = "openshell.ai/sandbox-name";
+const OPENSHELL_ISOLATION_ROLE_LABEL = "openshell.ai/isolation-role";
+const SANDBOX_CONTAINER_FORMAT = `{{.ID}}\t{{.Names}}\t{{.Label "${OPENSHELL_ISOLATION_ROLE_LABEL}"}}`;
 const DIRECT_SANDBOX_DISCOVERY_TIMEOUT_MS = 5000;
 
 type SandboxEntry = import("../../state/registry").SandboxEntry;
@@ -55,7 +57,7 @@ function findDirectSandboxContainer(
         "--filter",
         `label=${OPENSHELL_SANDBOX_NAME_LABEL}=${sandboxName}`,
         "--format",
-        "{{.ID}}\t{{.Names}}",
+        SANDBOX_CONTAINER_FORMAT,
       ],
       { timeout: Math.max(1, Math.min(DIRECT_SANDBOX_DISCOVERY_TIMEOUT_MS, timeoutMs)) },
     );
@@ -130,7 +132,9 @@ function resolvePinnedDockerTarget(
     selected !== expectedResourceHandle ||
     running !== "true" ||
     labels[OPENSHELL_MANAGED_BY_LABEL] !== OPENSHELL_MANAGED_BY_VALUE ||
-    labels[OPENSHELL_SANDBOX_NAME_LABEL] !== input.sandboxName
+    labels[OPENSHELL_SANDBOX_NAME_LABEL] !== input.sandboxName ||
+    (labels[OPENSHELL_ISOLATION_ROLE_LABEL] !== undefined &&
+      labels[OPENSHELL_ISOLATION_ROLE_LABEL] !== "sandbox")
   ) {
     return refuse();
   }
@@ -249,7 +253,7 @@ function observeStoppedDockerTarget(
         "--filter",
         `label=${OPENSHELL_SANDBOX_NAME_LABEL}=${input.sandboxName}`,
         "--format",
-        "{{.ID}}\t{{.Names}}",
+        SANDBOX_CONTAINER_FORMAT,
       ],
       DIRECT_SANDBOX_DISCOVERY_TIMEOUT_MS,
     );

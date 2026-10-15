@@ -45,6 +45,7 @@ function fixture() {
   const env = {
     PATH: process.env.PATH,
     HOME: root,
+    TMPDIR: root,
     NPM_CONFIG_CACHE: path.join(root, "cache"),
     NPM_CONFIG_USERCONFIG: path.join(root, "empty.npmrc"),
     NPM_CONFIG_GLOBALCONFIG: path.join(root, "empty-global.npmrc"),
@@ -245,7 +246,7 @@ console.log(JSON.stringify([typeof sdk.OpenShellClient.connect, raw.SandboxPolic
 
   it("rejects a changed archive before creating an npm cache", () => {
     const { root, probe } = fixture();
-    const archive = path.join(root, "scripts/vendor/openshell-sdk/nvidia-openshell-sdk-0.1.2.tgz");
+    const archive = path.join(root, "scripts/vendor/openshell-sdk/nvidia-openshell-sdk-0.1.3.tgz");
     writeFileSync(archive, "corrupted archive");
     const result = probe("prepare");
     expect(result.status).toBe(1);

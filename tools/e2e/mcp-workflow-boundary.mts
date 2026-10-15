@@ -90,11 +90,11 @@ const CREDENTIAL_WINDOW_RUN_STEP = "Run OpenShell credential generation-window l
 const CREDENTIAL_WINDOW_JOB_CONDITION =
   "${{ contains(fromJSON(needs.generate-matrix.outputs.selected_jobs), 'openshell-credential-generation-window') }}";
 const STABLE_RELEASE_SUPERVISOR_INDEX =
-  "d7b5264bb6bc56f4796e6fa3617b8e4a8d785be0b7293542efd8cc250b0fb67a";
+  "4ab2b970cdb02c7518ba4ccbbadb4861ae9a8d0b8770e5b160697f0453b0a8e4";
 const STABLE_MCP_INSTALL_CONTENT_SHA256 =
-  "949cb1a2fbbda1220e10b1a526aa964b8796c181e48e02001f8e118adab98a51";
+  "fabfb06cbea78d4fae521e327aacdd1ac37b94275e5fe620699092d9ccf6307f";
 const CREDENTIAL_WINDOW_INSTALL_CONTENT_SHA256 =
-  "bc4cb881937ff2632ec9d69973d5dcec27da3b7ef1d220192609f2433434020a";
+  "527fd3e1cb66b4f5a5313817b138ac386dfcaeac5fd41360810106ad067fa923";
 const DEV_COMPATIBILITY_RUN = [
   "set -euo pipefail",
   'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"',

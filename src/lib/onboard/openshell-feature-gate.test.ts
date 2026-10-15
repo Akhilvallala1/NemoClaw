@@ -30,6 +30,47 @@ exit 0
 describe("OpenShell MCP feature gate", () => {
   it.each([
     {
+      digest: "38fe063f19c72680a1bc4b0c343a3ec5b7a5cb087a627faab5b2aefd9d50d094",
+      version: "0.1.3",
+      cliVersion: "0.1.3",
+      markers: true,
+      accepted: true,
+    },
+    {
+      digest: "23147b42d31bd0b13e1a9ed7b3834b8e6075836cba0872fffa9e7d481f6dd281",
+      version: "0.1.3",
+      cliVersion: "0.1.3",
+      markers: true,
+      accepted: true,
+    },
+    {
+      digest: "5b2178f3b64a6c96eff9ed61bd7feeada4b4a4b3c68f3664e3b8f4f2b264a9b1",
+      version: "0.1.3",
+      cliVersion: "0.1.3",
+      markers: true,
+      accepted: false,
+    },
+    {
+      digest: "23147b42d31bd0b13e1a9ed7b3834b8e6075836cba0872fffa9e7d481f6dd281",
+      version: "0.1.2",
+      markers: true,
+      accepted: false,
+    },
+    {
+      digest: "23147b42d31bd0b13e1a9ed7b3834b8e6075836cba0872fffa9e7d481f6dd281",
+      version: "0.1.3",
+      cliVersion: "0.1.3",
+      markers: false,
+      accepted: false,
+    },
+    {
+      digest: "0".repeat(64),
+      version: "0.1.3",
+      cliVersion: "0.1.3",
+      markers: true,
+      accepted: false,
+    },
+    {
       digest: "5b2178f3b64a6c96eff9ed61bd7feeada4b4a4b3c68f3664e3b8f4f2b264a9b1",
       version: "0.1.2",
       markers: true,
@@ -62,7 +103,7 @@ describe("OpenShell MCP feature gate", () => {
     },
   ])(
     "checks pinned split sandbox identity, component coherence and CLI capabilities [%j]",
-    ({ digest, version, markers, accepted }) => {
+    ({ digest, version, cliVersion = "0.1.2", markers, accepted }) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openshell-split-"));
       const openshell = path.join(root, "openshell");
       const sandbox = path.join(root, "openshell-sandbox");
@@ -73,7 +114,7 @@ describe("OpenShell MCP feature gate", () => {
         writeExecutable(
           openshell,
           markers ? REQUIRED_OPENSHELL_MCP_FEATURES.join(" ") : "",
-          "0.1.2",
+          cliVersion,
         );
         writeExecutable(sandbox, "split sandbox without policy markers", version);
         expect(

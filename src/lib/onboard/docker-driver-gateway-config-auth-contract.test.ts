@@ -56,7 +56,7 @@ describe("docker-driver-gateway auth contract", () => {
       }
     },
   );
-  it("emits an OpenShell 0.1.2 sandbox JWT bundle with non-expiring sessions", () => {
+  it("emits an OpenShell 0.1.3 sandbox JWT bundle with non-expiring sessions", () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-gateway-config-"));
     try {
       const env = writeGatewayConfig(stateDir);
@@ -156,7 +156,7 @@ describe("docker-driver-gateway auth contract", () => {
     }
   });
 
-  it("emits the OpenShell 0.1.2 gateway authentication schema", () => {
+  it("preserves user mTLS without exposing client credentials to OpenShell 0.1.3 sandboxes", () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-gateway-config-"));
     try {
       const env = writeGatewayConfig(stateDir);
@@ -178,8 +178,8 @@ describe("docker-driver-gateway auth contract", () => {
       expect(toml).toContain("[openshell.gateway.auth]");
       expect(toml).toContain("allow_unauthenticated_users = false");
       expect(toml).toContain("guest_tls_ca = ");
-      expect(toml).toContain("guest_tls_cert = ");
-      expect(toml).toContain("guest_tls_key = ");
+      expect(toml).not.toContain("guest_tls_cert");
+      expect(toml).not.toContain("guest_tls_key");
     } finally {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }

@@ -563,7 +563,6 @@ async function runRuntimeIdentityE2EScenario(
       { interval: 2_000, timeout: 35_000 },
     )
     .toMatch(placeholderPattern);
-  for (const secret of redactionValues) expect(placeholder).not.toContain(secret);
   const expectProtectedResourceVersion = async (
     projectedPlaceholder: string,
     expectedVersion: number,

@@ -33,7 +33,7 @@ export function runCommandWithInstalledVersion(
   version: string,
   extraEnv: NodeJS.ProcessEnv = {},
   options: {
-    entrypoint?: "direct" | "wrapper";
+    entrypoint?: "direct" | "wrapper" | "feature-check";
     capability?: boolean;
     curlExitCode?: number;
     featurePlacement?: OpenShellFeaturePlacement;
@@ -307,6 +307,16 @@ exit 0`,
     // Exercise that boundary for direct calls as well as the normal wrapper path.
     const isolatedInstaller = path.join(tmp, "install-openshell.sh");
     fs.copyFileSync(path.join(SCRIPTS, "install-openshell.sh"), isolatedInstaller);
+    if (options.entrypoint === "feature-check") {
+      // Exercise the feature gate independently of the selected install version.
+      const source = fs.readFileSync(isolatedInstaller, "utf8");
+      const selectionStart = source.indexOf('\nACTIVE_OPENSHELL_BIN=""\n');
+      if (selectionStart === -1) throw new Error("Missing installer selection boundary");
+      fs.writeFileSync(
+        isolatedInstaller,
+        `${source.slice(0, selectionStart)}\nrequire_openshell_messaging_features "$(command -v openshell)"\n`,
+      );
+    }
     const result = spawnSync(
       options.entrypoint === "wrapper" ? process.execPath : "bash",
       [
