@@ -15,28 +15,28 @@
     "testFileCount": 77,
     "liveFileCount": 186,
     "direct": {
-      "expectCalls": 1252,
-      "matcherAssertions": 1231,
+      "expectCalls": 1255,
+      "matcherAssertions": 1234,
       "nodeAssertions": 103,
       "namedAssertionHelpers": 415,
       "failCalls": 0,
       "throwGuards": 50,
       "objectFieldAssertions": 177,
-      "assertionPoints": 1976,
-      "generatedProbeBlocks": 87,
-      "generatedProbeConditions": 216
+      "assertionPoints": 1979,
+      "generatedProbeBlocks": 86,
+      "generatedProbeConditions": 215
     },
     "unique": {
-      "expectCalls": 1670,
-      "matcherAssertions": 1644,
+      "expectCalls": 1673,
+      "matcherAssertions": 1647,
       "nodeAssertions": 126,
       "namedAssertionHelpers": 659,
       "failCalls": 1,
       "throwGuards": 525,
       "objectFieldAssertions": 250,
-      "assertionPoints": 3205,
-      "generatedProbeBlocks": 207,
-      "generatedProbeConditions": 719
+      "assertionPoints": 3208,
+      "generatedProbeBlocks": 206,
+      "generatedProbeConditions": 718
     },
     "fileMetricOrder": [
       "directExpectCalls",
@@ -72,7 +72,7 @@
       "test/e2e/live/hermes-root-entrypoint-smoke.test.ts": [4,25,4,25,4],
       "test/e2e/live/hermes-sandbox-secret-boundary.test.ts": [16,23,16,23,3],
       "test/e2e/live/hermes-slack-e2e.test.ts": [0,0,29,87,14],
-      "test/e2e/live/inference-routing-provider-smoke.test.ts": [24,37,33,54,2],
+      "test/e2e/live/inference-routing-provider-smoke.test.ts": [27,40,36,57,1],
       "test/e2e/live/inference-routing.test.ts": [35,50,45,89,13],
       "test/e2e/live/issue-4434-tui-unreachable-inference.test.ts": [28,32,28,32,0],
       "test/e2e/live/issue-4462-scope-upgrade-approval.test.ts": [8,18,8,18,0],

@@ -41,8 +41,8 @@ describe("runOpenshellInstall progress streaming (#4431)", () => {
     runOpenshellInstall(makeDeps());
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
     expect(spawnSyncMock.mock.calls[0].slice(0, 2)).toEqual([
-      process.execPath,
-      ["/fake/scripts/lib/install-openshell-for-nemoclaw.mts"],
+      "bash",
+      ["/fake/scripts/install-openshell.sh"],
     ]);
     const options = spawnSyncMock.mock.calls[0][2];
     expect(options.stdio).toEqual(["ignore", "inherit", "inherit"]);

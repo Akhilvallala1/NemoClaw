@@ -29,20 +29,14 @@ const REQUIRED_OPENSHELL_VERSION = credentialBoundaryManifest.openshellVersion;
 const LEGACY_OPENSHELL_VERSION = "0.0.44";
 
 describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
-  it.each([
-    ["Linux", "direct"],
-    ["Darwin", "direct"],
-    ["Linux", "wrapper"],
-    ["Darwin", "wrapper"],
-  ] as const)(
-    "preserves the legacy gateway before component replacement on %s through %s",
-    (os, entrypoint) => {
+  it.each(["Linux", "Darwin"] as const)(
+    "preserves the legacy gateway before component replacement on %s",
+    (os) => {
       const result = runCommandWithInstalledVersion(
         "0.0.116",
         {},
         {
           legacyGateway: true,
-          entrypoint,
           os,
           arch: "arm64",
         },

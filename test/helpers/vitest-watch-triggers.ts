@@ -42,7 +42,7 @@ function runTests(...tests: string[]): () => string[] {
 
 export const vitestWatchTriggerPatterns: VitestWatchTriggerPattern[] = [
   {
-    pattern: /(?:^|\/)scripts\/(?:install-openshell\.sh|lib\/install-openshell-for-nemoclaw\.mts)$/,
+    pattern: /(?:^|\/)scripts\/install-openshell\.sh$/,
     testsToRun: runTests(
       "test/installer-integration/install-openshell-version-check.test.ts",
       "test/installer-integration/install-openshell-version-pin.test.ts",

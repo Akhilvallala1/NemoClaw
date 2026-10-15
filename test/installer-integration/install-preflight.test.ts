@@ -567,6 +567,7 @@ exit 0
       const openshellLog = path.join(tmp, "install-openshell.log");
       fs.mkdirSync(path.join(tmp, ".git"));
 
+      fs.mkdirSync(path.join(tmp, "scripts"));
       writeNodeStub(fakeBin);
       writeExecutable(
         path.join(fakeBin, "openshell"),
@@ -1062,8 +1063,7 @@ if [ "\${1:-}" = "-C" ]; then
 fi
 if [ "$1" = "init" ]; then
   target="\${@: -1}"
-  mkdir -p "$target/nemoclaw" "$target/scripts/lib"
-  cp ${JSON.stringify(path.join(path.dirname(INSTALLER_PAYLOAD), "lib", "install-openshell-for-nemoclaw.mts"))} "$target/scripts/lib/"
+  mkdir -p "$target/nemoclaw" "$target/scripts"
   echo '{"name":"nemoclaw","version":"0.1.0","dependencies":{"openclaw":"2026.3.11"}}' > "$target/package.json"
   echo '{"name":"nemoclaw-plugin","version":"0.1.0"}' > "$target/nemoclaw/package.json"
   cat > "$target/scripts/install-openshell.sh" <<'EOS'

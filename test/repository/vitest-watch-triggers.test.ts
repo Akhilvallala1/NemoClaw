@@ -113,15 +113,12 @@ function triggeredBy(relativePath: string): string[] {
 }
 
 describe("Vitest opaque-input watch triggers", () => {
-  it.each(["scripts/install-openshell.sh", "scripts/lib/install-openshell-for-nemoclaw.mts"])(
-    "maps the installer cutover boundary to its process tests [%s]",
-    (inputPath) => {
-      expect(triggeredBy(inputPath)).toEqual([
-        "test/installer-integration/install-openshell-version-check.test.ts",
-        "test/installer-integration/install-openshell-version-pin.test.ts",
-      ]);
-    },
-  );
+  it("maps the installer cutover boundary to its process tests", () => {
+    expect(triggeredBy("scripts/install-openshell.sh")).toEqual([
+      "test/installer-integration/install-openshell-version-check.test.ts",
+      "test/installer-integration/install-openshell-version-pin.test.ts",
+    ]);
+  });
   it.each(["test/helpers/onboard-fixture-contract.json", "test/helpers/onboard-script-mocks.cjs"])(
     "maps %s to every sandbox identity consumer (#10463)",
     (fixturePath) => {

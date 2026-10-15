@@ -33,7 +33,7 @@ export function runCommandWithInstalledVersion(
   version: string,
   extraEnv: NodeJS.ProcessEnv = {},
   options: {
-    entrypoint?: "direct" | "wrapper" | "feature-check";
+    entrypoint?: "direct" | "feature-check";
     capability?: boolean;
     curlExitCode?: number;
     featurePlacement?: OpenShellFeaturePlacement;
@@ -304,7 +304,6 @@ exit 0`,
           }
         : {};
     // Protected execution projects the installer without adjacent candidate helpers.
-    // Exercise that boundary for direct calls as well as the normal wrapper path.
     const isolatedInstaller = path.join(tmp, "install-openshell.sh");
     fs.copyFileSync(path.join(SCRIPTS, "install-openshell.sh"), isolatedInstaller);
     if (options.entrypoint === "feature-check") {
@@ -317,28 +316,20 @@ exit 0`,
         `${source.slice(0, selectionStart)}\nrequire_openshell_messaging_features "$(command -v openshell)"\n`,
       );
     }
-    const result = spawnSync(
-      options.entrypoint === "wrapper" ? process.execPath : "bash",
-      [
-        options.entrypoint === "wrapper"
-          ? path.join(SCRIPTS, "lib/install-openshell-for-nemoclaw.mts")
-          : isolatedInstaller,
-      ],
-      {
-        env: {
-          ...process.env,
-          NEMOCLAW_OPENSHELL_CHANNEL: "stable",
-          ...explicitDriverEnv,
-          ...extraEnv,
-          HOME: tmp,
-          TMPDIR: tmp,
-          XDG_CONFIG_HOME: configHome,
-          OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
-          PATH: `${fakeBin}:${driverBin}:/usr/bin:/bin`,
-        },
-        encoding: "utf8",
+    const result = spawnSync("bash", [isolatedInstaller], {
+      env: {
+        ...process.env,
+        NEMOCLAW_OPENSHELL_CHANNEL: "stable",
+        ...explicitDriverEnv,
+        ...extraEnv,
+        HOME: tmp,
+        TMPDIR: tmp,
+        XDG_CONFIG_HOME: configHome,
+        OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmp, "system-openshell"),
+        PATH: `${fakeBin}:${driverBin}:/usr/bin:/bin`,
       },
-    );
+      encoding: "utf8",
+    });
     return {
       ...result,
       downloads: fs.existsSync(downloads) ? fs.readFileSync(downloads, "utf8") : "",
