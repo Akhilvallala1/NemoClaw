@@ -16,6 +16,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::process::{Command, Stdio};
@@ -526,6 +527,8 @@ impl WindowsStore {
             .ok_or(Error::Native("runtime-image-system-root"))?;
         let status = Command::new(system_root.join("System32").join("diskpart.exe"))
             .args(["/s", script.to_str().ok_or(Error::Identity)?])
+            // Null standard streams alone do not prevent a console window.
+            .creation_flags(0x0800_0000)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

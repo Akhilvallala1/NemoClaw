@@ -1827,10 +1827,10 @@ index 0000000000000000000000000000000000000000..620342c8f80a456e8a60f3512cd78237
 +}
 diff --git a/crates/openshell-mxc-boundary/src/control_stdio.rs b/crates/openshell-mxc-boundary/src/control_stdio.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..08f26b36cb5661ccaefc6609d21758a5790860e5
+index 0000000000000000000000000000000000000000..1b63ffe2f761e372f8f7f4dbf73df608512e0589
 --- /dev/null
 +++ b/crates/openshell-mxc-boundary/src/control_stdio.rs
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,407 @@
 +// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 +// SPDX-License-Identifier: Apache-2.0
 +
@@ -1976,8 +1976,23 @@ index 0000000000000000000000000000000000000000..08f26b36cb5661ccaefc6609d21758a5
 +        .await
 +        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "MXC control listener unavailable"))?;
 +        session(&mut reader, &mut writer, |mut application| async move {
-+            tokio::io::copy_bidirectional(&mut application, &mut stream).await?;
-+            Ok(())
++            match tokio::io::copy_bidirectional(&mut application, &mut stream).await {
++                Ok(_) => Ok(()),
++                Err(error)
++                    if matches!(
++                        error.kind(),
++                        io::ErrorKind::ConnectionAborted
++                            | io::ErrorKind::ConnectionReset
++                            | io::ErrorKind::BrokenPipe
++                    ) =>
++                {
++                    // Discovery can drop TCP without a graceful TLS shutdown.
++                    // Drain this framed session before the next authenticated one.
++                    tracing::debug!(%error, "MXC control TCP session closed");
++                    Ok(())
++                }
++                Err(error) => Err(error),
++            }
 +        })
 +        .await?;
 +    }
@@ -2081,6 +2096,94 @@ index 0000000000000000000000000000000000000000..08f26b36cb5661ccaefc6609d21758a5
 +            .kind(),
 +            io::ErrorKind::InvalidData
 +        );
++    }
++
++    #[tokio::test]
++    async fn relay_drains_aborted_tcp_session_before_reconnect() {
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let address = listener.local_addr().unwrap();
++        let (guest, host) = tokio::io::duplex(53);
++        let (reader, writer) = tokio::io::split(host);
++        let host = async {
++            let (mut socket, _) = listener.accept().await?;
++            socket.write_all(b"discovered").await?;
++            let mut request = [0; 1];
++            socket.read_exact(&mut request).await?;
++            // Force an abrupt TCP close, as can happen when discovery drops TLS.
++            #[allow(deprecated)]
++            socket.set_linger(Some(Duration::ZERO))?;
++            drop(socket);
++            let (mut socket, _) = listener.accept().await?;
++            socket.write_all(b"attached").await?;
++            socket.shutdown().await?;
++            let mut request = Vec::new();
++            socket.read_to_end(&mut request).await?;
++            Ok::<_, io::Error>(())
++        };
++        let guest = async {
++            let (mut reader, mut writer) = tokio::io::split(guest);
++            for (index, expected) in [b"discovered".as_slice(), b"attached".as_slice()]
++                .iter()
++                .enumerate()
++            {
++                writer.write_all(MAGIC).await?;
++                writer.write_u64(index as u64 + 1).await?;
++                session(&mut reader, &mut writer, |mut app| async move {
++                    let mut reply = vec![0; expected.len()];
++                    app.read_exact(&mut reply).await?;
++                    assert_eq!(reply, *expected);
++                    if index == 0 {
++                        app.write_all(b"!").await?;
++                    } else {
++                        app.shutdown().await?;
++                    }
++                    assert_eq!(app.read(&mut [0]).await?, 0);
++                    Ok(())
++                })
++                .await?;
++            }
++            Ok::<_, io::Error>(())
++        };
++        let relay_task = async {
++            assert_eq!(
++                relay(reader, writer, address).await.unwrap_err().kind(),
++                io::ErrorKind::UnexpectedEof
++            );
++            Ok::<_, io::Error>(())
++        };
++        tokio::time::timeout(Duration::from_secs(10), async {
++            tokio::try_join!(guest, host, relay_task)
++        })
++        .await
++        .unwrap()
++        .unwrap();
++    }
++
++    #[tokio::test]
++    async fn handler_close_does_not_hide_corrupt_or_unterminated_frames() {
++        for (bytes, kind) in [
++            (
++                ((FRAME_BYTES + 1) as u32).to_be_bytes().to_vec(),
++                io::ErrorKind::InvalidData,
++            ),
++            (vec![0, 0, 0, 4, 1], io::ErrorKind::UnexpectedEof),
++        ] {
++            let error = session(&mut bytes.as_slice(), &mut tokio::io::sink(), |_| async {
++                Ok(())
++            })
++            .await
++            .unwrap_err();
++            assert_eq!(error.kind(), kind);
++        }
++        let (mut reader, _held_open) = tokio::io::duplex(1);
++        let error = tokio::time::timeout(
++            DRAIN_TIMEOUT + Duration::from_secs(1),
++            session(&mut reader, &mut tokio::io::sink(), |_| async { Ok(()) }),
++        )
++        .await
++        .unwrap()
++        .unwrap_err();
++        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 +    }
 +
 +    #[tokio::test]
