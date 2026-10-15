@@ -45,8 +45,8 @@ import {
   installerReleaseTemplate,
   removeV00106OperationalTrust,
 } from "../helpers/openshell-installer-template";
-
 import { selectPreparedGatewayRuntime } from "../helpers/prepared-gateway-runtime";
+import { prepareInstallerBin } from "../support/openshell-installed-version";
 
 const REPO_ROOT = path.join(import.meta.dirname, "../..");
 const INSTALLER_TEMPLATE = fs.readFileSync(
@@ -600,7 +600,7 @@ function createFixture(
   const binDir = path.join(fixtureRoot, "bin");
   tempDirs.push(fixtureRoot);
   fs.mkdirSync(checksDir, { recursive: true });
-  fs.mkdirSync(binDir, { recursive: true });
+  prepareInstallerBin(binDir);
   fs.mkdirSync(path.join(fixtureRoot, "nemoclaw-blueprint"), {
     recursive: true,
   });

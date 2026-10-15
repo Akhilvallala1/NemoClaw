@@ -193,6 +193,51 @@ describe("Podman CPU lifecycle helper", () => {
     }
   });
 
+  test("retains redacted gateway errors after successful RPC logs replace the tail", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "nemoclaw-podman-gateway-log-test-"));
+    const bootstrapPath = path.join(root, "gateway-bootstrap.cjs");
+    const artifactDir = path.join(root, "artifacts");
+    const progress = testProgress([]);
+    await fs.writeFile(
+      bootstrapPath,
+      [
+        'process.stdout.write("WARN earlier warning\\n".repeat(2_000));',
+        'process.stdout.write("2026-10-15T00:00:00Z ERROR restart failed OPENAI_API_KEY=nvapi-");',
+        'setTimeout(() => process.stdout.write("gateway-secret\\n" + "INFO successful RPC\\n".repeat(8_000)), 20);',
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      await expect(
+        startPinnedGateway(
+          process.execPath,
+          { NODE_OPTIONS: `--require=${bootstrapPath}` },
+          progress,
+          artifactDir,
+        ),
+      ).rejects.toThrow("gateway exited");
+      const tail = await fs.readFile(
+        path.join(artifactDir, "openshell-podman-gateway.log"),
+        "utf8",
+      );
+      const errors = await fs.readFile(
+        path.join(artifactDir, "openshell-podman-gateway-errors.log"),
+        "utf8",
+      );
+      expect(tail).not.toContain("restart failed");
+      expect(errors).toContain("ERROR restart failed OPENAI_API_KEY=<REDACTED>");
+      expect(errors).not.toContain("gateway-secret");
+      expect(errors).not.toContain("INFO successful RPC");
+      expect(errors.length).toBeLessThanOrEqual(32 * 1024);
+      expect(
+        (await fs.stat(path.join(artifactDir, "openshell-podman-gateway-errors.log"))).mode & 0o777,
+      ).toBe(0o600);
+    } finally {
+      progress.stop();
+      await fs.rm(root, { force: true, recursive: true });
+    }
+  });
+
   test("escalates a rejected gateway child to SIGKILL before returning (#8497)", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "nemoclaw-podman-gateway-test-"));
     const artifactDir = path.join(root, "artifacts");

@@ -10,6 +10,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { redact, run, runCapture, runCaptureEx } from "../../src/lib/runner";
+import { prepareInstallerBin } from "../support/openshell-installed-version";
 
 const require = createRequire(import.meta.url);
 const runnerPath = path.join(import.meta.dirname, "..", "..", "src", "lib", "runner.ts");
@@ -1068,7 +1069,9 @@ describe("regression guards", () => {
         "scripts",
         "install-openshell.sh",
       );
-      const tmpBin = fs.mkdtempSync(path.join(os.tmpdir(), "gh-absent-"));
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "gh-absent-"));
+      const tmpBin = path.join(root, "bin");
+      prepareInstallerBin(tmpBin);
       const stub = `
         #!/usr/bin/env bash
         printf '%s\n' '#!/bin/sh' 'echo "openshell 0.0.1"' > "${tmpBin}/openshell"
@@ -1153,6 +1156,13 @@ describe("regression guards", () => {
       try {
         const result = spawnSync("bash", ["-c", stub], {
           encoding: "utf-8",
+          env: {
+            ...process.env,
+            HOME: path.join(tmpBin, "home"),
+            XDG_CONFIG_HOME: path.join(tmpBin, "config"),
+            XDG_BIN_HOME: path.join(tmpBin, "install-bin"),
+            OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmpBin, "system-gateways"),
+          },
           timeout: 5000,
         });
         const out = (result.stdout || "") + (result.stderr || "");
@@ -1160,7 +1170,7 @@ describe("regression guards", () => {
         expect(out).toContain("CURL_DIRECT");
         expect(out).not.toContain("gh CLI download failed");
       } finally {
-        fs.rmSync(tmpBin, { recursive: true, force: true });
+        fs.rmSync(root, { recursive: true, force: true });
       }
     });
 
@@ -1172,7 +1182,9 @@ describe("regression guards", () => {
         "scripts",
         "install-openshell.sh",
       );
-      const tmpBin = fs.mkdtempSync(path.join(os.tmpdir(), "gh-stub-"));
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "gh-stub-"));
+      const tmpBin = path.join(root, "bin");
+      prepareInstallerBin(tmpBin);
       const checksumLog = path.join(tmpBin, "sha256sum.log");
       const ghStub = path.join(tmpBin, "gh");
       fs.writeFileSync(ghStub, "#!/bin/sh\nexit 4\n");
@@ -1261,6 +1273,13 @@ describe("regression guards", () => {
       try {
         const result = spawnSync("bash", ["-c", stub], {
           encoding: "utf-8",
+          env: {
+            ...process.env,
+            HOME: path.join(tmpBin, "home"),
+            XDG_CONFIG_HOME: path.join(tmpBin, "config"),
+            XDG_BIN_HOME: path.join(tmpBin, "install-bin"),
+            OPENSHELL_SYSTEM_GATEWAY_DIR: path.join(tmpBin, "system-gateways"),
+          },
           timeout: 5000,
         });
         const out = (result.stdout || "") + (result.stderr || "");
@@ -1268,7 +1287,7 @@ describe("regression guards", () => {
         expect(out).toContain("CURL_FALLBACK");
         expect(fs.readFileSync(checksumLog, "utf-8")).toContain("SHA256SUM -c -");
       } finally {
-        fs.rmSync(tmpBin, { recursive: true, force: true });
+        fs.rmSync(root, { recursive: true, force: true });
       }
     });
   });

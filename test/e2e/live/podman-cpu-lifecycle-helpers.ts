@@ -148,7 +148,8 @@ export async function startPinnedGateway(
     },
   });
   let output = "";
-  const recordOutput = (chunk: unknown) => {
+  let importantOutput = "";
+  const recordOutput = (chunk: string) => {
     output = `${output}${String(chunk)}`.slice(-MAX_GATEWAY_DIAGNOSTIC_CHARS * 2);
     if (!artifactDir) return;
     fs.mkdirSync(artifactDir, { recursive: true, mode: 0o700 });
@@ -158,8 +159,39 @@ export async function startPinnedGateway(
       { encoding: "utf-8", mode: 0o600 },
     );
   };
-  child.stdout?.on("data", recordOutput);
-  child.stderr?.on("data", recordOutput);
+  for (const stream of [child.stdout, child.stderr]) {
+    // Keep warnings and errors when frequent successful RPC logs replace the tail.
+    // Buffer each stream independently so split credentials are redacted together.
+    let pendingLine = "";
+    let oversized = false;
+    const recordLines = (chunk: string) => {
+      for (const part of chunk.split(/(?<=\n)/u)) {
+        if (!oversized) pendingLine += part;
+        if (pendingLine.length > MAX_GATEWAY_DIAGNOSTIC_CHARS) {
+          pendingLine = "";
+          oversized = true;
+        }
+        if (!part.endsWith("\n")) continue;
+        const line = stripAnsi(pendingLine);
+        if (artifactDir && !oversized && /^(?:\S+\s+)?(?:WARN|ERROR)\s/u.test(line)) {
+          importantOutput = gatewayDiagnostic(`${importantOutput}${line}`);
+          fs.writeFileSync(
+            path.join(artifactDir, "openshell-podman-gateway-errors.log"),
+            importantOutput,
+            { encoding: "utf-8", mode: 0o600 },
+          );
+        }
+        pendingLine = "";
+        oversized = false;
+      }
+    };
+    stream?.setEncoding("utf8");
+    stream?.on("data", (chunk: string) => {
+      recordOutput(chunk);
+      recordLines(chunk);
+    });
+    stream?.once("end", () => recordLines("\n"));
+  }
 
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {

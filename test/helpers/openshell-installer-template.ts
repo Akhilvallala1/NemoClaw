@@ -101,6 +101,17 @@ const MACOS_METHOD_START = `MACOS_INSTALL_METHOD="\${_NEMOCLAW_OPENSHELL_INSTALL
 const MACOS_METHOD_END = "esac\n";
 
 export function installerReleaseTemplate(source: string, version: string): string {
+  // Historical trust fixtures predate the 0.1.2 retirement guard. Keep that
+  // guard in current-release fixtures; do not authorize a hybrid old template.
+  const guardStart = source.indexOf("# Every installation entrypoint must verify legacy state");
+  if (version !== "0.1.2" && guardStart !== -1) {
+    const guardEnd = source.indexOf(
+      "# invalidState: a consumed OpenShell release asset",
+      guardStart,
+    );
+    assert.ok(guardEnd > guardStart, "OpenShell 0.1.2 retirement guard fixture boundary");
+    source = source.slice(0, guardStart) + source.slice(guardEnd);
+  }
   const v012Comment =
     "  # OpenShell 0.1.2 enforces MCP policy in its supervisor image. Recognize\n" +
     "  # only its exact pinned sandbox artifacts here, not version text alone.\n" +
