@@ -376,8 +376,8 @@ The `protected` provider takes only `destroy`. Its `protected_files` resource pu
 | `image`, `architecture` | The pinned setup image and its Linux architecture |
 | `user`, `root` | Numeric non-root UID:GID that owns the files, and the application's mount path for `volume` |
 | `credentials` | Map of names to `env`, the provider's environment variable that holds the value, and `path`, below `root` |
-| `connection` | Optional descriptor block: `path`, `service`, `endpoint`, `trust`, `authentication`, `credential`, `health_seconds`, and `invoke_seconds` |
-| `agent` | The selected `fabric_agent`'s `ref`; required exactly when `connection` is set, and its owner must equal `owner` |
+| `agent_connection` | Optional descriptor block: `path`, `service`, `endpoint`, `trust`, `authentication`, `credential`, `health_seconds`, and `invoke_seconds` |
+| `agent` | The selected `fabric_agent`'s `ref`; required exactly when `agent_connection` is set, and its owner must equal `owner` |
 
 `oidcBearer` requires an HTTPS origin, `system` trust, and a `credential` entry. `none` requires plaintext HTTP to a canonical private IPv4 origin, `none` trust, and no credential. The resource cannot tell which gateway an origin belongs to; the SDK binds `none` to the deployment's managed Docker gateway.
 

@@ -222,7 +222,8 @@ pub const SCALAR_FIELDS: [&str; 9] = [
     "root",
 ];
 const CREDENTIALS: (&str, &str) = ("credentials", "credentials_json");
-const CONNECTION: (&str, &str) = ("connection", "connection_json");
+// OpenTofu reserves `connection` for provisioners.
+const CONNECTION: (&str, &str) = ("agent_connection", "agent_connection_json");
 
 /// Every row field of the resource, in schema order.
 pub fn fields() -> Vec<&'static str> {
@@ -240,13 +241,13 @@ pub fn optional_fields() -> Vec<&'static str> {
         .collect()
 }
 
-/// The typed `credentials` and `connection` inputs, shaped by their JSON schema.
+/// The typed `credentials` and `agent_connection` inputs, shaped by their JSON schema.
 pub fn structured_inputs() -> Vec<nemoclaw_tofu::Structured> {
     #[derive(schemars::JsonSchema)]
     #[allow(dead_code)]
     struct Blocks {
         credentials: BTreeMap<String, CredentialFile>,
-        connection: Option<ConnectionFile>,
+        agent_connection: Option<ConnectionFile>,
     }
     let schema = serde_json::to_value(schemars::schema_for!(Blocks)).expect("schema serializes");
     let fields =

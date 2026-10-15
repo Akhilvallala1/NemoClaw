@@ -22,7 +22,7 @@ resource protected_files (version 0)
   root: string, required
   user: string, required
   volume: string, required
-  block connection: optional
+  block agent_connection: optional
     authentication: string, required
       > `oidcBearer` or `none`.
     credential: string, optional

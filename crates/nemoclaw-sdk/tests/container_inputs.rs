@@ -447,9 +447,9 @@ fn application_descriptor_rejects_unresolved_binding_and_unknown_fields() {
     spec.agent.as_mut().unwrap().sandbox_id = "unresolved".into();
     assert!(spec.descriptor().is_err());
     let mut row = files(&document).row();
-    let mut connection: Value = serde_json::from_str(&row["connection_json"]).unwrap();
+    let mut connection: Value = serde_json::from_str(&row["agent_connection_json"]).unwrap();
     connection["unexpected"] = json!("field");
-    row.insert("connection_json".into(), connection.to_string());
+    row.insert("agent_connection_json".into(), connection.to_string());
     assert!(Files::from_row(&row).is_err());
 }
 
