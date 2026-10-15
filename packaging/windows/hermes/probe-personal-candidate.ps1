@@ -45,6 +45,25 @@ function Invoke-PersonalChecked([string]$Executable,[string[]]$Arguments,[string
     & $Executable @Arguments 2>&1 | Tee-Object -FilePath (Join-Path $output (($Label -replace '[^a-zA-Z0-9-]','-')+'.log'))
     if ($LASTEXITCODE -ne 0) { throw ($Label+' failed with exit '+$LASTEXITCODE) }
 }
+function New-PersonalNativeBuildCommand([string]$DeveloperCommand,[string]$PowerShellPath,[string]$ScriptPath,
+    [string]$RuntimeRoot,[string]$ArtifactDirectory,[string]$ControllerSource,[string]$InputFile,[object]$Toolchain) {
+    if ($ControllerSource -cnotmatch '^[a-f0-9]{40}$' -or
+        $Toolchain.msvcToolset -cnotmatch '^\d+\.\d+\.\d+$' -or
+        $Toolchain.windowsSdk -cnotmatch '^\d+\.\d+\.\d+\.\d+$' -or
+        $Toolchain.msvcHost -cne 'arm64' -or $Toolchain.msvcTarget -cne 'arm64') {
+        throw 'The Personal build requires the pinned native ARM64 toolchain.'
+    }
+    foreach ($value in @($DeveloperCommand,$PowerShellPath,$ScriptPath,$RuntimeRoot,$ArtifactDirectory,$InputFile)) {
+        if ([string]::IsNullOrWhiteSpace($value) -or $value -match '["\r\n%!]') {
+            throw 'A Personal build path cannot be represented safely.'
+        }
+    }
+    # VsDevCmd and the build must share a child environment; earlier CI steps do not persist it.
+    return ('call "'+$DeveloperCommand+'" -arch=arm64 -host_arch=arm64 -vcvars_ver='+$Toolchain.msvcToolset+
+        ' -winsdk='+$Toolchain.windowsSdk+' && "'+$PowerShellPath+'" -NoProfile -NonInteractive -File "'+$ScriptPath+
+        '" -RuntimeRoot "'+$RuntimeRoot+'" -ArtifactDirectory "'+$ArtifactDirectory+'" -ControllerSource "'+$ControllerSource+
+        '" -InputFile "'+$InputFile+'"')
+}
 function Test-PersonalRuntimeRemoval([object]$Completed,[string]$Runtime,[string]$SourceRevision) {
     # Failure of the workload is separate from closure of everything using its runtime.
     # Never accept a legacy, foreign or partially written receipt as cleanup authority.
@@ -231,10 +250,19 @@ try {
         $reuse=@{bootstrapPython=$python;bootstrapNode=$node;sourceArchive=$sourceArchive;baseZip=$baseZip;
             originalBuildRoot=$original;rustBinDirectory=[IO.Path]::GetFullPath($RustBinDirectory);compatibilityEvidence=$compatEvidence}
         [IO.File]::WriteAllText($reuseInput,($reuse|ConvertTo-Json -Depth 4)+"`n",[Text.UTF8Encoding]::new($false))
+        $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        $developerCommands=@(& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -find 'Common7\Tools\VsDevCmd.bat')
+        if ($LASTEXITCODE -ne 0 -or $developerCommands.Count -ne 1 -or -not (Test-Path -LiteralPath $developerCommands[0] -PathType Leaf)) {
+            throw 'The Personal build requires one installed Visual Studio ARM64 developer environment.'
+        }
+        $toolchain=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'official-python.lock.json') -Raw|ConvertFrom-Json
+        $buildCommand=New-PersonalNativeBuildCommand -DeveloperCommand $developerCommands[0] -PowerShellPath (Join-Path $PSHOME 'pwsh.exe') `
+            -ScriptPath (Join-Path $PSScriptRoot 'prepare-reused-runtime.ps1') -RuntimeRoot $runtime `
+            -ArtifactDirectory (Join-Path $output 'current-base') -ControllerSource $env:GITHUB_SHA -InputFile $reuseInput -Toolchain $toolchain
         $buildAttempted=$true;$buildProcessesClosed=$false
         try {
-            & (Join-Path $PSScriptRoot 'prepare-reused-runtime.ps1') -RuntimeRoot $runtime -ArtifactDirectory (Join-Path $output 'current-base') `
-                -ControllerSource $env:GITHUB_SHA -InputFile $reuseInput
+            & "$env:SystemRoot\System32\cmd.exe" /d /v:off /c $buildCommand
+            if ($LASTEXITCODE -ne 0) { throw 'The pinned native Personal runtime build failed; output retained.' }
         } finally {
             $phaseFile=Join-Path $output 'official-hermes-runtime-phase.json'
             if (Test-Path -LiteralPath $phaseFile) {

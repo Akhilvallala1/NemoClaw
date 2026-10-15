@@ -46,6 +46,70 @@ const browserOriginalNonce = "00112233445566778899aabb";
 const browserNewNonce = "ffeeddccbbaa998877665544";
 const browserController = "C:\\NemoClawPersonalNode-001122334455";
 
+test("Personal build selects locked ARM64 tools before starting its child build", () => {
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:NEMOCLAW_PERSONAL_WRAPPER_PATH,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Personal wrapper parsing failed.'}
+$functions=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-PersonalNativeBuildCommand'},$true))
+if($functions.Count -ne 1){throw 'Personal native build command is missing or ambiguous.'}
+Invoke-Expression $functions[0].Extent.Text
+$toolchain=Get-Content -LiteralPath $env:NEMOCLAW_PERSONAL_TOOLCHAIN_PATH -Raw|ConvertFrom-Json
+$arguments=@{DeveloperCommand='C:\Program Files\Visual Studio\Common7\Tools\VsDevCmd.bat';PowerShellPath='C:\Program Files\PowerShell\7\pwsh.exe';
+ ScriptPath='C:\source & tools\prepare-reused-runtime.ps1';RuntimeRoot='C:\NemoClawHermesProbe-0123456789ab';
+ ArtifactDirectory='C:\build evidence\current-base';ControllerSource=('a'*40);InputFile='C:\build evidence\inputs.json';Toolchain=$toolchain}
+$command=New-PersonalNativeBuildCommand @arguments
+$rejections=@(foreach($field in @('DeveloperCommand','PowerShellPath','ScriptPath','RuntimeRoot','ArtifactDirectory','InputFile')) {
+ foreach($bad in @('', 'C:\bad"path', 'C:\bad%PATH%', 'C:\bad!PATH!', ('C:\bad'+[char]13+[char]10+'path'))) {
+  $case=$arguments.Clone();$case[$field]=$bad
+  try {$null=New-PersonalNativeBuildCommand @case;$false}catch{$true}
+ }
+})
+$invalidToolchains=@(foreach($field in @('msvcHost','msvcTarget','msvcToolset','windowsSdk')) {
+ $case=$arguments.Clone();$lock=$toolchain|ConvertTo-Json|ConvertFrom-Json
+ $lock.$field=if($field -in @('msvcHost','msvcTarget')){'x64'}else{'1 & exit 0'}
+ $case.Toolchain=$lock
+ try {$null=New-PersonalNativeBuildCommand @case;$false}catch{$true}
+})
+$arguments.ControllerSource='invalid'
+$badSource=try {$null=New-PersonalNativeBuildCommand @arguments;$false}catch{$true}
+ConvertTo-Json -InputObject @{command=$command;rejections=$rejections;toolchains=$invalidToolchains;badSource=$badSource} -Compress
+`;
+  const child = spawnSync(
+    process.env.NEMOCLAW_TEST_PWSH ?? "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: {
+        ...process.env,
+        NEMOCLAW_PERSONAL_WRAPPER_PATH: fileURLToPath(
+          new URL("./probe-personal-candidate.ps1", import.meta.url),
+        ),
+        NEMOCLAW_PERSONAL_TOOLCHAIN_PATH: fileURLToPath(
+          new URL("./official-python.lock.json", import.meta.url),
+        ),
+      },
+    },
+  );
+  assert.equal(child.status, 0, child.stderr || String(child.error));
+  const result = JSON.parse(child.stdout);
+  assert.equal(
+    result.command,
+    String.raw`call "C:\Program Files\Visual Studio\Common7\Tools\VsDevCmd.bat" -arch=arm64 -host_arch=arm64 -vcvars_ver=14.51.36231 -winsdk=10.0.26100.0 && "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -File "C:\source & tools\prepare-reused-runtime.ps1" -RuntimeRoot "C:\NemoClawHermesProbe-0123456789ab" -ArtifactDirectory "C:\build evidence\current-base" -ControllerSource "${"a".repeat(40)}" -InputFile "C:\build evidence\inputs.json"`,
+  );
+  assert.deepEqual(result.rejections, Array(30).fill(true));
+  assert.deepEqual(result.toolchains, Array(4).fill(true));
+  assert.equal(result.badSource, true);
+});
+
 test("Personal wrapper removes only its current runtime after confirmed native closure", () => {
   const source = "a".repeat(40);
   const closed = {

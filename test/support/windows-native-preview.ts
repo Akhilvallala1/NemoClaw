@@ -24,13 +24,16 @@ export function previewStep(steps: WorkflowStep[], name: string) {
   return found;
 }
 
-export function previewFixture(extraRunnables: string[] = []) {
+export function previewFixture(
+  extraRunnables: string[] = [],
+  agent: "openclaw" | "hermes" = "openclaw",
+) {
   const root = mkdtempSync(join(tmpdir(), "windows-native-preview-"));
   const product = join(root, "finished-windows-product-transfer");
   const packageDirectory = join(product, "package");
   const helperDirectory = join(root, "candidate/scripts/checks");
   const transferScript = join(helperDirectory, "windows-native-transfer.ps1");
-  const label = join(root, "unqualified-openclaw-preview.json");
+  const label = join(root, `unqualified-${agent}-preview.json`);
   const revision = "a".repeat(40);
   const setup = "NemoClawSetup-0.1.10-windows-arm64.exe";
   const cleanup = () => {
@@ -76,7 +79,7 @@ export function previewFixture(extraRunnables: string[] = []) {
         "-SourceRevision",
         revision,
         "-Agent",
-        "openclaw",
+        agent,
         "-RunId",
         "123",
         "-RunAttempt",
@@ -91,7 +94,7 @@ export function previewFixture(extraRunnables: string[] = []) {
       script,
       previewStep(
         previewSources().workflow.jobs["windows-finished-installer"].steps!,
-        "Verify and label the unqualified OpenClaw preview",
+        `Verify and label the unqualified ${agent === "hermes" ? "Hermes" : "OpenClaw"} preview`,
       ).run!,
     );
     return {
@@ -102,6 +105,7 @@ export function previewFixture(extraRunnables: string[] = []) {
       receipt,
       receiptPath,
       installer: files[1],
+      msi: files[0],
       setupPath: join(packageDirectory, setup),
       run: (overrides: Record<string, string> = {}) =>
         spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-File", script], {

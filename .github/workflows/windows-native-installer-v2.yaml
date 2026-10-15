@@ -78,7 +78,7 @@ on:
           - startup-only
           - build-only
       build_windows_native_candidate:
-        description: Build an exact internal PR installer without inference credentials, installation or publication
+        description: Build an exact internal PR installer without credentials or installation; provide an unqualified Hermes download
         required: false
         default: false
         type: boolean
@@ -888,6 +888,59 @@ jobs:
             ${{ runner.temp }}/finished-windows-product-transfer/assembled/runtime-identity.json
             ${{ runner.temp }}/finished-windows-product-transfer/transfer-manifest.json
             ${{ runner.temp }}/unqualified-openclaw-preview.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Verify and label the unqualified Hermes preview
+        id: unqualified_hermes_preview
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.build_windows_native_candidate && needs.windows-finished-request.outputs.request_kind == 'candidate-build' && needs.windows-finished-request.outputs.candidate_repository == github.repository && needs.windows-finished-request.outputs.agent == 'hermes' && needs.windows-finished-request.outputs.validation_scope == 'build-only' && needs.windows-finished-request.outputs.credential_authorized == 'false' }}
+        shell: pwsh
+        env:
+          INSTALLER_MANIFEST: ${{ steps.product_manifest.outputs.manifest_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PRODUCT_VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid preview product version.' }
+          $product = "$env:RUNNER_TEMP\finished-windows-product-transfer"
+          $expectedMsi = "NemoClaw-$env:PRODUCT_VERSION-windows-arm64.msi"
+          $expectedSetup = "NemoClawSetup-$env:PRODUCT_VERSION-windows-arm64.exe"
+          $verifiedManifest = @(& "$env:GITHUB_WORKSPACE\candidate\scripts\checks\windows-native-transfer.ps1" -Mode Verify `
+            -Root $product -Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent hermes `
+            -RunId $env:GITHUB_RUN_ID -RunAttempt $env:GITHUB_RUN_ATTEMPT -ExpectedManifestSha256 $env:INSTALLER_MANIFEST `
+            -ExpectedPackageRunnables @($expectedMsi, $expectedSetup))
+          if ($verifiedManifest.Count -ne 1 -or [string]$verifiedManifest[0] -cne $env:INSTALLER_MANIFEST) {
+            throw 'The preview transfer did not match the built bytes.'
+          }
+          $receipt = Get-Content -LiteralPath "$product\package\immutable-package-build.json" -Raw | ConvertFrom-Json
+          $preview = [ordered]@{
+            schemaVersion = 1
+            classification = 'unqualified-hermes-installer-preview'
+            warning = 'Preview only. Full installed acceptance and release qualification have not been established.'
+            agent = 'hermes'
+            sourceRevision = $env:CANDIDATE_SHA
+            workflowRunId = $env:GITHUB_RUN_ID
+            workflowRunAttempt = $env:GITHUB_RUN_ATTEMPT
+            transferManifestSha256 = $env:INSTALLER_MANIFEST
+            installer = @($receipt.files | Where-Object { $_.file -ceq $expectedSetup })[0]
+            msi = @($receipt.files | Where-Object { $_.file -ceq $expectedMsi })[0]
+            installedAcceptance = $false
+            windowsQualified = $false
+            release = $false
+          }
+          $label = "$env:RUNNER_TEMP\unqualified-hermes-preview.json"
+          if (Test-Path -LiteralPath $label) { throw 'The preview label must be fresh.' }
+          [IO.File]::WriteAllText($label, ($preview | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+      - name: Publish the unqualified Hermes preview download
+        if: ${{ success() && steps.unqualified_hermes_preview.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unqualified-hermes-preview-${{ needs.windows-finished-request.outputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/finished-windows-product-transfer/package/NemoClawSetup-${{ needs.windows-finished-request.outputs.product_version }}-windows-arm64.exe
+            ${{ runner.temp }}/finished-windows-product-transfer/package/NemoClaw-${{ needs.windows-finished-request.outputs.product_version }}-windows-arm64.msi
+            ${{ runner.temp }}/finished-windows-product-transfer/package/immutable-package-build.json
+            ${{ runner.temp }}/finished-windows-product-transfer/package/compiled-msi.json
+            ${{ runner.temp }}/finished-windows-product-transfer/assembled/runtime-identity.json
+            ${{ runner.temp }}/finished-windows-product-transfer/transfer-manifest.json
+            ${{ runner.temp }}/unqualified-hermes-preview.json
           if-no-files-found: error
           retention-days: 14
       - name: Stage only non-runnable finished build evidence
