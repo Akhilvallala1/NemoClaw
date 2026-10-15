@@ -9,8 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import unittest
-from unittest import mock
+import unittest.mock
 import xml.etree.ElementTree as ET
 
 import test_assemble_runtime as fixtures
@@ -437,7 +436,7 @@ class PackageComposition(unittest.TestCase):
     def test_reviewed_recomposition_write_failure_removes_only_its_new_output(self):
         decision, output = self.reviewed_recomposition_inputs()
         original = package.inventory(self.output)
-        with mock.patch.object(package, "write_json", side_effect=OSError("fixture write failure")):
+        with unittest.mock.patch.object(package, "write_json", side_effect=OSError("fixture write failure")):
             with self.assertRaisesRegex(OSError, "fixture write failure"):
                 self.recompose_reviewed(decision, output)
         self.assertFalse(output.exists())
@@ -446,7 +445,7 @@ class PackageComposition(unittest.TestCase):
     def test_reviewed_recomposition_copy_failure_removes_only_its_partial_output(self):
         decision, output = self.reviewed_recomposition_inputs()
         original = package.inventory(self.output)
-        with mock.patch.object(package.shutil, "copy2", side_effect=OSError("fixture copy failure")):
+        with unittest.mock.patch.object(package.shutil, "copy2", side_effect=OSError("fixture copy failure")):
             with self.assertRaisesRegex(OSError, "fixture copy failure"):
                 self.recompose_reviewed(decision, output)
         self.assertFalse(output.exists())
@@ -461,7 +460,7 @@ class PackageComposition(unittest.TestCase):
             (destination / "keep.txt").write_text("not owned by recomposition")
             return copy(source, destination, **kwargs)
 
-        with mock.patch.object(package, "exact_copy", side_effect=raced_copy):
+        with unittest.mock.patch.object(package, "exact_copy", side_effect=raced_copy):
             with self.assertRaises(FileExistsError):
                 self.recompose_reviewed(decision, output)
         self.assertEqual((output / "keep.txt").read_text(), "not owned by recomposition")
