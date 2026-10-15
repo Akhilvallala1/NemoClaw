@@ -317,13 +317,19 @@ try {
   Invoke-OwnedSetup '-install' "$work\install.log"
   $timings['startupComparisonAvailable'] = $false
   if ($ValidationScope -ceq 'startup-only') {
-    & $ciNode --experimental-strip-types --no-warnings "$SourceRoot\packaging\windows\installer\qualify-finished-package.mts" `
-      --agent $Agent --install-root $installation --runtime-identity "$work\assembled\runtime-identity.json" --output "$work\installed-smoke"
-    if ($LASTEXITCODE -ne 0) { throw 'The installed startup-only smoke failed.' }
-    $smoke = Get-Content -LiteralPath "$work\installed-smoke\finished-package-smoke.json" -Raw | ConvertFrom-Json
-    if ($smoke.verdict -cne 'pass' -or $smoke.agent -cne $Agent -or $smoke.validationScope -cne 'startup-only' -or
-        $smoke.fullInstalledQualification -isnot [bool] -or $smoke.fullInstalledQualification) { throw 'The installed startup-only receipt is incomplete.' }
-    $timings['startupSmoke'] = @{ receipt = 'installed-smoke/finished-package-smoke.json'; deterministicLocalModel = $true }
+    foreach ($case in @(
+      @{ directory = 'installed-smoke'; timing = 'startupSmoke'; repair = $false },
+      @{ directory = 'installed-smoke-after-repair'; timing = 'repairStartupSmoke'; repair = $true }
+    )) {
+      if ($case.repair) { Invoke-OwnedSetup '-repair' "$work\repair.log" }
+      & $ciNode --experimental-strip-types --no-warnings "$SourceRoot\packaging\windows\installer\qualify-finished-package.mts" `
+        --agent $Agent --install-root $installation --runtime-identity "$work\assembled\runtime-identity.json" --output "$work\$($case.directory)"
+      if ($LASTEXITCODE -ne 0) { throw 'The installed startup-only smoke failed.' }
+      $smoke = Get-Content -LiteralPath "$work\$($case.directory)\finished-package-smoke.json" -Raw | ConvertFrom-Json
+      if ($smoke.verdict -cne 'pass' -or $smoke.agent -cne $Agent -or $smoke.validationScope -cne 'startup-only' -or
+          $smoke.fullInstalledQualification -isnot [bool] -or $smoke.fullInstalledQualification) { throw 'The installed startup-only receipt is incomplete.' }
+      $timings[$case.timing] = @{ receipt = "$($case.directory)/finished-package-smoke.json"; deterministicLocalModel = $true }
+    }
   } else {
   $coldOpenClawReceipt = $null
   $coldHermesReceipt = $null

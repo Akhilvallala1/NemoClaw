@@ -1445,7 +1445,7 @@ try {
 );
 
 test(
-  "startup acceptance checks the smoke process and receipt without running live acceptance",
+  "startup acceptance checks fresh and repaired startup without running live acceptance",
   { skip: process.platform !== "win32" },
   () => {
     const source = path.join(
@@ -1465,18 +1465,34 @@ $work = 'work-fixture'; $installation = 'install-fixture'; $ciNode = 'Invoke-Tes
 function Invoke-TestSmoke {
   if ($args -contains '--browser-driver-root' -or $args -notcontains '--agent' -or $args -notcontains 'openclaw' -or
       $args -notcontains 'source-fixture\packaging\windows\installer\qualify-finished-package.mts') { throw 'Unexpected installed test route.' }
-  $global:LASTEXITCODE = $testExit
+  $script:smokeCalls++
+  $expectedDirectory = if ($script:smokeCalls -eq 1) { 'installed-smoke' } else { 'installed-smoke-after-repair' }
+  if ($script:smokeCalls -gt 2 -or $args -notcontains "work-fixture\$expectedDirectory" -or
+      $script:repairCalls -ne ($script:smokeCalls - 1)) { throw 'Startup and repair ordering differs.' }
+  $global:LASTEXITCODE = if ($script:smokeCalls -eq $failurePhase) { $testExit } else { 0 }
+}
+function Invoke-OwnedSetup {
+  param($Action, $Log)
+  if ($Action -cne '-repair' -or $Log -cne 'work-fixture\repair.log' -or $script:smokeCalls -ne 1) { throw 'Unexpected maintenance route.' }
+  $script:repairCalls++
+  if ($scenario -ceq 'repair-exit') { throw 'Fixture repair failure.' }
 }
 function Get-Content {
   param($LiteralPath, [switch]$Raw)
-  if ($LiteralPath -cne 'work-fixture\installed-smoke\finished-package-smoke.json') { throw 'Unexpected receipt path.' }
-  return $testReceipt
+  $directory = if ($script:smokeCalls -eq 1) { 'installed-smoke' } else { 'installed-smoke-after-repair' }
+  if ($LiteralPath -cne "work-fixture\$directory\finished-package-smoke.json") { throw 'Unexpected receipt path.' }
+  return $(if ($script:smokeCalls -eq $failurePhase) { $testReceipt } else { $validReceipt })
 }
 $count = 0
-foreach ($case in @('pass','exit','receipt-fail','wrong-agent','wrong-scope','full-claim','truncated','missing','string-false')) {
-  $timings = @{}; $testExit = if ($case -ceq 'exit') { 1 } else { 0 }
+foreach ($scenario in @('pass','exit','receipt-fail','wrong-agent','wrong-scope','full-claim','truncated','missing','string-false',
+    'repair-exit','after-exit','after-receipt-fail','after-wrong-agent','after-wrong-scope','after-full-claim','after-truncated','after-missing','after-string-false')) {
+  $script:smokeCalls = 0; $script:repairCalls = 0
+  $failurePhase = if ($scenario.StartsWith('after-')) { 2 } else { 1 }
+  $variant = $scenario -creplace '^after-', ''
+  $timings = @{}; $testExit = if ($variant -ceq 'exit') { 1 } else { 0 }
   $receipt = @{ verdict='pass'; agent='openclaw'; validationScope='startup-only'; fullInstalledQualification=$false }
-  switch ($case) {
+  $validReceipt = $receipt | ConvertTo-Json -Compress
+  switch ($variant) {
     'receipt-fail' { $receipt.verdict = 'fail' }
     'wrong-agent' { $receipt.agent = 'pi' }
     'wrong-scope' { $receipt.validationScope = 'full-acceptance' }
@@ -1484,12 +1500,16 @@ foreach ($case in @('pass','exit','receipt-fail','wrong-agent','wrong-scope','fu
     'missing' { $receipt.Remove('fullInstalledQualification') }
     'string-false' { $receipt.fullInstalledQualification = 'False' }
   }
-  $testReceipt = if ($case -ceq 'truncated') { '{' } else { $receipt | ConvertTo-Json -Compress }
+  $testReceipt = if ($variant -ceq 'truncated') { '{' } else { $receipt | ConvertTo-Json -Compress }
   $failed = $false
   try { . $execute } catch { $failed = $true }
-  if ($failed -ne ($case -cne 'pass')) { throw ('Unexpected startup result: ' + $case) }
-  if ($timings.ContainsKey('startupSmoke') -ne ($case -ceq 'pass')) { throw 'Failed smoke acquired a success receipt.' }
-  if ($case -ceq 'pass' -and $timings.startupSmoke.deterministicLocalModel -ne $true) { throw 'Missing mock-model scope.' }
+  if ($failed -ne ($scenario -cne 'pass')) { throw ('Unexpected startup result: ' + $scenario) }
+  $initialPassed = $scenario -ceq 'pass' -or $scenario -ceq 'repair-exit' -or $failurePhase -eq 2
+  if ($timings.ContainsKey('startupSmoke') -ne $initialPassed -or
+      $timings.ContainsKey('repairStartupSmoke') -ne ($scenario -ceq 'pass')) { throw 'Failed smoke acquired a success receipt.' }
+  if ($script:repairCalls -ne [int]$initialPassed) { throw 'Repair must run exactly once after initial startup passes.' }
+  if ($scenario -ceq 'pass' -and ($timings.startupSmoke.deterministicLocalModel -ne $true -or
+      $timings.repairStartupSmoke.deterministicLocalModel -ne $true -or $script:smokeCalls -ne 2)) { throw 'Missing fresh/repaired mock-model scope.' }
   $count++
 }
 Write-Output $count
@@ -1513,7 +1533,7 @@ Write-Output $count
     );
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(result.stdout.trim(), "9");
+    assert.equal(result.stdout.trim(), "18");
   },
 );
 

@@ -998,7 +998,7 @@ jobs:
         shell: pwsh
         run: |
           $work = "$env:RUNNER_TEMP\finished-windows"
-          $inputs = @("$work\installed-smoke", "$work\installed-stage-timings.json")
+          $inputs = @("$work\installed-smoke", "$work\installed-smoke-after-repair", "$work\installed-stage-timings.json")
           foreach ($pattern in @("$work\*.log", "$work\package\*.json")) {
             $inputs += @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | ForEach-Object FullName)
           }
