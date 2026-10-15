@@ -169,6 +169,28 @@ describe("buildCreatedSandboxRegistryEntry", () => {
         preferredInferenceApi: null,
       }),
     ).toBe("exact");
+    const hostSelection = {
+      entry: buildCreatedSandboxRegistryEntry(input),
+      agentName: "openclaw",
+      sandboxName: "demo",
+      gatewayName: "nemoclaw",
+      provider: "llama-cpp-local",
+      model: "llama",
+      endpointUrl: "http://127.0.0.1:8081/v1",
+      endpointSource: null,
+      credentialEnv: null,
+      preferredInferenceApi: null,
+    } as const;
+    expect(nativeLocalReservationStatus(hostSelection)).toBe("exact");
+    const onMismatch = vi.fn();
+    expect(
+      nativeLocalReservationStatus({
+        ...hostSelection,
+        endpointUrl: "http://127.0.0.1:8082/v1",
+        onMismatch,
+      }),
+    ).toBe("changed");
+    expect(onMismatch).toHaveBeenCalledWith(expect.arrayContaining(["endpointUrl"]));
   });
 
   it("does not inherit a native attachment from a different published route (#12558)", () => {

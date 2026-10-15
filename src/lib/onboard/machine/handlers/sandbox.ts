@@ -1248,6 +1248,7 @@ class SandboxStateFlow<
   private acceptsNativeLocalReservation(targetEntry: SandboxEntry, sandboxName: string): boolean {
     if (!targetEntry.nativeLocalProviderAttachment) return false;
     const agentName = (this.options.agent as { name?: string } | null)?.name ?? "openclaw";
+    let mismatchFields: readonly string[] = [];
     const nativeLocalReservation = nativeLocalReservationStatus({
       entry: targetEntry,
       agentName,
@@ -1259,10 +1260,13 @@ class SandboxStateFlow<
       endpointSource: this.options.endpointSource ?? null,
       credentialEnv: this.options.credentialEnv ?? null,
       preferredInferenceApi: this.options.preferredInferenceApi ?? null,
+      onMismatch: (fields) => {
+        mismatchFields = fields;
+      },
     });
     if (nativeLocalReservation === "changed") {
       this.failGatewayRouteCheck(
-        `  Error: native local inference reservation for sandbox '${sandboxName}' changed while onboarding was in progress. Retry onboarding.`,
+        `  Error: native local inference reservation for sandbox '${sandboxName}' changed while onboarding was in progress (${mismatchFields.join(", ")}). Retry onboarding.`,
       );
     }
     return nativeLocalReservation === "exact";

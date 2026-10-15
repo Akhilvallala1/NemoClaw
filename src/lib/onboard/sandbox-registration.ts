@@ -33,6 +33,7 @@ import {
   cloneSandboxHostLocalInferenceProvenance,
   cloneSandboxHostLocalInferenceReceipt,
   nativeLocalAttachmentMatchesHostLocalReceipt,
+  nativeLocalHostSelectionMatchesHostLocalReceipt,
   requireSandboxHostLocalInferenceProvenance,
 } from "../state/registry/host-local-inference";
 import { cloneSandboxHostMounts } from "../state/registry/host-mount";
@@ -563,6 +564,7 @@ export function nativeLocalReservationStatus(input: {
   endpointSource: InferenceEndpointSource | null;
   credentialEnv: string | null;
   preferredInferenceApi: string | null;
+  onMismatch?: (fields: readonly string[]) => void;
 }): "shared" | "exact" | "changed" {
   if (!usesNativeLocalInferenceForAgent(input.agentName, input.provider, input.endpointUrl)) {
     return "shared";
@@ -570,26 +572,38 @@ export function nativeLocalReservationStatus(input: {
   const attachment = normalizeNativeLocalProviderAttachment(
     input.entry.nativeLocalProviderAttachment,
   );
-  return attachment &&
-    attachment.sandboxName === input.sandboxName &&
-    attachment.gatewayName === input.gatewayName &&
-    attachment.provider === input.provider &&
-    nativeLocalAttachmentMatchesSelection(attachment, {
-      agentName: input.agentName,
-      sandboxName: input.sandboxName,
-      gatewayName: input.gatewayName,
-      provider: input.provider,
-      endpointUrl: input.endpointUrl,
-      hostLocalInferenceReceipt: input.entry.hostLocalInferenceReceipt,
-    }) &&
-    input.entry.provider === input.provider &&
-    input.entry.model === input.model &&
-    input.entry.endpointUrl === input.endpointUrl &&
-    (input.entry.endpointSource ?? null) === input.endpointSource &&
-    (input.entry.credentialEnv ?? null) === input.credentialEnv &&
-    (input.entry.preferredInferenceApi ?? null) === input.preferredInferenceApi
-    ? "exact"
-    : "changed";
+  const selectedEndpointUrl = nativeLocalHostSelectionMatchesHostLocalReceipt(
+    input.entry.endpointUrl,
+    input.endpointUrl,
+    input.entry.hostLocalInferenceReceipt,
+  )
+    ? (input.entry.endpointUrl ?? null)
+    : input.endpointUrl;
+  const matches = {
+    attachment: Boolean(
+      attachment &&
+      nativeLocalAttachmentMatchesSelection(attachment, {
+        agentName: input.agentName,
+        sandboxName: input.sandboxName,
+        gatewayName: input.gatewayName,
+        provider: input.provider,
+        endpointUrl: selectedEndpointUrl,
+        hostLocalInferenceReceipt: input.entry.hostLocalInferenceReceipt,
+      }),
+    ),
+    provider: input.entry.provider === input.provider,
+    model: input.entry.model === input.model,
+    endpointUrl: input.entry.endpointUrl === selectedEndpointUrl,
+    endpointSource: (input.entry.endpointSource ?? null) === input.endpointSource,
+    credentialEnv: (input.entry.credentialEnv ?? null) === input.credentialEnv,
+    preferredInferenceApi:
+      (input.entry.preferredInferenceApi ?? null) === input.preferredInferenceApi,
+  };
+  const mismatches = Object.entries(matches)
+    .filter(([, matches]) => !matches)
+    .map(([field]) => field);
+  if (mismatches.length) input.onMismatch?.(mismatches);
+  return mismatches.length ? "changed" : "exact";
 }
 
 export function nativeInferenceCreateIntentFields(input: {
