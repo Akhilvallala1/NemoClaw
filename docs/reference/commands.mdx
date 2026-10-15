@@ -2534,7 +2534,20 @@ Slack requires both `SLACK_BOT_TOKEN` (bot user OAuth) and `SLACK_APP_TOKEN` (ap
 
 ### `$$nemoclaw <name> channels remove <channel>`
 
-Clear the stored credentials for a messaging channel and rebuild the sandbox so the image drops the channel. Running `remove` for a channel that was never configured is a no-op against the credentials file and normally still triggers the rebuild prompt. OpenClaw WeChat also checks for orphaned physical session state when no channel or policy entry exists; if cleanup cannot be confirmed, removal stops before rebuilding. When the bridge provider is attached to a live sandbox, NemoClaw detaches it before deleting the provider from the OpenShell gateway. If deletion fails, NemoClaw attempts to restore the attachment before returning the failure. If restoration also fails, the diagnostic names the provider and sandbox and warns that channel delivery may remain interrupted. If the matching built-in policy preset is applied, NemoClaw also removes that preset from the current OpenShell policy so the upstream API is no longer allow-listed after the channel is gone. When removing Teams, NemoClaw removes Teams-owned Microsoft login credential bindings from matching Outlook policy endpoints. It refuses to remove a binding owned by another integration. No session preset list exists to synchronize.
+Clear the stored credentials for a messaging channel and rebuild the sandbox so the image drops the channel.
+For a registered sandbox, `channels remove whatsapp` checks the messaging plan and applied policy presets.
+When neither contains WhatsApp, the command reports that WhatsApp is not configured and exits successfully.
+It leaves the messaging plan unchanged and does not prompt for or queue a rebuild.
+Disabled WhatsApp entries, entries awaiting removal, and applied WhatsApp policy presets still follow the removal process.
+
+OpenClaw WeChat also checks for orphaned physical session state when no channel or policy entry exists; if cleanup cannot be confirmed, removal stops before rebuilding.
+When the bridge provider is attached to a live sandbox, NemoClaw detaches it before deleting the provider from the OpenShell gateway.
+If deletion fails, NemoClaw attempts to restore the attachment before returning the failure.
+If restoration also fails, the diagnostic names the provider and sandbox and warns that channel delivery may remain interrupted.
+If the matching built-in policy preset is applied, NemoClaw also removes that preset from the current OpenShell policy so the upstream API is no longer allow-listed after the channel is gone.
+When removing Teams, NemoClaw removes Teams-owned Microsoft login credential bindings from matching Outlook policy endpoints.
+It refuses to remove a binding owned by another integration.
+No session preset list exists to synchronize.
 
 For QR-paired channels (today: WhatsApp), NemoClaw destructively clears the in-sandbox session directories before the rebuild so the complete native-home transfer does not restore the removed auth blob and let the channel reconnect:
 
@@ -2559,7 +2572,9 @@ $$nemoclaw my-assistant channels remove telegram
 | ----------- | ----------------------------------------------------------------------------------- |
 | `--dry-run` | Report the channel that would be removed without clearing credentials or rebuilding |
 
-As with `channels add`, `NEMOCLAW_NON_INTERACTIVE=1` or a run without a terminal on stdin skips the rebuild prompt and queues the change for a manual `$$nemoclaw <name> rebuild`. `channels start` and `channels stop` follow the same rule. If you omit the required `<channel>` argument, the CLI prints the `channels remove <channel>` usage with the supported channel list.
+When removal requires a rebuild, `NEMOCLAW_NON_INTERACTIVE=1` or a run without a terminal on stdin skips the prompt and queues a manual `$$nemoclaw <name> rebuild`.
+`channels start` and `channels stop` follow the same rule.
+If you omit the required `<channel>` argument, the CLI prints the `channels remove <channel>` usage with the supported channel list.
 
 Host-side removal is the supported path because managed startup (or an explicit custom image build) materializes agent channel config as image-owned state (`/sandbox/.openclaw/openclaw.json` for OpenClaw and `/sandbox/.hermes/.env` for Hermes); agent-specific channel removals inside the sandbox would modify the running config but not persist changes across rebuilds.
 
