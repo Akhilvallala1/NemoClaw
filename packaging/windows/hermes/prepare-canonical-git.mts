@@ -25,6 +25,16 @@ const initializedFiles = [
 ];
 type Row = { path: string; bytes: number; sha256: string };
 
+export function canonicalGitInventorySummary(rows: Row[]) {
+  // Receipt bytes must not depend on filesystem traversal or the host locale.
+  const ordered = [...rows].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return {
+    fileCount: rows.length,
+    logicalBytes: rows.reduce((sum, row) => sum + row.bytes, 0),
+    sha256: sha(Buffer.from(JSON.stringify(ordered))),
+  };
+}
+
 export function prepareCanonicalGit(runtimeRoot: string, baseInventory: string, evidence: string) {
   const runtime = fs.realpathSync(runtimeRoot);
   const git = path.join(runtime, "git");
@@ -89,20 +99,22 @@ export function prepareCanonicalGit(runtimeRoot: string, baseInventory: string, 
     }),
     "Every unrelated initialized Git file must remain byte-identical",
   );
+  const beforeSummary = canonicalGitInventorySummary(before);
+  const afterSummary = canonicalGitInventorySummary(after);
   const receipt = {
     schemaVersion: 1,
     classification: "ci-derived-initialized-canonical-hermes-git",
     baseCandidateSource: "8f54e647a1cda1c3c879ad4e350700a13bb8fc2e",
     baseInventorySha256: inventorySha256,
     upstreamCommit: "2237be355906fbe6065ce1815711eee52b2d646e",
-    beforeInventorySha256: sha(Buffer.from(JSON.stringify(before))),
-    afterInventorySha256: sha(Buffer.from(JSON.stringify(after))),
-    fileCount: after.length,
+    beforeInventorySha256: beforeSummary.sha256,
+    afterInventorySha256: afterSummary.sha256,
+    fileCount: afterSummary.fileCount,
     initializedFilesPreserved: initializedFiles,
     allOtherFilesUnchanged: true,
     filesReplacedAtBuild: 3,
-    beforeLogicalBytes: before.reduce((sum, row) => sum + row.bytes, 0),
-    afterLogicalBytes: after.reduce((sum, row) => sum + row.bytes, 0),
+    beforeLogicalBytes: beforeSummary.logicalBytes,
+    afterLogicalBytes: afterSummary.logicalBytes,
     firstLaunchSetupAllowed: false,
     files: changes.map((change) => ({ path: change.name, ...change.receipt })),
     nativeChecksumVerificationRequired: true,

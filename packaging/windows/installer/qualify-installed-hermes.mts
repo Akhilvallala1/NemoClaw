@@ -696,6 +696,33 @@ export function validateHermesRetainedTranscript(previous: any, detail: any) {
   return observed;
 }
 
+export function hermesResumeChatRoute(previous: any) {
+  assert(previous, "Hermes resume needs the retained conversation");
+  hermesTranscriptRoute(previous.storedSessionId, previous.profileName, 1);
+  return "/chat?" + new URLSearchParams({ resume: previous.storedSessionId }).toString();
+}
+
+export function validateHermesContinuedTranscript(
+  previous: any,
+  sessionId: string,
+  profile: string,
+  messages: any[],
+) {
+  assert(previous, "Hermes continuation needs the retained conversation");
+  assert.equal(sessionId, previous.storedSessionId, "Hermes restart opened another conversation");
+  assert.equal(profile, previous.profileName, "Hermes restart changed the conversation profile");
+  const continued = hermesTranscriptIdentity(sessionId, profile, messages);
+  validateHermesRetainedTranscript(previous, {
+    session_id: sessionId,
+    messages: messages.filter((row) => row.id <= previous.lastMessageId),
+  });
+  const appended = hermesMessagesAfter(messages, previous.lastMessageId);
+  assert(finalHermesTurn(appended), "Hermes restart did not complete a new turn in the saved chat");
+  assert(continued.messageCount > previous.messageCount);
+  assert(continued.lastMessageId > previous.lastMessageId);
+  return continued;
+}
+
 function argument(name: string, fallback?: string) {
   const i = process.argv.indexOf(name);
   if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1];
@@ -1200,7 +1227,10 @@ async function main() {
       if (new URL(request.url()).origin === origin.origin)
         sessionToken ??= request.headers()["x-hermes-session-token"];
     });
-    await page.goto(origin.origin + "/chat", {
+    const chatRoute = reuse
+      ? hermesResumeChatRoute(previousAcceptance.results.retainedConversation)
+      : "/chat";
+    await page.goto(origin.origin + chatRoute, {
       waitUntil: "domcontentloaded",
       timeout: Math.max(1, Math.min(30_000, 120_000 - (performance.now() - started))),
     });
@@ -1460,11 +1490,15 @@ async function main() {
       localBundledBrowserExecuted: false,
       visibleSentinel: browserSentinel,
     };
-    results.retainedConversation = hermesTranscriptIdentity(
-      pty.storedSessionId()!,
-      pty.profileName()!,
-      await sessionMessages(),
-    );
+    const retainedMessages = await sessionMessages();
+    results.retainedConversation = reuse
+      ? validateHermesContinuedTranscript(
+          previousAcceptance.results.retainedConversation,
+          pty.storedSessionId()!,
+          pty.profileName()!,
+          retainedMessages,
+        )
+      : hermesTranscriptIdentity(pty.storedSessionId()!, pty.profileName()!, retainedMessages);
     await page.screenshot({ path: path.join(output, "dashboard-model-tools.png"), fullPage: true });
     phase = "idle-measurement";
     pty.beginIdle(lastTurnMark);

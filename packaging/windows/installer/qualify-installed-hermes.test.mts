@@ -32,6 +32,8 @@ import {
   sanitizeHermesBrowserDiagnostic,
   hermesTranscriptIdentity,
   validateHermesRetainedTranscript,
+  hermesResumeChatRoute,
+  validateHermesContinuedTranscript,
   captureHermesNativeFailure,
   validateHermesDashboardReady,
   validateHermesInstalledConfiguration,
@@ -448,6 +450,53 @@ test("Hermes retention refuses incomplete transcripts and duplicate message iden
     })),
   ])
     assert.throws(() => hermesTranscriptIdentity("saved-session", "personal", invalid));
+});
+
+test("Hermes resume opens the saved dashboard conversation without query injection", () => {
+  const previous = hermesTranscriptIdentity("saved&fresh=1", "personal", retainedConversation());
+  const route = new URL(hermesResumeChatRoute(previous), "http://127.0.0.1:1234");
+  assert.equal(route.pathname, "/chat");
+  assert.deepEqual([...route.searchParams], [["resume", "saved&fresh=1"]]);
+  assert.throws(() => hermesResumeChatRoute(undefined));
+  assert.throws(() => hermesResumeChatRoute({ ...previous, storedSessionId: "" }));
+});
+
+test("Hermes continuation retains the old transcript and completes a new turn in the same chat", () => {
+  const messages = retainedConversation();
+  const previous = hermesTranscriptIdentity("saved-session", "personal", messages);
+  const continued = [
+    ...messages,
+    { id: 5, role: "user", content: "Continue the saved conversation." },
+    { id: 6, role: "assistant", content: "New reply in the saved conversation." },
+  ];
+  assert.deepEqual(
+    validateHermesContinuedTranscript(
+      previous,
+      "saved-session",
+      "personal",
+      [...continued].reverse(),
+    ),
+    hermesTranscriptIdentity("saved-session", "personal", continued),
+  );
+  assert.throws(() =>
+    validateHermesContinuedTranscript(undefined, "saved-session", "personal", continued),
+  );
+  assert.throws(() =>
+    validateHermesContinuedTranscript(previous, "new-session", "personal", continued),
+  );
+  assert.throws(() =>
+    validateHermesContinuedTranscript(previous, "saved-session", "other", continued),
+  );
+  for (const invalid of [
+    messages,
+    continued.slice(1),
+    continued.slice(0, -1),
+    [...messages, { id: 5, role: "assistant", content: "No new user turn." }],
+    continued.map((row) => (row.id === 3 ? { ...row, content: "Changed old tool output" } : row)),
+  ])
+    assert.throws(() =>
+      validateHermesContinuedTranscript(previous, "saved-session", "personal", invalid),
+    );
 });
 
 for (const existing of ["configuration", "agent-data"])

@@ -7,6 +7,8 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { canonicalGitInventorySummary } from "./prepare-canonical-git.mts";
+import { inventory } from "../mxc-bash/prepare-msys-aslr.mts";
 const exporter = fileURLToPath(new URL("./export-official-runtime.py", import.meta.url));
 const python = process.env.NEMOCLAW_TEST_PYTHON ?? "python3";
 const control = String.raw`
@@ -50,6 +52,10 @@ try:
   if mode=='modified-adapter':
    changed=bytearray(data);changed[0]^=1;(runtime/locations[0]).write_bytes(changed)
   checked=m.validate_current_adaptation(runtime,report);assert checked==current;result={'currentAdapterSha256':checked,'copies':len(locations)}
+ elif mode=='git-summary':
+  rows=json.loads((root/'git-inventory.json').read_text(encoding='utf-8'))
+  count,size,digest=m.git_inventory_summary({'git/'+row['path']:{'bytes':row['bytes'],'sha256':row['sha256']} for row in rows})
+  result={'fileCount':count,'logicalBytes':size,'sha256':digest}
  elif mode=='build-only':inv.validate_build_receipt(build);result={'buildOnlyAccepted':True}
  elif mode=='failed-mxc':
   relocation={'schemaVersion':1,'upstreamCommit':inv.UPSTREAM_COMMIT,'status':'fail','targetRoot':str(root)}
@@ -62,9 +68,11 @@ try:
  print(json.dumps({'ok':True,'result':result}))
 except BaseException as error:print(json.dumps({'ok':False,'type':type(error).__name__,'error':str(error),'traceback':traceback.format_exc()[-12000:]}))
 `;
-function run(mode: string) {
+function run(mode: string, gitInventory?: ReturnType<typeof inventory>) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-export-"));
   try {
+    if (gitInventory)
+      fs.writeFileSync(path.join(root, "git-inventory.json"), JSON.stringify(gitInventory));
     const p = spawnSync(python, ["-I", "-c", control, exporter, root, mode], {
       encoding: "utf8",
       timeout: 10_000,
@@ -83,6 +91,39 @@ function run(mode: string) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+test("canonical Git receipt and Python export bind the same mixed-case and nested inventory", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "canonical-git-order-"));
+  try {
+    for (const name of [
+      "Aardvark.txt",
+      "a-file.txt",
+      "nested.file",
+      "nested/B-file.txt",
+      "nested/a-file.txt",
+      "z-last.txt",
+      "\u00e9-file.txt",
+      "\u{1f600}-file.txt",
+    ]) {
+      const file = path.join(root, name);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "inventory fixture: " + name);
+    }
+    const rows = inventory(root);
+    const produced = canonicalGitInventorySummary(rows);
+    const consumed = run("git-summary", rows);
+    assert.equal(consumed.ok, true, JSON.stringify(consumed));
+    assert.deepEqual(produced, consumed.result);
+    assert.deepEqual(canonicalGitInventorySummary([...rows].reverse()), produced);
+    for (const field of ["path", "bytes", "sha256"] as const) {
+      const changed = structuredClone(rows);
+      if (field === "bytes") changed[0].bytes += 1;
+      else changed[0][field] += "changed";
+      assert.notEqual(canonicalGitInventorySummary(changed).sha256, produced.sha256);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 test("candidate archive retains every regular byte, empty directory and unproven declaration", () => {
   const value = run("archive");
   assert.equal(value.ok, true, JSON.stringify(value));

@@ -92,17 +92,13 @@ def validate_current_adaptation(runtime, report):
 
 
 def git_inventory_summary(files):
-    """Match the canonical Git producer's sorted-directory DFS and JSON bytes."""
+    """Match the producer's locale-independent full-path order and JSON bytes."""
     rows = [
         {"path": name[4:], "bytes": value["bytes"], "sha256": value["sha256"]}
         for name, value in files.items()
         if name.startswith("git/")
     ]
-    rows.sort(
-        key=lambda row: tuple(
-            part.encode("utf-16-be", "surrogatepass") for part in row["path"].split("/")
-        )
-    )
+    rows.sort(key=lambda row: row["path"].encode("utf-16-be", "surrogatepass"))
     encoded = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8"
     )
