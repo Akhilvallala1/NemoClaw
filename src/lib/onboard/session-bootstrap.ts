@@ -486,6 +486,7 @@ export interface OnboardSessionBootstrapInput {
   envAgent?: string | null;
   requestedToolDisclosure?: ToolDisclosure | null;
   requestedObservabilityEnabled?: boolean | null;
+  requestedPolicyTier?: string | null;
   apfInterceptorRequested?: boolean | null;
   stationExpressIntent?: StationExpressResumeIntent | null;
   requestedHostMounts?: readonly import("../state/registry/types").SandboxHostMount[];
@@ -512,6 +513,7 @@ export interface OnboardSessionBootstrapDeps {
       agent?: string | null;
       toolDisclosure?: ToolDisclosure | null;
       observabilityEnabled?: boolean | null;
+      policyTier?: string | null;
       hostMounts?: readonly import("../state/registry/types").SandboxHostMount[];
       authoritativeResumeConfig?: boolean;
     },
@@ -666,6 +668,14 @@ function reportResumeConflict(
     }
     return;
   }
+  if (conflict.field === "policy tier") {
+    deps.error(
+      conflict.recorded
+        ? `  Session was started with --policy-tier '${conflict.recorded}', not '${conflict.requested}'.`
+        : "  Session was started without --policy-tier; resume without that flag or start a fresh onboarding session.",
+    );
+    return;
+  }
   if (conflict.field === "fromImage") {
     if (!conflict.recorded) {
       deps.error(
@@ -768,6 +778,7 @@ async function prepareResumeSession(
     agent: input.agentFlag || null,
     toolDisclosure: input.requestedToolDisclosure ?? null,
     observabilityEnabled: input.requestedObservabilityEnabled ?? null,
+    policyTier: input.requestedPolicyTier ?? null,
     hostMounts: input.requestedHostMounts,
     authoritativeResumeConfig: input.authoritativeResumeConfig,
   });
@@ -816,6 +827,7 @@ function prepareFreshSession(
     observabilityEnabled: input.requestedObservabilityEnabled === true,
     observabilityRequestedExplicitly: typeof input.requestedObservabilityEnabled === "boolean",
     apfInterceptorRequested: input.apfInterceptorRequested === true,
+    policyTier: input.requestedPolicyTier ?? null,
     stationExpressIntent: input.stationExpressIntent ?? null,
     servingProfileProvenance: input.servingProfileProvenance ?? null,
     vllmGpuDevice: parseVllmGpuDevice(process.env[NEMOCLAW_VLLM_GPU_DEVICE_ENV]),

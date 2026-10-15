@@ -4,11 +4,8 @@
 import { loadServingCatalog } from "../inference/serving/catalog-loader";
 import type { GooglechatTunnelRuntimeDeps } from "../messaging/channels/googlechat/hooks/tunnel-runtime";
 import { type OnboardCommandOptions, runOnboardCommand } from "../onboard/command";
-import {
-  ONBOARD_POLICY_TIER_VALUES,
-  type OnboardFlags,
-  readAgentRegistryNames,
-} from "../onboard/command-support";
+import { POLICY_TIER_NAMES } from "../domain/policy-tier-names";
+import { type OnboardFlags, readAgentRegistryNames } from "../onboard/command-support";
 import { resolveOnboardResumeIntent } from "../onboard/session-bootstrap";
 import { loadOnboardCommandResumeSession } from "../onboard/sandbox-registration";
 import type { OnboardOptions } from "../onboard/types";
@@ -35,7 +32,7 @@ function buildOnboardCommandDeps(flags: OnboardFlags, runtimeDeps: OnboardAction
     env: process.env,
     runOnboard: (options: OnboardCommandOptions) => runOnboard(options, runtimeDeps),
     listAgents: () => [...readAgentRegistryNames()],
-    listPolicyTiers: () => ONBOARD_POLICY_TIER_VALUES,
+    listPolicyTiers: () => POLICY_TIER_NAMES,
     loadServingCatalog,
     loadSession: loadOnboardCommandResumeSession,
     resolveResumeIntent: resolveOnboardResumeIntent,

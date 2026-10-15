@@ -2,14 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Flags } from "@oclif/core";
+import { POLICY_TIER_NAMES } from "../domain/policy-tier-names";
 import { TOOL_DISCLOSURE_VALUES, type ToolDisclosure } from "../tool-disclosure";
 import { describeAgentFlag } from "./agent-flag-help";
 import { PORTABLE_EXPERIMENTAL_PROFILE } from "./docker-driver-platform";
 import { NOTICE_ACCEPT_FLAG, NOTICE_ACCEPT_FLAG_NAME } from "./usage-notice";
-
-// Mirrors nemoclaw-blueprint/policies/tiers.yaml. Kept inline so command help
-// does not load the tier registry; a unit test keeps the two lists aligned.
-export const ONBOARD_POLICY_TIER_VALUES = ["restricted", "balanced", "open", "personal"] as const;
 
 type AgentRegistryReader = () => readonly string[];
 
@@ -171,7 +168,7 @@ export function buildOnboardFlags(options: { includeEvents?: boolean } = {}): Re
     "policy-tier": Flags.string({
       description:
         "Select the network policy tier without the tier prompt (overrides NEMOCLAW_POLICY_TIER)",
-      options: [...ONBOARD_POLICY_TIER_VALUES],
+      options: [...POLICY_TIER_NAMES],
     }),
     observability: Flags.boolean({
       allowNo: true,

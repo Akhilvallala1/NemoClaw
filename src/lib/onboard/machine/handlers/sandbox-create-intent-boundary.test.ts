@@ -299,15 +299,11 @@ describe("sandbox create intent machine boundary", () => {
     },
   );
 
-  it("carries an explicit --policy-tier into create-time policy resolution (#13180)", async () => {
-    const session = createSession({ sandboxName: "tiered" });
-    const { deps, calls } = createDeps();
+  it("carries a recorded --policy-tier into create-time policy resolution (#13180)", async () => {
+    const session = createSession({ sandboxName: "tiered", policyTier: "restricted" });
+    const { deps, calls } = createDeps({}, session);
 
-    await handleSandboxState({
-      ...baseOptions(deps, session),
-      sandboxName: "tiered",
-      requestedPolicyTier: "restricted",
-    });
+    await handleSandboxState({ ...baseOptions(deps, session), sandboxName: "tiered" });
 
     expect(calls.resolveCreateIntent).toHaveBeenCalledWith(
       expect.objectContaining({ policyTier: "restricted" }),

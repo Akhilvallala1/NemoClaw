@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { makeMessagingPlan } from "../../../../../test/helpers/messaging-plan-fixtures";
+import { createSession } from "../../../state/onboard-session";
 import { createPolicyHandlerDeps, basePolicyHandlerOptions } from "./policies-test-fixture";
 import { handlePoliciesState } from "./policies";
 
@@ -62,9 +63,11 @@ describe("policy state handler", () => {
     );
   });
 
-  it("passes an explicit --policy-tier to fresh policy selection (#13180)", async () => {
-    const { deps, calls } = createPolicyHandlerDeps();
-    await handlePoliciesState({ ...basePolicyHandlerOptions(deps), requestedPolicyTier: "open" });
+  it("passes a recorded --policy-tier to policy selection (#13180)", async () => {
+    const { deps, calls } = createPolicyHandlerDeps({
+      loadSession: () => createSession({ policyTier: "open" }),
+    });
+    await handlePoliciesState(basePolicyHandlerOptions(deps));
     expect(calls.setupPolicies).toHaveBeenCalledWith(
       "my-assistant",
       expect.objectContaining({ selectedPresets: null, tierName: "open" }),

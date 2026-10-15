@@ -7,7 +7,6 @@ import { createSession } from "../state/onboard-session";
 import {
   applyOnboardRuntimeControlRequests,
   planSelectedAgentTransition,
-  sandboxFlowRuntimeControlOptions,
   updateSessionAgent,
 } from "./runtime-control-flow";
 
@@ -36,15 +35,6 @@ describe("onboard runtime control flow", () => {
       requestedObservabilityEnabled: null,
       requestedDcodeAutoApprovalMode: null,
       requestedPolicyTier: null,
-    });
-  });
-
-  it("hands the per-run policy tier to the sandbox phase (#13180)", () => {
-    const requests = applyOnboardRuntimeControlRequests({ requestedPolicyTier: "personal" });
-    expect(sandboxFlowRuntimeControlOptions(requests)).toEqual({
-      requestedObservabilityEnabled: null,
-      requestedDcodeAutoApprovalMode: null,
-      requestedPolicyTier: "personal",
     });
   });
 

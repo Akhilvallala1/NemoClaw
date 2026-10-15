@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-/** Shared validation for the two route-selection receipts persisted in an onboard session. */
+/** Shared validation for operator selections persisted in an onboard session. */
+export { isPolicyTierName } from "../../domain/policy-tier-names";
 export {
   readModelSelectionProvenance,
   type ModelSelectionProvenance,

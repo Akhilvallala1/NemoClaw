@@ -221,7 +221,7 @@ You can also set the tier with `NEMOCLAW_POLICY_TIER`:
 NEMOCLAW_POLICY_TIER=open $$nemoclaw onboard --non-interactive --yes-i-accept-third-party-software
 ```
 
-Unset, blank, or whitespace-only `NEMOCLAW_POLICY_TIER` values use the `balanced` default. In non-interactive onboarding, a non-blank value that does not match a known tier exits before preflight, gateway, or inference side effects and lists the valid options. In interactive onboarding, a valid value pre-selects that tier in the prompt, and an invalid value is ignored. `--policy-tier` takes precedence over `NEMOCLAW_POLICY_TIER`.
+Unset, blank, or whitespace-only `NEMOCLAW_POLICY_TIER` values use the `balanced` default. In non-interactive onboarding, a non-blank value that does not match a known tier exits before preflight, gateway, or inference side effects and lists the valid options. In interactive onboarding, a valid value pre-selects that tier in the prompt, and an invalid value is ignored. `--policy-tier` takes precedence over `NEMOCLAW_POLICY_TIER`; when the flag is set, NemoClaw does not validate the environment value. NemoClaw records the flag's tier with the onboarding session, so a resumed session keeps it.
 
 ### Inference
 

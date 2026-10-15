@@ -39,6 +39,36 @@ export function readPolicyTierPreselectionFromEnv(): string | null {
 }
 
 /**
+ * Run the NEMOCLAW_POLICY_TIER fail-fast check at the right onboarding point.
+ * Fresh non-interactive runs validate before runtime side effects; resumed or
+ * Portable runs validate after the locked runtime is active. An explicit or
+ * recorded `--policy-tier` governs the run, so the environment value is unused
+ * and is not validated (#13180).
+ */
+export function createPolicyTierEnvGate(
+  opts: { requestedPolicyTier?: string | null; experimentalProfile?: string | null },
+  resume: boolean,
+  isNonInteractive: () => boolean,
+): {
+  beforeRuntime(): void;
+  afterRuntime(loadSession: () => { policyTier?: string | null } | null): void;
+} {
+  const explicit = Boolean(opts.requestedPolicyTier);
+  const validatesBeforeRuntime =
+    isNonInteractive() && !resume && opts.experimentalProfile !== "portable";
+  return {
+    beforeRuntime() {
+      if (validatesBeforeRuntime && !explicit) validatePolicyTierEnvEarly();
+    },
+    afterRuntime(loadSession) {
+      if (!isNonInteractive() || validatesBeforeRuntime || explicit) return;
+      if (resume && loadSession()?.policyTier) return;
+      validatePolicyTierEnvEarly();
+    },
+  };
+}
+
+/**
  * Early gate intended for the top of onboard(): runs the validation
  * only when the env var is explicitly set to a non-blank value, so the
  * absence-of-env-var default still flows through to the interactive

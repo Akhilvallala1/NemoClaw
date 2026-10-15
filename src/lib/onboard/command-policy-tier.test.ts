@@ -4,7 +4,8 @@
 import { describe, expect, it } from "vitest";
 
 import { resolveOnboardOptions, runOnboardCommand } from "./command";
-import { ONBOARD_POLICY_TIER_VALUES, type OnboardFlags } from "./command-support";
+import { POLICY_TIER_NAMES } from "../domain/policy-tier-names";
+import type { OnboardFlags } from "./command-support";
 
 function exitWithCode(code: number): never {
   throw new Error(`exit:${code}`);
@@ -18,13 +19,13 @@ function resolve(
     env: {},
     error: () => {},
     exit: exitWithCode,
-    listPolicyTiers: () => ONBOARD_POLICY_TIER_VALUES,
+    listPolicyTiers: () => POLICY_TIER_NAMES,
     ...overrides,
   });
 }
 
 describe("onboard --policy-tier (#13180)", () => {
-  it("normalizes --policy-tier and rejects unknown, Portable, or resumed use (#13180)", () => {
+  it("normalizes --policy-tier and rejects unknown or Portable use (#13180)", () => {
     expect(resolve({ "policy-tier": " Restricted " }).requestedPolicyTier).toBe("restricted");
     expect(resolve({}).requestedPolicyTier).toBeNull();
 
@@ -34,11 +35,11 @@ describe("onboard --policy-tier (#13180)", () => {
     expect(() =>
       resolve({ "policy-tier": "open", "experimental-profile": "portable" }, { error }),
     ).toThrow("exit:1");
-    expect(() => resolve({ "policy-tier": "open", resume: true }, { error })).toThrow("exit:1");
+    // Resume is checked against the recorded session tier during session bootstrap.
+    expect(resolve({ "policy-tier": "open", resume: true }).requestedPolicyTier).toBe("open");
     expect(errors).toEqual([
       "  Unknown policy tier: locked. Valid: restricted, balanced, open, personal",
       "  --policy-tier cannot be used with the Portable profile.",
-      "  --policy-tier cannot be used when resuming onboarding; use --fresh to choose a new tier.",
     ]);
   });
 
@@ -48,7 +49,7 @@ describe("onboard --policy-tier (#13180)", () => {
     await runOnboardCommand({
       flags: { "policy-tier": "restricted" },
       env,
-      listPolicyTiers: () => ONBOARD_POLICY_TIER_VALUES,
+      listPolicyTiers: () => POLICY_TIER_NAMES,
       runOnboard: async (options) => {
         seen.push(options.requestedPolicyTier);
         expect(env.NEMOCLAW_POLICY_TIER).toBe("open");

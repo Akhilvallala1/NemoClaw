@@ -56,17 +56,6 @@ export function applyOnboardRuntimeControlRequests(
   };
 }
 
-/** Per-run requests consumed by the sandbox phase. */
-export function sandboxFlowRuntimeControlOptions(
-  requests: ReturnType<typeof applyOnboardRuntimeControlRequests>,
-) {
-  return {
-    requestedObservabilityEnabled: requests.requestedObservabilityEnabled,
-    requestedDcodeAutoApprovalMode: requests.requestedDcodeAutoApprovalMode,
-    requestedPolicyTier: requests.requestedPolicyTier,
-  };
-}
-
 export function updateSessionAgent(
   session: Session,
   agentName: string | null | undefined,

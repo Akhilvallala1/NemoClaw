@@ -242,7 +242,7 @@ export function createOnboardPolicyApplication(deps: OnboardPolicyApplicationDep
         setupPoliciesWithSelection(setupDeps, sandboxName, options),
       );
     },
-    validatePolicyTierEnvEarly: policyTierEnv.validatePolicyTierEnvEarly,
+    createPolicyTierEnvGate: policyTierEnv.createPolicyTierEnvGate,
   };
 }
 

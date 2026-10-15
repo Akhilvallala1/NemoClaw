@@ -212,8 +212,6 @@ export interface SandboxStateOptions<
   resumeAgentChanged: boolean;
   requestedObservabilityEnabled?: boolean | null;
   requestedDcodeAutoApprovalMode?: DcodeAutoApprovalMode | null;
-  /** Operator-selected `--policy-tier`; governs the create-time policy tier. */
-  requestedPolicyTier?: string | null;
   rebuildPolicySourcePath?: string;
   hostMounts?: readonly import("../../../state/registry/types").SandboxHostMount[];
   recreateSandbox: (requested?: boolean) => boolean;
@@ -1149,11 +1147,6 @@ class SandboxStateFlow<
     if (bindingCheck.status === "stale") this.rejectStaleCheckpointBindings(bindingCheck);
   }
 
-  private requestedPolicyTierIntent(): { policyTier?: string } {
-    const tier = this.options.requestedPolicyTier;
-    return tier ? { policyTier: tier } : {};
-  }
-
   private applyObservabilityRequest(
     state: SandboxStepState<WebSearchConfig>,
   ): SandboxStepState<WebSearchConfig> {
@@ -1938,7 +1931,7 @@ class SandboxStateFlow<
       staleExtraProviders,
       hostMounts: this.options.hostMounts,
       ...(reuseRegisteredCredentials ? { reuseRegisteredCredentials: true } : {}),
-      ...this.requestedPolicyTierIntent(),
+      ...requestedPolicyTierIntent(state.session),
     });
     const recreate = requiresSandboxRecreation(decision, this.options.recreateSandbox(false));
     return {
@@ -1981,7 +1974,7 @@ class SandboxStateFlow<
       ...(this.options.rebuildPolicySourcePath
         ? { rebuildPolicySourcePath: this.options.rebuildPolicySourcePath }
         : {}),
-      ...this.requestedPolicyTierIntent(),
+      ...requestedPolicyTierIntent(state.session),
       extraProviders,
     };
   }
@@ -2775,6 +2768,11 @@ class SandboxStateFlow<
         : await this.recreateSandbox(initialState, decision);
     return this.complete(completedState);
   }
+}
+
+/** A recorded `--policy-tier` governs create-time policy for fresh and resumed runs. */
+function requestedPolicyTierIntent(session: Session | null | undefined): { policyTier?: string } {
+  return session?.policyTier ? { policyTier: session.policyTier } : {};
 }
 
 export async function handleSandboxState<

@@ -478,7 +478,6 @@ function resolveOnboardToolDisclosure(
 function resolveRequestedPolicyTier(
   requested: string | undefined,
   experimentalProfile: ExperimentalOnboardProfile | null,
-  resume: boolean,
   deps: ResolveOnboardOptionsDeps,
 ): string | null {
   if (requested === undefined) return null;
@@ -488,12 +487,6 @@ function resolveRequestedPolicyTier(
     fail(deps, `  Unknown policy tier: ${requested}. Valid: ${knownTiers.join(", ")}`);
   }
   if (experimentalProfile) fail(deps, "  --policy-tier cannot be used with the Portable profile.");
-  if (resume) {
-    fail(
-      deps,
-      "  --policy-tier cannot be used when resuming onboarding; use --fresh to choose a new tier.",
-    );
-  }
   return name;
 }
 
@@ -531,7 +524,6 @@ export function resolveOnboardOptions(
   const requestedPolicyTier = resolveRequestedPolicyTier(
     flags["policy-tier"],
     experimentalProfile,
-    resume,
     deps,
   );
   return {

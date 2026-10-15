@@ -3,13 +3,9 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { POLICY_TIER_NAMES } from "../domain/policy-tier-names";
 import { listTiers } from "../policy/tiers";
-import {
-  buildOnboardFlags,
-  ONBOARD_POLICY_TIER_VALUES,
-  onboardUsage,
-  setAgentRegistryReaderForTest,
-} from "./command-support";
+import { buildOnboardFlags, onboardUsage, setAgentRegistryReaderForTest } from "./command-support";
 
 afterEach(() => {
   setAgentRegistryReaderForTest(null);
@@ -67,7 +63,7 @@ describe("buildOnboardFlags --policy-tier help (#13180)", () => {
     const flags = buildOnboardFlags();
 
     expect(flags["policy-tier"].options).toEqual(listTiers().map((tier) => tier.name));
-    expect([...ONBOARD_POLICY_TIER_VALUES]).toEqual(listTiers().map((tier) => tier.name));
+    expect([...POLICY_TIER_NAMES]).toEqual(listTiers().map((tier) => tier.name));
     expect(onboardUsage.join(" ")).toContain("--policy-tier <restricted|balanced|open|personal>");
   });
 });
