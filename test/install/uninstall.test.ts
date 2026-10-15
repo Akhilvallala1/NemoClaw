@@ -682,6 +682,7 @@ exit 0
         gatewayPort,
       );
       const openshellCalls = path.join(tmp, "openshell-calls");
+      const deletedSandboxMarker = path.join(tmp, "ordinary-authority-deleted");
       fs.writeFileSync(
         path.join(fakeBin, "openshell"),
         `#!/usr/bin/env bash
@@ -689,7 +690,8 @@ printf '%s\\n' "$*" >> '${openshellCalls}'
 case "$*" in
   "gateway list -o json") printf '[{"name":"${gatewayName}","active":true},{"name":"nemoclaw-9124","active":false}]\\n' ;;
   "gateway info -g ${gatewayName}") printf 'Gateway: ${gatewayName}\\n' ;;
-  "sandbox list"|"sandbox list -g ${gatewayName}") printf 'ordinary-authority Ready\\n' ;;
+  "sandbox list"|"sandbox list -g ${gatewayName}") if [[ -e '${deletedSandboxMarker}' ]]; then printf 'NAME STATUS\\n'; else printf 'ordinary-authority Ready\\n'; fi ;;
+  "sandbox delete -g ${gatewayName} ordinary-authority") : > '${deletedSandboxMarker}' ;;
   "sandbox ssh-config ordinary-authority"|"sandbox ssh-config -g ${gatewayName} ordinary-authority") printf 'Host openshell-ordinary-authority.default\\n  HostName 127.0.0.1\\n  User sandbox\\n  Port 2222\\n' ;;
   "status"|"status -g ${gatewayName}") printf 'Status: Connected\\nGateway: ${gatewayName}\\n' ;;
 esac

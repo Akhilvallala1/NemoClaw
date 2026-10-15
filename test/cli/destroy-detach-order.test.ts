@@ -82,13 +82,13 @@ describe("CLI dispatch", () => {
         expect(deleteIdx).toBeGreaterThan(-1);
 
         const expectedDetachLines = [
-          "sandbox provider detach alpha alpha-telegram-bridge",
-          "sandbox provider detach alpha alpha-discord-bridge",
-          "sandbox provider detach alpha alpha-wechat-bridge",
-          "sandbox provider detach alpha alpha-slack-bridge",
-          "sandbox provider detach alpha alpha-slack-app",
-          "sandbox provider detach alpha alpha-brave-search",
-          "sandbox provider detach alpha alpha-tavily-search",
+          "sandbox provider detach -g nemoclaw alpha alpha-telegram-bridge",
+          "sandbox provider detach -g nemoclaw alpha alpha-discord-bridge",
+          "sandbox provider detach -g nemoclaw alpha alpha-wechat-bridge",
+          "sandbox provider detach -g nemoclaw alpha alpha-slack-bridge",
+          "sandbox provider detach -g nemoclaw alpha alpha-slack-app",
+          "sandbox provider detach -g nemoclaw alpha alpha-brave-search",
+          "sandbox provider detach -g nemoclaw alpha alpha-tavily-search",
         ];
         expectedDetachLines.forEach((line) => {
           const idx = indexOfArg(log, line);
