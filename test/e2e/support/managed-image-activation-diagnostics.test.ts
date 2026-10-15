@@ -3,6 +3,7 @@
 
 import fs, { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path, { join } from "node:path";
 
@@ -30,6 +31,8 @@ import {
   externalImageActivationMatches,
   externalImageActivationOnboardArgs,
   managedActivationPostRestartAgentTurnScript,
+  managedActivationCommandEnv,
+  runManagedActivationAgentTurn,
   managedActivationOpenClawPluginScript,
   managedHermesBoundaryPoisonCommand,
   managedOpenClawSubagentCommand,
@@ -189,6 +192,130 @@ printf '%s\n' "$@" >"$MANAGED_ACTIVATION_FIXTURE/openclaw-args"
     fixture.remove();
   }
 }
+
+describe("managed image activation inference selection", () => {
+  it.each([false, true])(
+    "passes the selected credentialless=%s boundary to the CLI process",
+    (credentialless) => {
+      const environment = managedActivationCommandEnv(
+        {
+          env: {
+            COMPATIBLE_API_KEY: "unrelated-compatible-key",
+            NEMOCLAW_LOCAL_INFERENCE_SANDBOX_HOST_URL: "http://127.0.0.1",
+            NEMOCLAW_VLLM_LOCAL_TOKEN: "unrelated-local-token",
+          },
+        },
+        "/exact-catalog.json",
+        "http://host.openshell.internal:18321/v1",
+        credentialless,
+      );
+      const child = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            "-e",
+            `
+      const e=process.env;
+      console.log(JSON.stringify({
+        provider:e.NEMOCLAW_PROVIDER,
+        port:e.NEMOCLAW_VLLM_PORT ?? null,
+        endpoint:e.NEMOCLAW_ENDPOINT_URL ?? null,
+        compatibleCredentialPresent:Boolean(e.COMPATIBLE_API_KEY),
+        localCredentialPresent:Boolean(e.NEMOCLAW_VLLM_LOCAL_TOKEN),
+        loopbackOverridePresent:Boolean(e.NEMOCLAW_LOCAL_INFERENCE_SANDBOX_HOST_URL),
+        catalog:e.NEMOCLAW_MANAGED_ACTIVATION_CATALOG,
+      }));
+    `,
+          ],
+          { env: environment, encoding: "utf8" },
+        ),
+      );
+      expect(child).toEqual(
+        credentialless
+          ? {
+              provider: "vllm",
+              port: "18321",
+              endpoint: null,
+              compatibleCredentialPresent: false,
+              localCredentialPresent: false,
+              loopbackOverridePresent: false,
+              catalog: "/exact-catalog.json",
+            }
+          : {
+              provider: "custom",
+              port: null,
+              endpoint: "http://host.openshell.internal:18321/v1",
+              compatibleCredentialPresent: true,
+              localCredentialPresent: true,
+              loopbackOverridePresent: true,
+              catalog: "/exact-catalog.json",
+            },
+      );
+    },
+  );
+});
+
+describe("managed image activation agent request evidence", () => {
+  it.each([
+    { label: "stale onboarding request", newRequests: [], accepted: false },
+    {
+      label: "wrong model",
+      newRequests: [
+        { method: "POST", path: "/v1/chat/completions", bodyBytes: 1, model: "other-model" },
+      ],
+      accepted: false,
+    },
+    {
+      label: "model discovery only",
+      newRequests: [{ method: "GET", path: "/v1/models", bodyBytes: 0 }],
+      accepted: false,
+    },
+    {
+      label: "new selected-model completion",
+      newRequests: [
+        {
+          method: "POST",
+          path: "/v1/chat/completions",
+          bodyBytes: 1,
+          model: "nemoclaw-managed-activation-model",
+        },
+      ],
+      accepted: true,
+    },
+  ])("accepts only new agent completion evidence: $label", async ({ newRequests, accepted }) => {
+    const requests: import("../fixtures/fake-openai-compatible.ts").FakeOpenAiCompatibleRequest[] =
+      [
+        {
+          method: "POST",
+          path: "/v1/chat/completions",
+          bodyBytes: 1,
+          model: "nemoclaw-managed-activation-model",
+        },
+      ];
+    const exec = vi.fn(async () => {
+      requests.push(...newRequests);
+      return { exitCode: 0, stdout: "PONG", stderr: "", timedOut: false };
+    });
+    const outcome = await runManagedActivationAgentTurn(
+      { exec } as never,
+      "langchain-deepagents-code",
+      "credentialless-fixture",
+      "after",
+      {},
+      "dcode-credentialless",
+      () => requests,
+    ).then(
+      () => true,
+      () => false,
+    );
+    expect(outcome).toBe(accepted);
+    expect(exec).toHaveBeenCalledWith(
+      "credentialless-fixture",
+      ["dcode", "-n", "Reply with exactly one word: PONG", "--json"],
+      expect.objectContaining({ artifactName: "dcode-credentialless-agent-turn-after-restart" }),
+    );
+  });
+});
 
 describe("managed image activation failure diagnostics", () => {
   it("retains redacted llama.cpp logs before a failed agent assertion", async () => {
@@ -1022,7 +1149,7 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
                 stopGatewayRuntime: vi.fn(),
                 waitForSandboxReadyAfterGatewayRestart: ready,
               },
-              progress: { phase: vi.fn() },
+              progress: { phase: vi.fn(), event: vi.fn() },
               sandbox: {
                 cleanupSandbox,
                 exec: vi.fn(async () => ok),
