@@ -847,6 +847,8 @@ import os
 import re
 import subprocess
 import sys
+import stat
+import tempfile
 from urllib.parse import urlsplit
 
 config_file = sys.argv[1]
@@ -888,7 +890,12 @@ parsed = subprocess.run(
         "/usr/local/bin/node",
         "-e",
         'const JSON5=require("/usr/local/lib/node_modules/openclaw/node_modules/json5");'
-        'process.stdout.write(JSON.stringify(JSON5.parse(require("node:fs").readFileSync(0,"utf8"))));',
+        'const {hostedNativeProvider,NVIDIA_HOSTED_NATIVE_ENDPOINT,NVIDIA_HOSTED_CREDENTIAL_ENV}='
+        'require("/usr/local/lib/nemoclaw/managed-startup-image-runtime.cjs");'
+        'process.stdout.write(JSON.stringify({'
+        'config:JSON5.parse(require("node:fs").readFileSync(0,"utf8")),'
+        'openrouter:hostedNativeProvider("openrouter-api"),'
+        'nvidia:{endpoint:NVIDIA_HOSTED_NATIVE_ENDPOINT,credentialEnv:NVIDIA_HOSTED_CREDENTIAL_ENV}}));',
     ],
     input=source,
     text=True,
@@ -896,51 +903,54 @@ parsed = subprocess.run(
     stderr=subprocess.DEVNULL,
     check=True,
 )
-config = json.loads(parsed.stdout)
+inputs = json.loads(parsed.stdout)
+config = inputs["config"]
+openrouter = inputs["openrouter"]
+nvidia = inputs["nvidia"]
 
 refreshed = set()
 native_refreshed = False
 
-# A native handle persisted by the host-side config batch belongs to the
-# provider revision that issued it. After a restart or sandbox rebuild, only
-# the current revision is available. Refresh only a known native endpoint and
-# its exact scoped credential field before OpenClaw starts.
+# Restored native handles belong to the sandbox/provider revision that issued
+# them. Refresh the exact inference field before the final gateway start.
+# Accept only scoped runtime handles for the matching endpoint and key; leave
+# user-managed credentials unchanged.
 models = config.get("models") if isinstance(config, dict) else None
 providers = models.get("providers") if isinstance(models, dict) else None
 native = providers.get("inference") if isinstance(providers, dict) else None
-native_key = None
-if isinstance(native, dict):
-    endpoint = native.get("baseUrl")
-    if endpoint == "https://integrate.api.nvidia.com/v1":
-        native_key = "NVIDIA_INFERENCE_API_KEY"
-    elif isinstance(endpoint, str):
+native_keys = {
+    nvidia["endpoint"]: nvidia["credentialEnv"],
+    openrouter["endpoint"]: openrouter["credentialEnv"],
+}
+endpoint = native.get("baseUrl") if isinstance(native, dict) else None
+key = native_keys.get(endpoint.rstrip("/")) if isinstance(endpoint, str) else None
+if not key and isinstance(endpoint, str):
+    try:
+        parsed = urlsplit(endpoint)
+        host = parsed.hostname or ""
+        private_ipv4 = False
         try:
-            parsed = urlsplit(endpoint)
-            host = parsed.hostname or ""
-            private_ipv4 = False
-            try:
-                address = ipaddress.IPv4Address(host)
-                private_ipv4 = any(
-                    address in network
-                    for network in (
-                        ipaddress.IPv4Network("10.0.0.0/8"),
-                        ipaddress.IPv4Network("172.16.0.0/12"),
-                        ipaddress.IPv4Network("192.168.0.0/16"),
-                    )
+            address = ipaddress.IPv4Address(host)
+            private_ipv4 = any(
+                address in network
+                for network in (
+                    ipaddress.IPv4Network("10.0.0.0/8"),
+                    ipaddress.IPv4Network("172.16.0.0/12"),
+                    ipaddress.IPv4Network("192.168.0.0/16"),
                 )
-            except ipaddress.AddressValueError:
-                pass
-            if (
-                parsed.scheme == "http"
-                and not parsed.username
-                and not parsed.password
-                and (private_ipv4 or host in ("host.openshell.internal", "host.docker.internal"))
-            ):
-                native_key = "NEMOCLAW_LOCAL_INFERENCE_TOKEN"
-        except ValueError:
+            )
+        except ipaddress.AddressValueError:
             pass
-if native_key:
-    key = native_key
+        if (
+            parsed.scheme == "http"
+            and not parsed.username
+            and not parsed.password
+            and (private_ipv4 or host in ("host.openshell.internal", "host.docker.internal"))
+        ):
+            key = "NEMOCLAW_LOCAL_INFERENCE_TOKEN"
+    except ValueError:
+        pass
+if key:
     scoped = re.compile(rf"^{re.escape(prefix)}(?:v[0-9]{{1,20}}|s[a-f0-9]{{64}})_{key}$")
     saved = native.get("apiKey")
     state = runtime_state(key)
@@ -1085,9 +1095,32 @@ def walk_for_warnings(value, path):
 walk_for_warnings(updated, [])
 
 if updated != config or native_refreshed:
-    with open(config_file, "w", encoding="utf-8") as f:
-        json.dump(updated, f, indent=2)
-        f.write("\n")
+    # Publish the complete replacement, then persist its directory entry.
+    original = os.stat(config_file)
+    mode = stat.S_IMODE(original.st_mode)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=os.path.dirname(config_file),
+            prefix=".provider-refresh-", delete=False,
+        ) as f:
+            temporary = f.name
+            os.fchown(f.fileno(), -1, original.st_gid)
+            os.fchmod(f.fileno(), mode)
+            json.dump(updated, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, config_file)
+        temporary = None
+        directory = os.open(os.path.dirname(config_file), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary is not None and os.path.exists(temporary):
+            os.unlink(temporary)
 
 if refreshed:
     print("refreshed=" + ",".join(sorted(refreshed)))
