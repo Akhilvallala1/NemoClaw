@@ -112,6 +112,14 @@ describe("full E2E sandbox inference probe", () => {
       providerName: prepared.providerName,
       providerId: "provider-id",
     });
+    expect(() =>
+      buildFullE2eSandboxInferenceCommand(
+        "{}",
+        "compatible-endpoint",
+        { ...receipt, profileId: "invalid-profile" },
+        "http://host.openshell.internal:43049/v1",
+      ),
+    ).toThrow("Invalid native custom inference attachment authority");
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "full-e2e-custom-probe-"));
     try {
       fs.writeFileSync(path.join(directory, "curl"), '#!/bin/sh\nprintf "%s\\n" "$@"\n', {
@@ -140,6 +148,34 @@ describe("full E2E sandbox inference probe", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it.each(["http://host.openshell.internal:43049/v1", "http://127.0.0.1:34059/v1"])(
+    "probes the recorded host-local route %s without a hosted attachment",
+    (endpointUrl) => {
+      expect(
+        buildFullE2eSandboxInferenceCommand("{}", "compatible-endpoint", undefined, endpointUrl),
+      ).toEqual([
+        "curl",
+        "-fsS",
+        "--max-time",
+        "90",
+        "https://inference.local/v1/chat/completions",
+        "-H",
+        "Content-Type: application/json",
+        "--data-raw",
+        "{}",
+      ]);
+    },
+  );
+
+  it.each([undefined, "", "not-a-url", "https://api.example.com/v1"])(
+    "rejects a missing hosted attachment for endpoint %j",
+    (endpointUrl) => {
+      expect(() =>
+        buildFullE2eSandboxInferenceCommand("{}", "compatible-endpoint", undefined, endpointUrl),
+      ).toThrow("Invalid native custom inference attachment authority");
+    },
+  );
 
   it("retains the credential-free local probe for Portable inference", () => {
     expect(buildFullE2eSandboxInferenceCommand("{}", "portable")).toEqual([

@@ -855,6 +855,7 @@ test(
         chatPayload(inference.model, "Reply with exactly one word: PONG", 1024),
         recordedProvider as string,
         nativeCustom,
+        typeof recorded?.endpointUrl === "string" ? recorded.endpointUrl : undefined,
       ),
       {
         artifactName: "phase-5-sandbox-inference-chat",

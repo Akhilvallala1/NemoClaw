@@ -1285,6 +1285,7 @@ test(
                 attempt.requestBody,
                 PORTABLE_PROFILE ? "portable" : hosted.providerName,
                 receipt,
+                hosted.endpointUrl,
               ),
               {
                 artifactName: `${prefix}${attempt.artifactName}-availability-${availabilityAttempt}`,

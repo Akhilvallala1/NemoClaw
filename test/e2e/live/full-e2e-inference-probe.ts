@@ -5,6 +5,7 @@ import { runBoundedRetry, type RetryEvidence } from "../../../tools/e2e/retry-ev
 
 import { resolveMaxTokensField } from "../../../src/lib/inference/max-tokens-field.ts";
 import {
+  isHostLocalCustomEndpoint,
   profileFromCustomAttachment,
   type NativeCustomProviderAttachment,
 } from "../../../src/lib/inference/native-custom/index.ts";
@@ -31,9 +32,11 @@ export function buildFullE2eSandboxInferenceCommand(
   requestBody: string,
   logicalProvider: string,
   nativeCustom?: NativeCustomProviderAttachment,
+  endpointUrl?: string,
 ): [string, ...string[]] {
   const custom =
-    logicalProvider === "compatible-endpoint"
+    logicalProvider === "compatible-endpoint" &&
+    (nativeCustom !== undefined || !isHostLocalCustomEndpoint(endpointUrl))
       ? profileFromCustomAttachment(nativeCustom!)
       : undefined;
   if (logicalProvider === NVIDIA_HOSTED_LOGICAL_PROVIDER || custom) {
