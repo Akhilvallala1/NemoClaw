@@ -81,6 +81,7 @@ async function main(): Promise<void> {
     createWatcherStopped: true,
     workloadStopped: false,
     gatewayStopped: true,
+    lifecycleCommandsStopped: true,
     ownedRootsRemoved: false,
   };
   const receipt: Record<string, unknown> = {
@@ -109,6 +110,11 @@ async function main(): Promise<void> {
   let primaryError: unknown = null;
   const cleanupErrors: unknown[] = [];
   const logHandles: number[] = [];
+  const lifecycleCommands = new Set<ChildProcess>();
+  const ownLifecycleCommand = (child: ChildProcess) => {
+    lifecycleCommands.add(child);
+    child.once("close", () => lifecycleCommands.delete(child));
+  };
   const checked = async (args: string[], label: string, timeout = 30_000) => {
     console.log(`[Hermes components] ${label}`);
     const value = await command(openshell, args, environment, runRoot, timeout);
@@ -234,6 +240,16 @@ async function main(): Promise<void> {
       WINDIR: systemRoot,
     };
     receipt.sandboxEnvironment = sandboxEnvironment;
+    const workloadCommand = [
+      node,
+      "--experimental-strip-types",
+      "--no-warnings",
+      worker,
+      runtimeRoot,
+      resultPath,
+      nonce,
+      ...(tempControl === null ? [] : [tempControl, adapterSha256!]),
+    ];
     const args = [
       "sandbox",
       "create",
@@ -244,23 +260,16 @@ async function main(): Promise<void> {
       "--driver-config-json",
       JSON.stringify({
         mxc: {
-          command: [
-            node,
-            "--experimental-strip-types",
-            "--no-warnings",
-            worker,
-            runtimeRoot,
-            resultPath,
-            nonce,
-            ...(tempControl === null ? [] : [tempControl, adapterSha256!]),
-          ],
+          command: workloadCommand,
           cwd: shareRoot,
         },
       }),
       "--no-tty",
+      "--detach",
     ];
     for (const [key, value] of Object.entries(sandboxEnvironment))
       args.push("--env", `${key}=${value}`);
+    args.push("--", ...workloadCommand);
     const createFailure: { error: Error | null } = { error: null };
     for (const name of ["create.stdout.log", "create.stderr.log"])
       logHandles.push(fs.openSync(path.join(evidenceRoot, name), "wx"));
@@ -295,6 +304,8 @@ async function main(): Promise<void> {
       sandboxName,
       gateway,
       null,
+      undefined,
+      ownLifecycleCommand,
     );
     receipt.completion = completion;
     if (completion !== "AgentCompleted" && completion !== "MainProcessCompleted")
@@ -307,11 +318,16 @@ async function main(): Promise<void> {
       try {
         await checked(["sandbox", "delete", sandboxName], "Deleting the owned component sandbox");
         cleanup.sandboxDeleted = true;
-        await lifecycle.confirmNativeUiRegistryEmpty(openshell, environment, {
-          sandboxName,
-          gateway,
-          stateSession: null,
-        });
+        await lifecycle.confirmNativeUiRegistryEmpty(
+          openshell,
+          environment,
+          {
+            sandboxName,
+            gateway,
+            stateSession: null,
+          },
+          ownLifecycleCommand,
+        );
         cleanup.sandboxRegistryAbsent = true;
       } catch (error) {
         cleanupErrors.push(errorDetail(error));
@@ -328,6 +344,16 @@ async function main(): Promise<void> {
         cleanupErrors.push({ action: key, ...errorDetail(error) });
       }
     }
+    for (const child of lifecycleCommands) {
+      try {
+        if (child.pid && !(await helpers.stopChild(child)))
+          cleanup.lifecycleCommandsStopped = false;
+      } catch (error) {
+        cleanup.lifecycleCommandsStopped = false;
+        cleanupErrors.push({ action: "stop lifecycle command", ...errorDetail(error) });
+      }
+    }
+    cleanup.lifecycleCommandsStopped &&= lifecycleCommands.size === 0;
     for (const handle of logHandles) {
       try {
         fs.closeSync(handle);
@@ -337,6 +363,13 @@ async function main(): Promise<void> {
     }
     const removed = await Promise.all(
       createdRoots.map(async (root) => {
+        if (
+          !cleanup.lifecycleCommandsStopped ||
+          !cleanup.createWatcherStopped ||
+          !cleanup.gatewayStopped ||
+          (created && (!cleanup.sandboxDeleted || !cleanup.sandboxRegistryAbsent))
+        )
+          return false;
         try {
           return await helpers.removeDirectory(root);
         } catch (error) {

@@ -30,6 +30,8 @@ WORKERS = {
         "hermes-console-probe",
         "hermes-dashboard",
         "hermes-dashboard-probe",
+        "sitecustomize",
+        "hermes-browser-bootstrap",
     ),
 }
 

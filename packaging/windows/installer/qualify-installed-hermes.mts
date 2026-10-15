@@ -22,6 +22,21 @@ import { nativeCredentialBinding, readOpenedRegularFile } from "../runtime/nativ
 import { sampleInstalledIdle } from "../tests/performance/installed-idle.mts";
 import { sanitizeNativeDiagnostic } from "../runtime/native-session-diagnostics.mts";
 
+export function createHermesEvidenceDirectory(output: string) {
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  // Claim the leaf atomically; recursive mkdir would adopt a competing run's directory.
+  fs.mkdirSync(output, { mode: 0o700 });
+}
+
+export function readHermesDashboardReady(file: string, stateRoot: string, hostPid: number) {
+  const text = readOpenedRegularFile(file, {
+    encoding: "utf8",
+    maxBytes: 1024 * 1024,
+    rejectLinks: true,
+  });
+  return text === null ? null : validateHermesDashboardReady(JSON.parse(text), stateRoot, hostPid);
+}
+
 export function captureHermesNativeFailure(file: string, hostPid: number, secret: string) {
   const text = readOpenedRegularFile(file, {
     encoding: "utf8",
@@ -734,8 +749,7 @@ async function main() {
       !path.isAbsolute(outputFromRunnerTemp),
     "The observer output must remain beneath RUNNER_TEMP.",
   );
-  assert(!fs.existsSync(output));
-  fs.mkdirSync(output, { recursive: true });
+  createHermesEvidenceDirectory(output);
   const observerStopSentinel = path.join(
     output,
     `observer-stop-${randomBytes(32).toString("hex")}.sentinel`,
@@ -1029,9 +1043,9 @@ async function main() {
       assert.equal(guardian.exitCode, null);
       assert.equal(observer.exitCode, null);
       const file = path.join(session, "dashboard-ready.json");
-      if (fs.existsSync(file) && latest?.openEnabled) {
-        ready = JSON.parse(fs.readFileSync(file, "utf8"));
-        break;
+      if (latest?.openEnabled) {
+        ready = readHermesDashboardReady(file, results.stateRoot, latest.hostPid);
+        if (ready !== null) break;
       }
       await sleep(250);
     }

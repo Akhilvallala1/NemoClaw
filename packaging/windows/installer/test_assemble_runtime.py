@@ -421,9 +421,31 @@ class RuntimeAssembly(unittest.TestCase):
             )
         report = output / "bytecode.json"
         report.write_text(json.dumps(receipt))
-        self.assertEqual(
-            len(assembler.python_workers(self.workers, {"hermes": hermes})), 5
+        selected = assembler.python_workers(self.workers, {"hermes": hermes})
+        self.assertEqual(len(selected), 7)
+        self.assertIn(
+            "workers/hermes-browser-bootstrap.pyc", [destination for _, destination in selected]
         )
+        self.assertIn(
+            "workers/sitecustomize.pyc", [destination for _, destination in selected]
+        )
+        for name in ("sitecustomize", "hermes-browser-bootstrap"):
+            report.write_text(json.dumps({
+                **receipt,
+                "workers": [
+                    row for row in receipt["workers"]
+                    if row["worker"] != name + ".pyc"
+                ],
+            }))
+            with self.assertRaisesRegex(ValueError, "inventory changed"):
+                assembler.python_workers(self.workers, {"hermes": hermes})
+            report.write_text(json.dumps(receipt))
+            bootstrap = inputs / (name + ".py")
+            original = bootstrap.read_bytes()
+            bootstrap.write_text("# changed bootstrap\n")
+            with self.assertRaisesRegex(ValueError, "source-bound bytecode"):
+                assembler.python_workers(self.workers, {"hermes": hermes})
+            bootstrap.write_bytes(original)
         for observed in (None, "f" * 64):
             report.write_text(json.dumps({**receipt, "pythonSha256": observed}))
             with self.assertRaisesRegex(ValueError, "exact shipping Python"):

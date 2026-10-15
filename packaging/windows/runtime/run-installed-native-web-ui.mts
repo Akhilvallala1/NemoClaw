@@ -1138,12 +1138,17 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           "sandbox deletion",
           async () => {
             if (create)
-              await requestNativeUiSandboxDeletion(openshell, cliEnvironment, {
-                sandboxName,
-                gateway,
-                stateSession,
-                creationRejected: creation?.wasRejected(),
-              });
+              await requestNativeUiSandboxDeletion(
+                openshell,
+                cliEnvironment,
+                {
+                  sandboxName,
+                  gateway,
+                  stateSession,
+                  creationRejected: creation?.wasRejected(),
+                },
+                gatewaySession!.ownCommandProcess,
+              );
           },
         ],
         [
@@ -1157,11 +1162,16 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           "sandbox registry",
           async () => {
             if (!create) return;
-            await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
-              sandboxName,
-              gateway,
-              stateSession,
-            });
+            await confirmNativeUiRegistryEmpty(
+              openshell,
+              cliEnvironment,
+              {
+                sandboxName,
+                gateway,
+                stateSession,
+              },
+              gatewaySession!.ownCommandProcess,
+            );
           },
         ],
         [

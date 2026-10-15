@@ -11,6 +11,73 @@ import { test } from "node:test";
 import { command, commandPassed, fileIdentity } from "./probe-component-workload.mts";
 import { componentSandboxName } from "./probe-official-components.mts";
 
+for (const file of [
+  "./probe-official-components.mts",
+  "../performance/probe-installed-readonly.mts",
+]) {
+  for (const state of ["closed", "exit-only", "stop-failed", "sandbox-retained"]) {
+    test(`${file} retains owned roots until lifecycle commands close: ${state}`, async () => {
+      const source = fs.readFileSync(new URL(file, import.meta.url), "utf8");
+      const start = source.indexOf("    for (const child of lifecycleCommands) {");
+      const end = source.indexOf("    if (primaryError)", start);
+      assert(start > 0 && end > start);
+      const child = { pid: 1234, exitCode: 0 };
+      const lifecycleCommands = new Set([child]);
+      const removed: string[] = [];
+      const cleanup = {
+        lifecycleCommandsStopped: true,
+        createWatcherStopped: true,
+        gatewayStopped: true,
+        sandboxDeleted: state !== "sandbox-retained",
+        sandboxRegistryAbsent: state !== "sandbox-retained",
+        ownedRootsRemoved: false,
+      };
+      const execute = new Function(
+        "lifecycleCommands",
+        "helpers",
+        "cleanup",
+        "cleanupErrors",
+        "errorDetail",
+        "logHandles",
+        "fs",
+        "createdRoots",
+        "created",
+        "path",
+        "evidenceRoot",
+        `return (async () => {${source.slice(start, end)}})();`,
+      );
+      await execute(
+        lifecycleCommands,
+        {
+          async stopChild() {
+            if (state === "closed" || state === "sandbox-retained") lifecycleCommands.delete(child);
+            return state !== "stop-failed";
+          },
+          async removeDirectory(root: string) {
+            removed.push(root);
+            return true;
+          },
+        },
+        cleanup,
+        [],
+        () => ({}),
+        [],
+        { existsSync: () => false },
+        ["owned-probe-root"],
+        true,
+        path,
+        "owned-evidence",
+      );
+      assert.equal(
+        cleanup.lifecycleCommandsStopped,
+        state === "closed" || state === "sandbox-retained",
+      );
+      assert.equal(cleanup.ownedRootsRemoved, state === "closed");
+      assert.deepEqual(removed, state === "closed" ? ["owned-probe-root"] : []);
+    });
+  }
+}
+
 test("generated component names satisfy the installed OpenShell routable-name contract", () => {
   const names = ["0123456789abcdef01234567", "fedcba9876543210fedcba98"].map(componentSandboxName);
   for (const name of names) {

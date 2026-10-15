@@ -17,7 +17,7 @@ export function nativeWorkerApiFixture(root: string, mockPort: number): string {
   );
   fs.writeFileSync(
     path.join(portableRuntime, "native-local-pipe.mts"),
-    `export { readNativeBrokerBootstrap } from "./native-local-pipe-original.mts";
+    `export { readNativeBrokerBootstrap, requestNativeBrokerBootstrap } from "./native-local-pipe-original.mts";
 export function nativeLocalPipeName(port) {
   if (port !== ${mockPort}) throw new Error("Unexpected fixture pipe port");
   return ${JSON.stringify(path.join(root, "mock.sock"))};

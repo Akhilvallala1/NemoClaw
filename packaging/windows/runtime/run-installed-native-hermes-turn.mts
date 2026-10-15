@@ -4,6 +4,8 @@
 import { fileURLToPath as nativeEntryFile } from "node:url";
 declare const NEMOCLAW_BUNDLED_RUNTIME: boolean | undefined;
 import { nativeWorkerAssets } from "./native-assets.mts";
+import { hermesInferencePipePythonSource } from "./native-hermes-inference-pipe.mts";
+import { hermesPipeLoopPythonSource } from "./native-hermes-pipe-loop.mts";
 import { NativeGatewaySession } from "./native-gateway-session.mts";
 import { createPrivateShareRoot } from "./native-private-share.mts";
 import {
@@ -94,6 +96,7 @@ export function hermesWorkloadSource() {
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import { nativeLocalPipeName } from "./native-local-pipe.mts";
 
 const required = (name) => {
   const value = process.env[name];
@@ -104,6 +107,8 @@ const home = required("NEMOCLAW_HERMES_HOME_ROOT");
 const hermesHome = join(home, ".hermes");
 const python = required("NEMOCLAW_HERMES_PYTHON");
 const modelPort = Number(required("NEMOCLAW_HERMES_MODEL_PORT"));
+if (required("NEMOCLAW_HERMES_INFERENCE_PIPE_PORT") !== String(modelPort))
+  throw new Error("The Hermes qualification inference pipe declaration does not match.");
 const resultPath = required("NEMOCLAW_HERMES_RESULT");
 const turnProofs = [
   ["Reply exactly with NATIVE_HERMES_TURN_1_OK", "NATIVE_HERMES_TURN_1_OK"],
@@ -157,7 +162,7 @@ const model = createServer(async (request, response) => {
 });
 await new Promise((resolve, reject) => {
   model.once("error", reject);
-  model.listen(modelPort, "127.0.0.1", resolve);
+  model.listen(nativeLocalPipeName(modelPort), resolve);
 });
 mkdirSync(hermesHome, { recursive: true });
 writeFileSync(join(hermesHome, "config.yaml"), [
@@ -211,6 +216,8 @@ writeFileSync(runner, [
   "    raise RuntimeError('Multipart accepted an extended parameter override')",
   "from hermes_cli import __version__ as _hermes_version",
   "if _hermes_version != '0.21.1': raise RuntimeError('The official Hermes runtime version does not match its installation')",
+  ...${JSON.stringify(hermesPipeLoopPythonSource())},
+  ...${JSON.stringify(hermesInferencePipePythonSource())},
   "from hermes_cli.main import main",
   "main()",
   "",
@@ -234,6 +241,7 @@ const execute = (prompt) => new Promise((resolve, reject) => {
       HOME: home,
       PYTHONDONTWRITEBYTECODE: "1",
       PYTHONNOUSERSITE: "1",
+      PYTHONPATH: required("NEMOCLAW_WORKER_ROOT"),
       PYTHONUTF8: "1",
       USERPROFILE: home,
     },
@@ -386,7 +394,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       installRoot,
       runRoot,
       runtimeLease,
-      {},
+      { network: { kind: "supervised" } },
       gatewaySession,
     );
     // MXC adds its container-specific grant from filesystem_policy after this host boundary is set.
@@ -403,6 +411,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     const agentEnvironment = {
       NEMOCLAW_HERMES_HOME_ROOT: path.join(shareRoot, "home"),
       NEMOCLAW_HERMES_MODEL_PORT: "",
+      NEMOCLAW_HERMES_INFERENCE_PIPE_PORT: "",
       NEMOCLAW_HERMES_PYTHON: requiredFile(runtimeLease.python, "staged Python runtime"),
       NEMOCLAW_HERMES_RESULT: path.join(shareRoot, "hermes-result.json"),
     };
@@ -433,6 +442,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     const openShellPort = await freePort();
     const modelPort = await freePort();
     agentEnvironment.NEMOCLAW_HERMES_MODEL_PORT = String(modelPort);
+    agentEnvironment.NEMOCLAW_HERMES_INFERENCE_PIPE_PORT = String(modelPort);
     const gatewayLog = fs.openSync(gatewayLogPath, "w");
     ownedLogs.add(gatewayLog);
     const gatewayError = fs.openSync(gatewayErrorPath, "w");
@@ -474,12 +484,18 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       ["gateway", "add", `https://127.0.0.1:${openShellPort}`, "--local", "--name", gatewayName],
       cliEnvironment,
       `Registering the native ${agentLabel} gateway`,
+      undefined,
+      undefined,
+      gatewaySession.ownCommandProcess,
     );
     await run(
       openshell,
       ["gateway", "select", gatewayName],
       cliEnvironment,
       `Selecting the native ${agentLabel} gateway`,
+      undefined,
+      undefined,
+      gatewaySession.ownCommandProcess,
     );
     const sandboxEnvironment = {
       ...worker.environment,
@@ -503,6 +519,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       USERPROFILE: home,
       WINDIR: systemRoot,
     };
+    const workloadCommand = nativeRuntimeWorkerCommand(runtimeLease, workload);
     const createArgs = [
       "sandbox",
       "create",
@@ -513,14 +530,17 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       "--driver-config-json",
       JSON.stringify({
         mxc: {
-          command: nativeRuntimeWorkerCommand(runtimeLease, workload),
+          command: workloadCommand,
           cwd: shareRoot,
+          loopback_pipe_ports: [modelPort],
         },
       }),
       "--no-tty",
+      "--detach",
     ];
     for (const [name, value] of Object.entries(sandboxEnvironment))
       createArgs.push("--env", `${name}=${value}`);
+    createArgs.push("--", ...workloadCommand);
     console.log(
       `${agentLabel.toUpperCase()}> Launching the real ${agentLabel} runtime inside native MXC`,
     );
@@ -572,6 +592,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       sandboxName,
       gateway,
       runtimeLease,
+      undefined,
+      gatewaySession.ownCommandProcess,
     );
     if (completion === "ExecFailed" || completion === "MainProcessFailed")
       fail(`The native ${agentLabel} execution failed`);
@@ -580,14 +602,18 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       ["sandbox", "delete", sandboxName],
       cliEnvironment,
       `Deleting the native ${agentLabel} sandbox`,
+      undefined,
+      undefined,
+      gatewaySession.ownCommandProcess,
     );
     if (create !== null && !(await stopChild(create)))
       fail(`${agentLabel} sandbox request watcher did not stop`);
-    await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
-      sandboxName,
-      gateway,
-      stateSession: runtimeLease,
-    });
+    await confirmNativeUiRegistryEmpty(
+      openshell,
+      cliEnvironment,
+      { sandboxName, gateway, stateSession: runtimeLease },
+      gatewaySession.ownCommandProcess,
+    );
     if (!(await gatewaySession.stopGateway())) fail("OpenShell MXC gateway did not stop");
     await gatewaySession.dispose();
     fs.closeSync(gatewayLog);
@@ -621,6 +647,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
     primaryFailed = true;
     throw error;
   } finally {
+    let requestStopped = false;
+    let gatewayCleanupConfirmed = false;
     const failures = await attemptNativeUiCleanup([
       [
         "private share creator stop",
@@ -632,7 +660,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
       [
         "sandbox request stop",
         async () => {
-          if (create?.pid && !(await stopChild(create))) throw new Error();
+          requestStopped = !create?.pid || (await stopChild(create));
+          if (!requestStopped) throw new Error();
         },
       ],
       [
@@ -645,6 +674,8 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
               cliEnvironment,
               `Failure cleanup native ${agentLabel} sandbox`,
               30_000,
+              undefined,
+              gatewaySession.ownCommandProcess,
             );
         },
       ],
@@ -652,11 +683,12 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
         "sandbox registry verification",
         async () => {
           if (!passed && create && cliEnvironment)
-            await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
-              sandboxName,
-              gateway,
-              stateSession: runtimeLease,
-            });
+            await confirmNativeUiRegistryEmpty(
+              openshell,
+              cliEnvironment,
+              { sandboxName, gateway, stateSession: runtimeLease },
+              gatewaySession.ownCommandProcess,
+            );
         },
       ],
       [
@@ -665,7 +697,13 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           if (gateway?.pid && !(await gatewaySession.stopGateway())) throw new Error();
         },
       ],
-      ["private gateway cleanup", () => gatewaySession.dispose()],
+      [
+        "private gateway cleanup",
+        async () => {
+          await gatewaySession.dispose();
+          gatewayCleanupConfirmed = true;
+        },
+      ],
       ...[...ownedLogs].map(
         (descriptor) =>
           [
@@ -713,6 +751,7 @@ async function mainInternal(runtimeLease: NativeRuntimeSession) {
           [
             "temporary root removal: " + path.basename(directory),
             async () => {
+              if (!requestStopped || !gatewayCleanupConfirmed) throw new Error();
               if (directory === shareRoot && !shareCreatorStopped) throw new Error();
               if (!(await removeDirectory(directory))) throw new Error();
             },

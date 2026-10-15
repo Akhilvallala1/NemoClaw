@@ -63,6 +63,64 @@ export function renderFactory(root: string, file: string, name: string) {
   const hermesDashboardPythonSource = Function(
     helperJs + "\nreturn hermesDashboardPythonSource;",
   )();
+  const inference = parse(
+    "native-hermes-inference-pipe.mts",
+    fs.readFileSync(path.join(root, "native-hermes-inference-pipe.mts"), "utf8"),
+  );
+  const inferenceHelpers = all(inference, ts.isFunctionDeclaration).filter(
+    (node) => node.name?.text === "hermesInferencePipePythonSource",
+  );
+  if (inferenceHelpers.length !== 1)
+    throw new Error("The reviewed Hermes inference pipe source is missing or ambiguous.");
+  const inferenceJs = ts.transpileModule(
+    inferenceHelpers[0].getText(inference).replace(/^export\s+/u, ""),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const hermesInferencePipePythonSource = Function(
+    inferenceJs + "\nreturn hermesInferencePipePythonSource;",
+  )();
+  const pipeLoop = parse(
+    "native-hermes-pipe-loop.mts",
+    fs.readFileSync(path.join(root, "native-hermes-pipe-loop.mts"), "utf8"),
+  );
+  const loopHelpers = all(pipeLoop, ts.isFunctionDeclaration).filter(
+    (node) => node.name?.text === "hermesPipeLoopPythonSource",
+  );
+  if (loopHelpers.length !== 1)
+    throw new Error("The reviewed Hermes pipe event-loop source is missing or ambiguous.");
+  const loopJs = ts.transpileModule(loopHelpers[0].getText(pipeLoop).replace(/^export\s+/u, ""), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const hermesPipeLoopPythonSource = Function(loopJs + "\nreturn hermesPipeLoopPythonSource;")();
+  const browser = parse(
+    "native-hermes-browser-pipe.mts",
+    fs.readFileSync(path.join(root, "native-hermes-browser-pipe.mts"), "utf8"),
+  );
+  const browserHelpers = all(browser, ts.isFunctionDeclaration).filter(
+    (node) => node.name?.text === "hermesBrowserPipePythonSource",
+  );
+  if (browserHelpers.length !== 1)
+    throw new Error("The reviewed Hermes browser pipe source is missing or ambiguous.");
+  const browserJs = ts.transpileModule(
+    browserHelpers[0].getText(browser).replace(/^export\s+/u, ""),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const hermesBrowserPipePythonSource = Function(
+    browserJs + "\nreturn hermesBrowserPipePythonSource;",
+  )();
+  const browserIpc = parse(
+    "native-hermes-browser-ipc.mts",
+    fs.readFileSync(path.join(root, "native-hermes-browser-ipc.mts"), "utf8"),
+  );
+  const ipcHelpers = all(browserIpc, ts.isFunctionDeclaration).filter(
+    (node) => node.name?.text === "hermesBrowserIpcPythonSource",
+  );
+  if (ipcHelpers.length !== 1)
+    throw new Error("The reviewed Hermes browser IPC source is missing or ambiguous.");
+  const ipcJs = ts.transpileModule(ipcHelpers[0].getText(browserIpc).replace(/^export\s+/u, ""), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const hermesBrowserIpcPythonSource = Function(ipcJs + "\nreturn hermesBrowserIpcPythonSource;")();
   const options = parse(
     "native-options.mts",
     fs.readFileSync(path.join(root, "native-options.mts"), "utf8"),
@@ -81,9 +139,31 @@ export function renderFactory(root: string, file: string, name: string) {
   const nativeHermesConfiguration = Function(
     configurationJs + "\nreturn nativeHermesConfiguration;",
   )();
+  let nativeHermesMessagingArguments;
+  if (name === "interactiveWorkloadSource") {
+    const messaging = all(source, ts.isFunctionDeclaration).filter(
+      (node) => node.name?.text === "nativeHermesMessagingArguments",
+    );
+    if (messaging.length !== 1)
+      throw new Error("The reviewed Hermes messaging preflight is missing or ambiguous.");
+    const messagingJs = ts.transpileModule(
+      messaging[0].getText(source).replace(/^export\s+/u, ""),
+      {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      },
+    ).outputText;
+    nativeHermesMessagingArguments = Function(
+      messagingJs + "\nreturn nativeHermesMessagingArguments;",
+    )();
+  }
   const value = evaluateBuildExpression("(" + code + ")()", {
     hermesDashboardPythonSource,
+    hermesInferencePipePythonSource,
+    hermesPipeLoopPythonSource,
+    hermesBrowserPipePythonSource,
+    hermesBrowserIpcPythonSource,
     nativeHermesConfiguration,
+    nativeHermesMessagingArguments,
   });
   if (typeof value !== "string" || Buffer.byteLength(value) > 256 * 1024)
     throw new Error("Invalid build-time worker source.");
@@ -226,6 +306,30 @@ export async function buildNativeWorkers(
         .digest("hex"),
     );
   }
+  assets.set(
+    "sitecustomize.py",
+    renderFactory(runtimeSource, "native-hermes-bootstrap.mts", "hermesBootstrapPythonSource"),
+  );
+  assets.set(
+    "hermes-browser-bootstrap.py",
+    renderFactory(
+      runtimeSource,
+      "native-hermes-browser-bootstrap.mts",
+      "hermesBrowserBootstrapPythonSource",
+    ),
+  );
+  inputs.set(
+    "native-hermes-browser-bootstrap.mts",
+    createHash("sha256")
+      .update(fs.readFileSync(path.join(runtimeSource, "native-hermes-browser-bootstrap.mts")))
+      .digest("hex"),
+  );
+  inputs.set(
+    "native-hermes-bootstrap.mts",
+    createHash("sha256")
+      .update(fs.readFileSync(path.join(runtimeSource, "native-hermes-bootstrap.mts")))
+      .digest("hex"),
+  );
   const common = {
     define: { NEMOCLAW_BUNDLED_RUNTIME: "true" },
     bundle: true,

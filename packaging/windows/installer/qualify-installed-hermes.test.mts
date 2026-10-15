@@ -11,6 +11,8 @@ import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import { acceptanceProcessesStopped } from "./qualify-finished-package.mts";
 import {
+  createHermesEvidenceDirectory,
+  readHermesDashboardReady,
   recordedHermesTerminal,
   hermesInstalledToolCommand,
   hermesInstalledCodeCommand,
@@ -35,6 +37,121 @@ import {
   validateHermesInstalledConfiguration,
   validateHermesFailureNoticeClosure,
 } from "./qualify-installed-hermes.mts";
+
+test("Hermes evidence creation never adopts another run's directory", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-evidence-"));
+  const output = path.join(root, "nested", "output");
+  try {
+    createHermesEvidenceDirectory(output);
+    const retained = path.join(output, "retained.txt");
+    fs.writeFileSync(retained, "other run");
+    assert.throws(() => createHermesEvidenceDirectory(output), { code: "EEXIST" });
+    assert.equal(fs.readFileSync(retained, "utf8"), "other run");
+    const competing = path.join(root, "competing");
+    const mkdir = fs.mkdirSync;
+    t.mock.method(fs, "mkdirSync", (target: fs.PathLike, ...options: unknown[]) => {
+      if (target === competing) mkdir(competing);
+      return Reflect.apply(mkdir, fs, [target, ...options]);
+    });
+    assert.throws(() => createHermesEvidenceDirectory(competing), { code: "EEXIST" });
+    assert(fs.statSync(competing).isDirectory());
+  } finally {
+    t.mock.restoreAll();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function dashboardReadyFixture() {
+  return {
+    schemaVersion: 1,
+    classification: "native-hermes-dashboard-qualification",
+    agent: "hermes",
+    sessionId: "0123456789",
+    nodeProcessId: 42,
+    gatewayProcessId: 43,
+    agentRuntimeRoot: "C:\\NemoClawState-S-1-5-21-1000-hermes",
+  };
+}
+
+test("Hermes readiness waits only for absence and rejects invalid or oversized evidence", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-readiness-"));
+  const file = path.join(root, "ready.json");
+  const ready = dashboardReadyFixture();
+  const read = () => readHermesDashboardReady(file, ready.agentRuntimeRoot, 42);
+  try {
+    assert.equal(read(), null);
+    fs.writeFileSync(file, JSON.stringify(ready));
+    assert.deepEqual(read(), ready);
+    for (const content of ["", "{", "null", JSON.stringify({ ...ready, nodeProcessId: 99 })]) {
+      fs.writeFileSync(file, content);
+      assert.throws(read);
+    }
+    fs.writeFileSync(file, JSON.stringify(ready) + " ".repeat(1024 * 1024));
+    assert.throws(read, /exceeds its limit/u);
+    assert.throws(() => readHermesDashboardReady(root, ready.agentRuntimeRoot, 42));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Hermes readiness propagates access denial instead of treating it as not ready", (t) => {
+  const denied = Object.assign(new Error("controlled access denial"), { code: "EACCES" });
+  t.mock.method(fs, "openSync", () => {
+    throw denied;
+  });
+  assert.throws(
+    () => readHermesDashboardReady("denied.json", "state", 42),
+    (e) => e === denied,
+  );
+});
+
+test("Hermes readiness rejects a replacement before identity validation and closes its handle", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-readiness-"));
+  const file = path.join(root, "ready.json");
+  const replacement = path.join(root, "replacement.json");
+  const ready = dashboardReadyFixture();
+  const lstat = fs.lstatSync;
+  const close = fs.closeSync;
+  try {
+    fs.writeFileSync(file, JSON.stringify(ready));
+    fs.writeFileSync(replacement, JSON.stringify({ ...ready, nodeProcessId: 99 }));
+    const closing = t.mock.method(fs, "closeSync", close);
+    t.mock.method(fs, "lstatSync", (target: fs.PathLike) => {
+      if (target === file) fs.renameSync(replacement, file);
+      return lstat(target);
+    });
+    assert.throws(
+      () => readHermesDashboardReady(file, ready.agentRuntimeRoot, 42),
+      /changed identity/u,
+    );
+    assert.equal(closing.mock.callCount(), 1);
+  } finally {
+    t.mock.restoreAll();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Hermes readiness reads the held file when its path changes after validation", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-readiness-"));
+  const file = path.join(root, "ready.json");
+  const replacement = path.join(root, "replacement.json");
+  const ready = dashboardReadyFixture();
+  const lstat = fs.lstatSync;
+  try {
+    fs.writeFileSync(file, JSON.stringify(ready));
+    fs.writeFileSync(replacement, JSON.stringify({ ...ready, nodeProcessId: 99 }));
+    t.mock.method(fs, "lstatSync", (target: fs.PathLike) => {
+      const info = lstat(target);
+      if (target === file) fs.renameSync(replacement, file);
+      return info;
+    });
+    assert.deepEqual(readHermesDashboardReady(file, ready.agentRuntimeRoot, 42), ready);
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).nodeProcessId, 99);
+  } finally {
+    t.mock.restoreAll();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function failureNoticeClosureFixture() {
   const observation = {
@@ -391,7 +508,7 @@ for (const existing of ["configuration", "agent-data"])
     };
     const main = new Function(
       ...Object.keys(bindings),
-      `${stripTypeScriptTypes(body)}\nreturn main;`,
+      `${createHermesEvidenceDirectory.toString()}\n${stripTypeScriptTypes(body)}\nreturn main;`,
     )(...Object.values(bindings));
     await assert.rejects(
       main(),

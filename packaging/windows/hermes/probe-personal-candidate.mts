@@ -24,6 +24,7 @@ import {
   validateNativeUiPolicyLog,
   validateNativeUiMarkerLog,
   validateNativePolicyLog,
+  readNativeExecutionLog,
 } from "../mxc-bash/bash-compat.mts";
 
 export function validateBrowserUseLaunch(
@@ -835,9 +836,11 @@ function observePersonalNativeExecution(
 ) {
   assert.equal(fileIdentity(binding.policyFile).sha256, binding.requestSha256);
   const logFile = path.join(path.dirname(binding.policyFile), "mxc-native.log");
-  const stat = fs.lstatSync(logFile);
-  assert(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0 && stat.size <= 4 * 1024 * 1024);
-  return inspectPersonalNativeExecution(execution, binding, fs.readFileSync(logFile, "utf8"));
+  return inspectPersonalNativeExecution(
+    execution,
+    binding,
+    readNativeExecutionLog(logFile).toString("utf8"),
+  );
 }
 
 export function desktopAbsenceRequest(initial: any) {

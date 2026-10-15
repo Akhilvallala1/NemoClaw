@@ -9,23 +9,46 @@ export function nativeLocalPipeName(port: number): string {
   return String.raw`\\.\pipe\LOCAL\OpenShell-Loopback-${port}`;
 }
 
-export async function readNativeBrokerBootstrap(port: number, token: string): Promise<unknown> {
+export async function requestNativeBrokerBootstrap(
+  port: number,
+  token: string | null,
+  signal?: AbortSignal,
+): Promise<{ status: number; body: unknown }> {
   const socketPath = nativeLocalPipeName(port);
-  if (!/^[A-Za-z0-9_-]{32,128}$/u.test(token))
+  if (token !== null && (typeof token !== "string" || !/^[A-Za-z0-9_-]{32,128}$/u.test(token)))
     throw new Error("The native broker bootstrap identity is invalid.");
+  signal?.throwIfAborted();
   return await new Promise((resolve, reject) => {
+    let result: { status: number; body: unknown } | undefined;
+    let failure: Error | undefined;
     const request = http.request({
       socketPath,
       path: "/native/bootstrap",
       method: "POST",
-      headers: { authorization: `Bearer ${token}` },
+      agent: false,
+      headers: token === null ? {} : { authorization: `Bearer ${token}` },
     });
     const timer = setTimeout(
-      () => request.destroy(new Error("The native broker bootstrap timed out.")),
+      () =>
+        request.destroy(
+          Object.assign(new Error("The native broker bootstrap timed out."), { code: "ETIMEDOUT" }),
+        ),
       15_000,
     );
-    request.once("close", () => clearTimeout(timer));
-    request.once("error", reject);
+    const abort = () =>
+      request.destroy(
+        Object.assign(new Error("The native broker bootstrap was stopped."), { code: "ABORT_ERR" }),
+      );
+    request.once("close", () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (failure) reject(failure);
+      else if (result) resolve(result);
+      else reject(new Error("The native broker bootstrap closed before completion."));
+    });
+    request.once("error", (error) => {
+      failure = error;
+    });
     request.once("response", (response) => {
       const chunks: Buffer[] = [];
       let length = 0;
@@ -35,19 +58,37 @@ export async function readNativeBrokerBootstrap(port: number, token: string): Pr
           request.destroy(new Error("The native broker bootstrap reply is too large."));
         else chunks.push(chunk);
       });
-      response.once("error", reject);
+      response.once("error", (error) => request.destroy(error));
+      response.once("aborted", () =>
+        request.destroy(new Error("The native broker bootstrap reply was interrupted.")),
+      );
       response.once("end", () => {
-        if (response.statusCode !== 200) {
-          reject(new Error("The native broker bootstrap request failed."));
-          return;
-        }
         try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          result = {
+            status: response.statusCode ?? 0,
+            body:
+              response.statusCode === 200
+                ? JSON.parse(
+                    new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
+                  )
+                : null,
+          };
+          request.destroy();
         } catch {
-          reject(new Error("The native broker bootstrap reply is invalid."));
+          request.destroy(new Error("The native broker bootstrap reply is invalid."));
         }
       });
     });
-    request.end();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    else request.end();
   });
+}
+
+export async function readNativeBrokerBootstrap(port: number, token: string): Promise<unknown> {
+  if (typeof token !== "string")
+    throw new Error("The native broker bootstrap identity is invalid.");
+  const result = await requestNativeBrokerBootstrap(port, token);
+  if (result.status !== 200) throw new Error("The native broker bootstrap request failed.");
+  return result.body;
 }

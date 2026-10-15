@@ -138,6 +138,7 @@ def validate_build_receipt(build):
     if (
         build.get("status") != "runtime-provisioned"
         or build.get("installedTier") != "hash-verified (uv.lock)"
+        or build.get("selectedPythonExtras") != ["all", "messaging"]
     ):
         raise ValueError(
             "The complete official runtime has not passed locked provisioning"

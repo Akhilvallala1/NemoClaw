@@ -10,6 +10,42 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const LIMIT = 256 * 1024;
+// This file is copied as a standalone guest controller. Keep its host-only log
+// reader here so Personal and Bash evidence use the same held-file contract.
+export function readNativeExecutionLog(file: string): Buffer {
+  const maximum = 4 * 1024 * 1024;
+  const descriptor = fs.openSync(file, "r");
+  try {
+    const opened = fs.fstatSync(descriptor);
+    const named = fs.lstatSync(file);
+    assert(
+      opened.isFile() &&
+        named.isFile() &&
+        !named.isSymbolicLink() &&
+        opened.dev === named.dev &&
+        opened.ino === named.ino,
+      "The native execution log is not an ordinary held file.",
+    );
+    assert(
+      opened.size > 0 && opened.size <= maximum,
+      "The native execution log exceeds its byte bounds.",
+    );
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for (;;) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, maximum - bytes + 1));
+      const count = fs.readSync(descriptor, chunk, 0, chunk.length, null);
+      if (count === 0) break;
+      bytes += count;
+      assert(bytes <= maximum, "The native execution log exceeds its byte bounds.");
+      chunks.push(chunk.subarray(0, count));
+    }
+    assert(bytes > 0, "The native execution log is empty.");
+    return Buffer.concat(chunks, bytes);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
 const sha = (file: string) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 const argument = (name: string) => {
   const i = process.argv.indexOf(name);
@@ -1470,9 +1506,7 @@ async function main() {
   };
   const observeNativeExecution = (value: (typeof executions)[number]) => {
     assert(value.process.closed);
-    const logStat = fs.lstatSync(value.logFile);
-    assert(logStat.isFile() && !logStat.isSymbolicLink() && logStat.size <= 4 * 1024 * 1024);
-    const log = fs.readFileSync(value.logFile);
+    const log = readNativeExecutionLog(value.logFile);
     const jobTeardown = validateNativeJobTeardownLog(log.toString("utf8"));
     report.nativeExecutions[value.c.containerId] = {
       logSha256: createHash("sha256").update(log).digest("hex"),

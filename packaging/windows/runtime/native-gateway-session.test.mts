@@ -173,7 +173,7 @@ for (const fault of [
   });
 }
 
-test("gateway command owner retains the session until its command exits", async (t) => {
+test("gateway command owner retains the session until its command pipes close", async (t) => {
   const session = new NativeGatewaySession(
     path.resolve("owned-install"),
     path.resolve("owned-run"),
@@ -193,6 +193,10 @@ test("gateway command owner retains the session until its command exits", async 
     t.mock.timers.tick(5000);
     await disposal;
     child.exitCode = 0;
+    child.emit("exit", 0, null);
+    await assert.rejects(session.dispose(), /command pipes did not close/u);
+    assert.doesNotThrow(() => session.ownCommandProcess);
+    child.emit("close", 0, null);
     await session.dispose();
     assert.throws(() => session.ownCommandProcess, /disposed/u);
   } finally {

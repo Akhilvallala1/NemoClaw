@@ -3,6 +3,7 @@
 """Use the installed Browser Use module entry instead of uv's path trampoline."""
 
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import sys
@@ -17,6 +18,29 @@ CLI = "tools/browser-use/Lib/site-packages/browser_use/cli.py"
 CLI_SHA256 = "9a52306f028230fa471b0887e81b0ab4eccc15dc26be4b0b152bb001ba2977ef"
 PYTHON = "tools/browser-use/Scripts/python.exe"
 _installed_root = None
+
+
+def _install_pipe_bootstrap(root, native):
+    if "NEMOCLAW_HERMES_BROWSER_PIPE_PORT" not in os.environ:
+        return
+    python = native._regular_file(root / PYTHON, root)
+    if not native._same_path(Path(sys.executable), python):
+        return
+    workers = root.parent / "workers"
+    declared = os.environ.get("NEMOCLAW_WORKER_ROOT")
+    if not declared or not native._same_path(Path(declared), workers):
+        native._refuse("the contained Browser Use worker root differs from its runtime.")
+    bootstrap = native._regular_file(
+        workers / "hermes-browser-bootstrap.pyc", workers, native._runtime_volume_mount(root)
+    )
+    spec = importlib.util.spec_from_file_location("_nemoclaw_browser_bootstrap", bootstrap)
+    if spec is None or spec.loader is None:
+        native._refuse("the contained Browser Use bootstrap is unavailable.")
+    try:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        native._refuse("the contained Browser Use bootstrap could not be loaded.")
 
 
 def adapt(module, root, native):
@@ -84,6 +108,10 @@ def install():
     # Reuse the existing origin-checked loader rather than adding another finder.
     native._MODULES[MODULE] = RELATIVE
     native._adapt_module = adapt_module
+    try:
+        _install_pipe_bootstrap(root, native)
+    except Exception:
+        native._refuse("the contained Browser Use startup could not be initialized.")
     _installed_root = root
     if _installed_root != root:
         native._refuse("the Browser Use startup runtime was not retained.")

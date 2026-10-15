@@ -29,6 +29,8 @@ import { NATIVE_EXPRESS } from "./native-inference-manifest.mts";
 import { interactiveWorkloadSource } from "./run-installed-native-console-agent.mts";
 import type { NativeOptions } from "./native-options.mts";
 import { hermesDashboardPythonSource } from "./native-hermes-dashboard.mts";
+import { hermesInferencePipePythonSource } from "./native-hermes-inference-pipe.mts";
+import { hermesPipeLoopPythonSource } from "./native-hermes-pipe-loop.mts";
 import {
   buildNativeWorkers,
   renderFactory,
@@ -276,11 +278,13 @@ test("compiled native workers expose only retained agent modes", async (t) => {
     "inference",
   ]);
   assert.deepEqual(fs.readdirSync(path.join(output, "python-build-inputs")).sort(), [
+    "hermes-browser-bootstrap.py",
     "hermes-console-probe.py",
     "hermes-console.py",
     "hermes-dashboard-probe.py",
     "hermes-dashboard.py",
     "hermes-turn.py",
+    "sitecustomize.py",
   ]);
 });
 
@@ -519,7 +523,7 @@ test("actual console and turn driver configs prefix Hermes only and retain their
     "run-installed-native-hermes-turn.mts",
   ]) {
     const source = fs.readFileSync(new URL(file, import.meta.url), "utf8");
-    const start = source.indexOf("const createArgs = [");
+    const start = source.indexOf("const workloadCommand = nativeRuntimeWorkerCommand(");
     const end = source.indexOf("console.log(", start);
     assert(start >= 0 && end > start);
     for (const agent of ["hermes"] as const) {
@@ -539,6 +543,10 @@ test("actual console and turn driver configs prefix Hermes only and retain their
         agentRuntimeRoot: "held-state-root",
         shareRoot: "existing-turn-share",
         dashboard: false,
+        modelPort: 21000,
+        inferencePipePort: 21000,
+        browserPipePort: 21001,
+        dashboardPipePort: 21002,
         environment,
         sandboxEnvironment: environment,
         gatewaySession: { kind: "owned-session-fixture" },
@@ -556,7 +564,11 @@ test("actual console and turn driver configs prefix Hermes only and retain their
         driver.cwd,
         file.includes("console") ? "held-state-root" : "existing-turn-share",
       );
-      assert.deepEqual(Object.keys(driver).sort(), ["command", "cwd"]);
+      assert.deepEqual(Object.keys(driver).sort(), ["command", "cwd", "loopback_pipe_ports"]);
+      assert.deepEqual(
+        driver.loopback_pipe_ports,
+        file.includes("console") ? [21000, 21001] : [21000],
+      );
       const passedEnvironment = Object.fromEntries(
         args.flatMap((value, i) =>
           value === "--env" ? [args[i + 1].split(/=(.*)/su).slice(0, 2)] : [],
@@ -594,11 +606,8 @@ test("actual console and turn driver configs prefix Hermes only and retain their
             return "owned-gateway-config";
           },
         });
-        const console = file.includes("console");
-        assert(rendered.includes("pc_host_console = false\n"));
-        assert(rendered.includes(`pc_network_allow = ${console}\n`));
-        assert(rendered.includes(`pc_allow_local_network = ${console}\n`));
-        assert(rendered.includes("pc_loopback_ports = []\n"));
+        assert(!/pc_host_console|pc_network_allow|pc_loopback_ports/u.test(rendered));
+        assert(rendered.includes("pc_allow_local_network = false\n"));
         if (agent === "hermes") assert(rendered.includes("mxc-compat"));
         else assert(!rendered.includes("mxc-compat"));
       }
@@ -728,6 +737,9 @@ test("installed Hermes query modes bind both held owners and remain host or gues
       worker: { environment: { NEMOCLAW_WORKER_MODE: "interactive" } },
       agentRuntimeRoot,
       runId: "fixture",
+      inferencePipePort: 21000,
+      browserPipePort: 21001,
+      dashboardPipePort: 21002,
       bootstrapPath: "bootstrap",
       statusRoot: "status",
       brokerRelayRoot: "broker",
@@ -899,6 +911,7 @@ test("prebuilt Hermes worker keeps canonical Node instead of overwriting it with
     dashboard: false,
     process: { env: {} },
     required(name: string) {
+      if (name === "NEMOCLAW_WORKER_ROOT") return "C:\\sealed\\workers";
       assert.equal(name, "HERMES_NODE");
       return tools.node;
     },
@@ -906,6 +919,7 @@ test("prebuilt Hermes worker keeps canonical Node instead of overwriting it with
   runInNewContext(source.slice(start, end), context);
   assert.equal(context.extraEnvironment.HERMES_NODE, tools.node);
   assert.equal(context.extraEnvironment.HERMES_PYTHON, tools.python);
+  assert.equal(context.extraEnvironment.PYTHONPATH, "C:\\sealed\\workers");
   context.required = () => {
     throw new Error("canonical Node missing");
   };
@@ -938,6 +952,7 @@ test("Hermes turn-only worker also preserves the held canonical tool environment
   assert(functionStart >= 0 && functionEnd > functionStart);
   const source = runInNewContext(
     owner.slice(functionStart, functionEnd) + "\nhermesWorkloadSource()",
+    { hermesInferencePipePythonSource, hermesPipeLoopPythonSource },
   ) as string;
   const start = source.indexOf("    env: {");
   const end = source.indexOf('    stdio: ["ignore", "pipe", "pipe"]', start);
@@ -951,13 +966,15 @@ test("Hermes turn-only worker also preserves the held canonical tool environment
     hermesHome: "C:\\state\\.hermes",
     home: "C:\\state",
     python: tools.python,
-    required: () => tools.node,
+    required: (name: string) =>
+      name === "NEMOCLAW_WORKER_ROOT" ? "C:\\sealed\\workers" : tools.node,
   };
   const evaluate = "result = ({" + source.slice(start, end) + "}).env";
   runInNewContext(evaluate, context);
   assert.equal(context.result.HERMES_NODE, tools.node);
   assert.equal(context.result.HERMES_GIT_BASH_PATH, tools.bash);
   assert.equal(context.result.PATH, tools.environment.PATH);
+  assert.equal(context.result.PYTHONPATH, "C:\\sealed\\workers");
 });
 
 const configuration = {

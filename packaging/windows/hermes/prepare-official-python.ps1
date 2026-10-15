@@ -96,6 +96,9 @@ function Assert-PythonPhaseResult {
     if ($Result.python.cryptographyVersion -cne '50.0.0' -or $Result.python.opensslVersion -cnotmatch '^OpenSSL 3\.5\.8(?: |$)') {
         throw 'The locked cryptography module did not load its pinned built OpenSSL.'
     }
+    if (@($Result.selectedExtras).Count -ne 2 -or $Result.selectedExtras[0] -cne 'all' -or $Result.selectedExtras[1] -cne 'messaging') {
+        throw 'The locked Python environment did not select all required Hermes extras.'
+    }
     $conpty = $Result.python.conpty
     if ($conpty.schemaVersion -ne 1 -or $conpty.classification -cne 'ci-built-pywinpty-conpty-smoke' -or
         $conpty.status -cne 'pass' -or $conpty.backend -cne 'ConPTY' -or
@@ -108,7 +111,9 @@ function Assert-PythonPhaseResult {
         if ($conpty.$name -isnot [bool] -or -not $conpty.$name) { throw 'The actual ConPTY child did not complete its build smoke.' }
     }
     $imports = @($Result.python.imports)
-    foreach ($name in @('hermes_cli.main','tools.terminal_tool','tools.file_tools','tools.web_tools','fastapi','uvicorn','winpty')) {
+    foreach ($name in @('hermes_cli.main','tools.terminal_tool','tools.file_tools','tools.web_tools','fastapi','uvicorn','winpty',
+        'telegram.ext','telegram.request','discord.ext.commands','slack_bolt.async_app','slack_bolt.adapter.socket_mode.async_handler',
+        'slack_sdk.web.async_client','nacl.bindings','brotlicffi','qrcode','tornado.web')) {
         if ($imports -cnotcontains $name) { throw "The official Python phase did not import $name." }
     }
     $winpty = @($Result.python.packages | Where-Object { $_.name -eq 'pywinpty' })
@@ -119,6 +124,16 @@ function Assert-PythonPhaseResult {
     if ($winpty.Count -ne 1 -or $winpty[0].version -cne '2.0.15' -or
         $hermes.Count -lt 1 -or $unexpectedHermes.Count -ne 0) {
         throw 'The official Hermes or pywinpty version was substituted.'
+    }
+    $messagingVersions = @{
+        'python-telegram-bot' = '22.8'; 'discord-py' = '2.7.1'; 'slack-bolt' = '1.30.0'; 'slack-sdk' = '3.43.0'
+        'aiohttp' = '3.14.3'; 'brotlicffi' = '1.2.0.2'; 'pynacl' = '1.6.2'; 'qrcode' = '7.4.2'; 'tornado' = '6.5.7'
+    }
+    foreach ($name in $messagingVersions.Keys) {
+        $packages = @($Result.python.packages | Where-Object { (($_.name -replace '[-_.]+','-').ToLowerInvariant()) -ceq $name })
+        if ($packages.Count -ne 1 -or $packages[0].version -cne $messagingVersions[$name]) {
+            throw 'A required Hermes messaging package is missing or differs from uv.lock.'
+        }
     }
 }
 

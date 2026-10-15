@@ -11,6 +11,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { NativeGatewaySession } from "./native-gateway-session.mts";
+import { waitForConsoleAgentExit } from "./run-installed-native-console-agent.mts";
 import {
   nativeMxcCompletion,
   waitForNativeMxcCompletion,
@@ -142,11 +143,36 @@ test("missing lifecycle evidence never confirms execution completion", () => {
 test("completion polling retains the lease, gateway and deadline gates before launching a probe", async () => {
   const running = { exitCode: null, signalCode: null };
   await assert.rejects(
-    waitForNativeMxcCompletion("must-not-launch", {}, sandboxName, running, {
-      assertHeld() {
-        throw new Error("lease revoked");
+    waitForNativeMxcCompletion(
+      "must-not-launch",
+      {},
+      sandboxName,
+      running,
+      null,
+      undefined,
+      () => {
+        throw new Error("Unexpected command");
       },
-    }),
+      AbortSignal.abort(),
+    ),
+    /cancelled/u,
+  );
+  await assert.rejects(
+    waitForNativeMxcCompletion(
+      "must-not-launch",
+      {},
+      sandboxName,
+      running,
+      {
+        assertHeld() {
+          throw new Error("lease revoked");
+        },
+      },
+      undefined,
+      () => {
+        throw new Error("Unexpected command");
+      },
+    ),
     /lease revoked/u,
   );
   await assert.rejects(
@@ -156,11 +182,17 @@ test("completion polling retains the lease, gateway and deadline gates before la
       sandboxName,
       { ...running, exitCode: 1 },
       null,
+      undefined,
+      () => {
+        throw new Error("Unexpected command");
+      },
     ),
     /gateway stopped/u,
   );
   await assert.rejects(
-    waitForNativeMxcCompletion("must-not-launch", {}, sandboxName, running, null, 0),
+    waitForNativeMxcCompletion("must-not-launch", {}, sandboxName, running, null, 0, () => {
+      throw new Error("Unexpected command");
+    }),
     /before its deadline/u,
   );
 });
@@ -217,6 +249,7 @@ function cliFixture(
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mxc-lifecycle-"));
   const script = path.join(root, "cli.mjs");
   const calls = path.join(root, "calls.jsonl");
+  const children = new Set<childProcess.ChildProcess>();
   fs.writeFileSync(
     script,
     `
@@ -235,6 +268,10 @@ function cliFixture(
   `,
   );
   return {
+    ownProcess(child: childProcess.ChildProcess) {
+      children.add(child);
+      child.once("close", () => children.delete(child));
+    },
     environment: {
       SystemRoot: process.env.SystemRoot,
       WINDIR: process.env.WINDIR,
@@ -246,7 +283,10 @@ function cliFixture(
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line)),
-    close: () => fs.rmSync(root, { recursive: true, force: true }),
+    close: () => {
+      assert.equal(children.size, 0, "Keep fixture files until command pipes close.");
+      fs.rmSync(root, { recursive: true, force: true });
+    },
   };
 }
 
@@ -277,6 +317,7 @@ for (const [phase, code, reason] of [
             },
           },
           5000,
+          fixture.ownProcess,
         ),
         reason,
       );
@@ -298,14 +339,22 @@ for (const revoked of ["lease", "gateway-exit", "gateway-signal"] as const) {
     let checks = 0;
     try {
       await assert.rejects(
-        waitForNativeMxcCompletion(process.execPath, fixture.environment, sandboxName, gateway, {
-          assertHeld() {
-            if (++checks !== 2) return;
-            if (revoked === "lease") throw new Error("lease revoked during request");
-            if (revoked === "gateway-exit") gateway.exitCode = 0;
-            else gateway.signalCode = "SIGTERM";
+        waitForNativeMxcCompletion(
+          process.execPath,
+          fixture.environment,
+          sandboxName,
+          gateway,
+          {
+            assertHeld() {
+              if (++checks !== 2) return;
+              if (revoked === "lease") throw new Error("lease revoked during request");
+              if (revoked === "gateway-exit") gateway.exitCode = 0;
+              else gateway.signalCode = "SIGTERM";
+            },
           },
-        }),
+          undefined,
+          fixture.ownProcess,
+        ),
         revoked === "lease" ? /lease revoked during request/u : /gateway stopped/u,
       );
       assert.equal(fixture.calls().length, 1);
@@ -336,6 +385,7 @@ test("completion polling rejects a successful reply observed after its deadline"
           },
         },
         5000,
+        fixture.ownProcess,
       ),
       /before its deadline/u,
     );
@@ -409,6 +459,207 @@ for (const revoked of ["lease", "gateway-exit", "gateway-signal"] as const) {
 
 const listArgs = ["sandbox", "list", "-o", "json"];
 
+for (const failed of [false, true]) {
+  test(`console completion binds its command owner and rejects contradictory exit evidence: ${failed}`, async () => {
+    const fixture = cliFixture([failed ? mainExit(1, "Error", "MainProcessFailed") : mainExit(0)]);
+    try {
+      const pending = waitForConsoleAgentExit(
+        process.execPath,
+        fixture.environment,
+        sandboxName,
+        { exitCode: null, signalCode: null },
+        async () => JSON.stringify({ schemaVersion: 1, agent: "hermes", exitCode: 0 }) + "\n",
+        "hermes",
+        { assertHeld() {} },
+        undefined,
+        fixture.ownProcess,
+      );
+      if (failed) await assert.rejects(pending, /MXC failed after/u);
+      else assert.equal(await pending, 0);
+      assert.equal(fixture.calls().length, 1);
+    } finally {
+      fixture.close();
+    }
+  });
+}
+
+for (const receiptPublished of [false, true]) {
+  for (const closes of [true, false]) {
+    test(`console polling keeps its cancelled command owned until closure: receipt=${receiptPublished}, closes=${closes}`, async (t) => {
+      const controller = new AbortController();
+      const session = new NativeGatewaySession(
+        path.resolve("owned-install"),
+        path.resolve("owned-run"),
+      );
+      let launches = 0;
+      let kills = 0;
+      let outcome: unknown;
+      const child = Object.assign(new EventEmitter(), {
+        pid: 987654,
+        exitCode: null as number | null,
+        signalCode: null,
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        kill: () => {
+          kills++;
+          return false;
+        },
+      });
+      t.mock.method(childProcess, "spawn", () => {
+        launches++;
+        return child;
+      });
+      t.mock.method(fs, "existsSync", () => false);
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      syncBuiltinESMExports();
+      try {
+        const pending = waitForConsoleAgentExit(
+          "owned-cli",
+          {},
+          sandboxName,
+          { exitCode: null, signalCode: null },
+          async () =>
+            receiptPublished
+              ? JSON.stringify({ schemaVersion: 1, agent: "hermes", exitCode: 0 }) + "\n"
+              : null,
+          "hermes",
+          { assertHeld() {} },
+          controller.signal,
+          session.ownCommandProcess,
+        ).then(
+          (value) => {
+            outcome = value;
+          },
+          (error) => {
+            outcome = error;
+          },
+        );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(launches, 1);
+        controller.abort();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(kills, 1, "Cancellation must reach either pending status command.");
+        assert.equal(outcome, undefined);
+        if (closes) {
+          child.exitCode = 1;
+          child.emit("exit", 1, null);
+          child.emit("close", 1, null);
+        } else t.mock.timers.tick(5000);
+        await pending;
+        assert(outcome instanceof Error);
+        assert.match(
+          outcome.message,
+          receiptPublished ? /cancelled|did not close/u : /running state could not be confirmed/u,
+        );
+        assert.equal(launches, 1);
+        if (!closes) {
+          const disposal = assert.rejects(session.dispose(), /owned process did not stop/u);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          t.mock.timers.tick(5000);
+          await disposal;
+          child.exitCode = 1;
+          child.emit("exit", 1, null);
+          child.emit("close", 1, null);
+        }
+        await session.dispose();
+      } finally {
+        child.exitCode = 1;
+        child.emit("exit", 1, null);
+        child.emit("close", 1, null);
+        t.mock.timers.reset();
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      }
+    });
+  }
+}
+
+for (const operation of ["delete", "registry", "completion"] as const) {
+  for (const closes of [true, false]) {
+    test(`lifecycle ${operation} retains its timed-out command until closure: ${closes}`, async (t) => {
+      const session = new NativeGatewaySession(
+        path.resolve("owned-install"),
+        path.resolve("owned-run"),
+      );
+      const gateway = { exitCode: null, signalCode: null };
+      const ownership = { sandboxName, gateway, stateSession: null };
+      let launches = 0;
+      let kills = 0;
+      let outcome: unknown;
+      const child = Object.assign(new EventEmitter(), {
+        pid: 987654,
+        exitCode: null as number | null,
+        signalCode: null,
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        kill() {
+          kills++;
+          return false;
+        },
+      });
+      t.mock.method(childProcess, "spawn", () => {
+        launches++;
+        return child;
+      });
+      t.mock.method(fs, "existsSync", () => false);
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      syncBuiltinESMExports();
+      try {
+        const pending =
+          operation === "delete"
+            ? requestNativeUiSandboxDeletion("owned-cli", {}, ownership, session.ownCommandProcess)
+            : operation === "registry"
+              ? confirmNativeUiRegistryEmpty("owned-cli", {}, ownership, session.ownCommandProcess)
+              : waitForNativeMxcCompletion(
+                  "owned-cli",
+                  {},
+                  sandboxName,
+                  gateway,
+                  null,
+                  undefined,
+                  session.ownCommandProcess,
+                );
+        const finished = pending.then(
+          () => {
+            outcome = "unexpected success";
+          },
+          (error) => {
+            outcome = error;
+          },
+        );
+        child.stderr.emit("data", Buffer.from("private-command-canary"));
+        t.mock.timers.tick(operation === "delete" ? 30_000 : 10_000);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(kills, 1);
+        assert.equal(outcome, undefined, "A timeout is not confirmed command closure.");
+        if (closes) {
+          child.exitCode = 1;
+          child.emit("exit", 1, null);
+          child.emit("close", 1, null);
+        } else t.mock.timers.tick(5000);
+        await finished;
+        assert(outcome instanceof Error);
+        assert(!String(outcome).includes("private-command-canary"));
+        assert.equal(launches, 1, "Never retry an ambiguous deletion or failed read.");
+        if (!closes) {
+          const disposal = assert.rejects(session.dispose(), /owned process did not stop/u);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          t.mock.timers.tick(5000);
+          await disposal;
+          child.exitCode = 1;
+          child.emit("exit", 1, null);
+          child.emit("close", 1, null);
+        }
+        await session.dispose();
+      } finally {
+        t.mock.timers.reset();
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      }
+    });
+  }
+}
+
 for (const stopped of [true, false]) {
   test(`UI monitor cancellation retains its probe until shutdown is confirmed: ${stopped}`, async (t) => {
     const controller = new AbortController();
@@ -468,6 +719,9 @@ for (const stopped of [true, false]) {
         t.mock.timers.tick(5000);
         await disposal;
         child.exitCode = 0;
+        child.emit("exit", 0, null);
+        await assert.rejects(session.dispose(), /command pipes did not close/u);
+        child.emit("close", 0, null);
       }
       await session.dispose();
     } finally {
@@ -497,9 +751,19 @@ test("UI shutdown requests deletion before confirming registry absence", async (
     },
   };
   try {
-    await requestNativeUiSandboxDeletion(process.execPath, fixture.environment, ownership);
+    await requestNativeUiSandboxDeletion(
+      process.execPath,
+      fixture.environment,
+      ownership,
+      fixture.ownProcess,
+    );
     assert.deepEqual(fixture.calls(), [deleteArgs]);
-    await confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, ownership);
+    await confirmNativeUiRegistryEmpty(
+      process.execPath,
+      fixture.environment,
+      ownership,
+      fixture.ownProcess,
+    );
     assert.deepEqual(fixture.calls(), [deleteArgs, listArgs, listArgs]);
     gateway.exitCode = 0;
     held = false;
@@ -516,18 +780,23 @@ test("UI deletion checks ownership before and after its only mutation", async ()
       let checks = 0;
       try {
         await assert.rejects(
-          requestNativeUiSandboxDeletion(process.execPath, fixture.environment, {
-            sandboxName,
-            gateway,
-            stateSession: {
-              assertHeld() {
-                if (++checks === atCheck) {
-                  if (revoked === "lease") throw new Error("lease revoked");
-                  gateway.exitCode = 1;
-                }
+          requestNativeUiSandboxDeletion(
+            process.execPath,
+            fixture.environment,
+            {
+              sandboxName,
+              gateway,
+              stateSession: {
+                assertHeld() {
+                  if (++checks === atCheck) {
+                    if (revoked === "lease") throw new Error("lease revoked");
+                    gateway.exitCode = 1;
+                  }
+                },
               },
             },
-          }),
+            fixture.ownProcess,
+          ),
           revoked === "lease" ? /lease revoked/u : /gateway stopped/u,
         );
         if (atCheck === 1) assert.throws(() => fixture.calls(), { code: "ENOENT" });
@@ -543,12 +812,17 @@ test("a rejected UI create confirms absence without requesting deletion", async 
   for (const registry of [[], [deleting], [{ name: "foreign-session", phase: "Ready" }]]) {
     const fixture = cliFixture([registry], { args: listArgs });
     try {
-      const operation = requestNativeUiSandboxDeletion(process.execPath, fixture.environment, {
-        sandboxName,
-        gateway: { exitCode: null, signalCode: null },
-        stateSession: null,
-        creationRejected: true,
-      });
+      const operation = requestNativeUiSandboxDeletion(
+        process.execPath,
+        fixture.environment,
+        {
+          sandboxName,
+          gateway: { exitCode: null, signalCode: null },
+          stateSession: null,
+          creationRejected: true,
+        },
+        fixture.ownProcess,
+      );
       if (registry.length === 0) await operation;
       else await assert.rejects(operation, /not confirmed empty/u);
       assert.deepEqual(fixture.calls(), [listArgs]);
@@ -571,11 +845,16 @@ test("failed UI deletion remains a cleanup failure without retry or command outp
         "sandbox deletion",
         async () => {
           try {
-            await requestNativeUiSandboxDeletion(process.execPath, fixture.environment, {
-              sandboxName,
-              gateway: { exitCode: null, signalCode: null },
-              stateSession: null,
-            });
+            await requestNativeUiSandboxDeletion(
+              process.execPath,
+              fixture.environment,
+              {
+                sandboxName,
+                gateway: { exitCode: null, signalCode: null },
+                stateSession: null,
+              },
+              fixture.ownProcess,
+            );
           } catch (error) {
             assert(error instanceof Error);
             assert.match(error.message, /deletion request could not be confirmed/u);
@@ -608,14 +887,24 @@ test("registry confirmation accepts the complete upstream envelope and waits for
     { args: listArgs },
   );
   try {
-    await confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, {
-      sandboxName,
-      gateway: { exitCode: null, signalCode: null },
-      stateSession: null,
-      timeout: 5000,
-    });
+    await confirmNativeUiRegistryEmpty(
+      process.execPath,
+      fixture.environment,
+      {
+        sandboxName,
+        gateway: { exitCode: null, signalCode: null },
+        stateSession: null,
+        timeout: 5000,
+      },
+      fixture.ownProcess,
+    );
     assert.deepEqual(fixture.calls(), [listArgs, listArgs]);
-    await confirmNativeUiRegistryEmpty(process.execPath, fixture.environment);
+    await confirmNativeUiRegistryEmpty(
+      process.execPath,
+      fixture.environment,
+      undefined,
+      fixture.ownProcess,
+    );
   } finally {
     fixture.close();
   }
@@ -633,12 +922,17 @@ test("registry confirmation rejects incomplete pages and malformed upstream enve
     const fixture = cliFixture([reply, { sandboxes: [], next_page_token: "" }], { args: listArgs });
     try {
       await assert.rejects(
-        confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, {
-          sandboxName,
-          gateway: { exitCode: null, signalCode: null },
-          stateSession: null,
-          timeout: 5000,
-        }),
+        confirmNativeUiRegistryEmpty(
+          process.execPath,
+          fixture.environment,
+          {
+            sandboxName,
+            gateway: { exitCode: null, signalCode: null },
+            stateSession: null,
+            timeout: 5000,
+          },
+          fixture.ownProcess,
+        ),
         (error: unknown) => {
           assert(error instanceof Error);
           assert.match(error.message, /not confirmed empty/u);
@@ -657,16 +951,21 @@ test("registry confirmation waits for owned deletion without repeating the mutat
   const fixture = cliFixture([[deleting], []], { args: listArgs });
   let leaseChecks = 0;
   try {
-    await confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, {
-      sandboxName,
-      gateway: { exitCode: null, signalCode: null },
-      stateSession: {
-        assertHeld() {
-          leaseChecks++;
+    await confirmNativeUiRegistryEmpty(
+      process.execPath,
+      fixture.environment,
+      {
+        sandboxName,
+        gateway: { exitCode: null, signalCode: null },
+        stateSession: {
+          assertHeld() {
+            leaseChecks++;
+          },
         },
+        timeout: 5000,
       },
-      timeout: 5000,
-    });
+      fixture.ownProcess,
+    );
     assert.deepEqual(fixture.calls(), [listArgs, listArgs]);
     assert.equal(leaseChecks, 4, "Recheck ownership before and after each external probe.");
   } finally {
@@ -678,7 +977,12 @@ test("one-shot empty-registry confirmation does not wait past retained entries",
   const fixture = cliFixture([[deleting], []], { args: listArgs });
   try {
     await assert.rejects(
-      confirmNativeUiRegistryEmpty(process.execPath, fixture.environment),
+      confirmNativeUiRegistryEmpty(
+        process.execPath,
+        fixture.environment,
+        undefined,
+        fixture.ownProcess,
+      ),
       /not confirmed empty/u,
     );
     assert.equal(fixture.calls().length, 1);
@@ -702,12 +1006,17 @@ test("registry polling rejects malformed and foreign records without exposing th
     const fixture = cliFixture([registry, []], { args: listArgs });
     try {
       await assert.rejects(
-        confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, {
-          sandboxName,
-          gateway: { exitCode: null, signalCode: null },
-          stateSession: null,
-          timeout: 5000,
-        }),
+        confirmNativeUiRegistryEmpty(
+          process.execPath,
+          fixture.environment,
+          {
+            sandboxName,
+            gateway: { exitCode: null, signalCode: null },
+            stateSession: null,
+            timeout: 5000,
+          },
+          fixture.ownProcess,
+        ),
         (error: unknown) => {
           assert(error instanceof Error);
           assert.match(error.message, /not confirmed empty/u);
@@ -731,12 +1040,17 @@ test("registry confirmation rejects failed commands and invalid JSON without ret
     const fixture = cliFixture([[]], { ...options, args: listArgs });
     try {
       await assert.rejects(
-        confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, {
-          sandboxName,
-          gateway: { exitCode: null, signalCode: null },
-          stateSession: null,
-          timeout: 5000,
-        }),
+        confirmNativeUiRegistryEmpty(
+          process.execPath,
+          fixture.environment,
+          {
+            sandboxName,
+            gateway: { exitCode: null, signalCode: null },
+            stateSession: null,
+            timeout: 5000,
+          },
+          fixture.ownProcess,
+        ),
         (error: unknown) => {
           assert(error instanceof Error);
           assert.match(error.message, /could not be read/u);
@@ -758,19 +1072,24 @@ test("registry confirmation rejects lease loss and gateway exit during a success
     let checks = 0;
     try {
       await assert.rejects(
-        confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, {
-          sandboxName,
-          gateway,
-          timeout: 5000,
-          stateSession: {
-            assertHeld() {
-              if (++checks === 2) {
-                if (revoked === "lease") throw new Error("lease revoked");
-                gateway.exitCode = 1;
-              }
+        confirmNativeUiRegistryEmpty(
+          process.execPath,
+          fixture.environment,
+          {
+            sandboxName,
+            gateway,
+            timeout: 5000,
+            stateSession: {
+              assertHeld() {
+                if (++checks === 2) {
+                  if (revoked === "lease") throw new Error("lease revoked");
+                  gateway.exitCode = 1;
+                }
+              },
             },
           },
-        }),
+          fixture.ownProcess,
+        ),
         revoked === "lease" ? /lease revoked/u : /gateway stopped/u,
       );
       assert.equal(fixture.calls().length, 1);
@@ -786,12 +1105,17 @@ test("registry confirmation bounds retained deletion and a stalled CLI", async (
     const started = Date.now();
     try {
       await assert.rejects(
-        confirmNativeUiRegistryEmpty(process.execPath, fixture.environment, {
-          sandboxName,
-          gateway: { exitCode: null, signalCode: null },
-          stateSession: null,
-          timeout: 500,
-        }),
+        confirmNativeUiRegistryEmpty(
+          process.execPath,
+          fixture.environment,
+          {
+            sandboxName,
+            gateway: { exitCode: null, signalCode: null },
+            stateSession: null,
+            timeout: 500,
+          },
+          fixture.ownProcess,
+        ),
         /deadline/u,
       );
       assert(Date.now() - started < 5000);
@@ -808,6 +1132,9 @@ test("registry confirmation bounds retained deletion and a stalled CLI", async (
         gateway: { exitCode: null, signalCode: null },
         stateSession: null,
         timeout: 0,
+      },
+      () => {
+        throw new Error("Unexpected command");
       },
     ),
     /deadline/u,

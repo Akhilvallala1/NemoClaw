@@ -95,7 +95,7 @@ class AdapterPathControls(unittest.TestCase):
         fake._refuse = adapter._refuse
         with (
             patch.dict(sys.modules, {"nemoclaw_native_windows": fake}),
-            patch.object(browser_adapter, "os", SimpleNamespace(name="nt")),
+            patch.object(browser_adapter, "os", SimpleNamespace(name="nt", environ={})),
             patch.object(browser_adapter, "_installed_root", None),
             patch.object(browser_adapter, "adapt") as adapt,
         ):

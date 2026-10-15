@@ -45,6 +45,18 @@ function Write-PythonBuildJson {
     [IO.File]::WriteAllText($Path, (($Value | ConvertTo-Json -Depth 12) + "`n"), [Text.UTF8Encoding]::new($false))
 }
 
+function Invoke-PythonMessagingStage {
+    param([string]$UvPath, [string]$SourceRoot, [string]$PythonPath)
+    $previousEnvironment = $env:UV_PROJECT_ENVIRONMENT
+    try {
+        $env:UV_PROJECT_ENVIRONMENT = Join-Path $SourceRoot 'venv'
+        Invoke-NativeWithRelaxedErrorAction {
+            & $UvPath sync --project $SourceRoot --python $PythonPath --extra all --extra messaging --locked
+        }
+        if ($LASTEXITCODE -ne 0) { throw 'The locked Hermes messaging dependency stage failed; no fallback is allowed.' }
+    } finally { $env:UV_PROJECT_ENVIRONMENT = $previousEnvironment }
+}
+
 function Assert-PythonBuildSource {
     if ($env:OS -cne 'Windows_NT' -or
         $runtimeBuildRoot -notmatch '^[A-Za-z]:\\NemoClawHermesProbe-[a-f0-9]{12}$' -or
@@ -108,6 +120,10 @@ if ($StageWorker) {
     if ($runtimeBuildTier -cne 'hash-verified (uv.lock)') {
         throw 'The official dependency stage fell back from its hash-verified uv.lock tier.'
     }
+    # Upstream all deliberately excludes messaging because its normal installer
+    # downloads those SDKs on demand. The sealed runtime cannot lazy-install them.
+    Invoke-PythonMessagingStage -UvPath (Join-Path $runtimeBuildRoot 'bin\uv.exe') `
+        -SourceRoot $runtimeBuildSource -PythonPath $runtimeBuildPython
     Assert-PythonBuildSource
     if ((Get-FileHash -LiteralPath (Join-Path $runtimeBuildSource 'package-lock.json') -Algorithm SHA256).Hash -cne $runtimeBuildBefore) {
         throw 'The Python stage changed the official npm lock.'
@@ -126,7 +142,7 @@ expected = sys.argv[1]
 assert sys.version_info[:3] == (3, 11, 16), sys.version
 assert os.path.normcase(os.path.realpath(sys._base_executable)) == os.path.normcase(os.path.realpath(expected)), sys._base_executable
 assert sys.prefix != sys.base_prefix
-modules = ['hermes_cli.main', 'tools.terminal_tool', 'tools.file_tools', 'tools.web_tools', 'fastapi', 'uvicorn', 'winpty']
+modules = ['hermes_cli.main', 'tools.terminal_tool', 'tools.file_tools', 'tools.web_tools', 'fastapi', 'uvicorn', 'winpty', 'telegram.ext', 'telegram.request', 'discord.ext.commands', 'slack_bolt.async_app', 'slack_bolt.adapter.socket_mode.async_handler', 'slack_sdk.web.async_client', 'nacl.bindings', 'brotlicffi', 'qrcode', 'tornado.web']
 for name in modules:
     importlib.import_module(name)
 import cryptography
@@ -141,7 +157,7 @@ print(json.dumps({'cryptographyVersion':cryptography.__version__,'opensslVersion
     Write-PythonBuildJson -Value ([ordered]@{
         schemaVersion = 1; classification = 'official-hermes-python-provisioning-only'
         completeRuntime = $false; installedAcceptance = $false; relocatedRuntimeValidated = $false
-        upstream = $runtimeBuildLock.upstream; installedTier = $runtimeBuildTier
+        upstream = $runtimeBuildLock.upstream; installedTier = $runtimeBuildTier; selectedExtras = @('all','messaging')
         python = $runtimeBuildImport; status = 'python-provisioned'
     }) -Path (Join-Path $runtimeBuildEvidence 'official-python-worker.json')
     exit 0

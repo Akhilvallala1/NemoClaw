@@ -104,6 +104,34 @@ def preserve_notices(build, runtime):
     }
 
 
+def adapt_tui_transport(node, build, invoke):
+    build = Path(build).resolve()
+    source = build / "ui-tui/src/gatewayClient.ts"
+    adapter = Path(__file__).with_name("native-tui-pipe-build.mts").resolve()
+    original = digest(source)
+    result = invoke(
+        node,
+        [adapter, build],
+        cwd=build,
+        label="native-tui-pipe-adapter",
+    )
+    transport = json.loads(Path(result["stdout"]).read_text(encoding="utf-8"))
+    if (
+        not isinstance(transport, dict)
+        or transport.get("schemaVersion") != 1
+        or transport.get("classification") != "build-time-hermes-dashboard-pipe-client"
+        or transport.get("path") != "ui-tui/src/gatewayClient.ts"
+        or transport.get("callSites") != 2
+        or transport.get("nativeExecutionQualified") is not False
+        or transport.get("sourceSha256") != original
+        or transport.get("adapterSha256") != digest(adapter)
+        or transport.get("adaptedSha256") != digest(source)
+        or transport.get("adaptedSha256") == original
+    ):
+        raise ValueError("The Hermes dashboard pipe adapter receipt is invalid")
+    return transport
+
+
 def build_selected(*, runtime, evidence, source_archive, npm_root, extract, invoke):
     runtime, evidence, npm_root = Path(runtime), Path(evidence), Path(npm_root)
     source, build = runtime / "hermes-agent", evidence / "node-build"
@@ -131,6 +159,7 @@ def build_selected(*, runtime, evidence, source_archive, npm_root, extract, invo
         cwd=build,
         label="official-cli-npm-ci",
     )
+    transport = adapt_tui_transport(node, build, invoke)
     for workspace in ("ui-tui", "web"):
         invoke(
             node,
@@ -234,6 +263,7 @@ def build_selected(*, runtime, evidence, source_archive, npm_root, extract, invo
         "npmVersion": "12.0.2",
         "lockSha256": lock_hash,
         "upstreamLockUnchanged": True,
+        "nativeDashboardPipeAdapter": transport,
         "outputs": outputs,
         "notices": notices,
         "sidecars": sidecars,

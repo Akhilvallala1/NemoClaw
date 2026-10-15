@@ -1700,6 +1700,34 @@ function browserControl(
   const files = new Map<string, Buffer>();
   const directories = new Set<string>();
   const events: string[] = [];
+  const opened = new Map<number, { file: string; bytes: Buffer; offset: number }>();
+  let nextDescriptor = 100;
+  t.mock.method(fs, "openSync", (file: any, flags: any) => {
+    assert.equal(flags, "r");
+    const bytes = files.get(String(file));
+    assert(bytes, "unknown open " + file);
+    const descriptor = nextDescriptor++;
+    opened.set(descriptor, { file: String(file), bytes, offset: 0 });
+    return descriptor;
+  });
+  t.mock.method(fs, "fstatSync", (descriptor: number) => {
+    const entry = opened.get(descriptor);
+    assert(entry);
+    return { isFile: () => true, size: entry.bytes.length, dev: 1, ino: entry.file };
+  });
+  t.mock.method(
+    fs,
+    "readSync",
+    (descriptor: number, buffer: Buffer, offset: number, length: number, position: any) => {
+      assert.equal(position, null);
+      const entry = opened.get(descriptor);
+      assert(entry);
+      const count = entry.bytes.copy(buffer, offset, entry.offset, entry.offset + length);
+      entry.offset += count;
+      return count;
+    },
+  );
+  t.mock.method(fs, "closeSync", (descriptor: number) => assert(opened.delete(descriptor)));
   const pe = Buffer.alloc(256);
   pe.write("MZ");
   pe.writeUInt32LE(128, 60);
@@ -1724,7 +1752,13 @@ function browserControl(
   t.mock.method(fs, "lstatSync", (file: any) => {
     const value = files.get(String(file));
     assert(value, "unknown stat " + file);
-    return { isFile: () => true, isSymbolicLink: () => false, size: value.length };
+    return {
+      isFile: () => true,
+      isSymbolicLink: () => false,
+      size: value.length,
+      dev: 1,
+      ino: String(file),
+    };
   });
   t.mock.method(fs, "writeFileSync", (file: any, value: any, options: any) => {
     assert.equal(options.flag, "wx");

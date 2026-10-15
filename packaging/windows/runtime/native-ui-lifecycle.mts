@@ -1,12 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { execFile, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { promisify } from "node:util";
 import { run } from "./run-installed-native-turn.mts";
 
-const execFileAsync = promisify(execFile);
 type GatewayState = Pick<ChildProcess, "exitCode" | "signalCode">;
 type StateLease = { assertHeld(): void };
 type CleanupStep = readonly [label: string, action: () => unknown];
@@ -60,6 +58,7 @@ export async function requestNativeUiSandboxDeletion(
     stateSession: StateLease | null;
     creationRejected?: boolean;
   },
+  ownProcess: (child: ChildProcess) => void,
 ) {
   const assertOwnership = () => {
     ownership.stateSession?.assertHeld();
@@ -72,16 +71,19 @@ export async function requestNativeUiSandboxDeletion(
   };
   assertOwnership();
   if (ownership.creationRejected) {
-    await confirmNativeUiRegistryEmpty(openshell, environment);
+    await confirmNativeUiRegistryEmpty(openshell, environment, undefined, ownProcess);
   } else {
     try {
-      await execFileAsync(openshell, ["sandbox", "delete", ownership.sandboxName], {
-        env: environment,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 30_000,
-        maxBuffer: 1024 * 1024,
-      });
+      await run(
+        openshell,
+        ["sandbox", "delete", ownership.sandboxName],
+        environment,
+        "Deleting the native UI sandbox",
+        30_000,
+        undefined,
+        ownProcess,
+        { quiet: true },
+      );
     } catch {
       // A failed response can follow an accepted mutation. Do not repeat it.
       throw new Error("The native sandbox deletion request could not be confirmed.");
@@ -93,12 +95,15 @@ export async function requestNativeUiSandboxDeletion(
 export async function confirmNativeUiRegistryEmpty(
   openshell: string,
   environment: NodeJS.ProcessEnv,
-  removal?: {
-    sandboxName: string;
-    gateway: GatewayState | null | undefined;
-    stateSession: StateLease | null;
-    timeout?: number;
-  },
+  removal:
+    | {
+        sandboxName: string;
+        gateway: GatewayState | null | undefined;
+        stateSession: StateLease | null;
+        timeout?: number;
+      }
+    | undefined,
+  ownProcess: (child: ChildProcess) => void,
 ) {
   const timeout = removal?.timeout ?? (removal ? 30_000 : 10_000);
   const deadlineFailure = () =>
@@ -119,13 +124,16 @@ export async function confirmNativeUiRegistryEmpty(
     assertOwnership();
     let registry: unknown;
     try {
-      const result = await execFileAsync(openshell, ["sandbox", "list", "-o", "json"], {
-        env: environment,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: Math.min(10_000, Math.max(1, deadline - Date.now())),
-        maxBuffer: 1024 * 1024,
-      });
+      const result = await run(
+        openshell,
+        ["sandbox", "list", "-o", "json"],
+        environment,
+        "Reading the native UI registry",
+        Math.min(10_000, Math.max(1, deadline - Date.now())),
+        undefined,
+        ownProcess,
+        { quiet: true },
+      );
       registry = JSON.parse(result.stdout);
     } catch {
       if (Date.now() >= deadline) throw deadlineFailure();
@@ -257,22 +265,28 @@ export async function waitForNativeMxcCompletion(
   gateway: GatewayState,
   stateSession: StateLease | null,
   timeout = 45_000,
+  ownProcess: (child: ChildProcess) => void,
+  signal?: AbortSignal,
 ): Promise<MxcCompletion> {
   const deadline = Date.now() + timeout;
   const assertOwnership = () => {
+    if (signal?.aborted) throw new Error("The native MXC completion wait was cancelled.");
     stateSession?.assertHeld();
     if (gateway.exitCode !== null || gateway.signalCode !== null)
       throw new Error("The native gateway stopped before MXC execution completed.");
   };
   while (Date.now() < deadline) {
     assertOwnership();
-    const result = await execFileAsync(openshell, ["sandbox", "get", sandboxName, "-o", "json"], {
-      env: environment,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: Math.min(10_000, Math.max(1, deadline - Date.now())),
-      maxBuffer: 1024 * 1024,
-    });
+    const result = await run(
+      openshell,
+      ["sandbox", "get", sandboxName, "-o", "json"],
+      environment,
+      "Reading native MXC completion",
+      Math.min(10_000, Math.max(1, deadline - Date.now())),
+      undefined,
+      ownProcess,
+      { signal, quiet: true },
+    );
     assertOwnership();
     if (Date.now() >= deadline) break;
     const completion = nativeMxcCompletion(JSON.parse(result.stdout), sandboxName);

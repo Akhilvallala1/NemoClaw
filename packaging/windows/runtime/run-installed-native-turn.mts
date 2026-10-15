@@ -713,6 +713,8 @@ async function main(runtimeLease: NativeRuntimeSession) {
       sandboxName,
       gateway,
       runtimeLease,
+      undefined,
+      gatewaySession.ownCommandProcess,
     );
     if (completion === "ExecFailed" || completion === "MainProcessFailed")
       fail("OpenShell reported failed MXC workload termination");
@@ -726,11 +728,16 @@ async function main(runtimeLease: NativeRuntimeSession) {
       undefined,
       gatewaySession.ownCommandProcess,
     );
-    await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
-      sandboxName,
-      gateway,
-      stateSession: runtimeLease,
-    });
+    await confirmNativeUiRegistryEmpty(
+      openshell,
+      cliEnvironment,
+      {
+        sandboxName,
+        gateway,
+        stateSession: runtimeLease,
+      },
+      gatewaySession.ownCommandProcess,
+    );
     if (!(await gatewaySession.stopGateway())) fail("OpenShell MXC gateway did not stop");
     await gatewaySession.dispose();
     fs.closeSync(gatewayLog);
@@ -796,11 +803,16 @@ async function main(runtimeLease: NativeRuntimeSession) {
         "sandbox registry verification",
         async () => {
           if (!passed && create && cliEnvironment)
-            await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
-              sandboxName,
-              gateway,
-              stateSession: runtimeLease,
-            });
+            await confirmNativeUiRegistryEmpty(
+              openshell,
+              cliEnvironment,
+              {
+                sandboxName,
+                gateway,
+                stateSession: runtimeLease,
+              },
+              gatewaySession.ownCommandProcess,
+            );
         },
       ],
       [

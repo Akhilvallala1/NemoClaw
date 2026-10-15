@@ -70,7 +70,7 @@ class BuildControls(unittest.TestCase):
         )
         self.assertEqual(executable, "pinned-uv.exe")
         self.assertEqual(arguments, [
-            "sync", "--extra", "all", "--locked", "--offline",
+            "sync", "--extra", "all", "--extra", "messaging", "--locked", "--offline",
             "--reinstall-package", "hermes-agent",
         ])
         self.assertEqual(
@@ -468,6 +468,7 @@ class BuildControls(unittest.TestCase):
             "upstreamCommit": freezer.UPSTREAM_COMMIT,
             "status": "runtime-provisioned",
             "installedTier": "hash-verified (uv.lock)",
+            "selectedPythonExtras": ["all", "messaging"],
             "fallbacks": [],
             "sourceUnchanged": True,
             "stages": [
@@ -527,6 +528,15 @@ class BuildControls(unittest.TestCase):
         build["installedTier"] = "core only (no extras)"
         with self.assertRaisesRegex(ValueError, "locked provisioning"):
             freezer.validate_receipts(runtime, build, relocation)
+
+    def test_freeze_gate_rejects_missing_messaging_selection(self):
+        original = self.build_receipts()[1]
+        for selection in (None, ["all"], ["messaging"], ["all", "messaging", "unknown"]):
+            with self.subTest(selection=selection):
+                build = copy.deepcopy(original)
+                build["selectedPythonExtras"] = selection
+                with self.assertRaisesRegex(ValueError, "locked provisioning"):
+                    freezer.validate_build_receipt(build)
 
     def test_freeze_gate_rejects_failed_conpty(self):
         runtime, build, relocation = self.build_receipts()
@@ -613,6 +623,7 @@ class SelectedNodeControls(unittest.TestCase):
             "upstreamCommit": freezer.UPSTREAM_COMMIT,
             "status": "runtime-provisioned",
             "installedTier": "hash-verified (uv.lock)",
+            "selectedPythonExtras": ["all", "messaging"],
             "fallbacks": [],
             "sourceUnchanged": True,
             "stages": [

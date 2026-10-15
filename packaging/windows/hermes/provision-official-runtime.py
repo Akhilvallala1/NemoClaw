@@ -60,6 +60,8 @@ def regenerate_hermes_entrypoints(uv, environment, source, evidence):
             "sync",
             "--extra",
             "all",
+            "--extra",
+            "messaging",
             "--locked",
             "--offline",
             "--reinstall-package",
@@ -677,6 +679,7 @@ def main():
         if (
             python_receipt.get("status") != "python-provisioned"
             or python_receipt.get("installedTier") != "hash-verified (uv.lock)"
+            or python_receipt.get("selectedExtras") != ["all", "messaging"]
             or python_receipt.get("upstream", {}).get("commit") != UPSTREAM_COMMIT
             or python_receipt.get("python", {}).get("cryptographyVersion") != "50.0.0"
             or not python_receipt.get("python", {})
@@ -737,6 +740,7 @@ def main():
             },
         )
         receipt["installedTier"] = python_receipt["installedTier"]
+        receipt["selectedPythonExtras"] = python_receipt["selectedExtras"]
         receipt["stages"].append(
             {"stage": "dependencies", "ok": True, "skipped": False}
         )

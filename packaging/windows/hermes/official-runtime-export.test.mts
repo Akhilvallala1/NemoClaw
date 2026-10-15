@@ -14,6 +14,7 @@ import importlib.util,sys,json,pathlib,tarfile,hashlib,traceback
 spec=importlib.util.spec_from_file_location('exporter',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 root=pathlib.Path(sys.argv[2]);mode=sys.argv[3];inv=m.load_inventory()
 build={'schemaVersion':1,'upstreamCommit':inv.UPSTREAM_COMMIT,'status':'runtime-provisioned','installedTier':'hash-verified (uv.lock)','sourceUnchanged':True,'fallbacks':[],'stages':[{'stage':s,'ok':True,'skipped':False} for s in inv.REQUIRED_STAGES]}
+build['selectedPythonExtras']=['all','messaging']
 build["nodeBuild"]={'schemaVersion': 1, 'profile': 'official-prebuilt-cli-web-tui', 'npmVersion': '12.0.2', 'upstreamLockUnchanged': True, 'neighboringBuildDependenciesAbsent': True, 'tuiNonTtyImports': True, 'desktopSelected': False, 'outputs': [{'path': 'ui-tui/dist'}, {'path': 'hermes_cli/web_dist'}], 'sidecars': [{'path': 'plugins/platforms/photon/sidecar'}, {'path': 'scripts/whatsapp-bridge'}]}
 build["selectedBrowserChain"]={'profile': 'official-prebuilt-cli-web-tui', 'browserUse': '0.13.10', 'agentBrowser': 'agent-browser/bin/agent-browser-win32-x64.exe', 'runtimeQualified': False}
 try:
@@ -55,6 +56,8 @@ try:
   inv.validate_receipts(root,build,relocation);result=None
  elif mode=='fallback':build['installedTier']='core only';inv.validate_build_receipt(build);result=None
  elif mode=='missing-stage':build['stages']=[];inv.validate_build_receipt(build);result=None
+ elif mode=='missing-messaging':build['selectedPythonExtras']=['all'];inv.validate_build_receipt(build);result=None
+ elif mode=='legacy-extras':del build['selectedPythonExtras'];inv.validate_build_receipt(build);result=None
  elif mode=='wrong-adapter':m.validate_adaptation(root,{'schemaVersion':1},'0'*64);result=None
  print(json.dumps({'ok':True,'result':result}))
 except BaseException as error:print(json.dumps({'ok':False,'type':type(error).__name__,'error':str(error),'traceback':traceback.format_exc()[-12000:]}))
@@ -131,11 +134,18 @@ test("a stale adapter binding cannot satisfy current-source provenance", () =>
 test("same-size hook mutation after adaptation is refused", () =>
   assert.match(run("modified-adapter").error, /metadata changed/u));
 test("candidate build admission does not weaken the separate failed MXC qualification gate", () => {
-  assert.equal(run("build-only").ok, true);
+  const built = run("build-only");
+  assert.equal(built.ok, true, JSON.stringify(built));
   assert.match(run("failed-mxc").error, /not passed/u);
 });
 for (const mode of ["fallback", "missing-stage", "wrong-adapter"])
   test(`candidate build refuses ${mode}`, () => assert.equal(run(mode).ok, false));
+for (const mode of ["missing-messaging", "legacy-extras"])
+  test(`candidate build refuses ${mode}`, () => {
+    const rejected = run(mode);
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error, /not passed locked provisioning/u);
+  });
 test("native composition requires current controller, exact owned executor and complete sources", () => {
   const controls = fileURLToPath(new URL("./test_native_export_admission.py", import.meta.url));
   const result = spawnSync(python, ["-I", "-B", controls, "-v"], {

@@ -9,11 +9,10 @@ import {
   openNativeConsoleAttachment,
   reconcileNativeConsoleExit,
 } from "./native-console-attachment.mts";
-import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import type { ChildProcess } from "node:child_process";
+import { randomBytes, randomInt } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import {
   withNativeRuntimeSession,
   bindNativeRuntimeGuard,
@@ -23,6 +22,8 @@ import {
   type NativeRuntimeSession,
 } from "./native-runtime.mts";
 import { hermesDashboardPythonSource } from "./native-hermes-dashboard.mts";
+import { hermesInferencePipePythonSource } from "./native-hermes-inference-pipe.mts";
+import { hermesPipeLoopPythonSource } from "./native-hermes-pipe-loop.mts";
 import { openNativeUiFileOwner } from "./native-ui-file-owner.mts";
 import { startFileTcpRelay } from "./native-ui-relay.mts";
 import { openNativeWebSession } from "./native-web-session.mts";
@@ -63,13 +64,12 @@ import {
 const AGENT_ADAPTERS = {
   hermes: { displayName: "Hermes Agent", runtimeDirectory: "hermes", sandboxPrefix: "nc-h" },
 };
-const execFileAsync = promisify(execFile);
 
 function fail(message) {
   throw new Error(`NemoClaw native terminal launch failed: ${message}`);
 }
 
-async function waitForConsoleAgentExit(
+export async function waitForConsoleAgentExit(
   openshell,
   environment,
   sandboxName,
@@ -77,7 +77,8 @@ async function waitForConsoleAgentExit(
   readExitReceipt,
   agentId,
   stateSession,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  ownProcess: (child: ChildProcess) => void,
 ) {
   const deadline = Date.now() + 24 * 60 * 60_000;
   let nextStatusCheck = 0;
@@ -99,6 +100,9 @@ async function waitForConsoleAgentExit(
         sandboxName,
         gateway,
         stateSession,
+        undefined,
+        ownProcess,
+        signal,
       );
       if (
         (completion === "ExecFailed" || completion === "MainProcessFailed") &&
@@ -112,16 +116,15 @@ async function waitForConsoleAgentExit(
     if (Date.now() >= nextStatusCheck) {
       let status;
       try {
-        const result = await execFileAsync(
+        const result = await run(
           openshell,
           ["sandbox", "get", sandboxName, "-o", "json"],
-          {
-            env: environment,
-            encoding: "utf8",
-            windowsHide: true,
-            timeout: 10_000,
-            maxBuffer: 1024 * 1024,
-          },
+          environment,
+          "Reading the native agent status",
+          10_000,
+          undefined,
+          ownProcess,
+          { signal, quiet: true },
         );
         status = JSON.parse(result.stdout);
       } catch {
@@ -138,15 +141,42 @@ async function waitForConsoleAgentExit(
   fail("the interactive agent exceeded its session deadline");
 }
 
+export function nativeHermesMessagingArguments(channels: string[]): string[] {
+  const modules: Record<string, string[]> = {
+    telegram: ["telegram.ext", "telegram.request"],
+    discord: ["discord.ext.commands"],
+    slack: [
+      "slack_bolt.async_app",
+      "slack_bolt.adapter.socket_mode.async_handler",
+      "slack_sdk.web.async_client",
+    ],
+  };
+  if (!channels.length || channels.some((channel) => !Object.hasOwn(modules, channel)))
+    throw new Error("The selected Hermes messaging service is unsupported.");
+  return [
+    "-c",
+    [
+      "import importlib, runpy, sys",
+      "try:",
+      `    for name in ${JSON.stringify([...new Set(channels.flatMap((channel) => modules[channel]))])}:`,
+      "        importlib.import_module(name)",
+      "except (ImportError, OSError):",
+      "    sys.exit(78)",
+      "runpy.run_module('gateway.run', run_name='__main__', alter_sys=True)",
+    ].join("\n"),
+  ];
+}
+
 export function interactiveWorkloadSource() {
   return String.raw`import { spawn } from "node:child_process";
-import { createConnection } from "node:net";
+import { requestNativeBrokerBootstrap } from "./native-local-pipe.mts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { open as openFile } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 const nativeHermesConfiguration = ${nativeHermesConfiguration.toString()};
+const nativeHermesMessagingArguments = ${nativeHermesMessagingArguments.toString()};
 
 const required = (name) => {
   const value = process.env[name];
@@ -220,15 +250,16 @@ const runtime = required("NEMOCLAW_AGENT_RUNTIME");
 const python = process.env.NEMOCLAW_AGENT_PYTHON;
 const hermesSource = process.env.NEMOCLAW_HERMES_SOURCE_ROOT;
 const dashboard = process.env.NEMOCLAW_AGENT_INTERFACE === "dashboard";
+const inferencePipePort = Number(required("NEMOCLAW_HERMES_INFERENCE_PIPE_PORT"));
 let brokerTunnel;
 let browserTunnel;
 let bootstrapWritten = false;
 const connectivity = {
   schemaVersion: 1, agent, interface: dashboard ? "dashboard" : "console",
-  sessionId, transport: "guarded-file-tcp",
+  sessionId, transport: "guarded-file-native-pipe",
   brokerHost: "127.0.0.1", brokerPort: hostBrokerPort,
-  containedHost: "127.0.0.1", containedPort: null,
-  contained: { tcpConnected: false, unauthenticatedStatus: null, authenticatedStatus: null, bootstrapConsumedByWorkload: false },
+  containedPipePort: null,
+  contained: { pipeConnected: false, unauthenticatedStatus: null, authenticatedStatus: null, bootstrapConsumedByWorkload: false },
   verdict: "fail", failureStage: "bridge", errorCode: null,
 };
 const stopWatcher = watchNativeStopRequest(stopRequest, sessionId);
@@ -236,46 +267,36 @@ try {
 const { startNativeBrokerTunnel } = await import("./native-broker-tunnel.mts");
 brokerTunnel = await startNativeBrokerTunnel({
   relayRoot: required("NEMOCLAW_BROKER_RELAY_ROOT"), relayToken: required("NEMOCLAW_BROKER_RELAY_TOKEN"),
+  sandboxPipePort: inferencePipePort,
   signal: stopWatcher.signal,
 });
 if (agent === "hermes") {
   browserTunnel = await startNativeBrokerTunnel({
     relayRoot: required("NEMOCLAW_BROWSER_RELAY_ROOT"),
     relayToken: required("NEMOCLAW_BROWSER_RELAY_TOKEN"),
+    sandboxPipePort: Number(required("NEMOCLAW_HERMES_BROWSER_PIPE_PORT")),
     signal: stopWatcher.signal,
   });
   const cdpPath = required("NEMOCLAW_BROWSER_CDP_PATH");
   if (!/^\/devtools\/browser\/[A-Za-z0-9-]{1,128}$/u.test(cdpPath))
     throw new Error("The native Microsoft Edge CDP path is invalid.");
   process.env.BROWSER_CDP_URL = "ws://127.0.0.1:" + browserTunnel.port + cdpPath;
+  process.env.BU_CDP_WS = process.env.BROWSER_CDP_URL;
 }
 const proxyPort = String(brokerTunnel.port);
-connectivity.containedPort = brokerTunnel.port;
+connectivity.containedPipePort = brokerTunnel.port;
 const baseUrl = "http://127.0.0.1:" + proxyPort + "/v1";
-connectivity.failureStage = "tcp";
-await new Promise((resolve, reject) => {
-  const socket = createConnection({ host: "127.0.0.1", port: brokerTunnel.port, signal: stopWatcher.signal });
-  socket.setTimeout(5000);
-  socket.once("connect", () => { socket.destroy(); resolve(); });
-  socket.once("error", (error) => { socket.destroy(); reject(error); });
-  socket.once("timeout", () => { socket.destroy(); reject(Object.assign(new Error("Local broker TCP probe timed out."), { code: "ETIMEDOUT" })); });
-});
-connectivity.contained.tcpConnected = true;
 connectivity.failureStage = "unauthenticated-http";
-const denied = await fetch("http://127.0.0.1:" + proxyPort + "/native/bootstrap", {
-  method: "POST", signal: AbortSignal.any([AbortSignal.timeout(15000), stopWatcher.signal]),
-});
+const denied = await requestNativeBrokerBootstrap(brokerTunnel.port, null, stopWatcher.signal);
+connectivity.contained.pipeConnected = true;
 connectivity.contained.unauthenticatedStatus = denied.status;
-await denied.body?.cancel();
 if (denied.status !== 403) throw new Error("The local broker did not reject an unauthenticated bootstrap probe.");
 connectivity.failureStage = "authenticated-bootstrap";
-const bootstrapResponse = await fetch("http://127.0.0.1:" + proxyPort + "/native/bootstrap", {
-  method: "POST", headers: { authorization: "Bearer " + brokerToken }, signal: AbortSignal.any([AbortSignal.timeout(15000), stopWatcher.signal]),
-});
+const bootstrapResponse = await requestNativeBrokerBootstrap(brokerTunnel.port, brokerToken, stopWatcher.signal);
 connectivity.contained.authenticatedStatus = bootstrapResponse.status;
-if (!bootstrapResponse.ok) throw new Error("NemoClaw could not supply the selected optional services.");
+if (bootstrapResponse.status !== 200) throw new Error("NemoClaw could not supply the selected optional services.");
 connectivity.failureStage = "bootstrap-json";
-const nativeServices = await bootstrapResponse.json();
+const nativeServices = bootstrapResponse.body;
 connectivity.contained.bootstrapConsumedByWorkload = true;
 connectivity.verdict = "pass";
 connectivity.failureStage = null;
@@ -334,6 +355,8 @@ if (agent === "hermes") {
     ] : []),
     "from hermes_cli import __version__ as _hermes_version",
     "if _hermes_version != '0.21.1': raise RuntimeError('The official Hermes runtime version does not match its installation')",
+    ...${JSON.stringify(hermesPipeLoopPythonSource())},
+    ...${JSON.stringify(hermesInferencePipePythonSource())},
     ...(dashboard ? ${JSON.stringify(hermesDashboardPythonSource())} : ["from hermes_cli.main import main"]),
     ...(consoleProbe ? [
       "try:",
@@ -346,7 +369,7 @@ if (agent === "hermes") {
   ].join("\n"), "utf8");
   executable = python;
   args = dashboard ? [runner] : [runner, "--provider", "custom", "--model", model];
-  extraEnvironment = { HERMES_HOME: hermesHome, HERMES_TUI_DIR: process.env.NEMOCLAW_HERMES_TUI_DIR, HERMES_NODE: required("HERMES_NODE"), HERMES_PYTHON: python, HERMES_SKIP_NODE_BOOTSTRAP: "1", HERMES_DISABLE_LAZY_INSTALLS: "1", ...(dashboard ? {
+  extraEnvironment = { HERMES_HOME: hermesHome, HERMES_TUI_DIR: process.env.NEMOCLAW_HERMES_TUI_DIR, HERMES_NODE: required("HERMES_NODE"), HERMES_PYTHON: python, PYTHONPATH: required("NEMOCLAW_WORKER_ROOT"), HERMES_SKIP_NODE_BOOTSTRAP: "1", HERMES_DISABLE_LAZY_INSTALLS: "1", ...(dashboard ? {
     // Hermes's optional atomic file publication conflicts with the held state
     // directory guard. Its normal stdout contract reports the live bound port.
     HERMES_DESKTOP_READY_FILE: "",
@@ -362,8 +385,9 @@ const childEnvironment = {
 };
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const observe = (process) => new Promise((resolve) => {
-  process.once("error", () => resolve(1));
-  process.once("close", (code) => resolve(code ?? 1));
+  let failed = false;
+  process.on("error", () => { failed = true; });
+  process.once("close", (code) => resolve(failed ? 1 : code ?? 1));
 });
 function waitForHermesDashboardReady(child, childExit, timeoutMilliseconds = 180000) {
   return new Promise((resolve, reject) => {
@@ -428,28 +452,33 @@ function waitForHermesDashboardReady(child, childExit, timeoutMilliseconds = 180
     timer = setTimeout(() => finish(new Error("The real Hermes dashboard did not become ready.")), timeoutMilliseconds);
   });
 }
-async function stopOwnedNativeAgent(child, childStopped, timeoutMilliseconds = 10000) {
-  if (!child) return true;
-  if (child.exitCode === null && child.signalCode === null) child.kill();
+async function waitForOwnedNativeAgent(childStopped, timeoutMilliseconds) {
   let timer;
   try {
-    const stopped = await Promise.race([
-      childStopped.then(() => true),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMilliseconds); }),
+    return await Promise.race([
+      childStopped.then((exitCode) => ({ closed: true, exitCode })),
+      new Promise((resolve) => { timer = setTimeout(() => resolve({ closed: false, exitCode: null }), timeoutMilliseconds); }),
     ]);
-    if (!stopped) {
-      // A descendant can retain the pipes after the direct child exits. Close
-      // only this child's owned streams so Node can exit with failure and MXC
-      // can finish its job teardown; never destroy inherited console handles.
-      child.stdout?.unpipe(process.stdout);
-      child.stderr?.unpipe(process.stderr);
-      child.stdin?.destroy();
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      child.unref();
-    }
-    return stopped;
   } finally { clearTimeout(timer); }
+}
+async function stopOwnedNativeAgent(child, childStopped, timeoutMilliseconds = 10000) {
+  if (!child) return true;
+  if (child.exitCode === null && child.signalCode === null) {
+    try { child.kill(); } catch { /* Closure must still be confirmed after a failed kill. */ }
+  }
+  const stopped = await waitForOwnedNativeAgent(childStopped, timeoutMilliseconds);
+  if (!stopped.closed) {
+    // A descendant can retain the pipes after the direct child exits. Close
+    // only this child's owned streams so Node can exit with failure and MXC
+    // can finish its job teardown; never destroy inherited console handles.
+    child.stdout?.unpipe(process.stdout);
+    child.stderr?.unpipe(process.stderr);
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.unref();
+  }
+  return stopped.closed;
 }
 let messaging;
 let messagingExit;
@@ -462,7 +491,7 @@ try {
   stopWatcher.signal.throwIfAborted();
   if (agent === "hermes" && selectedChannels.length) {
     console.log("Connecting your selected messaging services…");
-    messaging = spawn(python, ["-m", "gateway.run"], {
+    messaging = spawn(python, nativeHermesMessagingArguments(selectedChannels), {
       cwd: home, env: childEnvironment, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
     });
     messagingExit = observe(messaging);
@@ -481,7 +510,11 @@ try {
           selectedChannels.some((channel) => status.platforms?.[channel]?.state === "fatal"))) break;
       await pause(250);
     }
-    if (!connected) throw new Error("A selected messaging service could not connect. Check its bot key, app permissions, and network in NemoClaw Setup.");
+    if (!connected) {
+      if (messaging.exitCode === 78)
+        throw new Error("This Hermes installation could not load the selected messaging components. Repair Hermes in NemoClaw Setup before reconnecting.");
+      throw new Error("A selected messaging service could not connect. Check its bot key, app permissions, and network in NemoClaw Setup.");
+    }
     console.log("Messaging connected: " + selectedChannels.join(", ") + ".");
   }
   stopWatcher.signal.throwIfAborted();
@@ -505,11 +538,13 @@ try {
   }
   if (dashboard) {
     const { port, processId } = await dashboardReady;
+    if (port !== Number(required("NEMOCLAW_HERMES_DASHBOARD_PIPE_PORT")))
+      throw new Error("The Hermes dashboard announced an undeclared pipe.");
     if (processId !== child.pid || child.exitCode !== null || child.signalCode !== null)
       throw new Error("The Hermes dashboard process stopped during readiness.");
     const { startNativeUiTunnel } = await import("./native-ui-tunnel.mts");
     await Promise.race([
-      startNativeUiTunnel({ relayRoot: required("NEMOCLAW_UI_RELAY_ROOT"), relayToken: required("NEMOCLAW_UI_RELAY_TOKEN"), uiPort: port, signal: stopWatcher.signal }),
+      startNativeUiTunnel({ relayRoot: required("NEMOCLAW_UI_RELAY_ROOT"), relayToken: required("NEMOCLAW_UI_RELAY_TOKEN"), uiPort: port, pipe: true, signal: stopWatcher.signal }),
       childExit.then(() => { throw new Error("The Hermes dashboard stopped unexpectedly."); }),
     ]);
     // The host subsequently deletes the exact MXC sandbox, which owns every
@@ -524,17 +559,27 @@ try {
     exitCode = 1;
     console.error("The owned native agent process did not stop within its cleanup deadline.");
   }
-  if (messaging && messaging.exitCode === null && messaging.signalCode === null) {
-    const stop = spawn(python, ["-c", "import sys; from gateway.status import get_running_pid, write_planned_stop_marker; pid=int(sys.argv[1]); sys.exit(0 if get_running_pid()==pid and write_planned_stop_marker(pid) else 1)", String(messaging.pid)], {
-      cwd: home, env: childEnvironment, stdio: "ignore", windowsHide: true,
-    });
-    const stopTimer = setTimeout(() => stop.kill(), 10000);
-    const stopCode = await observe(stop);
-    clearTimeout(stopTimer);
-    const drainTimer = setTimeout(() => { messagingFailure = true; messaging.kill(); }, 30000);
-    const gatewayCode = await messagingExit;
-    clearTimeout(drainTimer);
-    if (stopCode !== 0 || gatewayCode !== 0) messagingFailure = true;
+  if (messaging) {
+    if (messaging.exitCode === null && messaging.signalCode === null) {
+      try {
+        const stop = spawn(python, ["-c", "import sys; from gateway.status import get_running_pid, write_planned_stop_marker; pid=int(sys.argv[1]); sys.exit(0 if get_running_pid()==pid and write_planned_stop_marker(pid) else 1)", String(messaging.pid)], {
+          cwd: home, env: childEnvironment, stdio: "ignore", windowsHide: true,
+        });
+        const stopClosed = observe(stop);
+        const marker = await waitForOwnedNativeAgent(stopClosed, 10000);
+        if (!marker.closed || marker.exitCode !== 0) messagingFailure = true;
+        if (!marker.closed && !(await stopOwnedNativeAgent(stop, stopClosed))) {
+          console.error("The owned messaging stop helper did not close within its cleanup deadline.");
+        }
+      } catch {
+        messagingFailure = true;
+      }
+    }
+    const gateway = await waitForOwnedNativeAgent(messagingExit, 30000);
+    if (!gateway.closed || gateway.exitCode !== 0) messagingFailure = true;
+    if (!gateway.closed && !(await stopOwnedNativeAgent(messaging, messagingExit))) {
+      console.error("The owned messaging gateway did not close within its cleanup deadline.");
+    }
   }
 }
 if (messagingFailure) exitCode = 1;
@@ -710,6 +755,10 @@ async function runNativeConsoleAgentInternal(
     if (!systemDrive || !/^[A-Za-z]:$/u.test(systemDrive)) fail("SystemDrive is invalid");
     const systemRoot = requiredDirectory(process.env.SystemRoot ?? "", "Windows system root");
     const runId = randomBytes(5).toString("hex");
+    // Identifiers in the sandbox's LOCAL pipe namespace, not bound TCP ports.
+    const inferencePipePort = randomInt(20000, 60000);
+    const browserPipePort = inferencePipePort + 1;
+    const dashboardPipePort = inferencePipePort + 2;
     const relayToken = randomBytes(32).toString("base64url");
     diagnostics.secret(relayToken);
     const brokerRelayToken = randomBytes(32).toString("base64url");
@@ -797,7 +846,7 @@ async function runNativeConsoleAgentInternal(
       installRoot,
       runRoot,
       agentId === "hermes" ? runtimeLease : undefined,
-      { network: { kind: "personal" }, hostConsole: false },
+      { network: { kind: "supervised" }, hostConsole: false },
       gatewaySession,
     );
     runtimeLease.assertHeld();
@@ -930,6 +979,7 @@ async function runNativeConsoleAgentInternal(
           : {}),
         NEMOCLAW_AGENT_ID: agentId,
         NEMOCLAW_AGENT_SESSION_ID: runId,
+        NEMOCLAW_HERMES_INFERENCE_PIPE_PORT: String(inferencePipePort),
         NEMOCLAW_AGENT_BOOTSTRAP_RECEIPT: bootstrapPath,
         NEMOCLAW_AGENT_STOP_REQUEST: path.join(statusRoot, "shutdown"),
         NEMOCLAW_BROKER_RELAY_ROOT: brokerRelayRoot,
@@ -939,11 +989,13 @@ async function runNativeConsoleAgentInternal(
               NEMOCLAW_BROWSER_RELAY_ROOT: browserRelayRoot,
               NEMOCLAW_BROWSER_RELAY_TOKEN: browserRelayToken,
               NEMOCLAW_BROWSER_CDP_PATH: edge.endpoint.path,
+              NEMOCLAW_HERMES_BROWSER_PIPE_PORT: String(browserPipePort),
             }
           : {}),
         ...(dashboard
           ? {
               NEMOCLAW_AGENT_INTERFACE: "dashboard",
+              NEMOCLAW_HERMES_DASHBOARD_PIPE_PORT: String(dashboardPipePort),
               NEMOCLAW_UI_RELAY_ROOT: relayRoot,
               NEMOCLAW_UI_RELAY_TOKEN: relayToken,
               NEMOCLAW_UI_SESSION_TOKEN: randomBytes(32).toString("base64url"),
@@ -984,6 +1036,7 @@ async function runNativeConsoleAgentInternal(
           .filter(([name]) => /token|key|secret/iu.test(name))
           .map(([, value]) => String(value)),
       );
+      const workloadCommand = nativeRuntimeWorkerCommand(runtimeLease, workload);
       const createArgs = [
         "sandbox",
         "create",
@@ -994,8 +1047,13 @@ async function runNativeConsoleAgentInternal(
         "--driver-config-json",
         JSON.stringify({
           mxc: {
-            command: nativeRuntimeWorkerCommand(runtimeLease, workload),
+            command: workloadCommand,
             cwd: agentRuntimeRoot,
+            loopback_pipe_ports: [
+              inferencePipePort,
+              browserPipePort,
+              ...(dashboard ? [dashboardPipePort] : []),
+            ],
           },
         }),
         "--detach",
@@ -1003,6 +1061,7 @@ async function runNativeConsoleAgentInternal(
       ];
       for (const [name, value] of Object.entries(environment))
         createArgs.push("--env", `${name}=${value}`);
+      createArgs.push("--", ...workloadCommand);
       console.log(`Opening the authentic ${adapter.displayName} terminal inside native MXC…\n`);
       if (consoleEvidenceRoot !== null) {
         fs.writeFileSync(
@@ -1037,17 +1096,16 @@ async function runNativeConsoleAgentInternal(
               result.agent !== agentId ||
               result.sessionId !== runId ||
               result.interface !== (dashboard ? "dashboard" : "console") ||
-              result.transport !== "guarded-file-tcp" ||
+              result.transport !== "guarded-file-native-pipe" ||
               result.brokerHost !== "127.0.0.1" ||
               result.brokerPort !== broker.port ||
-              result.containedHost !== "127.0.0.1" ||
-              (result.containedPort !== null && !validPort(result.containedPort)) ||
+              (result.containedPipePort !== null &&
+                result.containedPipePort !== inferencePipePort) ||
               !["pass", "fail"].includes(result.verdict) ||
               !result.contained ||
-              typeof result.contained.tcpConnected !== "boolean" ||
+              typeof result.contained.pipeConnected !== "boolean" ||
               ![
                 "bridge",
-                "tcp",
                 "unauthenticated-http",
                 "authenticated-bootstrap",
                 "bootstrap-json",
@@ -1069,8 +1127,8 @@ async function runNativeConsoleAgentInternal(
               fail("the contained bootstrap result was invalid");
             const pass =
               result.verdict === "pass" &&
-              result.contained.tcpConnected &&
-              validPort(result.containedPort) &&
+              result.contained.pipeConnected &&
+              validPort(result.containedPipePort) &&
               result.contained.unauthenticatedStatus === 403 &&
               result.contained.authenticatedStatus === 200 &&
               result.contained.bootstrapConsumedByWorkload === true &&
@@ -1085,14 +1143,13 @@ async function runNativeConsoleAgentInternal(
               interface: dashboard ? "dashboard" : "console",
               nodeProcessId: process.pid,
               sandboxName,
-              transport: "guarded-file-tcp",
+              transport: "guarded-file-native-pipe",
               brokerHost: "127.0.0.1",
               brokerPort: broker.port,
-              containedHost: "127.0.0.1",
-              containedPort: result.containedPort,
+              containedPipePort: result.containedPipePort,
               hostListener: { httpStatus: hostProbe.status },
               contained: {
-                tcpConnected: result.contained.tcpConnected,
+                pipeConnected: result.contained.pipeConnected,
                 unauthenticatedStatus: Number.isInteger(result.contained.unauthenticatedStatus)
                   ? result.contained.unauthenticatedStatus
                   : null,
@@ -1183,6 +1240,7 @@ async function runNativeConsoleAgentInternal(
         agentId,
         stateSession,
         monitoring.signal,
+        gatewaySession.ownCommandProcess,
       );
       void agentExit.catch(() => {});
       let exitCode;
@@ -1294,11 +1352,16 @@ async function runNativeConsoleAgentInternal(
         undefined,
         gatewaySession.ownCommandProcess,
       );
-      await confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
-        sandboxName,
-        gateway,
-        stateSession,
-      });
+      await confirmNativeUiRegistryEmpty(
+        openshell,
+        cliEnvironment,
+        {
+          sandboxName,
+          gateway,
+          stateSession,
+        },
+        gatewaySession.ownCommandProcess,
+      );
       passed = true;
       sessionPassed = true;
       console.log(`\n${adapter.displayName} closed. NemoClaw removed the temporary sandbox.`);
@@ -1333,18 +1396,28 @@ async function runNativeConsoleAgentInternal(
           if (browserRelay) await browserRelay.close();
         });
         await cleanup("native sandbox deletion", () =>
-          requestNativeUiSandboxDeletion(openshell, cliEnvironment, {
-            sandboxName,
-            gateway,
-            stateSession,
-          }),
+          requestNativeUiSandboxDeletion(
+            openshell,
+            cliEnvironment,
+            {
+              sandboxName,
+              gateway,
+              stateSession,
+            },
+            gatewaySession.ownCommandProcess,
+          ),
         );
         await cleanup("native sandbox registry", () =>
-          confirmNativeUiRegistryEmpty(openshell, cliEnvironment, {
-            sandboxName,
-            gateway,
-            stateSession,
-          }),
+          confirmNativeUiRegistryEmpty(
+            openshell,
+            cliEnvironment,
+            {
+              sandboxName,
+              gateway,
+              stateSession,
+            },
+            gatewaySession.ownCommandProcess,
+          ),
         );
       }
       const gatewayStopped = await gatewaySession.stopGateway();

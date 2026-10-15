@@ -160,6 +160,7 @@ async function readMaterial(executable: string, ownProcess: (child: ChildProcess
 export class NativeGatewaySession {
   readonly root: string;
   private readonly children = new Set<ChildProcess>();
+  private readonly commands = new Set<ChildProcess>();
   private owned = false;
   private prepared = false;
   private disposed = false;
@@ -342,7 +343,11 @@ export class NativeGatewaySession {
     if (this.disposed) fail("the gateway session is disposed");
     return (child) => {
       this.children.add(child);
-      child.once("close", () => this.children.delete(child));
+      this.commands.add(child);
+      child.once("close", () => {
+        this.children.delete(child);
+        this.commands.delete(child);
+      });
     };
   }
 
@@ -390,6 +395,8 @@ export class NativeGatewaySession {
       if (child.pid && !(await stopChild(child))) stopped = false;
     }
     if (!stopped) fail("an owned process did not stop; private gateway state is retained");
+    if (this.commands.size !== 0)
+      fail("owned command pipes did not close; private gateway state is retained");
     if (this.owned && !(await removeDirectory(this.root)))
       fail("private gateway state could not be removed");
     if (!this.owned && fs.existsSync(this.root))
