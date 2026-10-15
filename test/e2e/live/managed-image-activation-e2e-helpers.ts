@@ -912,7 +912,7 @@ export async function qualifyAgent(
   observeRequests?: () => readonly FakeOpenAiCompatibleRequest[],
 ): Promise<void> {
   const { artifacts, cleanup, host, lifecycle, progress, sandbox } = fixtures;
-  const sandboxName = `${SANDBOX_NAMES[agent]}${credentialless ? "-credentialless" : ""}`;
+  const sandboxName = `${SANDBOX_NAMES[agent]}${credentialless ? "-noauth" : ""}`;
   const artifactPrefix = `${agent}${credentialless ? "-credentialless" : ""}`;
   const env = managedActivationCommandEnv(guard, catalogPath, endpointUrl, credentialless);
   cleanup.trackDisposable(`delete OpenShell sandbox ${sandboxName}`, () =>

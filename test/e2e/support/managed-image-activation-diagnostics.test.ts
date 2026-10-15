@@ -45,6 +45,7 @@ import {
   waitForManagedActivationSandboxAbsence,
 } from "../live/managed-image-activation-e2e-helpers.ts";
 import { pendingAdminRequestId } from "../fixtures/issue-4462-admin-approval-evidence.ts";
+import { validateSandboxName } from "../fixtures/clients/sandbox.ts";
 
 const MANAGED_ADMIN_PUBLIC_KEY_BYTES = Buffer.from(
   Array.from({ length: 32 }, (_value, index) => index),
@@ -1080,10 +1081,19 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
       expectedLogs: [],
       readyCalls: 1,
       error: "reached readiness",
+      credentialless: true,
     },
   ])(
     "retains diagnostics before reporting stop=$stop/start=$start",
-    async ({ stop, start, expectedEvents, expectedLogs, readyCalls, error }) => {
+    async ({
+      stop,
+      start,
+      expectedEvents,
+      expectedLogs,
+      readyCalls,
+      error,
+      credentialless = false,
+    }) => {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-restart-diagnostics-"));
       const events: string[] = [];
       const ok = { exitCode: 0, stdout: "PONG", stderr: "" };
@@ -1132,7 +1142,10 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
       const ready = vi.fn(async () => {
         throw new Error("reached readiness");
       });
-      const cleanupSandbox = vi.fn(async () => ok);
+      const cleanupSandbox = vi.fn(async (name: string) => {
+        validateSandboxName(name);
+        return ok;
+      });
       try {
         await expect(
           qualifyAgent(
@@ -1161,6 +1174,7 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
             "http://inference.invalid/v1",
             "langchain-deepagents-code",
             {} as never,
+            credentialless,
           ),
         ).rejects.toThrow(error);
         expect(events).toEqual(expectedEvents);
