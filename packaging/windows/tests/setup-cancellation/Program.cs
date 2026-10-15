@@ -343,7 +343,9 @@ internal static class Program
         var outputSize = int.Parse(arguments[3]);
         _ = await Console.In.ReadToEndAsync();
         using var lease = new FileStream(Path.Combine(root, "lease"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
-        await File.WriteAllTextAsync(Path.Combine(root, "ready"), Environment.ProcessId.ToString());
+        var ready = Path.Combine(root, "ready");
+        await File.WriteAllTextAsync(ready + ".next", Environment.ProcessId.ToString());
+        File.Move(ready + ".next", ready);
         await Console.Out.WriteAsync(new string('x', outputSize));
         await Console.Error.WriteAsync(new string('y', outputSize));
         using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -442,7 +444,7 @@ internal static class Program
             catch (InvalidOperationException) { }
             try { await visibleOperation.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (InvalidOperationException) { }
-            Directory.Delete(root, recursive: true);
+            await DeleteFixtureDirectoryAsync(root);
         }
     }
 
@@ -517,6 +519,21 @@ internal static class Program
         catch (InvalidOperationException) { }
     }
 
+    private static async Task DeleteFixtureDirectoryAsync(string root)
+    {
+        // The helper has exited; Windows can briefly retain a sharing lock during file teardown.
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            try { Directory.Delete(root, recursive: true); return; }
+            catch (IOException error) when (OperatingSystem.IsWindows()
+                && (error.HResult & 0xffff) is 32 or 33 && deadline.Elapsed < TimeSpan.FromSeconds(1))
+            {
+                await Task.Delay(20);
+            }
+        }
+    }
+
     private static async Task AssertPreparationTimeoutStopsHelperAsync()
     {
         var root = Directory.CreateTempSubdirectory("nemoclaw-setup-prepare-").FullName;
@@ -544,7 +561,7 @@ internal static class Program
             await File.WriteAllTextAsync(Path.Combine(root, "release"), "finish");
             try { await operation.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (OperationCanceledException) { }
-            Directory.Delete(root, recursive: true);
+            await DeleteFixtureDirectoryAsync(root);
         }
     }
 
