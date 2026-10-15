@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! `openshell_web_search`: one resource owning a web search provider's
-//! OpenShell profile and registration. It delegates to the profile and
-//! registration kinds, whose creation adopts an existing object with the same
-//! identity, so a failure between the two recovers on the next apply.
+//! OpenShell profile and registration, delegating to the profile and
+//! registration kinds. When only one of the two exists, after a failure
+//! between them or a deletion outside OpenTofu, the resource is replaced:
+//! removal deletes what remains and creation recreates both.
 use nemoclaw_backend::{Backend, Error, Mutation, ObservationError, Row};
 use nemoclaw_openshell::search::{SearchProvider, web_search_names};
 
@@ -14,7 +15,7 @@ fn value<'a>(row: &'a Row, field: &str) -> &'a str {
 }
 
 /// The profile and registration rows a web search row owns.
-fn rows(row: &Row) -> Result<(Row, Row), ObservationError> {
+pub fn rows(row: &Row) -> Result<(Row, Row), ObservationError> {
     let provider =
         SearchProvider::from_name(value(row, "provider_type")).ok_or(ObservationError::Query)?;
     let (profile, registration) =
@@ -52,6 +53,19 @@ pub(crate) async fn plan(
     desired: &Row,
     prior: Option<&Row>,
 ) -> Result<(), Error> {
+    if SearchProvider::from_name(value(desired, "provider_type")).is_none() {
+        return Err(Error::Conflict("provider_type must be brave or tavily"));
+    }
+    if value(desired, "credential_env").is_empty() {
+        return Err(Error::Conflict(
+            "credential_env must name the variable that holds the search API key",
+        ));
+    }
+    if value(desired, "binaries_json").is_empty() || value(desired, "binaries_json") == "[]" {
+        return Err(Error::Conflict(
+            "binaries must list the executables allowed to use web search",
+        ));
+    }
     let (profile, registration) = rows(desired)?;
     let prior = prior.map(rows).transpose()?;
     backend
@@ -91,10 +105,20 @@ pub(crate) async fn read(
             Ok(Some(observed))
         }
         (None, None) => Ok(None),
-        // Half of the pair exists: plan its creation, which adopts the other
-        // half; while removing, report it so removal deletes what remains.
+        // Half of the pair exists. Report the missing half's inputs as empty,
+        // so the plan shows drift and replaces the resource; while removing,
+        // report it unchanged so removal deletes what remains.
         _ if removing => Ok(Some(prior.clone())),
-        _ => Ok(None),
+        (profile, _) => {
+            let mut observed = prior.clone();
+            let missing = if profile.is_none() {
+                "binaries_json"
+            } else {
+                "credential_env"
+            };
+            observed.insert(missing.into(), String::new());
+            Ok(Some(observed))
+        }
     }
 }
 
@@ -103,15 +127,20 @@ pub(crate) async fn ensure(backend: &(impl Backend + ?Sized), desired: &Row) -> 
         Ok(rows) => rows,
         Err(error) => return Mutation::failed(error),
     };
-    if let (_, Some(error)) = backend
+    if let (state, Some(error)) = backend
         .ensure("provider_profile", &profile)
         .await
         .into_parts()
     {
-        return Mutation::failed(error);
+        // Record the identity when the profile may exist, so the next apply
+        // replaces the resource instead of creating a conflicting one.
+        return match state {
+            Some(_) => Mutation::partial(desired.clone(), error),
+            None => Mutation::failed(error),
+        };
     }
     match backend.ensure("provider", &registration).await.into_parts() {
-        (_, Some(error)) => Mutation::failed(error),
+        (_, Some(error)) => Mutation::partial(desired.clone(), error),
         (Some(established), None) => {
             let mut state = desired.clone();
             state.insert("id".into(), value(&established, "id").into());
@@ -127,24 +156,15 @@ pub(crate) async fn remove(
     destroying: bool,
 ) -> Result<(), ObservationError> {
     let (profile, registration) = rows(prior)?;
-    // The API refuses to delete a profile a registration still imports.
-    if backend
-        .read("provider", &registration, true)
-        .await?
-        .is_some()
-    {
-        backend
-            .remove("provider", &registration, destroying)
-            .await?;
-    }
-    if backend
-        .read("provider_profile", &profile, true)
-        .await?
-        .is_some()
-    {
-        backend
-            .remove("provider_profile", &profile, destroying)
-            .await?;
+    // Registration first: the API refuses to delete a profile a registration
+    // still imports. Each half is deleted through its observed row, which
+    // carries the ID it is bound to.
+    for (kind, row) in [("provider", registration), ("provider_profile", profile)] {
+        if let Some(observed) = backend.read(kind, &row, true).await? {
+            let mut bound = row;
+            bound.extend(observed);
+            backend.remove(kind, &bound, destroying).await?;
+        }
     }
     Ok(())
 }

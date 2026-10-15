@@ -15,7 +15,9 @@ variable "endpoint" { type = string }
 variable "launch_json" { type = string }
 variable "binaries" { type = list(string) }
 variable "enabled" { default = true }
-provider "openshell" {}
+variable "sandbox" { default = true }
+variable "destroy" { default = false }
+provider "openshell" { destroy = var.destroy }
 locals {
   gateway = {
     type                = "openshell_gateway"
@@ -43,7 +45,7 @@ resource "openshell_web_search" "brave" {
   binaries       = var.binaries
 }
 resource "openshell_sandbox" "agent" {
-  count       = var.enabled ? 1 : 0
+  count       = var.enabled && var.sandbox ? 1 : 0
   gateway     = local.gateway
   workspace   = openshell_workspace.example.ref
   name        = "assistant"
@@ -125,19 +127,33 @@ async fn web_search_owns_its_profile_and_registration() {
     }
     noop(&root);
 
-    // A registration lost after its profile was created is recreated, and the
-    // profile is adopted rather than recreated.
+    // Losing the registration replaces the resource: the plan shows the
+    // drift, removal deletes the remaining profile, and creation recreates
+    // both under a new generation.
     let profiles = fixture.state.lock().unwrap().profiles.clone();
     fixture.state.lock().unwrap().providers.clear();
     run(&root, &apply);
     {
         let state = fixture.state.lock().unwrap();
         assert_eq!(state.providers.len(), 1);
-        assert_eq!(state.profiles, profiles);
+        assert_eq!(state.profiles.len(), 1);
+        assert_ne!(state.profiles, profiles);
     }
     noop(&root);
 
-    // Removing it removes both objects; the workspace stays.
+    // Removing it removes both objects without destroy mode, once the sandbox
+    // that attaches it is gone; the workspace stays.
+    run(
+        &root,
+        &[
+            "apply",
+            "-auto-approve",
+            "-input=false",
+            "-var=sandbox=false",
+            "-var=destroy=true",
+        ],
+    );
+    assert_eq!(fixture.state.lock().unwrap().providers.len(), 1);
     run(
         &root,
         &[
@@ -145,6 +161,7 @@ async fn web_search_owns_its_profile_and_registration() {
             "-auto-approve",
             "-input=false",
             "-var=enabled=false",
+            "-var=sandbox=false",
         ],
     );
     let state = fixture.state.lock().unwrap();

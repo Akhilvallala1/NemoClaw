@@ -17,6 +17,7 @@ mod profile;
 mod provider;
 mod web_search;
 pub use nemoclaw_openshell::{policy::policy_json, profile::definition as inference_profile};
+pub use web_search::rows as web_search_rows;
 mod inference;
 use inference::{PROVIDERS_ENV, inference_environment};
 use network::{row_policy, validate_row_policy};
@@ -386,7 +387,9 @@ pub fn definitions() -> [nemoclaw_tofu::Definition; 5] {
         .derived("registration", provider_registration),
         // A web search provider's profile and registration, as one resource
         // whose owner is its workspace's. Every input names them, so changes
-        // replace.
+        // replace. `credential_env` and `binaries` are required by plans,
+        // not the schema: an observation reports them empty when their half
+        // of the pair is missing, which shows as drift.
         Definition::new(
             web_search::KIND,
             &[
@@ -400,6 +403,7 @@ pub fn definitions() -> [nemoclaw_tofu::Definition; 5] {
             ],
             &[],
         )
+        .optional(&["credential_env", "binaries_json"])
         .derived("registration", web_search_registration),
         Definition::new(
             "provider_profile",
