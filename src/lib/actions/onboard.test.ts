@@ -13,6 +13,7 @@ vi.mock("../agent/defs", () => ({ listAgents: mocks.listAgents }));
 vi.mock("../onboard", () => ({ onboard: mocks.onboard }));
 vi.mock("../onboard/command", () => ({ runOnboardCommand: mocks.runOnboardCommand }));
 
+import { readRequestedPolicyTier } from "../onboard/policy-tier-env";
 import { runOnboardAction } from "./onboard";
 
 describe("onboard action runtime composition", () => {
@@ -38,5 +39,27 @@ describe("onboard action runtime composition", () => {
       resume: false,
       googlechatTunnelRuntime,
     });
+  });
+
+  it("scopes --policy-tier to one legacy onboarding run (#13180)", async () => {
+    let observed: string | null = null;
+    mocks.runOnboardCommand.mockImplementation(
+      async (deps: {
+        listPolicyTiers(): readonly string[];
+        runOnboard(options: unknown): Promise<void>;
+      }) => {
+        expect(deps.listPolicyTiers()).toEqual(["restricted", "balanced", "open", "personal"]);
+        await deps.runOnboard({ requestedPolicyTier: "restricted" });
+      },
+    );
+    mocks.onboard.mockImplementationOnce(async () => {
+      observed = readRequestedPolicyTier();
+      throw new Error("boom");
+    });
+
+    await expect(runOnboardAction({ "policy-tier": "restricted" })).rejects.toThrow("boom");
+
+    expect(observed).toBe("restricted");
+    expect(readRequestedPolicyTier()).toBeNull();
   });
 });

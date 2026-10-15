@@ -22,7 +22,7 @@ import {
   createPolicySelectionPromptHelpers,
   type PolicySelectionPromptDeps,
 } from "../../../src/lib/onboard/policy-selection-prompts";
-import { resolvePolicyTierFromEnv } from "../../../src/lib/onboard/policy-tier-env";
+import * as policyTierEnv from "../../../src/lib/onboard/policy-tier-env";
 import * as policy from "../../../src/lib/policy";
 import * as tiers from "../../../src/lib/policy/tiers";
 
@@ -67,7 +67,7 @@ function createPromptHarness({
 } = {}) {
   const deps: PolicySelectionPromptDeps = {
     tiers,
-    policyTierEnv: { resolvePolicyTierFromEnv },
+    policyTierEnv,
     isNonInteractive: () => nonInteractive,
     note: (message) => notes.push(message),
     prompt: async (question) => {
@@ -319,7 +319,7 @@ describe("policy tier selection", () => {
       throw new Error(`process.exit(${String(code)})`);
     }) as never);
 
-    assert.throws(() => resolvePolicyTierFromEnv(), /process\.exit\(1\)/);
+    assert.throws(() => policyTierEnv.resolvePolicyTierFromEnv(), /process\.exit\(1\)/);
     assert.equal(exit.mock.calls[0]?.[0], 1);
     assert.match(
       errors.join("\n"),

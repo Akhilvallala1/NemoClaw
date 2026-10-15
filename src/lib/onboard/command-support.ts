@@ -7,6 +7,10 @@ import { describeAgentFlag } from "./agent-flag-help";
 import { PORTABLE_EXPERIMENTAL_PROFILE } from "./docker-driver-platform";
 import { NOTICE_ACCEPT_FLAG, NOTICE_ACCEPT_FLAG_NAME } from "./usage-notice";
 
+// Mirrors nemoclaw-blueprint/policies/tiers.yaml. Kept inline so command help
+// does not load the tier registry; a unit test keeps the two lists aligned.
+export const ONBOARD_POLICY_TIER_VALUES = ["restricted", "balanced", "open", "personal"] as const;
+
 type AgentRegistryReader = () => readonly string[];
 
 let agentRegistryReaderForTest: AgentRegistryReader | null = null;
@@ -47,7 +51,7 @@ function agentFlagDescription(): string {
 }
 
 export const onboardUsage = [
-  `onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository@sha256:digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [${NOTICE_ACCEPT_FLAG}]`,
+  `onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository@sha256:digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--policy-tier <restricted|balanced|open|personal>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [${NOTICE_ACCEPT_FLAG}]`,
 ];
 
 export const onboardExamples = [
@@ -60,6 +64,7 @@ export const onboardExamples = [
   "<%= config.bin %> onboard --from-image registry.example.com/agent@sha256:<digest> --name alpha",
   "<%= config.bin %> onboard --name alpha --host-mount /home/user/project:/sandbox/project",
   "<%= config.bin %> onboard --agents ./agents.yaml",
+  "<%= config.bin %> onboard --policy-tier restricted",
   "<%= config.bin %> onboard --sandbox-gpu --sandbox-gpu-device nvidia.com/gpu=0",
   `<%= config.bin %> onboard --non-interactive --yes --name alpha ${NOTICE_ACCEPT_FLAG}`,
 ];
@@ -85,6 +90,7 @@ export type OnboardFlags = {
   agent?: string;
   agents?: string;
   "tool-disclosure"?: ToolDisclosure;
+  "policy-tier"?: string;
   observability?: boolean;
   "control-ui-port"?: number;
   events?: "jsonl";
@@ -161,6 +167,11 @@ export function buildOnboardFlags(options: { includeEvents?: boolean } = {}): Re
       description:
         "Choose progressive tool discovery or direct exposure of all session-authorized tools",
       options: [...TOOL_DISCLOSURE_VALUES],
+    }),
+    "policy-tier": Flags.string({
+      description:
+        "Select the network policy tier without the tier prompt (overrides NEMOCLAW_POLICY_TIER)",
+      options: [...ONBOARD_POLICY_TIER_VALUES],
     }),
     observability: Flags.boolean({
       allowNo: true,

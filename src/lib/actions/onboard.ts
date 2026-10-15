@@ -4,7 +4,11 @@
 import { loadServingCatalog } from "../inference/serving/catalog-loader";
 import type { GooglechatTunnelRuntimeDeps } from "../messaging/channels/googlechat/hooks/tunnel-runtime";
 import { type OnboardCommandOptions, runOnboardCommand } from "../onboard/command";
-import { type OnboardFlags, readAgentRegistryNames } from "../onboard/command-support";
+import {
+  ONBOARD_POLICY_TIER_VALUES,
+  type OnboardFlags,
+  readAgentRegistryNames,
+} from "../onboard/command-support";
 import { resolveOnboardResumeIntent } from "../onboard/session-bootstrap";
 import { loadOnboardCommandResumeSession } from "../onboard/sandbox-registration";
 import type { OnboardOptions } from "../onboard/types";
@@ -22,7 +26,14 @@ async function runOnboard(
   const { onboard } = (await import("../onboard")) as unknown as {
     onboard: (onboardOptions?: OnboardOptions) => Promise<void>;
   };
-  await onboard({ ...options, googlechatTunnelRuntime: runtimeDeps.googlechatTunnelRuntime });
+  // An explicit --policy-tier makes the wizard skip its tier prompt for this run only.
+  const { setRequestedPolicyTier } = await import("../onboard/policy-tier-env");
+  setRequestedPolicyTier(options.requestedPolicyTier ?? null);
+  try {
+    await onboard({ ...options, googlechatTunnelRuntime: runtimeDeps.googlechatTunnelRuntime });
+  } finally {
+    setRequestedPolicyTier(null);
+  }
 }
 
 function buildOnboardCommandDeps(flags: OnboardFlags, runtimeDeps: OnboardActionRuntimeDeps) {
@@ -31,6 +42,7 @@ function buildOnboardCommandDeps(flags: OnboardFlags, runtimeDeps: OnboardAction
     env: process.env,
     runOnboard: (options: OnboardCommandOptions) => runOnboard(options, runtimeDeps),
     listAgents: () => [...readAgentRegistryNames()],
+    listPolicyTiers: () => ONBOARD_POLICY_TIER_VALUES,
     loadServingCatalog,
     loadSession: loadOnboardCommandResumeSession,
     resolveResumeIntent: resolveOnboardResumeIntent,

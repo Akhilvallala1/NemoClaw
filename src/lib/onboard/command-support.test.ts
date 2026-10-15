@@ -3,7 +3,13 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildOnboardFlags, onboardUsage, setAgentRegistryReaderForTest } from "./command-support";
+import { listTiers } from "../policy/tiers";
+import {
+  buildOnboardFlags,
+  ONBOARD_POLICY_TIER_VALUES,
+  onboardUsage,
+  setAgentRegistryReaderForTest,
+} from "./command-support";
 
 afterEach(() => {
   setAgentRegistryReaderForTest(null);
@@ -53,6 +59,16 @@ describe("buildOnboardFlags --apf-interceptor help", () => {
     expect(flags["apf-interceptor"].description).toContain("without claiming its provenance");
     expect(flags["apf-interceptor"].exclusive).toEqual(["resume", "recreate-sandbox"]);
     expect(onboardUsage.join(" ")).toContain("--apf-interceptor");
+  });
+});
+
+describe("buildOnboardFlags --policy-tier help (#13180)", () => {
+  it("offers exactly the tiers defined in tiers.yaml", () => {
+    const flags = buildOnboardFlags();
+
+    expect(flags["policy-tier"].options).toEqual(listTiers().map((tier) => tier.name));
+    expect([...ONBOARD_POLICY_TIER_VALUES]).toEqual(listTiers().map((tier) => tier.name));
+    expect(onboardUsage.join(" ")).toContain("--policy-tier <restricted|balanced|open|personal>");
   });
 });
 

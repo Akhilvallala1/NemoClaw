@@ -34,6 +34,9 @@ export interface PolicySelectionPromptDeps {
   };
   policyTierEnv: {
     resolvePolicyTierFromEnv(): string;
+    readPolicyTierPreselectionFromEnv(): string | null;
+    /** Tier chosen with `onboard --policy-tier`; skips the tier prompt when set. */
+    readRequestedPolicyTier(): string | null;
   };
   isNonInteractive(): boolean;
   note(message: string): void;
@@ -123,15 +126,27 @@ export function createPolicySelectionPromptHelpers(deps: PolicySelectionPromptDe
   /**
    * Prompt the user to select a policy tier (restricted / balanced / open / personal).
    * Uses the same radio-style TUI as presetsCheckboxSelector (single-select).
+   * An explicit `--policy-tier` choice skips the prompt in every mode.
    * In non-interactive mode reads NEMOCLAW_POLICY_TIER (default: balanced).
+   * In interactive mode a valid NEMOCLAW_POLICY_TIER pre-selects that tier.
    * Returns the tier name string.
    */
   async function selectPolicyTier(): Promise<string> {
     const allTiers = tiers.listTiers();
-    const defaultTier = allTiers.find((tier) => tier.name === "balanced") ?? allTiers[1];
+    const balancedTier = allTiers.find((tier) => tier.name === "balanced") ?? allTiers[1];
 
-    if (!defaultTier) {
+    if (!balancedTier) {
       throw new Error("No policy tiers are configured.");
+    }
+
+    const explicitName = policyTierEnv.readRequestedPolicyTier();
+    if (explicitName) {
+      const explicitTier = tiers.getTier(explicitName);
+      if (!explicitTier) {
+        throw new Error(`Unknown policy tier from --policy-tier: ${explicitName}`);
+      }
+      note(`  Policy tier: ${explicitTier.label} (from --policy-tier)`);
+      return explicitTier.name;
     }
 
     if (isNonInteractive()) {
@@ -139,6 +154,19 @@ export function createPolicySelectionPromptHelpers(deps: PolicySelectionPromptDe
       note(`  [non-interactive] Policy tier: ${name}`);
       return name;
     }
+
+    const envName = policyTierEnv.readPolicyTierPreselectionFromEnv();
+    const envTier = envName ? allTiers.find((tier) => tier.name === envName) : undefined;
+    if (envName && !envTier) {
+      note(
+        `  Ignoring unknown NEMOCLAW_POLICY_TIER '${envName}'. Valid: ${allTiers
+          .map((tier) => tier.name)
+          .join(", ")}`,
+      );
+    } else if (envTier) {
+      note(`  Pre-selected policy tier from NEMOCLAW_POLICY_TIER: ${envTier.label}`);
+    }
+    const defaultTier = envTier ?? balancedTier;
 
     const RADIO_ON = useColor ? "[\x1b[32m✓\x1b[0m]" : "[✓]";
     const RADIO_OFF = useColor ? "\x1b[2m[ ]\x1b[0m" : "[ ]";

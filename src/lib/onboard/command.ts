@@ -84,6 +84,8 @@ export interface OnboardCommandOptions {
   agent: string | null;
   agentsManifest: string | null;
   toolDisclosure: ToolDisclosure | null;
+  /** Operator-selected `--policy-tier`; skips the tier prompt when set. */
+  requestedPolicyTier: string | null;
   observabilityEnabled: boolean | null;
   controlUiPort: number | null;
   gpu: boolean;
@@ -104,6 +106,7 @@ export interface ResolveOnboardOptionsDeps {
   arch?: NodeJS.Architecture;
   runtimeProviders?: import("./runtime-provider/access").RuntimeProviderBundleRegistry;
   listAgents?: () => string[];
+  listPolicyTiers?: () => readonly string[];
   listServingProfiles?: () => ServingProfileListEntry[];
   loadServingCatalog?: () => CompiledServingCatalog;
   loadSession?: () => {
@@ -472,6 +475,28 @@ function resolveOnboardToolDisclosure(
   }
 }
 
+function resolveRequestedPolicyTier(
+  requested: string | undefined,
+  experimentalProfile: ExperimentalOnboardProfile | null,
+  resume: boolean,
+  deps: ResolveOnboardOptionsDeps,
+): string | null {
+  if (requested === undefined) return null;
+  const name = requested.trim().toLowerCase();
+  const knownTiers = deps.listPolicyTiers?.() ?? [];
+  if (knownTiers.length > 0 && !knownTiers.includes(name)) {
+    fail(deps, `  Unknown policy tier: ${requested}. Valid: ${knownTiers.join(", ")}`);
+  }
+  if (experimentalProfile) fail(deps, "  --policy-tier cannot be used with the Portable profile.");
+  if (resume) {
+    fail(
+      deps,
+      "  --policy-tier cannot be used when resuming onboarding; use --fresh to choose a new tier.",
+    );
+  }
+  return name;
+}
+
 function resolveExternalImageReference(
   value: string | undefined,
   deps: ResolveOnboardOptionsDeps,
@@ -503,6 +528,12 @@ export function resolveOnboardOptions(
   if (experimentalProfile === PORTABLE_EXPERIMENTAL_PROFILE && fromImage) {
     fail(deps, "  --from-image cannot be used with the Portable profile.");
   }
+  const requestedPolicyTier = resolveRequestedPolicyTier(
+    flags["policy-tier"],
+    experimentalProfile,
+    resume,
+    deps,
+  );
   return {
     tempManagedRuntime: flags["temp-managed-runtime"] === true,
     tempManagedRuntimeCatalog: resolveFileOption(
@@ -528,6 +559,7 @@ export function resolveOnboardOptions(
     agent,
     agentsManifest: resolveAgentsManifest(flags.agents, agent, deps),
     toolDisclosure,
+    requestedPolicyTier,
     observabilityEnabled: typeof flags.observability === "boolean" ? flags.observability : null,
     controlUiPort: flags["control-ui-port"] ?? null,
     gpu: flags.gpu === true,
@@ -718,6 +750,24 @@ function restoreOnboardCommandEnvironment(
   }
 }
 
+// Scope `--policy-tier` to one run. The flag overrides an ambient
+// NEMOCLAW_POLICY_TIER so every non-interactive tier consumer sees the same
+// choice. The onboard action separately tells the wizard to skip its prompt.
+function applyRequestedPolicyTierEnvironment(
+  options: OnboardCommandOptions,
+  env: NodeJS.ProcessEnv,
+): () => void {
+  const tier = options.requestedPolicyTier;
+  if (!tier) return () => {};
+  const present = Object.prototype.hasOwnProperty.call(env, "NEMOCLAW_POLICY_TIER");
+  const previous = env.NEMOCLAW_POLICY_TIER;
+  env.NEMOCLAW_POLICY_TIER = tier;
+  return () => {
+    if (present) env.NEMOCLAW_POLICY_TIER = previous ?? "";
+    else delete env.NEMOCLAW_POLICY_TIER;
+  };
+}
+
 async function runOnboardCommandAttempt(
   deps: RunOnboardCommandDeps,
   env: NodeJS.ProcessEnv,
@@ -729,6 +779,7 @@ async function runOnboardCommandAttempt(
     resumeIntent,
   });
   let restoreServingProfileEnvironment = () => {};
+  let restorePolicyTierEnvironment = () => {};
   const environmentSnapshot: OnboardCommandEnvironmentSnapshot = {
     agentsManifest: env.NEMOCLAW_EXTRA_AGENTS_JSON,
     toolDisclosure: env[TOOL_DISCLOSURE_ENV],
@@ -757,11 +808,13 @@ async function runOnboardCommandAttempt(
     if (options.noOllamaAutostart && !options.experimentalProfile) {
       env.NEMOCLAW_OLLAMA_NO_AUTOSTART = "1";
     }
+    restorePolicyTierEnvironment = applyRequestedPolicyTierEnvironment(options, env);
     await withCredentialOverrides(activation.credentialOverrides, () => deps.runOnboard(options));
     return "complete";
   } catch (error) {
     return handleOnboardCommandAttemptError(error, deps, attempt);
   } finally {
+    restorePolicyTierEnvironment();
     restoreOnboardCommandEnvironment(
       env,
       options,
