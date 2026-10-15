@@ -1,5 +1,5 @@
 {
-  "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.\nSPDX-License-Identifier: Apache-2.0\n\nInitial no-growth baseline for issue #10934 and Epic #10920. The epic reference remains fixed at fe18b2f004e2304c52db33cf7bb5895828197f9a. Current main is lower because #10722 removed the live Shields assertion suites before this ratchet landed. PR #10341 adds the accepted public deferred-install and same-home credential continuation boundary for Hermes and Deep Agents Code; existing per-file budgets remain unchanged.",
+  "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.\nSPDX-License-Identifier: Apache-2.0\n\nInitial no-growth baseline for issue #10934 and Epic #10920. The epic reference remains fixed at fe18b2f004e2304c52db33cf7bb5895828197f9a. Current main is lower because #10722 removed the live Shields assertion suites before this ratchet landed. PR #10341 adds the accepted public deferred-install and same-home credential continuation boundary for Hermes and Deep Agents Code; existing per-file budgets remain unchanged. PR #13055 adds five explicitly approved assertions for the native Deep Agents Code OpenRouter request in the existing hosted OpenRouter target.",
   "schemaVersion": 1,
   "issue": 10934,
   "epic": 10920,
