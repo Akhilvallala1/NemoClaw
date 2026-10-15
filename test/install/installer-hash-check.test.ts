@@ -40,6 +40,7 @@ import {
   alterRequiredReleaseValue,
   brevMutationFixtures,
   npmReplacementFixtureVersion,
+  copyTrustedInstallerVerifier,
   preparedReleaseArgs,
   prepareReleaseFixtureRuntime,
   installerReleaseTemplate,
@@ -47,6 +48,7 @@ import {
 } from "../helpers/openshell-installer-template";
 import { selectPreparedGatewayRuntime } from "../helpers/prepared-gateway-runtime";
 import { prepareInstallerBin } from "../support/openshell-installed-version";
+import { registerV012TemplateCases } from "./installer-hash-v012-suite";
 
 const REPO_ROOT = path.join(import.meta.dirname, "../..");
 const INSTALLER_TEMPLATE = fs.readFileSync(
@@ -373,8 +375,8 @@ const removeFirstReleaseFormula = (source: string): string =>
   );
 const trustSyntheticSupervisorRuntimeTemplate = (source: string): string => {
   const marker = "      runtimeTemplateSha256: [\n";
-  const result = source.replaceAll(
-    marker,
+  const result = source.replace(
+    /^      runtimeTemplateSha256: \[\n/gmu,
     `${marker}        "${SYNTHETIC_SUPERVISOR_RUNTIME_TEMPLATE_SHA256}",\n`,
   );
   assert.notEqual(result, source, "synthetic supervisor runtime trust anchors");
@@ -599,17 +601,12 @@ function createFixture(
   const checksDir = path.join(scriptsDir, "checks");
   const binDir = path.join(fixtureRoot, "bin");
   tempDirs.push(fixtureRoot);
-  fs.mkdirSync(checksDir, { recursive: true });
+  copyTrustedInstallerVerifier(REPO_ROOT, fixtureRoot);
   prepareInstallerBin(binDir);
   fs.mkdirSync(path.join(fixtureRoot, "nemoclaw-blueprint"), {
     recursive: true,
   });
   fs.mkdirSync(path.join(fixtureRoot, "src/lib/onboard"), { recursive: true });
-  const checker = fs.readFileSync(
-    path.join(REPO_ROOT, "scripts", "check-installer-hash.sh"),
-    "utf8",
-  );
-  fs.writeFileSync(path.join(scriptsDir, "check-installer-hash.sh"), checker);
   fs.writeFileSync(
     path.join(checksDir, "extract-installer-pins.mts"),
     trustSyntheticSupervisorRuntimeTemplate(
@@ -752,6 +749,7 @@ function runFixture(
   openshellVersion?: string,
   trustedChecker = false,
   formatting: PinFormatting = "canonical",
+  candidateAdmission = false,
 ) {
   const fixtureRoot = createFixture(openshellVersion, formatting);
   const targetChecker = path.join(fixtureRoot, "scripts", "check-installer-hash.sh");
@@ -764,12 +762,7 @@ function runFixture(
     "extract-installer-pins.mts",
   );
   tempDirs.push(trustedRoot);
-  fs.mkdirSync(path.dirname(trustedParserPath), { recursive: true });
-  fs.copyFileSync(path.join(REPO_ROOT, "scripts", "check-installer-hash.sh"), trustedCheckerPath);
-  fs.copyFileSync(
-    path.join(REPO_ROOT, "scripts", "checks", "extract-installer-pins.mts"),
-    trustedParserPath,
-  );
+  copyTrustedInstallerVerifier(REPO_ROOT, trustedRoot);
   const parserSource = fs.readFileSync(trustedParserPath, "utf8");
   const mutateParser = PARSER_MUTATIONS[mode];
   const mutatedParserSource = mutateParser?.(parserSource) ?? parserSource;
@@ -806,8 +799,11 @@ function runFixture(
     encoding: "utf8",
     env: {
       ...process.env,
-      GITHUB_TOKEN: "",
+      GITHUB_TOKEN: candidateAdmission ? "fixture-unused-token" : "",
       GH_TOKEN: "",
+      UPGRADE_PR_NUMBER: candidateAdmission ? "123" : "",
+      UPGRADE_CANDIDATE_SHA: candidateAdmission ? "a".repeat(40) : "",
+      UPGRADE_BASE_SHA: candidateAdmission ? "b".repeat(40) : "",
       NEMOCLAW_INSTALLER_HASH_REPO_ROOT: trustedChecker ? fixtureRoot : "",
       NEMOCLAW_TEST_CURL_MODE:
         mode.includes("bypass") || mode === "brev-mismatch" ? "complete" : mode,
@@ -857,6 +853,14 @@ function parseNpmReplacement(source: string, digest: string, trustedDigest = dig
 }
 
 describe("installer hash verification", () => {
+  it("keeps upstream asset verification when candidate admission uses unchanged base trust", () => {
+    expectTrustedRelease(
+      runFixture("complete", "0.0.116", true, "canonical", true),
+      "0.0.116",
+      CHECKSUM_MANIFESTS,
+      ASSET_DIGESTS_BY_VERSION.get("0.0.116")!,
+    );
+  });
   // source-shape-contract: security -- Exact absence of the retired Brev digest prevents a stale installer template from regaining authorization
   it("does not base-trust the obsolete Brev npm replacement digest", () => {
     const parserSource = fs.readFileSync(
@@ -941,7 +945,7 @@ describe("installer hash verification", () => {
   it("verifies all installer and Brev pins from token-free checksum manifests", () => {
     const result = runFixture("complete");
 
-    expect(result.status, result.stdout).toBe(0);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toContain("All installer hashes are current");
   });
 
@@ -1052,14 +1056,7 @@ describe("installer hash verification", () => {
       ),
     ]);
   });
-  it("admits only the exact thread-group supervisor template with OpenShell 0.1.2", () => {
-    const root = createFixture("0.1.2");
-    prepareReleaseFixtureRuntime(REPO_ROOT, root, { currentProcessReader: true });
-    const run = () => spawnSync("node", preparedReleaseArgs(REPO_ROOT, root), { encoding: "utf8" });
-    expect(run().status).toBe(0);
-    fs.appendFileSync(path.join(root, "src/lib/onboard/docker-driver-gateway-runtime.ts"), "//x");
-    expect(run()).toMatchObject({ status: 1, stderr: expect.stringContaining("not base-trusted") });
-  });
+  registerV012TemplateCases(REPO_ROOT, createFixture);
   it.each(V012_TRUST_MUTATIONS)(
     "rejects an altered OpenShell 0.1.2 %s",
     (_label, name, value, diagnostic) => {
