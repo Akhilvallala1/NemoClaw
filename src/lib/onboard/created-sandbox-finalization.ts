@@ -620,6 +620,7 @@ type OnboardCreateIntent = {
   readonly observabilityEnabled?: boolean;
 } | null;
 type OnboardResolvedCreateIntent = {
+  readonly nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
   readonly nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
   readonly nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
   readonly policy: {
