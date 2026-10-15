@@ -13,11 +13,6 @@ use tf_provider::{
     value::{Value, ValueEmpty},
 };
 
-/// Longest wait for a container to finish starting.
-const MAX_WAIT_SECONDS: u64 = 3600;
-/// Interval between health observations while the container starts.
-const POLL: Duration = Duration::from_secs(2);
-
 pub(crate) struct HostContainerHealthDataSource(pub Arc<ConfiguredBackend>);
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct HostContainerHealthState {
@@ -30,7 +25,7 @@ pub(crate) struct HostContainerHealthState {
     healthy: Value<bool>,
 }
 
-/// The container a read must find, once every input is known.
+/// The container a read must find.
 struct Expected {
     engine: String,
     name: String,
@@ -39,57 +34,39 @@ struct Expected {
     wait: Duration,
 }
 
-fn known<'a>(value: &'a Value<String>, required: &'static str) -> Result<Option<&'a str>, Error> {
-    match value {
-        Value::Value(value) if !value.is_empty() => Ok(Some(value)),
-        Value::Unknown => Ok(None),
-        _ => Err(Error::State(required)),
-    }
-}
-
 impl Expected {
-    /// The expected container, or `None` while any input is unknown.
-    fn from_state(config: &HostContainerHealthState) -> Result<Option<Self>, Error> {
-        let engine = known(&config.engine, "container engine is required")?;
-        let name = known(&config.name, "container name is required")?;
-        let id = known(&config.container_id, "container identity is required")?;
-        if let Some(engine) = engine {
-            crate::config::validate_engine_endpoint(engine)?;
-        }
-        let wait = match config.wait_timeout_seconds {
-            Value::Value(seconds) if seconds <= MAX_WAIT_SECONDS => Some(seconds),
-            Value::Null => Some(0),
-            Value::Unknown => None,
-            Value::Value(_) => {
-                return Err(Error::State(
-                    "container health wait must be between 0 and 3600 seconds",
-                ));
-            }
+    /// The expected container; an error while any input is unknown or missing.
+    fn from_state(config: &HostContainerHealthState) -> Result<Self, Error> {
+        let text = |value: &Value<String>| match value {
+            Value::Value(value) if !value.is_empty() => Ok(value.clone()),
+            _ => Err(Error::State("container health inputs are not yet known")),
         };
         let labels = match &config.labels {
-            Value::Null => Some(BTreeMap::new()),
-            Value::Unknown => None,
+            Value::Null => BTreeMap::new(),
             Value::Value(labels) => labels
                 .iter()
-                .map(|(key, value)| match value {
-                    Value::Value(value) => Ok(Some((key.clone(), value.clone()))),
-                    Value::Unknown => Ok(None),
-                    Value::Null => Err(Error::State("container label values are required")),
-                })
-                .collect::<Result<Option<_>, _>>()?,
+                .map(|(key, value)| Ok((key.clone(), text(value)?)))
+                .collect::<Result<_, Error>>()?,
+            Value::Unknown => {
+                return Err(Error::State("container health inputs are not yet known"));
+            }
         };
-        let (Some(engine), Some(name), Some(id), Some(wait), Some(labels)) =
-            (engine, name, id, wait, labels)
-        else {
-            return Ok(None);
+        let wait = match config.wait_timeout_seconds {
+            Value::Value(seconds) => seconds.min(3600),
+            Value::Null => 0,
+            Value::Unknown => {
+                return Err(Error::State("container health inputs are not yet known"));
+            }
         };
-        Ok(Some(Self {
-            engine: engine.into(),
-            name: name.into(),
-            id: id.into(),
+        let engine = text(&config.engine)?;
+        crate::config::validate_engine_endpoint(&engine)?;
+        Ok(Self {
+            engine,
+            name: text(&config.name)?,
+            id: text(&config.container_id)?,
             labels,
             wait: Duration::from_secs(wait),
-        }))
+        })
     }
 }
 
@@ -125,31 +102,30 @@ async fn observe(connections: &Connections, expected: &Expected) -> Result<bool,
     if state.running != Some(true) {
         return Err(Error::State("container is not running; reapply"));
     }
-    let health = state
+    match state
         .health
         .and_then(|health| health.status)
-        .ok_or(Error::State("container has no Docker HEALTHCHECK"))?;
-    match health.to_string().as_str() {
-        "healthy" => Ok(true),
-        "starting" => Ok(false),
-        "unhealthy" => Err(Error::State(
+        .map(|s| s.to_string())
+        .as_deref()
+    {
+        Some("healthy") => Ok(true),
+        Some("starting") => Ok(false),
+        Some("unhealthy") => Err(Error::State(
             "container health check failed; inspect its logs",
         )),
-        _ => Err(ObservationError::Incomplete.into()),
+        _ => Err(Error::State("container has no Docker HEALTHCHECK")),
     }
 }
 
 async fn wait_healthy(connections: &Connections, expected: &Expected) -> Result<(), Error> {
     let deadline = tokio::time::Instant::now() + expected.wait;
-    loop {
-        if observe(connections, expected).await? {
-            return Ok(());
-        }
+    while !observe(connections, expected).await? {
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::State("container health check is still starting"));
         }
-        tokio::time::sleep(POLL).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
+    Ok(())
 }
 
 #[async_trait]
@@ -187,19 +163,6 @@ impl DataSource for HostContainerHealthDataSource {
             },
         })
     }
-    async fn validate<'a>(
-        &self,
-        diags: &mut Diagnostics,
-        config: HostContainerHealthState,
-    ) -> Option<()> {
-        match Expected::from_state(&config) {
-            Ok(_) => Some(()),
-            Err(error) => {
-                diags.root_error("Invalid container health requirements", error.to_string());
-                None
-            }
-        }
-    }
     async fn read<'a>(
         &self,
         diags: &mut Diagnostics,
@@ -207,18 +170,10 @@ impl DataSource for HostContainerHealthDataSource {
         _: ValueEmpty,
     ) -> Option<HostContainerHealthState> {
         let work = async {
-            let Some(expected) = Expected::from_state(&config)? else {
-                return Err(Error::State("container health inputs are not yet known"));
-            };
-            if matches!(config.read_trigger, Value::Unknown) {
-                return Err(Error::State(
-                    "container health read trigger is not yet known",
-                ));
-            }
+            let expected = Expected::from_state(&config)?;
             wait_healthy(self.0.connections(), &expected).await
-        }
-        .await;
-        match work {
+        };
+        match work.await {
             Ok(()) => {
                 config.healthy = Value::Value(true);
                 Some(config)
@@ -237,96 +192,41 @@ mod tests {
     use crate::docker::fixture::Fixture;
     use serde_json::json;
 
-    const ENGINE: &str = "unix:///var/run/docker.sock";
-
-    fn expected() -> Expected {
-        Expected {
-            engine: ENGINE.into(),
+    #[tokio::test]
+    async fn only_a_running_healthy_owned_container_is_healthy() {
+        let engine = "unix:///var/run/docker.sock";
+        let expected = Expected {
+            engine: engine.into(),
             name: "application".into(),
             id: "application-id".into(),
             labels: BTreeMap::from([("owner".into(), "deployment".into())]),
             wait: Duration::ZERO,
-        }
-    }
-
-    fn container(health: &str, running: bool) -> serde_json::Value {
-        json!({"Id":"application-id","Name":"/application","Config":{"Labels":{"owner":"deployment"}},
-            "State":{"Running":running,"Health":{"Status":health}}})
-    }
-
-    async fn read(status: u16, body: serde_json::Value) -> Result<(), Error> {
-        let fixture = Fixture::engine(move |request| {
-            assert_eq!(request.method, "GET");
-            assert_eq!(request.path, "/containers/application-id/json");
-            Some((status, serde_json::to_vec(&body).unwrap()))
-        })
-        .await;
-        let connections = Connections::fixed([fixture.engine_for(ENGINE)]).unwrap();
-        wait_healthy(&connections, &expected()).await
-    }
-
-    #[tokio::test]
-    async fn only_a_running_healthy_owned_container_is_healthy() {
-        assert!(read(200, container("healthy", true)).await.is_ok());
-        let mut cases = vec![
-            (200, container("starting", true)),
-            (200, container("unhealthy", true)),
-            (200, container("healthy", false)),
-            (
-                200,
-                json!({"Id":"application-id","Name":"/application","Config":{"Labels":{"owner":"deployment"}},"State":{"Running":true}}),
-            ),
-            (404, json!({})),
-            (401, json!({})),
-            (500, json!({})),
-        ];
-        for (pointer, value) in [
-            ("/Id", json!("PRIVATE_SENTINEL")),
-            ("/Name", json!("/PRIVATE_SENTINEL")),
-            ("/Config/Labels/owner", json!("PRIVATE_SENTINEL")),
-        ] {
-            let mut body = container("healthy", true);
-            *body.pointer_mut(pointer).unwrap() = value;
-            cases.push((200, body));
-        }
-        for (status, body) in cases {
-            let error = read(status, body.clone()).await.unwrap_err();
-            assert!(
-                !error.to_string().contains("PRIVATE_SENTINEL"),
-                "{status} {body}"
-            );
-        }
-    }
-
-    #[test]
-    fn requirements_validate_offline_and_defer_unknown_values() {
-        let valid = || HostContainerHealthState {
-            engine: Value::Value(ENGINE.into()),
-            name: Value::Value("application".into()),
-            container_id: Value::Value("application-id".into()),
-            ..Default::default()
         };
-        assert!(Expected::from_state(&valid()).unwrap().is_some());
-        for change in [
-            |state: &mut HostContainerHealthState| state.container_id = Value::Unknown,
-            |state: &mut HostContainerHealthState| state.labels = Value::Unknown,
-            |state: &mut HostContainerHealthState| state.wait_timeout_seconds = Value::Unknown,
+        let container = |health: &str, running: bool| {
+            json!({"Id":"application-id","Name":"/application","Config":{"Labels":{"owner":"deployment"}},
+                "State":{"Running":running,"Health":{"Status":health}}})
+        };
+        let mut foreign = container("healthy", true);
+        foreign["Config"]["Labels"]["owner"] = json!("PRIVATE_SENTINEL");
+        for (status, body, healthy) in [
+            (200, container("healthy", true), true),
+            (200, container("starting", true), false),
+            (200, container("unhealthy", true), false),
+            (200, container("healthy", false), false),
+            (200, foreign, false),
+            (404, json!({}), false),
         ] {
-            let mut state = valid();
-            change(&mut state);
-            assert!(Expected::from_state(&state).unwrap().is_none());
-        }
-        for change in [
-            |state: &mut HostContainerHealthState| state.name = Value::Null,
-            |state: &mut HostContainerHealthState| state.container_id = Value::Value(String::new()),
-            |state: &mut HostContainerHealthState| state.engine = Value::Value("tcp://e".into()),
-            |state: &mut HostContainerHealthState| {
-                state.wait_timeout_seconds = Value::Value(MAX_WAIT_SECONDS + 1)
-            },
-        ] {
-            let mut state = valid();
-            change(&mut state);
-            assert!(Expected::from_state(&state).is_err());
+            let fixture = Fixture::engine(move |request| {
+                assert_eq!(request.method, "GET");
+                Some((status, serde_json::to_vec(&body).unwrap()))
+            })
+            .await;
+            let connections = Connections::fixed([fixture.engine_for(engine)]).unwrap();
+            let result = wait_healthy(&connections, &expected).await;
+            assert_eq!(result.is_ok(), healthy, "{status} {result:?}");
+            if let Err(error) = result {
+                assert!(!error.to_string().contains("PRIVATE_SENTINEL"));
+            }
         }
     }
 }

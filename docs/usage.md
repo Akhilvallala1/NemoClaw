@@ -103,12 +103,11 @@ Keep state, diagnose the failure, and reapply after recovery.
 
 ### Run an Application Container
 
-Declare a `kind: container` service with an immutable image, Linux architecture, literal environment settings, and an owned data directory below `/var/lib`.
-The image owns startup and its Docker HEALTHCHECK.
-Before creating the container, the `host_image` check requires the image to define startup and a HEALTHCHECK.
-On every apply, including unchanged applies, `host_container_health` waits up to the configured startup timeout for that HEALTHCHECK to report healthy.
-Placement inherits a managed local Docker gateway or explicitly selects a local Docker engine and private network.
-Optional publication binds an unprivileged TCP port to loopback or a private IPv4 address; `dependsOn` orders declared services without injecting settings.
+Declare a `kind: container` service with an immutable image, literal environment settings, and an owned data directory below `/var/lib`.
+The image owns startup and its Docker HEALTHCHECK; Docker pulls it for the engine's platform when it is absent.
+On every apply, including unchanged applies, `host_container_health` waits up to 300 seconds for that HEALTHCHECK to report healthy.
+The container runs on the managed local Docker gateway's engine and network.
+Optional publication binds an unprivileged TCP port to loopback or a private IPv4 address.
 Application storage is disposable: destroy removes the owned data volume.
 The [basic parser fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container.yaml) demonstrates these fields with invented pins and endpoints; it does not qualify an image for live use.
 
@@ -144,12 +143,11 @@ See [sandbox policy configuration](sandbox-network.md) for changes and [security
 ## Control Container Image Downloads
 
 Set `imagePullPolicy` beside `image` under `spec.gateway` or `spec.services.<name>`.
-The service setting applies to `kind: vllm`, `ollama`, `ollamaProxy`, and `container`.
-The setting controls image acquisition on that container's engine.
-Application containers use a local Unix Docker socket; inference services also support an SSH Docker engine selected by `placement.engine`.
+The service setting applies to `kind: vllm`, `ollama`, and `ollamaProxy`.
+The setting controls image acquisition on that container's engine, including an SSH Docker engine selected by the service's `placement.engine`.
 Images still require immutable SHA-256 references.
 
-| Policy | Managed service images |
+| Policy | Managed inference and proxy images |
 |---|---|
 | `IfNotPresent` (default) | The Docker provider ensures the pinned image is available and pulls it when absent |
 | `Never` | The Docker provider reads the local image; a missing image fails that observation |

@@ -339,26 +339,10 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
-impl ImageLaunch {
-    fn valid(&self) -> bool {
-        let env_name = regex::Regex::new(crate::config::constraints::ENV).unwrap();
-        !self.user.is_empty()
-            && self.user.len() <= 1 << 20
-            && !self.user.contains(['\0', '\r', '\n'])
-            && self.environment.len() <= 128
-            && self.environment.values().map(String::len).sum::<usize>() <= 128 << 10
-            && self.environment.iter().all(|(key, value)| {
-                env_name.is_match(key)
-                    && !key.contains(['\0', '\r', '\n'])
-                    && value.len() <= 65536
-                    && !value.contains('\0')
-            })
-    }
-}
 impl Process {
     fn valid_launch(&self) -> bool {
         if let Some(image) = &self.image_owned {
-            image.valid()
+            !image.user.is_empty()
                 && self.configuration.is_empty()
                 && self.entrypoint.is_empty()
                 && self.command.is_empty()
@@ -369,6 +353,7 @@ impl Process {
                 && !self.entrypoint.is_empty()
                 && !self.bind_address.is_empty()
                 && self.port != 0
+                && !self.architecture.is_empty()
         }
     }
 }
@@ -430,7 +415,6 @@ impl Spec {
                 && process.command.iter().all(|value| valid_token(value))
                 && process.mount_target.starts_with('/')
                 && !process.mount_target.contains("..")
-                && !process.architecture.is_empty()
                 && process.memory_bytes > 0
                 && process.cpu_limit_millis != Some(0)
             {

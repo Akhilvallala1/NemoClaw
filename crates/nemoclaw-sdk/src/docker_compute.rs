@@ -81,6 +81,8 @@ fn image(target: &Target) -> Result<Target, Error> {
         let platform = spec
             .process
             .as_ref()
+            // An image-owned application runs on the engine's own platform.
+            .filter(|process| !process.architecture.is_empty())
             .map(|process| format!("linux/{}", process.architecture));
         (spec.engine().to_owned(), spec.image().to_owned(), platform)
     };
@@ -507,12 +509,10 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
 
 fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> {
     let mut gates = Vec::new();
-    for target in raw.iter().filter(|target| {
-        matches!(
-            target.kind.as_str(),
-            "inference_service" | "ollama_service" | "container_service"
-        )
-    }) {
+    for target in raw
+        .iter()
+        .filter(|target| matches!(target.kind.as_str(), "inference_service" | "ollama_service"))
+    {
         let image = image(target)?;
         let container = address(&target.address);
         let name = container
@@ -531,7 +531,6 @@ fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
             "image": service.image(),
             "architecture": process.architecture,
             "labels": process.image_labels,
-            "require_healthcheck": process.image_owned.is_some(),
             "allow_missing": image.kind == "docker_image",
         });
         literal(&mut config);

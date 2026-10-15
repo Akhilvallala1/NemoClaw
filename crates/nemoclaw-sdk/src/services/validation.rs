@@ -7,10 +7,7 @@ use crate::{Error, managed::Spec};
 /// Validate a compiled resource without opening connections or reading secrets.
 /// Parse errors deliberately omit serialized source values.
 pub fn validate_resource_spec(kind: &str, encoded: &str) -> Result<(), Error> {
-    if !matches!(
-        kind,
-        vllm::SERVICE_KIND | ollama::SERVICE_KIND | super::installers::container::SERVICE_KIND
-    ) {
+    if !matches!(kind, vllm::SERVICE_KIND | ollama::SERVICE_KIND) {
         return Ok(());
     }
     let spec: Spec = serde_json::from_str(encoded)
@@ -27,9 +24,6 @@ pub fn validate_resource_spec(kind: &str, encoded: &str) -> Result<(), Error> {
         }
         ollama::SERVICE_KIND => {
             ollama::configured_service(&spec)?;
-        }
-        super::installers::container::SERVICE_KIND => {
-            super::installers::container::validate_spec(&spec)?;
         }
         _ => {}
     }

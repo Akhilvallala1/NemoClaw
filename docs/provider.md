@@ -41,7 +41,7 @@ The generated graphs manage these objects and observations:
 | vLLM and Ollama provider data sources | Runtime contracts, service or proxy readiness, and the upstream model digest behind an Ollama proxy (`ollama_model`) |
 | OpenShell provider | Kubernetes namespace and encryption key (`openshell_kubernetes_storage`), development issuer (`openshell_kubernetes_auth`), and gateway readiness (`openshell_kubernetes_gateway`) |
 | Host provider data source | Engine facts and advertised hardware (`host_engine`) |
-| Host provider data source | Managed vLLM, Ollama, and application image platform and labels (`host_image`) |
+| Host provider data source | Managed vLLM and Ollama image platform and labels (`host_image`) |
 | Host provider data source | Application container health (`host_container_health`) |
 | Docker provider | Docker gateway, inference, proxy, and application containers; model-cache and application volumes, service-owned networks and acquired images |
 | Docker provider data source | Local images selected with `imagePullPolicy: Never` |
@@ -434,7 +434,7 @@ An observation describes the selected target at the time of its read; it is not 
 | Engine features, CPU, memory, and advertised GPU inventory | `host_engine` (`hardware_json`); selected engine API | Onboarding and planning for selected gateway/service engines |
 | GPU memory, driver, compute capability, and disk measurements | Provider `observe_host_hardware` with a selected `HostObserver` | Explicit direct calls or existing configured service-capacity checks; the new passive hardware source does not run collectors |
 | Packaged adapters, APIs, settings, and runtime requirements | `fabric_harnesses`; selected image metadata containing Fabric discovery results | Onboarding image changes and deployment planning |
-| Required labels and platform of managed images, and application startup and HEALTHCHECK | `host_image`; selected engine image inspection | Plan for present images; after image acquisition before runtime mutations |
+| Required labels and platform of managed images | `host_image`; selected engine image inspection | Plan for present images; after image acquisition before runtime mutations |
 | Advertised models and catalog authentication | Direct SDK `observe_endpoints`; HTTP model-list endpoint from the control host | Onboarding endpoint changes and planning for selected inference routes |
 | Credential-reference availability | Direct SDK `observe_credentials`; application's secret resolver | Onboarding, SDK calls, and plan-result discovery; values and local availability do not enter provider state |
 | Gateway version and compute drivers | Existing `openshell_gateway`; authenticated OpenShell API | Onboarding review and required deployment lifecycle checks |
@@ -687,7 +687,6 @@ Generated graphs also run the container as `0:0` and give it:
 
 `host_image` requires an `engine`, an `image` pinned by SHA-256 digest, and an `architecture` (`amd64` or `arm64`), and returns `observation_json` with `status` and `source`.
 Optional `labels` maps each label the image must carry to its value; generated graphs require each vLLM or Ollama service's backend, recipe, and authentication labels.
-Optional `require_healthcheck: true` also requires the image to define an entrypoint or command and a Docker HEALTHCHECK; generated graphs set it for application containers.
 The source checks the Linux platform, the architecture, and `labels`, and knows nothing about NemoClaw runtimes.
 It performs one engine image inspection with a 20-second bound and never pulls an image or starts a process.
 A platform mismatch or a missing or mismatched label fails the read and names the label, not the image's value; authentication, transport, and incomplete inspection failures also stop the operation.

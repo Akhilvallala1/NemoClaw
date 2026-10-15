@@ -159,6 +159,9 @@ pub(crate) fn constrain_schema(
                 "x-nemoclaw-error": "service image must be pinned by a SHA-256 digest"
             }),
         );
+        if service["properties"]["kind"]["const"] == "container" {
+            continue;
+        }
         crate::config::schema::validation::property(
             service,
             "imagePullPolicy",
@@ -223,8 +226,8 @@ impl ServiceDefinition {
 
     fn validate_installation(&self, document: &Document) -> Result<(), ConfigError> {
         let (container, preparation_memory) = match self {
-            Self::Container(service) => {
-                service.location(document)?;
+            Self::Container(_) => {
+                installers::container::Service::gateway(document)?;
                 return Ok(());
             }
             Self::Vllm(service) => (
@@ -269,15 +272,10 @@ impl ServiceDefinition {
 
     fn allocation(&self, gateway: &Gateway) -> Result<Option<NetworkAllocation>, ConfigError> {
         if let Self::Container(service) = self {
-            let (engine, network_cidr) = if let Some(placement) = &service.placement {
-                (placement.engine.clone(), placement.network_cidr.clone())
-            } else {
-                let gateway = gateway.managed()?;
-                (gateway.engine.clone(), gateway.network_cidr.clone())
-            };
+            let gateway = gateway.managed()?;
             return Ok(Some(NetworkAllocation {
-                engine,
-                network_cidr,
+                engine: gateway.engine.clone(),
+                network_cidr: gateway.network_cidr.clone(),
                 bind_address: service
                     .publication
                     .as_ref()
@@ -555,7 +553,6 @@ pub(crate) fn validate(document: &Document) -> Result<(), ConfigError> {
         definition.validate_definition()?;
         definition.validate_installation(document)?;
     }
-    validate_dependencies(document)?;
     let gateway = &document.spec.gateway;
     let mut publications = BTreeSet::new();
     let mut networks = BTreeMap::new();
@@ -581,45 +578,6 @@ pub(crate) fn validate(document: &Document) -> Result<(), ConfigError> {
                 )),
             "managed service publication addresses must be distinct on each engine",
         )?;
-    }
-    Ok(())
-}
-
-fn validate_dependencies(document: &Document) -> Result<(), ConfigError> {
-    fn visit<'a>(
-        document: &'a Document,
-        name: &'a str,
-        active: &mut BTreeSet<&'a str>,
-        done: &mut BTreeSet<&'a str>,
-    ) -> Result<(), ConfigError> {
-        if done.contains(name) {
-            return Ok(());
-        }
-        if active.len() >= 128 || !active.insert(name) {
-            return Err(ConfigError::new(
-                "container service dependencies contain a cycle or exceed the depth limit",
-            ));
-        }
-        if let ServiceDefinition::Container(service) = &document.spec.services[name] {
-            for dependency in &service.depends_on {
-                let Some((name, _)) = document.spec.services.get_key_value(dependency) else {
-                    return Err(crate::config::references::missing_reference(
-                        "services[].dependsOn",
-                        "service",
-                        dependency,
-                        document.spec.services.keys().map(String::as_str),
-                    ));
-                };
-                visit(document, name, active, done)?;
-            }
-        }
-        active.remove(name);
-        done.insert(name);
-        Ok(())
-    }
-    let mut done = BTreeSet::new();
-    for name in document.spec.services.keys() {
-        visit(document, name, &mut BTreeSet::new(), &mut done)?;
     }
     Ok(())
 }

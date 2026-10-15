@@ -16,12 +16,6 @@ pub(crate) fn configure_readiness(
         let spec = crate::managed::Spec::from_values(&target.kind, &target.values)?;
         let literal = |value: &str| value.replace("${", "$${").replace("%{", "%%{");
         if target.kind == super::installers::container::SERVICE_KIND {
-            let wait: u64 = target
-                .values
-                .get("wait_timeout_seconds")
-                .ok_or(Error::State("missing application startup timeout"))?
-                .parse()
-                .map_err(|_| Error::State("invalid application startup timeout"))?;
             // Labels bind the observation to this deployment's container and
             // its compiled launch.
             let labels: std::collections::BTreeMap<_, _> = spec
@@ -32,7 +26,8 @@ pub(crate) fn configure_readiness(
             graph["data"][super::installers::container::HEALTH_DATA_SOURCE][logical] = json!({
                 "engine":literal(spec.engine()), "name":literal(&spec.name),
                 "container_id":format!("${{{container}.id}}"), "labels":labels,
-                "read_trigger":"${timestamp() != \"\"}", "wait_timeout_seconds":wait
+                "read_trigger":"${timestamp() != \"\"}",
+                "wait_timeout_seconds":super::installers::container::STARTUP_TIMEOUT_SECONDS
             });
             continue;
         }

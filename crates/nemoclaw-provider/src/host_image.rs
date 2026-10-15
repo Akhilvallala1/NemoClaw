@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `host_image`: whether an engine holds an image with a platform, architecture,
-//! labels, and, for an application, its own startup and health check, without
-//! pulling it or starting anything.
+//! and labels, without pulling it or starting anything.
 use crate::{Error, ObservationError, docker::Connections, provider::ConfiguredBackend};
 use async_trait::async_trait;
 use nemoclaw_sdk::discovery::{ObservationStatus, RuntimeImageObservation};
@@ -22,7 +21,6 @@ pub(crate) struct HostImageState {
     image: Value<String>,
     architecture: Value<String>,
     labels: Value<BTreeMap<String, Value<String>>>,
-    require_healthcheck: Value<bool>,
     image_id: Value<String>,
     allow_missing: Value<bool>,
     observation_json: Value<String>,
@@ -33,8 +31,6 @@ struct Requirements {
     image: String,
     architecture: String,
     labels: BTreeMap<String, String>,
-    /// The image must define its startup and a Docker HEALTHCHECK.
-    require_healthcheck: bool,
 }
 impl Requirements {
     /// The requirements, or `None` while any input is unknown.
@@ -68,11 +64,6 @@ impl Requirements {
         else {
             return Ok(None);
         };
-        let require_healthcheck = match config.require_healthcheck {
-            Value::Null => false,
-            Value::Value(required) => required,
-            Value::Unknown => return Ok(None),
-        };
         crate::config::validate_engine_endpoint(&engine)?;
         if !regex::Regex::new(r"^[^@\s]+@sha256:[a-f0-9]{64}$")
             .unwrap()
@@ -88,7 +79,6 @@ impl Requirements {
             image,
             architecture,
             labels,
-            require_healthcheck,
         }))
     }
 }
@@ -134,21 +124,6 @@ async fn observe(
             format!("image platform is not linux/{}", required.architecture),
         )));
     }
-    if required.require_healthcheck {
-        let config = image.config.as_ref().ok_or(ObservationError::Incomplete)?;
-        let healthcheck = config
-            .healthcheck
-            .as_ref()
-            .and_then(|health| health.test.as_ref())
-            .is_some_and(|test| test.len() > 1 && matches!(test[0].as_str(), "CMD" | "CMD-SHELL"));
-        let startup = config.entrypoint.as_ref().is_some_and(|e| !e.is_empty())
-            || config.cmd.as_ref().is_some_and(|c| !c.is_empty());
-        if !healthcheck || !startup {
-            return Err(Error::Conflict(
-                "image must define its startup command and a Docker HEALTHCHECK",
-            ));
-        }
-    }
     // Name the label, never the image's value.
     if let Some(key) = required
         .labels
@@ -178,7 +153,6 @@ impl DataSource for HostImageDataSource {
                     ("image", String, Required),
                     ("architecture", String, Required),
                     ("labels", Map(Box::new(String)), Optional),
-                    ("require_healthcheck", Bool, Optional),
                     ("image_id", String, Optional),
                     ("allow_missing", Bool, Optional),
                     ("observation_json", String, Computed),
@@ -255,74 +229,6 @@ mod tests {
     use nemoclaw_sdk::{compile, config::Document};
     use serde_json::json;
 
-    #[tokio::test]
-    async fn required_healthcheck_rejects_images_without_startup_health_or_platform() {
-        let spec = Requirements {
-            engine: "unix:///var/run/docker.sock".into(),
-            image: format!("application@sha256:{}", "a".repeat(64)),
-            architecture: "arm64".into(),
-            labels: Default::default(),
-            require_healthcheck: true,
-        };
-        for variant in [
-            "valid",
-            "health",
-            "none",
-            "startup",
-            "platform",
-            "identity",
-            "absent",
-            "authentication",
-            "transport",
-        ] {
-            let mut image = json!({"Id":"sha256:application","Os":"linux","Architecture":spec.architecture,"Config":{"Entrypoint":["/usr/local/bin/application"],"Healthcheck":{"Test":["CMD","application","healthcheck"]}}});
-            match variant {
-                "health" => {
-                    image["Config"]
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("Healthcheck");
-                }
-                "none" => image["Config"]["Healthcheck"]["Test"] = json!(["NONE"]),
-                "startup" => image["Config"]["Entrypoint"] = json!([]),
-                "platform" => image["Os"] = json!("PRIVATE_SENTINEL"),
-                "identity" => image["Id"] = json!(""),
-                _ => {}
-            }
-            let code = match variant {
-                "absent" => 404,
-                "authentication" => 401,
-                "transport" => 503,
-                _ => 200,
-            };
-            let fixture = Fixture::engine(move |request| {
-                assert_eq!(request.method, "GET");
-                assert!(request.path.starts_with("/images/"));
-                Some((code, serde_json::to_vec(&image).unwrap()))
-            })
-            .await;
-            let connections = Connections::fixed([fixture.engine_for(&spec.engine)]).unwrap();
-            let result = observe(&connections, &spec, None, true).await;
-            match variant {
-                "valid" => {
-                    assert_eq!(result.unwrap().status, ObservationStatus::Available);
-                    assert!(
-                        observe(&connections, &spec, Some("sha256:wrong"), false)
-                            .await
-                            .is_err()
-                    );
-                }
-                "absent" => {
-                    assert_eq!(result.unwrap().status, ObservationStatus::Unknown);
-                    assert!(observe(&connections, &spec, None, false).await.is_err());
-                }
-                _ => {
-                    assert!(!result.unwrap_err().to_string().contains("PRIVATE_SENTINEL"));
-                }
-            }
-        }
-    }
-
     #[test]
     fn requirements_validate_offline_and_defer_unknown_values() {
         let valid = || HostImageState {
@@ -398,7 +304,6 @@ mod tests {
                 image: spec.image().into(),
                 architecture: process.architecture.clone(),
                 labels: process.image_labels.clone(),
-                require_healthcheck: false,
             };
             for variant in [
                 "valid",
