@@ -24,6 +24,7 @@ const MAX_FINDINGS = 256;
 const MAX_EVIDENCE = 256;
 const MAX_CAPABILITY_REFERENCES = 64;
 const MAX_EVIDENCE_REFERENCES = 32;
+const GPU_DEVICE_EVIDENCE_ID = /^host\.gpu\.device\.[0-9]+$/u;
 const ENVIRONMENT_DETAIL_KEYS = new Set([
   "env",
   "environment",
@@ -193,6 +194,7 @@ function evidence(entry: ReadinessEvidence): ReadinessEvidence {
   return {
     id: entry.id,
     summary: bounded(entry.summary, MAX_EVIDENCE_LENGTH),
+    ...(gpuInventoryCounts(entry) ?? {}),
     ...(redactedDetails
       ? {
           details: Object.fromEntries(
@@ -250,12 +252,21 @@ export function createPublicReadinessReport(
   for (const entry of selectedFindings) {
     addReferences(requiredEvidenceIds, entry.evidenceIds);
   }
+  const gpuEvidence = report.evidence.filter(({ id }) => GPU_DEVICE_EVIDENCE_ID.test(id));
   const selectedEvidence = boundedReferencedEntries(
-    report.evidence,
+    [...report.evidence.filter(({ id }) => !GPU_DEVICE_EVIDENCE_ID.test(id)), ...gpuEvidence],
     requiredEvidenceIds,
     MAX_EVIDENCE,
     "evidence",
   );
+  const listedGpus = selectedEvidence.filter(({ id }) => GPU_DEVICE_EVIDENCE_ID.test(id));
+  const omittedGpus = gpuEvidence.length - listedGpus.length;
+  const inventoryEntry = omittedGpus > 0 ? (listedGpus[0] ?? selectedEvidence[0]) : undefined;
+  const inventoryCounts = {
+    gpuInventoryCollected: gpuEvidence.length,
+    gpuInventoryListed: listedGpus.length,
+    gpuInventoryOmitted: omittedGpus,
+  };
   const buildIdentity = validateBuildIdentity({
     nemoclawVersion: report.provenance.nemoclawVersion,
     sourceRevision: report.provenance.sourceRevision,
@@ -273,7 +284,9 @@ export function createPublicReadinessReport(
     capabilities: selectedCapabilities.map(capability),
     qualifications: selectedQualifications.map(qualification),
     findings: selectedFindings.map(finding),
-    evidence: selectedEvidence.map(evidence),
+    evidence: selectedEvidence.map((entry) =>
+      evidence(entry === inventoryEntry ? { ...entry, ...inventoryCounts } : entry),
+    ),
   };
 }
 
@@ -303,6 +316,29 @@ export function createPublicHostProbeReadinessReport(
   };
 }
 
+function gpuInventoryCounts(entry: ReadinessEvidence) {
+  const collected = entry.gpuInventoryCollected;
+  const listed = entry.gpuInventoryListed;
+  const omitted = entry.gpuInventoryOmitted;
+  if (
+    typeof collected !== "number" ||
+    typeof listed !== "number" ||
+    typeof omitted !== "number" ||
+    !Number.isSafeInteger(collected) ||
+    !Number.isSafeInteger(listed) ||
+    !Number.isSafeInteger(omitted) ||
+    listed < 0 ||
+    omitted <= 0 ||
+    collected !== listed + omitted
+  )
+    return null;
+  return {
+    gpuInventoryCollected: collected,
+    gpuInventoryListed: listed,
+    gpuInventoryOmitted: omitted,
+  };
+}
+
 export function renderReadinessReport(report: Readonly<SystemReadinessReport>): string {
   const lines = [
     `System readiness: ${report.status}`,
@@ -311,9 +347,16 @@ export function renderReadinessReport(report: Readonly<SystemReadinessReport>): 
     "Mutation performed: no",
   ];
 
-  const gpus = report.evidence.filter(({ id }) => /^host\.gpu\.device\.[0-9]+$/u.test(id));
-  if (gpus.length > 0) {
-    lines.push("GPUs:", ...gpus.map(({ summary }) => `- ${summary}`));
+  const gpus = report.evidence.filter(({ id }) => GPU_DEVICE_EVIDENCE_ID.test(id));
+  const inventory = report.evidence.map(gpuInventoryCounts).find((counts) => counts !== null);
+  if (gpus.length > 0 || inventory) {
+    lines.push("GPUs:");
+    if (inventory) {
+      lines.push(
+        `- GPU inventory incomplete: ${inventory.gpuInventoryListed} of ${inventory.gpuInventoryCollected} devices listed; ${inventory.gpuInventoryOmitted} omitted.`,
+      );
+    }
+    lines.push(...gpus.map(({ summary }) => `- ${summary}`));
   }
 
   if (report.findings.length === 0) {

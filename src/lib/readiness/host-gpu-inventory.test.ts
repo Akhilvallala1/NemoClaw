@@ -9,6 +9,7 @@ import {
   type HostObservationSnapshot,
 } from "./host";
 import { createPublicHostProbeReadinessReport, renderReadinessReport } from "./presentation";
+import { composeSystemReadinessReport } from "./system";
 
 const NOW = new Date("2026-10-13T00:00:00.000Z");
 const MIB = 1024 ** 2;
@@ -62,14 +63,16 @@ function collect(gpus: typeof GPUS | null = GPUS, hasNvidiaGpu = true) {
   });
 }
 
+function project(snapshot: HostObservationSnapshot) {
+  return projectHostReadiness(snapshot, {
+    nemoclawVersion: "0.1.0",
+    sourceRevision: "697289aec2e0c5a1a2b8d2ed5a714b31bb5df4b4",
+    now: () => NOW,
+  });
+}
+
 function present(snapshot: HostObservationSnapshot) {
-  return createPublicHostProbeReadinessReport(
-    projectHostReadiness(snapshot, {
-      nemoclawVersion: "0.1.0",
-      sourceRevision: "697289aec2e0c5a1a2b8d2ed5a714b31bb5df4b4",
-      now: () => NOW,
-    }),
-  );
+  return createPublicHostProbeReadinessReport(project(snapshot));
 }
 
 function devices(report: ReturnType<typeof present>) {
@@ -169,5 +172,157 @@ describe("host probe GPU inventory (#13019)", () => {
       name: GPUS[1]!.name,
       memoryBytes: 256703 * MIB,
     });
+  });
+
+  it.each([
+    { count: 255, listed: 255, omitted: 0 },
+    { count: 256, listed: 256, omitted: 0 },
+    { count: 257, listed: 256, omitted: 1 },
+  ])("reports inventory completeness for $count GPUs", ({ count, listed, omitted }) => {
+    const projected = project(collect(Array.from({ length: count }, () => GPUS[0]!)));
+    const original = structuredClone(projected);
+    const report = createPublicHostProbeReadinessReport(projected);
+    const json = JSON.parse(JSON.stringify(report)) as typeof report;
+
+    expect(json.evidence).toHaveLength(listed);
+    expect(devices(json)).toHaveLength(listed);
+    expect(devices(json).at(-1)?.details?.index).toBe(listed - 1);
+    expect(json.evidence[0]?.details).toEqual({
+      index: 0,
+      name: GPUS[0]!.name,
+      memoryBytes: 97887 * MIB,
+    });
+    expect(json.evidence[0]).toMatchObject(
+      omitted
+        ? {
+            gpuInventoryCollected: count,
+            gpuInventoryListed: listed,
+            gpuInventoryOmitted: omitted,
+          }
+        : { id: "host.gpu.device.0" },
+    );
+    expect(json.evidence.some((entry) => "gpuInventoryOmitted" in entry)).toBe(omitted > 0);
+    expect(
+      renderReadinessReport(json)
+        .split("\n")
+        .filter((line) => line.includes("inventory incomplete")),
+    ).toEqual(
+      omitted
+        ? [`- GPU inventory incomplete: ${listed} of ${count} devices listed; ${omitted} omitted.`]
+        : [],
+    );
+    expect(json.observations).toEqual(projected.observations);
+    expect([json.status, json.exitCode, json.mutated]).toEqual([
+      projected.status,
+      projected.exitCode,
+      false,
+    ]);
+    expect(createPublicHostProbeReadinessReport(report)).toEqual(report);
+    expect(projected).toEqual(original);
+  });
+
+  it("retains platform and gateway evidence before unreferenced GPU rows", () => {
+    const snapshot = collect(Array.from({ length: 256 }, () => GPUS[0]!));
+    const host = project({
+      ...snapshot,
+      observations: {
+        ...snapshot.observations!,
+        platformIdentity: { ...snapshot.observations?.platformIdentity, productName: "GPU host" },
+      },
+    });
+    const gatewayEvidence = { id: "gateway.diagnostic", summary: "Gateway diagnostic retained." };
+    const composed = composeSystemReadinessReport(host, {
+      observations: [],
+      capabilities: [],
+      findings: [],
+      evidence: [gatewayEvidence],
+    });
+    const report = createPublicHostProbeReadinessReport(composed);
+
+    expect(report.evidence).toHaveLength(256);
+    expect(report.evidence).toContainEqual(
+      expect.objectContaining({ id: "host.platform.identity" }),
+    );
+    expect(report.evidence).toContainEqual(gatewayEvidence);
+    expect(devices(report)).toHaveLength(254);
+    expect(devices(report)[0]).toMatchObject({
+      gpuInventoryCollected: 256,
+      gpuInventoryListed: 254,
+      gpuInventoryOmitted: 2,
+    });
+    expect(renderReadinessReport(report)).toContain(
+      "GPU inventory incomplete: 254 of 256 devices listed; 2 omitted.",
+    );
+  });
+
+  it.each(["device", "gateway"] as const)(
+    "retains all required %s evidence when it fills the public evidence budget",
+    (kind) => {
+      const host = project(collect(Array.from({ length: 257 }, () => GPUS[0]!)));
+      const required = Array.from({ length: 256 }, (_, index) =>
+        kind === "device"
+          ? host.evidence[index + 1]!
+          : {
+              id: `gateway.diagnostic.${index}`,
+              summary: `Gateway diagnostic ${index}`,
+              details: Object.fromEntries(
+                Array.from({ length: 16 }, (_, key) => [`detail${key}`, key]),
+              ),
+            },
+      );
+      const report = createPublicHostProbeReadinessReport({
+        ...host,
+        observations: [
+          ...host.observations,
+          ...Array.from({ length: 8 }, (_, index) => ({
+            id: `gateway.required.${index}`,
+            state: "present" as const,
+            evidenceIds: required.slice(index * 32, (index + 1) * 32).map(({ id }) => id),
+          })),
+        ],
+        evidence: kind === "device" ? host.evidence : [...host.evidence, ...required],
+      });
+      const listed = kind === "device" ? 256 : 0;
+
+      expect(report.evidence.map(({ id }) => id)).toEqual(required.map(({ id }) => id));
+      expect(report.evidence.map(({ details }) => details)).toEqual(
+        required.map(({ details }) => details),
+      );
+      expect(report.evidence[0]).toMatchObject({
+        gpuInventoryCollected: 257,
+        gpuInventoryListed: listed,
+        gpuInventoryOmitted: 257 - listed,
+      });
+      expect(Object.keys(report.evidence[0]?.details ?? {})).toHaveLength(
+        kind === "device" ? 3 : 16,
+      );
+      expect(createPublicHostProbeReadinessReport(report)).toEqual(report);
+      expect(renderReadinessReport(report)).toContain(
+        `GPU inventory incomplete: ${listed} of 257 devices listed; ${257 - listed} omitted.`,
+      );
+    },
+  );
+
+  it.each([
+    { gpuInventoryCollected: 257 },
+    { gpuInventoryCollected: "257", gpuInventoryListed: 256, gpuInventoryOmitted: 1 },
+    { gpuInventoryCollected: 257, gpuInventoryListed: Infinity, gpuInventoryOmitted: 1 },
+    { gpuInventoryCollected: 257, gpuInventoryListed: 256, gpuInventoryOmitted: NaN },
+    { gpuInventoryCollected: 257, gpuInventoryListed: -1, gpuInventoryOmitted: 258 },
+    { gpuInventoryCollected: 257, gpuInventoryListed: 256, gpuInventoryOmitted: 2 },
+  ])("discards invalid inventory counts from public output: %j", (counts) => {
+    const report = present(collect());
+    const invalidEntry = {
+      ...report.evidence[0]!,
+      ...counts,
+    } as unknown as (typeof report.evidence)[number];
+    const invalidReport = { ...report, evidence: [invalidEntry] };
+    const sanitized = createPublicHostProbeReadinessReport(invalidReport);
+
+    expect(renderReadinessReport(invalidReport)).not.toContain("inventory incomplete");
+    expect(sanitized.evidence[0]).not.toHaveProperty("gpuInventoryCollected");
+    expect(sanitized.evidence[0]).not.toHaveProperty("gpuInventoryListed");
+    expect(sanitized.evidence[0]).not.toHaveProperty("gpuInventoryOmitted");
+    expect(sanitized.evidence[0]?.details).toEqual(report.evidence[0]?.details);
   });
 });
