@@ -192,16 +192,8 @@ describe("host probe GPU inventory (#13019)", () => {
       name: GPUS[0]!.name,
       memoryBytes: 97887 * MIB,
     });
-    expect(json.evidence[0]).toMatchObject(
-      omitted
-        ? {
-            gpuInventoryCollected: count,
-            gpuInventoryListed: listed,
-            gpuInventoryOmitted: omitted,
-          }
-        : { id: "host.gpu.device.0" },
-    );
-    expect(json.evidence.some((entry) => "gpuInventoryOmitted" in entry)).toBe(omitted > 0);
+    expect(json.gpuInventory).toEqual(omitted ? { collected: count, listed, omitted } : undefined);
+    expect(json.evidence).toEqual(projected.evidence.slice(0, listed));
     expect(
       renderReadinessReport(json)
         .split("\n")
@@ -245,10 +237,10 @@ describe("host probe GPU inventory (#13019)", () => {
     );
     expect(report.evidence).toContainEqual(gatewayEvidence);
     expect(devices(report)).toHaveLength(254);
-    expect(devices(report)[0]).toMatchObject({
-      gpuInventoryCollected: 256,
-      gpuInventoryListed: 254,
-      gpuInventoryOmitted: 2,
+    expect(report.gpuInventory).toEqual({
+      collected: 256,
+      listed: 254,
+      omitted: 2,
     });
     expect(renderReadinessReport(report)).toContain(
       "GPU inventory incomplete: 254 of 256 devices listed; 2 omitted.",
@@ -284,14 +276,11 @@ describe("host probe GPU inventory (#13019)", () => {
       });
       const listed = kind === "device" ? 256 : 0;
 
-      expect(report.evidence.map(({ id }) => id)).toEqual(required.map(({ id }) => id));
-      expect(report.evidence.map(({ details }) => details)).toEqual(
-        required.map(({ details }) => details),
-      );
-      expect(report.evidence[0]).toMatchObject({
-        gpuInventoryCollected: 257,
-        gpuInventoryListed: listed,
-        gpuInventoryOmitted: 257 - listed,
+      expect(report.evidence).toEqual(required);
+      expect(report.gpuInventory).toEqual({
+        collected: 257,
+        listed,
+        omitted: 257 - listed,
       });
       expect(Object.keys(report.evidence[0]?.details ?? {})).toHaveLength(
         kind === "device" ? 3 : 16,
@@ -303,26 +292,45 @@ describe("host probe GPU inventory (#13019)", () => {
     },
   );
 
+  it("ignores GPU counts supplied by unrelated gateway evidence", () => {
+    const host = present(collect([], false));
+    const gateway = { id: "gateway.diagnostic", summary: "Gateway diagnostic." };
+    const report = createPublicHostProbeReadinessReport({
+      ...host,
+      evidence: [
+        ...host.evidence,
+        {
+          ...gateway,
+          gpuInventoryCollected: 257,
+          gpuInventoryListed: 0,
+          gpuInventoryOmitted: 257,
+        },
+      ],
+    });
+
+    expect(report.gpuInventory).toBeUndefined();
+    expect(report.evidence).toContainEqual(gateway);
+    expect(renderReadinessReport(report)).not.toContain("GPUs:");
+  });
+
   it.each([
-    { gpuInventoryCollected: 257 },
-    { gpuInventoryCollected: "257", gpuInventoryListed: 256, gpuInventoryOmitted: 1 },
-    { gpuInventoryCollected: 257, gpuInventoryListed: Infinity, gpuInventoryOmitted: 1 },
-    { gpuInventoryCollected: 257, gpuInventoryListed: 256, gpuInventoryOmitted: NaN },
-    { gpuInventoryCollected: 257, gpuInventoryListed: -1, gpuInventoryOmitted: 258 },
-    { gpuInventoryCollected: 257, gpuInventoryListed: 256, gpuInventoryOmitted: 2 },
-  ])("discards invalid inventory counts from public output: %j", (counts) => {
+    { summary: null },
+    { summary: "unavailable" },
+    { summary: [] },
+    { summary: { collected: 3 } },
+    { summary: { collected: "3", listed: 2, omitted: 1 } },
+    { summary: { collected: 3, listed: Infinity, omitted: 1 } },
+    { summary: { collected: 3, listed: 2, omitted: NaN } },
+    { summary: { collected: 3, listed: -1, omitted: 4 } },
+    { summary: { collected: 3, listed: 2, omitted: 2 } },
+    { summary: { collected: 257, listed: 256, omitted: 1 } },
+  ])("discards invalid inventory summary from public output: %j", ({ summary }) => {
     const report = present(collect());
-    const invalidEntry = {
-      ...report.evidence[0]!,
-      ...counts,
-    } as unknown as (typeof report.evidence)[number];
-    const invalidReport = { ...report, evidence: [invalidEntry] };
+    const invalidReport = { ...report, gpuInventory: summary } as unknown as typeof report;
     const sanitized = createPublicHostProbeReadinessReport(invalidReport);
 
     expect(renderReadinessReport(invalidReport)).not.toContain("inventory incomplete");
-    expect(sanitized.evidence[0]).not.toHaveProperty("gpuInventoryCollected");
-    expect(sanitized.evidence[0]).not.toHaveProperty("gpuInventoryListed");
-    expect(sanitized.evidence[0]).not.toHaveProperty("gpuInventoryOmitted");
-    expect(sanitized.evidence[0]?.details).toEqual(report.evidence[0]?.details);
+    expect(sanitized).not.toHaveProperty("gpuInventory");
+    expect(sanitized.evidence).toEqual(report.evidence);
   });
 });

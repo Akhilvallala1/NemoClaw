@@ -52,10 +52,6 @@ export interface ReadinessFinding {
 export interface ReadinessEvidence {
   id: string;
   summary: string;
-  /** Counts for a GPU inventory that exceeds the public evidence limit. */
-  gpuInventoryCollected?: number;
-  gpuInventoryListed?: number;
-  gpuInventoryOmitted?: number;
   details?: Readonly<Record<string, EvidenceScalar>>;
   [key: string]: unknown;
 }
@@ -69,6 +65,8 @@ interface SystemReadinessReportFields {
   qualifications: readonly ReadinessQualification[];
   findings: readonly ReadinessFinding[];
   evidence: readonly ReadinessEvidence[];
+  /** Counts when the public evidence limit omits GPU devices. */
+  gpuInventory?: { collected: number; listed: number; omitted: number };
   [key: string]: unknown;
 }
 

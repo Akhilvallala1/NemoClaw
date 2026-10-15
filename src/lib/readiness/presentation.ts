@@ -194,7 +194,6 @@ function evidence(entry: ReadinessEvidence): ReadinessEvidence {
   return {
     id: entry.id,
     summary: bounded(entry.summary, MAX_EVIDENCE_LENGTH),
-    ...(gpuInventoryCounts(entry) ?? {}),
     ...(redactedDetails
       ? {
           details: Object.fromEntries(
@@ -260,13 +259,13 @@ export function createPublicReadinessReport(
     "evidence",
   );
   const listedGpus = selectedEvidence.filter(({ id }) => GPU_DEVICE_EVIDENCE_ID.test(id));
-  const omittedGpus = gpuEvidence.length - listedGpus.length;
-  const inventoryEntry = omittedGpus > 0 ? (listedGpus[0] ?? selectedEvidence[0]) : undefined;
-  const inventoryCounts = {
-    gpuInventoryCollected: gpuEvidence.length,
-    gpuInventoryListed: listedGpus.length,
-    gpuInventoryOmitted: omittedGpus,
-  };
+  const previousInventory = gpuInventoryCounts(report.gpuInventory, gpuEvidence.length);
+  const collectedGpus = previousInventory?.collected ?? gpuEvidence.length;
+  const omittedGpus = collectedGpus - listedGpus.length;
+  const gpuInventory =
+    omittedGpus > 0
+      ? { collected: collectedGpus, listed: listedGpus.length, omitted: omittedGpus }
+      : undefined;
   const buildIdentity = validateBuildIdentity({
     nemoclawVersion: report.provenance.nemoclawVersion,
     sourceRevision: report.provenance.sourceRevision,
@@ -284,9 +283,8 @@ export function createPublicReadinessReport(
     capabilities: selectedCapabilities.map(capability),
     qualifications: selectedQualifications.map(qualification),
     findings: selectedFindings.map(finding),
-    evidence: selectedEvidence.map((entry) =>
-      evidence(entry === inventoryEntry ? { ...entry, ...inventoryCounts } : entry),
-    ),
+    evidence: selectedEvidence.map(evidence),
+    ...(gpuInventory ? { gpuInventory } : {}),
   };
 }
 
@@ -316,10 +314,9 @@ export function createPublicHostProbeReadinessReport(
   };
 }
 
-function gpuInventoryCounts(entry: ReadinessEvidence) {
-  const collected = entry.gpuInventoryCollected;
-  const listed = entry.gpuInventoryListed;
-  const omitted = entry.gpuInventoryOmitted;
+function gpuInventoryCounts(value: unknown, deviceCount: number) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { collected, listed, omitted } = value as Record<string, unknown>;
   if (
     typeof collected !== "number" ||
     typeof listed !== "number" ||
@@ -328,15 +325,12 @@ function gpuInventoryCounts(entry: ReadinessEvidence) {
     !Number.isSafeInteger(listed) ||
     !Number.isSafeInteger(omitted) ||
     listed < 0 ||
+    listed !== deviceCount ||
     omitted <= 0 ||
     collected !== listed + omitted
   )
     return null;
-  return {
-    gpuInventoryCollected: collected,
-    gpuInventoryListed: listed,
-    gpuInventoryOmitted: omitted,
-  };
+  return { collected, listed, omitted };
 }
 
 export function renderReadinessReport(report: Readonly<SystemReadinessReport>): string {
@@ -348,12 +342,12 @@ export function renderReadinessReport(report: Readonly<SystemReadinessReport>): 
   ];
 
   const gpus = report.evidence.filter(({ id }) => GPU_DEVICE_EVIDENCE_ID.test(id));
-  const inventory = report.evidence.map(gpuInventoryCounts).find((counts) => counts !== null);
+  const inventory = gpuInventoryCounts(report.gpuInventory, gpus.length);
   if (gpus.length > 0 || inventory) {
     lines.push("GPUs:");
     if (inventory) {
       lines.push(
-        `- GPU inventory incomplete: ${inventory.gpuInventoryListed} of ${inventory.gpuInventoryCollected} devices listed; ${inventory.gpuInventoryOmitted} omitted.`,
+        `- GPU inventory incomplete: ${inventory.listed} of ${inventory.collected} devices listed; ${inventory.omitted} omitted.`,
       );
     }
     lines.push(...gpus.map(({ summary }) => `- ${summary}`));
