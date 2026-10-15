@@ -2045,6 +2045,8 @@ URL=$($$nemoclaw my-assistant dashboard-url --quiet)
 
 When onboarding records a non-loopback `CHAT_UI_URL`, the command returns that browser-facing origin with the OpenClaw authentication fragment.
 The host forward remains bound to loopback unless you explicitly configure remote binding.
+If you change or clear `CHAT_UI_URL` when you onboard an existing sandbox again, onboarding records the new URL, but the running dashboard keeps accepting only the previous origins.
+Run `$$nemoclaw <sandbox> rebuild` before you open the new URL.
 Without a recorded external URL, the command uses the recorded local dashboard port.
 
 <Warning>
