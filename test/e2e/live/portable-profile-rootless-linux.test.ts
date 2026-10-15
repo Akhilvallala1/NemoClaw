@@ -628,7 +628,9 @@ async function proveHistoricalHermesPortableLifecycle(input: {
     "env",
     "NEMOCLAW_HERMES_API_PORT=8642",
     `NEMOCLAW_SANDBOX_NAME=${sandboxName}`,
-    "/usr/local/bin/nemoclaw-start",
+    "/bin/sh",
+    "-c",
+    'stat -c "Hermes portable /sandbox metadata: uid=%u gid=%g mode=%a" /sandbox; exec /usr/local/bin/nemoclaw-start',
   ];
 
   const createArgs = [
