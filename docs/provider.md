@@ -41,9 +41,9 @@ The generated graphs manage these objects and observations:
 | vLLM and Ollama provider data sources | Runtime contracts, service or proxy readiness, and the upstream model digest behind an Ollama proxy (`ollama_model`) |
 | OpenShell provider | Kubernetes namespace and encryption key (`openshell_kubernetes_storage`), development issuer (`openshell_kubernetes_auth`), and gateway readiness (`openshell_kubernetes_gateway`) |
 | Host provider data source | Engine facts and advertised hardware (`host_engine`) |
-| Host provider data source | Managed vLLM, Ollama, and application image platform and labels (`host_image`) |
+| Host provider data source | Managed vLLM and Ollama image platform and labels (`host_image`) |
 | Host provider data source | Application container health (`host_container_health`) |
-| Protected provider | Protected application files and their setup container (`protected_files`) |
+| Protected provider | An application's protected files, their setup container, and their volume (`protected_files`) |
 | Docker provider | Docker gateway, inference, proxy, and application containers; model-cache and application volumes, service-owned networks and acquired images |
 | Docker provider data source | Local images selected with `imagePullPolicy: Never` |
 | Helm provider | The managed Kubernetes gateway's OpenShell chart release (`helm_release.gateway`) |
@@ -355,6 +355,27 @@ Each read lists the upstream's models with `GET /api/tags` and fails when the mo
 OpenTofu reads it while planning once its inputs are known, so a changed digest stops the plan.
 Generated graphs read it for each Ollama proxy and start the proxy container after it.
 
+### Protected Files
+
+The `protected` provider takes only `destroy`. Its `protected_files` resource publishes an application's credential files and agent connection descriptor into a volume it owns, `<name>-inputs`, which the application mounts read-only at `/run/nemoclaw`.
+
+| Input | Meaning |
+|---|---|
+| `engine`, `owner`, `generation` | Local Docker engine, and the labels the setup container and volume carry |
+| `name` | The application container's name |
+| `image` | The application image, used for a setup container that never starts |
+| `user` | Numeric non-root UID:GID that owns the files |
+| `credentials` | File names under `secrets/`, mapped to the provider environment variables holding their values |
+| `agent_connection` | Optional descriptor block: `service`, `endpoint`, `authentication` (`oidcBearer` or `none`), and `credential` |
+| `agent` | The selected `fabric_agent`'s `ref`; required exactly when `agent_connection` is set, and its owner must equal `owner` |
+
+The provider reads every credential before any change, so a missing one changes nothing.
+It creates a fresh volume and a setup container that mounts it, writes the files with Docker's archive API, and writes a completion marker last; the container never starts.
+Files are mode `0600` and directories `0700`, owned by `user`.
+State records only `id` and `complete`; credential values never enter inputs, plans, state, or diagnostics.
+An unchanged apply reads the marker and writes nothing. An incomplete publication starts again in a fresh volume.
+A setup container or volume with another owner or generation stops every operation. Removal deletes the owned setup container and volume, and never revokes a credential.
+
 ### Host Data Sources
 
 The `host` provider observes container engines and changes nothing; it has no settings.
@@ -364,26 +385,6 @@ The `host` provider observes container engines and changes nothing; it has no se
 | `host_engine` | [Engine version, platform, CPUs, memory](#engine-and-fabric-discovery), and [advertised hardware](#target-hardware) |
 | `host_image` | [An image's platform and labels](#runtime-image-compatibility) |
 | `host_container_health` | [An owned container's Docker HEALTHCHECK](#application-container-health) |
-
-### Protected Files
-
-The `protected` provider takes only `destroy`. Its `protected_files` resource publishes credential files and an optional agent connection descriptor into an existing owned Docker volume before the application starts.
-
-| Input | Meaning |
-|---|---|
-| `engine`, `volume`, `owner`, `generation` | Local Docker engine and the volume that receives the files; the volume must carry this owner and generation |
-| `application` | The owned application container, which must be stopped while files change |
-| `image`, `architecture` | The pinned setup image and its Linux architecture |
-| `user`, `root` | Numeric non-root UID:GID that owns the files, and the application's mount path for `volume` |
-| `credentials` | Map of names to `env`, the provider's environment variable that holds the value, and `path`, below `root` |
-| `agent_connection` | Optional descriptor block: `path`, `service`, `endpoint`, `trust`, `authentication`, `credential`, `health_seconds`, and `invoke_seconds` |
-| `agent` | The selected `fabric_agent`'s `ref`; required exactly when `agent_connection` is set, and its owner must equal `owner` |
-
-`oidcBearer` requires an HTTPS origin, `system` trust, and a `credential` entry. `none` requires plaintext HTTP to a canonical private IPv4 origin, `none` trust, and no credential. The resource cannot tell which gateway an origin belongs to; the SDK binds `none` to the deployment's managed Docker gateway.
-
-Before transfer, the setup container checks the volume's ownership, modes, and ACLs and reports readiness. Only then does the provider read the credential values from its environment and send them over the container's stdin. Values never enter inputs, plans, state, Docker settings, or diagnostics; state records only `id` and `complete`. Any input change replaces the resource. An unchanged apply reads the completion marker and published files without restarting the helper or rotating credentials.
-
-A failed or interrupted publication keeps the helper binding with `complete = false`; the next apply retries only after the helper and the application have stopped. A helper or volume with another owner, generation, or configuration stops every operation. Removal deletes only the stopped helper; Docker removes the volume, and with it the published files. Removal never revokes a credential.
 
 ### Docker and Helm Types
 
@@ -455,7 +456,7 @@ An observation describes the selected target at the time of its read; it is not 
 | Engine features, CPU, memory, and advertised GPU inventory | `host_engine` (`hardware_json`); selected engine API | Onboarding and planning for selected gateway/service engines |
 | GPU memory, driver, compute capability, and disk measurements | Provider `observe_host_hardware` with a selected `HostObserver` | Explicit direct calls or existing configured service-capacity checks; the new passive hardware source does not run collectors |
 | Packaged adapters, APIs, settings, and runtime requirements | `fabric_harnesses`; selected image metadata containing Fabric discovery results | Onboarding image changes and deployment planning |
-| Required labels and platform of managed images, and application startup and HEALTHCHECK | `host_image`; selected engine image inspection | Plan for present images; after image acquisition before runtime mutations |
+| Required labels and platform of managed images | `host_image`; selected engine image inspection | Plan for present images; after image acquisition before runtime mutations |
 | Advertised models and catalog authentication | Direct SDK `observe_endpoints`; HTTP model-list endpoint from the control host | Onboarding endpoint changes and planning for selected inference routes |
 | Credential-reference availability | Direct SDK `observe_credentials`; application's secret resolver | Onboarding, SDK calls, and plan-result discovery; values and local availability do not enter provider state |
 | Gateway version and compute drivers | Existing `openshell_gateway`; authenticated OpenShell API | Onboarding review and required deployment lifecycle checks |
@@ -708,7 +709,6 @@ Generated graphs also run the container as `0:0` and give it:
 
 `host_image` requires an `engine`, an `image` pinned by SHA-256 digest, and an `architecture` (`amd64` or `arm64`), and returns `observation_json` with `status` and `source`.
 Optional `labels` maps each label the image must carry to its value; generated graphs require each vLLM or Ollama service's backend, recipe, and authentication labels.
-Optional `require_healthcheck: true` also requires the image to define an entrypoint or command and a Docker HEALTHCHECK; generated graphs set it for application containers.
 The source checks the Linux platform, the architecture, and `labels`, and knows nothing about NemoClaw runtimes.
 It performs one engine image inspection with a 20-second bound and never pulls an image or starts a process.
 A platform mismatch or a missing or mismatched label fails the read and names the label, not the image's value; authentication, transport, and incomplete inspection failures also stop the operation.

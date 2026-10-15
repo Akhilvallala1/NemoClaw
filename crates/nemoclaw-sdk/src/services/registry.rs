@@ -47,8 +47,6 @@ pub enum ServiceDefinition {
 pub struct ResourceBehavior {
     pub retained_storage: bool,
     pub runtime_process: bool,
-    /// Apply may delete it outside teardown; it holds no retained data.
-    pub disposable: bool,
 }
 
 /// Provider schema for one installer-owned OpenTofu resource.
@@ -121,7 +119,6 @@ pub fn resource_schemas() -> Vec<ResourceSchema> {
 
 pub fn resource_behavior(kind: &str) -> ResourceBehavior {
     ResourceBehavior {
-        disposable: kind == installers::container::inputs::FILES_KIND,
         retained_storage: matches!(
             kind,
             installers::ollama::STORAGE_KIND
@@ -154,7 +151,6 @@ pub(crate) fn constrain_schema(
     installers::ollama::constrain_schema(defs, normalized);
     installers::vllm::schema::constrain(defs, normalized);
     installers::container::constrain_schema(defs);
-    installers::container::inputs::constrain_schema(defs);
     for service in defs["ServiceDefinition"]["oneOf"].as_array_mut().unwrap() {
         crate::config::schema::validation::property(
             service,
@@ -163,6 +159,9 @@ pub(crate) fn constrain_schema(
                 "x-nemoclaw-error": "service image must be pinned by a SHA-256 digest"
             }),
         );
+        if service["properties"]["kind"]["const"] == "container" {
+            continue;
+        }
         crate::config::schema::validation::property(
             service,
             "imagePullPolicy",
@@ -228,9 +227,10 @@ impl ServiceDefinition {
     fn validate_installation(&self, document: &Document) -> Result<(), ConfigError> {
         let (container, preparation_memory) = match self {
             Self::Container(service) => {
-                let (engine, network) = service.location(document)?;
-                for connection in service.agent_connections.values() {
-                    connection.validate_binding(document, &engine, &network)?;
+                installers::container::Service::gateway(document)?;
+                if let Some(connection) = &service.agent_connection {
+                    connection.agent(document)?;
+                    connection.endpoint(document)?;
                 }
                 return Ok(());
             }
@@ -276,15 +276,10 @@ impl ServiceDefinition {
 
     fn allocation(&self, gateway: &Gateway) -> Result<Option<NetworkAllocation>, ConfigError> {
         if let Self::Container(service) = self {
-            let (engine, network_cidr) = if let Some(placement) = &service.placement {
-                (placement.engine.clone(), placement.network_cidr.clone())
-            } else {
-                let gateway = gateway.managed()?;
-                (gateway.engine.clone(), gateway.network_cidr.clone())
-            };
+            let gateway = gateway.managed()?;
             return Ok(Some(NetworkAllocation {
-                engine,
-                network_cidr,
+                engine: gateway.engine.clone(),
+                network_cidr: gateway.network_cidr.clone(),
                 bind_address: service
                     .publication
                     .as_ref()
@@ -522,13 +517,6 @@ pub(crate) struct InstallPlans {
 }
 
 impl InstallPlans {
-    pub(crate) fn configure(&self, graph: &mut serde_json::Value) -> Result<(), crate::Error> {
-        for plan in &self.plans {
-            plan.configure(graph)?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn targets(&self) -> impl Iterator<Item = &Target> {
         self.plans.iter().flat_map(|plan| plan.targets.iter())
     }
@@ -569,7 +557,6 @@ pub(crate) fn validate(document: &Document) -> Result<(), ConfigError> {
         definition.validate_definition()?;
         definition.validate_installation(document)?;
     }
-    validate_dependencies(document)?;
     let gateway = &document.spec.gateway;
     let mut publications = BTreeSet::new();
     let mut networks = BTreeMap::new();
@@ -595,45 +582,6 @@ pub(crate) fn validate(document: &Document) -> Result<(), ConfigError> {
                 )),
             "managed service publication addresses must be distinct on each engine",
         )?;
-    }
-    Ok(())
-}
-
-fn validate_dependencies(document: &Document) -> Result<(), ConfigError> {
-    fn visit<'a>(
-        document: &'a Document,
-        name: &'a str,
-        active: &mut BTreeSet<&'a str>,
-        done: &mut BTreeSet<&'a str>,
-    ) -> Result<(), ConfigError> {
-        if done.contains(name) {
-            return Ok(());
-        }
-        if active.len() >= 128 || !active.insert(name) {
-            return Err(ConfigError::new(
-                "container service dependencies contain a cycle or exceed the depth limit",
-            ));
-        }
-        if let ServiceDefinition::Container(service) = &document.spec.services[name] {
-            for dependency in &service.depends_on {
-                let Some((name, _)) = document.spec.services.get_key_value(dependency) else {
-                    return Err(crate::config::references::missing_reference(
-                        "services[].dependsOn",
-                        "service",
-                        dependency,
-                        document.spec.services.keys().map(String::as_str),
-                    ));
-                };
-                visit(document, name, active, done)?;
-            }
-        }
-        active.remove(name);
-        done.insert(name);
-        Ok(())
-    }
-    let mut done = BTreeSet::new();
-    for name in document.spec.services.keys() {
-        visit(document, name, &mut BTreeSet::new(), &mut done)?;
     }
     Ok(())
 }
@@ -738,17 +686,4 @@ pub(crate) fn required_storage_address(
             (candidate == process || crate::docker_compute::address(&candidate) == process)
                 .then_some(storage)
         }))
-}
-
-/// Resolve service-owned protected credentials before deployment state or runtime access.
-pub(crate) fn preflight(
-    document: &Document,
-    secrets: &dyn crate::Secrets,
-) -> Result<(), crate::Error> {
-    for service in document.spec.services.values() {
-        if let ServiceDefinition::Container(service) = service {
-            service.preflight(secrets)?;
-        }
-    }
-    Ok(())
 }

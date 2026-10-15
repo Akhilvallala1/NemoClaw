@@ -2551,17 +2551,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nemoclaw-container-inputs"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.4.3",
- "rustix",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "nemoclaw-discovery"
 version = "0.1.0"
 dependencies = [
@@ -2739,7 +2728,6 @@ dependencies = [
  "interprocess",
  "ipnet",
  "nemoclaw-backend",
- "nemoclaw-container-inputs",
  "nemoclaw-discovery",
  "nemoclaw-docker",
  "nemoclaw-openshell",
@@ -2815,7 +2803,6 @@ dependencies = [
  "kube",
  "nemo-fabric-core",
  "nemoclaw-backend",
- "nemoclaw-container-inputs",
  "nemoclaw-docker",
  "nemoclaw-fabric",
  "nemoclaw-openshell",

@@ -25,34 +25,6 @@ pub(crate) enum InstallStage {
 pub(crate) struct InstallPlan {
     pub targets: Vec<crate::compile::Target>,
     pub dependencies: std::collections::BTreeMap<String, Vec<String>>,
-    /// `host_image` inputs, validated by the installer that owns them. Every
-    /// Docker change waits for these checks.
-    pub image_checks: std::collections::BTreeMap<String, serde_json::Value>,
-    pub replacement_triggers: std::collections::BTreeMap<String, Vec<String>>,
-}
-
-impl InstallPlan {
-    pub(crate) fn configure(&self, graph: &mut serde_json::Value) -> Result<(), crate::Error> {
-        for (name, requirements) in &self.image_checks {
-            let mut attributes = requirements.clone();
-            literal(&mut attributes);
-            attributes["allow_missing"] = serde_json::json!(false);
-            graph["data"]["host_image"][name] = attributes;
-        }
-        for (address, triggers) in &self.replacement_triggers {
-            let (kind, name) = address.split_once('.').ok_or(crate::Error::State(
-                "invalid installation replacement address",
-            ))?;
-            let attributes = graph["resource"]
-                .get_mut(kind)
-                .and_then(|r| r.get_mut(name))
-                .ok_or(crate::Error::State(
-                    "installation replacement target is absent",
-                ))?;
-            attributes["lifecycle"]["replace_triggered_by"] = serde_json::json!(triggers);
-        }
-        Ok(())
-    }
 }
 
 /// Destroy-time policy returned by an installer.

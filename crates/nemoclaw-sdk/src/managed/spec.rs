@@ -71,8 +71,9 @@ pub struct Process {
 pub struct ImageLaunch {
     pub user: String,
     pub environment: std::collections::BTreeMap<String, String>,
-    /// Nonsecret delivery revision used by the service's disposable storage policy.
-    pub input_revision: String,
+    /// The container mounts its `protected_files`, read-only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected_inputs: bool,
 }
 /// CFS period for container CPU limits, matching kubelet and `docker --cpus`.
 pub(crate) const CPU_PERIOD_MICROS: u64 = 100_000;
@@ -341,29 +342,10 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
-impl ImageLaunch {
-    fn valid(&self) -> bool {
-        let matches =
-            |pattern: &str, value: &str| regex::Regex::new(pattern).unwrap().is_match(value);
-        let env_name = regex::Regex::new(crate::config::constraints::ENV).unwrap();
-        !self.user.is_empty()
-            && self.user.len() <= 1 << 20
-            && !self.user.contains(['\0', '\r', '\n'])
-            && (self.input_revision.is_empty() || matches(r"^[a-f0-9]{64}$", &self.input_revision))
-            && self.environment.len() <= 128
-            && self.environment.values().map(String::len).sum::<usize>() <= 128 << 10
-            && self.environment.iter().all(|(key, value)| {
-                env_name.is_match(key)
-                    && !key.contains(['\0', '\r', '\n'])
-                    && value.len() <= 65536
-                    && !value.contains('\0')
-            })
-    }
-}
 impl Process {
     fn valid_launch(&self) -> bool {
         if let Some(image) = &self.image_owned {
-            image.valid()
+            !image.user.is_empty()
                 && self.configuration.is_empty()
                 && self.entrypoint.is_empty()
                 && self.command.is_empty()
@@ -374,6 +356,7 @@ impl Process {
                 && !self.entrypoint.is_empty()
                 && !self.bind_address.is_empty()
                 && self.port != 0
+                && !self.architecture.is_empty()
         }
     }
 }
@@ -435,7 +418,6 @@ impl Spec {
                 && process.command.iter().all(|value| valid_token(value))
                 && process.mount_target.starts_with('/')
                 && !process.mount_target.contains("..")
-                && !process.architecture.is_empty()
                 && process.memory_bytes > 0
                 && process.cpu_limit_millis != Some(0)
             {
@@ -547,13 +529,7 @@ impl Spec {
         .into())
     }
     pub fn volume(&self) -> String {
-        data_volume(
-            &self.name,
-            self.process
-                .as_ref()
-                .and_then(|p| p.image_owned.as_ref())
-                .map_or("", |image| image.input_revision.as_str()),
-        )
+        format!("{}-data", self.name)
     }
     pub fn network(&self) -> String {
         format!(
@@ -696,14 +672,5 @@ impl Spec {
             format!("{data_path}/tls/jwt/kid"),
             self.name
         )
-    }
-}
-
-/// One volume naming rule for managed processes and their input preparation.
-pub fn data_volume(name: &str, revision: &str) -> String {
-    if revision.is_empty() {
-        format!("{name}-data")
-    } else {
-        format!("{name}-{}-data", revision.get(..16).unwrap_or(revision))
     }
 }

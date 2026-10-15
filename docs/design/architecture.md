@@ -20,7 +20,7 @@ The [accepted scope](scope.md) defines the invariants; this page explains the re
 | Fabric provider | Fabric runtime configuration and readiness in agent sandboxes |
 | vLLM and Ollama providers | Inference service storage contracts and readiness observations |
 | Host provider | Engine and image observations, and application container health |
-| Protected provider | Publication of protected application files: credential files and the agent connection descriptor |
+| Protected provider | An application's credential files and agent connection descriptor |
 | Hosted runtime | Model preparation, startup, application health, and protective shutdown |
 | Fabric | Adapter and target discovery, native schemas, native configuration validation and mapping, and agent execution |
 
@@ -38,20 +38,11 @@ Implementation starts at [Deployment](../../crates/nemoclaw-sdk/src/deployment/m
 Ollama, vLLM, and generic application containers use one internal [Docker installer](../../crates/nemoclaw-sdk/src/services/installers/docker.rs) to assemble owned specifications, storage, process targets, and dependencies.
 Service callers supply resource identities, process settings, image acquisition policy, preparation resources, and storage retention requirements.
 Ollama and vLLM supply model and supervisor settings; vLLM also supplies credential storage and source declarations.
-Applications retain image-owned startup and health, literal settings, publication, and protected-input projection.
+Applications retain image-owned startup and health, literal settings, and publication, on the managed Docker gateway's engine and network.
 The existing Docker compiler maps these plans to OpenTofu resources; providers own mutations and readiness observations.
-The host provider reads application image requirements and Docker health without changing containers.
+The host provider reads application Docker health without changing containers.
+The protected provider's `protected_files` resource publishes an application's credential files and connection descriptor into a volume it owns, through Docker's archive API and a setup container that never starts; the application mounts that volume read-only.
 Each service owns its storage retention requirements.
-
-Application preparation records owned storage, numeric user, data root, architecture, setup image, and input references.
-Application image, literal environment, publication, and runtime settings do not participate in preparation identity.
-The [connection module](../../crates/nemoclaw-sdk/src/services/installers/container/connection.rs) projects the selected sandbox identity, endpoint, authentication, trust, and deadlines into a nonsecret descriptor.
-The `protected_files` resource takes these as typed inputs and the selected `fabric_agent`'s `ref`, never a compiled document.
-Its provider resolves credentials and uses the fixed Rust publisher for private filesystem admission and atomic publication.
-The shared Docker client owns bounded archive transport and checked metadata; the protected provider owns custody policy.
-Docker still owns the application container and its volume.
-Image observations receive explicit platform and startup requirements, independently of application process identity.
-The service registry supplies credential preflight and resource behavior to deployment orchestration.
 
 ## Managed Kubernetes Ownership
 

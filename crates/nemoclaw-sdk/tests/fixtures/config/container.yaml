@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Basic application parser fixture; invented pins are unsuitable for live apply.
-# The endpoints, UUID, image digests, model, and network are test values.
+# The UUID, image digests, endpoints, and model are test values.
 
 apiVersion: nemoclaw.nvidia.com/v1alpha1
 kind: NemoClawConfig
@@ -10,12 +10,13 @@ metadata:
   uid: c8fd820d-fbc6-48ac-b4c7-240b92313689
 spec:
   gateway:
-    management: external
+    management: managed
     runtime:
       provider: docker
-    endpoint: https://openshell.example.invalid:8443
+    endpoint: http://127.0.0.1:17681
     engine: unix:///var/run/docker.sock
-    credential: {env: OPENSHELL_OPERATOR_TOKEN}
+    image: ghcr.io/nvidia/openshell/gateway@sha256:ea14aa4db0980fab4769fb6b5509ac42ae3dc8495e645b1ba1fe1ada49892fa6
+    networkCIDR: 172.29.230.0/24
   inferenceProviders:
     - name: agent-model
       provider: openai
@@ -41,12 +42,7 @@ spec:
     voice:
       kind: container
       image: example.invalid/application@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      imagePullPolicy: Never
-      architecture: arm64
       user: "65532:65532"
-      placement:
-        engine: unix:///var/run/docker.sock
-        networkCIDR: 172.29.230.0/24
       publication:
         bindAddress: 127.0.0.1
         port: 18790
@@ -56,5 +52,3 @@ spec:
         APP_STATE_PATH: /var/lib/application/state/state.db
       data:
         mountPath: /var/lib/application
-      readiness:
-        startupTimeoutSeconds: 300

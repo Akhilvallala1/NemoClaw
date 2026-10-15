@@ -224,7 +224,6 @@ impl Deployment {
         let mut document = document.clone();
         document.defaults();
         document.validate()?;
-        crate::services::preflight(&document, self.secrets.as_ref())?;
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }

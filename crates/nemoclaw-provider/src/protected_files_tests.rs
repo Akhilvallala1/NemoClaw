@@ -1,186 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! Docker API fixtures prove ordering and custody, not Linux filesystem enforcement.
+//! A fake Docker engine proves ordering, custody, and ownership, not Linux
+//! filesystem enforcement.
 use super::*;
 use crate::docker::fixture::Fixture;
-use serde_json::json;
 use std::sync::{Arc, Mutex};
+
 const SENTINEL: &str = "test-only-protected-token";
 
-fn live_spec(
-    mut spec: Files,
-    nonce: String,
-    endpoint: String,
-    image: String,
-    architecture: String,
-) -> Files {
-    spec.image = image;
-    spec.application = format!("nc-{}-container-input-check", &nonce[..16]);
-    spec.volume = format!("{}-data", spec.application);
-    spec.owner = format!(
-        "{}-{}-{}-{}-{}",
-        &nonce[..8],
-        &nonce[8..12],
-        &nonce[12..16],
-        &nonce[16..20],
-        &nonce[20..]
-    );
-    spec.generation = nonce;
-    spec.engine = endpoint;
-    spec.architecture = architecture;
-    spec
-}
-
-#[test]
-fn manual_test_resource_identity_matches_the_protected_files_contract_on_both_platforms() {
-    for architecture in ["arm64", "amd64"] {
-        let spec = live_spec(
-            Files::from_row(&row()).unwrap(),
-            "d".repeat(32),
-            "unix:///var/run/docker.sock".into(),
-            format!("inputs@sha256:{}", "b".repeat(64)),
-            architecture.into(),
-        );
-        spec.validate(true).unwrap();
-        assert_eq!(spec.helper_name(), format!("{}-inputs", spec.application));
-        assert_eq!(spec.architecture, architecture);
-    }
-}
-
-/// The missing live contract is Docker hijacked stdin plus the scratch helper's
-/// Linux volume ownership/ACL enforcement under the provider's actual caps.
-/// Protocol fixtures own ordering/recovery; helper units own path/ACL denial.
-/// This opt-in test owns only real delivery, unchanged binding and owned cleanup.
-#[tokio::test]
-#[ignore = "opt-in Docker integration: creates one owned helper and disposable volume"]
-async fn live_container_inputs_deliver_without_restarting_on_unchanged_apply() {
-    let endpoint = std::env::var("NEMOCLAW_INPUT_TEST_ENGINE")
-        .expect("set NEMOCLAW_INPUT_TEST_ENGINE to an explicit unix:/// engine endpoint");
-    let image = std::env::var("NEMOCLAW_INPUT_TEST_IMAGE")
-        .expect("set NEMOCLAW_INPUT_TEST_IMAGE to a preloaded repository@sha256: manifest digest");
-    let engine = crate::docker::Engine::connect(&endpoint).unwrap();
-    let mut desired = row();
-    let mut spec = Files::from_row(&desired).unwrap();
-    spec.image = image;
-    let observed_image = engine.image(&spec.image).await.unwrap().unwrap();
-    let mut nonce = [0u8; 16];
-    getrandom::fill(&mut nonce).unwrap();
-    let nonce: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
-    let image = spec.image.clone();
-    spec = live_spec(
-        spec,
-        nonce,
-        endpoint,
-        image,
-        observed_image.architecture.unwrap(),
-    );
-    spec.validate(true).unwrap();
-    desired.extend(spec.row());
-    let backend = FilesBackend::new(engine.clone()).with_secrets(Arc::new(TestSecrets(true)));
-    // All compatibility and credential checks precede even the test volume.
-    backend
-        .plan(files::FILES_KIND, &desired, None)
-        .await
-        .unwrap();
-    let volume = spec.volume.clone();
-    assert!(engine.volume(&volume).await.unwrap().is_none());
-    assert!(
-        engine
-            .container(&spec.helper_name())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    eprintln!(
-        "owned integration resources: helper={} volume={volume}",
-        spec.helper_name()
-    );
-    engine
-        .api
-        .create_volume(bollard::models::VolumeCreateRequest {
-            name: Some(volume.clone()),
-            driver: Some("local".into()),
-            labels: Some(
-                [
-                    (OWNER_LABEL.into(), spec.owner.clone()),
-                    (GENERATION_LABEL.into(), spec.generation.clone()),
-                ]
-                .into(),
-            ),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let result: Result<(), ObservationError> = async {
-        let mutation = backend.ensure(files::FILES_KIND, &desired).await;
-        if let Some(error) = mutation.error() {
-            return Err(error);
-        }
-        let complete = mutation.state().ok_or(ObservationError::Incomplete)?;
-        if complete.get("complete").map(String::as_str) != Some("true") {
-            return Err(ObservationError::Incomplete);
-        }
-        let bytes = engine
-            .read_file(
-                &complete["id"],
-                "/input-data/credentials/speech",
-                MAX_CREDENTIAL_BYTES,
-            )
-            .await
-            .map_err(diagnostic)?
-            .ok_or(ObservationError::Incomplete)?;
-        if bytes != SENTINEL.as_bytes() {
-            return Err(ObservationError::Incomplete);
-        }
-        let refreshed = backend
-            .read(files::FILES_KIND, complete, false)
-            .await?
-            .ok_or(ObservationError::Incomplete)?;
-        let second = backend.ensure(files::FILES_KIND, &refreshed).await;
-        if let Some(error) = second.error() {
-            return Err(error);
-        }
-        if second.state() != Some(complete) {
-            return Err(ObservationError::BindingMismatch);
-        }
-        Ok(())
-    }
-    .await;
-    // No panic assertions until owned cleanup has been attempted. Never force a
-    // volume deletion or delete it after an uncertain helper-removal outcome.
-    let cleanup = backend.remove(files::FILES_KIND, &desired, false).await;
-    if cleanup.is_ok() {
-        backend.volume(&spec).await.unwrap();
-        tokio::time::timeout(
-            Duration::from_secs(20),
-            engine.api.remove_volume(
-                &volume,
-                Some(bollard::query_parameters::RemoveVolumeOptions { force: false }),
-            ),
-        )
-        .await
-        .expect("volume cleanup deadline")
-        .expect("owned volume cleanup");
-        assert!(engine.volume(&volume).await.unwrap().is_none());
-        assert!(
-            engine
-                .container(&spec.helper_name())
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-    assert!(
-        cleanup.is_ok(),
-        "helper cleanup failed; retain named resources: {cleanup:?}"
-    );
-    assert!(
-        result.is_ok(),
-        "live protected-input delivery failed: {result:?}"
-    );
-}
-struct TestSecrets(bool);
-impl nemoclaw_sdk::Secrets for TestSecrets {
+struct Secrets(bool);
+impl nemoclaw_sdk::Secrets for Secrets {
     fn resolve(&self, _: &str) -> Result<String, ObservationError> {
         if self.0 {
             Ok(SENTINEL.into())
@@ -189,24 +18,14 @@ impl nemoclaw_sdk::Secrets for TestSecrets {
         }
     }
 }
-pub(super) fn row() -> Row {
-    let mut document = connection_document();
-    let nemoclaw_sdk::services::ServiceDefinition::Container(service) =
-        document.spec.services.get_mut("voice").unwrap()
-    else {
-        unreachable!()
-    };
-    service.agent_connections.clear();
-    input_row(&document)
-}
-fn connection_document() -> nemoclaw_sdk::config::Document {
-    nemoclaw_sdk::config::Document::parse(
-        include_bytes!("../../nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml")
+
+/// The compiled inputs of the connection fixture, with its agent resolved.
+fn row(engine: &str) -> Row {
+    let document = nemoclaw_sdk::config::Document::parse(
+        include_bytes!("../../nemoclaw-sdk/tests/fixtures/config/container-agent-connection.yaml")
             .as_slice(),
     )
-    .unwrap()
-}
-fn input_row(document: &nemoclaw_sdk::config::Document) -> Row {
+    .unwrap();
     let generations = [
         "workspace",
         "provider",
@@ -216,650 +35,241 @@ fn input_row(document: &nemoclaw_sdk::config::Document) -> Row {
     ]
     .map(|kind| (kind.into(), "a".repeat(32)))
     .into();
-    nemoclaw_sdk::compile::targets(document, &generations)
+    let mut row = nemoclaw_sdk::compile::targets(&document, &generations)
         .unwrap()
         .into_iter()
         .find(|t| t.kind == files::FILES_KIND)
         .unwrap()
-        .values
-}
-fn image() -> serde_json::Value {
-    json!({"Id":format!("sha256:{}","c".repeat(64)),"Os":"linux","Architecture":"arm64","Config":{"Entrypoint":[nemoclaw_container_inputs::ENTRYPOINT],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"Labels":{nemoclaw_container_inputs::CONTRACT_LABEL:nemoclaw_container_inputs::CONTRACT_VERSION}}})
-}
-
-#[tokio::test]
-async fn local_connection_payload_delivers_speech_and_descriptor_without_an_openshell_credential() {
-    struct SpeechOnly;
-    impl nemoclaw_sdk::Secrets for SpeechOnly {
-        fn resolve(&self, name: &str) -> Result<String, ObservationError> {
-            if name == "NVIDIA_API_KEY" {
-                Ok(SENTINEL.into())
-            } else {
-                Err(ObservationError::Authentication)
-            }
-        }
-    }
-    let mut desired = input_row(&connection_document());
-    desired.insert(
-        "agent_sandbox_id".into(),
-        "11111111-2222-3333-4444-555555555555".into(),
-    );
-    let fixture =
-        Fixture::engine(|_| panic!("payload assembly must not contact Docker or the gateway"))
-            .await;
-    let backend = FilesBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
-        .with_secrets(Arc::new(SpeechOnly));
-    let spec = backend.spec(&desired).unwrap();
-    let request: Request = serde_json::from_slice(&backend.payload(&spec).unwrap()).unwrap();
-    request.validate().unwrap();
-    assert_eq!(request.files.len(), 2);
-    let speech = request
-        .files
-        .iter()
-        .find(|file| file.role == Role::Credential)
-        .unwrap();
-    assert_eq!(speech.path, "credentials/speech");
-    assert_eq!(speech.content, SENTINEL);
-    let descriptor = request
-        .files
-        .iter()
-        .find(|file| file.role == Role::Descriptor)
-        .unwrap();
-    let descriptor: serde_json::Value = serde_json::from_str(&descriptor.content).unwrap();
-    assert_eq!(
-        descriptor["gateway"]["endpoint"],
-        "http://172.29.230.2:17681"
-    );
-    assert_eq!(
-        descriptor["authentication"],
-        json!({"mode":"none","credentialFile":null,"refreshMode":"none"})
-    );
-    assert!(!descriptor.to_string().contains(SENTINEL));
-}
-
-#[tokio::test]
-async fn protected_input_plan_checks_credentials_and_image_without_mutation() {
-    let requests = Arc::new(Mutex::new(vec![]));
-    let seen = requests.clone();
-    let fixture = Fixture::engine(move |request| {
-        seen.lock()
-            .unwrap()
-            .push((request.method.clone(), request.path.clone()));
-        assert_eq!(request.method, "GET");
-        Some((200, serde_json::to_vec(&image()).unwrap()))
-    })
-    .await;
-    let backend = FilesBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
-        .with_secrets(Arc::new(TestSecrets(true)));
-    backend.plan(files::FILES_KIND, &row(), None).await.unwrap();
-    assert!(!requests.lock().unwrap().is_empty());
-}
-
-#[derive(Default)]
-struct State {
-    helper: Option<serde_json::Value>,
-    files: std::collections::BTreeMap<String, (Vec<u8>, bool)>,
-    requests: Vec<(String, String)>,
-    creates: usize,
-    starts: usize,
-    deletes: usize,
-    transfers: usize,
-    reject_ready: bool,
-    fail_publish: bool,
-    lose_observation: bool,
-    application_running: bool,
-    foreign: bool,
-    omit_archive_owner: bool,
-}
-struct SetupFixture {
-    endpoint: String,
-    row: Row,
-    state: Arc<Mutex<State>>,
-    _directory: tempfile::TempDir,
-    task: tokio::task::JoinHandle<()>,
-}
-impl Drop for SetupFixture {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-impl SetupFixture {
-    async fn new() -> Self {
-        Self::with_row(row()).await
-    }
-    async fn with_row(mut row: Row) -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("engine.sock");
-        let listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let endpoint = format!("unix://{}", path.display());
-        let mut spec = Files::from_row(&row).unwrap();
-        spec.engine = endpoint.clone();
-        row.extend(spec.row());
-        let state = Arc::new(Mutex::new(State::default()));
-        let shared = state.clone();
-        let started = Arc::new(tokio::sync::Notify::new());
-        let task = tokio::spawn(async move {
-            let mut connections = tokio::task::JoinSet::new();
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let state = shared.clone();
-                let spec = spec.clone();
-                let started = started.clone();
-                connections.spawn(async move {
-                    serve_setup(stream, state, spec, started).await;
-                });
-            }
-        });
-        Self {
-            endpoint,
-            row,
-            state,
-            _directory: directory,
-            task,
-        }
-    }
-    fn backend(&self, available: bool) -> FilesBackend {
-        FilesBackend::new(crate::docker::Engine::connect(&self.endpoint).unwrap())
-            .with_secrets(Arc::new(TestSecrets(available)))
-    }
-}
-fn tar_file(bytes: &[u8], directory: bool, name: &str, spec: &Files, omit_owner: bool) -> Vec<u8> {
-    let (uid, gid) = owner(spec);
-    let mut builder = tar::Builder::new(Vec::new());
-    let mut header = tar::Header::new_gnu();
-    header.set_entry_type(if directory {
-        tar::EntryType::Directory
-    } else {
-        tar::EntryType::Regular
-    });
-    header.set_mode(if directory { 0o700 } else { 0o600 });
-    if !omit_owner {
-        header.set_uid(uid as u64);
-        header.set_gid(gid as u64);
-    }
-    header.set_size(bytes.len() as u64);
-    header.set_mtime(0);
-    header.set_cksum();
-    builder.append_data(&mut header, name, bytes).unwrap();
-    builder.into_inner().unwrap()
-}
-async fn serve_setup(
-    mut stream: tokio::net::UnixStream,
-    state: Arc<Mutex<State>>,
-    spec: Files,
-    started: Arc<tokio::sync::Notify>,
-) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut header = Vec::new();
-    while !header.ends_with(b"\r\n\r\n") {
-        match stream.read_u8().await {
-            Ok(byte) => header.push(byte),
-            Err(_) => return,
-        }
-        if header.len() > 8192 {
-            return;
-        }
-    }
-    let header = String::from_utf8(header).unwrap();
-    let first = header
-        .lines()
-        .next()
-        .unwrap()
-        .split_whitespace()
-        .collect::<Vec<_>>();
-    let method = first[0].to_owned();
-    let raw = first[1];
-    let path = if raw.starts_with("/v1.") {
-        format!("/{}", raw.split('/').skip(2).collect::<Vec<_>>().join("/"))
-    } else {
-        raw.into()
-    };
-    assert!(!path.contains(SENTINEL));
-    state
-        .lock()
-        .unwrap()
-        .requests
-        .push((method.clone(), path.clone()));
-    if path.contains("/attach?") {
-        assert!(path.contains("logs=false"));
-        stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\nContent-Type: application/vnd.docker.raw-stream\r\n\r\n").await.unwrap();
-        loop {
-            let notified = started.notified();
-            if state
-                .lock()
-                .unwrap()
-                .helper
-                .as_ref()
-                .is_some_and(|v| v["State"]["Running"] == true)
-            {
-                break;
-            }
-            notified.await;
-        }
-        let reject = state.lock().unwrap().reject_ready;
-        let ready: &[u8] = if reject { b"denied\n" } else { b"ready\n" };
-        let mut frame = vec![1, 0, 0, 0];
-        frame.extend_from_slice(&(ready.len() as u32).to_be_bytes());
-        frame.extend_from_slice(ready);
-        if stream.write_all(&frame).await.is_err() {
-            return;
-        }
-        let mut bytes = Vec::new();
-        let _ = stream.read_to_end(&mut bytes).await;
-        let mut state = state.lock().unwrap();
-        if !bytes.is_empty() {
-            assert!(
-                !reject,
-                "credentials must never cross a rejected admission handshake"
-            );
-            assert!(
-                bytes
-                    .windows(SENTINEL.len())
-                    .any(|v| v == SENTINEL.as_bytes())
-            );
-            state.transfers += 1;
-            let request = nemoclaw_container_inputs::parse(&bytes).unwrap();
-            for input in &request.files {
-                let mut prefix = String::new();
-                for part in input
-                    .path
-                    .split('/')
-                    .take(input.path.split('/').count() - 1)
-                {
-                    if !prefix.is_empty() {
-                        prefix.push('/');
-                    }
-                    prefix.push_str(part);
-                    state.files.insert(prefix.clone(), (vec![], true));
-                }
-                state.files.insert(
-                    input.path.clone(),
-                    (input.content.as_bytes().to_vec(), false),
-                );
-            }
-            state.files.insert("".into(), (vec![], true));
-            if !state.fail_publish {
-                state
-                    .files
-                    .insert(MARKER.into(), (request.completion_bytes(), false));
-            }
-        }
-        let exit = if state.fail_publish || reject { 1 } else { 0 };
-        let helper = state.helper.as_mut().unwrap();
-        helper["State"] = json!({"Running":false,"Status":"exited","ExitCode":exit});
-        return;
-    }
-    let length = header
-        .lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                .map(|(_, value)| value.trim().parse::<usize>().unwrap())
-        })
-        .unwrap_or(0);
-    let mut body = vec![0; length];
-    if stream.read_exact(&mut body).await.is_err() {
-        return;
-    }
-    let route = path.split('?').next().unwrap();
-    let (status, body) = {
-        let mut state = state.lock().unwrap();
-        match (method.as_str(),route) {
-            ("GET",route) if route.starts_with("/images/")=>(200,serde_json::to_vec(&image()).unwrap()),
-            ("GET",route) if route.starts_with("/volumes/")=>(200,serde_json::to_vec(&json!({"Name":spec.volume.clone(),"Driver":"local","Scope":"local","Mountpoint":"/var/lib/docker/volumes/owned/_data","Options":{},"CreatedAt":"created","Labels":{OWNER_LABEL:spec.owner,GENERATION_LABEL:spec.generation}})).unwrap()),
-            ("POST","/containers/create")=>{
-                assert!(!String::from_utf8_lossy(&body).contains(SENTINEL));let config:serde_json::Value=serde_json::from_slice(&body).unwrap();
-                assert_eq!(config["Env"],json!([]));assert_eq!(config["HostConfig"]["NetworkMode"],"none");assert_eq!(config["HostConfig"]["LogConfig"]["Type"],"none");
-                assert_eq!(config["HostConfig"]["Mounts"][0]["VolumeOptions"]["NoCopy"],true);
-                state.creates+=1;let id=format!("helper-{}",state.creates);
-                let mut observed_config = config.clone();
-                observed_config["Env"] = image()["Config"]["Env"].clone();
-                for (key, value) in image()["Config"]["Labels"].as_object().unwrap() {
-                    observed_config["Labels"].as_object_mut().unwrap().entry(key.clone()).or_insert(value.clone());
-                }
-                state.helper=Some(json!({"Id":id,"Name":format!("/{}",spec.helper_name()),"Image":image()["Id"],"Config":observed_config,"HostConfig":config["HostConfig"],"Mounts":[{"Type":"volume","Name":spec.volume.clone(),"Destination":ROOT,"RW":true}],"State":{"Running":false,"Status":"created","ExitCode":0}}));
-                (201,serde_json::to_vec(&json!({"Id":id,"Warnings":[]})).unwrap())
-            }
-            ("POST",route) if route.ends_with("/start")=>{state.starts+=1;state.helper.as_mut().unwrap()["State"]=json!({"Running":true,"Status":"running","ExitCode":0});started.notify_waiters();(204,vec![])},
-            ("GET",route) if route.ends_with("/archive")=>{
-                let query=url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes()).find(|(k,_)|k=="path").unwrap().1.into_owned();
-                let name=query.strip_prefix(ROOT).unwrap().trim_start_matches('/');
-                match state.files.get(name){Some((bytes,directory))=>(200,tar_file(bytes,*directory,if name.is_empty(){"input-data"}else{name},&spec,state.omit_archive_owner)),None=>(404,b"{}".to_vec())}
-            }
-            ("GET",route) if route.ends_with("/json")=>{
-                if route.contains("helper-")||route.contains(&spec.helper_name()) {
-                    if state.lose_observation&&state.helper.as_ref().is_some_and(|v|v["State"]["Status"]=="exited") {state.lose_observation=false;(503,b"{}".to_vec())}
-                    else if let Some(helper)=&state.helper {let mut helper=helper.clone();if state.foreign{helper["Config"]["Labels"][OWNER_LABEL]=json!("foreign");}(200,serde_json::to_vec(&helper).unwrap())}
-                    else{(404,b"{}".to_vec())}
-                }else if state.application_running{(200,serde_json::to_vec(&json!({"Config":{"Labels":{OWNER_LABEL:spec.owner,GENERATION_LABEL:spec.generation}},"State":{"Running":true}})).unwrap())}
-                else{(404,b"{}".to_vec())}
-            }
-            ("DELETE",_)=>{state.deletes+=1;state.helper=None;(204,vec![])},
-            _=>panic!("unexpected setup API operation {method} {route}"),
-        }
-    };
-    let response = format!(
-        "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.write_all(&body).await;
-}
-#[tokio::test]
-async fn setup_image_update_checks_the_existing_helpers_prior_spec_without_mutation() {
-    let fixture = SetupFixture::new().await;
-    let backend = fixture.backend(true);
-    let first = backend.ensure(files::FILES_KIND, &fixture.row).await;
-    assert!(first.error().is_none());
-    let prior = first.state().unwrap();
-    let mut desired = fixture.row.clone();
-    let mut spec = Files::from_row(&desired).unwrap();
-    spec.image = format!("voiceclaw@sha256:{}", "e".repeat(64));
-    desired.extend(spec.row());
-    let requests = fixture.state.lock().unwrap().requests.len();
-    backend
-        .plan(files::FILES_KIND, &desired, Some(prior))
-        .await
-        .unwrap();
-    {
-        let state = fixture.state.lock().unwrap();
-        assert!(
-            state.requests[requests..]
-                .iter()
-                .all(|(method, _)| method == "GET")
-        );
-        assert_eq!(
-            (state.creates, state.starts, state.transfers, state.deletes),
-            (1, 1, 1, 0)
-        );
-        assert!(state.files.contains_key("credentials/speech"));
-    }
-    fixture.state.lock().unwrap().foreign = true;
-    assert!(
-        backend
-            .plan(files::FILES_KIND, &desired, Some(prior))
-            .await
-            .is_err()
-    );
-    let files = {
-        let state = fixture.state.lock().unwrap();
-        assert_eq!(
-            (state.creates, state.starts, state.transfers, state.deletes),
-            (1, 1, 1, 0)
-        );
-        assert!(state.helper.is_some());
-        assert!(state.files.contains_key("credentials/speech"));
-        state.files.clone()
-    };
-    fixture.state.lock().unwrap().foreign = false;
-    backend
-        .remove(files::FILES_KIND, prior, false)
-        .await
-        .unwrap();
-    let replacement = backend.ensure(files::FILES_KIND, &desired).await;
-    assert!(replacement.error().is_none(), "{:?}", replacement.error());
-    assert_eq!(replacement.state().unwrap()["complete"], "true");
-    assert_ne!(replacement.state().unwrap()["id"], prior["id"]);
-    let state = fixture.state.lock().unwrap();
-    assert_eq!(
-        (state.creates, state.starts, state.transfers, state.deletes),
-        (2, 2, 2, 1)
-    );
-    assert_eq!(state.files, files);
-    assert!(
-        state
-            .requests
-            .iter()
-            .filter(|(method, _)| method == "DELETE")
-            .all(|(_, path)| path.starts_with("/containers/"))
-    );
-}
-
-#[tokio::test]
-async fn setup_transfers_only_after_admission_and_unchanged_apply_does_not_restart_or_rewrite() {
-    let fixture = SetupFixture::new().await;
-    let backend = fixture.backend(true);
-    let mutation = backend.ensure(files::FILES_KIND, &fixture.row).await;
-    assert!(
-        mutation.error().is_none(),
-        "setup failed: {:?}; requests: {:?}",
-        mutation.error(),
-        fixture.state.lock().unwrap().requests
-    );
-    let row = mutation.state().unwrap().clone();
-    assert_eq!(row["complete"], "true");
-    assert!(!serde_json::to_string(&row).unwrap().contains(SENTINEL));
-    let read = backend
-        .read(files::FILES_KIND, &row, false)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(read, row);
-    let again = backend.ensure(files::FILES_KIND, &row).await;
-    assert!(again.error().is_none());
-    assert_eq!(again.state().unwrap(), &row);
-    {
-        let state = fixture.state.lock().unwrap();
-        assert_eq!((state.creates, state.starts, state.transfers), (1, 1, 1));
-    }
-    backend.remove(files::FILES_KIND, &row, true).await.unwrap();
-    let state = fixture.state.lock().unwrap();
-    assert_eq!(state.deletes, 1);
-    assert!(state.files.contains_key("credentials/speech"));
-    assert!(
-        state
-            .requests
-            .iter()
-            .filter(|(m, _)| m == "DELETE")
-            .all(|(_, p)| p.starts_with("/containers/"))
-    );
-}
-#[tokio::test]
-async fn setup_rejects_unexpected_container_environment_without_restart_transfer_or_cleanup() {
-    let fixture = SetupFixture::new().await;
-    let backend = fixture.backend(true);
-    let first = backend.ensure(files::FILES_KIND, &fixture.row).await;
-    assert!(first.error().is_none());
-    let row = first.state().unwrap();
-    for environment in [
-        json!(["PATH=/tmp"]),
-        json!(["LD_PRELOAD=/tmp/injected.so"]),
-        json!([
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "TOKEN=unexpected-image-content"
-        ]),
-        json!([
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        ]),
-    ] {
-        fixture.state.lock().unwrap().helper.as_mut().unwrap()["Config"]["Env"] = environment;
-        assert!(backend.read(files::FILES_KIND, row, false).await.is_err());
-        assert!(
-            backend
-                .ensure(files::FILES_KIND, row)
-                .await
-                .error()
-                .is_some()
-        );
-        assert!(backend.remove(files::FILES_KIND, row, true).await.is_err());
-        let state = fixture.state.lock().unwrap();
-        assert_eq!(
-            (state.creates, state.starts, state.transfers, state.deletes),
-            (1, 1, 1, 0)
-        );
-        assert!(state.helper.is_some());
-        assert!(state.files.contains_key("credentials/speech"));
-    }
-}
-
-#[tokio::test]
-async fn rejected_admission_and_missing_credentials_never_transfer_secret_bytes() {
-    for missing in [false, true] {
-        let fixture = SetupFixture::new().await;
-        fixture.state.lock().unwrap().reject_ready = true;
-        let mutation = fixture
-            .backend(!missing)
-            .ensure(files::FILES_KIND, &fixture.row)
-            .await;
-        assert!(mutation.error().is_some());
-        let state = fixture.state.lock().unwrap();
-        assert_eq!(state.transfers, 0);
-        if missing {
-            assert_eq!(state.creates, 0);
-            assert!(state.requests.is_empty());
-        }
-    }
-}
-#[tokio::test]
-async fn interrupted_delivery_retains_binding_and_explicit_retry_reconciles_completion() {
-    let fixture = SetupFixture::new().await;
-    fixture.state.lock().unwrap().lose_observation = true;
-    let backend = fixture.backend(true);
-    let mutation = backend.ensure(files::FILES_KIND, &fixture.row).await;
-    assert!(mutation.error().is_some());
-    let partial = mutation.state().unwrap().clone();
-    assert_eq!(partial["complete"], "false");
-    let actual = backend
-        .read(files::FILES_KIND, &partial, false)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(actual["complete"], "true");
-    let again = backend.ensure(files::FILES_KIND, &partial).await;
-    assert!(again.error().is_none());
-    assert_eq!(again.state().unwrap()["id"], partial["id"]);
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.starts, state.transfers), (1, 1, 1));
-}
-#[tokio::test]
-async fn failed_setup_retries_only_when_stopped_and_never_adopts_a_foreign_binding() {
-    let fixture = SetupFixture::new().await;
-    fixture.state.lock().unwrap().fail_publish = true;
-    let backend = fixture.backend(true);
-    let first = backend.ensure(files::FILES_KIND, &fixture.row).await;
-    assert!(first.error().is_some());
-    let partial = first.state().unwrap().clone();
-    fixture.state.lock().unwrap().foreign = true;
-    let denied = backend.ensure(files::FILES_KIND, &partial).await;
-    assert!(denied.error().is_some());
-    {
-        let mut state = fixture.state.lock().unwrap();
-        assert_eq!(state.creates, 1);
-        state.foreign = false;
-        state.fail_publish = false;
-        state.application_running = true;
-    }
-    let denied = backend.ensure(files::FILES_KIND, &partial).await;
-    assert!(denied.error().is_some());
-    assert_eq!(fixture.state.lock().unwrap().creates, 1);
-    fixture.state.lock().unwrap().application_running = false;
-    let recovered = backend.ensure(files::FILES_KIND, &partial).await;
-    assert!(recovered.error().is_none());
-    assert_ne!(recovered.state().unwrap()["id"], partial["id"]);
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.starts, state.transfers), (2, 2, 2));
-}
-
-#[tokio::test]
-async fn changed_target_identity_and_helper_configuration_refuse_all_mutations() {
-    let mut row = input_row(&connection_document());
+        .values;
+    row.insert("engine".into(), engine.into());
     row.insert(
         "agent_sandbox_id".into(),
         "11111111-2222-3333-4444-555555555555".into(),
     );
-    let fixture = SetupFixture::with_row(row).await;
-    let backend = fixture.backend(true);
-    let first = backend.ensure(files::FILES_KIND, &fixture.row).await;
-    assert!(first.error().is_none());
-    let original = first.state().unwrap();
-    let original_helper = fixture.state.lock().unwrap().helper.clone().unwrap();
-    for (pointer, value) in [
-        ("/HostConfig/CapAdd", json!(["SYS_ADMIN"])),
-        ("/HostConfig/NetworkMode", json!("host")),
-        ("/HostConfig/ReadonlyRootfs", json!(false)),
-        (
-            "/HostConfig/Devices",
-            json!([{"PathOnHost":"/dev/owned", "PathInContainer":"/dev/owned", "CgroupPermissions":"rwm"}]),
-        ),
-        ("/Mounts/0/RW", json!(false)),
-    ] {
-        let mut changed = original_helper.clone();
-        let (parent, field) = pointer.rsplit_once('/').unwrap();
-        changed.pointer_mut(parent).unwrap()[field] = value;
-        fixture.state.lock().unwrap().helper = Some(changed);
+    row
+}
+
+#[derive(Default)]
+struct Engine {
+    helper: Option<serde_json::Value>,
+    volume: Option<serde_json::Value>,
+    files: Vec<(String, Vec<u8>)>,
+    uploads: Vec<Vec<u8>>,
+    requests: Vec<(String, String)>,
+}
+
+/// A stateful engine that holds one helper container and one volume.
+async fn engine(state: Arc<Mutex<Engine>>) -> Fixture {
+    Fixture::engine(move |request| {
+        let mut state = state.lock().unwrap();
+        let route = request.path.split('?').next().unwrap().to_owned();
+        state
+            .requests
+            .push((request.method.clone(), request.path.clone()));
+        assert!(!request.path.contains(SENTINEL));
+        let found = |value: &Option<serde_json::Value>| match value {
+            Some(value) => (200, serde_json::to_vec(value).unwrap()),
+            None => (404, b"{}".to_vec()),
+        };
+        Some(match (request.method.as_str(), route.as_str()) {
+            ("GET", route) if route.starts_with("/volumes/") => found(&state.volume),
+            ("POST", "/volumes/create") => {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let volume = json!({"Name":body["Name"],"Driver":"local","Labels":body["Labels"],
+                    "Mountpoint":"/var/lib/docker/volumes/inputs/_data","Scope":"local","Options":{}});
+                state.volume = Some(volume.clone());
+                (201, serde_json::to_vec(&volume).unwrap())
+            }
+            ("DELETE", route) if route.starts_with("/volumes/") => {
+                state.volume = None;
+                (204, vec![])
+            }
+            ("POST", "/containers/create") => {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                assert!(!body.to_string().contains(SENTINEL));
+                assert_eq!(body["HostConfig"]["NetworkMode"], "none");
+                let name = request.path.split("name=").nth(1).unwrap();
+                state.helper = Some(json!({"Id":"helper-id","Name":format!("/{name}"),
+                    "Config":{"Labels":body["Labels"]},"State":{"Status":"created"},
+                    "Mounts":[{"Type":"volume","Name":body["HostConfig"]["Mounts"][0]["Source"],
+                        "Destination":ROOT}]}));
+                (201, br#"{"Id":"helper-id","Warnings":[]}"#.to_vec())
+            }
+            ("GET", route) if route.ends_with("/json") => found(&state.helper),
+            ("DELETE", route) if route.starts_with("/containers/") => {
+                state.helper = None;
+                state.files.clear();
+                (204, vec![])
+            }
+            ("PUT", route) if route.ends_with("/archive") => {
+                let mut archive = tar::Archive::new(request.body.as_slice());
+                for entry in archive.entries().unwrap() {
+                    let mut entry = entry.unwrap();
+                    let mut bytes = Vec::new();
+                    std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+                    let path = entry.path().unwrap().display().to_string();
+                    state.files.retain(|(name, _)| *name != path);
+                    state.files.push((path, bytes));
+                }
+                state.uploads.push(request.body.clone());
+                (200, vec![])
+            }
+            ("GET", route) if route.ends_with("/archive") => {
+                let path = request
+                    .path
+                    .split("path=")
+                    .nth(1)
+                    .unwrap()
+                    .replace("%2F", "/");
+                let name = path.trim_start_matches(&format!("{ROOT}/")).to_owned();
+                match state.files.iter().find(|(file, _)| *file == name) {
+                    Some((_, bytes)) => (
+                        200,
+                        nemoclaw_docker::archive(&[(name.as_str(), bytes, 0o600)]).unwrap(),
+                    ),
+                    None => (404, b"{}".to_vec()),
+                }
+            }
+            (method, route) => panic!("unexpected Docker request {method} {route}"),
+        })
+    })
+    .await
+}
+
+#[tokio::test]
+async fn publication_checks_credentials_first_writes_private_files_once_and_cleans_up() {
+    let state = Arc::new(Mutex::new(Engine::default()));
+    let fixture = engine(state.clone()).await;
+    let desired = row("unix:///var/run/docker.sock");
+    let backend = |available| {
+        FilesBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
+            .with_secrets(Arc::new(Secrets(available)))
+    };
+
+    // A missing credential stops before any Docker request.
+    assert!(
+        backend(false)
+            .ensure(files::FILES_KIND, &desired)
+            .await
+            .error()
+            .is_some()
+    );
+    assert!(state.lock().unwrap().requests.is_empty());
+
+    let published = backend(true).ensure(files::FILES_KIND, &desired).await;
+    assert!(published.error().is_none(), "{:?}", published.error());
+    let published = published.state().unwrap().clone();
+    assert_eq!(published["complete"], "true");
+    assert!(!format!("{published:?}").contains(SENTINEL));
+    {
+        let state = state.lock().unwrap();
         assert!(
-            backend
-                .read(files::FILES_KIND, original, false)
-                .await
-                .is_err()
+            !state
+                .requests
+                .iter()
+                .any(|(_, path)| path.ends_with("/start"))
         );
-        assert!(
-            backend
-                .ensure(files::FILES_KIND, original)
-                .await
-                .error()
-                .is_some()
+        let mut archive = tar::Archive::new(state.uploads[0].as_slice());
+        for entry in archive.entries().unwrap() {
+            let header = entry.unwrap().header().clone();
+            let directory = header.entry_type().is_dir();
+            assert_eq!(
+                header.mode().unwrap(),
+                if directory { 0o700 } else { 0o600 }
+            );
+            assert_eq!(
+                (header.uid().unwrap(), header.gid().unwrap()),
+                (65532, 65532)
+            );
+        }
+        let descriptor = &state.files.iter().find(|(f, _)| f == DESCRIPTOR).unwrap().1;
+        let descriptor: serde_json::Value = serde_json::from_slice(descriptor).unwrap();
+        assert_eq!(
+            descriptor["authentication"]["credentialFile"],
+            "/run/nemoclaw/secrets/openshell"
         );
-        assert!(
-            backend
-                .remove(files::FILES_KIND, original, true)
-                .await
-                .is_err()
-        );
+        assert!(!descriptor.to_string().contains(SENTINEL));
     }
-    fixture.state.lock().unwrap().helper = Some(original_helper);
-    let mut changed = original.clone();
-    changed.insert(
-        "agent_sandbox_id".into(),
-        "11111111-2222-3333-4444-666666666666".into(),
-    );
+
+    // An unchanged apply reads the marker and writes nothing.
+    let uploads = state.lock().unwrap().uploads.len();
+    let read = backend(true)
+        .read(files::FILES_KIND, &published, false)
+        .await
+        .unwrap();
+    assert_eq!(read.as_ref(), Some(&published));
     assert!(
-        backend
-            .read(files::FILES_KIND, &changed, false)
-            .await
-            .is_err()
-    );
-    assert!(
-        backend
-            .ensure(files::FILES_KIND, &changed)
+        backend(true)
+            .ensure(files::FILES_KIND, &published)
             .await
             .error()
-            .is_some()
+            .is_none()
+    );
+    assert_eq!(state.lock().unwrap().uploads.len(), uploads);
+
+    // An interrupted publication starts again in a fresh volume.
+    state
+        .lock()
+        .unwrap()
+        .files
+        .retain(|(name, _)| name != MARKER);
+    let read = backend(true)
+        .read(files::FILES_KIND, &published, false)
+        .await
+        .unwrap();
+    assert_eq!(read.unwrap()["complete"], "false");
+    let mut retry = published.clone();
+    retry.insert("id".into(), String::new());
+    assert!(
+        backend(true)
+            .ensure(files::FILES_KIND, &retry)
+            .await
+            .error()
+            .is_none()
     );
     assert!(
-        backend
-            .remove(files::FILES_KIND, &changed, true)
-            .await
-            .is_err()
-    );
-    fixture.state.lock().unwrap().omit_archive_owner = true;
-    assert!(
-        backend
-            .engine
-            .read_file(&original["id"], &format!("{ROOT}/{MARKER}"), 4096)
-            .await
+        state
+            .lock()
             .unwrap()
-            .is_some()
+            .requests
+            .iter()
+            .any(|(m, p)| m == "DELETE" && p.starts_with("/volumes/"))
     );
+
+    // Foreign resources are refused and never deleted.
+    let owner = OWNER_LABEL.to_owned();
+    state.lock().unwrap().helper.as_mut().unwrap()["Config"]["Labels"][owner.as_str()] =
+        json!("foreign");
+    let deletes = |state: &Engine| state.requests.iter().filter(|(m, _)| m == "DELETE").count();
+    let before = deletes(&state.lock().unwrap());
     assert!(
-        backend
-            .read(files::FILES_KIND, original, false)
+        backend(true)
+            .read(files::FILES_KIND, &published, false)
             .await
             .is_err()
     );
     assert!(
-        backend
-            .ensure(files::FILES_KIND, original)
+        backend(true)
+            .ensure(files::FILES_KIND, &published)
             .await
             .error()
             .is_some()
     );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!(
-        (state.creates, state.starts, state.transfers, state.deletes),
-        (1, 1, 1, 0)
+    assert!(
+        backend(true)
+            .remove(files::FILES_KIND, &published, true)
+            .await
+            .is_err()
     );
-    assert!(state.helper.is_some());
-    assert!(state.files.contains_key("credentials/speech"));
+    assert_eq!(deletes(&state.lock().unwrap()), before);
+
+    // Removal deletes the owned helper and volume.
+    state.lock().unwrap().helper.as_mut().unwrap()["Config"]["Labels"][owner.as_str()] =
+        json!(published["owner"]);
+    backend(true)
+        .remove(files::FILES_KIND, &published, true)
+        .await
+        .unwrap();
+    let state = state.lock().unwrap();
+    assert!(state.helper.is_none() && state.volume.is_none());
 }

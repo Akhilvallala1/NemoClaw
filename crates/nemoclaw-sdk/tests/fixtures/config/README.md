@@ -4,6 +4,7 @@
 # Configuration contract fixtures
 
 `container.yaml` declares an application without protected inputs or agent connections.
+`container-agent-connection.yaml` adds two secrets and an HTTPS/OIDC agent connection.
 Generic launch, placement, image, and readiness tests use it.
 Its reserved endpoints and invented image digests are unsuitable for live apply.
 
@@ -13,17 +14,3 @@ These files are parser fixtures, not authorization to apply the embedded live de
 Live tests must select independent identities.
 
 The `spark.yaml` fixture exercises the inline recipe schema.
-
-The `container-agent-connection.yaml` fixture supplies a complete application,
-sandbox, external gateway, and inference declaration. Its test checks protected
-input ordering, credential-reference separation, and YAML round-trip parsing.
-Reserved endpoints and invented image digests make it unsuitable for live apply.
-It does not qualify an application image or an OpenShell service identity.
-
-The `container-managed-local.yaml` fixture selects explicit development-only
-HTTP without client authentication, on the deployment's managed Docker network.
-The compiler derives its application-reachable private gateway endpoint.
-There is no OpenShell service token; protected speech delivery remains required.
-Any process with gateway network access can use its API, so this is not a
-production profile or permission to expose the gateway outside the test network.
-Its invented image digests and deployment UID must not be used for live apply.

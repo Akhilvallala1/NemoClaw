@@ -1,21 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Complete parser fixture, not a deployable or qualified application recipe.
-# The endpoints, UUID, image digests, model, and network are test values.
+# Application with protected inputs and an agent connection; parser fixture; invented pins are unsuitable for live apply.
+# The UUID, image digests, endpoints, and model are test values.
 
 apiVersion: nemoclaw.nvidia.com/v1alpha1
 kind: NemoClawConfig
 metadata:
-  name: application-manual-test
+  name: application-container
   uid: c8fd820d-fbc6-48ac-b4c7-240b92313689
 spec:
   gateway:
-    management: external
+    management: managed
     runtime:
       provider: docker
-    endpoint: https://openshell.example.invalid:8443
+    endpoint: http://127.0.0.1:17681
     engine: unix:///var/run/docker.sock
-    credential: {env: OPENSHELL_OPERATOR_TOKEN}
+    image: ghcr.io/nvidia/openshell/gateway@sha256:ea14aa4db0980fab4769fb6b5509ac42ae3dc8495e645b1ba1fe1ada49892fa6
+    networkCIDR: 172.29.230.0/24
   inferenceProviders:
     - name: agent-model
       provider: openai
@@ -41,46 +42,21 @@ spec:
     voice:
       kind: container
       image: example.invalid/application@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      imagePullPolicy: Never
-      inputSetup:
-        image: example.invalid/container-inputs@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-      architecture: arm64
-      user: "65532:65532"
-      placement:
-        engine: unix:///var/run/docker.sock
-        networkCIDR: 172.29.230.0/24
       publication:
         bindAddress: 127.0.0.1
         port: 18790
       # APP_* settings are examples interpreted by the application image.
       environment:
-        APP_MODE: qualification
-        APP_AGENT_CONNECTION_FILE: /var/lib/application/config/agent-connection.json
-        APP_CREDENTIAL_FILE: /var/lib/application/credentials/speech
-        APP_STATE_PATH: /var/lib/application/state/state.db
+        APP_AGENT_CONNECTION_FILE: /run/nemoclaw/agent-connection.json
+        APP_CREDENTIAL_FILE: /run/nemoclaw/secrets/speech
       data:
         mountPath: /var/lib/application
       secrets:
-        speech:
-          credential: {env: NVIDIA_API_KEY}
-          targetPath: /var/lib/application/credentials/speech
-        openshell:
-          credential: {env: APP_OPENSHELL_SERVICE_TOKEN}
-          targetPath: /var/lib/application/credentials/openshell
-      agentConnections:
-        primary:
-          sandboxRef: assistant
-          agent: main
-          targetPath: /var/lib/application/config/agent-connection.json
-          gatewayEndpoint: https://openshell.example.invalid:8443
-          authentication:
-            mode: oidcBearer
-            secretRef: openshell
-            refreshMode: none
-          tls:
-            trust: system
-          timeouts:
-            healthSeconds: 12
-            invokeSeconds: 120
-      readiness:
-        startupTimeoutSeconds: 300
+        speech: {env: NVIDIA_API_KEY}
+        openshell: {env: APP_OPENSHELL_SERVICE_TOKEN}
+      agentConnection:
+        sandboxRef: assistant
+        gatewayEndpoint: https://openshell.example.invalid:8443
+        authentication:
+          mode: oidcBearer
+          secretRef: openshell

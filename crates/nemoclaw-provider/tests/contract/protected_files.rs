@@ -43,7 +43,6 @@ fn authored_protected_files_are_validated_offline_without_echoing_inputs() {
         "workspace",
         "provider",
         "sandbox",
-        "ollama_service",
         "managed_gateway",
         "container_service",
     ]
@@ -56,19 +55,10 @@ fn authored_protected_files_are_validated_offline_without_echoing_inputs() {
         .unwrap();
     let valid = authored(&Files::from_row(&target.values).unwrap());
     let workspace = crate::workspace();
-    for fault in [None, Some("owner"), Some("generation"), Some("credential")] {
+    for fault in [None, Some("owner"), Some("generation"), Some("user")] {
         let mut resource = valid.clone();
         match fault {
-            Some("credential") => {
-                let name = resource["credentials"]
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .next()
-                    .unwrap()
-                    .clone();
-                resource["credentials"][name]["env"] = json!("PRIVATE_SENTINEL=");
-            }
+            Some("user") => resource["user"] = json!("PRIVATE_SENTINEL"),
             Some(attribute) => resource[attribute] = json!(""),
             None => {}
         }

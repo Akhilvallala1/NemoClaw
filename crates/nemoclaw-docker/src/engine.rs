@@ -13,16 +13,6 @@ use futures_util::StreamExt;
 use nemoclaw_backend::{Error, ObservationError};
 use std::{io::Read, time::Duration};
 
-/// A bounded entry with verified tar structure. Missing metadata remains explicit;
-/// callers that require custody checks must reject it.
-#[derive(Debug)]
-pub struct ArchiveEntry {
-    pub bytes: Vec<u8>,
-    pub uid: Option<u64>,
-    pub gid: Option<u64>,
-    pub mode: Option<u32>,
-}
-
 #[derive(Clone)]
 pub struct Engine {
     pub api: bollard::Docker,
@@ -144,20 +134,6 @@ impl Engine {
         path: &str,
         limit: usize,
     ) -> Result<Option<Vec<u8>>, Error> {
-        Ok(self
-            .read_entry(id, path, limit, false)
-            .await?
-            .map(|entry| entry.bytes))
-    }
-    /// Directory reads stop at the first header, without downloading the data tree.
-    /// File reads require a complete transport and exactly one bounded regular file.
-    pub async fn read_entry(
-        &self,
-        id: &str,
-        path: &str,
-        limit: usize,
-        directory: bool,
-    ) -> Result<Option<ArchiveEntry>, Error> {
         let work = async {
             let options = DownloadFromContainerOptions { path: path.into() };
             let mut stream = self.api.download_from_container(id, Some(options));
@@ -168,24 +144,16 @@ impl Engine {
             while let Some(chunk) = stream.next().await {
                 match chunk {
                     Ok(chunk) => {
-                        if directory {
-                            let take = chunk.len().min(512usize.saturating_sub(bytes.len()));
-                            bytes.extend_from_slice(&chunk[..take]);
-                            if bytes.len() == 512 {
-                                break;
-                            }
-                        } else {
-                            if chunk.len() > bound.saturating_sub(bytes.len()) {
-                                return Err(ObservationError::Incomplete.into());
-                            }
-                            bytes.extend_from_slice(&chunk);
+                        if chunk.len() > bound.saturating_sub(bytes.len()) {
+                            return Err(ObservationError::Incomplete.into());
                         }
+                        bytes.extend(chunk);
                     }
                     Err(error) if is_missing(&error) && bytes.is_empty() => return Ok(None),
                     Err(error) => return Err(remote(&error)),
                 }
             }
-            read_entry_archive(&bytes, limit, directory).map(Some)
+            read_archive(&bytes, limit).map(Some)
         };
         tokio::time::timeout(Duration::from_secs(20), work)
             .await
@@ -261,17 +229,7 @@ pub fn optional<T>(result: Result<T, bollard::errors::Error>) -> Result<Option<T
     }
 }
 
-fn read_entry_archive(bytes: &[u8], limit: usize, directory: bool) -> Result<ArchiveEntry, Error> {
-    // Reject PAX/GNU extensions before tar can interpret or skip their headers.
-    let header = bytes.get(..512).ok_or(ObservationError::Incomplete)?;
-    let header = tar::Header::from_byte_slice(header);
-    if if directory {
-        !header.entry_type().is_dir() || header.size().ok() != Some(0)
-    } else {
-        !header.entry_type().is_file()
-    } {
-        return Err(ObservationError::Incomplete.into());
-    }
+fn read_archive(bytes: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
     let mut archive = tar::Archive::new(bytes);
     let mut entries = archive
         .entries()
@@ -280,27 +238,18 @@ fn read_entry_archive(bytes: &[u8], limit: usize, directory: bool) -> Result<Arc
         .next()
         .ok_or(ObservationError::Incomplete)?
         .map_err(|_| ObservationError::Incomplete)?;
-    let header = entry.header();
-    let mut result = ArchiveEntry {
-        bytes: Vec::new(),
-        uid: header.uid().ok(),
-        gid: header.gid().ok(),
-        mode: header.mode().ok(),
-    };
-    if directory {
-        return Ok(result);
-    }
     let size = entry.size();
-    if size == 0 || size > limit as u64 {
+    if !entry.header().entry_type().is_file() || size == 0 || size > limit as u64 {
         return Err(ObservationError::Incomplete.into());
     }
+    let mut output = Vec::new();
     entry
-        .read_to_end(&mut result.bytes)
+        .read_to_end(&mut output)
         .map_err(|_| ObservationError::Incomplete)?;
-    if result.bytes.len() as u64 != size || entries.next().is_some() {
+    if output.len() as u64 != size || entries.next().is_some() {
         return Err(ObservationError::Incomplete.into());
     }
-    Ok(result)
+    Ok(output)
 }
 /// A tar archive of files with fixed modification times.
 pub fn archive(files: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Error> {
@@ -309,8 +258,6 @@ pub fn archive(files: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Error> {
         let mut header = tar::Header::new_gnu();
         header.set_size(bytes.len() as u64);
         header.set_mode(*mode);
-        header.set_uid(0);
-        header.set_gid(0);
         header.set_mtime(0);
         header.set_cksum();
         builder

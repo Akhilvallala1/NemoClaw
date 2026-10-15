@@ -32,4 +32,3 @@ data host_image (version 0)
   image_id: string, optional
   labels: map(string), optional
   observation_json: string, computed
-  require_healthcheck: bool, optional

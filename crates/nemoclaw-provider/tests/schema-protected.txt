@@ -11,36 +11,21 @@ provider protected (version 0)
 
 resource protected_files (version 0)
   agent: object({ name = string, owner = string, sandbox = string, sandbox_id = string, type = string, workspace = string }), optional
-  application: string, required
-  architecture: string, required
   complete: string, computed
+  credentials: map(string), optional
   engine: string, required
   generation: string, required
   id: string, computed
   image: string, required
+  name: string, required
   owner: string, required
-  root: string, required
   user: string, required
-  volume: string, required
   block agent_connection: optional
     authentication: string, required
       > `oidcBearer` or `none`.
     credential: string, optional
       > The `credentials` entry holding the bearer token; required for oidcBearer.
     endpoint: string, required
-      > OpenShell gateway origin the application reaches: HTTPS for oidcBearer, or a private IPv4 HTTP origin for none.
-    health_seconds: number, required
-      > Non-generative agent check deadline, 1–12 seconds.
-    invoke_seconds: number, required
-      > Agent invocation deadline, 1–120 seconds.
-    path: string, required
-      > Absolute descriptor path below `root`.
+      > Gateway origin the application reaches.
     service: string, required
       > Application service name written to the descriptor.
-    trust: string, required
-      > `system` for HTTPS, or `none` for development-only HTTP.
-  block credentials: map
-    env: string, required
-      > The provider's environment variable that holds the credential. Its value never enters state.
-    path: string, required
-      > Absolute file path below `root`.

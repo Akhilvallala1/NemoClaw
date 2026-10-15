@@ -20,7 +20,7 @@ NemoClaw provides a public desired-state SDK, CLI, and OpenTofu provider.
 | Fabric provider | Fabric runtime configuration and readiness in agent sandboxes |
 | vLLM and Ollama providers | Inference service storage, readiness observations, and application-specific persistence |
 | Host provider | Engine and image observations, and application container health |
-| Protected provider | Publication of protected application files into an owned volume |
+| Protected provider | Publication of an application's protected files into a volume it owns |
 | Hosted runtime | Startup capacity checks, model preparation, and application health |
 | Fabric | Agent runtime health semantics and adapter checks |
 
@@ -69,39 +69,16 @@ Qualify the provider against pinned OpenTofu and use an explicitly verified bund
 Keep tests that need live resources opt-in; record a live run's revision, platform, and environment in its CI results or the commit that relies on it.
 Compilation alone does not qualify migration or platforms.
 
-## Local Container Connection Decision
-
-Decision: Accept, authorized by San Dang in the operator conversation on October 6, 2026: “Ok let's do it from nemoclaw side as well.”
-Accountable maintainer: San Dang.
-Reason: the fresh DGX Station VoiceClaw manual test needs to connect to the gateway that NemoClaw installs, rather than an externally provisioned HTTPS/OIDC gateway.
-Placement: the existing generic container connection validator, compiler, and protected descriptor delivery; VoiceClaw owns the matching application transport.
-
-The development-only connection explicitly selects `authentication.mode: none`, `refreshMode: none`, and `tls.trust: none`, without an OpenShell credential reference.
-It is restricted to this deployment's managed local Docker gateway and the same owned Docker network and engine.
-The compiler derives the gateway container's private IPv4 address and listen port; an authored endpoint must match that binding exactly.
-The gateway's host publication stays on loopback.
-HTTPS/OIDC behavior remains unchanged, and authentication or transport failure never selects anonymous mode automatically.
-
-This profile provides neither encryption nor client authentication or per-application authorization.
-Any process able to reach the gateway can use its API; use only for an isolated, trusted local development deployment, not production or shared untrusted workloads.
-No issuer, proxy, Docker socket grant to the application, operator credential copying, new lifecycle manager, or native-health claim is accepted.
-Protected speech input delivery, target/workspace binding, application health, owned removal, and dependency preservation remain unchanged.
-
-The SDK enforces the managed-gateway binding. The `protected_files` resource enforces only the explicit profile: plaintext to a canonical private IPv4 origin, with no credential.
-
-Validation: deterministic parser/schema, compilation, binding, descriptor, export/reapply, and negative transport/authentication/placement tests, followed by the separate manual Station installation and voice turn.
-Local tests do not establish image or live qualification.
-Changing network exposure, authentication authority, supported platforms, or application transport requires a new joint decision.
-
-## Protected Files Provider Decision
+## Protected Application Inputs Decision
 
 Decision: Accept, authorized by San Dang on October 15, 2026, after the provider reorganization in #13131.
 Accountable maintainer: San Dang.
-Reason: the pinned Docker provider can upload files into a container, but not with admission before credential transfer, completion verification, or recovery of an interrupted publication.
-Placement: one `protected_files` resource in a `protected` provider, built from `nemoclaw-provider`.
-It owns only the setup helper and the files it publishes; Docker keeps the application container and volume, and Fabric keeps the agent.
-No general container provider is added.
+Reason: an application container needs credential files and an agent connection descriptor before it starts, without credential values in its environment, configuration, plans, or state.
+Placement: one `protected_files` resource in a `protected` provider, built from `nemoclaw-provider`; no general container provider.
+It owns only its setup container and volume. Docker keeps the application container, and Fabric keeps the agent.
 
-Credential values pass only from the provider's environment to the helper's stdin.
-They never enter resource inputs, plans, state, Docker settings, or diagnostics.
-Validation: deterministic provider, compiler, and pinned OpenTofu contract tests; Linux Docker and ACL qualification and the joint VoiceClaw turn remain under #12570.
+The provider reads credential values from its environment and writes them with Docker's archive API into a fresh volume, through a setup container that never starts; a marker written last records completion.
+The volume is fresh for every publication and mounted read-only by the application, so the application cannot plant links in it.
+The provider does not check host default ACLs on Docker's volume directory.
+The `none` authentication mode is plaintext without client authentication, restricted by the SDK to this deployment's managed Docker gateway; use it only on a trusted local machine.
+Validation: deterministic provider, compiler, and pinned OpenTofu contract tests; Linux Docker and the joint VoiceClaw turn remain under #12570.

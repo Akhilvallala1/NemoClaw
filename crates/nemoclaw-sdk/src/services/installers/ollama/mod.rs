@@ -226,7 +226,6 @@ impl Installer for ManagedOllama {
             InstallPlan {
                 targets: Vec::new(),
                 dependencies: BTreeMap::from([(address(SERVICE_KIND, name), prerequisites)]),
-                ..InstallPlan::default()
             },
         )
     }
@@ -255,7 +254,6 @@ impl Installer for OllamaProxy {
         Ok(InstallPlan {
             targets: proxy::targets(document, name, self, generations)?,
             dependencies: BTreeMap::from([(service, vec![address(proxy::STORAGE, name)])]),
-            ..InstallPlan::default()
         })
     }
 

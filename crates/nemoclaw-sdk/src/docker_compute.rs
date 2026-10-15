@@ -51,13 +51,10 @@ pub(crate) fn is_disposable(address: &str) -> bool {
         "docker_image.",
         "docker_network.",
         "docker_volume.",
+        "protected_files.",
     ]
     .iter()
     .any(|prefix| address.starts_with(prefix))
-        || address.starts_with(&format!(
-            "{}.",
-            crate::services::installers::container::inputs::FILES_KIND
-        ))
 }
 fn digest(engine: &str, name: &str) -> String {
     Sha256::digest(format!("{engine}\0{name}").as_bytes())[..16]
@@ -85,6 +82,8 @@ fn image(target: &Target) -> Result<Target, Error> {
         let platform = spec
             .process
             .as_ref()
+            // An image-owned application runs on the engine's own platform.
+            .filter(|process| !process.architecture.is_empty())
             .map(|process| format!("linux/{}", process.architecture));
         (spec.engine().to_owned(), spec.image().to_owned(), platform)
     };
@@ -479,10 +478,23 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
             dependencies.push(json!(network.address));
         }
         attrs["depends_on"] = json!(dependencies);
-        for attribute in ["precondition", "replace_triggered_by"] {
-            if let Some(value) = old.get("lifecycle").and_then(|l| l.get(attribute)) {
-                attrs["lifecycle"][attribute] = value.clone();
-            }
+        if let Some(preconditions) = old.get("lifecycle").and_then(|l| l.get("precondition")) {
+            attrs["lifecycle"] = json!({"precondition":preconditions});
+        }
+        if spec(target).is_ok_and(|spec| {
+            spec.process
+                .and_then(|process| process.image_owned)
+                .is_some_and(|launch| launch.protected_inputs)
+        }) {
+            // The application reads its protected files read-only, and starts
+            // afresh whenever they are published again.
+            use crate::services::installers::container::inputs::{FILES_KIND, ROOT};
+            let name = target.address.split_once('.').unwrap().1;
+            let volume = format!("{}-inputs", attrs["name"].as_str().unwrap_or_default());
+            attrs["mounts"].as_array_mut().unwrap().push(json!({
+                "type":"volume","source":volume,"target":ROOT,"read_only":true
+            }));
+            attrs["lifecycle"]["replace_triggered_by"] = json!([format!("{FILES_KIND}.{name}")]);
         }
         let physical = address(&target.address);
         graph["resource"]["docker_container"][physical.split_once('.').unwrap().1] = attrs;
@@ -512,19 +524,11 @@ pub(crate) fn configure(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
 }
 
 fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> {
-    // Installer checks already in the graph gate every change too.
-    let mut gates: Vec<_> = graph["data"]["host_image"]
-        .as_object()
-        .into_iter()
-        .flat_map(|checks| checks.keys())
-        .map(|name| json!(format!("data.host_image.{name}")))
-        .collect();
-    for target in raw.iter().filter(|target| {
-        matches!(
-            target.kind.as_str(),
-            "inference_service" | "ollama_service" | "container_service"
-        )
-    }) {
+    let mut gates = Vec::new();
+    for target in raw
+        .iter()
+        .filter(|target| matches!(target.kind.as_str(), "inference_service" | "ollama_service"))
+    {
         let image = image(target)?;
         let container = address(&target.address);
         let name = container
@@ -543,7 +547,6 @@ fn runtime_image_checks(graph: &mut Value, raw: &[Target]) -> Result<(), Error> 
             "image": service.image(),
             "architecture": process.architecture,
             "labels": process.image_labels,
-            "require_healthcheck": process.image_owned.is_some(),
             "allow_missing": image.kind == "docker_image",
         });
         literal(&mut config);
@@ -602,52 +605,6 @@ mod tests {
         compile::{Generations, runtime_graph},
         config::Document,
     };
-    #[test]
-    fn docker_compilation_keeps_installer_gates_triggers_and_protected_inputs() {
-        use crate::services::installers::container::inputs::{FILES_KIND, Files};
-        let document = Document::parse(
-            include_bytes!("../tests/fixtures/config/container-agent-connection.yaml").as_slice(),
-        )
-        .unwrap();
-        let generations = crate::state::Record::new(document.clone())
-            .unwrap()
-            .generations;
-        let raw: Vec<_> = crate::services::install_plans(
-            &document,
-            &generations,
-            crate::services::InstallStage::Deployment,
-        )
-        .unwrap()
-        .targets()
-        .cloned()
-        .collect();
-        let files = raw.iter().find(|t| t.kind == FILES_KIND).unwrap();
-        let check = Files::from_row(&files.values).unwrap().image_requirements();
-        let mut graph = json!({"resource": {}, "data": {"host_image": {"setup": check}}});
-        for target in &raw {
-            let (kind, name) = target.address.split_once('.').unwrap();
-            graph["resource"][kind][name] = json!(target.values);
-        }
-        graph["resource"]["nemoclaw_container_service"]["voice"]["lifecycle"] = json!({
-            "replace_triggered_by": ["protected_files.voice"]
-        });
-        let inputs = graph["resource"]["protected_files"]["voice"].clone();
-        configure(&mut graph, &raw).unwrap();
-        let application = &graph["resource"]["docker_container"]["container_service_voice"];
-        assert_eq!(
-            application["lifecycle"]["replace_triggered_by"],
-            json!(["protected_files.voice"])
-        );
-        for (field, value) in inputs.as_object().unwrap() {
-            assert_eq!(graph["resource"]["protected_files"]["voice"][field], *value);
-        }
-        assert!(
-            application["depends_on"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("data.host_image.setup"))
-        );
-    }
     #[test]
     fn model_caches_use_native_volume_recovery_with_explicit_retention() {
         let document =
@@ -882,7 +839,6 @@ mod tests {
             "docker_container.inference_service_inference_qwen"
         ));
         assert!(!is_disposable("vllm_credential_storage.inference_qwen"));
-        assert!(is_disposable("protected_files.voice"));
     }
     #[test]
     fn omitted_image_policy_uses_provider_acquisition_and_never_only_reads_local_images() {

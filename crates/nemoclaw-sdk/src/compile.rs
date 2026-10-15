@@ -672,7 +672,7 @@ fn compile_with_plans(
         }]});
         if crate::backend::openshell_lifecycle(&target.kind)
             != Some(crate::backend::OpenShellLifecycle::Reconstructible)
-            && !crate::services::resource_behavior(&target.kind).disposable
+            && !files
         {
             attributes["lifecycle"]["prevent_destroy"] = json!(true);
         }
@@ -731,9 +731,6 @@ fn compile_with_plans(
     graph["resource"] = resources;
     graph["data"]["fabric_agent_readiness"] = json!(agent_readiness);
     graph["data"]["openshell_gateway"]["apply"] = apply_readiness;
-    service_plans
-        .configure(&mut graph)
-        .map_err(|_| ConfigError::new("invalid service install requirements"))?;
     Ok(graph)
 }
 

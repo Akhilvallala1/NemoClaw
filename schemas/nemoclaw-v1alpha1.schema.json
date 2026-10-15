@@ -90,89 +90,24 @@
     },
     "AgentConnection": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "else": {
-            "properties": {
-              "tls": {
-                "properties": {
-                  "trust": {
-                    "const": "none"
-                  }
-                }
-              }
-            }
-          },
-          "if": {
-            "properties": {
-              "authentication": {
-                "properties": {
-                  "mode": {
-                    "const": "oidcBearer"
-                  }
-                }
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "gatewayEndpoint": {
-                "minLength": 1
-              },
-              "tls": {
-                "properties": {
-                  "trust": {
-                    "const": "system"
-                  }
-                }
-              }
-            },
-            "required": [
-              "gatewayEndpoint"
-            ]
-          }
-        }
-      ],
-      "description": "One explicitly selected sandbox agent and application-reachable OpenShell endpoint.",
+      "description": "The sandbox agent the application invokes. NemoClaw writes a nonsecret\nconnection descriptor before the application starts.",
       "properties": {
-        "agent": {
-          "description": "Agent name declared by the selected sandbox.",
-          "pattern": "^[a-z][a-z0-9-]{0,39}$",
-          "type": "string"
-        },
         "authentication": {
           "$ref": "#/$defs/ApplicationAuthentication",
-          "description": "Declared application identity reference; issuance and authority remain external."
+          "description": "Explicit authentication; an omitted or failed mode never selects none."
         },
         "gatewayEndpoint": {
-          "description": "HTTPS origin for oidcBearer. For development-only none, omission derives the managed Docker gateway's private origin; an explicit value must match it exactly.",
+          "description": "HTTPS gateway origin for oidcBearer. Omit for none; NemoClaw derives the managed gateway's private origin.",
           "type": "string"
         },
         "sandboxRef": {
-          "description": "Declared sandbox whose ownership and physical identity bind the connection.",
-          "pattern": "^[a-z][a-z0-9-]{0,39}$",
+          "description": "Declared sandbox whose agent the application invokes.",
           "type": "string"
-        },
-        "targetPath": {
-          "description": "Canonical descriptor file path below the application data root.",
-          "type": "string"
-        },
-        "timeouts": {
-          "$ref": "#/$defs/ConnectionTimeouts",
-          "description": "Bounded application client deadlines."
-        },
-        "tls": {
-          "$ref": "#/$defs/ApplicationTrust",
-          "description": "system for HTTPS/OIDC, or explicit none for the managed local development connection."
         }
       },
       "required": [
         "sandboxRef",
-        "agent",
-        "targetPath",
-        "authentication",
-        "tls",
-        "timeouts"
+        "authentication"
       ],
       "type": "object"
     },
@@ -216,48 +151,14 @@
     },
     "ApplicationAuthentication": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "else": {
-            "properties": {
-              "secretRef": {
-                "type": "null"
-              }
-            }
-          },
-          "if": {
-            "properties": {
-              "mode": {
-                "const": "oidcBearer"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "secretRef": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "secretRef"
-            ]
-          }
-        }
-      ],
-      "description": "Static bearer delivery does not issue, refresh, or narrow an identity's authority.",
+      "description": "The application's identity at the gateway. Issuance and refresh stay with the application.",
       "properties": {
         "mode": {
           "$ref": "#/$defs/AuthenticationMode",
-          "description": "oidcBearer requires an external service identity. Explicit none selects development-only, unauthenticated HTTP to this deployment's managed Docker gateway; no automatic fallback."
-        },
-        "refreshMode": {
-          "$ref": "#/$defs/RefreshMode",
-          "description": "none: the application fails closed on expiry; no installer-owned refresh."
+          "description": "oidcBearer for HTTPS with a bearer credential, or none for development-only HTTP."
         },
         "secretRef": {
-          "description": "Required protected credential name for oidcBearer; absent or null for none. Speech credentials remain independent.",
-          "pattern": "^[a-z][a-z0-9-]{0,39}$",
+          "description": "The `secrets` entry holding the bearer token; required for oidcBearer.",
           "type": [
             "string",
             "null"
@@ -265,22 +166,7 @@
         }
       },
       "required": [
-        "mode",
-        "refreshMode"
-      ],
-      "type": "object"
-    },
-    "ApplicationTrust": {
-      "additionalProperties": false,
-      "description": "Trust must match the explicitly selected authentication and transport profile.",
-      "properties": {
-        "trust": {
-          "$ref": "#/$defs/TlsTrust",
-          "description": "system uses image CA roots with HTTPS/OIDC. none explicitly selects plaintext for the bound local development gateway. Private CA delivery and skipped certificate verification are unsupported."
-        }
-      },
-      "required": [
-        "trust"
+        "mode"
       ],
       "type": "object"
     },
@@ -292,12 +178,19 @@
       "type": "string"
     },
     "AuthenticationMode": {
-      "description": "Explicit application authentication profile.",
-      "enum": [
-        "oidcBearer",
-        "none"
-      ],
-      "type": "string"
+      "description": "How the application authenticates to the gateway.",
+      "oneOf": [
+        {
+          "const": "oidcBearer",
+          "description": "HTTPS with system trust and a static bearer credential from `secrets`.",
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "Development-only plaintext HTTP to this deployment's managed Docker gateway, without authentication.",
+          "type": "string"
+        }
+      ]
     },
     "Compatibility": {
       "additionalProperties": false,
@@ -398,37 +291,12 @@
       ],
       "type": "object"
     },
-    "ConnectionTimeouts": {
-      "additionalProperties": false,
-      "description": "Bounded application-client health and invocation deadlines.",
-      "properties": {
-        "healthSeconds": {
-          "description": "Non-generative native agent check deadline, 1–12 seconds.",
-          "format": "uint64",
-          "maximum": 12,
-          "minimum": 1,
-          "type": "integer"
-        },
-        "invokeSeconds": {
-          "description": "Explicit agent invocation deadline, 1–120 seconds.",
-          "format": "uint64",
-          "maximum": 120,
-          "minimum": 1,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "healthSeconds",
-        "invokeSeconds"
-      ],
-      "type": "object"
-    },
     "ContainerData": {
       "additionalProperties": false,
       "description": "An owned disposable data volume. The image must supply the writable non-root mount directory.",
       "properties": {
         "mountPath": {
-          "description": "One canonical application directory below /var/lib, owned by the image's non-root user.",
+          "description": "One application directory below /var/lib, owned by the image's non-root user.",
           "pattern": "^/var/lib/[a-z][a-z0-9-]{0,62}$",
           "type": "string"
         }
@@ -438,37 +306,16 @@
       ],
       "type": "object"
     },
-    "ContainerPlacement": {
-      "additionalProperties": false,
-      "description": "Local Docker engine and application network. Remote engines are not qualified here.",
-      "properties": {
-        "engine": {
-          "description": "Local Unix Docker socket endpoint. TCP and SSH endpoints are rejected.",
-          "pattern": "^unix:///",
-          "type": "string"
-        },
-        "networkCIDR": {
-          "description": "Canonical private IPv4 /24. Services sharing an engine must use the same network.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "engine",
-        "networkCIDR"
-      ],
-      "type": "object"
-    },
     "ContainerPublication": {
       "additionalProperties": false,
-      "description": "One application TCP listener, independent of inference URL conventions.",
+      "description": "One application TCP listener on the host.",
       "properties": {
         "bindAddress": {
-          "description": "Loopback or private host IPv4 address; public and wildcard addresses are rejected by SDK validation.",
-          "format": "ipv4",
+          "description": "Loopback or private host IPv4 address.",
           "type": "string"
         },
         "port": {
-          "description": "Same unprivileged TCP port inside the container and on the selected host.",
+          "description": "Same unprivileged TCP port inside the container and on the host.",
           "format": "uint16",
           "maximum": 65535,
           "minimum": 1024,
@@ -479,21 +326,6 @@
         "bindAddress",
         "port"
       ],
-      "type": "object"
-    },
-    "ContainerReadiness": {
-      "additionalProperties": false,
-      "description": "Apply observes Docker health only while this bounded startup wait is active.",
-      "properties": {
-        "startupTimeoutSeconds": {
-          "default": 300,
-          "description": "Bounded startup wait, 1–3600 seconds. Omission selects 300 seconds.",
-          "format": "uint64",
-          "maximum": 3600,
-          "minimum": 1,
-          "type": "integer"
-        }
-      },
       "type": "object"
     },
     "Credential": {
@@ -1273,21 +1105,6 @@
         "serving",
         "licenses",
         "sourceNotices"
-      ],
-      "type": "object"
-    },
-    "InputSetup": {
-      "additionalProperties": false,
-      "description": "A preloaded, immutable NemoClaw setup image. It runs only to publish protected inputs.",
-      "properties": {
-        "image": {
-          "description": "Repository SHA-256 manifest digest. Build from image/container-inputs/Dockerfile and preload it in the selected engine; no implicit pull.",
-          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$",
-          "type": "string"
-        }
-      },
-      "required": [
-        "image"
       ],
       "type": "object"
     },
@@ -2344,32 +2161,6 @@
       ],
       "description": "A literal glob or a nonempty list of alternative globs."
     },
-    "ProtectedCredential": {
-      "additionalProperties": false,
-      "description": "A caller-supplied token reference delivered as a protected file, never Docker environment.",
-      "properties": {
-        "credential": {
-          "$ref": "#/$defs/Credential",
-          "description": "Caller environment reference; no value appears in deployment configuration or state."
-        },
-        "targetPath": {
-          "description": "Canonical file path below this application's data root.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "credential",
-        "targetPath"
-      ],
-      "type": "object"
-    },
-    "RefreshMode": {
-      "description": "The installer delivers a static reference; refresh belongs to the application.",
-      "enum": [
-        "none"
-      ],
-      "type": "string"
-    },
     "Resources": {
       "additionalProperties": false,
       "description": "Resource declarations checked against host observations and produced data.",
@@ -3119,47 +2910,26 @@
           "additionalProperties": false,
           "description": "Image-owned application with bounded Docker HEALTHCHECK observation.",
           "properties": {
-            "agentConnections": {
-              "additionalProperties": {
-                "$ref": "#/$defs/AgentConnection"
-              },
-              "description": "Explicit connection projection and selected-agent readiness ordering.",
-              "maxProperties": 1,
-              "propertyNames": {
-                "pattern": "^[a-z][a-z0-9-]{0,39}$"
-              },
-              "type": "object"
-            },
-            "architecture": {
-              "description": "Linux image architecture: arm64 or amd64. This does not select a host architecture.",
-              "enum": [
-                "arm64",
-                "amd64"
+            "agentConnection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentConnection"
+                },
+                {
+                  "type": "null"
+                }
               ],
-              "type": "string"
+              "description": "The sandbox agent the application invokes. NemoClaw writes its\ndescriptor to /run/nemoclaw/agent-connection.json, and starts the\napplication after the agent is ready."
             },
             "data": {
               "$ref": "#/$defs/ContainerData",
-              "description": "Disposable application data. Destroy removes this volume; external data is not mounted."
-            },
-            "dependsOn": {
-              "description": "Declared services that must be ready before this container starts. This injects no settings.",
-              "items": {
-                "pattern": "^[a-z][a-z0-9-]{0,39}$",
-                "type": "string"
-              },
-              "maxItems": 128,
-              "type": "array",
-              "uniqueItems": true
+              "description": "Disposable application data. Destroy removes this volume."
             },
             "environment": {
               "additionalProperties": {
-                "maxLength": 65536,
-                "pattern": "^[^\\u0000]*$(?![\\s\\S])",
                 "type": "string"
               },
               "description": "Literal non-secret application settings. Credentials must not be supplied here.",
-              "maxProperties": 128,
               "propertyNames": {
                 "pattern": "^[A-Z_][A-Z0-9_]{0,127}$"
               },
@@ -3171,48 +2941,20 @@
               "type": "string",
               "x-nemoclaw-error": "service image must be pinned by a SHA-256 digest"
             },
-            "imagePullPolicy": {
-              "$ref": "#/$defs/ImagePullPolicy",
-              "description": "Omission selects IfNotPresent. Never requires an image in the selected engine.",
-              "enum": [
-                "IfNotPresent",
-                "Never"
-              ]
-            },
-            "inputSetup": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/InputSetup"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Explicit preloaded immutable setup image; required when protected inputs are declared. No caller-supplied setup commands are accepted."
-            },
             "kind": {
               "const": "container",
               "description": "Supported installer selected by this service definition.",
               "type": "string"
             },
-            "placement": {
-              "$ref": "#/$defs/ContainerPlacement",
-              "description": "Local Docker placement. Omission inherits the managed Docker gateway's engine and network."
-            },
             "publication": {
               "$ref": "#/$defs/ContainerPublication",
               "description": "Optional loopback or private IPv4 TCP publication. Omission publishes no port."
             },
-            "readiness": {
-              "$ref": "#/$defs/ContainerReadiness",
-              "description": "Apply-time observation of the image-owned Docker HEALTHCHECK; no mutation or task invocation."
-            },
             "secrets": {
               "additionalProperties": {
-                "$ref": "#/$defs/ProtectedCredential"
+                "$ref": "#/$defs/Credential"
               },
-              "description": "Protected token references. Setup publishes root-confined files before dependent application startup.",
-              "maxProperties": 16,
+              "description": "Credential references. NemoClaw writes each value to a private file,\n/run/nemoclaw/secrets/<name>, before the application starts; values\nnever enter its environment, configuration, or state.",
               "propertyNames": {
                 "pattern": "^[a-z][a-z0-9-]{0,39}$"
               },
@@ -3228,7 +2970,6 @@
           "required": [
             "kind",
             "image",
-            "architecture",
             "data"
           ],
           "type": "object"
@@ -3749,14 +3490,6 @@
         "key"
       ],
       "type": "object"
-    },
-    "TlsTrust": {
-      "description": "Trust for the selected application transport.",
-      "enum": [
-        "system",
-        "none"
-      ],
-      "type": "string"
     },
     "Tool": {
       "additionalProperties": false,

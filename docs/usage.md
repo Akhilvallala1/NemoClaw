@@ -103,30 +103,34 @@ Keep state, diagnose the failure, and reapply after recovery.
 
 ### Run an Application Container
 
-Declare a `kind: container` service with an immutable image, Linux architecture, literal environment settings, and an owned data directory below `/var/lib`.
-The image owns startup and its Docker HEALTHCHECK.
-Before creating the container, the `host_image` check requires the image to define startup and a HEALTHCHECK.
-On every apply, including unchanged applies, `host_container_health` waits up to the configured startup timeout for that HEALTHCHECK to report healthy.
-Placement inherits a managed local Docker gateway or explicitly selects a local Docker engine and private network.
-Optional publication binds an unprivileged TCP port to loopback or a private IPv4 address; `dependsOn` orders declared services without injecting settings.
+Declare a `kind: container` service with an immutable image, literal environment settings, and an owned data directory below `/var/lib`.
+The image owns startup and its Docker HEALTHCHECK; Docker pulls it for the engine's platform when it is absent.
+On every apply, including unchanged applies, `host_container_health` waits up to 300 seconds for that HEALTHCHECK to report healthy.
+The container runs on the managed local Docker gateway's engine and network.
+Optional publication binds an unprivileged TCP port to loopback or a private IPv4 address.
 Application storage is disposable: destroy removes the owned data volume.
 The [basic parser fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container.yaml) demonstrates these fields with invented pins and endpoints; it does not qualify an image for live use.
 
-### Connect a Local Development Container to the Managed Gateway
+### Give an Application Credentials and an Agent
 
-For an isolated local test, explicitly select `authentication.mode: none`, `refreshMode: none`, and `tls.trust: none` under the container's `agentConnections` entry.
-Omit `secretRef` and `gatewayEndpoint`; the compiler derives the managed gateway container's private IPv4 address and listen port.
-An explicit endpoint must equal that derived origin exactly.
-The gateway must be managed local Docker, and the application must use its engine and owned network; external gateways, Podman, and different placement are rejected for this profile.
+Under `secrets`, map each file name to a credential reference, such as `speech: {env: NVIDIA_API_KEY}`.
+Under `agentConnection`, name the `sandboxRef` whose agent the application invokes, and its `authentication`.
+Before the application starts, NemoClaw writes each credential to `/run/nemoclaw/secrets/<name>` and a nonsecret connection descriptor to `/run/nemoclaw/agent-connection.json`.
+Point the application at these paths through its `environment`.
+The application starts after its agent reports ready.
 
-This is plaintext without client authentication or per-application authorization.
-Any process able to reach the gateway can use its API; use a trusted private development network, keep host gateway publication on loopback, and do not use this profile for production or shared untrusted workloads.
-HTTPS/OIDC connections still require a protected service credential and verified system TLS trust.
-Neither an omitted authentication mode nor an authentication failure selects anonymous mode.
+The files are owned by the application's `user`, with mode `0600` and directories `0700`.
+The application mounts them read-only from a volume NemoClaw owns; destroy removes that volume and the files.
+Credential values pass from the caller's environment to Docker's archive API; they never enter the application's environment, configuration, plans, or state.
+Changing a reference republishes the files into a fresh volume and recreates the application.
+An unchanged reference is not republished, so rotating its value requires replacing the application.
 
-The [complete local parser fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container-managed-local.yaml) shows the declaration and protected application inputs.
-Its UID, image digests, inference endpoint, and model are test values, not a deployable recipe or live qualification.
-See the [accepted boundary](design/scope.md#local-container-connection-decision) and [credential ownership](security.md#credentials-and-authentication).
+`authentication.mode: oidcBearer` requires an HTTPS `gatewayEndpoint` and a `secretRef` naming the bearer token's secret; the application uses system TLS trust and refreshes nothing.
+`authentication.mode: none` selects development-only plaintext HTTP to this deployment's managed Docker gateway, without authentication.
+Omit `gatewayEndpoint`; NemoClaw derives the gateway's private address.
+Any process that can reach that address can use the gateway, so use `none` only on a trusted local machine.
+Neither an omitted mode nor an authentication failure selects `none`.
+The [connection fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container-agent-connection.yaml) shows both fields with test values.
 
 ### Supply Credential References
 
@@ -135,20 +139,13 @@ Use the [field reference](reference/configuration.md) for names, defaults, and v
 
 Unknown fields, duplicate keys, and unsupported combinations are rejected; images require immutable SHA-256 references.
 Container `environment` values are literal settings retained in configuration and state.
-Use protected credential references for secrets; validation cannot identify a secret pasted into a literal setting.
+Keep credentials out of literal settings; validation cannot identify a secret pasted into a literal value.
 Gateway and inference ownership are independent of the harness, but inference must support the harness's request API.
 See [managed models](models.md), [Ollama](inference.md#run-managed-ollama), or [external Ollama with a managed proxy](inference.md#use-external-ollama-through-a-managed-proxy) for service configuration.
 
 Use `credential: {env: INFERENCE_API_KEY}` for an inference provider or gateway.
 The caller supplies the referenced environment value.
 For gateway mTLS, `tls.ca.env`, `tls.certificate.env`, and `tls.key.env` reference environment variables whose values are local file paths.
-
-For an application container, `secrets` names credential references and their file destinations below its data root.
-The fixed setup helper publishes them before application startup, with directories restricted to mode `0700` and files to `0600`, owned by the configured application UID:GID.
-The application can read and write those files; the credentials remain in its owned volume until that volume is removed.
-Reapplying unchanged references does not rotate credential values.
-Changing protected-input references selects a replacement disposable volume and removes the old application data during reconciliation; preserve any required application data before making that change.
-See the [container input contract](../crates/nemoclaw-container-inputs/README.md) for publication and recovery rules.
 
 Credential values stay out of configuration, plans, state, and export.
 OpenShell stores installed provider credentials for routing; removing the local variable does not revoke them.
@@ -167,12 +164,11 @@ See [sandbox policy configuration](sandbox-network.md) for changes and [security
 ## Control Container Image Downloads
 
 Set `imagePullPolicy` beside `image` under `spec.gateway` or `spec.services.<name>`.
-The service setting applies to `kind: vllm`, `ollama`, `ollamaProxy`, and `container`.
-The setting controls image acquisition on that container's engine.
-Application containers use a local Unix Docker socket; inference services also support an SSH Docker engine selected by `placement.engine`.
+The service setting applies to `kind: vllm`, `ollama`, and `ollamaProxy`.
+The setting controls image acquisition on that container's engine, including an SSH Docker engine selected by the service's `placement.engine`.
 Images still require immutable SHA-256 references.
 
-| Policy | Managed service images |
+| Policy | Managed inference and proxy images |
 |---|---|
 | `IfNotPresent` (default) | The Docker provider ensures the pinned image is available and pulls it when absent |
 | `Never` | The Docker provider reads the local image; a missing image fails that observation |
