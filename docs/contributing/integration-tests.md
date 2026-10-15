@@ -46,7 +46,7 @@ On failure, read the OpenTofu diagnostic in the test output and check that the b
 Each production provider's `contract` binary, under `tests/contract`, applies its types through OpenTofu against fakes.
 Its coverage test is not ignored and runs with the unit tests; the remaining tests are ignored and run in the `lifecycle` step.
 
-### NemoClaw Provider Contract
+### vLLM, Ollama, and Host Provider Contract
 
 ```sh
 NEMOCLAW_TEST_BUNDLE=/absolute/path/to/bundle \
@@ -126,6 +126,7 @@ The fixtures return protocol responses; they do not establish agent inference, n
 | `inference_discovery` | Optional catalog failures that keep complete unchanged plans and report uncertainty |
 | `sandbox_readiness` | Standalone sandbox completion; see [below](#standalone-sandbox-completion) |
 | `remote_service` | Services on simulated SSH hosts; see [SSH service fixtures](#ssh-service-fixtures) |
+| `travel_example` | `examples/hcl/travel` applied unchanged as plain HCL from the bundle's provider mirror: Ollama placed from its runtime launch on a simulated SSH engine, endpoint readiness against a fake model server, OpenShell objects and the Pi agent on the fixture gateway, agent readiness, and an unchanged second plan |
 | `helm_recovery` | On Unix, destroy and its recovery against an in-memory Kubernetes API, after failures, a second destroy, and cancellation; see [below](#helm-release-recovery) |
 
 In `deployment`, `cli_terminal_outputs_preserve_lifecycle_and_json_contract` checks text plans, JSON apply, unchanged text apply, JSON plan completeness, text destroy, and repeated JSON destroy against one fixture state.
@@ -159,7 +160,7 @@ Each test that makes destroy fail or stop ends by removing the cause, if any, an
 
 ### Standalone Sandbox Completion
 
-On Unix, run `cargo test -p nemoclaw-e2e --test integration sandbox_readiness:: -- --ignored` with the bundle set as above; the test runs the bundle's `nemoclaw` provider.
+On Unix, run `cargo test -p nemoclaw-e2e --test integration sandbox_readiness:: -- --ignored` with the bundle set as above; the test runs the bundle's providers.
 It runs the sandbox completion data source through OpenTofu against the local gRPC fixture, without SDK orchestration.
 It checks deferred health reads, failed postconditions with retained observations and bindings, unchanged-apply rechecks, prompt configuration-admission rejection with safe sandbox context, and teardown without readiness.
 

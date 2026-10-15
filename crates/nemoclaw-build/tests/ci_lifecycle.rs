@@ -125,7 +125,17 @@ exit "${CARGO_RESULT:-0}"
                 "docker",
                 r#"#!/bin/sh
 printf '%s\n' "$*" >> docker.log
+if [ -n "$DOCKER_FAIL_IMAGE" ]; then
+    case "$1 $2" in
+        'buildx bake') [ "$3" = "$DOCKER_FAIL_IMAGE" ] && exit 1 ;;
+        'buildx build')
+            for argument; do
+                [ "$argument" = "nc-live-images:$DOCKER_FAIL_IMAGE" ] && exit 1
+            done ;;
+    esac
+fi
 case "$1 $2" in
+    'info --format') printf '%s\n' '{"Address":"/test/containerd.sock","Namespaces":{"Containers":"test-images"}}' ;;
     'version '*) printf '29.0.0\n' ;;
     'buildx bake')
         if [ "$3" = --print ]; then
@@ -146,6 +156,17 @@ exit 0
 "#,
             ),
             (
+                "sudo",
+                r#"#!/bin/sh
+printf '%s\n' "$*" > containerd.log
+[ "$1 $2 $3 $4 $5 $6 $7 $8 $9" = '-n ctr --address /test/containerd.sock --namespace test-images images export --all-platforms' ] || exit 1
+shift 9
+output=$1
+shift
+printf 'exported %s\n' "$*" > "$output"
+"#,
+            ),
+            (
                 "zstd",
                 r#"#!/bin/sh
 output=
@@ -160,6 +181,8 @@ for argument; do
 done
 if [ -n "$decompress" ]; then
     while IFS= read -r line; do printf '%s\n' "$line"; done < "$input"
+elif [ "$input" != "$output" ]; then
+    /bin/cat "$input" > "$output"
 else
     while IFS= read -r line; do printf '%s\n' "$line"; done > "$output"
 fi
@@ -199,11 +222,11 @@ fi
             "dist/linux_arm64/libexec/tofu",
             ".tools/protoc-36.1/bin/protoc",
             ".tools/nextest-0.9.144/cargo-nextest",
-            "target/debug/terraform-provider-nemoclaw",
             "target/debug/terraform-provider-openshell",
             "target/debug/terraform-provider-fabric",
             "target/debug/terraform-provider-vllm",
             "target/debug/terraform-provider-ollama",
+            "target/debug/terraform-provider-host",
             "target/debug/nemoclaw-fixture-ssh",
         ] {
             let file = self.0.path().join(path);
@@ -435,18 +458,77 @@ fn live_images_builds_the_agent_dummy_and_proxy_images_once_and_saves_them_compr
             "{log}"
         );
     }
-    assert!(
-        log.contains(
-            "save nc-live-images:pi nc-live-images:dummy nc-live-images:proxy-a nc-live-images:proxy-b"
-        ),
-        "{log}"
-    );
+    assert!(!log.lines().any(|line| line.starts_with("save ")), "{log}");
     let archive =
         fs::read_to_string(fixture.0.path().join(".build/ci/live-images.tar.zst")).unwrap();
     assert!(
-        archive.starts_with("saved save nc-live-images:pi"),
+        archive.trim()
+            == "exported docker.io/library/nc-live-images:pi docker.io/library/nc-live-images:dummy docker.io/library/nc-live-images:proxy-a docker.io/library/nc-live-images:proxy-b",
         "{archive}"
     );
+}
+
+#[test]
+fn live_images_report_each_build_duration() {
+    let fixture = Fixture::new();
+    fixture.fake_container_tools();
+    let output = fixture.run(&["live-images"]);
+    let report = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{report}");
+    for image in ["pi", "dummy", "proxy-a", "proxy-b"] {
+        let tag = format!("nc-live-images:{image}");
+        let start = report
+            .find(&format!("Building live image {tag}\n"))
+            .unwrap_or_else(|| panic!("missing build start for {tag}: {report}"));
+        let completion = format!("Built live image {tag} in ");
+        let end = report
+            .find(&completion)
+            .unwrap_or_else(|| panic!("missing build duration for {tag}: {report}"));
+        assert!(start < end, "{report}");
+        let seconds: f64 = report[end + completion.len()..]
+            .lines()
+            .next()
+            .unwrap()
+            .strip_suffix('s')
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(seconds.is_finite() && seconds >= 0.0, "{report}");
+    }
+}
+
+#[test]
+fn live_images_report_failed_build_duration_and_stop() {
+    let images = ["pi", "dummy", "proxy-a", "proxy-b"];
+    for (index, image) in images.iter().enumerate() {
+        let fixture = Fixture::new();
+        fixture.fake_container_tools();
+        let output = fixture
+            .command(&["live-images"])
+            .env("DOCKER_FAIL_IMAGE", image)
+            .output()
+            .unwrap();
+        let report = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{report}");
+        let failure = format!("Failed to build live image nc-live-images:{image} after ");
+        let duration = report
+            .lines()
+            .find_map(|line| line.strip_prefix(&failure))
+            .unwrap_or_else(|| panic!("missing failed duration: {report}"));
+        let seconds: f64 = duration.strip_suffix('s').unwrap().parse().unwrap();
+        assert!(seconds.is_finite() && seconds >= 0.0, "{report}");
+        assert!(
+            !report.contains(&format!("Built live image nc-live-images:{image} in ")),
+            "{report}"
+        );
+        for later in &images[index + 1..] {
+            assert!(
+                !report.contains(&format!("Building live image nc-live-images:{later}")),
+                "{report}"
+            );
+        }
+        assert!(!fixture.0.path().join("containerd.log").exists());
+    }
 }
 
 #[test]

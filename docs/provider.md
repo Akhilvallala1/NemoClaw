@@ -40,7 +40,8 @@ The generated graphs manage these objects and observations:
 | Ollama provider | Retained Ollama proxy credentials (`ollama_proxy_credential_storage`) |
 | vLLM and Ollama provider data sources | Runtime contracts, service or proxy readiness, and the upstream model digest behind an Ollama proxy (`ollama_model`) |
 | OpenShell provider | Kubernetes namespace and encryption key (`openshell_kubernetes_storage`), development issuer (`openshell_kubernetes_auth`), and gateway readiness (`openshell_kubernetes_gateway`) |
-| NemoClaw provider data source | Engine capabilities and managed runtime-image compatibility |
+| Host provider data source | Engine facts and advertised hardware (`host_engine`) |
+| Host provider data source | Managed vLLM and Ollama image platform and labels (`host_image`) |
 | Docker provider | Docker gateway, inference, and proxy containers; model-cache volumes, service-owned networks and acquired images |
 | Docker provider data source | Local images selected with `imagePullPolicy: Never` |
 | Helm provider | The managed Kubernetes gateway's OpenShell chart release (`helm_release.gateway`) |
@@ -62,25 +63,27 @@ The bundle pins these providers:
 
 | Provider | Source address | Version |
 |---|---|---|
-| NemoClaw | `registry.opentofu.org/nvidia/nemoclaw` | Source-derived |
-| OpenShell | `registry.opentofu.org/nvidia/openshell` | Source-derived, matching NemoClaw |
-| Fabric | `registry.opentofu.org/nvidia/fabric` | Source-derived, matching NemoClaw |
-| vLLM | `registry.opentofu.org/nvidia/vllm` | Source-derived, matching NemoClaw |
-| Ollama | `registry.opentofu.org/nvidia/ollama` | Source-derived, matching NemoClaw |
+| OpenShell | `registry.opentofu.org/nvidia/openshell` | Source-derived, matching the bundle |
+| Fabric | `registry.opentofu.org/nvidia/fabric` | Source-derived, matching the bundle |
+| vLLM | `registry.opentofu.org/nvidia/vllm` | Source-derived, matching the bundle |
+| Ollama | `registry.opentofu.org/nvidia/ollama` | Source-derived, matching the bundle |
+| Host | `registry.opentofu.org/nvidia/host` | Source-derived, matching the bundle |
 | Docker | `registry.opentofu.org/kreuzwerker/docker` | 4.6.0 |
 | Helm | `registry.opentofu.org/hashicorp/helm` | 3.3.0 |
 
 None of them exposes ephemeral resources or provider functions.
 
-### OpenShell Resources and Data Source
+### OpenShell Resources and Data Sources
 
 | Type | Manages or observes |
 |---|---|
 | `openshell_workspace` | Workspace |
 | `openshell_provider_registration` | Provider registration |
 | `openshell_provider_profile` | Provider profile |
+| `openshell_web_search` | [A web search provider and its profile](#web-search) |
 | `openshell_sandbox` | Sandbox |
 | `openshell_gateway` data source | [Gateway version and compute drivers](#gateway-capabilities) |
+| `openshell_external_inference_server` data source | [An inference server NemoClaw doesn't run](#external-inference-servers) |
 
 The `openshell` provider takes only `destroy`, which permits deleting sandboxes during explicit teardown.
 Each object names the gateway that holds it with `gateway`, the `ref` of `data.openshell_gateway`.
@@ -90,6 +93,26 @@ Objects keep their gateway connection in state, so refresh and removal reach the
 Credential and TLS references update in place; a different endpoint is a different gateway, so it replaces reconstructible objects and retained or stateful objects refuse it.
 These schemas are version 1; state from an earlier provider is rejected rather than upgraded.
 When a registration names a managed vLLM or Ollama proxy credential, the provider reads the key from the owning container during apply, so the key never enters OpenTofu state.
+
+#### External Inference Servers
+
+`openshell_external_inference_server` checks an inference server NemoClaw doesn't run, such as a hosted API or an IT-run LiteLLM proxy, and exports the `inference_server` ref that registrations will take ([#13228](https://github.com/NVIDIA/NemoClaw/issues/13228)).
+It requires `endpoint`, the URL the machine running OpenTofu checks, and `api`: `openai-completions`, `openai-responses`, or `anthropic-messages`.
+Optional `sandbox_endpoint` is the URL gateways and sandboxes use, defaulting to `endpoint`; optional `model` is a model the server must list; and optional `credential_env` names the variable holding a key for listing models.
+The read lists the server's models without following redirects, within five seconds, and blocks: it fails when the server can't be reached or returns no model list, requires a key that isn't set, refuses the key, or doesn't list `model`.
+Errors never echo the key or the server's own error text.
+It checks only each URL's shape (an http or https URL with a host and no credentials, query, or fragment); which destinations sandboxes may reach is OpenShell's to decide.
+It exports `ref = { type = "inference_server", endpoint, model, credential_env, credential_source }`, with `sandbox_endpoint` as `endpoint`, the variable's name but never its value, and an empty `credential_source`.
+Set `read_trigger` to a value known only during apply, such as `timestamp() != ""`, to check at apply instead of while planning.
+
+```hcl
+data "openshell_external_inference_server" "litellm" {
+  endpoint       = "https://litellm.corp.example.com/v1"
+  api            = "openai-completions"
+  model          = "nemotron-super"
+  credential_env = "LITELLM_API_KEY"
+}
+```
 
 Each OpenShell resource exports a computed `ref` object identifying it: its `type`, `name`, `owner`, `generation`, and `id`, plus `workspace` for objects inside a workspace.
 Objects name each other by `ref`, never by separate name strings:
@@ -109,6 +132,7 @@ Other inputs are typed too:
   The block's attributes and blocks follow the sandbox policy model with snake_case names: optional `explicit` policy and `managed` deployment grants, whose named network rules are labeled blocks.
   A matcher that is either a glob or alternatives sets `value` for the glob, or `any` for the alternatives.
 - `openshell_provider_profile` takes a `binaries` list.
+- `openshell_sandbox`'s `providers` takes the `ref` of a registration, of type `openshell_provider`, from either `openshell_provider_registration` or `openshell_web_search`. Each ref names the OpenShell registration it attaches in `registration`.
 - `launch_json` is a JSON-encoded launch: the command, environment, and metadata to start the sandbox, the policy used when no explicit policy is authored, and the executables managed endpoint grants allow.
   OpenShell merges that policy with the authored `policy` block and managed grants, and records the launch with the sandbox; it does not depend on the agent runtime that produced the launch.
   `fabric_harnesses` returns `launch_json` for its configured agent, and Fabric reads its agent name and runtime binding back from the launch metadata.
@@ -137,6 +161,33 @@ resource "openshell_sandbox" "assistant" {
       }
     }
   }
+}
+```
+
+#### Web Search
+
+`openshell_web_search` registers a Brave or Tavily search provider with OpenShell, together with the provider profile it uses.
+It takes:
+
+- `workspace`, a workspace `ref`. The search objects belong to the workspace's owner, so the resource takes no `owner`.
+- `name`, which scopes the objects it owns. Their OpenShell names derive from it, the provider, and `credential_env`.
+- `provider_type`, `brave` or `tavily`. Each has a fixed endpoint.
+- `credential_env`, the variable holding the search API key. The provider reads it during apply, so the key never enters OpenTofu state.
+- `binaries`, the executables allowed to call the search API.
+
+Plans reject a missing `credential_env` or `binaries`.
+The schema lists both as optional so that when one of the two OpenShell objects disappears, the next plan shows drift and replaces the resource.
+Any change to an input also replaces it, and removal deletes both objects.
+Its `ref` has the same `openshell_provider` type as a registration's, so sandboxes take it in `providers`.
+
+```hcl
+resource "openshell_web_search" "brave" {
+  gateway        = data.openshell_gateway.current.ref
+  workspace      = openshell_workspace.example.ref
+  name           = "assistant"
+  provider_type  = "brave"
+  credential_env = "BRAVE_API_KEY"
+  binaries       = ["/usr/bin/curl"]
 }
 ```
 
@@ -272,15 +323,14 @@ Each read lists the upstream's models with `GET /api/tags` and fails when the mo
 OpenTofu reads it while planning once its inputs are known, so a changed digest stops the plan.
 Generated graphs read it for each Ollama proxy and start the proxy container after it.
 
-### NemoClaw Data Sources
+### Host Data Sources
 
-The `nemoclaw` provider serves only data sources; its `destroy` setting has no effect.
+The `host` provider observes container engines and changes nothing; it has no settings.
 
 | Data source | Observes |
 |---|---|
-| `nemoclaw_engine_capabilities` | [Engine version, platform, CPUs, and memory](#engine-and-fabric-discovery) |
-| `nemoclaw_target_hardware` | [Engine-advertised hardware](#target-hardware) |
-| `nemoclaw_runtime_image` | [Managed runtime image labels](#runtime-image-compatibility) |
+| `host_engine` | [Engine version, platform, CPUs, memory](#engine-and-fabric-discovery), and [advertised hardware](#target-hardware) |
+| `host_image` | [An image's platform and labels](#runtime-image-compatibility) |
 
 ### Docker and Helm Types
 
@@ -310,6 +360,7 @@ For reconstructible resources, OpenTofu and the provider own confirmed absence, 
 | Resource | Reconciliation | Protection |
 |---|---|---|
 | Provider profile and registration | Update supported fields, replace immutable configuration, remove unused declarations, and recreate after confirmed absence | Verify ownership and established identity before mutation; preserve bindings on failed observation |
+| Web search | Create the profile and then the registration; replace on any input change or when either object is missing | The same checks for both objects; a failure between them records the identity, so the next apply replaces the resource |
 | Fabric runtime configuration | Apply the public Fabric document and reconcile its resource lifecycle | Verify the parent sandbox identity; a changed configuration can restart its runtime and lose native session state |
 | Sandbox | Create and observe the declared sandbox | During apply, refuse deletion, replacement, or recreation of a missing binding because deletion loses agent files and history |
 | Workspace | Create, observe, and retain | Refuse replacement, deletion, or automatic recreation of a missing binding |
@@ -346,12 +397,12 @@ An observation describes the selected target at the time of its read; it is not 
 
 | Question | Owner and source | When it runs |
 |---|---|---|
-| Engine version, platform, CPUs, and memory | `nemoclaw_engine_capabilities`; selected Docker/Podman API | Onboarding target changes and managed deployment planning |
+| Engine version, platform, CPUs, and memory | `host_engine` (`engine_json`); selected Docker/Podman API | Onboarding target changes and managed deployment planning |
 | Managed gateway prerequisites for its compute driver | `openshell_gateway_prerequisites`; selected Docker/Podman API | Onboarding target changes and managed deployment planning |
-| Engine features, CPU, memory, and advertised GPU inventory | `nemoclaw_target_hardware`; selected engine API | Onboarding and planning for selected gateway/service engines |
+| Engine features, CPU, memory, and advertised GPU inventory | `host_engine` (`hardware_json`); selected engine API | Onboarding and planning for selected gateway/service engines |
 | GPU memory, driver, compute capability, and disk measurements | Provider `observe_host_hardware` with a selected `HostObserver` | Explicit direct calls or existing configured service-capacity checks; the new passive hardware source does not run collectors |
 | Packaged adapters, APIs, settings, and runtime requirements | `fabric_harnesses`; selected image metadata containing Fabric discovery results | Onboarding image changes and deployment planning |
-| Managed runtime specification, required labels, and platform | `nemoclaw_runtime_image`; selected engine image inspection | Plan for present images; after image acquisition before runtime mutations |
+| Required labels and platform of managed images | `host_image`; selected engine image inspection | Plan for present images; after image acquisition before runtime mutations |
 | Advertised models and catalog authentication | Direct SDK `observe_endpoints`; HTTP model-list endpoint from the control host | Onboarding endpoint changes and planning for selected inference routes |
 | Credential-reference availability | Direct SDK `observe_credentials`; application's secret resolver | Onboarding, SDK calls, and plan-result discovery; values and local availability do not enter provider state |
 | Gateway version and compute drivers | Existing `openshell_gateway`; authenticated OpenShell API | Onboarding review and required deployment lifecycle checks |
@@ -359,10 +410,11 @@ An observation describes the selected target at the time of its read; it is not 
 
 ## Engine and Fabric Discovery
 
-`nemoclaw_engine_capabilities` (NemoClaw provider), `openshell_gateway_prerequisites` (OpenShell provider), and `fabric_harnesses` (Fabric provider) require `engine`, the selected container-engine endpoint, without requiring an OpenShell connection.
+`host_engine` (host provider), `openshell_gateway_prerequisites` (OpenShell provider), and `fabric_harnesses` (Fabric provider) require `engine`, the selected container-engine endpoint, without requiring an OpenShell connection.
 The prerequisite source also requires `compute_driver` (`docker` or `podman`); the Fabric source requires `image`.
 For a cluster image that no local engine can inspect, the Fabric source instead reads the metadata bundle whose path is in the environment variable named by `metadata_env`; `engine` must then be empty.
-Each returns `status`, `available`, and structured JSON in `observation_json`.
+Each returns `status`, `available`, and structured JSON: `host_engine` in `engine_json` and `hardware_json`, the others in `observation_json`.
+One read of the engine's `/info` answers both of `host_engine`'s observations; its `status` and `available` describe the engine facts, and `hardware_json` carries its own status.
 
 The engine observation reports available server version, architecture, operating system, CPU count, and memory fields.
 The prerequisite observation is `unavailable`, with its reason, when the engine cannot host a managed gateway with that driver: the Podman driver needs a Podman engine socket, and rootless Podman needs pasta networking.
@@ -425,8 +477,8 @@ An image observation is scoped to the selected engine, not every possible execut
 
 ## Target Hardware
 
-`nemoclaw_target_hardware` requires `engine` and returns `status` and `observation_json`.
-The passive read reports the daemon identity, architecture, CPU/memory fields, and available engine features such as rootless mode, runtimes, networking, cgroups, and memory-limit support.
+`host_engine`'s `hardware_json` is the passive hardware read.
+It reports the daemon identity, architecture, CPU/memory fields, and available engine features such as rootless mode, runtimes, networking, cgroups, and memory-limit support.
 GPU IDs advertised as engine generic resources are retained without inventing names, VRAM, driver versions, or compute capability.
 No GPU advertisement means unknown inventory, not zero GPUs.
 
@@ -434,7 +486,7 @@ For complete host measurements, the provider library exposes `hardware_observati
 The operation checks the collector's daemon identity before accepting measurements and has a 30-second bound.
 It reports unsupported GPU memory counters separately from unobserved counters.
 Collector failure never falls back to the client's hardware.
-The new `nemoclaw_target_hardware` source uses passive engine information and does not execute a collector or launch a probe container.
+`host_engine` uses passive engine information and does not execute a collector or launch a probe container.
 Existing configured service-capacity checks retain their daemon-bound `HostObserver` collectors; this passive source neither replaces nor disables those checks.
 
 ## Inference Endpoint Metadata
@@ -523,8 +575,30 @@ data "vllm_runtime" "qwen" {
 }
 ```
 
-A vLLM `docker_container` passes `spec` as `NEMOCLAW_RUNTIME_SPEC` and declares the rest of its configuration directly.
-Generated graphs declare:
+`launch` and `requirements` describe the server for any platform, so a Docker container, a Kubernetes pod, or any other placement can run it without the SDK:
+
+- `launch` has `entrypoint`, `command`, `environment` (only `NEMOCLAW_RUNTIME_SPEC`, holding `spec`), the `port` the server listens on, and the `data_path` for its model cache.
+- `requirements` has `gpu`, a recommended minimum `shared_memory_bytes` (8 GiB), and `ulimits` by name, where `-1` is unlimited: `memlock` and `stack`. Platforms that cannot set process limits leave them to the node.
+- Memory and CPU limits, IPC, publication, and credentials are the placement's choice.
+
+```hcl
+resource "docker_container" "qwen" {
+  name       = "qwen"
+  image      = var.vllm_image # pinned by digest
+  entrypoint = data.vllm_runtime.qwen.launch.entrypoint
+  command    = data.vllm_runtime.qwen.launch.command
+  env        = [for name, value in data.vllm_runtime.qwen.launch.environment : "${name}=${value}"]
+  shm_size   = data.vllm_runtime.qwen.requirements.shared_memory_bytes / 1048576
+  gpus       = "all"
+  ports {
+    internal = data.vllm_runtime.qwen.launch.port
+    external = data.vllm_runtime.qwen.launch.port
+    ip       = "127.0.0.1"
+  }
+}
+```
+
+Generated graphs place managed vLLM with Docker and declare:
 
 - `entrypoint = ["/usr/local/bin/nemoclaw-runtime"]` and `env = ["NEMOCLAW_RUNTIME_SPEC=${data.vllm_runtime.NAME.spec}"]`.
 - The model cache volume at `/data` and, with bearer authentication, the `vllm_credential_storage` credential volume at `/credentials`.
@@ -542,7 +616,7 @@ See [container limits and update policy](inference.md#set-container-limits-and-u
 
 ## Ollama Runtime Contracts
 
-`ollama_runtime` computes the managed Ollama runtime's `NEMOCLAW_RUNTIME_SPEC` the same way.
+`ollama_runtime` computes the managed Ollama runtime's `NEMOCLAW_RUNTIME_SPEC` the same way, with the same `launch` and `requirements` outputs.
 Its blocks follow the Ollama runtime contract with snake_case names: `hardware`, `model` with `name` and `digest`, `serving`, and `memory`.
 
 `ollama_proxy_runtime` computes the external Ollama proxy's `NEMOCLAW_OLLAMA_PROXY` value from `bind_address`, `upstream`, `model`, and `digest`.
@@ -579,12 +653,12 @@ Generated graphs also run the container as `0:0` and give it:
 
 ## Runtime Image Compatibility
 
-`nemoclaw_runtime_image` requires the service's `engine`, its `image` pinned by SHA-256 digest, and its `architecture` (`amd64` or `arm64`), and returns `observation_json` with `status`, `source`, and `required_version`.
-Optional `labels` maps each label the image must carry to its value; generated graphs require the service's backend, recipe, and authentication labels.
-The source checks the vLLM or Ollama image's `org.nemoclaw.runtime.spec` label against the shared runtime contract, plus the Linux platform, the architecture, and `labels`.
+`host_image` requires an `engine`, an `image` pinned by SHA-256 digest, and an `architecture` (`amd64` or `arm64`), and returns `observation_json` with `status` and `source`.
+Optional `labels` maps each label the image must carry to its value; generated graphs require each vLLM or Ollama service's backend, recipe, and authentication labels.
+The source checks the Linux platform, the architecture, and `labels`, and knows nothing about NemoClaw runtimes.
 It performs one engine image inspection with a 20-second bound and never pulls an image or starts a process.
-Missing or mismatched runtime-spec labels fail with [rebuild guidance](build.md#retained-sources-and-compatibility); authentication, transport, and incomplete inspection failures also stop the operation.
-Diagnostics do not echo image label values.
+A platform mismatch or a missing or mismatched label fails the read and names the label, not the image's value; authentication, transport, and incomplete inspection failures also stop the operation.
+See [retained sources and compatibility](build.md#retained-sources-and-compatibility) for rebuilding a mismatched image.
 
 Optional `allow_missing: true` permits a confirmed absent image to return `status: unknown` before acquisition; omission or false rejects absence.
 Optional `image_id` requires the inspected image to match the Docker provider's acquired image ID.
@@ -606,7 +680,25 @@ Each validates the runtime contract and container identity, reads the service's 
 It does not repeat model-file verification, collect hardware inventory, or request model responses.
 Startup phases may be polled; stopped services, failed observations, and malformed status fail the read.
 
-Each readiness data source requires the container's `engine`, `name`, and `container_id`, and its `contract`: the `spec` of the runtime contract data source the container runs with, `vllm_runtime` for `vllm_readiness`, `ollama_runtime` for `ollama_readiness`, and `ollama_proxy_runtime` for `ollama_proxy_readiness`.
+Each readiness data source requires its `contract`, the `spec` of the runtime contract data source the server runs with: `vllm_runtime` for `vllm_readiness`, `ollama_runtime` for `ollama_readiness`, and `ollama_proxy_runtime` for `ollama_proxy_readiness`.
+It reads readiness in one of two modes:
+
+- **Container mode:** `engine`, `name`, and `container_id` name a Docker container; the read follows the container's status as described above. Given `sandbox_endpoint`, the base URL gateways and sandboxes use, a successful read also exports the server's `ref`. For a server that requires its generated key (vLLM with `authentication`, and every Ollama proxy), the ref's `credential_source` names where that key lives: the container, the credential volume it mounts, and that volume's NemoClaw identity, read from the engine and checked as registrations check it. Without `sandbox_endpoint`, container mode exports no `ref`.
+- **Endpoint mode:** `endpoint` is the server's OpenAI-compatible base URL, ending in `/v1`, that the provider can reach. The read polls `<endpoint>/models`, without following redirects, until the response lists the contract's served model; it needs no engine and works for a server on any platform. It serves unauthenticated contracts only and reports neither startup phase nor failure reason. Optional `sandbox_endpoint` is the base URL gateways and sandboxes use, defaulting to `endpoint`, and a successful read exports the server's `ref`. `ollama_proxy_readiness` supports container mode only.
+
+The `ref` is `{ type = "inference_server", endpoint, model, credential_env, credential_source }`, the same shape `openshell_external_inference_server` exports: `endpoint` is the sandbox endpoint, `model` the contract's served model, `credential_env` empty, and `credential_source` set only for a server that requires its generated key. It names the key's location and never holds the key.
+
+Setting both modes' inputs fails validation, as does endpoint mode with an authenticated contract.
+Until inference registrations take the `ref`, pass its endpoint: `endpoint = data.vllm_readiness.NAME.ref.endpoint`.
+
+```hcl
+data "vllm_readiness" "qwen" {
+  contract         = data.vllm_runtime.qwen.spec
+  endpoint         = "http://127.0.0.1:18898/v1"
+  sandbox_endpoint = "http://10.0.0.8:18898/v1"
+  read_trigger     = docker_container.qwen.id != ""
+}
+```
 A contract for another runtime fails validation, naming the provider that reads it.
 Its optional `wait_timeout_seconds` accepts zero to 32400 seconds; omission means 32400 seconds, and zero requests one bounded observation.
 Successful reads return `ready: true`; unsuccessful reads report an error.
@@ -732,4 +824,14 @@ The Docker and Helm providers have fixed release versions and checksum-pinned na
 The providers are not published yet ([#12638](https://github.com/NVIDIA/NemoClaw/issues/12638)).
 Supported HCL examples, import, adoption, remote-state backends and compatibility across releases are tracked in [#12645](https://github.com/NVIDIA/NemoClaw/issues/12645).
 
-Every resource and data source takes inputs that can be written in HCL, but this guide does not recommend a direct-use workflow.
+Every resource and data source takes inputs that can be written in HCL.
+[`examples/hcl/travel`](../examples/hcl/travel/main.tf) is a complete hand-written configuration: a Pi agent in an OpenShell sandbox, answering with a local Ollama server placed with Docker, and allowed only HTTPS `GET` requests to one site.
+A system test applies it unchanged against the bundle's providers.
+Writing one by hand:
+
+- Install the providers from a bundle: name its `providers` directory as a filesystem mirror, and pin each NVIDIA provider to the bundle's version. Development bundles carry pre-release versions, which OpenTofu selects only when pinned exactly.
+- Place model servers with any platform from `vllm_runtime` or `ollama_runtime`'s [`launch` and `requirements`](#vllm-runtime-contract), confirm them with [endpoint readiness](#runtime-capacity-and-readiness), and register `ref.endpoint`. Registrations will take the `ref` itself ([#13228](https://github.com/NVIDIA/NemoClaw/issues/13228)).
+- Inference registrations currently accept plain HTTP only to a literal loopback or private IP address; [#13232](https://github.com/NVIDIA/NemoClaw/issues/13232) leaves destination checks to OpenShell, which also accepts its gateway-host alias `host.openshell.internal`.
+- Name an inference profile `nemoclaw-inference-<registration name>`. Its registration finds it by that name, without a `profile` input, and must share its `owner` and `generation`.
+- Register web search with [`openshell_web_search`](#web-search), which owns its profile.
+- Workspaces are retained, so `tofu destroy` cannot tear such a configuration down yet ([#13230](https://github.com/NVIDIA/NemoClaw/issues/13230)).

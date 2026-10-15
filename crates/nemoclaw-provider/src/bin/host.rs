@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+//! The `vllm` OpenTofu provider.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -8,6 +9,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| "provider TLS initialization failed")?;
-    tf_provider::serve("nemoclaw", nemoclaw_provider::NemoClawProvider::default()).await?;
+    tf_provider::serve("host", nemoclaw_provider::HostProvider::default()).await?;
     Ok(())
 }

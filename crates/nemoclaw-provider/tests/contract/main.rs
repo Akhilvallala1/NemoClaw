@@ -18,9 +18,11 @@ use http_fixture as transport;
 mod image_runtime;
 
 mod discovery;
+mod endpoint_readiness;
+mod host_image;
 mod provider_protocol;
+mod readiness_refs;
 mod references;
-mod runtime_image;
 mod service_capacity;
 mod service_readiness;
 mod service_storage;
@@ -31,20 +33,13 @@ mod vllm_runtime;
 
 pub use nemoclaw_test_fixtures::{openshell, tofu};
 
-/// The nemoclaw provider Cargo built from this checkout, the one under test.
-pub fn provider() -> std::path::PathBuf {
-    nemoclaw_test_fixtures::package_executable!("terraform-provider-nemoclaw")
-}
-
-/// A workspace with this package's providers under test (nemoclaw, vllm,
-/// and ollama), and OpenTofu and the openshell and fabric providers from the
-/// bundle.
+/// A workspace with this package's providers under test (vllm, ollama, and
+/// host), and OpenTofu and the openshell and fabric providers from the bundle.
 pub fn workspace() -> tofu::TofuWorkspace {
     let bundle = nemoclaw_test_fixtures::Bundle::from_env();
     tofu::TofuWorkspace::with_providers(
         bundle.tofu(),
         &[
-            ("nemoclaw", &provider()),
             (
                 "vllm",
                 &nemoclaw_test_fixtures::package_executable!("terraform-provider-vllm"),
@@ -52,6 +47,10 @@ pub fn workspace() -> tofu::TofuWorkspace {
             (
                 "ollama",
                 &nemoclaw_test_fixtures::package_executable!("terraform-provider-ollama"),
+            ),
+            (
+                "host",
+                &nemoclaw_test_fixtures::package_executable!("terraform-provider-host"),
             ),
             ("openshell", &bundle.provider("openshell")),
             ("fabric", &bundle.provider("fabric")),
@@ -100,18 +99,20 @@ fn every_type_has_a_contract_test() {
             .collect()
     }
     // Every type this package's providers serve, by full type name.
-    let types: Vec<String> = served("nemoclaw", nemoclaw_provider::NemoClawProvider::default())
+    let types: Vec<String> = served("vllm", nemoclaw_provider::ServiceProvider::vllm())
         .into_iter()
-        .chain(served("vllm", nemoclaw_provider::ServiceProvider::vllm()))
         .chain(served(
             "ollama",
             nemoclaw_provider::ServiceProvider::ollama(),
         ))
+        .chain(served("host", nemoclaw_provider::HostProvider::default()))
         .collect();
     let sources = [
         include_str!("discovery.rs"),
+        include_str!("endpoint_readiness.rs"),
+        include_str!("readiness_refs.rs"),
         include_str!("provider_protocol.rs"),
-        include_str!("runtime_image.rs"),
+        include_str!("host_image.rs"),
         include_str!("service_capacity.rs"),
         include_str!("service_readiness.rs"),
         include_str!("service_storage.rs"),

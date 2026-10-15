@@ -235,15 +235,15 @@ fn prerequisites(address: &str) -> Option<String> {
     (address == format!("data.{source}.current")).then(|| GATEWAY_PREREQUISITES.to_owned())
 }
 fn observation_name(address: &str) -> Option<String> {
-    if address == "data.nemoclaw_engine_capabilities.current" {
+    if address == "data.host_engine.current" {
         Some("engine".into())
     } else if address == "data.openshell_gateway.current" {
         Some("gateway".into())
     } else {
         [
             "data.fabric_harnesses.",
-            "data.nemoclaw_runtime_image.",
-            "data.nemoclaw_target_hardware.",
+            "data.host_image.",
+            "data.host_engine.",
         ]
         .iter()
         .find_map(|prefix| address.strip_prefix(prefix).map(str::to_owned))
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn query_provenance_copies_only_safe_inputs_not_provider_payloads() {
-        let plan:Plan=serde_json::from_value(json!({"planned_values":{"root_module":{"resources":[{"address":"data.nemoclaw_target_hardware.target_0","values":{"engine":"unix:///var/run/docker.sock","credential":"PRIVATE_SENTINEL","spec":"PRIVATE_SENTINEL","observation_json":null}}]}}})).unwrap();
+        let plan:Plan=serde_json::from_value(json!({"planned_values":{"root_module":{"resources":[{"address":"data.host_engine.target_0","values":{"engine":"unix:///var/run/docker.sock","credential":"PRIVATE_SENTINEL","spec":"PRIVATE_SENTINEL","observation_json":null}}]}}})).unwrap();
         let report = plan
             .discovery_report(
                 DiscoveryScope::Deployment,
@@ -678,7 +678,7 @@ mod encoding_tests {
     fn every_observation_kind_keeps_its_report_encoding() {
         let expected = json!({"observations": {
             "engine": {"kind": "engine", "observation": serde_json::to_value(EngineObservation::unknown("unreachable")).unwrap()},
-            "runtime_image_0": {"kind": "runtime_image", "observation": {"status": "available", "source": "engine_image_inspect", "required_version": "1"}},
+            "runtime_image_0": {"kind": "runtime_image", "observation": {"status": "available", "source": "engine_image_inspect"}},
             "service_model": {"kind": "service", "observation": {"ready": null, "source": "service_readiness"}},
             "gateway": {"kind": "unresolved", "observation": {"category": "gateway"}}
         }});

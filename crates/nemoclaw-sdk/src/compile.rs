@@ -10,15 +10,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/nemoclaw";
 /// Registry address of the provider that reconciles OpenShell objects.
 pub const OPENSHELL_PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/openshell";
 /// Registry address of the provider that configures Fabric agents in sandboxes.
 pub const FABRIC_PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/fabric";
 pub const VLLM_PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/vllm";
 pub const OLLAMA_PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/ollama";
-/// This repository's providers; each takes `destroy`.
-pub const NEMOCLAW_PROVIDERS: [&str; 5] = ["nemoclaw", "openshell", "fabric", "vllm", "ollama"];
+/// Registry address of the provider that observes container engines; it has
+/// no settings, so it is not one of [`NEMOCLAW_PROVIDERS`].
+pub const HOST_PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/host";
+/// This repository's providers that take `destroy`.
+pub const NEMOCLAW_PROVIDERS: [&str; 4] = ["openshell", "fabric", "vllm", "ollama"];
 
 /// The OpenTofu resource type that reconciles a resource kind.
 pub fn resource_type(kind: &str) -> String {
@@ -115,11 +117,14 @@ fn targets_with_plans(
             .map(|provider| provider.key.clone())
             .collect::<Vec<_>>();
         if let Some(search) = &web_search {
-            provider_names.push(crate::config::search_provider_name(
-                search.provider,
-                &search.credential.env,
-                &search.provider.image_profile(&image_scope),
-            ));
+            provider_names.push(
+                nemoclaw_openshell::search::web_search_names(
+                    search.provider,
+                    &search.credential.env,
+                    &image_scope,
+                )
+                .1,
+            );
         }
 
         let mut values: Row = [
@@ -175,60 +180,38 @@ fn targets_with_plans(
             address: format!("openshell_sandbox.{}", sandbox.name),
             values,
         });
+        // One web search resource per provider, credential reference, and
+        // image: sandboxes sharing all three share it.
         if let Some(search) = web_search {
-            let profile_name = search.provider.image_profile(&image_scope);
-            let provider_name = crate::config::search_provider_name(
-                search.provider,
-                &search.credential.env,
-                &profile_name,
-            );
-            for (kind, name) in [
-                ("provider_profile", profile_name.as_str()),
-                ("provider", provider_name.as_str()),
-            ] {
-                let mut values: Row = [
+            let target = Target {
+                kind: "web_search".into(),
+                address: format!(
+                    "openshell_web_search.{}_{}_{}",
+                    search.provider.name(),
+                    image_scope,
+                    search.credential.env.to_ascii_lowercase()
+                ),
+                values: [
                     ("workspace".into(), workspace.clone()),
-                    ("name".into(), name.into()),
+                    ("name".into(), image_scope.clone()),
                     ("owner".into(), document.metadata.uid.clone()),
                     (
                         "generation".into(),
                         generation(generations, "provider")?.into(),
                     ),
+                    ("provider_type".into(), search.provider.name().into()),
+                    ("credential_env".into(), search.credential.env.clone()),
                 ]
-                .into();
-                if kind == "provider" {
-                    values.extend([
-                        ("endpoint".into(), search.provider.endpoint().into()),
-                        ("credential_env".into(), search.credential.env.clone()),
-                        ("provider_type".into(), search.provider.name().into()),
-                        ("profile_name".into(), profile_name.clone()),
-                    ]);
+                .into(),
+            };
+            if let Some(previous) = result.iter().find(|t| t.address == target.address) {
+                if previous != &target {
+                    return Err(ConfigError::new(
+                        "web search provider registration conflicts with an existing target",
+                    ));
                 }
-                let target = Target {
-                    kind: kind.into(),
-                    address: if kind == "provider" {
-                        let logical = crate::config::profile_address(search.provider)
-                            .strip_prefix("openshell_provider_profile.")
-                            .unwrap();
-                        let prefix = format!("{}-search-", search.provider.name());
-                        format!(
-                            "openshell_provider_registration.{logical}_{}",
-                            provider_name.strip_prefix(&prefix).unwrap()
-                        )
-                    } else {
-                        crate::config::image_profile_address(search.provider, &image_scope)
-                    },
-                    values,
-                };
-                if let Some(previous) = result.iter().find(|t| t.address == target.address) {
-                    if previous != &target {
-                        return Err(ConfigError::new(
-                            "web search provider registration conflicts with an existing target",
-                        ));
-                    }
-                } else {
-                    result.push(target);
-                }
+            } else {
+                result.push(target);
             }
         }
     }
@@ -443,15 +426,15 @@ fn graph_base(document: &Document, version: &str) -> Result<Value, ConfigError> 
     let drivers = [document.spec.gateway.runtime().provider.openshell_driver()];
     let mut graph = json!({
         "terraform":{"required_version":format!("= {OPENTOFU_VERSION}"),"required_providers":{
-            "nemoclaw":{"source":PROVIDER_ADDRESS,"version":format!("= {version}")},
             "openshell":{"source":OPENSHELL_PROVIDER_ADDRESS,"version":format!("= {version}")},
             "fabric":{"source":FABRIC_PROVIDER_ADDRESS,"version":format!("= {version}")},
             "vllm":{"source":VLLM_PROVIDER_ADDRESS,"version":format!("= {version}")},
-            "ollama":{"source":OLLAMA_PROVIDER_ADDRESS,"version":format!("= {version}")}
+            "ollama":{"source":OLLAMA_PROVIDER_ADDRESS,"version":format!("= {version}")},
+            "host":{"source":HOST_PROVIDER_ADDRESS,"version":format!("= {version}")}
         }},
         // Each provider reaches the engines, clusters, and gateways named on
-        // its resources; providers take only `destroy`.
-        "provider":{"nemoclaw":{},"openshell":{},"fabric":{},"vllm":{},"ollama":{}}, "resource":{},
+        // its resources; providers take at most `destroy`.
+        "provider":{"openshell":{},"fabric":{},"vllm":{},"ollama":{},"host":{}}, "resource":{},
         "data":{"openshell_gateway":{"current":gateway_data(&connection, json!(drivers))}}
     });
     crate::discovery_graph::populate(&mut graph, document)?;
@@ -469,8 +452,10 @@ fn compile_with_plans(
     let mut resources = json!({});
     let provider_dependencies: BTreeMap<_, _> = targets
         .iter()
-        .filter(|target| target.kind == "provider")
-        .map(|target| (target.values["name"].clone(), target.address.clone()))
+        .filter_map(|target| {
+            nemoclaw_openshell::registration_name(&target.kind, &target.values)
+                .map(|name| (name, target.address.clone()))
+        })
         .collect();
     let mut runtime_sources = BTreeMap::new();
     let mut profile_sources = BTreeMap::new();
@@ -484,13 +469,9 @@ fn compile_with_plans(
                 .entry(format!("nemoclaw-inference-{}", provider.key))
                 .or_insert_with(|| source.clone());
         }
-        if let Some(search) = document.web_search(sandbox)? {
+        if document.web_search(sandbox)?.is_some() {
             profile_sources
-                .entry(
-                    search
-                        .provider
-                        .image_profile(&document.image_scope(sandbox)?),
-                )
+                .entry(format!("web_search:{}", document.image_scope(sandbox)?))
                 .or_insert(source);
         }
     }
@@ -573,8 +554,17 @@ fn compile_with_plans(
                 targets
                     .iter()
                     .find(|candidate| {
-                        nemoclaw_openshell::type_name(&candidate.kind) == reference.kind
-                            && candidate.values.get("name").map(String::as_str) == Some(name)
+                        nemoclaw_openshell::ref_type(&candidate.kind) == reference.kind
+                            && if reference.kind == nemoclaw_openshell::PROVIDER_TYPE {
+                                nemoclaw_openshell::registration_name(
+                                    &candidate.kind,
+                                    &candidate.values,
+                                )
+                                .as_deref()
+                                    == Some(name)
+                            } else {
+                                candidate.values.get("name").map(String::as_str) == Some(name)
+                            }
                     })
                     .map(|candidate| format!("${{{}.ref}}", candidate.address))
                     .ok_or_else(|| {
@@ -602,6 +592,12 @@ fn compile_with_plans(
                 profile_sources[&target.values["name"]]
             ));
         }
+        if target.kind == "web_search" {
+            attributes["binaries"] = json!(format!(
+                "${{jsondecode({}.binaries_json)}}",
+                profile_sources[&format!("web_search:{}", target.values["name"])]
+            ));
+        }
         if target.kind == "sandbox" {
             attributes
                 .as_object_mut()
@@ -618,13 +614,12 @@ fn compile_with_plans(
                 .map(|provider| provider_dependencies[&provider.key].clone())
                 .collect();
             if let Some(search) = document.web_search(sandbox)? {
-                let name = crate::config::search_provider_name(
+                let name = nemoclaw_openshell::search::web_search_names(
                     search.provider,
                     &search.credential.env,
-                    &search
-                        .provider
-                        .image_profile(&document.image_scope(sandbox)?),
-                );
+                    &document.image_scope(sandbox)?,
+                )
+                .1;
                 dependencies.push(provider_dependencies[&name].clone());
             }
             attributes["depends_on"] = json!(dependencies);

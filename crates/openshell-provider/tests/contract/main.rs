@@ -19,6 +19,7 @@ use http_fixture as transport;
 pub use nemoclaw_test_fixtures::{openshell, tofu};
 
 mod capabilities;
+mod external_inference;
 // Gateway installation: Docker gateway reads, the Podman gateway and its
 // storage, and the Kubernetes gateway types.
 // A managed gateway needs a local engine, which only Unix clients reach.
@@ -32,6 +33,7 @@ mod gateway_storage;
 mod kubernetes_hcl;
 mod kubernetes_lifecycle;
 mod standalone;
+mod web_search;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/contract/fixtures");
 
@@ -52,7 +54,6 @@ pub fn workspace() -> TofuWorkspace {
     TofuWorkspace::with_providers(
         bundle.tofu(),
         &[
-            ("nemoclaw", &bundle.provider("nemoclaw")),
             ("openshell", &provider()),
             ("fabric", &bundle.provider("fabric")),
         ],
@@ -76,11 +77,12 @@ pub fn assert_same_managed_resources(actual: &[u8], expected: &[u8]) {
     assert_eq!(managed(actual), managed(expected));
 }
 
-/// Credential variables the fixture's registrations name, with fixture values.
+/// Credential variables the fixture's registrations and web search resources
+/// name, with fixture values.
 fn credentials(fixture: &Value) -> BTreeSet<String> {
-    fixture["resource"]["openshell_provider_registration"]
-        .as_object()
+    ["openshell_provider_registration", "openshell_web_search"]
         .into_iter()
+        .filter_map(|kind| fixture["resource"][kind].as_object())
         .flat_map(|registrations| registrations.values())
         .filter_map(|registration| registration["credential_env"].as_str())
         .filter(|name| !name.is_empty())
@@ -186,12 +188,14 @@ fn every_type_has_a_contract_test() {
         .collect();
     let mut sources = [
         include_str!("capabilities.rs"),
+        include_str!("external_inference.rs"),
         include_str!("gateway_installation.rs"),
         include_str!("gateway_readiness.rs"),
         include_str!("gateway_storage.rs"),
         include_str!("kubernetes_hcl.rs"),
         include_str!("kubernetes_lifecycle.rs"),
         include_str!("standalone.rs"),
+        include_str!("web_search.rs"),
     ]
     .concat();
     for entry in fs::read_dir(FIXTURES).unwrap() {
@@ -252,6 +256,7 @@ macro_rules! fixtures {
                 "openshell_workspace",
                 "openshell_provider_profile",
                 "openshell_provider_registration",
+                "openshell_web_search",
                 "openshell_sandbox",
                 "openshell_gateway",
             ] {

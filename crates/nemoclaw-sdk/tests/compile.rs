@@ -165,9 +165,10 @@ fn compiled_resources_preserve_ownership_connections_and_dependency_order() {
     let graph = compile(&document, &generations, "0.1.0").unwrap();
     // Providers take no connection; the gateway data source does, and
     // objects take its ref.
-    for provider in ["nemoclaw", "openshell", "fabric"] {
+    for provider in ["openshell", "fabric", "host"] {
         assert_eq!(graph["provider"][provider], json!({}), "{provider}");
     }
+    assert!(graph["provider"].get("nemoclaw").is_none());
     for read in ["current", "apply"] {
         let connection = &graph["data"]["openshell_gateway"][read];
         for (field, expected) in [
@@ -296,7 +297,7 @@ fn managed_plans_query_selected_engine_and_image_without_probe_resources() {
         // reads: the facts serve every reader, and the openshell provider
         // judges whether the engine can host its gateway.
         let selected = &document.spec.gateway.as_managed().unwrap().engine;
-        let engine = &graph["data"]["nemoclaw_engine_capabilities"]["current"];
+        let engine = &graph["data"]["host_engine"]["current"];
         assert_eq!(engine["engine"], *selected);
         assert!(engine.get("compute_driver").is_none());
         assert!(engine.get("lifecycle").is_none());
