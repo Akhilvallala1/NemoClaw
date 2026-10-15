@@ -282,6 +282,31 @@ describe("rebuild recreate OpenClaw dashboard origin (#13177)", () => {
     expect(observed()).toBe("http://127.0.0.1:18790");
     expect(process.env.CHAT_UI_URL).toBe("https://ambient.example.test");
   });
+
+  it("restores the ambient CHAT_UI_URL after the inner onboard fails", async () => {
+    process.env.CHAT_UI_URL = "https://ambient.example.test";
+    let observed: string | undefined;
+    vi.spyOn(rebuildOnboardDependencies, "onboard").mockImplementation(async () => {
+      observed = process.env.CHAT_UI_URL;
+      throw new Error("inner onboard failed");
+    });
+
+    await expect(
+      runRebuildRecreatePhase(
+        makeInput({
+          sandboxEntry: {
+            name: SANDBOX_NAME,
+            agent: "openclaw",
+            dashboardExternalUrl: "https://launchpad.example.test:18789",
+          },
+          recreateOptions: { ...recreateOptions, controlUiPort: 18_790 },
+        }),
+      ),
+    ).rejects.toThrow("bail: Recreate failed");
+
+    expect(observed).toBe("https://launchpad.example.test:18790");
+    expect(process.env.CHAT_UI_URL).toBe("https://ambient.example.test");
+  });
 });
 
 describe("rebuild recreate compatible-endpoint reasoning handoff (#7940)", () => {
