@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { nativeSelectionConfigCredentials } from "./inference-set/native";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenShellProviderAdapter } from "../adapters/openshell/provider-adapter";
 import { nativeLocalIdentity, type NativeLocalBinding } from "../inference/native-local/contract";
@@ -277,5 +278,47 @@ describe.each([
     await expect(execute(input)).rejects.toThrow(
       /detach readback unavailable[\s\S]*restoring the previous native local provider attachment also failed: restore unavailable/i,
     );
+  });
+});
+
+describe("native-local credential references during provider changes", () => {
+  it.each([
+    "openshell:resolve:env:NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+    "openshell:resolve:env:v42_NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+    `openshell:resolve:env:s${"a".repeat(64)}_NEMOCLAW_LOCAL_INFERENCE_TOKEN`,
+  ])("does not reuse a local reference for a public endpoint: %s", (reference) => {
+    expect(
+      nativeSelectionConfigCredentials(
+        "compatible-endpoint",
+        "https://api.example.com/v1",
+        reference,
+        {},
+      ),
+    ).toEqual({ apiKey: "unused" });
+  });
+
+  it.each(["operator-api-key", "openshell:resolve:env:v42_OTHER_KEY"])(
+    "preserves unrelated credentials for a public endpoint: %s",
+    (apiKey) => {
+      expect(
+        nativeSelectionConfigCredentials(
+          "compatible-endpoint",
+          "https://api.example.com/v1",
+          apiKey,
+          {},
+        ),
+      ).toEqual({ apiKey });
+    },
+  );
+
+  it("selects the canonical local reference for the new local attachment", () => {
+    expect(
+      nativeSelectionConfigCredentials(
+        "ollama-local",
+        "http://host.openshell.internal:11434/v1",
+        "operator-api-key",
+        {},
+      ),
+    ).toEqual({ apiKey: "openshell:resolve:env:NEMOCLAW_LOCAL_INFERENCE_TOKEN" });
   });
 });

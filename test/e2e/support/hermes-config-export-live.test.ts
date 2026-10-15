@@ -452,38 +452,97 @@ describe("Hermes config export live evidence", () => {
     },
   );
 
-  it("accepts messaging refusal alongside other export findings", async () => {
-    mocks.load.mockReturnValue({
-      sandboxes: {
-        hermes: {
-          credentialEnv: "NVIDIA_API_KEY",
-          endpointUrl: "https://integrate.api.nvidia.com/v1",
-          gatewayName: "nemoclaw",
-          messaging: { schemaVersion: 1, plan: { channels: [] } },
-          workload: { kind: "managed-image", reference: IMAGE_REF },
+  it.each(["unsupported, policy-not-representable", "policy-not-representable, unsupported"])(
+    "accepts messaging refusal alongside categories %s",
+    async (categories) => {
+      mocks.load.mockReturnValue({
+        sandboxes: {
+          hermes: {
+            credentialEnv: "NVIDIA_API_KEY",
+            endpointUrl: "https://integrate.api.nvidia.com/v1",
+            gatewayName: "nemoclaw",
+            messaging: { schemaVersion: 1, plan: { channels: [] } },
+            workload: { kind: "managed-image", reference: IMAGE_REF },
+          },
         },
-      },
-    });
-    mocks.command.mockResolvedValue({
-      exitCode: 2,
-      stdout: "",
-      stderr: [
-        "Config export failed (unsupported, policy-not-representable).",
-        "V1 export does not support messaging.",
-        "The sandbox provider attachments do not match its supported configuration.",
-        "The managed startup profile is not the canonical profile supported by v1 export.",
-      ].join("\n"),
-    });
+      });
+      mocks.command.mockResolvedValue({
+        exitCode: 2,
+        stdout: "",
+        stderr: [
+          `Config export failed (${categories}).`,
+          "V1 export does not support messaging.",
+          "The sandbox provider attachments do not match its supported configuration.",
+          "The managed startup profile is not the canonical profile supported by v1 export.",
+        ].join("\n"),
+      });
 
-    await expect(runEnabledFixture()).resolves.toEqual({ checked: true, passed: true });
-    expect(mocks.writeJson).toHaveBeenCalledWith(
-      "hermes-config-export-live-evidence.json",
-      expect.objectContaining({
-        refusalCategory: "unsupported",
-        refusalDiagnosticMatches: true,
-      }),
-    );
-  });
+      await expect(runEnabledFixture()).resolves.toEqual({ checked: true, passed: true });
+      expect(mocks.writeJson).toHaveBeenCalledWith(
+        "hermes-config-export-live-evidence.json",
+        expect.objectContaining({
+          refusalCategory: "unsupported",
+          refusalDiagnosticMatches: true,
+        }),
+      );
+    },
+  );
+
+  it.each([
+    {
+      name: "unrelated messaging failure",
+      scheme: "https",
+      driver: "docker",
+      diagnostics: "messaging export crashed",
+    },
+    {
+      name: "missing refusal category",
+      scheme: "https",
+      driver: "docker",
+      diagnostics: "Config export failed (drifted).\nV1 export does not support messaging.",
+    },
+    {
+      name: "vague messaging detail",
+      scheme: "https",
+      driver: "docker",
+      diagnostics: "Config export failed (unsupported).\nUnexpected messaging failure.",
+    },
+    {
+      name: "missing HTTP credential refusal",
+      scheme: "http",
+      driver: "docker",
+      diagnostics: "Config export failed (unsupported).\nV1 export does not support messaging.",
+    },
+    {
+      name: "missing Podman refusal",
+      scheme: "https",
+      driver: "podman",
+      diagnostics: "Config export failed (unsupported).\nV1 export does not support messaging.",
+    },
+  ])(
+    "rejects $name as expected messaging refusal evidence",
+    async ({ scheme, driver, diagnostics }) => {
+      mocks.load.mockReturnValue({
+        sandboxes: {
+          hermes: {
+            credentialEnv: "NVIDIA_API_KEY",
+            endpointUrl: `${scheme}://host.openshell.internal:35271/v1`,
+            gatewayName: "nemoclaw",
+            openshellDriver: driver,
+            messaging: { schemaVersion: 1, plan: { channels: [] } },
+            workload: { kind: "managed-image", reference: IMAGE_REF },
+          },
+        },
+      });
+      mocks.command.mockResolvedValue({ exitCode: 2, stdout: "", stderr: diagnostics });
+      await expect(runEnabledFixture()).resolves.toEqual({ checked: true, passed: false });
+      expect(mocks.writeJson).toHaveBeenCalledWith(
+        "hermes-config-export-live-evidence.json",
+        expect.objectContaining({ refusalCategory: null, refusalDiagnosticMatches: false }),
+      );
+      expect(mocks.save).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects other unsupported findings without the messaging refusal", async () => {
     mocks.load.mockReturnValue({

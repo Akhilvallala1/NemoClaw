@@ -103,7 +103,14 @@ export async function rejectInferenceSelectionProbe(input: {
       `Native local inference verification failed for '${input.sandboxName}': ${input.detail}. No new inference selection was committed.`,
     );
   }
-  const restoreFailure = await input.restorePreviousSelection();
+  let restoreFailure: string | null;
+  try {
+    restoreFailure = await input.restorePreviousSelection();
+  } catch (error) {
+    restoreFailure = redactInferenceSetRouteDiagnostic(
+      (error instanceof Error ? error.message : String(error)) || "Unknown restoration error",
+    );
+  }
   if (restoreFailure) {
     throw new InferenceSetError(
       `Sandbox-side verification rejected provider '${input.provider}' / '${input.model}': ${input.detail}. ` +

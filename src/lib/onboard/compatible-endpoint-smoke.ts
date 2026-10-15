@@ -132,6 +132,8 @@ export async function verifyCompatibleEndpointSandboxSmoke(options: {
   const local = normalizeNativeLocalProviderAttachment(options.nativeLocalProviderAttachment);
   if (options.nativeLocalProviderAttachment && !local)
     throw new Error("Invalid native local inference ownership receipt.");
+  if (local && local.provider !== options.provider)
+    throw new Error("Native local inference attachment does not match the selected provider.");
   if (
     !local &&
     options.forceCanonicalRoute !== true &&

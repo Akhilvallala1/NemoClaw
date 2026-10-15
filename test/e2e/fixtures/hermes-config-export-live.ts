@@ -355,7 +355,12 @@ export async function verifyHermesConfigExportLive(
       const refusalDiagnosticMatches = [nemoclawDiagnostics, nemohermesDiagnostics].every(
         (diagnostic) => {
           if (!expectsMessagingRefusal) return diagnostic === expectedDiagnostic;
-          return /\bmessaging\b/i.test(diagnostic);
+          const [header, ...findings] = diagnostic.split("\n");
+          const categories = /^Config export failed \(([^)]+)\)\.$/u.exec(header ?? "")?.[1];
+          return (
+            categories?.split(", ").includes("unsupported") === true &&
+            expectedRefusals.every((refusal) => findings.includes(refusal))
+          );
         },
       );
       const refusalCategory = refusalDiagnosticMatches ? "unsupported" : null;
