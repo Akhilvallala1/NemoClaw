@@ -41,6 +41,7 @@ import { REPO_ROOT } from "../fixtures/paths.ts";
 import type { ShellProbeResult } from "../fixtures/shell-probe.ts";
 import {
   captureGatewayUpgradeFailureDiagnostics,
+  captureLegacyGatewayForward,
   currentGatewayUpgradeInstallerArgs,
   currentNemoclawUpgradeRef,
   gatewayCredentialNonExposureScript,
@@ -610,6 +611,7 @@ async function attemptCurrentNemoclawUpgrade(
 async function assertLegacyGatewayPreserved(
   host: HostCliClient,
   attempt: ShellProbeResult,
+  legacyForward: Awaited<ReturnType<typeof captureLegacyGatewayForward>>,
   service?: GatewayUpgradeServiceEvidence,
 ): Promise<void> {
   await waitForSandboxPhase(host, SURVIVOR_SANDBOX, "Ready", "after-refusal");
@@ -650,10 +652,13 @@ async function assertLegacyGatewayPreserved(
     await waitForSandboxPhase(host, sandboxName, "Stopped", `restored-${sandboxName}`);
   }
 
-  const forward = await host.inspectOpenShellForwardListener(DASHBOARD_PORT, SURVIVOR_SANDBOX, {
-    artifactName: "preserved-dashboard-forward",
-    env: liveEnv(),
-  });
+  const forward = await captureLegacyGatewayForward(
+    host,
+    SURVIVOR_SANDBOX,
+    DASHBOARD_PORT,
+    liveEnv(),
+    "preserved",
+  );
   expect(
     attempt.exitCode !== 0 &&
       !attempt.timedOut &&
@@ -662,9 +667,10 @@ async function assertLegacyGatewayPreserved(
       resultText(attempt).includes("existing gateway and sandboxes were left unchanged") &&
       LEGACY_SANDBOXES.every((name) => resultText(attempt).includes(name)) &&
       stateChecks.every((result) => result.exitCode === 0) &&
-      forward.valid &&
+      legacyForward.identity !== null &&
+      forward.identity === legacyForward.identity &&
       (!service || gatewayServiceWasPreserved(service)),
-    `${resultText(attempt)}\n${stateChecks.map(resultText).join("\n")}\n${forward.output}\n${JSON.stringify(service)}`,
+    `${resultText(attempt)}\n${stateChecks.map(resultText).join("\n")}\n${legacyForward.output}\n${forward.output}\n${JSON.stringify(service)}`,
   ).toBe(true);
 }
 
@@ -795,6 +801,13 @@ runOpenShellGatewayUpgrade(
     );
 
     progress.phase("attempt the 0.1.x cutover and require refusal");
+    const legacyForward = await captureLegacyGatewayForward(
+      host,
+      SURVIVOR_SANDBOX,
+      DASHBOARD_PORT,
+      liveEnv(),
+      "legacy",
+    );
     const attempt = await attemptCurrentNemoclawUpgrade(host, artifacts, fake.baseUrl);
     const preservedService = await captureGatewayUpgradeService(
       host,
@@ -807,6 +820,7 @@ runOpenShellGatewayUpgrade(
     await assertLegacyGatewayPreserved(
       host,
       attempt,
+      legacyForward,
       VERIFY_SYSTEMD_UPGRADE
         ? {
             before: legacyService,
