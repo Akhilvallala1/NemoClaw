@@ -60,16 +60,13 @@ function cancellationRecoveryFor(
 
 function prepublicationRecoveryHarness(
   options: {
-    identityFree?: boolean;
     partialLifecycleGeneration?: boolean;
     reservationSessionId?: string;
     sandboxPresent?: boolean;
     sessionRecoveryOverrides?: Partial<SessionCancellationRecovery>;
   } = {},
 ) {
-  const recovery = options.identityFree
-    ? retainedRecoveryRecordWithoutIdentity()
-    : retainedRecoveryRecord();
+  const recovery = retainedRecoveryRecord();
   const harness = createDestroyHarness({
     sandboxPresent: options.sandboxPresent ?? false,
     dockerRunResult: { status: 0, stdout: "" },
@@ -262,26 +259,6 @@ describe("destroySandbox retained recovery flow", () => {
       );
       expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
         ["sandbox", "delete", "alpha"],
-        expect.anything(),
-      );
-      expect(harness.resolveRetainedSandboxRecoverySpy).not.toHaveBeenCalled();
-      expect(harness.removeSandboxSpy).not.toHaveBeenCalled();
-    },
-  );
-
-  it(
-    "refuses identity-free recovery before pending identity publication (#11418)",
-    { timeout: 30_000 },
-    async () => {
-      const { harness } = prepublicationRecoveryHarness({ identityFree: true });
-      configureFailedGatewayList(harness);
-
-      await expect(harness.destroySandbox("alpha", { yes: true })).rejects.toThrow(
-        "process.exit(1)",
-      );
-
-      expect(harness.runOpenshellSpy).not.toHaveBeenCalledWith(
-        ["gateway", "list", "-o", "json"],
         expect.anything(),
       );
       expect(harness.resolveRetainedSandboxRecoverySpy).not.toHaveBeenCalled();

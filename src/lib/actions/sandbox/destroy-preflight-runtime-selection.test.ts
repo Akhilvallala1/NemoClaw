@@ -29,6 +29,16 @@ describe("destroy preflight runtime selection", () => {
     vi.unstubAllEnvs();
     resetDestroyModuleCache();
   });
+  it("rejects an endpoint override before OpenShell probes or deletion", async () => {
+    vi.stubEnv("OPENSHELL_GATEWAY_ENDPOINT", "https://foreign.invalid");
+    const harness = createDestroyHarness();
+
+    await expect(harness.prepareSandboxDestroy("alpha")).rejects.toThrow(
+      "OpenShell may bypass the gateway recorded for this sandbox",
+    );
+    expect(harness.captureOpenshellSpy).not.toHaveBeenCalled();
+    expect(harness.runOpenshellSpy).not.toHaveBeenCalled();
+  });
   it("binds typed selection and inventory to the operation's frozen authority", async () => {
     vi.stubEnv("OPENSHELL_GATEWAY", "foreign");
     vi.stubEnv("OPENSHELL_WORKSPACE", "foreign");
