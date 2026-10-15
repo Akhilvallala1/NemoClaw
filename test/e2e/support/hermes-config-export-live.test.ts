@@ -452,41 +452,47 @@ describe("Hermes config export live evidence", () => {
     },
   );
 
-  it.each(["unsupported, policy-not-representable", "policy-not-representable, unsupported"])(
-    "accepts messaging refusal alongside categories %s",
-    async (categories) => {
-      mocks.load.mockReturnValue({
-        sandboxes: {
-          hermes: {
-            credentialEnv: "NVIDIA_API_KEY",
-            endpointUrl: "https://integrate.api.nvidia.com/v1",
-            gatewayName: "nemoclaw",
-            messaging: { schemaVersion: 1, plan: { channels: [] } },
-            workload: { kind: "managed-image", reference: IMAGE_REF },
-          },
+  it.each([
+    "unsupported",
+    "unsupported, policy-not-representable",
+    "policy-not-representable, unsupported",
+  ])("accepts messaging refusal alongside categories %s", async (categories) => {
+    mocks.load.mockReturnValue({
+      sandboxes: {
+        hermes: {
+          credentialEnv: "NVIDIA_API_KEY",
+          endpointUrl: "https://integrate.api.nvidia.com/v1",
+          gatewayName: "nemoclaw",
+          messaging: { schemaVersion: 1, plan: { channels: [] } },
+          workload: { kind: "managed-image", reference: IMAGE_REF },
         },
-      });
-      mocks.command.mockResolvedValue({
-        exitCode: 2,
-        stdout: "",
-        stderr: [
-          `Config export failed (${categories}).`,
-          "V1 export does not support messaging.",
-          "The sandbox provider attachments do not match its supported configuration.",
-          "The managed startup profile is not the canonical profile supported by v1 export.",
-        ].join("\n"),
-      });
+      },
+    });
+    mocks.command.mockResolvedValue({
+      exitCode: 2,
+      stdout: "",
+      stderr: [
+        `Config export failed (${categories}).`,
+        "V1 export does not support messaging.",
+        "The sandbox provider attachments do not match its supported configuration.",
+        "The managed startup profile is not the canonical profile supported by v1 export.",
+        ...(categories.includes("policy-not-representable")
+          ? [
+              "Verified effective policy is malformed, unknown, or cannot be represented losslessly.",
+            ]
+          : []),
+      ].join("\n"),
+    });
 
-      await expect(runEnabledFixture()).resolves.toEqual({ checked: true, passed: true });
-      expect(mocks.writeJson).toHaveBeenCalledWith(
-        "hermes-config-export-live-evidence.json",
-        expect.objectContaining({
-          refusalCategory: "unsupported",
-          refusalDiagnosticMatches: true,
-        }),
-      );
-    },
-  );
+    await expect(runEnabledFixture()).resolves.toEqual({ checked: true, passed: true });
+    expect(mocks.writeJson).toHaveBeenCalledWith(
+      "hermes-config-export-live-evidence.json",
+      expect.objectContaining({
+        refusalCategory: "unsupported",
+        refusalDiagnosticMatches: true,
+      }),
+    );
+  });
 
   it.each([
     {
@@ -512,6 +518,50 @@ describe("Hermes config export live evidence", () => {
       scheme: "http",
       driver: "docker",
       diagnostics: "Config export failed (unsupported).\nV1 export does not support messaging.",
+    },
+    {
+      name: "unexpected identity drift alongside messaging refusal",
+      scheme: "https",
+      driver: "docker",
+      diagnostics: [
+        "Config export failed (unsupported, drifted).",
+        "V1 export does not support messaging.",
+        "Registry and live gateway bindings differ.",
+      ].join("\n"),
+    },
+    {
+      name: "undocumented finding in the unsupported category",
+      scheme: "https",
+      driver: "docker",
+      diagnostics: [
+        "Config export failed (unsupported).",
+        "V1 export does not support messaging.",
+        "Unexpected export observation failure.",
+      ].join("\n"),
+    },
+    {
+      name: "unrelated category with only expected findings",
+      scheme: "https",
+      driver: "docker",
+      diagnostics:
+        "Config export failed (unsupported, drifted).\nV1 export does not support messaging.",
+    },
+    {
+      name: "policy category without its finding",
+      scheme: "https",
+      driver: "docker",
+      diagnostics:
+        "Config export failed (unsupported, policy-not-representable).\nV1 export does not support messaging.",
+    },
+    {
+      name: "policy finding without its category",
+      scheme: "https",
+      driver: "docker",
+      diagnostics: [
+        "Config export failed (unsupported).",
+        "V1 export does not support messaging.",
+        "Verified effective policy is malformed, unknown, or cannot be represented losslessly.",
+      ].join("\n"),
     },
     {
       name: "missing Podman refusal",
