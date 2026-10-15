@@ -33,6 +33,7 @@ mod gateway_storage;
 mod kubernetes_hcl;
 mod kubernetes_lifecycle;
 mod standalone;
+mod web_search;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/contract/fixtures");
 
@@ -193,6 +194,7 @@ fn every_type_has_a_contract_test() {
         include_str!("kubernetes_hcl.rs"),
         include_str!("kubernetes_lifecycle.rs"),
         include_str!("standalone.rs"),
+        include_str!("web_search.rs"),
     ]
     .concat();
     for entry in fs::read_dir(FIXTURES).unwrap() {
