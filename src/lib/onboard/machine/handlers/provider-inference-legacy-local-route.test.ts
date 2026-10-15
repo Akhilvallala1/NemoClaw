@@ -9,6 +9,7 @@ vi.mock("../../../state/registry", async (importOriginal) => ({
   getSandbox: vi.fn(() => null),
 }));
 
+import { parseSandboxRegistryEntries } from "../../../state/registry-normalization";
 import { createSession } from "../../../state/onboard-session";
 import type { SandboxEntry } from "../../../state/registry";
 import { handleProviderInferenceState } from "./provider-inference";
@@ -16,12 +17,14 @@ import { baseOptions, createDeps } from "./provider-inference.test-support";
 
 describe("legacy local inference resume", () => {
   it.each([
-    ["openclaw", true],
-    ["langchain-deepagents-code", true],
-    ["langchain-deepagents-code", false],
+    ["openclaw", true, "2026-09-01T00:00:00Z"],
+    ["openclaw", true, undefined],
+    ["langchain-deepagents-code", true, "2026-09-01T00:00:00Z"],
+    ["langchain-deepagents-code", true, undefined],
+    ["langchain-deepagents-code", false, "2026-09-01T00:00:00Z"],
   ])(
     "stops %s before provider mutations with completed selection %s",
-    async (selectedAgent, complete) => {
+    async (selectedAgent, complete, recordedAt) => {
       const session = createSession({
         agent: selectedAgent,
         sandboxName: "my-assistant",
@@ -38,14 +41,17 @@ describe("legacy local inference resume", () => {
         name: "my-assistant",
         agent: selectedAgent,
         gatewayName: "nemoclaw",
-        createdAt: "2026-09-01T00:00:00Z",
+        ...(recordedAt ? { createdAt: recordedAt } : {}),
         provider: session.provider,
         model: session.model,
         endpointUrl: session.endpointUrl,
         credentialEnv: session.credentialEnv,
         preferredInferenceApi: session.preferredInferenceApi,
       } as SandboxEntry;
-      const { deps, calls } = createDeps({ getSandboxRegistryEntry: () => recorded });
+      const [, persisted] = parseSandboxRegistryEntries(
+        JSON.parse(JSON.stringify({ "my-assistant": recorded })),
+      )[0]!;
+      const { deps, calls } = createDeps({ getSandboxRegistryEntry: () => persisted });
 
       await expect(
         handleProviderInferenceState({

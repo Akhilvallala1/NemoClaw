@@ -1284,7 +1284,6 @@ function assertNoLegacySharedLocalResume(
   if (
     recorded &&
     recorded.pendingRouteReservation !== true &&
-    typeof recorded.createdAt === "string" &&
     hasLegacySharedLocalInferenceRoute(recorded)
   ) {
     throw new Error(

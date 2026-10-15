@@ -774,8 +774,9 @@ export function createOnboardCreatedSandboxCompletion(
         provider,
         model,
         preferredInferenceApi,
-        endpointUrl,
+        endpointUrl: resolvedCreateIntent.nativeLocalProviderAttachment?.endpointUrl ?? endpointUrl,
         nativeProvider: Boolean(
+          resolvedCreateIntent.nativeLocalProviderAttachment ||
           resolvedCreateIntent.nativeHostedProviderAttachment ||
           resolvedCreateIntent.nativeNvidiaProviderAttachment,
         ),
