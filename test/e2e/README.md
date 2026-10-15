@@ -382,6 +382,24 @@ Keep a Pi upgrade in one PR with two publication steps:
 2. After both candidate images publish, add their receipts and matching authority in the same PR.
    Keep image inputs unchanged between the source and receipt commits.
 
+Use `tools/managed-images/collect-pi-qualification.mts` from a reviewed tooling checkout to prepare
+the receipt commit. Run it with the upgrade checkout as the working directory. Supply a GitHub API
+token through `GITHUB_TOKEN`; do not put credentials in the command or patch. The collector reads
+Git objects without passing that token to Git and does not execute the upgrade checkout's code.
+
+```bash
+node /path/to/reviewed-checkout/tools/managed-images/collect-pi-qualification.mts PR_NUMBER RUN_ID > /path/to/pi-refresh.patch
+git apply --check /path/to/pi-refresh.patch
+git apply /path/to/pi-refresh.patch
+```
+
+The selected managed-images run must have succeeded for the current open upstream PR commit.
+The collector verifies both artifact archive digests, platforms, source revision, release and
+publication attempt. It rechecks the PR and run before printing a three-file patch: both receipts
+and their authority hashes. It does not apply the patch, publish changes or certify full lifecycle
+qualification. Review the patch and run the existing receipt refresh check before committing it.
+Do not apply a partial patch after a collection error.
+
 CI does not permit the source-only exception. It requires refreshed receipts before the PR can pass.
 A partial receipt or authority change remains an error in local hooks and CI.
 
