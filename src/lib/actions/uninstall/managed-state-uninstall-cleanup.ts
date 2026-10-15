@@ -53,12 +53,10 @@ export function managedAgentStateVolumeContext(
 export function removeManagedStateVolumesForUninstall(
   contexts: readonly ManagedAgentStateVolumeContext[],
   runtime: ManagedAgentStateVolumeRuntime,
-  migrationStateDir?: string,
 ): boolean {
   for (const context of contexts) {
     const results = removeManagedAgentStateVolumes(context, {
       workspace: runtime.env.OPENSHELL_WORKSPACE ?? OPENSHELL_DEFAULT_WORKSPACE,
-      migrationStateDir,
       runtimeProviders: runtime.runtimeProviders ?? CURRENT_RUNTIME_PROVIDER_BUNDLES,
       runDocker: (args, options) =>
         runtime.runDocker(["volume", ...args], {
@@ -72,11 +70,6 @@ export function removeManagedStateVolumesForUninstall(
         runtime.error(`Managed agent state volume '${result.volumeName}' could not be removed.`);
         runtime.error("Preserved NemoClaw state so exact cleanup can be retried.");
         return false;
-      }
-      if ("retainedVolumeName" in result && result.retainedVolumeName) {
-        runtime.warn(
-          `Retained pre-migration state volume '${result.retainedVolumeName}' with user data. It is not deleted automatically; preserve it for administrator-reviewed recovery or retirement.`,
-        );
       }
       if (result.status === "not-owned") {
         runtime.warn(

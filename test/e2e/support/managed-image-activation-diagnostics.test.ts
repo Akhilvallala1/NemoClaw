@@ -72,48 +72,43 @@ describe("legacy managed volume fixture", () => {
       vi.spyOn(podmanRuntime, "createCurrentPodmanRuntimeProviderBundle").mockReturnValue(provider);
       const cleanup = new CleanupRegistry();
       const fixture = createLegacyManagedVolumeFixture(cleanup);
-      try {
-        expect(isValidName(fixture.sandboxName)).toBe(true);
-        expect(capture).not.toHaveBeenCalled();
-        fixture.seed();
-        const commands = () => capture.mock.calls.map((call) => call[1]);
-        expect(commands().find((args) => args[0] === "volume" && args[1] === "create")).toEqual([
-          "volume",
-          "create",
-          ...Object.entries(fixture.root.ownershipLabels).flatMap(([key, value]) => [
-            "--label",
-            `${key}=${value}`,
-          ]),
-          fixture.root.resourceIdentity,
-        ]);
-        const probe = commands().find((args) => args[0] === "create")!;
-        expect(probe.at(-1)).toContain(JSON.stringify(fixture.marker));
-        expect(probe.join(" ")).toContain(
-          runtime === "docker"
-            ? `src=${fixture.root.resourceIdentity},dst=/state,volume-nocopy`
-            : `${fixture.root.resourceIdentity}:/state:rw,nocopy`,
-        );
-        expect(await cleanup.runAll()).toEqual({
-          passed: ["remove only the volume qualification fixtures"],
-          failures: [],
-        });
-        expect(commands().filter((args) => args[0] === "volume" && args[1] === "rm")).toEqual([
-          ["volume", "rm", fixture.root.resourceIdentity],
-        ]);
-        expect(commands().at(-1)).toEqual([
-          "volume",
-          "ls",
-          "--format",
-          "{{.Name}}",
-          ...Object.entries(fixture.root.ownershipLabels).flatMap(([key, value]) => [
-            "--filter",
-            `label=${key}=${value}`,
-          ]),
-        ]);
-        expect(fs.existsSync(fixture.stateDir)).toBe(false);
-      } finally {
-        fs.rmSync(fixture.stateDir, { recursive: true, force: true });
-      }
+      expect(isValidName(fixture.sandboxName)).toBe(true);
+      expect(capture).not.toHaveBeenCalled();
+      fixture.seed();
+      const commands = () => capture.mock.calls.map((call) => call[1]);
+      expect(commands().find((args) => args[0] === "volume" && args[1] === "create")).toEqual([
+        "volume",
+        "create",
+        ...Object.entries(fixture.root.ownershipLabels).flatMap(([key, value]) => [
+          "--label",
+          `${key}=${value}`,
+        ]),
+        fixture.root.resourceIdentity,
+      ]);
+      const probe = commands().find((args) => args[0] === "create")!;
+      expect(probe.at(-1)).toContain(JSON.stringify(fixture.marker));
+      expect(probe.join(" ")).toContain(
+        runtime === "docker"
+          ? `src=${fixture.root.resourceIdentity},dst=/state,volume-nocopy`
+          : `${fixture.root.resourceIdentity}:/state:rw,nocopy`,
+      );
+      expect(await cleanup.runAll()).toEqual({
+        passed: ["remove only the volume qualification fixtures"],
+        failures: [],
+      });
+      expect(commands().filter((args) => args[0] === "volume" && args[1] === "rm")).toEqual([
+        ["volume", "rm", fixture.root.resourceIdentity],
+      ]);
+      expect(commands().at(-1)).toEqual([
+        "volume",
+        "ls",
+        "--format",
+        "{{.Name}}",
+        ...Object.entries(fixture.root.ownershipLabels).flatMap(([key, value]) => [
+          "--filter",
+          `label=${key}=${value}`,
+        ]),
+      ]);
     },
   );
 });

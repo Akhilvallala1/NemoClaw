@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { PodmanBoundContainerEngine, PodmanContainerEngine } from "../../adapters/podman";
@@ -16,7 +17,7 @@ import {
   managedStartupStateRoots,
 } from "../managed-startup/state-roots";
 import { managedImageRuntimeIdentity } from "../managed-image/agents";
-import { prepareManagedStateVolumes } from "./managed-state-volumes";
+import { preflightManagedStateVolumes, prepareManagedStateVolumes } from "./managed-state-volumes";
 import {
   managedHermesStateVolumeName,
   removeManagedAgentStateVolumes,
@@ -93,6 +94,42 @@ describe("managed Hermes state volume", () => {
       status: "removed",
     });
   });
+
+  it.each(["openclaw", "hermes"] as const)(
+    "rejects legacy %s state through the provider without changing the volume",
+    (agent) => {
+      const roots = managedStartupStateRoots({
+        agent,
+        sandboxName: "alpha",
+        agentIdentity: managedImageRuntimeIdentity(agent),
+      });
+      const root = roots[0]!;
+      const docker = dockerHarness({
+        name: root.resourceIdentity,
+        labels: { ...root.ownershipLabels },
+      });
+      const provider = createDockerRuntimeProviderBundle();
+      assert(provider.containerEngine.supported, "Docker engine is unavailable");
+      vi.spyOn(provider.containerEngine, "capture").mockImplementation((_operation, args) => {
+        expect(args[0]).toBe("volume");
+        const result = docker.runDocker(args.slice(1));
+        return {
+          status: result.status,
+          stdout: String(result.stdout ?? ""),
+          stderr: String(result.stderr ?? ""),
+        };
+      });
+      const before = JSON.stringify(docker.volume);
+      expect(() => preflightManagedStateVolumes({ roots }, { runtimeProvider: provider })).toThrow(
+        "lacks OpenShell attachment approval",
+      );
+      expect(() => prepareManagedStateVolumes({ roots }, { runtimeProvider: provider })).toThrow(
+        "lacks OpenShell attachment approval",
+      );
+      expect(JSON.stringify(docker.volume)).toBe(before);
+      expect(docker.calls.every((args) => args[0] === "inspect")).toBe(true);
+    },
+  );
 
   it.each(["", " default", "default\n"])(
     "rejects invalid workspace %j before effects",

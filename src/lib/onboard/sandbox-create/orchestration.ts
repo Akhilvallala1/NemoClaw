@@ -970,11 +970,6 @@ export function cleanupRecreatedSourceStateVolumes(
         `OpenShell confirmed that sandbox '${input.sandboxName}' is absent, but the runtime could not remove its managed state volume '${cleanup.volumeName}': ${deps.redact(cleanup.detail)}. NemoClaw preserved the sandbox registry entry so a subsequent recreation can retry the volume removal.`,
       );
     }
-    if ("retainedVolumeName" in cleanup && cleanup.retainedVolumeName) {
-      deps.warn(
-        `  Retained pre-migration state volume '${cleanup.retainedVolumeName}' with user data. It is not deleted automatically; preserve it for administrator-reviewed recovery or retirement.`,
-      );
-    }
     if (cleanup.status === "not-owned") {
       deps.warn(
         `  Left managed state volume '${cleanup.volumeName}' untouched because ${cleanup.detail}.`,

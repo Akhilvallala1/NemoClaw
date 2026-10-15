@@ -167,7 +167,7 @@ export function createManagedStateVolumeOnboardLifecycle(
   return {
     roots: input.roots,
     materializeSandboxCreatePlan(input, materialize) {
-      // The source deletion has completed before materialization. Never copy an attached volume.
+      // Recheck attachment approval after source deletion and before selecting mounts.
       scope ??= prepareManagedStateVolumes({ roots }, volumeDeps);
       const managedStateMountDriverId = scope ? mountDriverId : undefined;
       return materialize({

@@ -293,6 +293,9 @@ function verify() {
       query(binary, ["--version"]),
     );
     if (!version) deny("the installed CLI version is unknown");
+    // A gateway already on the selected release is outside the legacy cutover.
+    // The component checks below still verify the installed release artifacts.
+    if (version[0] === `openshell ${process.argv[1]}`) return;
   }
   // Native gateway list silently omits corrupt metadata. Inspect registrations
   // before querying each gateway, rather than trusting an empty gateway list.
@@ -322,7 +325,7 @@ try {
   );
   process.exitCode = 1;
 }
-'
+' "$PIN_VERSION"
 
 # invalidState: a consumed OpenShell release asset differs from the digest
 # published for the selected immutable release, or a mutable registry tag moves.

@@ -1337,28 +1337,20 @@ OpenShell readiness, the durable external-image receipt, identity-drift
 rejection before replacement, rebuild from the recorded digest, NemoClaw
 destruction, and shared image retention.
 
-The same Docker and rootless Podman jobs run a separate legacy-volume migration
-case before agent activation. It uses the production runtime provider and pinned
-copy helper, injects one failed helper process, then retries through normal volume
-preparation. It checks the selected destination's marker and metadata against the
-retained original, and removes only its disposable fixture volumes and helpers.
-This case needs no inference service, gateway, GPU, or sudo. It proves the engine
-copy and selection boundary, not OpenShell sandbox attachment or agent recovery.
-The helper uses Docker's `--mount volume-nocopy` or Podman's `--volume :nocopy`
-syntax, retaining a read-only source on both engines. Each test declares its own
-phase callbacks; helpers invoke them only when the corresponding operation starts.
-Migration and activation results remain separate, including their cleanup evidence.
+The same Docker and rootless Podman jobs run a separate legacy-volume refusal
+case before agent activation. It creates a disposable owned volume without
+OpenShell attachment approval. The production preflight must reject that volume.
+The test then reads the original marker, ownership, mode, and symlink to verify
+that they remain unchanged. Cleanup removes only the fixture volume and helpers.
+This case needs no inference service, gateway, GPU, or sudo.
 
-`managed-state-volume-migration.test.ts` connects the onboarding lifecycle to the
-production create-plan materializer for Docker and Podman. It checks the selected
-mount in the generated driver configuration and retry after a rejected plan.
-A verified copy remains selected after plan rejection; the original remains untouched.
-This is deterministic wiring evidence, not proof of attachment to a running sandbox.
-When inference setup fails before sandbox creation, as tracked in #12558, activation
-does not prove that attachment. The independent copy test does not close that gap.
+The maintainer decision for #12603 removes automatic copying of legacy volumes.
+The live copy-failure, copy-retry, destination-selection, and migrated-state
+attachment checks are therefore removed. Legacy data preservation remains covered
+by the refusal case. Fresh-volume activation, agent turns, lifecycle, security
+refusal, and cleanup remain covered by the activation case.
 
-The migration case fits the existing assertion budget by removing duplicate or
-deterministic checks from the activation helper:
+These earlier removals retain their existing evidence owners:
 
 | Removed live check | Retained evidence owner |
 | --- | --- |
@@ -1367,10 +1359,6 @@ deterministic checks from the activation helper:
 | Catalog cohort and extra-key fixture guards | Production catalog validation and positive/negative source tests in `sandbox-workload-preparation.test.ts`; live per-agent digest selection remains |
 | Engine `info` exit assertion | Keep the diagnostic artifact; real onboarding, lifecycle and engine inventory operations establish availability |
 | Constant managed-receipt `shared` field | Receipt construction in `src/lib/onboard/managed-workload/onboard-orchestration.test.ts`; live digest and provenance checks remain |
-| Incomplete-copy resolver assertion | `managed-state-volume-migration.test.ts`; live E2E retains actual helper failure, retry, distinct destination, data preservation and cleanup |
-
-No lifecycle, security-refusal, original-data preservation, or cleanup outcome is
-removed. The live budget decreases from 28 to 26 assertion points for this file.
 
 ## Device-auth health classification
 

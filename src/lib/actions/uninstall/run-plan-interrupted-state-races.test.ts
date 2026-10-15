@@ -328,38 +328,34 @@ describe("interrupted pre-gateway uninstall races (#11395)", () => {
     }
   });
 
-  it.each(["backups/workspace.tar", "state/managed-volume-migrations/retired.json"])(
-    "recovers %s from abandoned staging before cleanup",
-    async (relative) => {
-      const tmpHome = fs.mkdtempSync(
-        path.join(process.cwd(), "nemoclaw-uninstall-staging-recovery-"),
-      );
-      const port = 9123;
-      const detachedRoot = path.join(tmpHome, `.nemoclaw-uninstall-staging-${String(port)}`);
-      try {
-        const result = await runInterruptedUninstall(tmpHome, port, {
-          initialStateRoot: () => detachedRoot,
-          prepareState: (initialStateRoot) => {
-            const file = path.join(initialStateRoot, relative);
-            fs.mkdirSync(path.dirname(file), { mode: 0o700, recursive: true });
-            fs.writeFileSync(file, "preserved\n");
-            fs.mkdirSync(path.join(initialStateRoot, "state"), { mode: 0o700, recursive: true });
-            fs.writeFileSync(path.join(initialStateRoot, "state", "obsolete"), "remove\n");
-          },
-        });
+  it("recovers preserved data from abandoned staging before cleanup", async () => {
+    const tmpHome = fs.mkdtempSync(
+      path.join(process.cwd(), "nemoclaw-uninstall-staging-recovery-"),
+    );
+    const port = 9123;
+    const detachedRoot = path.join(tmpHome, `.nemoclaw-uninstall-staging-${String(port)}`);
+    try {
+      const result = await runInterruptedUninstall(tmpHome, port, {
+        initialStateRoot: () => detachedRoot,
+        prepareState: (initialStateRoot) => {
+          const backupFile = path.join(initialStateRoot, "backups", "workspace.tar");
+          fs.mkdirSync(path.dirname(backupFile), { mode: 0o700, recursive: true });
+          fs.writeFileSync(backupFile, "preserved\n");
+        },
+      });
 
-        expect(result.outcome.exitCode, result.errors.join("\n")).toBe(0);
-        expect(fs.readFileSync(path.join(result.stateRoot, relative), "utf8")).toBe("preserved\n");
-        expect(fs.existsSync(path.join(result.stateRoot, "state", "obsolete"))).toBe(false);
-        expect(result.logs.join("\n")).toContain(
-          `Recovered preserved state from an interrupted uninstall: ${path.dirname(relative)}`,
-        );
-        expect(fs.existsSync(detachedRoot)).toBe(false);
-      } finally {
-        fs.rmSync(tmpHome, { force: true, recursive: true });
-      }
-    },
-  );
+      expect(result.outcome.exitCode, result.errors.join("\n")).toBe(0);
+      expect(fs.readFileSync(path.join(result.stateRoot, "backups", "workspace.tar"), "utf8")).toBe(
+        "preserved\n",
+      );
+      expect(result.logs.join("\n")).toContain(
+        "Recovered preserved state from an interrupted uninstall: backups",
+      );
+      expect(fs.existsSync(detachedRoot)).toBe(false);
+    } finally {
+      fs.rmSync(tmpHome, { force: true, recursive: true });
+    }
+  });
 
   it("does not inspect a replacement through the abandoned staging pathname", async () => {
     const tmpHome = fs.mkdtempSync(path.join(process.cwd(), "nemoclaw-uninstall-recovery-swap-"));

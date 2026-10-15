@@ -2169,7 +2169,7 @@ If `destroy` warns that it could not identify or stop a listener for the deleted
 4. Do not stop a previously reported process ID if its command line no longer matches.
 
 <Warning>
-Download any files you need before destroying the sandbox; do not rely on retained OpenShell storage as a backup. NemoClaw removes the selected managed OpenClaw or Hermes state volume after confirmed deletion, but leaves an original retained during migration unchanged. Refer to [Retained Pre-Migration Volumes](../manage-sandboxes/state-and-backups/create-and-restore-snapshots#retained-pre-migration-volumes) for the remaining user-data boundary. Because OpenShell can retain the same-name `/sandbox` volume, Deep Agents Code destroy clears that complete persistence root before deletion and stops with the registry entry intact if cleanup cannot be confirmed.
+Download any files you need before destroying the sandbox; do not rely on retained OpenShell storage as a backup. NemoClaw removes managed OpenClaw and Hermes state volumes after confirmed deletion. Because OpenShell can retain the same-name `/sandbox` volume, Deep Agents Code destroy clears that complete persistence root before deletion and stops with the registry entry intact if cleanup cannot be confirmed.
 If you want to upgrade the sandbox while preserving state, use `$$nemoclaw <name> rebuild` instead.
 </Warning>
 
@@ -3952,12 +3952,10 @@ This differs from a managed `NEMOCLAW_OPENSHELL_GATEWAY_STATE_DIR` override, whi
 
 <AgentOnly variant="hermes">
   <Warning>
-    For a Docker Hermes sandbox that uses the NemoClaw-managed image, uninstall removes its selected
-    managed state volume even without `--destroy-user-data`. Back up required Hermes state first. NemoClaw
+    For a Docker Hermes sandbox that uses the NemoClaw-managed image, uninstall removes its managed
+    state volume even without `--destroy-user-data`. Back up required Hermes state first. NemoClaw
     removes only a volume with exact ownership labels; inspection or removal failure exits nonzero
     and preserves registry state for retry.
-    An original retained during migration is not deleted, including with `--destroy-user-data`.
-    Refer to [Retained Pre-Migration Volumes](../manage-sandboxes/state-and-backups/create-and-restore-snapshots#retained-pre-migration-volumes).
   </Warning>
 </AgentOnly>
 

@@ -177,7 +177,7 @@ NVIDIA tracks shared-file tooling (shared mount, `workspaces list` command) in [
 ## Persistence Behavior
 
 Workspace files live in the sandbox's persistent state volume, not in the container image.
-They survive normal container restarts. Destroy removes the selected managed state volume; an original retained during migration is separate and is not deleted automatically.
+They survive normal container restarts, but NemoClaw deletes them when you destroy the sandbox.
 
 OpenShell-managed OpenClaw uses its home, `/sandbox`, for user configuration in `~/.config` and `~/.gitconfig`, and application data in `~/.local/share` and `~/.local/state`.
 npm `--global` and Python `--user` installations use `~/.local`, with commands available through `~/.local/bin` on the agent's `PATH`.
@@ -200,9 +200,7 @@ It does not continue with a partial backup.
 
 ### Deleted During Sandbox Destroy
 
-Running `$$nemoclaw <name> destroy` deletes the sandbox and its selected managed state volume.
-An original retained during migration remains unchanged and can still contain user data.
-Refer to [Retained Pre-Migration Volumes](create-and-restore-snapshots#retained-pre-migration-volumes) for the retention and recovery boundary.
+Running `$$nemoclaw <name> destroy` deletes the sandbox and its persistent state volume.
 
 <Warning>
 Back up your workspace files before running `$$nemoclaw <name> destroy`.
@@ -254,8 +252,7 @@ Named boards, attachments, worker logs, and scratch workspaces under `.hermes/ka
 Rebuild restore treats `.hermes/profiles/` as native agent-owned state and preserves user-created named profiles.
 Startup consumes an older reserved `.hermes/profiles/dashboard-home/` as a one-time migration source, moves safe contents into the shared native home, and removes the retired profile.
 
-Running `$$nemoclaw <name> destroy` deletes the sandbox and its selected managed state volume.
-An original retained during migration is not deleted automatically; refer to [Retained Pre-Migration Volumes](create-and-restore-snapshots#retained-pre-migration-volumes).
+Running `$$nemoclaw <name> destroy` deletes the sandbox and its persistent state volume.
 Back up important state before destroying a Hermes sandbox.
 
 ## Editing State

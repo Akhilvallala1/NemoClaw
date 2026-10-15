@@ -2,52 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import fs from "node:fs";
-import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PodmanBoundContainerEngine } from "../../adapters/podman";
 import { createHermesStateVolumeDockerHarness } from "../../onboard/__test-helpers__/hermes-state-volume";
 import { createPodmanRuntimeProviderBundle } from "../../onboard/runtime-provider/podman";
 import { createRuntimeProviderBundleRegistry } from "../../onboard/runtime-provider/registry";
 import { removeManagedStateVolumesForUninstall } from "./managed-state-uninstall-cleanup";
-import { prepareManagedStateVolumes } from "../../onboard/managed-workload/managed-state-volumes";
-import { cleanupMigrationHarness } from "../../onboard/managed-workload/managed-state-volume-migration.test-fixture";
-import * as sandboxProviderCleanup from "../../onboard/sandbox-provider-cleanup";
 import { runManagedHermesVolumeUninstall } from "../../../../test/support/uninstall-state-volume";
 
-afterEach(cleanupMigrationHarness);
-
 describe("managed agent state volume uninstall", () => {
-  it.each(["removed", "absent"] as const)(
-    "reports the retained migration source when the selected volume is %s",
-    (status) => {
-      const retainedVolumeName = "nemoclaw-hermes-state-v1-hermes";
-      const remove = vi
-        .spyOn(sandboxProviderCleanup, "removeManagedAgentStateVolumes")
-        .mockReturnValue([{ status, retainedVolumeName }]);
-      const warn = vi.fn();
-      try {
-        expect(
-          removeManagedStateVolumesForUninstall(
-            [
-              {
-                agentName: "hermes",
-                runtimeProviderId: "docker",
-                sandboxName: "hermes",
-                workloadKind: "managed-image",
-              },
-            ],
-            { env: {}, error: vi.fn(), log: vi.fn(), warn, runDocker: vi.fn() },
-          ),
-        ).toBe(true);
-        expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
-          `Retained pre-migration state volume '${retainedVolumeName}'`,
-        );
-      } finally {
-        remove.mockRestore();
-      }
-    },
-  );
-
   it("dispatches a Podman-owned volume through provider cleanup authority", () => {
     const volume = createHermesStateVolumeDockerHarness();
     volume.runDocker([
@@ -147,47 +110,6 @@ describe("managed agent state volume uninstall", () => {
       } finally {
         harness.cleanup();
       }
-    },
-  );
-
-  it.each([
-    [false, "default"],
-    [true, "selected-workspace"],
-  ] as const)(
-    "uninstall retains originals without restoring them on fresh onboarding (destroy-user-data=%s, workspace=%s)",
-    async (destroyUserData, workspace) => {
-      const harness = await runManagedHermesVolumeUninstall(
-        "migrated",
-        destroyUserData,
-        "absent",
-        "openclaw",
-        workspace,
-      );
-      const h = harness.migration!;
-      expect(harness.result.exitCode, harness.errors.join("\n")).toBe(0);
-      expect(fs.readdirSync(path.join(harness.stateDir, "state"))).toEqual([
-        "managed-volume-migrations",
-      ]);
-      expect([...h.volumes.keys()].sort()).toEqual([h.source.Name, "foreign"].sort());
-      const original = JSON.stringify(h.source);
-      const callsBefore = h.calls.length;
-      const fresh = prepareManagedStateVolumes(h.input, {
-        ...h.deps,
-        workspace,
-        migrationStateDir: path.join(harness.stateDir, "state"),
-      })!;
-      fresh.commit();
-      expect(fresh.mounts[0]!.source).not.toBe(h.source.Name);
-      expect(h.volumes.get(fresh.mounts[0]!.source)!.bytes).toBe("");
-      expect(
-        h.calls.slice(callsBefore).some((args) => args[0] === "create" || args[0] === "start"),
-      ).toBe(false);
-      expect(JSON.stringify(h.volumes.get(h.source.Name))).toBe(original);
-      expect(h.volumes.get("foreign")).toEqual({
-        ...h.source,
-        Name: "foreign",
-        Labels: { owner: "other" },
-      });
     },
   );
 

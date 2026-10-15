@@ -56,28 +56,19 @@ Backups created by older NemoClaw versions from a selective per-agent path inven
 
 ## Destroy
 
-`$$nemoclaw <name> destroy` removes the selected NemoClaw-owned managed state volume and, for Deep Agents Code, clears the complete retained `/sandbox` root before asking OpenShell to delete the sandbox. Download files you need before destroy. To replace software while preserving the complete native state, use `$$nemoclaw <name> rebuild`.
+`$$nemoclaw <name> destroy` removes NemoClaw-owned managed state volumes and, for Deep Agents Code, clears the complete retained `/sandbox` root before asking OpenShell to delete the sandbox. Download files you need before destroy. To replace software while preserving the complete native state, use `$$nemoclaw <name> rebuild`.
 
-## Retained Pre-Migration Volumes
+<AgentOnly variant="openclaw,hermes">
 
-NemoClaw migrates an eligible older managed OpenClaw or Hermes state volume only when both OpenShell attachment-approval labels are absent.
-It verifies ownership and source detachment, copies the data into a separately labeled volume, and leaves the original unchanged.
-Partial, conflicting, or workspace-mismatched approval labels stop onboarding without changing retained data and require operator reconciliation.
-The replacement uses the migrated copy.
-After migration, writes to that copy do not update the original, so the original is not a current backup.
+## Legacy Managed State Volumes
 
-Cleanup removes only the selected migrated copy after verifying ownership.
-Destroy, Hermes uninstall, and recreation cleanup report the retained original's volume name when that migration state is available.
-NemoClaw does not automatically delete, expire, or restore the original.
-A successful cleanup does not establish that all historical user data has been erased.
+Managed OpenClaw and Hermes state volumes require OpenShell attachment approval for the selected workspace before onboarding or recreation.
+Missing, partial, conflicting, or workspace-mismatched approval labels stop the operation before sandbox deletion or changes to the existing volume.
+NemoClaw preserves the volume without copying its data or changing its labels.
+Keep the existing sandbox and volume available until an approved migration path is available.
+Back up required state before using `destroy` or uninstall, which retain their documented data-removal behavior.
 
-<Warning>
-The retained original can contain user files and sensitive agent state and continues to consume storage.
-Keep the reported volume name and restrict access through the owning container engine.
-Before any manual recovery or retirement, have the host administrator verify the exact volume's identity, ownership, attachments, and backup requirements on that same engine.
-Retirement requires a separate data-deletion decision; do not delete a volume solely because its name appeared in an earlier warning.
-NemoClaw provides no automatic retirement or restore command for these originals.
-</Warning>
+</AgentOnly>
 
 ## Related Topics
 

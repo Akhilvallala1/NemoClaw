@@ -144,6 +144,18 @@ describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
     expect(result.stdout).toContain(`already installed: ${REQUIRED_OPENSHELL_VERSION}`);
   });
 
+  it("preserves registered sandboxes when the selected OpenShell release is already installed", () => {
+    const result = runCommandWithInstalledVersion(
+      REQUIRED_OPENSHELL_VERSION,
+      {},
+      { legacyGateway: true },
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(`already installed: ${REQUIRED_OPENSHELL_VERSION}`);
+    expect(result.downloads).toBe("");
+    expect(result.retainedFilesUnchanged).toBe(true);
+  });
+
   it("accepts MCP L7 support from the installed gateway sidecar", () => {
     const result = runCommandWithInstalledVersion(
       REQUIRED_OPENSHELL_VERSION,

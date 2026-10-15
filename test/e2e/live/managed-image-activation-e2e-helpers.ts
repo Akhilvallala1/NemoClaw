@@ -50,19 +50,14 @@ import type { TestProgress } from "../fixtures/progress.ts";
 import { createDockerRuntimeProviderBundle } from "../../../src/lib/onboard/runtime-provider/docker.ts";
 import { createCurrentPodmanRuntimeProviderBundle } from "../../../src/lib/onboard/runtime-provider/podman.ts";
 import { managedStartupStateRoots } from "../../../src/lib/onboard/managed-startup/state-roots.ts";
-import {
-  prepareManagedStateVolumes,
-  preflightManagedStateVolumes,
-} from "../../../src/lib/onboard/managed-workload/managed-state-volumes.ts";
-import { type MigrationEngine } from "../../../src/lib/onboard/managed-workload/managed-state-volume-migration.ts";
-import {
-  MANAGED_STATE_COPY_IMAGE,
-  managedStateVolumeMountArgs,
-} from "../../../src/lib/onboard/managed-workload/managed-state-volume-copy.ts";
+import { preflightManagedStateVolumes } from "../../../src/lib/onboard/managed-workload/managed-state-volumes.ts";
+
+const STATE_PROBE_IMAGE =
+  "node:24.18.1-trixie-slim@sha256:ac39e4b5fcb2b1b34b20364fd58b2e898f3bb80731ee6f62a7536f9df3d6aadc";
 
 const API_KEY = "nemoclaw-managed-activation-e2e-key";
 
-/** Shared seed for the copy oracle and the production onboarding consumer. */
+/** Disposable legacy state for the attachment-refusal check. */
 export function createLegacyManagedVolumeFixture(cleanup: CleanupRegistry) {
   const sandboxName = `mv-${randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const runtimeProvider =
@@ -77,13 +72,12 @@ export function createLegacyManagedVolumeFixture(cleanup: CleanupRegistry) {
   const volumes = new Set<string>();
   const helpers = new Set<string>();
   let unresolvedHelperCreation = false;
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-volume-e2e-"));
   const root = managedStartupStateRoots({
     agent: "openclaw",
     sandboxName,
     agentIdentity: { uid: 1000, gid: 1000 },
   })[0]!;
-  const run: MigrationEngine = (args, timeout) => {
+  const run = (args: readonly string[], timeout?: number) => {
     const previouslyUnresolved = unresolvedHelperCreation;
     if (args[0] === "create") unresolvedHelperCreation = true;
     if (args[0] === "volume" && args[1] === "create") volumes.add(args.at(-1)!);
@@ -121,9 +115,7 @@ export function createLegacyManagedVolumeFixture(cleanup: CleanupRegistry) {
         `label=${key}=${value}`,
       ]),
     ]);
-    // Production destruction owns its migrated copy; do not delete an untracked destination here.
     expect(remaining).toBe("");
-    fs.rmSync(stateDir, { recursive: true });
   });
   const marker = randomUUID();
   const probe = (volume: string, program: string, readonly = true) => {
@@ -136,10 +128,15 @@ export function createLegacyManagedVolumeFixture(cleanup: CleanupRegistry) {
       "--network",
       "none",
       "--read-only",
-      ...managedStateVolumeMountArgs(runtimeProvider.identity.id, volume, "/state", readonly),
+      ...(runtimeProvider.identity.id === "podman"
+        ? ["--volume", `${volume}:/state:${readonly ? "ro" : "rw"},nocopy`]
+        : [
+            "--mount",
+            `type=volume,src=${volume},dst=/state,volume-nocopy${readonly ? ",readonly" : ""}`,
+          ]),
       "--entrypoint",
       "/usr/local/bin/node",
-      MANAGED_STATE_COPY_IMAGE,
+      STATE_PROBE_IMAGE,
       "-e",
       program,
     ]);
@@ -150,7 +147,7 @@ export function createLegacyManagedVolumeFixture(cleanup: CleanupRegistry) {
     }
   };
   const seed = () => {
-    command(["pull", "--quiet", MANAGED_STATE_COPY_IMAGE]);
+    command(["pull", "--quiet", STATE_PROBE_IMAGE]);
     command([
       "volume",
       "create",
@@ -167,44 +164,29 @@ export function createLegacyManagedVolumeFixture(cleanup: CleanupRegistry) {
     );
   };
   const readback = `const fs=require("node:fs"); const s=fs.lstatSync("/state/marker"); process.stdout.write(JSON.stringify([fs.readFileSync("/state/marker","utf8"),s.uid,s.gid,s.mode,fs.readlinkSync("/state/link")]));`;
-  return { sandboxName, root, marker, seed, probe, readback, runtimeProvider, stateDir, run };
+  return { sandboxName, root, marker, seed, probe, readback, runtimeProvider };
 }
 
 /** Real engine/provider evidence; deterministic identity and failure matrices stay in unit tests. */
-export async function qualifyManagedVolumeMigration(
+export async function qualifyManagedVolumePreservation(
   { artifacts, cleanup }: Pick<RuntimeFixtures, "artifacts" | "cleanup">,
-  phases: { copy: () => void; evidence: () => void },
+  phases: { refusal: () => void; evidence: () => void },
 ): Promise<void> {
-  const { root, seed, probe, readback, runtimeProvider, stateDir, run } =
+  const { root, seed, probe, readback, runtimeProvider } =
     createLegacyManagedVolumeFixture(cleanup);
   seed();
-  const input = { roots: [root] };
-  const deps = { runtimeProvider, migrationStateDir: stateDir, runMigrationEngine: run };
   const before = probe(root.resourceIdentity, readback);
-  phases.copy();
-  // The process really exits nonzero; no mocked success or synthetic filesystem is involved.
-  const failCopy: MigrationEngine = (args, timeout) =>
-    run(args[0] === "create" ? [...args.slice(0, -1), "process.exit(42)"] : args, timeout);
-  expect(() =>
-    prepareManagedStateVolumes(input, { ...deps, runMigrationEngine: failCopy }),
-  ).toThrow("copy did not finish");
-  preflightManagedStateVolumes(input, deps);
-  const scope = prepareManagedStateVolumes(input, deps)!;
-  scope.commit();
-  const selected = scope.mounts[0]!.source;
-  // Destination derivation and selection are covered by managed-state-volume-migration.test.ts.
-  expect([probe(root.resourceIdentity, readback), probe(selected, readback)]).toEqual([
-    before,
-    before,
-  ]);
+  phases.refusal();
+  expect(() => preflightManagedStateVolumes({ roots: [root] }, { runtimeProvider })).toThrow(
+    "lacks OpenShell attachment approval",
+  );
+  expect(probe(root.resourceIdentity, readback)).toBe(before);
   phases.evidence();
-  await artifacts.writeJson("managed-volume-migration.json", {
+  await artifacts.writeJson("legacy-managed-volume-preservation.json", {
     provider: runtimeProvider.identity.id,
     source: root.resourceIdentity,
-    selected,
-    failedCopyRejected: true,
+    attachmentRejected: true,
     contentAndMetadataPreserved: true,
-    originalRetained: true,
   });
 }
 const MODEL = "nemoclaw-managed-activation-model";
@@ -982,10 +964,7 @@ export async function qualifyAgent(
   phases: ManagedActivationPhases,
 ): Promise<void> {
   const { artifacts, cleanup, host, lifecycle, sandbox } = fixtures;
-  // Register first so retained-source cleanup runs after both production sandbox cleanup paths.
-  const legacy = agent === "openclaw" ? createLegacyManagedVolumeFixture(cleanup) : undefined;
-  // A fresh identity avoids reusing a retired migration journal from an earlier qualification.
-  const sandboxName = legacy?.sandboxName ?? SANDBOX_NAMES[agent];
+  const sandboxName = SANDBOX_NAMES[agent];
   const env = commandEnv(guard, catalogPath, endpointUrl);
   cleanup.trackDisposable(`delete OpenShell sandbox ${sandboxName}`, () =>
     sandbox.cleanupSandbox(sandboxName, { env, timeoutMs: 60_000 }),
@@ -994,7 +973,6 @@ export async function qualifyAgent(
   await preclean(host, lifecycle, sandbox, sandboxName, env);
 
   phases.agents[agent].onboard();
-  legacy?.seed();
   const onboard = await host.nemoclaw(
     managedActivationOnboardArgs(catalogPath, agent, sandboxName),
     {
@@ -1009,23 +987,6 @@ export async function qualifyAgent(
     await collectOnboardFailureRuntimeDiagnostics(artifacts, host, agent, sandboxName, env);
   }
   expect(onboard.exitCode, resultText(onboard)).toBe(0);
-  if (legacy) {
-    const retained = await sandbox.execShell(
-      sandboxName,
-      trustedSandboxShellScript(`cat ${shellQuote(`${legacy.root.mountTarget}/marker`)}`),
-      { artifactName: "openclaw-read-migrated-state-in-sandbox", env, timeoutMs: 30_000 },
-    );
-    expect(
-      retained.exitCode === 0 && retained.stdout.trim() === legacy.marker,
-      resultText(retained),
-    ).toBe(true);
-    await artifacts.writeJson("managed-volume-attachment.json", {
-      source: legacy.root.resourceIdentity,
-      sandboxName,
-      mountTarget: legacy.root.mountTarget,
-      markerReadInsideSandbox: true,
-    });
-  }
   if (agent === "openclaw") {
     await approveOpenClawAdminScope(host, sandbox, sandboxName, env, [API_KEY]);
   }

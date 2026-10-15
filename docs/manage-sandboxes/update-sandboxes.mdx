@@ -108,9 +108,12 @@ This mandatory installation applies to source and managed install modes and cann
 After the installer replaces the packaged gateway, it waits up to 30 seconds for the gateway port to bind before sandbox recovery begins.
 If the gateway does not bind, the installer stops and preserves the backups.
 If the forced installation fails, the installer does not stage a gateway service or start sandbox recovery, preserves the backups, and reports how to retry.
-When an owned managed state volume lacks the current OpenShell attachment labels, recovery copies its data into a separate labeled volume before attaching the replacement sandbox.
-NemoClaw keeps the original volume and records the copy in a private migration journal.
-If it cannot verify the source, destination, or journal, recovery stops and keeps the original volume for inspection.
+<AgentOnly variant="openclaw,hermes">
+
+If an existing managed state volume lacks OpenShell attachment approval for the selected workspace, recreation stops before sandbox deletion or changes to that volume.
+Keep the existing sandbox and volume available; refer to [Legacy Managed State Volumes](../state-and-backups/create-and-restore-snapshots#legacy-managed-state-volumes).
+
+</AgentOnly>
 
 ## Resume a Manually Prepared Upgrade
 

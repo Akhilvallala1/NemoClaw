@@ -4,31 +4,31 @@
 import { test } from "../fixtures/e2e-test.ts";
 import {
   qualifyManagedImageActivation,
-  qualifyManagedVolumeMigration,
+  qualifyManagedVolumePreservation,
 } from "./managed-image-activation-e2e-helpers.ts";
 
 const TIMEOUT_MS = 75 * 60_000;
 
 test(
-  "legacy managed state survives real engine copy failure and migration (#12603)",
+  "legacy managed state remains unchanged when attachment approval is missing (#12603)",
   {
     timeout: 10 * 60_000,
     meta: {
       e2ePhases: [
         "create owned legacy state on the selected container engine",
-        "reject a failed real helper then migrate and select retained state",
-        "record real-engine migration evidence",
+        "reject legacy state without changing its content or metadata",
+        "record legacy state preservation evidence",
       ],
     },
   },
   async ({ artifacts, cleanup, progress }) => {
     progress.phase("create owned legacy state on the selected container engine");
-    await qualifyManagedVolumeMigration(
+    await qualifyManagedVolumePreservation(
       { artifacts, cleanup },
       {
-        copy: () =>
-          progress.phase("reject a failed real helper then migrate and select retained state"),
-        evidence: () => progress.phase("record real-engine migration evidence"),
+        refusal: () =>
+          progress.phase("reject legacy state without changing its content or metadata"),
+        evidence: () => progress.phase("record legacy state preservation evidence"),
       },
     );
   },
@@ -59,7 +59,7 @@ test(
     const containerEngine = process.env.NEMOCLAW_GATEWAY_RUNTIME === "podman" ? "Podman" : "Docker";
     await artifacts.target.declare({
       id: "managed-image-activation",
-      boundary: `exact candidate CLI and published all-agent managed-image digests through real ${containerEngine}, OpenShell, legacy OpenClaw state migration and running-sandbox attachment, agent turns, gateway restart readiness, and exact cleanup; the selected runtime also adopts and retains the public OpenClaw and Hermes digests as external images, rejects identity drift before replacement, and rebuilds OpenClaw from its recorded digest`,
+      boundary: `exact candidate CLI and published all-agent managed-image digests through real ${containerEngine}, OpenShell, agent turns, gateway restart readiness, and exact cleanup; the selected runtime also adopts and retains the public OpenClaw and Hermes digests as external images, rejects identity drift before replacement, and rebuilds OpenClaw from its recorded digest`,
       agents: ["openclaw", "hermes", "langchain-deepagents-code"],
       syntheticBoundary:
         "Only the OpenAI-compatible inference response is synthetic; runtime construction and agent execution are real.",

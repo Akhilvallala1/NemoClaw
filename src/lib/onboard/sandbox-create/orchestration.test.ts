@@ -16,7 +16,6 @@ import {
   assertApfCreateIntent,
   activateManagedStartupCorporateCaTrustAfterSandboxCreate,
   completeHermesPortableSandboxRegistration,
-  cleanupRecreatedSourceStateVolumes,
   finalizeRecreatedSourceStateVolumes,
   createProviderEffectBoundary,
   finalizeCreatedSandboxBeforeHermesCredentialReconciliation,
@@ -105,34 +104,6 @@ describe("recreated managed state retention reporting", () => {
       }
       expect(error).toEqual(expectedError);
       expect(events).toEqual(expectedEvents);
-    },
-  );
-  it.each(["removed", "absent"] as const)(
-    "reports the original migration volume when the selected volume is %s",
-    (status) => {
-      const retainedVolumeName = "nemoclaw-hermes-state-v1-alpha";
-      const warn = vi.fn();
-      cleanupRecreatedSourceStateVolumes(
-        {
-          sandboxName: "alpha",
-          targetStateRoots: [],
-          sourceEntry: {
-            name: "alpha",
-            agent: "hermes",
-            openshellDriver: "docker",
-          } as SandboxEntry,
-        },
-        {
-          normalizeRuntimeProviderIdentity: (driver) => driver ?? "docker",
-          removeManagedAgentStateVolumes: () => [{ status, retainedVolumeName }],
-          note: vi.fn(),
-          warn,
-          redact: (message) => message,
-        },
-      );
-      expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
-        `Retained pre-migration state volume '${retainedVolumeName}'`,
-      );
     },
   );
 });

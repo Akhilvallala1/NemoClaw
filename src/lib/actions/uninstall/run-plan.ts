@@ -3359,11 +3359,7 @@ async function executeOpenShellResourceCleanup(
   if (
     !portableRuntimeCleanup &&
     !externallySupervised &&
-    !removeManagedStateVolumesForUninstall(
-      managedAgentStateVolumes,
-      runtime,
-      path.join(paths.nemoclawStateDir, "state"),
-    )
+    !removeManagedStateVolumesForUninstall(managedAgentStateVolumes, runtime)
   ) {
     return false;
   }
@@ -4027,10 +4023,6 @@ function stateRootPreservationEntries(
   return [
     ...preserveUnderStateDir,
     ...portableStateEntries,
-    // Retained originals must never become eligible for migration again after uninstall.
-    ...(portableStateEntries.includes("state")
-      ? []
-      : [path.join("state", "managed-volume-migrations")]),
     ...failedManagedLlamaStateDirs.flatMap((stateDir) => {
       const relative = path.relative(paths.nemoclawStateDir, stateDir);
       return relative && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)

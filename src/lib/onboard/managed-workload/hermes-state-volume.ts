@@ -131,8 +131,6 @@ function genericDeps(
     ...(deps.runDocker && !runtimeProvider ? { runContainerEngine: deps.runDocker } : {}),
     ...(runtimeProvider ? { runtimeProvider } : {}),
     ...(deps.registerExitCleanup ? { registerExitCleanup: deps.registerExitCleanup } : {}),
-    ...(deps.migrationStateDir ? { migrationStateDir: deps.migrationStateDir } : {}),
-    ...(deps.runMigrationEngine ? { runMigrationEngine: deps.runMigrationEngine } : {}),
   };
 }
 
@@ -166,12 +164,7 @@ export function removeManagedHermesStateVolume(
   context: ManagedHermesStateVolumeContext,
   deps: Pick<
     ManagedHermesStateVolumeDeps,
-    | "runDocker"
-    | "workspace"
-    | "runtimeProvider"
-    | "runtimeProviders"
-    | "migrationStateDir"
-    | "runMigrationEngine"
+    "runDocker" | "workspace" | "runtimeProvider" | "runtimeProviders"
   > = {},
 ): ManagedHermesStateVolumeCleanupResult {
   if (!requiresManagedHermesStateVolume(context, deps.runtimeProviders, deps.runtimeProvider)) {
@@ -191,12 +184,7 @@ export function removeManagedAgentStateVolumes(
   },
   deps: Pick<
     ManagedHermesStateVolumeDeps,
-    | "runDocker"
-    | "workspace"
-    | "runtimeProvider"
-    | "runtimeProviders"
-    | "migrationStateDir"
-    | "runMigrationEngine"
+    "runDocker" | "workspace" | "runtimeProvider" | "runtimeProviders"
   > = {},
 ): readonly ManagedAgentStateVolumeCleanupResult[] {
   const runtimeProvider = selectedRuntimeProvider(

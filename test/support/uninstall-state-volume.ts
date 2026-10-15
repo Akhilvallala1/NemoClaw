@@ -8,8 +8,6 @@ import { vi } from "vitest";
 import { createDockerRuntimeProviderBundle } from "../../src/lib/onboard/runtime-provider/docker";
 import { createRuntimeProviderBundleRegistry } from "../../src/lib/onboard/runtime-provider/registry";
 import { managedStartupStateRoots } from "../../src/lib/onboard/managed-startup/state-roots";
-import { prepareManagedStateVolumes } from "../../src/lib/onboard/managed-workload/managed-state-volumes";
-import { createMigrationHarness } from "../../src/lib/onboard/managed-workload/managed-state-volume-migration.test-fixture";
 import { withSuccessfulPreUninstallBackup } from "./uninstall-managed-gateway-test-support";
 import {
   type RunResult,
@@ -42,31 +40,14 @@ async function runUninstallPlan(options: UninstallRunOptions, deps: UninstallRun
 }
 
 export async function runManagedHermesVolumeUninstall(
-  mode: "foreign" | "owned" | "remove-fails" | "remove-fails-once" | "migrated",
+  mode: "foreign" | "owned" | "remove-fails" | "remove-fails-once",
   destroyUserData: boolean,
   containerMode: "absent" | "foreign" | "owned" = "absent",
   agent: "hermes" | "openclaw" = "hermes",
   workspace = "default",
 ) {
-  const migration = mode === "migrated" ? createMigrationHarness(agent, "hermes") : undefined;
-  const home =
-    migration?.stateDir ??
-    fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-uninstall-hermes-volume-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-uninstall-hermes-volume-"));
   const stateDir = path.join(home, ".nemoclaw");
-  if (migration) {
-    vi.stubEnv("OPENSHELL_WORKSPACE", workspace);
-    prepareManagedStateVolumes(migration.input, {
-      ...migration.deps,
-      migrationStateDir: path.join(stateDir, "state"),
-    })!.commit();
-    migration.volumes.set("foreign", {
-      ...migration.source,
-      Name: "foreign",
-      Labels: { owner: "other" },
-    });
-    fs.writeFileSync(path.join(stateDir, "state", "obsolete"), "remove\n");
-    vi.stubEnv("OPENSHELL_WORKSPACE", "unrelated-parent-workspace");
-  }
   const registryFile = path.join(stateDir, "sandboxes.json");
   const root = managedStartupStateRoots({
     agent,
@@ -121,14 +102,6 @@ export async function runManagedHermesVolumeUninstall(
   const runDocker = vi.fn((args: string[]) => {
     dockerCalls.push(args);
     events.push(`docker ${args.join(" ")}`);
-    if (migration && args[0] === "volume") {
-      const result = migration.run(args);
-      return {
-        status: result.status ?? 1,
-        stdout: String(result.stdout ?? ""),
-        stderr: String(result.stderr ?? ""),
-      };
-    }
     switch (args.join(" ")) {
       case "ps -a --format {{.ID}} {{.Image}} {{.Names}}":
         switch (containerPresent ? containerMode : "absent") {
@@ -218,7 +191,6 @@ export async function runManagedHermesVolumeUninstall(
 
   return {
     cleanup: () => fs.rmSync(home, { force: true, recursive: true }),
-    migration,
     stateDir,
     containerId,
     containerPresent: () => containerPresent,
