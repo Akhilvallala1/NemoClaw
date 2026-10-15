@@ -6,6 +6,23 @@ use nemoclaw_sdk::{
     config::{Document, Gateway, schema::input_schema},
 };
 use serde_json::{Value, json};
+
+/// The credential source a proxied registration's target records. Generated
+/// graphs pass the proxy's readiness ref instead, whose read observes the same
+/// source during apply.
+fn proxy_credential(
+    document: &nemoclaw_sdk::config::Document,
+    generations: &nemoclaw_sdk::compile::Generations,
+) -> String {
+    nemoclaw_sdk::compile::targets(document, generations)
+        .unwrap()
+        .into_iter()
+        .find(|target| target.kind == "inference")
+        .unwrap()
+        .values["credential_source"]
+        .clone()
+}
+
 fn input() -> Value {
     let mut value: Value =
         serde_saphyr::from_str(include_str!("fixtures/config/managed-ollama.yaml")).unwrap();
@@ -56,15 +73,8 @@ fn explicit_proxy_engine_works_with_an_external_gateway() {
     for target in proxy_targets {
         assert_eq!(target.values["engine"], "unix:///tmp/proxy-engine.sock");
     }
-    let graph = compile(&document, &generations, "0.1.0").unwrap();
     let credential: Value =
-        serde_json::from_str(
-            provider_scope::resource(&graph["resource"]["openshell_inference"], "local")["server"]
-                ["credential_source"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
+        serde_json::from_str(&proxy_credential(&document, &generations)).unwrap();
     assert_eq!(
         credential["storage"]["Engine"],
         "unix:///tmp/proxy-engine.sock"
@@ -262,10 +272,15 @@ fn external_ollama_compiles_only_the_proxy_and_its_model_check() {
             .unwrap()
             .contains(&json!("data.ollama_model.ollama-auth"))
     );
-    // The proxy's generated key authenticates the registration.
-    assert_ne!(
-        provider_scope::resource(&resources["openshell_inference"], "local")["server"]["credential_source"],
-        ""
+    // The registration takes the server ref the proxy's readiness read
+    // exports, for the endpoint sandboxes use.
+    assert_eq!(
+        provider_scope::resource(&resources["openshell_inference"], "local")["server"],
+        "${data.ollama_proxy_readiness.ollama_proxy_ollama-auth.ref}"
+    );
+    assert_eq!(
+        graph["data"]["ollama_proxy_readiness"]["ollama_proxy_ollama-auth"]["sandbox_endpoint"],
+        "http://172.20.0.1:11435/v1"
     );
     assert_eq!(
         provider_scope::resource(&resources["openshell_inference"], "local")["depends_on"],
@@ -275,13 +290,7 @@ fn external_ollama_compiles_only_the_proxy_and_its_model_check() {
             "data.ollama_proxy_readiness.ollama_proxy_ollama-auth"
         ])
     );
-    assert!(
-        !provider_scope::resource(&resources["openshell_inference"], "local")["server"]
-            ["credential_source"]
-            .as_str()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(!proxy_credential(&doc, &gens).is_empty());
 }
 #[test]
 fn proxy_rejects_unpinned_models_nonlocal_daemons_and_ambiguous_ownership() {
@@ -325,13 +334,7 @@ fn deep_agents_and_pi_use_authenticated_ollama_proxy_connections() {
             .into();
         let graph = compile(&doc, &gens, "0.1.0").unwrap();
         assert!(graph["resource"]["docker_container"]["ollama_proxy_ollama-auth"].is_object());
-        assert!(
-            !provider_scope::resource(&graph["resource"]["openshell_inference"], "local")["server"]
-                ["credential_source"]
-                .as_str()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(!proxy_credential(&doc, &gens).is_empty());
     }
 }
 
@@ -366,15 +369,12 @@ fn named_proxies_have_distinct_containers_storage_and_credentials() {
             graph["resource"][kind][second]["name"]
         );
     }
+    let before = proxy_credential(&doc, &gens);
     let first = serde_json::to_value(&doc).unwrap();
     let mut changed = first;
     changed["spec"]["inferenceProviders"][0]["serviceRef"] = json!("second");
     let doc = Document::parse(changed.to_string().as_bytes()).unwrap();
-    let other = compile(&doc, &gens, "0.1.0").unwrap();
-    assert_ne!(
-        provider_scope::resource(&graph["resource"]["openshell_inference"], "local")["server"]["credential_source"],
-        provider_scope::resource(&other["resource"]["openshell_inference"], "local")["server"]["credential_source"]
-    );
+    assert_ne!(before, proxy_credential(&doc, &gens));
 }
 
 #[test]

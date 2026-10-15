@@ -40,14 +40,26 @@ pub(crate) fn configure_proxy_readiness(
         let mut dependencies = started.as_array().cloned().unwrap_or_default();
         dependencies.push(json!(format!("data.{model}.{service}")));
         *started = json!(dependencies);
-        for instances in graph["resource"].as_object_mut().unwrap().values_mut() {
+        let mut sandbox_endpoint = None;
+        for (kind, instances) in graph["resource"].as_object_mut().unwrap() {
             for resource in instances.as_object_mut().unwrap().values_mut() {
                 if let Some(dependencies) = resource["depends_on"].as_array_mut()
                     && dependencies.contains(&json!(container))
                 {
                     dependencies.push(json!(address));
+                    // A registration through the proxy takes the server ref its
+                    // readiness read exports, for the endpoint sandboxes use.
+                    if kind == "openshell_inference" {
+                        if let Some(endpoint) = resource["server"]["endpoint"].as_str() {
+                            sandbox_endpoint = Some(endpoint.to_owned());
+                        }
+                        resource["server"] = json!(format!("${{{address}.ref}}"));
+                    }
                 }
             }
+        }
+        if let Some(endpoint) = sandbox_endpoint {
+            graph["data"][readiness][logical]["sandbox_endpoint"] = json!(endpoint);
         }
     }
     Ok(())

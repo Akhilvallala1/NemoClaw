@@ -181,7 +181,7 @@ Plans reject a missing `server` or `binaries`; the schema lists them as optional
 Any change to an input replaces the resource, including a changed endpoint or credential in the server's `ref`, and removal deletes both objects.
 A sandbox that attaches it also needs a policy that allows traffic to the server's endpoint.
 Its `ref` has type `openshell_provider`, so sandboxes take it in `providers`.
-Generated graphs register each selected inference provider this way. Until they read servers ([#13228](https://github.com/NVIDIA/NemoClaw/issues/13228)), they pass a literal `inference_server` object built from the provider definition.
+Generated graphs register each selected inference provider this way. For an Ollama proxy they pass its `ollama_proxy_readiness` read's `ref`, with the proxy's sandbox endpoint as `sandbox_endpoint`. Other providers get a literal `inference_server` object built from the provider definition, because managed vLLM and Ollama servers are read in a separate runtime graph; [#13254](https://github.com/NVIDIA/NemoClaw/issues/13254) moves both into one root.
 
 ```hcl
 resource "openshell_inference" "nemotron" {
