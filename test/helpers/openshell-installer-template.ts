@@ -151,10 +151,10 @@ export function installerReleaseTemplate(source: string, version: string): strin
         source.slice(fallbackEnd + "    esac\n".length);
     }
   }
-  // Historical trust fixtures predate the 0.1.2 retirement guard. Keep that
-  // guard in current-release fixtures; do not authorize a hybrid old template.
+  // Historical trust fixtures must use their own reviewed guard. Keep the
+  // current guard only in the current-release fixture.
   const guardStart = source.indexOf("# Every installation entrypoint must verify legacy state");
-  if (version !== "0.1.2" && version !== "0.1.3" && guardStart !== -1) {
+  if (version !== "0.1.3" && guardStart !== -1) {
     const guardEnd = source.indexOf(
       "# invalidState: a consumed OpenShell release asset",
       guardStart,

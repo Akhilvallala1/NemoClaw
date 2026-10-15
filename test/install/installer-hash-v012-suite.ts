@@ -21,9 +21,6 @@ function guardedInstaller(repoRoot: string, source: string): string {
   const marker = "# Every installation entrypoint";
   assert.ok(fixture.includes(marker));
   const guard = fixture.slice(fixture.indexOf(marker)).trimEnd() + "\n\n";
-  if (source.includes(marker) && source.includes("# OpenShell 0.1.2 enforces MCP policy")) {
-    return source;
-  }
   const before = [
     "  # MCP policy enforcement and credential replacement execute in",
     "  # openshell-sandbox. When that host artifact is present, require the native",
@@ -45,6 +42,10 @@ function guardedInstaller(repoRoot: string, source: string): string {
   const featureCheck =
     '  if [[ "$sandbox_strings" != *"$OPENSHELL_SANDBOX_MCP_FEATURE"* ]]; then\n';
   const installStart = "# invalidState: a consumed";
+  if (source.includes(after)) {
+    for (const required of [featureCheck, installStart]) assert.ok(source.includes(required));
+    return source.replace(installStart, guard + installStart);
+  }
   for (const required of [before, featureCheck, installStart]) assert.ok(source.includes(required));
   return source
     .replace(before, after)
