@@ -424,14 +424,14 @@ it("retains the previous HTTPS adapter route after a same-endpoint model probe f
   expect(f.entry.nativeCustomProviderAttachment).toEqual(f.receipt);
 });
 
-it("writes matching issued Hermes references rather than the shared-route sentinel (#12636)", async () => {
+it("writes matching Hermes credential templates rather than the shared-route sentinel (#12636)", async () => {
   const f = await fixture("hermes");
   await runInferenceSet({ provider: "compatible-endpoint", model: "new-model" }, f.deps);
   expect(f.deps.calls.restartSandboxGateway).not.toHaveBeenCalled();
   const written = f.deps.calls.writeSandboxConfig.mock.calls[0][2];
   expect(written.model).toMatchObject({
     base_url: f.receipt.endpointUrl,
-    api_key: "sk-OPENSHELL-RESOLVE-ENV-v12_COMPATIBLE_API_KEY",
+    api_key: "${COMPATIBLE_API_KEY}",
   });
   expect(written.unrelated).toEqual({ preserve: true });
   expect(JSON.stringify(written)).not.toContain("host-secret");
@@ -595,7 +595,7 @@ it("selects the native OpenAI frontend for a new Hermes custom Anthropic switch 
   expect(f.config).toMatchObject({
     model: {
       base_url: "http://12.12.12.12/v1",
-      api_key: "sk-OPENSHELL-RESOLVE-ENV-v12_COMPATIBLE_ANTHROPIC_API_KEY",
+      api_key: "${COMPATIBLE_ANTHROPIC_API_KEY}",
     },
   });
   expect(f.deps.inferenceRouteObserver.observeInferenceRoute).not.toHaveBeenCalled();

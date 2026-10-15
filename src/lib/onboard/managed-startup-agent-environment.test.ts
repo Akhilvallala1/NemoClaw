@@ -458,7 +458,7 @@ describe("managed startup agent environment", () => {
     const environment = mapManagedStartupProfileToAgentEnvironment(attached);
     const settings = readHermesBuildSettings(environment.configurationEnvironment);
     const policy = buildHermesManagedPolicy(settings, {});
-    expect(policy.config.model?.api_key).toBe("sk-OPENSHELL-RESOLVE-ENV-COMPATIBLE_API_KEY");
+    expect(policy.config.model?.api_key).toBe("${COMPATIBLE_API_KEY}");
     expect(environment.configurationEnvironment.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV).toBe(
       "COMPATIBLE_API_KEY",
     );

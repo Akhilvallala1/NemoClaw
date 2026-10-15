@@ -1191,7 +1191,7 @@ print(json.dumps(captured))
   });
 });
 
-describe("Hermes native custom credential refresh (#12636)", () => {
+describe("Hermes native custom credential validation (#12636)", () => {
   it("rejects malformed endpoint and provider selectors without changing config or integrity anchors", () => {
     const result = runPythonHarness(`${loadGuardModule}
 import json
@@ -1205,7 +1205,7 @@ with tempfile.TemporaryDirectory() as tmp:
     compat = os.path.join(tmp, ".config-hash")
     os.environ["COMPATIBLE_API_KEY"] = "openshell:resolve:env:v12_COMPATIBLE_API_KEY"
     for field, value in cases:
-        reference = "sk-OPENSHELL-RESOLVE-ENV-COMPATIBLE_API_KEY"
+        reference = "\${COMPATIBLE_API_KEY}"
         config = {
             "model": {"base_url": "https://api.example.com/v1", "api_key": reference},
             "providers": {"compatible-endpoint": {"api": "https://api.example.com/v1", "api_key": reference}},
@@ -1218,7 +1218,7 @@ with tempfile.TemporaryDirectory() as tmp:
         for anchor in (strict, compat):
             with open(anchor, "w") as handle: handle.write("unchanged")
         try:
-            guard.refresh_native_custom_inference(tmp, strict, "both")
+            guard.provider_placeholders(tmp, strict, "compat", None, None)
         except guard.UnsafePathError:
             pass
         else:
@@ -1246,7 +1246,7 @@ with tempfile.TemporaryDirectory() as tmp:
     with open(strict, "w") as handle: handle.write("strict-unchanged")
     with open(compat, "w") as handle: handle.write("compat-unchanged")
     try:
-        guard.refresh_native_custom_inference(tmp, strict, "both")
+        guard.provider_placeholders(tmp, strict, "compat", None, None)
     except guard.UnsafePathError as error:
         assert str(error) == "Native custom inference configuration is not valid YAML"
         assert isinstance(error.__cause__, yaml.YAMLError)
@@ -1265,27 +1265,30 @@ with tempfile.TemporaryDirectory() as tmp:
     expect(result.stderr).not.toContain("private-config-canary");
   });
 
-  it("refreshes all owned credential fields and integrity hashes across supervisor revisions", () => {
-    const result = runPythonHarness(`${loadGuardModule}
-import hashlib
+  it.each([
+    ["compatible-endpoint", "COMPATIBLE_API_KEY"],
+    ["compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
+  ] as const)(
+    "preserves sealed %s config and both integrity anchors across supervisor revisions",
+    (provider, key) => {
+      const result = runPythonHarness(`${loadGuardModule}
 import json
 import os
 import tempfile
-import types
 import yaml
-sys.modules["gateway.config"] = types.SimpleNamespace(GatewayConfig=types.SimpleNamespace(from_dict=lambda value: value))
 with tempfile.TemporaryDirectory() as tmp:
     config_path = os.path.join(tmp, "config.yaml")
     env_path = os.path.join(tmp, ".env")
     strict = os.path.join(tmp, "strict-hash")
     compat = os.path.join(tmp, ".config-hash")
-    key = "COMPATIBLE_API_KEY"
-    reference = "sk-OPENSHELL-RESOLVE-ENV-" + key
+    key = "${key}"
+    provider = "${provider}"
+    reference = "$" + "{" + key + "}"
     config = {
         "model": {"default": "model", "base_url": "https://api.example.com/v1", "api_key": reference},
-        "providers": {"compatible-endpoint": {"api": "https://api.example.com/v1", "api_key": reference}},
-        "custom_providers": [{"name": "compatible-endpoint", "base_url": "https://api.example.com/v1", "api_key": reference}],
-        "_nemoclaw_upstream": {"provider": "compatible-endpoint", "provider_key": "compatible-endpoint", "native_custom_credential_env": "COMPATIBLE_API_KEY"},
+        "providers": {provider: {"api": "https://api.example.com/v1", "api_key": reference}},
+        "custom_providers": [{"name": provider, "base_url": "https://api.example.com/v1", "api_key": reference}],
+        "_nemoclaw_upstream": {"provider": provider, "provider_key": provider, "native_custom_credential_env": key},
         "unowned": "preserved",
     }
     with open(config_path, "w") as handle: yaml.safe_dump(config, handle)
@@ -1293,30 +1296,34 @@ with tempfile.TemporaryDirectory() as tmp:
     initial, *_ = guard._hash_text(config_path, env_path)
     for anchor in (strict, compat):
         with open(anchor, "w") as handle: handle.write(initial)
+    before = open(config_path, "rb").read()
     for generation in (12, 13):
         os.environ[key] = f"openshell:resolve:env:v{generation}_{key}"
-        guard.refresh_native_custom_inference(tmp, strict, "both")
+        guard.provider_placeholders(tmp, strict, "compat", None, None)
         with open(config_path) as handle: updated = yaml.safe_load(handle)
-        expected = f"sk-OPENSHELL-RESOLVE-ENV-v{generation}_{key}"
+        expected = reference
         assert updated["model"]["api_key"] == expected
-        assert updated["providers"]["compatible-endpoint"]["api_key"] == expected
+        assert updated["providers"][provider]["api_key"] == expected
         assert updated["custom_providers"][0]["api_key"] == expected
         assert updated["unowned"] == "preserved"
+        assert open(config_path, "rb").read() == before
         actual, *_ = guard._hash_text(config_path, env_path)
+        assert actual == initial
         for anchor in (strict, compat):
             with open(anchor) as handle: assert handle.read() == actual
     before = open(config_path, "rb").read()
     os.environ[key] = "raw-host-secret"
-    try: guard.refresh_native_custom_inference(tmp, strict, "both")
+    try: guard.provider_placeholders(tmp, strict, "compat", None, None)
     except guard.UnsafePathError as error: assert "raw-host-secret" not in str(error)
     else: raise AssertionError("accepted host credential")
     assert open(config_path, "rb").read() == before
-    print(json.dumps({"refreshed": True, "raw_credential_rejected_without_write": True}))
+    print(json.dumps({"config_and_anchors_unchanged": True, "raw_credential_rejected_without_write": True}))
 `);
-    expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({
-      refreshed: true,
-      raw_credential_rejected_without_write: true,
-    });
-  });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        config_and_anchors_unchanged: true,
+        raw_credential_rejected_without_write: true,
+      });
+    },
+  );
 });

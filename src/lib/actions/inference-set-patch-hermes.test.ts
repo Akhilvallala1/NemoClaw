@@ -38,7 +38,7 @@ describe("patchHermesInferenceConfig", () => {
       native_custom_credential_env: "COMPATIBLE_API_KEY",
     });
     expect(config.model).toMatchObject({
-      api_key: "sk-OPENSHELL-RESOLVE-ENV-COMPATIBLE_API_KEY",
+      api_key: "${COMPATIBLE_API_KEY}",
     });
     patchHermesInferenceConfig(
       config,

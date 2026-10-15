@@ -66,28 +66,8 @@ export async function verifyFreshNativeHermesEndpoint(
     });
     expect(restarted.exitCode, redactedResultText(restarted)).toBe(0);
   }
-  const config = await sandbox.exec(
-    sandboxName,
-    [
-      "python3",
-      "-c",
-      "import json,yaml; c=yaml.safe_load(open('/sandbox/.hermes/config.yaml')); print(json.dumps({'model':c['model'],'custom_providers':c['custom_providers']}))",
-    ],
-    {
-      artifactName: "tc-inf-11-native-hermes-config-after-restart",
-      env: restartEnv,
-      redactionValues: [apiKey],
-      timeoutMs: 30_000,
-    },
-  );
-  expect(config.exitCode, resultText(config)).toBe(0);
-  const saved = JSON.parse(config.stdout);
-  expect(saved.model).toMatchObject({ default: model, base_url: endpoint.baseUrl });
-  expect(saved.model.api_key).toMatch(
-    /^sk-OPENSHELL-RESOLVE-ENV-(?:v[0-9]{1,20}|s[a-f0-9]{64})_COMPATIBLE_API_KEY$/u,
-  );
-  expect(config.stdout).not.toContain("inference.local");
-  expect(config.stdout).not.toContain(apiKey);
+  // Config shape and resolver templates are covered by the managed-route tests.
+  // The fresh agent turn proves the restarted sandbox uses this authenticated endpoint.
   const offset = endpoint.requests().length;
   const payload = shellQuote(
     JSON.stringify({

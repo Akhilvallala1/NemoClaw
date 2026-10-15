@@ -111,7 +111,7 @@ export function applyHermesManagedRoute(
   }
   const nativeHosted = nativeHostedAgentConfig(route.upstreamProvider, route.baseUrl);
   let apiKey = nativeCustom
-    ? `sk-OPENSHELL-RESOLVE-ENV-${nativeCustomKey}`
+    ? `\${${nativeCustomKey}}`
     : nativeHosted
       ? `\${${nativeHosted.credentialEnv}}`
       : managedInferenceApiKey(route.baseUrl, HERMES_PROXY_REWRITE_SENTINEL);
@@ -123,9 +123,8 @@ export function applyHermesManagedRoute(
       throw new Error(
         "Hermes native custom inference requires its matching issued credential reference.",
       );
-    apiKey =
-      "sk-OPENSHELL-RESOLVE-ENV-" +
-      route.credentialReference.slice("openshell:resolve:env:".length);
+    // Resolve the current supervisor handle at load time, including after restart.
+    // Persisting its revision would require rewriting the sealed config at startup.
   }
   if (route.nativeCredentialHandle !== undefined) {
     if (

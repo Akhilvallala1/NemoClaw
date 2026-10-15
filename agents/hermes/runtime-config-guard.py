@@ -3201,13 +3201,13 @@ def ensure_api_key(hermes_dir: str, hash_file: str, mode: str) -> None:
     print("minted=1" if minted else "updated=1")
 
 
-def refresh_native_custom_inference(hermes_dir: str, hash_file: str, mode: str) -> None:
-    """Replace only the selected native credential reference with its issued identity."""
+def validate_native_custom_inference(hermes_dir: str) -> None:
+    """Validate loader-resolved credentials without mutating the sealed config."""
     from urllib.parse import urlsplit
     config_path = os.path.join(hermes_dir, "config.yaml")
     if not os.path.exists(config_path):
         return
-    text, snapshot = _read_text(config_path, MAX_CONFIG_INPUT_BYTES)
+    text, _snapshot = _read_text(config_path, MAX_CONFIG_INPUT_BYTES)
     try:
         config = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -3241,7 +3241,7 @@ def refresh_native_custom_inference(hermes_dir: str, hash_file: str, mode: str) 
     issued = os.environ.get(key, "")
     if re.fullmatch(rf"openshell:resolve:env:(?:v[0-9]{{1,20}}|s[a-f0-9]{{64}})_{key}", issued) is None:
         raise UnsafePathError("Native custom inference requires its supervisor-issued credential placeholder")
-    replacement = "sk-OPENSHELL-RESOLVE-ENV-" + issued.removeprefix(SCOPED_PLACEHOLDER_PREFIX)
+    expected = "${" + key + "}"
     providers = config.get("providers", {})
     provider_key = upstream.get("provider_key")
     selected = providers.get(provider_key, {}) if isinstance(providers, dict) and isinstance(provider_key, str) else {}
@@ -3254,21 +3254,9 @@ def refresh_native_custom_inference(hermes_dir: str, hash_file: str, mode: str) 
     records = [model, selected, custom[0]]
     if selected.get("api") != model.get("base_url") or custom[0].get("base_url") != model.get("base_url"):
         raise UnsafePathError("Native custom inference endpoint bindings disagree")
-    changed = False
     for record in records:
-        reference = record.get("api_key", "")
-        if not isinstance(reference, str) or re.fullmatch(rf"sk-OPENSHELL-RESOLVE-ENV-(?:(?:v[0-9]{{1,20}}|s[a-f0-9]{{64}})_)?{key}", reference) is None:
+        if record.get("api_key") != expected:
             raise UnsafePathError("Native custom inference configuration has an invalid credential reference")
-        if reference != replacement:
-            record["api_key"] = replacement
-            changed = True
-    if changed:
-        if snapshot.mode & 0o222 == 0:
-            raise UnsafePathError("Native custom inference configuration is read-only; recreate the sandbox")
-        updated = yaml.safe_dump(config, sort_keys=False)
-        _validate_hermes_config_candidate(updated.encode("utf-8"))
-        _write_existing(config_path, updated, snapshot)
-        refresh_hashes(hermes_dir, hash_file, mode)
 
 
 def provider_placeholders(
@@ -3278,7 +3266,7 @@ def provider_placeholders(
     runtime_plan_path: str | None,
     boundary_validator_path: str | None,
 ) -> None:
-    refresh_native_custom_inference(hermes_dir, hash_file, mode)
+    validate_native_custom_inference(hermes_dir)
     env_path = os.path.join(hermes_dir, ".env")
     if not os.path.exists(env_path):
         return

@@ -9,6 +9,13 @@ import { applyHermesManagedRoute } from "../../src/lib/hermes-managed-route.ts";
 const runtime = process.argv[2] ?? "/opt/hermes";
 const python = process.argv[3] ?? `${runtime}/.venv/bin/python3`;
 const providers = [
+  ["compatible-endpoint", "https://api.example.com/v1", "COMPATIBLE_API_KEY", "openai-completions"],
+  [
+    "compatible-anthropic-endpoint",
+    "https://api.example.com",
+    "COMPATIBLE_ANTHROPIC_API_KEY",
+    "anthropic-messages",
+  ],
   ["openai-api", "https://api.openai.com/v1", "OPENAI_API_KEY", "openai-completions"],
   ["anthropic-prod", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "anthropic-messages"],
   [
@@ -32,6 +39,7 @@ const cases = providers.map(([provider, baseUrl, key, inferenceApi]) => {
     upstreamProvider: provider,
     baseUrl,
     inferenceApi,
+    ...(provider.startsWith("compatible-") ? { nativeCustomCredentialEnv: key } : {}),
   });
   return { config, key, provider };
 });
@@ -59,7 +67,7 @@ for case in json.load(sys.stdin):
             assert source["api_key"] == handle, case["provider"]
     del os.environ[key]
     assert _expand_env_vars(config)["model"]["api_key"] == template
-print("Hermes native credential resolution passed for five hosted providers.")
+print("Hermes native credential resolution passed for five hosted and two custom providers.")
 `,
     runtime,
   ],

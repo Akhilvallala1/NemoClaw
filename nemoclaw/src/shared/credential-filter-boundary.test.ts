@@ -184,6 +184,11 @@ describe("shared credential filter", () => {
     `sk-OPENSHELL-RESOLVE-ENV-s${"a".repeat(63)}_COMPATIBLE_API_KEY`,
     `sk-OPENSHELL-RESOLVE-ENV-s${"a".repeat(63)}_COMPATIBLE_ANTHROPIC_API_KEY`,
     "sk-OPENSHELL-RESOLVE-ENV-UNOWNED_API_KEY",
+    "${COMPATIBLE_API_KEY}-raw-secret",
+    "${COMPATIBLE_ANTHROPIC_API_KEY}-raw-secret",
+    "${COMPATIBLE_API_KEY:-raw-secret}",
+    "${COMPATIBLE_ANTHROPIC_API_KEY:-raw-secret}",
+    "${UNOWNED_API_KEY}",
   ])("strips malformed Hermes native reference %s (#12636)", (value) => {
     expect(isSafeCredentialPlaceholder(value)).toBe(false);
     expect(stripCredentials({ api_key: value })).toEqual({ api_key: CREDENTIAL_PLACEHOLDER });

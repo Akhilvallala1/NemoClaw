@@ -367,7 +367,7 @@ describe("native custom Hermes policy (#12636)", () => {
       readHermesBuildSettings(environment.configurationEnvironment),
       {},
     );
-    expect(policy.config.model?.api_key).toBe(`sk-OPENSHELL-RESOLVE-ENV-${key}`);
+    expect(policy.config.model?.api_key).toBe(`\${${key}}`);
     expect(loadWithPython(policy).status).toBe(0);
     const runtimeBoundary = spawnSync(
       "python3",
@@ -441,11 +441,11 @@ describe("native custom Hermes policy (#12636)", () => {
       expect(loadWithPython(policy).status).toBe(0);
       expect(policy.config.model).toMatchObject({
         base_url: baseUrl,
-        api_key: `sk-OPENSHELL-RESOLVE-ENV-${key}`,
+        api_key: `\${${key}}`,
       });
       expect(policy.config._nemoclaw_upstream?.native_custom_credential_env).toBe(key);
       const serialized = JSON.stringify(policy);
-      expect(serialized).toContain(`sk-OPENSHELL-RESOLVE-ENV-${key}`);
+      expect(serialized).toContain(`\${${key}}`);
       const malformed = {
         ...policy,
         config: {

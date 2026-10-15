@@ -578,6 +578,12 @@ function exportNativeInferenceSelection(entry: ObservedExportRegistry) {
   );
 }
 
+function exportNativeCustomCredentialEnv(entry: ObservedExportRegistry): string | undefined {
+  if (entry.agent !== "hermes" && entry.agent !== "openclaw") return undefined;
+  return normalizeNativeCustomProviderAttachment(entry.nativeCustomProviderAttachment, entry.name)
+    ?.credentialEnv;
+}
+
 function expectedManagedStartupProfile(entry: ObservedExportRegistry): ManagedStartupProfile {
   if (!isSupportedExportAgent(entry.agent)) {
     throw new Error("The agent is unsupported.");
@@ -607,6 +613,7 @@ function expectedManagedStartupProfile(entry: ObservedExportRegistry): ManagedSt
     inference: {
       routeProvider: inference.providerKey,
       upstreamProvider: selected.provider,
+      nativeCustomCredentialEnv: exportNativeCustomCredentialEnv(entry),
       model: selected.model,
       routedBaseUrl: inference.inferenceBaseUrl,
       upstreamEndpointUrl: deepAgentsUpstreamEndpoint(agent, selected),

@@ -186,7 +186,7 @@ def load_managed_policy(path: Path = MANAGED_POLICY_PATH) -> dict:
         if native_custom_credential_env is not None:
             if not key or native_custom_credential_env != key or url.hostname == "inference.local":
                 raise ManagedPolicyError("managed policy native custom route authority is invalid")
-            expected_key = f"sk-OPENSHELL-RESOLVE-ENV-{key}"
+            expected_key = "${" + key + "}"
         api_key = policy_value(config, "model.api_key")
         hosted_placeholder = None if native_nvidia else _native_hosted_placeholder(config, base_url)
         scoped_nvidia_handle = (

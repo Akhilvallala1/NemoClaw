@@ -122,13 +122,16 @@ const SAFE_CREDENTIAL_PLACEHOLDER_PATTERNS: readonly RegExp[] = [
   /^Bearer\s+openshell:resolve:env:[A-Za-z0-9_]+$/i,
   /^xoxb-OPENSHELL-RESOLVE-ENV-[A-Za-z0-9_]+$/,
   /^xapp-OPENSHELL-RESOLVE-ENV-[A-Za-z0-9_]+$/,
-  // Hermes restores these non-secret references, then refreshes their issued
-  // identity at startup. Admit only the native custom inference namespaces.
+  // Retain legacy Hermes issued references in existing native snapshots.
   /^sk-OPENSHELL-RESOLVE-ENV-(?:(?:v[0-9]{1,20}|s[a-f0-9]{64})_)?COMPATIBLE(?:_ANTHROPIC)?_API_KEY$/,
 ];
 const NVIDIA_INFERENCE_ENV_REFERENCE = "${NVIDIA_INFERENCE_API_KEY}";
 const SAFE_CREDENTIAL_PLACEHOLDER_LITERALS: ReadonlySet<string> = new Set([
   "unused",
+  // Hermes resolves these fixed native-custom references from the replacement
+  // sandbox's issued environment. They contain no credential value.
+  "${COMPATIBLE_API_KEY}",
+  "${COMPATIBLE_ANTHROPIC_API_KEY}",
   // Pi and Deep Agents use this public, fixed route sentinel when talking to
   // OpenShell's local managed-inference endpoint. It is not upstream
   // authority and is safe to carry across a native-home rebuild.

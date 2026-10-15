@@ -86,7 +86,7 @@ it("requires the existing attachment build argument for a native custom Hermes r
     NEMOCLAW_INFERENCE_BASE_URL: "https://api.example.com/v1",
     NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: "COMPATIBLE_API_KEY",
   });
-  expect(native.config.model.api_key).toBe("sk-OPENSHELL-RESOLVE-ENV-COMPATIBLE_API_KEY");
+  expect(native.config.model.api_key).toBe("${COMPATIBLE_API_KEY}");
   expect(native.config._nemoclaw_upstream.native_custom_credential_env).toBe("COMPATIBLE_API_KEY");
   expectGenerationError(
     { ...route, NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: "FOREIGN_KEY" },
