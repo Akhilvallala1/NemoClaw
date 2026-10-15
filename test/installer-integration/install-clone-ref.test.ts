@@ -206,6 +206,8 @@ describe("installer version stamping", testTimeoutOptions(15_000), () => {
 describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
   const REPO_URL = "https://github.com/NVIDIA/NemoClaw.git";
   const delayedConnectionFailure = `fatal: unable to access '${REPO_URL}/': Failed to connect to github.com port 443 after 132418 ms: Couldn't connect to server`;
+  // curl 7.81.0 lib/vtls/openssl.c emits this exact timeout diagnostic.
+  const tlsConnectionTimeout = `fatal: unable to access '${REPO_URL}/': SSL connection timeout`;
 
   function standaloneInstaller(installer: string, directory: string) {
     const copy = path.join(directory, "installer-under-test.sh");
@@ -287,7 +289,7 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
   );
 
   it.each([INSTALLER_PAYLOAD, CURL_PIPE_INSTALLER])(
-    "reports a refused connection as unreachable instead of a missing ref [case %#] (#11515)",
+    "reports a refused connection as an unverified lookup instead of a missing ref [case %#] (#11515)",
     async (installer) => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-clone-refused-"));
       const closedPort = await closedLoopbackPort();
@@ -298,9 +300,7 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
           "http.proxy": "",
         });
         expect(result.status).toBe(1);
-        expect(result.stderr).toContain(
-          `Could not connect to ${REPO_URL} to look up install ref 'lkg'.`,
-        );
+        expect(result.stderr).toContain(`Could not verify install ref 'lkg' from ${REPO_URL}.`);
         expect(result.stderr).toContain("The installed CLI was not changed.");
         expect(result.stderr).not.toContain("is not available");
       } finally {
@@ -333,8 +333,8 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
           classify(
             `${unableToAccess}Failed to connect to github.com port 443 after 3 ms: Couldn't connect to server`,
           ),
-        ).toBe("connect-failed");
-        expect(classify(delayedConnectionFailure)).toBe("connect-failed");
+        ).toBe("lookup-failed");
+        expect(classify(delayedConnectionFailure)).toBe("lookup-failed");
         expect(
           classify(
             `${unableToAccess}Failed to connect to github.com port 443 after 129003 ms: Connection timed out`,
@@ -346,6 +346,10 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
           ),
         ).toBe("connect-timeout");
         expect(classify(`${unableToAccess}Timeout was reached`)).toBe("connect-timeout");
+        expect(classify(tlsConnectionTimeout)).toBe("connect-timeout");
+        expect(classify("error: RPC failed; curl 28 SSL connection timeout")).toBe(
+          "connect-timeout",
+        );
         expect(
           classify("error: RPC failed; curl 28 Operation timed out after 1000 milliseconds"),
         ).toBe("connect-timeout");
@@ -355,7 +359,7 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
           ),
         ).toBe("connect-timeout");
         expect(classify("error: RPC failed; curl 56 Recv failure: Connection reset by peer")).toBe(
-          "connect-failed",
+          "lookup-failed",
         );
         expect(classify("fatal: invalid refspec '+timed out:refs/nemoclaw-install/target'")).toBe(
           "missing-ref",
@@ -367,15 +371,27 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
         ).toBe("missing-ref");
         expect(
           classify(
+            "fatal: invalid refspec '+error: RPC failed; curl 28 SSL connection timeout:refs/nemoclaw-install/target'",
+          ),
+        ).toBe("missing-ref");
+        expect(
+          classify(
             "warning: redirecting to another URL\nerror: RPC failed; curl 28 Operation timed out after 1000 milliseconds",
           ),
         ).toBe("connect-timeout");
         expect(
           classify("fatal: unable to access 'https://timeout.example.test/': Connection refused"),
-        ).toBe("connect-failed");
+        ).toBe("lookup-failed");
         expect(classify(`${unableToAccess}Could not resolve host: github.com`)).toBe(
-          "connect-failed",
+          "lookup-failed",
         );
+        expect(
+          classify("fatal: Authentication failed for 'https://github.com/NVIDIA/NemoClaw.git/'"),
+        ).toBe("lookup-failed");
+        expect(
+          classify("fatal: repository 'https://github.com/NVIDIA/NemoClaw.git/' not found"),
+        ).toBe("lookup-failed");
+        expect(classify("")).toBe("lookup-failed");
         expect(classify("fatal: couldn't find remote ref refs/heads/does-not-exist")).toBe(
           "missing-ref",
         );
@@ -422,7 +438,7 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
       });
       expect(result.status, result.stderr).toBe(1);
       expect(result.stderr).toContain(
-        `[ERROR] Could not connect to ${REPO_URL} to look up install ref 'lkg'.`,
+        `[ERROR] Could not verify install ref 'lkg' from ${REPO_URL}.`,
       );
       expect(result.stderr).toContain("The installed CLI was not changed.");
       expect(sha256(installed.cli)).toBe(installed.digest);
@@ -462,9 +478,7 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
         },
       );
       expect(result.status, `${result.stdout}${result.stderr}`).toBe(1);
-      expect(result.stderr).toContain(
-        `Could not connect to ${REPO_URL} to look up install ref 'lkg'.`,
-      );
+      expect(result.stderr).toContain(`Could not verify install ref 'lkg' from ${REPO_URL}.`);
       expect(result.stderr).toContain("The installed CLI was not changed.");
       expect(sha256(installed.cli)).toBe(installed.digest);
       expect(fs.readFileSync(managedMarker, "utf8")).toBe("previous managed install\n");
@@ -479,6 +493,12 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
     { caller: "payload", failure: "stall" },
     { caller: "bootstrap", failure: "delayed failure" },
     { caller: "payload", failure: "delayed failure" },
+    { caller: "bootstrap", failure: "TLS timeout" },
+    { caller: "payload", failure: "TLS timeout" },
+    { caller: "bootstrap", failure: "HTTP 403" },
+    { caller: "payload", failure: "HTTP 403" },
+    { caller: "bootstrap", failure: "HTTP 500" },
+    { caller: "payload", failure: "HTTP 500" },
   ] as const)(
     "reports $failure through the $caller caller without replacing the installed CLI (#11515)",
     async ({ caller, failure }) => {
@@ -489,18 +509,27 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
       fs.mkdirSync(managedSource, { recursive: true });
       fs.writeFileSync(marker, "previous managed source\n");
       const sockets = new Set<net.Socket>();
+      const httpStatus = failure.startsWith("HTTP ") ? failure.slice(5) : "";
+      const stubbedFetch = failure === "delayed failure" || failure === "TLS timeout";
+      const timeoutExpected = failure === "stall" || failure === "TLS timeout";
       let acceptedConnections = 0;
       const server = net.createServer((socket) => {
         acceptedConnections++;
         sockets.add(socket);
         socket.once("close", () => sockets.delete(socket));
+        socket.once("data", () => {
+          httpStatus &&
+            socket.end(
+              `HTTP/1.1 ${httpStatus} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+            );
+        });
       });
       try {
         const port = await new Promise<number>((resolve, reject) => {
           server.once("error", reject);
           server.listen(0, "127.0.0.1", () => resolve((server.address() as net.AddressInfo).port));
         });
-        failure === "delayed failure" &&
+        stubbedFetch &&
           fs.writeFileSync(
             path.join(installed.bin, "git"),
             '#!/usr/bin/env bash\ncase " $* " in\n  *" fetch "*) printf "%s\\n" "$GIT_ERROR_FIXTURE" >&2; exit 128 ;;\n  *) exec /usr/bin/git "$@" ;;\nesac\n',
@@ -519,7 +548,8 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
             BOOTSTRAP: CURL_PIPE_INSTALLER,
             INSTALLER_PAYLOAD,
             NON_SOURCE_ROOT: path.join(root, "not-a-checkout"),
-            GIT_ERROR_FIXTURE: delayedConnectionFailure,
+            GIT_ERROR_FIXTURE:
+              failure === "TLS timeout" ? tlsConnectionTimeout : delayedConnectionFailure,
             GIT_CONFIG_NOSYSTEM: "1",
             GIT_CONFIG_GLOBAL: "/dev/null",
             GIT_TERMINAL_PROMPT: "0",
@@ -539,13 +569,22 @@ describe("installer git checkout failures", testTimeoutOptions(15_000), () => {
         expect(result.error).toBeUndefined();
         expect(result.timedOut).toBe(false);
         expect(result.status, result.stderr).toBe(1);
-        expect(acceptedConnections > 0).toBe(failure === "stall");
+        expect(acceptedConnections > 0).toBe(!stubbedFetch);
         expect(result.stderr).toContain(
-          failure === "stall"
+          timeoutExpected
             ? `Timed out looking up install ref 'lkg' at ${REPO_URL}.`
-            : "Git reported 132418 ms elapsed before the connection failed.",
+            : `Could not verify install ref 'lkg' from ${REPO_URL}.`,
         );
-        expect(result.stderr.includes("Timed out")).toBe(failure === "stall");
+        const details = {
+          stall: "Timed out looking up install ref",
+          "delayed failure": "Git reported 132418 ms elapsed before the lookup failed.",
+          "TLS timeout": "SSL connection timeout",
+          "HTTP 403": "The requested URL returned error: 403",
+          "HTTP 500": "The requested URL returned error: 500",
+        };
+        expect(result.stderr).toContain(details[failure]);
+        expect(result.stderr.includes("Timed out")).toBe(timeoutExpected);
+        expect(result.stderr).not.toContain("Could not connect");
         expect(result.stderr).toContain("The installed CLI was not changed.");
         expect(result.stderr).not.toContain("is not available");
         expect(sha256(installed.cli)).toBe(installed.digest);

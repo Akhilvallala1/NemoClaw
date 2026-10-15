@@ -68,13 +68,16 @@ has_payload_marker() {
 
 # Use explicit Git/libcurl timeout diagnostics. Elapsed time is not a timeout cause.
 classify_install_ref_fetch_failure() {
-  local line failure=missing-ref
+  local line
   while IFS= read -r line; do
     case "$line" in
+      "fatal: couldn't find remote ref "* | "fatal: invalid refspec "*)
+        printf 'missing-ref'
+        return 0
+        ;;
       "fatal: unable to access "* | "error: RPC failed; "*)
-        failure=connect-failed
         case "$line" in
-          *"timed out"* | *"Timeout was reached"* | *"Operation too slow."*)
+          *"timed out"* | *"Timeout was reached"* | *"Operation too slow."* | *"SSL connection timeout"*)
             printf 'connect-timeout'
             return 0
             ;;
@@ -82,7 +85,7 @@ classify_install_ref_fetch_failure() {
         ;;
     esac
   done <<<"$1"
-  printf '%s' "$failure"
+  printf 'lookup-failed'
 }
 
 clone_nemoclaw_ref() {
@@ -97,19 +100,19 @@ clone_nemoclaw_ref() {
     if ! fetch_error="$(LC_ALL=C git -C "$dest" fetch --quiet --depth 1 origin "+${ref}:refs/nemoclaw-install/target" 2>&1)"; then
       [[ -z "$fetch_error" ]] || printf '%s\n' "$fetch_error" >&2
       [[ "$fetch_error" =~ after\ ([0-9]+)\ ms ]] \
-        && elapsed_detail=" Git reported ${BASH_REMATCH[1]} ms elapsed before the connection failed."
+        && elapsed_detail=" Git reported ${BASH_REMATCH[1]} ms elapsed before the lookup failed."
       case "$(classify_install_ref_fetch_failure "$fetch_error")" in
         connect-timeout)
           printf "[ERROR] Timed out looking up install ref '%s' at https://github.com/NVIDIA/NemoClaw.git.\n" "$ref" >&2
           printf "        The installed CLI was not changed. Check network access to github.com and try again.\n" >&2
           ;;
-        connect-failed)
-          printf "[ERROR] Could not connect to https://github.com/NVIDIA/NemoClaw.git to look up install ref '%s'.%s\n" "$ref" "$elapsed_detail" >&2
-          printf "        The installed CLI was not changed. Check network access to github.com and try again.\n" >&2
-          ;;
-        *)
+        missing-ref)
           printf "[ERROR] Requested install ref '%s' is not available from https://github.com/NVIDIA/NemoClaw.git.\n" "$ref" >&2
           printf "        The installed CLI was not changed. Check NEMOCLAW_INSTALL_TAG/NEMOCLAW_INSTALL_REF and try again.\n" >&2
+          ;;
+        *)
+          printf "[ERROR] Could not verify install ref '%s' from https://github.com/NVIDIA/NemoClaw.git.%s\n" "$ref" "$elapsed_detail" >&2
+          printf "        The installed CLI was not changed. Check repository access and the Git diagnostic, then try again.\n" >&2
           ;;
       esac
       exit 1

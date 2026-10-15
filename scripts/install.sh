@@ -198,13 +198,16 @@ resolve_stamped_version() {
 
 # Use explicit Git/libcurl timeout diagnostics. Elapsed time is not a timeout cause.
 classify_install_ref_fetch_failure() {
-  local line failure=missing-ref
+  local line
   while IFS= read -r line; do
     case "$line" in
+      "fatal: couldn't find remote ref "* | "fatal: invalid refspec "*)
+        printf 'missing-ref'
+        return 0
+        ;;
       "fatal: unable to access "* | "error: RPC failed; "*)
-        failure=connect-failed
         case "$line" in
-          *"timed out"* | *"Timeout was reached"* | *"Operation too slow."*)
+          *"timed out"* | *"Timeout was reached"* | *"Operation too slow."* | *"SSL connection timeout"*)
             printf 'connect-timeout'
             return 0
             ;;
@@ -212,7 +215,7 @@ classify_install_ref_fetch_failure() {
         ;;
     esac
   done <<<"$1"
-  printf '%s' "$failure"
+  printf 'lookup-failed'
 }
 
 clone_nemoclaw_ref() {
@@ -227,16 +230,16 @@ clone_nemoclaw_ref() {
     if ! fetch_error="$(LC_ALL=C git -C "$dest" fetch --quiet --depth 1 origin "+${ref}:refs/nemoclaw-install/target" 2>&1)"; then
       [[ -z "$fetch_error" ]] || printf '%s\n' "$fetch_error" >&2
       [[ "$fetch_error" =~ after\ ([0-9]+)\ ms ]] \
-        && elapsed_detail=" Git reported ${BASH_REMATCH[1]} ms elapsed before the connection failed."
+        && elapsed_detail=" Git reported ${BASH_REMATCH[1]} ms elapsed before the lookup failed."
       case "$(classify_install_ref_fetch_failure "$fetch_error")" in
         connect-timeout)
           error "Timed out looking up install ref '$ref' at https://github.com/NVIDIA/NemoClaw.git. The installed CLI was not changed. Check network access to github.com and try again."
           ;;
-        connect-failed)
-          error "Could not connect to https://github.com/NVIDIA/NemoClaw.git to look up install ref '$ref'.$elapsed_detail The installed CLI was not changed. Check network access to github.com and try again."
+        missing-ref)
+          error "Requested install ref '$ref' is not available from https://github.com/NVIDIA/NemoClaw.git. The installed CLI was not changed. Check NEMOCLAW_INSTALL_TAG/NEMOCLAW_INSTALL_REF and try again."
           ;;
         *)
-          error "Requested install ref '$ref' is not available from https://github.com/NVIDIA/NemoClaw.git. The installed CLI was not changed. Check NEMOCLAW_INSTALL_TAG/NEMOCLAW_INSTALL_REF and try again."
+          error "Could not verify install ref '$ref' from https://github.com/NVIDIA/NemoClaw.git.$elapsed_detail The installed CLI was not changed. Check repository access and the Git diagnostic, then try again."
           ;;
       esac
     fi
