@@ -31,6 +31,7 @@ import { nativeHostedAgentConfig } from "../src/lib/inference/native-provider/ag
 
 import { hasProviderlessInferenceEnvironment } from "../src/lib/providerless-inference.ts";
 import { managedInferenceApiKey } from "../src/lib/inference-credential.ts";
+import { DASHBOARD_ORIGINS_ENV, parseDashboardOrigins } from "../src/lib/dashboard/url.ts";
 
 import {
   chmodSync,
@@ -156,54 +157,31 @@ function unique<T>(values: Iterable<T>): T[] {
   return [...new Set(values)];
 }
 
-const DASHBOARD_ORIGINS_ENV = "NEMOCLAW_DASHBOARD_ORIGINS";
-const MAX_DASHBOARD_ORIGINS = 16;
-
 /**
- * Read extra dashboard browser origins (#13177). Onboarding and the managed
- * startup profile validate them with `parseDashboardOrigins`; this generator
- * runs in the image without that module, so it enforces the same rules before
- * it writes `allowedOrigins`: a bare http(s) origin, https unless the host is
- * loopback, and at most `MAX_DASHBOARD_ORIGINS` entries.
- * `test/generation/generate-openclaw-config-dashboard-origins.test.ts` keeps
- * the two in step.
+ * Read extra dashboard browser origins (#13177) with the same parser that
+ * onboarding and the managed startup profile use. A rejected entry is named by
+ * position: the parser's message can echo the value, which may hold user
+ * information.
  */
 function readDashboardOriginsEnv(env: Env): string[] {
-  const origins: string[] = [];
   const entries = (env[DASHBOARD_ORIGINS_ENV] ?? "").split(",");
   for (const [index, entry] of entries.entries()) {
-    const value = entry.trim();
-    if (!value) continue;
-    let url: URL | null = null;
     try {
-      url = new URL(value);
+      parseDashboardOrigins([entry]);
     } catch {
-      url = null;
-    }
-    // Accept what parseDashboardOrigins accepts: URL parsing lowercases the
-    // scheme and host and drops a default port and a lone trailing slash, but
-    // a path, query, fragment, or user information changes the origin.
-    const allowed =
-      url !== null &&
-      url.username === "" &&
-      url.password === "" &&
-      url.pathname === "/" &&
-      !/[?#]/u.test(value) &&
-      (url.protocol === "https:" || (url.protocol === "http:" && isLoopback(url.hostname)));
-    if (!allowed) {
       throw new Error(
-        // Name the entry by position: echoing it could print user information.
         `${DASHBOARD_ORIGINS_ENV} entry ${String(index + 1)} must be a bare https origin, or http on loopback.`,
       );
     }
-    if (!origins.includes(url!.origin)) origins.push(url!.origin);
   }
-  if (origins.length > MAX_DASHBOARD_ORIGINS) {
+  try {
+    return parseDashboardOrigins(entries);
+  } catch (error) {
+    // Every entry parsed, so only the origin-count limit remains.
     throw new Error(
-      `${DASHBOARD_ORIGINS_ENV} accepts at most ${String(MAX_DASHBOARD_ORIGINS)} origins; got ${String(origins.length)}`,
+      `${DASHBOARD_ORIGINS_ENV}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  return origins;
 }
 
 function expandUser(pathValue: string): string {

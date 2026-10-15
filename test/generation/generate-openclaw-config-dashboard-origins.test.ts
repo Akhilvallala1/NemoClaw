@@ -126,6 +126,17 @@ describe("generate-openclaw-config.mts: NEMOCLAW_DASHBOARD_ORIGINS (#13177)", ()
     expect(message).not.toMatch(/admin|s3cret/);
   });
 
+  it.each([
+    ["a control character", "https://launchpad.example.test\u0001"],
+    ["an over-long value", `https://${"a".repeat(2050)}.example.test`],
+  ])("refuses %s the same way parseDashboardOrigins does", (_case, origin) => {
+    expect(() => parseDashboardOrigins([origin])).toThrow();
+    expectBuildConfigError(
+      { CHAT_UI_URL: "http://127.0.0.1:18789", NEMOCLAW_DASHBOARD_ORIGINS: origin },
+      /NEMOCLAW_DASHBOARD_ORIGINS entry 1/,
+    );
+  });
+
   it("refuses more origins than one sandbox may record", () => {
     const origins = Array.from({ length: 17 }, (_, i) => `https://o${i}.example.test:8443`);
     expectBuildConfigError(
