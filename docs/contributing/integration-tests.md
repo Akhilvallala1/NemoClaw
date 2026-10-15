@@ -58,12 +58,12 @@ Its modules run the `nemoclaw` types against fake Docker engines, gateways, mode
 | Module | Checks |
 |---|---|
 | `provider_protocol` | The fixture provider from `nemoclaw-fixture-provider`, and on Unix the provider against a fake Docker API: network and image planning, including prerequisite changes before saved-plan application |
-| `service_capacity` | Combined service capacity through an isolated SSH simulator: shared-host overcommit, deferred reads, state kept after failed observations, and cleanup without capacity checks |
+| `service_capacity` | `vllm_capacity` through an isolated SSH simulator (shared-host overcommit, deferred reads, state kept after failed observations, and cleanup without capacity checks), and Ollama readiness and capacity rejecting a vLLM contract |
 | `service_readiness` | Standalone service readiness; see [below](#standalone-service-readiness) |
 | `service_storage`, `gateway_storage` | Retained service storage and, on Unix, Docker gateway storage against a fake engine |
 | `gateway_readiness` | Managed-gateway exit diagnostics, bootstrap state kept after failure, corrected retry, unchanged-apply rechecks, and teardown without the readiness data source |
 | `runtime_image`, `vllm_runtime` | Runtime image compatibility and, on Unix, the vLLM runtime contract |
-| `discovery`, `inference_capabilities` | Discovery plans that read target metadata without mutations, and inference catalog discovery against a fake model server |
+| `discovery` | Discovery plans that read target metadata without mutations |
 | `kubernetes_hcl`, `kubernetes_lifecycle` | Kubernetes planning, and apply, refresh, and teardown against the in-memory API in `crates/test-support/kube_api.rs`; the test writes and deletes the objects Helm would, and the live Kind suite runs the chart itself |
 
 `every_type_has_a_contract_test` requires a contract test for every type the provider serves, or an `ELSEWHERE` entry naming where it is tested instead.
@@ -98,9 +98,9 @@ NEMOCLAW_TEST_BUNDLE=/absolute/path/to/bundle \
   cargo test -p fabric-provider --test contract -- --ignored
 ```
 
-`fabric_agent_configuration` applies a Pi configuration from `tests/contract/fixtures` to a sandbox: an invalid configuration fails validation at its field without repeating the value, the configuration updates without replacing the sandbox, a stopped host is reconfigured, and a lost reply is not retried.
-`fabric_sandbox_readiness` reports the configured agent ready, and not ready while its health fails, without writing to the sandbox.
-On Unix, `fabric_capabilities` reads a fake Docker engine's image metadata: a compatible image reports its runtime binaries; another platform, or a read policy without the runtime's paths, is unsupported; a missing image is unknown.
+`fabric_agent` applies a Pi agent from `tests/contract/fixtures` to a sandbox: an invalid configuration fails validation at its field without repeating the value, one the harness cannot apply fails at plan, the configuration updates without replacing the sandbox, a stopped host is reconfigured, and a lost reply is not retried.
+`fabric_agent_readiness` reports the configured agent ready, and not ready while its health fails, without writing to the sandbox.
+On Unix, `fabric_harnesses` reads a fake Docker engine's image metadata: a compatible image reports its runtime binaries; another platform, or a read policy without the runtime's paths, is unsupported; a missing image is unknown.
 `every_fabric_type_has_a_contract_test` requires a contract test for every Fabric type.
 
 ## System Tests

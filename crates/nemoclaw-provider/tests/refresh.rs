@@ -207,7 +207,7 @@ async fn failed_and_partial_observations_retain_protocol_state() {
         "provider_profile",
         "provider",
         "sandbox",
-        "agent_configuration",
+        "agent",
     ] {
         for observation in [
             Err(ObservationError::Transport),
@@ -236,7 +236,7 @@ async fn confirmed_absence_reconciles_registrations_but_preserves_stateful_bindi
         "provider_profile",
         "provider",
         "sandbox",
-        "agent_configuration",
+        "agent",
     ] {
         for destroying in [false, true] {
             let resource = ResourceAdapter::new(
@@ -251,10 +251,8 @@ async fn confirmed_absence_reconciles_registrations_but_preserves_stateful_bindi
             let result = resource
                 .read(&mut diagnostics, prior.clone(), Value::Null, Value::Null)
                 .await;
-            if matches!(
-                kind,
-                "provider_profile" | "provider" | "agent_configuration"
-            ) || (destroying && kind == "sandbox")
+            if matches!(kind, "provider_profile" | "provider" | "agent")
+                || (destroying && kind == "sandbox")
             {
                 assert!(result.is_none());
                 assert!(diagnostics.errors.is_empty());
@@ -391,7 +389,7 @@ async fn reconstructible_resources_plan_replacement_and_deletion_without_teardow
         "provider_profile",
         "provider",
         "sandbox",
-        "agent_configuration",
+        "agent",
     ] {
         let resource = ResourceAdapter::new(
             support::definition(kind, &["name", "owner", "generation"], &[]),
@@ -411,10 +409,7 @@ async fn reconstructible_resources_plan_replacement_and_deletion_without_teardow
                 Value::Null,
             )
             .await;
-        let reconstructible = matches!(
-            kind,
-            "provider_profile" | "provider" | "agent_configuration"
-        );
+        let reconstructible = matches!(kind, "provider_profile" | "provider" | "agent");
         assert_eq!(result.is_some(), reconstructible, "{kind}");
         assert_eq!(diagnostics.errors.is_empty(), reconstructible, "{kind}");
         if let Some((_, _, replacements)) = result {
@@ -611,39 +606,4 @@ async fn removing_credential_reference_plans_unauthenticated_replacement() {
     assert!(diagnostics.errors.is_empty());
     assert_eq!(planned["credential_env"], Value::Value(String::new()));
     assert_eq!(replacements.len(), 1);
-}
-
-#[tokio::test]
-async fn external_ollama_observation_names_the_authored_upstream_without_url_credentials() {
-    for upstream in [
-        "http://127.0.0.1:11434/v1",
-        "http://[::1]:11434/v1",
-        "http://user:PRIVATE_URL@127.0.0.1:11434/v1",
-    ] {
-        let resource = ResourceAdapter::new(
-            support::definition(
-                "ollama_external_model",
-                &["name", "owner", "generation", "upstream"],
-                &[],
-            ),
-            Arc::new(Fixture(Err(ObservationError::Incomplete))),
-        );
-        let mut values = row();
-        values.insert(
-            "name".into(),
-            "nc-1234567890abcdef-ollama-proxy-local".into(),
-        );
-        values.insert("upstream".into(), upstream.into());
-        let mut diagnostics = Diagnostics::default();
-        resource
-            .read(&mut diagnostics, state(values), Value::Null, Value::Null)
-            .await;
-        let text = format!("{diagnostics:?}");
-        assert!(text.contains("services.local.upstream"), "{text}");
-        assert!(text.contains("observation is incomplete"), "{text}");
-        if !upstream.contains("PRIVATE_") {
-            assert!(text.contains(upstream), "{text}");
-        }
-        assert!(!text.contains("PRIVATE_"), "{text}");
-    }
 }

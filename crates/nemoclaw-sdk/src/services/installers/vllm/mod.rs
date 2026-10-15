@@ -63,7 +63,7 @@ pub(crate) fn service_address(name: &str) -> String {
 }
 
 fn address(kind: &str, name: &str) -> String {
-    format!("nemoclaw_{kind}.inference_{name}")
+    format!("{}.inference_{name}", crate::compile::resource_type(kind))
 }
 
 fn targets(
@@ -189,7 +189,7 @@ impl Installer for Service {
             service_dependencies.push(address(STORAGE_KIND, &format!("{name}_auth")));
         }
         if document.spec.gateway.as_managed().is_some() && self.placement.is_none() {
-            service_dependencies.insert(0, "nemoclaw_managed_gateway.runtime".into());
+            service_dependencies.insert(0, "openshell_podman_gateway.runtime".into());
         }
         Ok(InstallPlan {
             targets,

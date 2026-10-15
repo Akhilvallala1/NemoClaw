@@ -132,7 +132,7 @@ pub(crate) fn service_address(name: &str) -> String {
 }
 
 fn address(kind: &str, name: &str) -> String {
-    format!("nemoclaw_{kind}.{name}")
+    format!("{}.{name}", crate::compile::resource_type(kind))
 }
 
 pub const SERVICE_KIND: &str = "ollama_service";
@@ -249,7 +249,7 @@ impl Installer for ManagedOllama {
         let service = address(SERVICE_KIND, name);
         let mut dependencies = vec![address(STORAGE_KIND, name)];
         if document.spec.gateway.as_managed().is_some() && self.placement.is_none() {
-            dependencies.insert(0, "nemoclaw_managed_gateway.runtime".into());
+            dependencies.insert(0, "openshell_podman_gateway.runtime".into());
         }
         Ok(InstallPlan {
             targets: managed_targets(document, name, self, generations)?,
@@ -280,10 +280,7 @@ impl Installer for OllamaProxy {
         let service = address(proxy::PROXY, name);
         Ok(InstallPlan {
             targets: proxy::targets(document, name, self, generations)?,
-            dependencies: BTreeMap::from([(
-                service,
-                vec![address(proxy::STORAGE, name), address(proxy::MODEL, name)],
-            )]),
+            dependencies: BTreeMap::from([(service, vec![address(proxy::STORAGE, name)])]),
         })
     }
 
