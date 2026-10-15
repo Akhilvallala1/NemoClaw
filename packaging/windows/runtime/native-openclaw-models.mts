@@ -13,6 +13,7 @@ export type NativeModelCatalog = {
   provider: string;
   configuration: Record<string, unknown> & { models: (Record<string, unknown> & { id: string })[] };
   references: Record<string, string>;
+  referenceAliases?: Record<string, string>;
 };
 
 /** Rebind transport on launch without resetting native model choices or tuning. */
@@ -26,6 +27,8 @@ export function nativeOpenClawModels(
   const migrate = (value: unknown): string | undefined => {
     if (typeof value !== "string") return undefined;
     if (references.has(value)) return value;
+    const alias = catalog.referenceAliases?.[value];
+    if (alias && references.has(alias)) return alias;
     if (value.startsWith("nemoclawNative/"))
       return catalog.references[value.slice("nemoclawNative/".length)];
     return undefined;

@@ -40,6 +40,9 @@ function __nemoGatewaySocketOptions(url, options) {
 }
 `;
 const providerHelper = String.raw`
+import { request as __nemoProviderRequest } from "node:http";
+import { Readable as __nemoProviderReadable } from "node:stream";
+import { pipeline as __nemoProviderPipeline } from "node:stream/promises";
 function __nemoBrokerFetchOptions(model, options) {
   const value = process.env.NEMOCLAW_MXC_BROKER_PIPE_PORT;
   const provider = process.env.NEMOCLAW_MXC_MODEL_PROVIDER ?? "nemoclawNative";
@@ -50,7 +53,7 @@ function __nemoBrokerFetchOptions(model, options) {
   const origin = "http://127.0.0.1:" + value;
   if (base.origin !== origin || base.username || base.password || base.pathname !== "/v1" || base.search || base.hash)
     throw Error("Native broker requires its declared local origin");
-  if (options.dispatcherPolicy || options.resolveDispatcherPolicy || process.env.OPENCLAW_PROXY_ACTIVE === "1")
+  if (options.dispatcherPolicy || options.resolveDispatcherPolicy || options.fetchImpl || process.env.OPENCLAW_PROXY_ACTIVE === "1")
     throw Error("Native broker has conflicting transport settings");
   const selected = { mode: "direct", connect: { socketPath: __nemoPipeName(Number(value)) } };
   const resolveDispatcherPolicy = (target) => {
@@ -60,7 +63,38 @@ function __nemoBrokerFetchOptions(model, options) {
     return selected;
   };
   resolveDispatcherPolicy(new URL(options.url));
-  return { ...options, dispatcherPolicy: selected, resolveDispatcherPolicy };
+  // Keep native guarded fetch as the owner of policy, redirects and timeouts.
+  // Node's HTTP reader avoids the pinned fetch client's Windows pipe read hang.
+  const fetchImpl = async (url, init) => {
+    const target = new URL(url);
+    resolveDispatcherPolicy(target);
+    if (init?.redirect !== "manual") throw Error("Native broker requires guarded redirects");
+    const request = new Request(url, init);
+    return await new Promise((resolve, reject) => {
+      const outgoing = __nemoProviderRequest({
+        socketPath: selected.connect.socketPath, path: target.pathname,
+        method: request.method, headers: Object.fromEntries(request.headers),
+        signal: request.signal, agent: false,
+      }, incoming => {
+        try {
+          const headers = new Headers();
+          for (let i = 0; i < incoming.rawHeaders.length; i += 2)
+            headers.append(incoming.rawHeaders[i], incoming.rawHeaders[i + 1]);
+          const status = incoming.statusCode;
+          const empty = request.method === "HEAD" || [204, 205, 304].includes(status);
+          resolve(new Response(empty ? null : __nemoProviderReadable.toWeb(incoming), {
+            status, statusText: incoming.statusMessage, headers,
+          }));
+          if (empty) incoming.resume();
+        } catch (error) { incoming.destroy(); outgoing.destroy(); reject(error); }
+      });
+      outgoing.once("error", reject);
+      if (request.body) {
+        void __nemoProviderPipeline(__nemoProviderReadable.fromWeb(request.body), outgoing).catch(reject);
+      } else outgoing.end();
+    });
+  };
+  return { ...options, dispatcherPolicy: selected, resolveDispatcherPolicy, fetchImpl };
 }
 `;
 const catalogHelper = String.raw`

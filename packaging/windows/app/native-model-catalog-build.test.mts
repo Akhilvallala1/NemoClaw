@@ -24,6 +24,8 @@ test("the compiled adapter delegates provider discovery, metadata and references
       "export function l(text) { return globalThis.nativeParse(text); }",
     "model-key-CMdQNkZf.js":
       'export function t(provider, id) { return "native-reference:" + provider + ":" + id; }',
+    "model-ref-shared-Dz7QU0Lx.js":
+      'export function a(provider, id) { return provider === "nvidia" ? "native-legacy:" + provider + ":" + id : null; }',
     "extensions/nvidia/provider-catalog.js":
       'export async function buildSelectableLiveNvidiaProvider() { return globalThis.nativeProvider("nvidia"); }',
     "extensions/openrouter/provider-catalog.js":
@@ -102,6 +104,12 @@ test("the compiled adapter delegates provider discovery, metadata and references
     assert.equal(
       result.references[models[0]!.id],
       `native-reference:${result.provider}:vendor/model`,
+    );
+    assert.deepEqual(
+      Object.entries(result.referenceAliases ?? {}),
+      inference === "nvidia"
+        ? [["native-legacy:nvidia:vendor/model", "native-reference:nvidia:vendor/model"]]
+        : [],
     );
     assert.equal(
       result.provider,

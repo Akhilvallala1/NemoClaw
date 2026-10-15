@@ -28,6 +28,7 @@ const catalog: NativeModelCatalog = {
     ],
   },
   references: { "nvidia/first": "nvidia/first", "other/second": "nvidia/other/second" },
+  referenceAliases: { "nvidia/nvidia/first": "nvidia/first" },
 };
 
 test("the native catalog, metadata and provider references populate the existing picker", () => {
@@ -91,6 +92,40 @@ test("legacy installer choices migrate to native references without adding unava
   assert.equal(
     nativeOpenClawModels(catalog, "nvidia/first", foreign).agents.defaults.model.primary,
     "nvidia/first",
+  );
+});
+
+test("restart retains native picker aliases and tuning without admitting unknown references", () => {
+  const previous = {
+    agents: {
+      defaults: {
+        model: {
+          primary: "nvidia/nvidia/first",
+          fallbacks: ["nvidia/nvidia/first", "nvidia/nvidia/missing"],
+        },
+        models: { "nvidia/nvidia/first": { alias: "My selection", params: { temperature: 0.3 } } },
+      },
+    },
+  };
+  const original = structuredClone(previous);
+  const result = nativeOpenClawModels(catalog, "other/second", previous);
+  assert.deepEqual(result.agents.defaults.model, {
+    primary: "nvidia/first",
+    fallbacks: ["nvidia/first"],
+  });
+  assert.deepEqual(
+    result.agents.defaults.models["nvidia/first"],
+    previous.agents.defaults.models["nvidia/nvidia/first"],
+  );
+  assert.deepEqual(previous, original);
+  assert.equal(
+    nativeOpenClawModels(catalog, "other/second", previous, true).agents.defaults.model.primary,
+    "nvidia/other/second",
+  );
+  const unavailable = { ...catalog, referenceAliases: { "nvidia/nvidia/first": "openai/foreign" } };
+  assert.equal(
+    nativeOpenClawModels(unavailable, "other/second", previous).agents.defaults.model.primary,
+    "nvidia/other/second",
   );
 });
 

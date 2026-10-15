@@ -3,11 +3,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { randomBytes, randomInt } from "node:crypto";
+import { buffer } from "node:stream/consumers";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { EventEmitter } from "node:events";
 import syntax from "typescript";
 import { transformSync } from "esbuild";
 import { compileNativePipeTransport } from "./native-pipe-transport-build.mts";
+import { createBrokerRelayPeer } from "../runtime/native-broker-relay-protocol.mts";
+import { containedBrokerRelayFiles } from "../runtime/native-broker-tunnel.mts";
 
 const listenerPath = "dist/server-start-yuOHTviK.js";
 const listener =
@@ -56,9 +65,14 @@ function load(
     }),
     URL,
     Response,
+    Request,
+    Headers,
     AbortSignal,
     require: (name: string) => {
       if (name in modules) return modules[name];
+      if (name === "node:stream") return { Readable };
+      if (name === "node:stream/promises") return { pipeline };
+      if (name === "node:http") return { request: () => assert.fail("Unexpected HTTP request") };
       assert.equal(name, "node:net");
       return { connect: (pipe: string) => ({ pipe }) };
     },
@@ -208,6 +222,7 @@ test("provider pipe retains guarded fetch and refuses origin or transport change
   ])
     assert.throws(() => guarded.resolveDispatcherPolicy(new URL(url)), /escaped/);
   assert.throws(() => fetch(model, { ...options, dispatcherPolicy: {} }), /conflicting/);
+  assert.throws(() => fetch(model, { ...options, fetchImpl: () => {} }), /conflicting/);
   assert.throws(
     () => fetch({ ...model, baseUrl: "https://127.0.0.1:18790/v1" }, options),
     /declared local origin/,
@@ -219,6 +234,131 @@ test("provider pipe retains guarded fetch and refuses origin or transport change
   assert.equal(fetch({ ...model, provider: "other" }, options), options);
   assert.equal(load(providerPath, provider)(model, options), options);
 });
+
+test(
+  "Windows guarded provider pipe streams repeated responses and propagates cancellation",
+  {
+    skip: process.platform !== "win32",
+    timeout: 30000,
+  },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-provider-pipe-"));
+    const slots = Array.from({ length: 32 }, () => `stream-${randomBytes(8).toString("hex")}`);
+    for (const slot of slots) fs.mkdirSync(path.join(root, slot));
+    const payload = Buffer.from("data: " + "a".repeat(96 * 1024) + "\n\ndata: [DONE]\n\n");
+    let received = 0;
+    const server = http.createServer(async (request, response) => {
+      const body = await buffer(request);
+      received++;
+      response.setHeader("content-type", "text/event-stream");
+      if (body.toString() === "wait") {
+        response.flushHeaders();
+        return;
+      }
+      if (
+        request.headers.authorization !== "Bearer fixture" ||
+        body.toString() !== "fixture request"
+      ) {
+        response.writeHead(400).end();
+        return;
+      }
+      response.end(payload);
+    });
+    let host: Awaited<ReturnType<typeof createBrokerRelayPeer>> | undefined;
+    let sandbox: typeof host;
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const options = {
+        files: containedBrokerRelayFiles(root),
+        token: randomBytes(32).toString("base64url"),
+        slots,
+      };
+      const pipePort = randomInt(20000, 60000);
+      host = await createBrokerRelayPeer({
+        ...options,
+        side: "host",
+        brokerPort: (server.address() as { port: number }).port,
+      });
+      sandbox = await createBrokerRelayPeer({
+        ...options,
+        side: "sandbox",
+        sandboxPipePort: pipePort,
+      });
+      const url = `http://127.0.0.1:${pipePort}/v1/chat/completions`;
+      const adapt = load(
+        providerPath,
+        provider,
+        undefined,
+        "win32",
+        String(pipePort),
+        {},
+        { "node:http": http },
+      );
+      const guarded = adapt(
+        { provider: "nemoclawNative", baseUrl: `http://127.0.0.1:${pipePort}/v1` },
+        { url },
+      ) as {
+        fetchImpl(url: string, init: RequestInit): Promise<Response>;
+      };
+      for (let turn = 0; turn < 36; turn++) {
+        const request = new Request(url, {
+          method: "POST",
+          headers: { authorization: "Bearer fixture" },
+          body: "fixture request",
+        });
+        const response = await guarded.fetchImpl(url, {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+          redirect: "manual",
+          signal: AbortSignal.timeout(5000),
+          ...{ duplex: "half" },
+        });
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get("content-type"), "text/event-stream");
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload);
+      }
+      const beforeRejected = received;
+      await assert.rejects(
+        guarded.fetchImpl("http://127.0.0.1:1/v1/models", { redirect: "manual" }),
+        /escaped/,
+      );
+      await assert.rejects(guarded.fetchImpl(url, { redirect: "follow" }), /guarded redirects/);
+      assert.equal(received, beforeRejected);
+      const controller = new AbortController();
+      const pending = await guarded.fetchImpl(url, {
+        method: "POST",
+        body: "wait",
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      controller.abort();
+      await assert.rejects(pending.text());
+      const cancelled = await guarded.fetchImpl(url, {
+        method: "POST",
+        body: "wait",
+        redirect: "manual",
+      });
+      await cancelled.body!.cancel();
+      await sandbox.close();
+      await host.close();
+      assert.equal(host.diagnostics().activeConnections, 0);
+      assert.equal(sandbox.diagnostics().activeConnections, 0);
+    } finally {
+      try {
+        await sandbox?.close();
+      } finally {
+        try {
+          await host?.close();
+        } finally {
+          server.closeAllConnections();
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      }
+    }
+  },
+);
 
 test("pipe activation rejects invalid ports and non-Windows execution", () => {
   const server = { listen: () => assert.fail("Invalid configuration reached listen") };

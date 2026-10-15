@@ -18,6 +18,7 @@ export async function parseNativeConfiguration(text) {
 export async function buildNativeModelCatalog(inference, baseUrl, apiKey) {
   __nemoPrepareAssetRoot();
   const { t: modelKey } = await import(${entry("model-key-CMdQNkZf.js")});
+  const { a: legacyModelKey } = await import(${entry("model-ref-shared-Dz7QU0Lx.js")});
   let provider = "nemoclawNative";
   let configuration;
   if (inference === "nvidia") {
@@ -38,6 +39,10 @@ export async function buildNativeModelCatalog(inference, baseUrl, apiKey) {
     provider,
     configuration: { ...configuration, baseUrl, apiKey, timeoutSeconds: 180 },
     references: Object.fromEntries(configuration.models.map(model => [model.id, modelKey(provider, model.id)])),
+    referenceAliases: Object.fromEntries(configuration.models.flatMap(model => {
+      const legacy = legacyModelKey(provider, model.id);
+      return legacy ? [[legacy, modelKey(provider, model.id)]] : [];
+    })),
   };
 }
 `;
