@@ -25,13 +25,14 @@ function resolve(
 }
 
 describe("onboard --policy-tier (#13180)", () => {
-  it("normalizes --policy-tier and rejects unknown or Portable use (#13180)", () => {
-    expect(resolve({ "policy-tier": " Restricted " }).requestedPolicyTier).toBe("restricted");
+  it("accepts exact --policy-tier names and rejects unknown or Portable use (#13180)", () => {
+    expect(resolve({ "policy-tier": "restricted" }).requestedPolicyTier).toBe("restricted");
     expect(resolve({}).requestedPolicyTier).toBeNull();
 
     const errors: string[] = [];
     const error = (message?: string) => errors.push(String(message));
     expect(() => resolve({ "policy-tier": "locked" }, { error })).toThrow("exit:1");
+    expect(() => resolve({ "policy-tier": " Restricted " }, { error })).toThrow("exit:1");
     expect(() =>
       resolve({ "policy-tier": "open", "experimental-profile": "portable" }, { error }),
     ).toThrow("exit:1");
@@ -39,6 +40,7 @@ describe("onboard --policy-tier (#13180)", () => {
     expect(resolve({ "policy-tier": "open", resume: true }).requestedPolicyTier).toBe("open");
     expect(errors).toEqual([
       "  Unknown policy tier: locked. Valid: restricted, balanced, open, personal",
+      "  Unknown policy tier:  Restricted . Valid: restricted, balanced, open, personal",
       "  --policy-tier cannot be used with the Portable profile.",
     ]);
   });

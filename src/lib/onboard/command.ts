@@ -481,13 +481,14 @@ function resolveRequestedPolicyTier(
   deps: ResolveOnboardOptionsDeps,
 ): string | null {
   if (requested === undefined) return null;
-  const name = requested.trim().toLowerCase();
+  // The CLI parser already limits the flag to exact tier names; this check
+  // covers direct callers with the same exact-match contract.
   const knownTiers = deps.listPolicyTiers?.() ?? [];
-  if (knownTiers.length > 0 && !knownTiers.includes(name)) {
+  if (knownTiers.length > 0 && !knownTiers.includes(requested)) {
     fail(deps, `  Unknown policy tier: ${requested}. Valid: ${knownTiers.join(", ")}`);
   }
   if (experimentalProfile) fail(deps, "  --policy-tier cannot be used with the Portable profile.");
-  return name;
+  return requested;
 }
 
 function resolveExternalImageReference(

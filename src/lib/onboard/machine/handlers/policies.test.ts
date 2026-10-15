@@ -63,6 +63,17 @@ describe("policy state handler", () => {
     );
   });
 
+  it("reconciles a resumed session against its recorded --policy-tier (#13180)", async () => {
+    const { deps, calls } = createPolicyHandlerDeps({
+      loadSession: () => createSession({ policyTier: "restricted" }),
+    });
+    await handlePoliciesState({ ...basePolicyHandlerOptions(deps), resume: true });
+    expect(calls.prepareResume).toHaveBeenCalledWith(
+      "my-assistant",
+      expect.objectContaining({ tierName: "restricted" }),
+    );
+  });
+
   it("passes a recorded --policy-tier to policy selection (#13180)", async () => {
     const { deps, calls } = createPolicyHandlerDeps({
       loadSession: () => createSession({ policyTier: "open" }),
