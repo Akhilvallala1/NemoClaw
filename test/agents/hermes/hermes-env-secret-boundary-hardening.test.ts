@@ -403,11 +403,16 @@ raise SystemExit(module.validate_env_file(sys.argv[3]))`,
     );
   });
 
-  it("reports the rejected sandbox owner, group, and mode", () => {
+  it("accepts the sandbox-owned 0700 workspace used by rootless Podman", () => {
     const result = validateHermesRootMode(0o750, 0o700);
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it("reports the rejected sandbox owner, group, and mode", () => {
+    const result = validateHermesRootMode(0o750, 0o701);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(
-      `/sandbox does not match a trusted owner/group/mode posture (uid=${String(os.userInfo().uid)}, gid=${String(os.userInfo().gid)}, mode=0700)`,
+      `/sandbox does not match a trusted owner/group/mode posture (uid=${String(os.userInfo().uid)}, gid=${String(os.userInfo().gid)}, mode=0701)`,
     );
   });
 
