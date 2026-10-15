@@ -60,6 +60,24 @@ describe("onboard --dashboard-origin (#13177)", () => {
     },
   );
 
+  it("accepts dashboard origins when NEMOCLAW_AGENT names an OpenClaw alias", () => {
+    const { options } = resolve(
+      { "dashboard-origin": ["https://launchpad.example.test:8443"] },
+      { NEMOCLAW_AGENT: "nemoclaw" },
+    );
+
+    expect(options().dashboardOrigins).toEqual(["https://launchpad.example.test:8443"]);
+  });
+
+  it("refuses dashboard origins when NEMOCLAW_AGENT names another agent's alias", () => {
+    const { options } = resolve(
+      { "dashboard-origin": ["https://launchpad.example.test:8443"] },
+      { NEMOCLAW_AGENT: "nemohermes" },
+    );
+
+    expect(options).toThrow("exit:1");
+  });
+
   it("refuses an exported NEMOCLAW_DASHBOARD_ORIGINS for another agent", () => {
     const { options } = resolve(
       { agent: "hermes" },

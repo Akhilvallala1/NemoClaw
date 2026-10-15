@@ -272,7 +272,10 @@ function resolveDashboardOrigins(
   if (!deps.resolveDashboardOrigins) {
     fail(deps, "  --dashboard-origin is not available in this onboarding context.");
   }
-  const selectedAgent = agent ?? deps.env.NEMOCLAW_AGENT?.trim() ?? "";
+  const requestedAgent = agent ?? deps.env.NEMOCLAW_AGENT?.trim() ?? "";
+  // NEMOCLAW_AGENT reaches here uncanonicalized, so map an OpenClaw alias
+  // such as `nemoclaw` before the OpenClaw-only check.
+  const selectedAgent = resolveAgentNameAlias(requestedAgent, ["openclaw"]) ?? requestedAgent;
   if (selectedAgent && !isOpenclawAgent(selectedAgent)) {
     fail(
       deps,

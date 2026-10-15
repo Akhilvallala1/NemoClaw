@@ -170,7 +170,8 @@ const MAX_DASHBOARD_ORIGINS = 16;
  */
 function readDashboardOriginsEnv(env: Env): string[] {
   const origins: string[] = [];
-  for (const entry of (env[DASHBOARD_ORIGINS_ENV] ?? "").split(",")) {
+  const entries = (env[DASHBOARD_ORIGINS_ENV] ?? "").split(",");
+  for (const [index, entry] of entries.entries()) {
     const value = entry.trim();
     if (!value) continue;
     let url: URL | null = null;
@@ -191,7 +192,8 @@ function readDashboardOriginsEnv(env: Env): string[] {
       (url.protocol === "https:" || (url.protocol === "http:" && isLoopback(url.hostname)));
     if (!allowed) {
       throw new Error(
-        `${DASHBOARD_ORIGINS_ENV} entry must be a bare https origin, or http on loopback: ${JSON.stringify(value)}`,
+        // Name the entry by position: echoing it could print user information.
+        `${DASHBOARD_ORIGINS_ENV} entry ${String(index + 1)} must be a bare https origin, or http on loopback.`,
       );
     }
     if (!origins.includes(url!.origin)) origins.push(url!.origin);

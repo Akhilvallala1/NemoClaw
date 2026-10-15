@@ -111,6 +111,21 @@ describe("generate-openclaw-config.mts: NEMOCLAW_DASHBOARD_ORIGINS (#13177)", ()
     );
   });
 
+  it("does not echo a rejected entry's user information", () => {
+    let message = "";
+    try {
+      buildConfigDirect({
+        CHAT_UI_URL: "http://127.0.0.1:18789",
+        NEMOCLAW_DASHBOARD_ORIGINS:
+          "https://launchpad.example.test,https://admin:s3cret@launchpad.example.test",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/NEMOCLAW_DASHBOARD_ORIGINS entry 2/);
+    expect(message).not.toMatch(/admin|s3cret/);
+  });
+
   it("refuses more origins than one sandbox may record", () => {
     const origins = Array.from({ length: 17 }, (_, i) => `https://o${i}.example.test:8443`);
     expectBuildConfigError(

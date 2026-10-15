@@ -992,6 +992,7 @@ Each value must be a bare origin: a scheme, a host, and an optional port, withou
 A remote origin must use `https`, and `http` is accepted only for a loopback host.
 The flag requires a NemoClaw-managed OpenClaw image, so onboarding refuses it with `--from` or `--from-image`, or when it falls back to the Dockerfile build.
 It does not change the dashboard bind address or the URL that NemoClaw reports.
+If you add or change origins when you onboard an existing sandbox again, onboarding records them, but the running dashboard uses them only after `$$nemoclaw <name> rebuild`.
 `$$nemoclaw <name> rebuild` replays the recorded origins.
 To remove them, unset `NEMOCLAW_DASHBOARD_ORIGINS`, run onboard again without `--dashboard-origin`, then rebuild the sandbox.
 
