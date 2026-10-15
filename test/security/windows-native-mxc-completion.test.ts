@@ -4,22 +4,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("node:child_process", () => ({
-  execFile: Object.assign(() => {}, {
-    [Symbol.for("nodejs.util.promisify.custom")]: mocks.invoke,
-  }),
+vi.mock("../../packaging/windows/runtime/run-installed-native-turn.mts", () => ({
+  run: mocks.invoke,
 }));
 
 import { waitForNativeMxcCompletion } from "../../packaging/windows/runtime/native-ui-lifecycle.mts";
 
 const gateway = { exitCode: null, signalCode: null };
+const ownProcess = vi.fn();
 const completed = {
   name: "owned",
   phase: "Ready",
   ready_condition: { status: "True", reason: "AgentCompleted" },
 };
 const reply = (status: unknown) => ({ stdout: JSON.stringify(status), stderr: "" });
-beforeEach(() => mocks.invoke.mockReset());
+beforeEach(() => {
+  mocks.invoke.mockReset();
+  ownProcess.mockReset();
+});
 
 describe("native MXC execution completion", () => {
   it.each([
@@ -35,7 +37,15 @@ describe("native MXC execution completion", () => {
       }),
     );
     await expect(
-      waitForNativeMxcCompletion("openshell.exe", {}, "owned", gateway, null),
+      waitForNativeMxcCompletion(
+        "openshell.exe",
+        {},
+        "owned",
+        gateway,
+        null,
+        undefined,
+        ownProcess,
+      ),
     ).resolves.toBe(reason);
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(mocks.invoke.mock.calls[0][1]).toEqual(["sandbox", "get", "owned", "-o", "json"]);
@@ -48,7 +58,15 @@ describe("native MXC execution completion", () => {
       .mockResolvedValue(reply(completed));
     const lease = { assertHeld: vi.fn() };
     await expect(
-      waitForNativeMxcCompletion("openshell.exe", {}, "owned", gateway, lease),
+      waitForNativeMxcCompletion(
+        "openshell.exe",
+        {},
+        "owned",
+        gateway,
+        lease,
+        undefined,
+        ownProcess,
+      ),
     ).resolves.toBe("AgentCompleted");
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(lease.assertHeld).toHaveBeenCalledTimes(4);
@@ -67,7 +85,12 @@ describe("native MXC execution completion", () => {
     expect(mocks.invoke).toHaveBeenCalledWith(
       "openshell.exe",
       ["sandbox", "get", "owned", "-o", "json"],
-      expect.objectContaining({ encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 }),
+      {},
+      "Reading native MXC completion",
+      expect.any(Number),
+      undefined,
+      ownProcess,
+      { signal: undefined, quiet: true },
     );
   });
 
@@ -80,7 +103,15 @@ describe("native MXC execution completion", () => {
       }),
     );
     await expect(
-      waitForNativeMxcCompletion("openshell.exe", {}, "owned", gateway, null),
+      waitForNativeMxcCompletion(
+        "openshell.exe",
+        {},
+        "owned",
+        gateway,
+        null,
+        undefined,
+        ownProcess,
+      ),
     ).resolves.toBe("ExecFailed");
   });
 
@@ -107,6 +138,8 @@ describe("native MXC execution completion", () => {
       "owned",
       gateway,
       null,
+      undefined,
+      ownProcess,
     ).catch((value: unknown) => value);
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain(error);
@@ -116,7 +149,7 @@ describe("native MXC execution completion", () => {
   it("does not treat a Ready phase without a completion condition as teardown", async () => {
     mocks.invoke.mockResolvedValue(reply({ name: "owned", phase: "Ready", ready_condition: null }));
     await expect(
-      waitForNativeMxcCompletion("openshell.exe", {}, "owned", gateway, null, 200),
+      waitForNativeMxcCompletion("openshell.exe", {}, "owned", gateway, null, 200, ownProcess),
     ).rejects.toThrow("did not complete");
   });
 
@@ -128,6 +161,8 @@ describe("native MXC execution completion", () => {
         "owned",
         { exitCode: 1, signalCode: null },
         null,
+        undefined,
+        ownProcess,
       ),
     ).rejects.toThrow("gateway stopped");
     expect(mocks.invoke).not.toHaveBeenCalled();

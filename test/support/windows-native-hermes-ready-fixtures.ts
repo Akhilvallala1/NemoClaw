@@ -10,6 +10,8 @@ import { finished } from "node:stream/promises";
 import vm from "node:vm";
 import ts from "typescript";
 import { hermesDashboardPythonSource } from "../../packaging/windows/runtime/native-hermes-dashboard.mts";
+import { hermesInferencePipePythonSource } from "../../packaging/windows/runtime/native-hermes-inference-pipe.mts";
+import { hermesPipeLoopPythonSource } from "../../packaging/windows/runtime/native-hermes-pipe-loop.mts";
 import { nativeHermesConfiguration } from "../../packaging/windows/runtime/native-options.mts";
 import { createNativeDiagnosticCapture } from "../../packaging/windows/runtime/native-session-diagnostics.mts";
 
@@ -36,13 +38,22 @@ function findNode(root: ts.Node, predicate: (node: ts.Node) => boolean): ts.Node
   if (!found) throw new Error("The actual contained dashboard implementation was not found.");
   return found;
 }
-const generator = findNode(
-  source,
-  (node) => ts.isFunctionDeclaration(node) && node.name?.text === "interactiveWorkloadSource",
+const generators = ["nativeHermesMessagingArguments", "interactiveWorkloadSource"].map((name) =>
+  findNode(source, (node) => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    .getText(source)
+    .replace(/^export\s+/, ""),
 );
 const generated = new vm.Script(
-  generator.getText(source).replace(/^export\s+/, "") + "\ninteractiveWorkloadSource();",
-).runInNewContext({ String, hermesDashboardPythonSource, nativeHermesConfiguration }) as string;
+  ts.transpileModule(generators.join("\n") + "\ninteractiveWorkloadSource();", {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText,
+).runInNewContext({
+  String,
+  hermesDashboardPythonSource,
+  hermesInferencePipePythonSource,
+  hermesPipeLoopPythonSource,
+  nativeHermesConfiguration,
+}) as string;
 const workload = ts.createSourceFile(
   "workload.mjs",
   generated,
@@ -52,6 +63,7 @@ const workload = ts.createSourceFile(
 );
 const functions = [
   "waitForHermesDashboardReady",
+  "waitForOwnedNativeAgent",
   "stopOwnedNativeAgent",
   "watchNativeStopRequest",
 ].map((name) =>

@@ -22,6 +22,7 @@ import { stopChild } from "../../packaging/windows/runtime/run-installed-native-
 
 async function probeNativeUiRegistry(output: string, code: number) {
   const directory = await mkdtemp(path.join(tmpdir(), "native-create-registry-"));
+  const probes: ChildProcess[] = [];
   try {
     const script = path.join(directory, "registry.mjs");
     const executable = path.join(directory, "openshell-fixture");
@@ -35,8 +36,14 @@ async function probeNativeUiRegistry(output: string, code: number) {
       `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(script)} "$@"\n`,
     );
     await chmod(executable, 0o700);
-    return await confirmNativeUiRegistryEmpty(executable, { PATH: "/usr/bin:/bin" });
+    return await confirmNativeUiRegistryEmpty(
+      executable,
+      { PATH: "/usr/bin:/bin" },
+      undefined,
+      (child) => probes.push(child),
+    );
   } finally {
+    expect((await Promise.all(probes.map(stopChild))).every(Boolean)).toBe(true);
     await rm(directory, { recursive: true, force: true });
   }
 }

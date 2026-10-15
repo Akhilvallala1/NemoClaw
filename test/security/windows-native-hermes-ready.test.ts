@@ -23,10 +23,12 @@ describe("native Hermes dashboard readiness", () => {
     const parent = {
       HERMES_DESKTOP_READY_FILE: "outside-ready.json",
       HERMES_NODE: "owned-node",
+      NEMOCLAW_WORKER_ROOT: "owned-worker",
     };
     const environment = dashboardChildEnvironment(parent);
     expect(environment.HERMES_DESKTOP_READY_FILE).toBe("");
     expect(environment.HERMES_NODE).toBe("owned-node");
+    expect(environment.PYTHONPATH).toBe("owned-worker");
     expect(parent.HERMES_DESKTOP_READY_FILE).toBe("outside-ready.json");
   });
 

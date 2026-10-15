@@ -147,6 +147,7 @@ describe.each(routes)("native %s result cleanup", (route) => {
           gateway: fixture.gateway,
           stateSession: fixture.runtimeLease,
         },
+        fixture.ownProcess,
       ],
     ]);
     expect(finished).toBe(false);
@@ -177,6 +178,8 @@ describe.each(routes)("native %s result cleanup", (route) => {
           "owned-sandbox",
           fixture.gateway,
           fixture.runtimeLease,
+          undefined,
+          fixture.ownProcess,
         ],
       ]);
       expect(fixture.deletions).toEqual([]);
@@ -190,6 +193,9 @@ describe.each(routes)("native %s result cleanup", (route) => {
           ["sandbox", "delete", "owned-sandbox"],
           fixture.environment,
           expect.any(String),
+          undefined,
+          undefined,
+          fixture.ownProcess,
         ],
       ]);
     },
@@ -287,7 +293,9 @@ describe("native one-shot result ownership", () => {
   ])("rejects the actual $name result", async ({ result }) => {
     const fixture = await openNativeTurnResultFixture();
     try {
-      fixture.publish(result);
+      const workload = fixture.publish(result);
+      await workload.closed;
+      expect(workload.child.exitCode).toBe(0);
       await expect(fixture.wait()).rejects.toThrow("turn result was not exact");
     } finally {
       await fixture.close();

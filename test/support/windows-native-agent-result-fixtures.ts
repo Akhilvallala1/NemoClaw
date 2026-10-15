@@ -189,6 +189,9 @@ export function createNativeAgentCompletionFixture(_route: ResultRoute, deferAbs
   const deletions: unknown[][] = [];
   const registryQueries: unknown[][] = [];
   const runtimeLease = { assertHeld() {} };
+  const ownProcess = (_child: ChildProcess) => {
+    throw new Error("The controlled command boundary must not launch a real process.");
+  };
   let confirmAbsent!: () => void;
   let rejectAbsence!: (error: Error) => void;
   const absence = new Promise<void>((resolve, reject) => {
@@ -203,6 +206,7 @@ export function createNativeAgentCompletionFixture(_route: ResultRoute, deferAbs
     cliEnvironment: environment,
     sandboxName: "owned-sandbox",
     gateway,
+    gatewaySession: { ownCommandProcess: ownProcess },
     agentLabel: "Hermes",
     create: null,
     runtimeLease,
@@ -232,5 +236,6 @@ export function createNativeAgentCompletionFixture(_route: ResultRoute, deferAbs
     runtimeLease,
     confirmAbsent,
     rejectAbsence,
+    ownProcess,
   };
 }
