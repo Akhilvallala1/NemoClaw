@@ -216,7 +216,7 @@ import { isAbsolute, join } from "node:path";
 
 function deny(reason) {
   throw new Error(
-    `Cannot replace OpenShell: ${reason}. Back up and retire the legacy gateway with the installed CLI before retrying. Existing components and gateway data were not changed.`,
+    `Cannot replace OpenShell: ${reason}. Keep the existing gateway and sandboxes intact until an approved migration path is available. Existing components and gateway data were not changed.`,
   );
 }
 

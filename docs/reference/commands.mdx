@@ -752,8 +752,12 @@ The installer detects existing sandbox sessions before onboarding and prints a w
 curl -fsSL https://www.nvidia.com/nemoclaw.sh | NEMOCLAW_SINGLE_SESSION=1 bash
 ```
 
-When existing sandboxes were created with OpenShell earlier than `0.0.37`, the installer prompts before running the automatic gateway upgrade path.
-For scripted installs, set `NEMOCLAW_ACCEPT_EXPERIMENTAL_OPENSHELL_UPGRADE=1` to allow the automatic path to prepare the current CLI without replacing OpenShell, back up every registered sandbox with the current state manifest, retire an installed gateway whose OpenShell version is outside the current release's supported range, install the supported OpenShell release, and recover the existing sandboxes.
+For an eligible upgrade within OpenShell `0.0.x`, the installer prompts when registered sandboxes were created before `0.0.37`.
+If a registered sandbox uses an OpenShell `0.0.x` gateway, the installer refuses to replace that gateway with OpenShell `0.1.3` and reports the affected sandbox names after name validation.
+It leaves the gateway and sandboxes unchanged before backup or gateway retirement; neither `NEMOCLAW_ACCEPT_EXPERIMENTAL_OPENSHELL_UPGRADE=1` nor `NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1` bypasses the stop.
+Refer to [Update Sandboxes](../manage-sandboxes/operate-sandboxes/update-sandboxes#use-the-automatic-upgrade-path) before upgrading registered sandboxes across this version boundary.
+For a supported upgrade that does not cross from OpenShell `0.0.x` to `0.1.x`, scripted installs can set `NEMOCLAW_ACCEPT_EXPERIMENTAL_OPENSHELL_UPGRADE=1` to allow the automatic path.
+That path prepares the current CLI, backs up registered sandboxes, retires an out-of-range gateway, installs the supported OpenShell release, and recovers eligible sandboxes.
 The installer reads that supported range from the prepared current source and stops without retiring the gateway if the installed version is unknown or the range is missing or invalid.
 When the installed OpenShell version is already supported, the installer keeps the running gateway through the host update.
 On Linux and macOS, if installed OpenShell lifecycle commands cannot retire the gateway, the installer uses verified NemoClaw-managed service or PID-file evidence for the supported recovery path.
@@ -785,6 +789,7 @@ That flow prepares the current CLI before it replaces OpenShell.
 If it completes, do not run the manual steps below.
 Continue manually only when the automatic flow stops after preparing the CLI or a support workflow directs you to this recovery path.
 Use the prepared current CLI to require strict backup and retire all applicable registered legacy forwards before you retire the old gateway.
+Do not retire an OpenShell `0.0.x` gateway with registered sandboxes through these manual commands; the installer cannot recover those sandboxes on OpenShell `0.1.3`.
 Strict backup can report a confirmed stranded registry sandbox without creating a backup for it because both the selected gateway and the container provider prove that no sandbox runtime remains.
 That record requires the cleanup or recreation action printed by `$$nemoclaw backup-all`, but it does not block a prepared upgrade after the strict command succeeds:
 

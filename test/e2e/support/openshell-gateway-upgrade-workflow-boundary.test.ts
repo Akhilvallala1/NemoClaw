@@ -24,6 +24,7 @@ import {
   currentNemoclawUpgradeRef,
   gatewayCredentialNonExposureScript,
   gatewayUpgradeRecoverySucceeded,
+  gatewayServiceWasPreserved,
   gatewayUpgradeAgentResponseIsSuccessful,
   gatewayUpgradeInstallerCommand,
   prepareGatewayUpgradeUserManager,
@@ -65,6 +66,22 @@ describe("OpenShell gateway upgrade boundary", () => {
   });
   const beforeService = service("a".repeat(32));
   const afterService = service("b".repeat(32));
+
+  it("keeps the same active systemd invocation when a 0.1.x cutover is denied (#12558)", () => {
+    const evidence = {
+      before: beforeService,
+      after: beforeService,
+      expectedFragmentPath: fragmentPath,
+    };
+    expect(gatewayServiceWasPreserved(evidence)).toBe(true);
+    expect(gatewayServiceWasPreserved({ ...evidence, after: afterService })).toBe(false);
+    expect(
+      gatewayServiceWasPreserved({
+        ...evidence,
+        after: { ...beforeService, stdout: beforeService.stdout.replace("=active", "=inactive") },
+      }),
+    ).toBe(false);
+  });
 
   it("requires a successful query and a new active service invocation for systemd recovery", () => {
     const evidence = {

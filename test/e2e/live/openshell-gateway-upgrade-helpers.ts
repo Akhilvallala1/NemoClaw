@@ -124,6 +124,13 @@ function gatewayServiceWasReplaced(evidence: GatewayUpgradeServiceEvidence): boo
   return before !== null && after !== null && before !== after;
 }
 
+/** A denied cutover must leave the same active gateway service in place. */
+export function gatewayServiceWasPreserved(evidence: GatewayUpgradeServiceEvidence): boolean {
+  const before = activeServiceInvocation(evidence.before, evidence.expectedFragmentPath);
+  const after = activeServiceInvocation(evidence.after, evidence.expectedFragmentPath);
+  return before !== null && before === after;
+}
+
 export async function captureGatewayUpgradeFailureDiagnostics(
   exitCode: number | null,
   capture: (() => Promise<void>) | undefined,
