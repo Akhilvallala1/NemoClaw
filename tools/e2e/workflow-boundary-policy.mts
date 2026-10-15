@@ -23,8 +23,8 @@ export const E2E_ACTION_PROVENANCE = {
   },
   stageNativePodmanToolchains: {
     reference:
-      "NVIDIA/NemoClaw/.github/actions/stage-native-podman-e2e-toolchains@dfb7fb7c0ae86b2926ec6e896bec72bacd9b23a2",
-    contentSha256: "60e4a4e39c06c9de3c2e64caaafcb232e0742c5a9afa7a9b472a9ee086123897",
+      "NVIDIA/NemoClaw/.github/actions/stage-native-podman-e2e-toolchains@19eb13446b3eb5e41cca2e65b44c9b33c963a595",
+    contentSha256: "7fd90d4dc1fbed1c0c037a33239e68ab29ff7e937744743398d87cf834ac5c2a",
   },
   restoreCliArtifact: {
     reference:
@@ -63,6 +63,6 @@ export const E2E_ACTION_PROVENANCE = {
 
 export const E2E_JOB_POLICY = {
   cliArtifactProducer: "generate-matrix",
-  prepareNoBuild: ["managed-image-multiarch-startup"],
-  prepareTrustedBuild: ["managed-image-protected-runtime"],
+  prepareNoBuild: ["managed-image-multiarch-startup", "managed-image-protected-runtime"],
+  prepareTrustedBuild: ["llama-cpp-dgx-spark-qualification"],
 } as const;

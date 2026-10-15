@@ -1,6 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  hostedNativeProvider,
+  usesNativeHermesEndpoint,
+} from "../inference/native-provider/hosted";
+import { requireHostedProviderAttachment } from "../inference/native-provider/hosted-attachment";
+import { prepareHostedNativeProvider } from "../inference/native-provider/setup";
+import type { NativeProviderAttachment } from "../inference/native-provider/contract";
+
 import type { OpenShellGatewayLifecycle } from "../adapters/openshell/gateway-lifecycle";
 import { canonicalEndpoint } from "../core/url-utils";
 import { isBedrockRuntimeEndpoint } from "../inference/bedrock-runtime";
@@ -15,7 +23,7 @@ import {
   formatGatewayRouteImpactWarning,
   isAdvisoryGatewayRouteConflict,
 } from "../inference/gateway-route-compatibility";
-import {
+import type {
   withGatewayRouteMutationLock,
   withModelRouterPortLifecycleLock,
 } from "../inference/gateway-route-mutation-lock";
@@ -50,11 +58,12 @@ import {
   scopeGatewayOpenshellArgs,
   type OpenShellGatewayEndpointEnvironment,
 } from "../adapters/openshell/gateway-scope";
-import { withSandboxMutationLock } from "../state/mcp-lifecycle-lock";
+import type { withSandboxMutationLock } from "../state/mcp-lifecycle-lock";
 import type { Session } from "../state/onboard-session";
+import type { SandboxEntry } from "../state/registry/types";
 import { createSandboxHostLocalInferenceProvenance } from "../state/registry/host-local-inference";
-import { resolveModelRouterPort } from "./model-router";
 import {
+  withRoutedInferencePortLock,
   type RoutedProviderDeps,
   upsertRoutedProvider as upsertRoutedInferenceProvider,
 } from "./routed-inference";
@@ -237,6 +246,8 @@ export type SetupInferenceDeps = ProviderBranchDeps & {
   // by hand, so every read below must stay optional-chained.
   getSandbox?: typeof import("../state/registry").getSandbox;
   listSandboxes?: typeof import("../state/registry").listSandboxes;
+  getNativeHostedProviderAuthority?: typeof import("../state/registry").getNativeHostedProviderAuthority;
+  setNativeHostedProviderAuthority?: typeof import("../state/registry").setNativeHostedProviderAuthority;
   getNativeNvidiaProviderAuthority?: typeof import("../state/registry").getNativeNvidiaProviderAuthority;
   setNativeNvidiaProviderAuthority?: typeof import("../state/registry").setNativeNvidiaProviderAuthority;
   unloadOllamaModels?: (onlyModels: readonly string[]) => OllamaUnloadResult | void;
@@ -635,12 +646,199 @@ function releaseSupersededOllamaModel(
   if (authorityRefusal) throw authorityRefusal;
 }
 
+function shouldStageGatewayRouteAfterBackup(
+  provider: string,
+  source: SandboxEntry | null | undefined,
+  hostLocalSelection: ProviderInferenceSetupOptions["hostLocalInference"],
+  credentialEnv: string | null,
+  ollamaProxyCredentialEnv: string,
+): boolean {
+  return Boolean(
+    inferenceProviders.isRemoteProviderName(provider) &&
+    !hostLocalSelection &&
+    credentialEnv !== ollamaProxyCredentialEnv &&
+    source &&
+    !isLocalOllamaRouteOwner(source) &&
+    source.pendingRouteReservation !== true,
+  );
+}
+
+function createGatewayRouteStager(input: {
+  deps: SetupInferenceDeps;
+  provider: string;
+  sandboxName: string | null;
+  gatewayName: string;
+  endpointUrl: string | null;
+  credentialEnv: string | null;
+  hostLocalSelection: ProviderInferenceSetupOptions["hostLocalInference"];
+  options: ProviderInferenceSetupOptions;
+  revalidateSandboxIdentity?: (operation: string) => void;
+}) {
+  let stagedRoute: Parameters<OpenShellInferenceRouteMutator["setInferenceRoute"]>[0] | null = null;
+  const stagedProviderUpserts: Array<
+    () => Promise<Awaited<ReturnType<CommonDeps["upsertProvider"]>>>
+  > = [];
+  const publishedSourceForStaging = (): SandboxEntry | null => {
+    const source =
+      input.sandboxName && input.options.deferPublishedRouteReservation
+        ? input.deps.getSandbox?.(input.sandboxName)
+        : null;
+    return shouldStageGatewayRouteAfterBackup(
+      input.provider,
+      source,
+      input.hostLocalSelection,
+      input.credentialEnv,
+      input.deps.ollamaProxyCredentialEnv,
+    )
+      ? (source ?? null)
+      : null;
+  };
+  const mutator: OpenShellInferenceRouteMutator = {
+    setInferenceRoute: (request) => {
+      input.revalidateSandboxIdentity?.("change the OpenShell inference provider route");
+      if (publishedSourceForStaging()) {
+        stagedRoute = request;
+        return Promise.resolve({ ok: true });
+      }
+      return input.deps.inferenceRouteMutator.setInferenceRoute(request);
+    },
+  };
+  return {
+    mutator,
+    reusePublishedProvider: (providerName: string) => {
+      const source = publishedSourceForStaging();
+      if (!source || source.provider !== providerName) return null;
+      if (
+        (source.endpointUrl ?? null) !== input.endpointUrl ||
+        (source.credentialEnv ?? null) !== input.credentialEnv ||
+        (source.preferredInferenceApi ?? null) !== (input.options.preferredInferenceApi ?? null)
+      ) {
+        return {
+          ok: false,
+          status: 1,
+          message:
+            `Cannot change provider '${providerName}' endpoint, credential binding, or ` +
+            `inference API while recreating the published sandbox. Re-run this model ` +
+            `change with the source sandbox's provider configuration.`,
+        };
+      }
+      return { ok: true };
+    },
+    stageProviderUpsert: (
+      upsert: () => Promise<Awaited<ReturnType<CommonDeps["upsertProvider"]>>>,
+    ) => {
+      if (!publishedSourceForStaging()) return false;
+      stagedProviderUpserts.push(upsert);
+      return true;
+    },
+    hasStagedRoute: () => stagedRoute !== null,
+    successResult: (): SetupInferenceResult => {
+      if (!stagedRoute) {
+        if (stagedProviderUpserts.length > 0)
+          throw new Error("The staged inference provider has no deferred route to publish.");
+        return { ok: true };
+      }
+      const request = stagedRoute;
+      const providerUpserts = [...stagedProviderUpserts];
+      return {
+        ok: true,
+        // The sandbox create phase holds the gateway-route lock through backup,
+        // route publication, and reservation. Acquiring it here would deadlock.
+        deferredInferenceRoute: async (reserve) => {
+          input.revalidateSandboxIdentity?.("apply the backed-up sandbox inference route");
+          const target = { kind: "named" as const, gatewayName: input.gatewayName };
+          const before = await input.deps.inferenceRouteObserver.observeInferenceRoute({
+            target,
+          });
+          if (!before.ok || before.value.state !== "configured") {
+            throw new Error(
+              `Cannot capture the published inference route on gateway '${input.gatewayName}' before replacement.`,
+            );
+          }
+          const sourceRoute = before.value.route;
+          try {
+            for (const upsert of providerUpserts) {
+              const providerResult = await upsert();
+              if (!providerResult.ok)
+                throw new Error(
+                  providerResult.message ??
+                    `Cannot update the inference provider on gateway '${input.gatewayName}'.`,
+                );
+            }
+            const result = await input.deps.inferenceRouteMutator.setInferenceRoute(request);
+            if (!result.ok) throw new Error(result.error.message);
+            const after = await input.deps.inferenceRouteObserver.observeInferenceRoute({
+              target,
+            });
+            if (
+              !after.ok ||
+              after.value.state !== "configured" ||
+              after.value.route.provider !== request.route.provider ||
+              after.value.route.model !== request.route.model
+            ) {
+              throw new Error("The replacement inference route was not verified.");
+            }
+            reserve();
+          } catch (error) {
+            const live = await input.deps.inferenceRouteObserver.observeInferenceRoute({
+              target,
+            });
+            if (
+              !live.ok ||
+              live.value.state !== "configured" ||
+              ((live.value.route.provider !== sourceRoute.provider ||
+                live.value.route.model !== sourceRoute.model) &&
+                (live.value.route.provider !== request.route.provider ||
+                  live.value.route.model !== request.route.model))
+            ) {
+              throw new Error(
+                "Cannot safely restore the published inference route after replacement failed; inspect the live gateway before retrying.",
+                { cause: error },
+              );
+            }
+            if (
+              live.value.route.provider !== sourceRoute.provider ||
+              live.value.route.model !== sourceRoute.model
+            ) {
+              input.revalidateSandboxIdentity?.("restore the published sandbox inference route");
+              const restored = await input.deps.inferenceRouteMutator.setInferenceRoute({
+                ...request,
+                route: sourceRoute,
+              });
+              if (!restored.ok) {
+                throw new Error(
+                  `Cannot restore the published inference route: ${restored.error.message}`,
+                  { cause: error },
+                );
+              }
+              const confirmed = await input.deps.inferenceRouteObserver.observeInferenceRoute({
+                target,
+              });
+              if (
+                !confirmed.ok ||
+                confirmed.value.state !== "configured" ||
+                confirmed.value.route.provider !== sourceRoute.provider ||
+                confirmed.value.route.model !== sourceRoute.model
+              ) {
+                throw new Error(
+                  "Cannot verify restoration of the published inference route; inspect the live gateway before retrying.",
+                  { cause: error },
+                );
+              }
+            }
+            throw error;
+          }
+        },
+      };
+    },
+  };
+}
+
 export function createSetupInference(
   defaults: SetupInferenceDeps,
   overrides: Partial<SetupInferenceDeps> = {},
 ): SetupInference {
   const deps: SetupInferenceDeps = { ...defaults, ...overrides };
-  const { inferenceRouteMutator } = deps;
 
   return async function setupInferenceWithDeps(
     sandboxName: string | null,
@@ -661,13 +859,9 @@ export function createSetupInference(
       provider === "compatible-anthropic-endpoint" && isBedrockRuntimeEndpoint(endpointUrl);
     let shouldLogSuccessfulRoute = false;
     const withInferenceMutationLocks = <T>(operation: () => Promise<T> | T): Promise<T> =>
-      deps.withGatewayRouteMutationLock(gatewayName, () => {
-        if (!routedProvider) return operation();
-        const withRouterPortLock =
-          deps.withModelRouterPortLifecycleLock ?? withModelRouterPortLifecycleLock;
-        const port = (deps.getModelRouterPort ?? resolveModelRouterPort)();
-        return withRouterPortLock(port, operation);
-      });
+      deps.withGatewayRouteMutationLock(gatewayName, () =>
+        withRoutedInferencePortLock(routedProvider, operation, deps),
+      );
     const mutateGatewayRoute = (): Promise<SetupInferenceResult> =>
       // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: provider onboarding centralizes route and two-phase transaction ordering.
       withInferenceMutationLocks(async () => {
@@ -681,7 +875,27 @@ export function createSetupInference(
           );
           return deps.exitProcess(1);
         }
-        if (!isNativeNvidiaProvider(provider)) {
+        const recordedSandbox =
+          provider === "hermes-provider" && sandboxName ? deps.getSandbox?.(sandboxName) : null;
+        const hermesAuthority =
+          provider === "hermes-provider"
+            ? ((recordedSandbox?.provider === provider
+                ? requireHostedProviderAttachment(
+                    recordedSandbox.nativeHostedProviderAttachment,
+                    provider,
+                  )
+                : undefined) ??
+              deps.getNativeHostedProviderAuthority?.(
+                gatewayName,
+                provider,
+                endpointUrl || undefined,
+              ))
+            : undefined;
+        const nativeHostedSelection =
+          hostedNativeProvider(provider) &&
+          (provider !== "hermes-provider" ||
+            usesNativeHermesEndpoint(endpointUrl, hermesAuthority));
+        if (!isNativeNvidiaProvider(provider) && !nativeHostedSelection) {
           const observedRoute = await deps.inferenceRouteObserver.observeInferenceRoute({
             target: { kind: "named", gatewayName },
           });
@@ -757,18 +971,24 @@ export function createSetupInference(
           revalidateSandboxIdentity?.("change the OpenShell inference provider route");
           return runExactGatewayOpenshell(...args);
         };
-        const revalidatingInferenceRouteMutator: OpenShellInferenceRouteMutator = {
-          setInferenceRoute: (request) => {
-            revalidateSandboxIdentity?.("change the OpenShell inference provider route");
-            return inferenceRouteMutator.setInferenceRoute(request);
-          },
-        };
+        const hostLocalSelection = options.hostLocalInference;
+        const routeStager = createGatewayRouteStager({
+          deps,
+          provider,
+          sandboxName,
+          gatewayName,
+          endpointUrl,
+          credentialEnv,
+          hostLocalSelection,
+          options,
+          revalidateSandboxIdentity,
+        });
+        const revalidatingInferenceRouteMutator = routeStager.mutator;
         let hostLocalRoute: HostLocalInferenceStartupRoute | null = null;
         let hostLocalGatewayMutation: HostLocalInferenceGatewayMutation | null = null;
         let hostLocalRollbackAttempted = false;
         let hostLocalRegistryPublicationEntered = false;
         const hostLocalProviderErrors: string[] = [];
-        const hostLocalSelection = options.hostLocalInference;
         let routeReserved = false;
         let hostLocalInferenceReceipt: string | null = null;
         let hostLocalInferenceProvenance:
@@ -776,9 +996,33 @@ export function createSetupInference(
           | undefined;
         let hostLocalInferenceGatewayPortAuthority: number | undefined;
         let hostLocalInferenceRuntimeProviderId: string | undefined;
+        let nativeHostedEndpoint: string | undefined;
+        let nativeHostedCredentialEnv: string | undefined;
+        let nativeHostedProviderAttachment: NativeProviderAttachment | undefined;
+        let retainedNativeHostedCredential = false;
         let nativeNvidiaProviderAttachment: NativeNvidiaProviderAttachment | undefined;
         const reserveRoute = (name: string, selectedProvider: string, selectedModel: string) => {
           if (routeReserved) return true;
+          // Local Ollama cleanup runs after this reservation; it must not unload
+          // a model while its source route remains published.
+          const publishedSource = options.deferPublishedRouteReservation
+            ? deps.getSandbox?.(name)
+            : null;
+          if (
+            options.deferPublishedRouteReservation &&
+            shouldStageGatewayRouteAfterBackup(
+              provider,
+              publishedSource,
+              hostLocalSelection,
+              credentialEnv,
+              deps.ollamaProxyCredentialEnv,
+            )
+          ) {
+            // The sandbox phase owns the replacement reservation after its
+            // pre-delete backup succeeds. Keep the current source connectable
+            // if that backup rejects the workspace.
+            return true;
+          }
           revalidateSandboxIdentity?.("reserve the sandbox inference route");
           // A route-only reservation abandoned by an earlier run otherwise
           // refuses this one and blames a session that no longer exists
@@ -787,15 +1031,16 @@ export function createSetupInference(
           const route: Parameters<SetupInferenceDeps["updateSandbox"]>[1] = {
             provider: selectedProvider,
             model: selectedModel,
-            endpointUrl: hostLocalRoute?.applicationBaseUrl ?? endpointUrl,
+            endpointUrl: nativeHostedEndpoint ?? hostLocalRoute?.applicationBaseUrl ?? endpointUrl,
             endpointSource: hostLocalRoute ? "inference-set" : endpointSource,
-            credentialEnv,
+            credentialEnv: nativeHostedCredentialEnv ?? credentialEnv,
             preferredInferenceApi: options.preferredInferenceApi ?? null,
             gatewayName,
             reservationSessionId: options.reservationSessionId,
             hostLocalInferenceReceipt,
             ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
             ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
+            ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
             ...(hostLocalInferenceProvenance && hostLocalInferenceGatewayPortAuthority !== undefined
               ? { gatewayPort: hostLocalInferenceGatewayPortAuthority }
               : {}),
@@ -833,7 +1078,11 @@ export function createSetupInference(
           : deps.error;
         const selectedUpsertProvider: CommonDeps["upsertProvider"] = async (...args) => {
           revalidateSandboxIdentity?.("register the inference provider");
+          const reused = routeStager.reusePublishedProvider(args[0]);
+          if (reused) return reused;
           const upsertProvider = hostLocalGatewayMutation?.upsertProvider ?? defaultUpsertProvider;
+          if (routeStager.stageProviderUpsert(async () => await upsertProvider(...args)))
+            return { ok: true };
           return await upsertProvider(...args);
         };
         const commonDeps = {
@@ -842,6 +1091,7 @@ export function createSetupInference(
           gatewayName,
           upsertProvider: selectedUpsertProvider,
           verifyInferenceRoute: (selectedProvider: string, selectedModel: string) => {
+            if (routeStager.hasStagedRoute()) return;
             if (!hostLocalRoute && sandboxName) {
               reserveRoute(sandboxName, selectedProvider, selectedModel);
             }
@@ -934,6 +1184,33 @@ export function createSetupInference(
         }
 
         const setupSelectedProvider = async (): Promise<SetupInferenceResult | null> => {
+          const hosted = hostedNativeProvider(provider);
+          if (hosted && provider !== deps.hermesProviderAuth.HERMES_PROVIDER_NAME) {
+            if (
+              !deps.providerAdapter ||
+              !deps.getNativeHostedProviderAuthority ||
+              !deps.setNativeHostedProviderAuthority
+            ) {
+              throw new Error(
+                "Native hosted setup is missing its provider adapter or ownership store.",
+              );
+            }
+            const credentialValue =
+              deps.hydrateCredentialEnv(credentialEnv || hosted.credentialEnv) || null;
+            nativeHostedProviderAttachment = await prepareHostedNativeProvider({
+              provider,
+              adapter: deps.providerAdapter,
+              gatewayName,
+              credentialValue,
+              reuseExistingCredential: options.reuseGatewayCredentialWithoutLocalKey === true,
+              recordedSandbox: sandboxName ? deps.getSandbox?.(sandboxName) : null,
+              readAuthority: deps.getNativeHostedProviderAuthority,
+              writeAuthority: deps.setNativeHostedProviderAuthority,
+            });
+            retainedNativeHostedCredential = !credentialValue;
+            return null;
+          }
+
           if (provider === deps.hermesProviderAuth.HERMES_PROVIDER_NAME) {
             return inferenceProviders.setupHermesProviderInference(
               {
@@ -947,10 +1224,37 @@ export function createSetupInference(
               },
               {
                 ...commonDeps,
+                getNativeProviderAuthority: () => hermesAuthority,
+                prepareNativeProvider: async (apiKey, returnedEndpoint) => {
+                  if (
+                    !deps.providerAdapter ||
+                    !deps.getNativeHostedProviderAuthority ||
+                    !deps.setNativeHostedProviderAuthority
+                  )
+                    throw new Error(
+                      "Native Hermes setup is missing its provider adapter or ownership store",
+                    );
+                  revalidateSandboxIdentity?.("register the native Hermes provider");
+                  nativeHostedProviderAttachment = await prepareHostedNativeProvider({
+                    provider,
+                    gatewayName,
+                    adapter: deps.providerAdapter,
+                    credentialValue: apiKey,
+                    endpointUrl: returnedEndpoint,
+                    lookup: deps.resolveEndpointHost,
+                    recordedSandbox: sandboxName ? deps.getSandbox?.(sandboxName) : null,
+                    reuseExistingCredential: apiKey === null,
+                    readAuthority: deps.getNativeHostedProviderAuthority,
+                    writeAuthority: deps.setNativeHostedProviderAuthority,
+                  });
+                  nativeHostedEndpoint =
+                    nativeHostedProviderAttachment.endpointUrl ??
+                    hostedNativeProvider(provider)!.endpoint;
+                  nativeHostedCredentialEnv = "OPENAI_API_KEY";
+                  return nativeHostedProviderAttachment;
+                },
                 hermesProviderAuth: deps.hermesProviderAuth,
                 getHermesToolGatewayBroker: deps.getHermesToolGatewayBroker,
-                providerExistsInGateway: (name: string) =>
-                  deps.providerExistsInGateway(name, gatewayName),
                 normalizeHermesAuthMethod: deps.normalizeHermesAuthMethod,
                 resolveHermesNousApiKey: deps.resolveHermesNousApiKey,
                 checkHermesProviderStoreReachable: deps.checkHermesProviderStoreReachable,
@@ -1190,18 +1494,23 @@ export function createSetupInference(
         try {
           const providerResult = await setupSelectedProvider();
           if (providerResult) return providerResult;
-          if (!nativeNvidiaProviderAttachment) commonDeps.verifyInferenceRoute(provider, model);
+          if (!nativeNvidiaProviderAttachment && !nativeHostedProviderAttachment)
+            commonDeps.verifyInferenceRoute(provider, model);
           if (hostLocalRoute) {
             deps.log(
               "  Deferring inference.local smoke to the sandbox runtime after sandbox readiness.",
             );
-          } else if (options.skipHostInferenceSmoke === true) {
+          } else if (options.skipHostInferenceSmoke === true || retainedNativeHostedCredential) {
             deps.log("  Reusing existing gateway credential; skipping host inference smoke.");
           } else {
             await deps.verifyOnboardInferenceSmoke({
               provider,
               model,
-              endpointUrl,
+              endpointUrl:
+                nativeHostedEndpoint ??
+                nativeHostedProviderAttachment?.endpointUrl ??
+                hostedNativeProvider(provider)?.endpoint ??
+                endpointUrl,
               credentialEnv,
               pinnedAddresses: endpointPinnedAddresses,
               trustedPrivateCapability: endpointTrustedPrivateCapability,
@@ -1273,7 +1582,7 @@ export function createSetupInference(
           }
           revalidateSandboxIdentity?.("report successful inference provider setup");
           shouldLogSuccessfulRoute = true;
-          return { ok: true as const };
+          return routeStager.successResult();
         } catch (error) {
           if (!hostLocalRoute || !hostLocalSelection) throw error;
           emitHostLocalInferenceFailure(

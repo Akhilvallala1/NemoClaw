@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { ModelSelectionProvenance } from "../../../domain/telemetry/provenance";
 import { clearAutoDetectedCompatibleContextWindow } from "../../../inference/compatible-endpoint-context";
 import { resolveAgentProviderInferenceApi } from "../../../inference/config";
 import type { TrustedPrivateEndpointCapability } from "../../../inference/endpoint-ssrf-preflight";
@@ -58,14 +59,28 @@ import {
 import { reserveRecoveredSandboxInferenceRoute } from "../../sandbox-lifecycle";
 import { withInferenceTrace, withProviderSelectionTrace } from "../../tracing";
 import { advanceTo, type OnboardStateTransitionResult, retryTo } from "../result";
-import { createRecovery, type RecoveryAuthority } from "./provider-inference-recovery";
+import {
+  createRecovery,
+  providerModelProvenanceUpdate,
+  readModelSelectionProvenance,
+  selectedOrRecoveredModelProvenance,
+  type RecoveryAuthority,
+} from "./provider-inference-recovery";
 import {
   assertProviderInferenceRouteCompatible,
   guardProviderInferenceRouteSelection,
   type ProviderInferenceProbeRoute,
 } from "./provider-inference-route-containment";
 
-export type ProviderInferenceRetry = { retry: "selection" } | { ok: true; retry?: undefined };
+export type ProviderInferenceRetry = import("../../inference-providers/types").SetupInferenceResult;
+
+function selectedNativeInference(
+  nativeInference: { endpointUrl: string; credentialEnv: string } | undefined,
+  endpointUrl: string | null,
+  credentialEnv: string | null,
+) {
+  return nativeInference ?? { endpointUrl, credentialEnv };
+}
 
 export interface ProviderInferenceSetupOptions {
   gatewayName?: string;
@@ -91,6 +106,8 @@ export interface ProviderInferenceSetupOptions {
   inferenceCapabilityCache?: OnboardInferenceCapabilityCache;
   /** Onboard session that owns the route reservation this setup creates. */
   reservationSessionId?: string;
+  /** Keep a published source row intact until the sandbox create phase passes backup. */
+  deferPublishedRouteReservation?: boolean;
   /** Recheck recorded-route ownership after acquiring route mutation locks. */
   isRecordedProviderRecoveryAuthorized?: () => boolean;
   /** Recheck live OpenShell sandbox identity at each inference mutation edge. */
@@ -101,6 +118,14 @@ export interface ProviderInferenceSetupOptions {
   preparedOllamaProxyToken?: string;
   /** Narrow rebuild authority for the historical default no-auth proxy port. */
   allowLegacyRecordedNoAuthEndpoint?: boolean;
+}
+
+/** Defer fresh routes and incomplete resumes until sandbox backup. */
+function preBackupRouteReservationOptions(
+  effectiveResume: boolean,
+  sandboxStepComplete: boolean,
+): Pick<ProviderInferenceSetupOptions, "deferPublishedRouteReservation"> {
+  return !effectiveResume || !sandboxStepComplete ? { deferPublishedRouteReservation: true } : {};
 }
 
 function legacyRecordedNoAuthEndpointSetupOptions(options: {
@@ -117,6 +142,7 @@ function legacyRecordedNoAuthEndpointSetupOptions(options: {
 }
 
 export interface ProviderSelectionResult {
+  modelSelectionProvenance?: ModelSelectionProvenance;
   model: string | null;
   provider: string;
   endpointUrl: string | null;
@@ -335,6 +361,7 @@ export interface ProviderInferenceStateOptions<Gpu, Agent, Host> {
 }
 
 export interface ProviderInferenceStateResult {
+  deferredInferenceRoute?: (reserve: () => void) => Promise<void>;
   sandboxName: string | null;
   model: string;
   provider: string;
@@ -1258,6 +1285,14 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
   // compatible OpenAI Completions route can apply it.
   const reasoningEffortRequest = resolveReasoningEffortRequest(null, env);
   let model = initial.model;
+  let modelSelectionProvenance = readModelSelectionProvenance(session?.modelSelectionProvenance);
+  const provenanceUpdate = () =>
+    providerModelProvenanceUpdate(modelSelectionProvenance, {
+      model,
+      provider,
+      endpointUrl,
+      preferredInferenceApi,
+    });
   let provider = initial.provider;
   let endpointUrl = initial.endpointUrl;
   let credentialEnv = initial.credentialEnv;
@@ -1300,6 +1335,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
   const effectiveResume = resume && !fresh;
   let hostLocalInferenceRouteOnly = false;
   let hostLocalInferenceProofAuthority: HostLocalInferenceSandboxProofAuthority | null = null;
+  let deferredInferenceRoute: ((reserve: () => void) => Promise<void>) | undefined;
   const hostLocalInferenceResolutionCache = new Map<
     string,
     HostLocalInferenceStartupSelection | null
@@ -1606,6 +1642,10 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         hostLocalInferenceProofAuthority = null;
         prospectiveHostLocalPolicyRoute = null;
       }
+      modelSelectionProvenance = selectedOrRecoveredModelProvenance(
+        selection,
+        modelSelectionProvenance,
+      );
       endpointUrl = selection.endpointUrl;
       credentialEnv = selection.credentialEnv;
       hermesAuthMethod = selection.hermesAuthMethod;
@@ -1683,6 +1723,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       session = await deps.recordStepComplete(
         "provider_selection",
         deps.toSessionUpdates({
+          ...provenanceUpdate(),
           provider,
           model,
           endpointUrl,
@@ -1803,6 +1844,10 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
             ...(endpointTrustedPrivateCapability ? { endpointTrustedPrivateCapability } : {}),
             ...(inferenceCapabilityCache ? { inferenceCapabilityCache } : {}),
             reservationSessionId: session?.sessionId,
+            ...preBackupRouteReservationOptions(
+              effectiveResume,
+              session?.steps?.sandbox?.status === "complete",
+            ),
             ...resolveCachedHostLocalInferenceSetupOptions(confirmedSandboxName),
           };
           await deps.startRecordedStep("inference", { provider, model });
@@ -1835,11 +1880,20 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
           forceProviderSelection = true;
           continue;
         }
+        deferredInferenceRoute = inferenceResult.deferredInferenceRoute;
+        ({ endpointUrl, credentialEnv } = selectedNativeInference(
+          inferenceResult?.nativeInference,
+          endpointUrl,
+          credentialEnv,
+        ));
         session = await deps.recordStepComplete(
           "inference",
           deps.toSessionUpdates({
+            ...provenanceUpdate(),
             provider,
             model,
+            endpointUrl,
+            credentialEnv,
             hermesAuthMethod,
             compatibleEndpointReasoning,
             compatibleEndpointReasoningEffort,
@@ -1968,6 +2022,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       session = await deps.recordStepComplete(
         "inference",
         deps.toSessionUpdates({
+          ...provenanceUpdate(),
           provider,
           model,
           hermesAuthMethod,
@@ -2055,6 +2110,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         session = await deps.recordStepComplete(
           "provider_selection",
           deps.toSessionUpdates({
+            ...provenanceUpdate(),
             provider,
             model,
             endpointUrl,
@@ -2098,6 +2154,10 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         ...(endpointTrustedPrivateCapability ? { endpointTrustedPrivateCapability } : {}),
         ...(inferenceCapabilityCache ? { inferenceCapabilityCache } : {}),
         ...(freshManagedOllama ? { reservationSessionId: session?.sessionId } : {}),
+        ...preBackupRouteReservationOptions(
+          effectiveResume,
+          session?.steps?.sandbox?.status === "complete",
+        ),
         ...providerRecovery.setupOptions(
           recoveredRecordedProvider,
           confirmedSandboxName,
@@ -2135,6 +2195,12 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       forceProviderSelection = true;
       continue;
     }
+    deferredInferenceRoute = inferenceResult.deferredInferenceRoute;
+    ({ endpointUrl, credentialEnv } = selectedNativeInference(
+      inferenceResult?.nativeInference,
+      endpointUrl,
+      credentialEnv,
+    ));
     const hostLocalRoute = resolvedHostLocalInferenceRoute(
       activeHostLocalInferenceSetupOptions.hostLocalInference,
       { endpointUrl, endpointSource, onboardEndpointUrl },
@@ -2152,6 +2218,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
       session = await deps.recordStepComplete(
         "provider_selection",
         deps.toSessionUpdates({
+          ...provenanceUpdate(),
           provider,
           model,
           endpointUrl,
@@ -2172,8 +2239,10 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
     session = await deps.recordStepComplete(
       "inference",
       deps.toSessionUpdates({
+        ...provenanceUpdate(),
         provider,
         model,
+        ...inferenceResult?.nativeInference,
         hermesAuthMethod,
         compatibleEndpointReasoning,
         compatibleEndpointReasoningEffort,
@@ -2211,6 +2280,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
     webSearchConfig,
     hostLocalInferenceRouteOnly,
     hostLocalInferenceSandboxProofAuthority: hostLocalInferenceProofAuthority,
+    deferredInferenceRoute,
     session,
     stateResult,
     stateResults,
