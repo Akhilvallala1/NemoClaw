@@ -2037,6 +2037,17 @@ async function removeSandboxChannelUnlocked(
   const hasChannelResidue =
     registry.getConfiguredMessagingChannelsFromEntry(registryEntry).includes(canonical) ||
     (await policies.getAppliedPresets(sandboxName)).includes(canonical);
+  const existingPlan = registryEntry?.messaging?.plan;
+  if (
+    registryEntry &&
+    channelUsesInSandboxQrPairing(channel) &&
+    !hasChannelResidue &&
+    !existingPlan?.channels.some((candidate) => candidate.channelId === canonical)
+  ) {
+    console.log(`  Channel '${canonical}' is not configured for '${sandboxName}'. Nothing to do.`);
+    recordConfigurationResult(sandboxName, "no_change", "unchanged");
+    return;
+  }
   const recoverPhysicalWechatResidue =
     canonical === "wechat" && resolveAgentForSandbox(sandboxName).name === "openclaw";
 
@@ -2084,7 +2095,6 @@ async function removeSandboxChannelUnlocked(
   const configuredChannels = registry.getConfiguredMessagingChannelsFromEntry(registryEntry);
   let disabledAgentConfigPlan: SandboxMessagingPlan | null = null;
   let removalPlanPersisted = false;
-  const existingPlan = registryEntry?.messaging?.plan;
   const existingRemoval = existingPlan?.channels.some(
     (candidate) => candidate.channelId === canonical && candidate.pendingRemoval === true,
   );
