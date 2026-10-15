@@ -263,6 +263,26 @@ internal static class Program
             throw new InvalidOperationException("The retried maintenance attempt could not be cancelled independently.");
     }
 
+    private static void AssertCancellationFailureDetail()
+    {
+        foreach (var status in new[] { 1223, 1602, unchecked((int)0x800704c7), unchecked((int)0x80070642) })
+        {
+            var before = NativeCancellationState.FailureDetail(status, executionStarted: false);
+            if (before is null || !before.Contains("before Windows started changing application files", StringComparison.Ordinal)
+                || !before.Contains("Approve the Windows permission prompt", StringComparison.Ordinal)
+                || before.Contains("rolled back", StringComparison.Ordinal))
+                throw new InvalidOperationException("Pre-execution cancellation lacks accurate retry guidance.");
+            var after = NativeCancellationState.FailureDetail(status, executionStarted: true);
+            if (after is null || !after.Contains("after Windows started making changes", StringComparison.Ordinal)
+                || after.Contains("before Windows started", StringComparison.Ordinal)
+                || after.Contains("rolled back", StringComparison.Ordinal))
+                throw new InvalidOperationException("Cancellation after execution falsely claims no changes or a confirmed rollback.");
+        }
+        foreach (var status in new[] { 0, 1, 1603, unchecked((int)0x80070643) })
+            if (NativeCancellationState.FailureDetail(status, executionStarted: false) is not null)
+                throw new InvalidOperationException("A non-cancellation status received cancellation guidance.");
+    }
+
     private static string ProductionMethod(string source, string start, string end)
     {
         var startIndex = source.IndexOf(start, StringComparison.Ordinal);
@@ -542,6 +562,7 @@ internal static class Program
         await AssertDownloadedModelOrderingAsync(true, false);
         await AssertDownloadedModelOrderingAsync(false, true);
         AssertRecoverableMaintenanceCancellationCanRetry();
+        AssertCancellationFailureDetail();
         AssertRecoverableMaintenanceProductionWiring();
         await AssertTransactionOutlivesObserverAsync(0, 0);
         await AssertTransactionOutlivesObserverAsync(7, 0);
@@ -556,7 +577,7 @@ internal static class Program
         await AssertPreparationTimeoutStopsHelperAsync();
         await AssertBoundedObservationRetainsOwnerAsync();
         AssertRecoveryStatusRejectsUntrustedResults();
-        Console.WriteLine("25 native setup controls passed; bounded recovery checks preserve transaction ownership and reject invalid status.");
+        Console.WriteLine("26 native setup controls passed; bounded recovery checks preserve transaction ownership and reject invalid status.");
 #if NATIVE_WPF_CONTROLS
         WindowRecoveryControls.Run();
 #endif

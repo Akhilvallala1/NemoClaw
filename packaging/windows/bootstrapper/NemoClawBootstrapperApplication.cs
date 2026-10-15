@@ -460,7 +460,9 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
         this.Engine.Log(LogLevel.Error, $"NemoClaw setup error {args.ErrorCode}: {args.ErrorMessage}");
         if (this.executingPackageId == "MxcSystemDrivePreparation" && args.PackageId == "MxcSystemDrivePreparation")
             this.RememberPreparationFailure(args.ErrorCode);
-        var detail = this.preparationFailure?.Summary ?? $"Windows reported setup error {args.ErrorCode}. Setup log contains the saved details.";
+        var detail = this.preparationFailure?.Summary
+            ?? NativeCancellationState.FailureDetail(args.ErrorCode, this.executingPackage)
+            ?? $"Windows reported setup error {args.ErrorCode}. Setup log contains the saved details.";
         this.Ui(() => this.window?.ShowRecoverableError(detail));
         args.Result = this.cancellation.IsRequested ? Result.Cancel : args.Recommendation;
     }
@@ -495,7 +497,9 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
         }
         else
         {
-            var detail = this.preparationFailure?.Summary ?? "Setup rolled back because Windows could not complete the requested change.";
+            var detail = this.preparationFailure?.Summary
+                ?? NativeCancellationState.FailureDetail(args.Status, this.executingPackage)
+                ?? "Windows could not complete the requested change. Review the setup log before opening the installer again.";
             this.Ui(() => this.window?.ShowFailure(detail, this.BundleLogPath()));
         }
 
