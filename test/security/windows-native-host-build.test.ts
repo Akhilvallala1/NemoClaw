@@ -58,6 +58,8 @@ it.each([
       fixture,
       `
 export function registerPrebuiltPlugins() {}
+export function buildNativeModelCatalog() { throw new Error("Catalog is not used by the turn fixture"); }
+export function parseNativeConfiguration() { throw new Error("Configuration parsing is not used by the turn fixture"); }
 export function runOpenClaw(argv) {
   if (!process.execArgv.includes("--preserve-symlinks-main")) throw new Error("Worker entry traverses denied ancestors");
   if (!process.execArgv.includes("--preserve-symlinks")) throw new Error("Worker dependencies traverse denied ancestors");
