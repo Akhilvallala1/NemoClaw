@@ -39,7 +39,7 @@ try{
     if((Get-FileHash -LiteralPath $python -Algorithm SHA256).Hash.ToLowerInvariant() -cne '54e17da389d3aae8c56b08a06fea5cd2f5acd57d2a7acb4061fc572964d4108b' -or
        (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant() -cne '97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878'){throw 'Pinned external build interpreters changed.'}
     Assert-ReuseBytes ([string]$reuseSpec.sourceArchive) 69242564 'c1f2401c8096e9372c46fa4ef8bdada18ed3cc84c0f5274562b86b7646ed3a87'
-    Assert-ReuseBytes ([string]$reuseSpec.baseZip) 1099967399 'c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc'
+    Assert-ReuseBytes ([string]$reuseSpec.baseZip) 1107789613 'bd59f69d7bba8177239f3d0028de493c55be814c0ee206fff796db08ab941390'
     $baseInventory=Join-Path $build 'base-payload-inventory.json'
     $oldBuild=Join-Path $build 'official-runtime-build.json'
     $archive=[IO.Compression.ZipFile]::OpenRead([string]$reuseSpec.baseZip)
@@ -50,8 +50,8 @@ try{
             try{$incoming.CopyTo($destination)}finally{$destination.Dispose();$incoming.Dispose()}
         }
     }finally{$archive.Dispose()}
-    if((Get-FileHash -LiteralPath $baseInventory -Algorithm SHA256).Hash.ToLowerInvariant() -cne '9b2a7161657e9c55acb57fd52fbe36610747e032aa4323f83422696c112e1f4d' -or
-       (Get-FileHash -LiteralPath $oldBuild -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'c50a92fa7cb97c1d65cebcd958af722d94db1da9819cfe6eb4c20e505954f475'){throw 'The original inventory/build receipt bytes changed.'}
+    if((Get-FileHash -LiteralPath $baseInventory -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'c6255066a9d6ab620c6d6627bb97b2f96f74430c034f8b2016ecc02aa530af70' -or
+       (Get-FileHash -LiteralPath $oldBuild -Algorithm SHA256).Hash.ToLowerInvariant() -cne '828181ba43a2ee417794b383f3a835c44d60aa4f607c0e4fa26df91c63e2470d'){throw 'The original inventory/build receipt bytes changed.'}
     $adaptation=Join-Path $build 'native-adaptation.json'
     Invoke-ReuseTool $python @('-I','-B',(Join-Path $PSScriptRoot 'prepare-native-runtime.py'),'--runtime-root',$RuntimeRoot,
         '--source-root',[string]$reuseSpec.originalBuildRoot,'--target-root',$RuntimeRoot,'--environment','hermes-agent/venv',

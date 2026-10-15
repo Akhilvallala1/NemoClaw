@@ -18,7 +18,7 @@ MXC_SOURCE = "7cd00d1ee6af9208322c924ef64e5113f6704639"
 MXC_FILES = ("wxc-exec.exe", "wxc-host-prep.exe")
 MXC_LICENSE_SHA256 = "d9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb"
 NODE_SHA256 = "97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878"
-OPENSHELL_SOURCE = "6f83bf13e4ec7f03ff20bfb716c2d02b52ed44ad"
+OPENSHELL_SOURCE = "624f55b3c6affedd4f2757c7eb32132196b4c3e8"
 _SOURCE_SPEC = importlib.util.spec_from_file_location(
     "openshell_source", Path(__file__).with_name("openshell_source.py")
 )

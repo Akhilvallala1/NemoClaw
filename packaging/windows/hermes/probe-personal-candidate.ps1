@@ -187,8 +187,8 @@ try {
     $receipt['bootstrapPythonSha256']=$bootstrap.pythonSha256
     $receipt['bootstrapNodeSha256']='97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878'
     if ($nativeProduction) {
-        $receipt.candidateSource='371706dfa3173422b8d7ad521c2519010809697a'
-        $receipt.artifactId=11637766639
+        $receipt.candidateSource='8f54e647a1cda1c3c879ad4e350700a13bb8fc2e'
+        $receipt.artifactId=11995339173
         $compatEvidence=[IO.Path]::GetFullPath($NativeCompatibilityDirectory)
         $proof=Get-Content -LiteralPath (Join-Path $compatEvidence 'result.json') -Raw|ConvertFrom-Json
         $runner=Get-Content -LiteralPath (Join-Path $compatEvidence 'runner-result.json') -Raw|ConvertFrom-Json
@@ -218,7 +218,7 @@ try {
                 $runtimeOwned=$ownership.schemaVersion -eq 1 -and $ownership.classification -ceq 'verified-current-Hermes-base-extraction' -and
                     $ownership.controllerSource -ceq $env:GITHUB_SHA -and $ownership.runtimeRoot -ceq $runtime -and
                     $ownership.createdByExtraction -is [bool] -and $ownership.createdByExtraction -ceq $true -and
-                    $ownership.baseSource -ceq $receipt.candidateSource -and $ownership.baseZipSha256 -ceq 'c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc'
+                    $ownership.baseSource -ceq $receipt.candidateSource -and $ownership.baseZipSha256 -ceq 'bd59f69d7bba8177239f3d0028de493c55be814c0ee206fff796db08ab941390'
             }
         }
         if (-not $runtimeOwned) { throw 'Current base extraction ownership is not confirmed.' }
@@ -226,7 +226,7 @@ try {
         $original=[string]$extraction.originalBuildRoot
         if ($extraction.controllerSource -cne $env:GITHUB_SHA -or $extraction.runtimeRoot -cne $runtime -or
             $extraction.allFilesRehashed -cne $true -or $extraction.allLinksContained -cne $true -or
-            $original -cne 'C:\NemoClawHermesProbe-00503572df74' -or (Test-Path -LiteralPath $original)) { throw 'Current base extraction identity differs.' }
+            $original -cne 'C:\NemoClawHermesProbe-5804d8b1dcca' -or (Test-Path -LiteralPath $original)) { throw 'Current base extraction identity differs.' }
         $reuseInput=Join-Path $output 'current-base-reuse-inputs.json'
         $reuse=@{bootstrapPython=$python;bootstrapNode=$node;sourceArchive=$sourceArchive;baseZip=$baseZip;
             originalBuildRoot=$original;rustBinDirectory=[IO.Path]::GetFullPath($RustBinDirectory);compatibilityEvidence=$compatEvidence}

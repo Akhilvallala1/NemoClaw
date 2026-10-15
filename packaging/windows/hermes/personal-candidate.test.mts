@@ -628,19 +628,19 @@ test("Personal native intake requires all five executions and their owned cleanu
 function currentBaseDerivation() {
   return {
     base: {
-      artifactId: 11637766639,
-      runId: 37969718115,
-      sourceRevision: "371706dfa3173422b8d7ad521c2519010809697a",
-      zipSha256: "c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc",
-      inventorySha256: "9b2a7161657e9c55acb57fd52fbe36610747e032aa4323f83422696c112e1f4d",
-      candidateReceiptSha256: "3a15c2101d25cef859591ce7edebc98dc4cdfc6f8c6c0212105415f1e81b1fea",
-      buildReceiptSha256: "c50a92fa7cb97c1d65cebcd958af722d94db1da9819cfe6eb4c20e505954f475",
+      artifactId: 11995339173,
+      runId: 38778013068,
+      sourceRevision: "8f54e647a1cda1c3c879ad4e350700a13bb8fc2e",
+      zipSha256: "bd59f69d7bba8177239f3d0028de493c55be814c0ee206fff796db08ab941390",
+      inventorySha256: "c6255066a9d6ab620c6d6627bb97b2f96f74430c034f8b2016ecc02aa530af70",
+      candidateReceiptSha256: "f6bf562bf88379049328f3eb2224558becf0bb26e2dc6766acd27ed22dd1a334",
+      buildReceiptSha256: "828181ba43a2ee417794b383f3a835c44d60aa4f607c0e4fa26df91c63e2470d",
     },
     metadataRelocation: {
       schemaVersion: 1,
       classification: "current-adapter-metadata-relocation",
-      baseCandidateSource: "371706dfa3173422b8d7ad521c2519010809697a",
-      previousMarkerSha256: "e9a9baffe32dc0ffc5c0e275fa5389c237b9a9d3a9c116279dc27401aed8232b",
+      baseCandidateSource: "8f54e647a1cda1c3c879ad4e350700a13bb8fc2e",
+      previousMarkerSha256: "89d27c95b5c4f7e5a90f25bcb587e7f67291b1c64359d847168f110a0b29c0d7",
       startupAdapterSha256: "d8e8b5524ca783dccc0024a1eed61a4c0955cf73b7d45157093787070dc8ed16",
       hookPaths: [
         "hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-aarch64-none/Lib/site-packages/nemoclaw_native_windows.py",
@@ -2097,7 +2097,7 @@ test("current base extraction records this controller and its fresh root without
   assert.equal(ownership.createdByExtraction, true);
   assert.equal(ownership.createdByReplay, undefined);
   assert.equal(ownership.runtimeRoot, extraction.runtimeRoot);
-  assert.equal(extraction.originalBuildRoot, "C:\\NemoClawHermesProbe-00503572df74");
+  assert.equal(extraction.originalBuildRoot, "C:\\NemoClawHermesProbe-5804d8b1dcca");
   assert.equal(extraction.allFilesRehashed, true);
   assert.equal(extraction.allLinksContained, true);
   assert.equal(extraction.runtimeExecuted, false);

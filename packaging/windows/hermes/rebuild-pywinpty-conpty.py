@@ -21,12 +21,12 @@ import tomllib
 import zipfile
 
 HERE = Path(__file__).parent
-BASE_HEAD = "371706dfa3173422b8d7ad521c2519010809697a"
-BASE_RUN = 37969718115
-BASE_ARTIFACT = 11637766639
-BASE_ZIP_BYTES = 1099967399
-BASE_ZIP_SHA = "c1df0f54b5fc65bb35c0f34ee2f8c434e5dc9e9c6feffdc69fec316b9e5414dc"
-BASE_MARKER_SHA = "e9a9baffe32dc0ffc5c0e275fa5389c237b9a9d3a9c116279dc27401aed8232b"
+BASE_HEAD = "8f54e647a1cda1c3c879ad4e350700a13bb8fc2e"
+BASE_RUN = 38778013068
+BASE_ARTIFACT = 11995339173
+BASE_ZIP_BYTES = 1107789613
+BASE_ZIP_SHA = "bd59f69d7bba8177239f3d0028de493c55be814c0ee206fff796db08ab941390"
+BASE_MARKER_SHA = "89d27c95b5c4f7e5a90f25bcb587e7f67291b1c64359d847168f110a0b29c0d7"
 PYTHON_SHA = "54e17da389d3aae8c56b08a06fea5cd2f5acd57d2a7acb4061fc572964d4108b"
 UV_SHA = "dbef885dac7790485a24cf4f67355d63e9ee1eba2e2182bb232a08f9e5d6e729"
 SOURCE = {
@@ -40,7 +40,7 @@ SITE = "hermes-agent/venv/Lib/site-packages/"
 DIST = "pywinpty-2.0.15.dist-info/"
 PACKAGE_ROOTS = (SITE + "winpty", SITE + DIST.rstrip("/"))
 NATIVE = SITE + "winpty/winpty.cp311-win_arm64.pyd"
-OLD_NATIVE_SHA = "a794add7c2445ded631373407642061869e17bcbaeae837f6b69cd2135d130b7"
+OLD_NATIVE_SHA = "44445ef5c88fb1985287eca58fef9ad77aae414ed300bd700929183dd8f37cdb"
 INSTALL_METADATA = {
     SITE + DIST + name
     for name in (
@@ -300,9 +300,9 @@ def base_identity():
         "runId": BASE_RUN,
         "sourceRevision": BASE_HEAD,
         "zipSha256": BASE_ZIP_SHA,
-        "candidateReceiptSha256": "3a15c2101d25cef859591ce7edebc98dc4cdfc6f8c6c0212105415f1e81b1fea",
-        "inventorySha256": "9b2a7161657e9c55acb57fd52fbe36610747e032aa4323f83422696c112e1f4d",
-        "buildReceiptSha256": "c50a92fa7cb97c1d65cebcd958af722d94db1da9819cfe6eb4c20e505954f475",
+        "candidateReceiptSha256": "f6bf562bf88379049328f3eb2224558becf0bb26e2dc6766acd27ed22dd1a334",
+        "inventorySha256": "c6255066a9d6ab620c6d6627bb97b2f96f74430c034f8b2016ecc02aa530af70",
+        "buildReceiptSha256": "828181ba43a2ee417794b383f3a835c44d60aa4f607c0e4fa26df91c63e2470d",
     }
 
 

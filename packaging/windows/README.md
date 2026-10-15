@@ -32,7 +32,7 @@ their separate protected workflow and approval gates.
 ## Windows-tip migration in progress
 
 The finished-host build now pins OpenShell
-`6f83bf13e4ec7f03ff20bfb716c2d02b52ed44ad` from the current `windows` branch
+`624f55b3c6affedd4f2757c7eb32132196b4c3e8` from the current `windows` branch
 and source-built MXC `7cd00d1ee6af9208322c924ef64e5113f6704639`.
 The older `windows-0.0.x-backup` branch is not the build base. Upstream runtime
 qualification does not establish installer acceptance. OpenShell also applies
@@ -87,9 +87,9 @@ for the complete process tree. Hermes dashboard sessions keep their separate PTY
 path. Focused tests cover attachment, exit-status reconciliation, and failure cleanup;
 installed interactive acceptance with the selected runtime remains required.
 
-Hermes reuse now pins base artifact `11637766639` from run `37969718115`, built
-from `371706dfa3173422b8d7ad521c2519010809697a`. This base already contains the
-checked-in startup adapter. Reuse relocates generated path metadata without changing
+Hermes reuse now pins base artifact `11995339173` from run `38778013068`, built
+from `8f54e647a1cda1c3c879ad4e350700a13bb8fc2e`. This base contains the startup
+adapter and native dashboard pipe adapter. Reuse relocates generated path metadata without changing
 the adapter or claiming a historical upgrade. The wheel, Git, export, and Personal
 probe consumers retain the same base identity. Fresh compatibility proof, moved-root
 execution, and installed acceptance remain required. The historical replay and
