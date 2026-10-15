@@ -307,13 +307,30 @@ describe("policy channel remove/enable flows", () => {
     expect(rebuildSandbox).not.toHaveBeenCalled();
   });
 
-  it.each(["policy", "disabled", "pending removal"])(
+  it("clears policy-only WhatsApp sessions before removing the applied preset", async () => {
+    const { removePreset } = await arrangeChannelRemoval("whatsapp", "openclaw");
+    vi.mocked(registry.getSandbox).mockReturnValue({ name: "alpha", agent: "openclaw" });
+    vi.mocked(registry.getConfiguredMessagingChannelsFromEntry).mockRestore();
+
+    await expect(removeChannelNonInteractive()).resolves.toBeUndefined();
+
+    expect(commandTransport.executeSandboxExecCommand).toHaveBeenCalledExactlyOnceWith(
+      "alpha",
+      expect.stringContaining("/sandbox/.openclaw/whatsapp"),
+    );
+    expect(removePreset).toHaveBeenCalledExactlyOnceWith("alpha", "whatsapp");
+    expect(commandTransport.executeSandboxExecCommand).toHaveBeenCalledBefore(removePreset);
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("rebuild' to apply (remove 'whatsapp')"),
+    );
+  });
+
+  it.each(["disabled", "pending removal"])(
     "continues WhatsApp removal when %s state remains",
     async (state) => {
       const { current } = await arrangeChannelRemoval("whatsapp", "openclaw");
       const plan = current.messaging!.plan;
       const entries: Record<string, SandboxEntry> = {
-        policy: { name: "alpha", agent: "openclaw" },
         disabled: {
           ...current,
           messaging: {
@@ -337,9 +354,7 @@ describe("policy channel remove/enable flows", () => {
       vi.mocked(registry.getSandbox).mockReturnValue(entries[state]);
       vi.mocked(registry.getConfiguredMessagingChannelsFromEntry).mockRestore();
       vi.mocked(registry.getDisabledChannels).mockReturnValue(["whatsapp"]);
-      vi.mocked(policies.getAppliedPresets).mockResolvedValue(
-        state === "policy" ? ["whatsapp"] : [],
-      );
+      vi.mocked(policies.getAppliedPresets).mockResolvedValue([]);
 
       await expect(removeChannelNonInteractive()).resolves.toBeUndefined();
 
