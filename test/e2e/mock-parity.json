@@ -188,6 +188,9 @@
     {
       "live": "test/e2e/live/inference-routing.test.ts",
       "liveSources": [
+        "test/e2e/live/cloudflared-prerequisite.ts",
+        "test/e2e/live/https-pin-compatible-server.ts",
+        "test/e2e/live/runtime-identity-oauth-server.ts",
         "test/e2e/live/inference-routing-helpers.ts",
         "test/e2e/live/openclaw-admin-scope.ts",
         "test/e2e/fixtures/admin-approval-connect.ts",
@@ -200,6 +203,8 @@
         "nemoclaw/src/blueprint/runtime-identity.test.ts",
         "src/lib/onboard/inference-providers/compatible-endpoint-gateway-route.test.ts",
         "test/onboarding/blueprint-runtime-identity-lifecycle.test.ts",
+        "test/e2e/support/cloudflared-prerequisite.test.ts",
+        "test/e2e/support/e2e-http-protocol.test.ts",
         "test/e2e/support/hosted-inference.test.ts",
         "test/e2e/support/onboard-timeout-contract.test.ts",
         "test/onboarding/onboard-inference-gateway-scope.test.ts",
