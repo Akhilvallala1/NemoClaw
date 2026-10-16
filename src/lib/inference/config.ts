@@ -105,6 +105,7 @@ export const CLOUD_MODEL_OPTIONS = [
   { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super 120B" },
   { id: "nvidia/nemotron-3.5-super-vl-120b-a12b", label: "Nemotron 3.5 Super VL 120B" },
 ];
+// Brev extracts literal entries from each provider array; keep these entries explicit.
 export const OPENROUTER_CLOUD_MODEL_OPTIONS = [
   { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra 550B" },
   { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super 120B" },
