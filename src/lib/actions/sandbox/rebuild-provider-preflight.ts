@@ -37,6 +37,7 @@ import {
 import * as registry from "../../state/registry";
 import type { RebuildResumeConfig } from "./rebuild-resume-config";
 import { isLocalInferenceProvider } from "./rebuild-resume-config";
+import { verifyRecordedNativeLocalProviderAttachment } from "../../inference/native-local/profile";
 
 const hermesProviderAuth = require("../../hermes-provider-auth") as {
   HERMES_PROVIDER_NAME: string;
@@ -150,6 +151,25 @@ function rebuildProviderAdapter(
           })) as RunProviderCommand)
       : undefined,
   );
+}
+
+/** Recheck the recorded local attachment at the last boundary before deletion. */
+export async function verifyRebuildNativeLocalProviderBeforeDelete(
+  sandboxName: string,
+  config: RebuildResumeConfig,
+  gatewayName: string,
+  runtimeSelection?: OpenShellRuntimeSelection,
+): Promise<void> {
+  if (runtimeSelection && runtimeSelection.gatewayName !== gatewayName)
+    throw new Error("Native local provider runtime does not match the rebuild gateway.");
+  await verifyRecordedNativeLocalProviderAttachment({
+    adapter: rebuildProviderAdapter(runtimeSelection),
+    expected: config.nativeLocalProviderAttachment,
+    sandboxName,
+    gatewayName,
+    agent: config.agent,
+    provider: config.provider,
+  });
 }
 
 export async function inspectRebuildGatewayProviderRegistration(
@@ -425,6 +445,21 @@ export async function checkRebuildGatewayCredentialReuseOrBail(
   bail: (msg: string, code?: number) => never,
   deps: GatewayCredentialReusePreflightDeps = defaultGatewayCredentialReusePreflightDeps(),
 ): Promise<boolean> {
+  if (config.nativeLocalProviderAttachment !== undefined) {
+    try {
+      await verifyRecordedNativeLocalProviderAttachment({
+        adapter: rebuildProviderAdapter(),
+        expected: config.nativeLocalProviderAttachment,
+        sandboxName,
+        agent: config.agent,
+        provider: config.provider,
+      });
+      return true;
+    } catch {
+      bail("Could not verify native local provider credential reuse; sandbox is untouched");
+      return false;
+    }
+  }
   const nativeAttachment = recordedNativeProviderAttachment(config);
   if (nativeAttachment) {
     return checkRebuildGatewayProviderOrBail(config.provider, config.credentialEnv, log, bail, {
@@ -498,7 +533,11 @@ export async function checkRebuildGatewayCredentialReuseOrBail(
   console.error(
     `  ${_RD}Rebuild preflight failed:${R} cannot safely reuse the recorded gateway credential.`,
   );
-  console.error(`  ${rebuildCredentialReuseCondition(decision.condition)}`);
+  console.error(
+    `  ${rebuildCredentialReuseCondition(
+      decision.kind === "reject" ? decision.condition : "gateway-provider-identity",
+    )}`,
+  );
   console.error("  Export the provider credential to use normal validation and upsert.");
   console.error("  Sandbox is untouched — no data was lost.");
   bail("Unsafe gateway credential reuse");
