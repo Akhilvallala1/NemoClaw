@@ -217,9 +217,40 @@ function Assert-HermesCaseReceipt($Receipt, [string]$CaseName, $ColdReceipt) {
       throw 'Hermes backend cleanup differs from the selected runtime.'
     }
   }
+  $conversationNames = @('retainedConversation')
+  if ($warm) { $conversationNames += 'restoredConversation' }
+  foreach ($name in $conversationNames) {
+    $conversation = $Receipt.results.$name
+    if ($conversation -isnot [pscustomobject] -or
+        $conversation.storedSessionId -isnot [string] -or $conversation.storedSessionId.Length -lt 1 -or $conversation.storedSessionId.Length -gt 128 -or
+        $conversation.profileName -isnot [string] -or $conversation.profileName.Length -lt 1 -or $conversation.profileName.Length -gt 128 -or
+        ($conversation.messageCount -isnot [long] -and $conversation.messageCount -isnot [int]) -or
+        $conversation.messageCount -lt 2 -or $conversation.messageCount -ge 500 -or
+        ($conversation.lastMessageId -isnot [long] -and $conversation.lastMessageId -isnot [int]) -or
+        $conversation.lastMessageId -lt $conversation.messageCount -or $conversation.lastMessageId -gt 9007199254740991 -or
+        $conversation.transcriptSha256 -isnot [string] -or $conversation.transcriptSha256 -cnotmatch '^[a-f0-9]{64}$') {
+      throw 'Hermes acceptance lacks a complete retained conversation identity.'
+    }
+  }
   if ($warm) {
+    if ($ColdReceipt -isnot [pscustomobject]) { throw 'Hermes restart lacks its validated cold receipt.' }
     foreach ($name in @('stateRoot','configurationSha256')) {
       if ($Receipt.results.$name -cne $ColdReceipt.results.$name) { throw 'Hermes restart changed the retained state or configuration.' }
+    }
+    foreach ($name in @('storedSessionId','profileName','messageCount','lastMessageId','transcriptSha256')) {
+      if ($Receipt.results.restoredConversation.$name -cne $ColdReceipt.results.retainedConversation.$name) {
+        throw 'Hermes restart did not restore the cold conversation.'
+      }
+    }
+    foreach ($name in @('storedSessionId','profileName')) {
+      if ($Receipt.results.retainedConversation.$name -cne $ColdReceipt.results.retainedConversation.$name) {
+        throw 'Hermes restart continued a different conversation.'
+      }
+    }
+    if ($Receipt.results.retainedConversation.messageCount -le $ColdReceipt.results.retainedConversation.messageCount -or
+        $Receipt.results.retainedConversation.lastMessageId -le $ColdReceipt.results.retainedConversation.lastMessageId -or
+        $Receipt.results.retainedConversation.transcriptSha256 -ceq $ColdReceipt.results.retainedConversation.transcriptSha256) {
+      throw 'Hermes restart lacks a new completed turn in the retained conversation.'
     }
   }
 }
@@ -381,7 +412,11 @@ try {
     if ($Agent -ceq 'hermes') {
       Assert-HermesCaseReceipt $accepted $case.name $coldHermesReceipt
       if ($case.name -ceq 'firstInstalledLaunch') { $coldHermesReceipt = $accepted }
-      else { $restartCustodyUnresolved = $false }
+      else {
+        $restartCustodyUnresolved = $false
+        $timings['restartPersistence'] = @{ qualified=$true; configurationUnchanged=$true; sameConversation=$true; sameStateRoot=$true;
+          coldReceipt='installed-acceptance/installed-hermes-acceptance.json'; warmReceipt='installed-acceptance-warm/installed-hermes-acceptance.json' }
+      }
     }
     if ($openClawRestart) {
       Assert-OpenClawRestartReceipt $accepted $case.name $coldOpenClawReceipt

@@ -148,6 +148,54 @@ uint16_t machineFromPeHeader(const unsigned char* header, size_t size) {
     return machine == 0xaa64 || machine == 0x8664 ? machine : 0;
 }
 
+// The pinned MSYS runtime reserves this range before copying its parent's
+// cygheap. Observe the suspended child without reserving or changing any pages.
+void logMsysHeapReservation(HANDLE child, const char* stage) {
+    const DWORD saved = GetLastError();
+    if (!observeDerivedMsysLayout() || !NemoClawMsysDiagnosticsEnabled()) {
+        SetLastError(saved);
+        return;
+    }
+    constexpr uintptr_t low = 0x800000000ULL, high = 0xa00000000ULL;
+    uintptr_t cursor = low;
+    DWORD error = 0;
+    unsigned records = 0;
+    const DWORD childPid = GetProcessId(child);
+    while (cursor < high && records < 16) {
+        MEMORY_BASIC_INFORMATION region = {};
+        const SIZE_T queried = VirtualQueryEx(child, reinterpret_cast<LPCVOID>(cursor), &region, sizeof(region));
+        if (queried != sizeof(region)) {
+            error = queried ? ERROR_INVALID_DATA : GetLastError();
+            if (!error) error = ERROR_INVALID_DATA;
+            break;
+        }
+        const uintptr_t base = reinterpret_cast<uintptr_t>(region.BaseAddress);
+        if (base > cursor || !region.RegionSize || region.RegionSize > UINTPTR_MAX - base ||
+            base + region.RegionSize <= cursor) {
+            error = ERROR_INVALID_DATA;
+            break;
+        }
+        char line[768];
+        const int count = _snprintf_s(line, sizeof(line), _TRUNCATE,
+            "NEMOCLAW_MSYS_HEAP_REGION={\"schemaVersion\":1,\"parentPid\":%lu,\"childPid\":%lu,\"stage\":\"%s\",\"index\":%u,\"queryAddress\":\"0x%llx\",\"base\":\"0x%llx\",\"allocationBase\":\"0x%llx\",\"bytes\":%llu,\"state\":%lu,\"type\":%lu,\"protect\":%lu,\"diagnosticOnly\":true}\n",
+            GetCurrentProcessId(), childPid, stage, records,
+            static_cast<unsigned long long>(cursor), static_cast<unsigned long long>(base),
+            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(region.AllocationBase)),
+            static_cast<unsigned long long>(region.RegionSize), region.State, region.Type, region.Protect);
+        DWORD written = 0;
+        if (count > 0) WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, static_cast<DWORD>(count), &written, nullptr);
+        ++records;
+        cursor = base + region.RegionSize;
+    }
+    char line[512];
+    const int count = _snprintf_s(line, sizeof(line), _TRUNCATE,
+        "NEMOCLAW_MSYS_HEAP_SCAN={\"schemaVersion\":1,\"parentPid\":%lu,\"childPid\":%lu,\"stage\":\"%s\",\"records\":%u,\"complete\":%s,\"error\":%lu,\"diagnosticOnly\":true}\n",
+        GetCurrentProcessId(), childPid, stage, records, cursor >= high ? "true" : "false", error);
+    DWORD written = 0;
+    if (count > 0) WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, static_cast<DWORD>(count), &written, nullptr);
+    SetLastError(saved);
+}
+
 struct ProcessImageFile {
     HANDLE handle = INVALID_HANDLE_VALUE;
     WCHAR path[4096] = {};
@@ -710,9 +758,14 @@ BOOL inject(HANDLE child) {
         SetLastError(ERROR_INVALID_DATA); return FALSE;
     }
     const char* dlls[] = {dll};
+    const WCHAR* imageLeaf = wcsrchr(image.path, L'\\');
+    const bool observeHeap = machine == IMAGE_FILE_MACHINE_AMD64 && imageLeaf &&
+        !_wcsicmp(imageLeaf + 1, L"grep.exe");
+    if (observeHeap) logMsysHeapReservation(child, "before-import");
     BOOL ok = DetourUpdateProcessWithDll(child, dlls, 1);
     error = ok ? ERROR_SUCCESS : GetLastError();
     if (!ok && !error) error = ERROR_DLL_INIT_FAILED;
+    if (observeHeap) logMsysHeapReservation(child, "after-import");
     logPropagation(GetProcessId(child), machine, TRUE, TRUE, ok, error);
     SetLastError(error);
     return ok;

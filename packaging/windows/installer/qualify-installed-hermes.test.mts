@@ -11,6 +11,10 @@ import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import { acceptanceProcessesStopped } from "./qualify-finished-package.mts";
 import {
+  sanitizedFailure,
+  stripInheritedAcceptanceEnvironment,
+} from "./qualify-installed-openclaw.mts";
+import {
   createHermesEvidenceDirectory,
   readHermesDashboardReady,
   recordedHermesTerminal,
@@ -523,7 +527,12 @@ for (const existing of ["configuration", "agent-data"])
         argv: [],
         env: {
           GITHUB_ACTIONS: "true",
+          GITHUB_RUN_ID: "123456",
+          GITHUB_RUN_ATTEMPT: "2",
           NVIDIA_API_KEY: "nvapi-synthetic-fixture",
+          NVIDIA_INFERENCE_API_KEY: "nvapi-other-synthetic-fixture",
+          NODE_OPTIONS: "--require=untrusted.cjs",
+          PYTHONPATH: "C:\\Untrusted",
           LOCALAPPDATA: "C:\\UserData",
           RUNNER_TEMP: "C:\\RunnerTemp",
           SystemRoot: "C:\\Windows",
@@ -544,12 +553,16 @@ for (const existing of ["configuration", "agent-data"])
           receipts[name] = JSON.parse(value);
         },
       },
-      childEnvironment: () => ({}),
+      stripInheritedAcceptanceEnvironment,
       randomBytes,
       nativeCredentialBinding: () => "synthetic-binding",
       acceptanceProcessesStopped,
-      captureOwned: async (_launcher: string, args: string[]) => {
+      captureOwned: async (_launcher: string, args: string[], environment: NodeJS.ProcessEnv) => {
         calls.push(args);
+        assert.deepEqual(environment, {
+          LOCALAPPDATA: "C:\\UserData",
+          SystemRoot: "C:\\Windows",
+        });
         assert.deepEqual(args, ["--state-session", "hermes"]);
         return {
           failure: null,
@@ -576,7 +589,94 @@ for (const existing of ["configuration", "agent-data"])
     const receipt = receipts["C:\\RunnerTemp\\Evidence\\installed-hermes-acceptance.json"];
     assert.equal(receipt.verdict, "fail");
     assert.equal(receipt.failedStage, "configuration");
+    assert.equal(receipt.controllerRun, "123456:2");
     assert.deepEqual(receipt.cleanupErrors, []);
+    assert.deepEqual(bindings.process.env, {
+      GITHUB_ACTIONS: "true",
+      LOCALAPPDATA: "C:\\UserData",
+      SystemRoot: "C:\\Windows",
+    });
+  });
+
+test("Hermes dashboard browser receives only the filtered application environment", async () => {
+  const source = fs.readFileSync(
+    new URL("./qualify-installed-hermes.mts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf(
+    '    const driver = path.resolve(argument("--browser-driver-root"));',
+  );
+  const end = source.indexOf("    const page = await browser.newPage();", start);
+  assert(start > 0 && end > start);
+  const environment = { SystemRoot: "C:\\Windows", LOCALAPPDATA: "C:\\UserData" };
+  let launches = 0;
+  const bindings = {
+    assert,
+    path: path.win32,
+    argument: () => "C:\\Driver",
+    process: { env: { ProgramFiles: "C:\\Programs", NVIDIA_API_KEY: "nvapi-not-for-browser" } },
+    fs: { existsSync: () => true },
+    environment,
+    performance: { now: () => 1000 },
+    started: 0,
+    createRequire: () => () => ({
+      chromium: {
+        launch: async (options: Record<string, unknown>) => {
+          launches++;
+          assert.deepEqual(options, {
+            executablePath: "C:\\Programs\\Microsoft\\Edge\\Application\\msedge.exe",
+            env: environment,
+            headless: true,
+            timeout: 30_000,
+          });
+          return {};
+        },
+      },
+    }),
+  };
+  await new Function(
+    ...Object.keys(bindings),
+    `return (async () => { let browser; ${stripTypeScriptTypes(source.slice(start, end))} })();`,
+  )(...Object.values(bindings));
+  assert.equal(launches, 1);
+});
+
+for (const name of ["NVIDIA_API_KEY", "NVIDIA_INFERENCE_API_KEY"])
+  test(`Hermes entry point redacts ${name} after inherited environment removal`, async () => {
+    const source = fs.readFileSync(
+      new URL("./qualify-installed-hermes.mts", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("\nif (process.argv[1]");
+    assert(start > 0);
+    const secret = "nvapi-synthetic-private-value";
+    const fakeProcess = {
+      argv: ["node", "/qualification.mts"],
+      env: { [name]: secret },
+      exitCode: 0,
+    };
+    const messages: string[] = [];
+    const bindings = {
+      process: fakeProcess,
+      path: path.posix,
+      fileURLToPath: () => "/qualification.mts",
+      sanitizedFailure,
+      console: { error: (message: unknown) => messages.push(JSON.stringify(message)) },
+      main: async () => {
+        stripInheritedAcceptanceEnvironment(fakeProcess.env);
+        throw new Error(`Controller failed with ${secret}`);
+      },
+    };
+    new Function(
+      ...Object.keys(bindings),
+      source.slice(start).replaceAll("import.meta.url", '"file:///qualification.mts"'),
+    )(...Object.values(bindings));
+    await Promise.resolve();
+    assert.deepEqual(fakeProcess.env, {});
+    assert.equal(fakeProcess.exitCode, 1);
+    assert.equal(messages.length, 1);
+    assert(!messages[0].includes(secret));
+    assert.match(messages[0], /Controller failed/u);
   });
 
 test("Hermes cleanup retains data until both native cleanup and process closure are confirmed", async () => {

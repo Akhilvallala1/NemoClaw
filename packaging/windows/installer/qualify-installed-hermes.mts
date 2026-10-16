@@ -17,7 +17,10 @@ import {
   captureOwned,
   retainedAcceptance,
 } from "./qualify-finished-package.mts";
-import { childEnvironment, sanitizedFailure } from "./qualify-installed-openclaw.mts";
+import {
+  stripInheritedAcceptanceEnvironment,
+  sanitizedFailure,
+} from "./qualify-installed-openclaw.mts";
 import { nativeCredentialBinding, readOpenedRegularFile } from "../runtime/native-security.mts";
 import { sampleInstalledIdle } from "../tests/performance/installed-idle.mts";
 import { sanitizeNativeDiagnostic } from "../runtime/native-session-diagnostics.mts";
@@ -781,7 +784,8 @@ async function main() {
     output,
     `observer-stop-${randomBytes(32).toString("hex")}.sentinel`,
   );
-  const environment = childEnvironment(process.env);
+  const controllerRun = `${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`;
+  const environment = stripInheritedAcceptanceEnvironment(process.env);
   delete environment.GITHUB_ACTIONS;
   const observerEnvironment = { ...environment, GITHUB_ACTIONS: "true" };
   const launcher = path.join(install, "bin/NemoClaw.exe");
@@ -856,7 +860,7 @@ async function main() {
             maxBytes: 64 * 1024,
             rejectLinks: true,
           }) ?? "",
-          `${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
+          controllerRun,
         )
       : undefined;
     const ownedState = JSON.parse(await command("private state", ["--state-session", "hermes"]));
@@ -1102,6 +1106,7 @@ async function main() {
     assert(edge, "The runner has no existing browser for real dashboard acceptance");
     browser = await chromium.launch({
       executablePath: edge,
+      env: environment,
       headless: true,
       timeout: Math.max(1, Math.min(30_000, 120_000 - (performance.now() - started))),
     });
@@ -1656,7 +1661,7 @@ async function main() {
   write("installed-hermes-acceptance.json", {
     schemaVersion: 1,
     classification: "installed-canonical-hermes-acceptance",
-    controllerRun: `${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
+    controllerRun,
     runtime: identity,
     verdict: primary === undefined ? "pass" : "fail",
     failedStage: primary === undefined ? null : phase,
@@ -1668,13 +1673,10 @@ async function main() {
   if (primary !== undefined) throw primary;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const secret = process.env.NVIDIA_API_KEY || process.env.NVIDIA_INFERENCE_API_KEY || "";
   void main().catch((error) => {
-    console.error(
-      sanitizedFailure(
-        error,
-        process.env.NVIDIA_API_KEY || process.env.NVIDIA_INFERENCE_API_KEY || "",
-      ),
-    );
+    console.error(sanitizedFailure(error, secret));
     process.exitCode = 1;
   });
+}

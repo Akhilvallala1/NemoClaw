@@ -1582,13 +1582,20 @@ function Get-Content {
   if ($scenario -ceq 'malformed-receipt') { return '{' }
   $warm=$calls.Count -eq 2
   $receipt = @{ schemaVersion=1; classification='installed-canonical-hermes-acceptance'; controllerRun='123:1';runtime=$expectedHermesRuntime.Clone();verdict='pass'; cleanupErrors=@();fullInstalledQualification=$false;results=@{
-    realTerminal=$true; realModelReply=$true; fileToolsQualified=$true; turns=@(@{},@{fileTools=$true}); configurationReused=$warm;configurationPreserved=(-not $warm)
+    configurationReused=$warm;configurationPreserved=(-not $warm)
     stateRoot='C:\NemoClawState-S-1-5-21-1-hermes';configurationSha256=('e' * 64)
+    retainedConversation=@{storedSessionId='saved-session';profileName='personal';messageCount=10;lastMessageId=20;transcriptSha256=('f' * 64)}
     custody=@{nativeLaunchAttempted=$true;nativeCleanupConfirmed=$true;processesStopped=$true;uninstallSafe=$true;configurationRetainedForRecovery=$false}
     cleanup=@{schemaVersion=1;classification='native-hermes-dashboard-qualification';agent='hermes';sandboxDeleted=$true;gatewayStopped=$true;ephemeralRootsRemoved=$true;stateRetained=$true;leaseReleased=$true;cleanupSucceeded=$true;
       guardianClosed=$true;observerClosed=$true;runtimeLeaseOwnerClosedWithGuardian=$true;
       runtimeIdentity=@{runtimeId=$expectedHermesRuntime.runtimeId;manifestSha256=$expectedHermesRuntime.manifestSha256;sourceRevision=$expectedHermesRuntime.sourceRevision}}
   } }
+  if ($warm) {
+    $receipt.results.restoredConversation=$receipt.results.retainedConversation.Clone()
+    $receipt.results.retainedConversation.messageCount=20
+    $receipt.results.retainedConversation.lastMessageId=40
+    $receipt.results.retainedConversation.transcriptSha256='1' * 64
+  }
   switch ($scenario) {
     'failed-receipt' { $receipt.verdict='fail' }
     'cleanup-failure' { $receipt.cleanupErrors=@('retained process') }
@@ -1622,16 +1629,56 @@ function Get-Content {
     'changed-warm-state' { if ($warm) { $receipt.results.stateRoot='C:\NemoClawState-S-1-5-21-2-hermes' } }
     'changed-warm-config' { if ($warm) { $receipt.results.configurationSha256='9' * 64 } }
     'full-claim' { $receipt.fullInstalledQualification=$true }
+    'missing-retained' { $receipt.results.Remove('retainedConversation') }
+    'retained-array' { $receipt.results.retainedConversation=@($receipt.results.retainedConversation) }
+    'empty-session' { $receipt.results.retainedConversation.storedSessionId='' }
+    'array-session' { $receipt.results.retainedConversation.storedSessionId=@('saved-session') }
+    'long-session' { $receipt.results.retainedConversation.storedSessionId='s' * 129 }
+    'empty-profile' { $receipt.results.retainedConversation.profileName='' }
+    'long-profile' { $receipt.results.retainedConversation.profileName='p' * 129 }
+    'string-count' { $receipt.results.retainedConversation.messageCount='10' }
+    'single-count' { $receipt.results.retainedConversation.messageCount=1 }
+    'limit-count' { $receipt.results.retainedConversation.messageCount=500 }
+    'fraction-count' { $receipt.results.retainedConversation.messageCount=10.5 }
+    'string-last' { $receipt.results.retainedConversation.lastMessageId='20' }
+    'last-before-count' { $receipt.results.retainedConversation.lastMessageId=9 }
+    'unsafe-last' { $receipt.results.retainedConversation.lastMessageId=[long]9007199254740992 }
+    'invalid-hash' { $receipt.results.retainedConversation.transcriptSha256='not-a-digest' }
+    'array-hash' { $receipt.results.retainedConversation.transcriptSha256=@('f' * 64) }
+    'warm-missing-restored' { if ($warm) { $receipt.results.Remove('restoredConversation') } }
+    'warm-array-restored' { if ($warm) { $receipt.results.restoredConversation=@($receipt.results.restoredConversation) } }
+    'warm-restored-string-count' { if ($warm) { $receipt.results.restoredConversation.messageCount='10' } }
+    'warm-restored-session' { if ($warm) { $receipt.results.restoredConversation.storedSessionId='other-session' } }
+    'warm-restored-profile' { if ($warm) { $receipt.results.restoredConversation.profileName='other-profile' } }
+    'warm-restored-count' { if ($warm) { $receipt.results.restoredConversation.messageCount=9 } }
+    'warm-restored-last' { if ($warm) { $receipt.results.restoredConversation.lastMessageId=19 } }
+    'warm-restored-hash' { if ($warm) { $receipt.results.restoredConversation.transcriptSha256='2' * 64 } }
+    'warm-continued-session' { if ($warm) { $receipt.results.retainedConversation.storedSessionId='other-session' } }
+    'warm-continued-profile' { if ($warm) { $receipt.results.retainedConversation.profileName='other-profile' } }
+    'warm-continued-count' { if ($warm) { $receipt.results.retainedConversation.messageCount=10 } }
+    'warm-continued-last' { if ($warm) { $receipt.results.retainedConversation.lastMessageId=20 } }
+    'warm-continued-hash' { if ($warm) { $receipt.results.retainedConversation.transcriptSha256='f' * 64 } }
   }
   return ($receipt | ConvertTo-Json -Depth 10)
 }
 $count=0
 $scenarios=@('pass','process-failure','warm-process-failure','failed-receipt','cleanup-failure','missing-cleanup-errors','string-schema','wrong-classification','array-classification','array-verdict','array-run','wrong-run','wrong-runtime','wrong-source','missing-custody','no-launch','native-unknown','string-native','process-unknown','unsafe','retained-recovery','string-retained','missing-backend','backend-incomplete','string-backend','wrong-backend-runtime','wrong-backend-agent','wrong-backend-schema','wrong-case','string-case','wrong-preservation','unbound-state','changed-warm-state','changed-warm-config','full-claim','stale-receipt','missing-receipt','malformed-receipt')
+$scenarios+=@('missing-retained','retained-array','empty-session','array-session','long-session','empty-profile','long-profile','string-count','single-count','limit-count','fraction-count','string-last','last-before-count','unsafe-last','invalid-hash','array-hash','warm-missing-restored','warm-array-restored','warm-restored-string-count','warm-restored-session','warm-restored-profile','warm-restored-count','warm-restored-last','warm-restored-hash','warm-continued-session','warm-continued-profile','warm-continued-count','warm-continued-last','warm-continued-hash')
 foreach ($scenario in $scenarios) {
   $calls=[Collections.Generic.List[object]]::new(); $timings=@{}; $failed=$false; $restartCustodyUnresolved=$false
   try { . $execute } catch { if ($scenario -ceq 'pass') { throw }; $failed=$true }
   if ($failed -ne ($scenario -cne 'pass')) { throw ('Unexpected Hermes acceptance result: '+$scenario) }
   if ($scenario -ceq 'pass' -and ($calls.Count -ne 2 -or $timings.startupComparisonAvailable -ne $true)) { throw 'Incorrect launch comparison result.' }
+  if ($scenario -ceq 'pass') {
+    foreach ($name in @('qualified','configurationUnchanged','sameConversation','sameStateRoot')) {
+      if ($timings.restartPersistence[$name] -cne $true) { throw ('Missing Hermes restart evidence: ' + $name) }
+    }
+    if ($timings.restartPersistence.coldReceipt -cne 'installed-acceptance/installed-hermes-acceptance.json' -or
+        $timings.restartPersistence.warmReceipt -cne 'installed-acceptance-warm/installed-hermes-acceptance.json' -or
+        $timings.restartPersistence.ContainsKey('credentialRecreated')) { throw 'Incorrect Hermes restart evidence scope.' }
+  }
+  if ($failed -and $timings.ContainsKey('restartPersistence')) { throw 'A failed case claimed restart persistence.' }
+  if ($scenario.StartsWith('warm-') -and $calls.Count -ne 2) { throw 'Warm rejection was not exercised after cold success.' }
   if ($failed -and $timings.startupComparisonAvailable -eq $true) { throw 'A failed case claimed a startup comparison.' }
   if ($restartCustodyUnresolved -ne $failed) { throw ('Hermes recovery custody differs: ' + $scenario) }
   $denied=$false; try { . $uninstall } catch { $denied=$true }
@@ -1658,7 +1705,7 @@ Write-Output $count
     );
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(result.stdout.trim(), "38");
+    assert.equal(result.stdout.trim(), "67");
   });
 
 for (const shell of ["powershell.exe", "pwsh.exe"])
