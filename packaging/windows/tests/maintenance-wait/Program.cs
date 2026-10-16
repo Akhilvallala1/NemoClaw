@@ -71,6 +71,8 @@ internal static class Program
                 throw new InvalidOperationException("Completed maintenance lost its exit code or returned before process termination.");
         }
         await AssertHeadlessRoutingAsync();
+        AssertRelatedCompletion();
+        AssertApplyRestartResult();
         AssertInspectionControls();
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
@@ -90,6 +92,52 @@ internal static class Program
         }
         Console.WriteLine("Maintenance controls passed; headless repair and uninstall select the registered product, and unconfirmed completion cannot start another transaction.");
         return 0;
+    }
+
+    private static void AssertRelatedCompletion()
+    {
+        foreach (var uninstall in new[] { false, true })
+        foreach (var code in new[] { 0, 3010, 1641, 1603 })
+        {
+            var calls = new List<string>();
+            void Completed()
+            {
+                if (uninstall) calls.Add("remove-links");
+                calls.Add("success");
+            }
+            void Restart(string message)
+            {
+                var instruction = code == 1641 ? "reopen the installer after Windows restarts" :
+                    "restart Windows before reopening the installer";
+                if (!message.Contains("Close this window", StringComparison.Ordinal) ||
+                    !message.Contains(instruction, StringComparison.Ordinal))
+                    throw new InvalidDataException("Restart-required maintenance lost its close-only recovery guidance.");
+                calls.Add("restart");
+            }
+            try
+            {
+                NativeMaintenance.CompleteRelatedAction(code, Completed, Restart);
+                if (code == 1603) throw new InvalidDataException("Failed maintenance was accepted.");
+            }
+            catch (InvalidOperationException) when (code == 1603) { }
+            var expected = code is 3010 or 1641 ? new[] { "restart" } : code == 1603 ? Array.Empty<string>() :
+                uninstall ? new[] { "remove-links", "success" } : new[] { "success" };
+            if (!calls.SequenceEqual(expected))
+                throw new InvalidDataException("Maintenance completion removed links or showed success before restart, or lost successful completion.");
+        }
+    }
+
+    private static void AssertApplyRestartResult()
+    {
+        foreach (var required in new[] { false, true })
+        foreach (var initiated in new[] { false, true })
+        foreach (var status in new[] { unchecked((int)0x80070643), 0, 1, 3010, 1641 })
+        {
+            int? expected = status < 0 ? null : initiated || status == 1641 ? 1641 :
+                required || status == 3010 ? 3010 : null;
+            if (NativeMaintenance.RestartExitCode(status, required, initiated) != expected)
+                throw new InvalidDataException("Burn completion lost the restart result or replaced a failed HRESULT.");
+        }
     }
 
     private static async Task AssertHeadlessRoutingAsync()

@@ -3,6 +3,8 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[cfg(any(windows, test))]
+mod runtime_image_attachment;
 #[path = "../launcher/src/runtime_lease.rs"]
 mod runtime_lease;
 mod runtime_manifest;
@@ -143,6 +145,7 @@ fn failure_exit_code(error: &str) -> i32 {
         | "Native(\"runtime-image-mount-descriptor\")"
         | "Native(\"runtime-image-mount-descriptor-dacl\")"
         | "Native(\"runtime-image-mount-permissions\")" => 122,
+        "Native(\"runtime-image-mount-cleanup\")" => 123,
         _ => 120,
     }
 }
@@ -302,6 +305,7 @@ mod tests {
         assert_eq!(failure_exit_code("Native(\"runtime-image-diskpart\")"), 113);
         assert_eq!(failure_exit_code("Native(\"runtime-image-mount\")"), 115);
         assert_eq!(failure_exit_code("Native(\"runtime-image-detach\")"), 116);
+        assert_eq!(failure_exit_code("Native(\"runtime-image-mount-cleanup\")"), 123);
         assert_eq!(
             failure_exit_code("Native(\"runtime-image-mount-permissions\")"),
             122

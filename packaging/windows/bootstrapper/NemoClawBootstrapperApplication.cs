@@ -301,11 +301,14 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
             {
                 this.window?.ShowProgress("Maintaining your installation", "Windows is updating the previous registered NemoClaw installation.");
                 var code = await NativeMaintenance.RunRelatedActionAsync(action == LaunchAction.Uninstall, cancellation.Token);
-                if (code is not (0 or 3010)) throw new InvalidOperationException("Windows could not complete maintenance of the previous installation.");
+                if (code is not (0 or 3010 or 1641)) throw new InvalidOperationException("Windows could not complete maintenance of the previous installation.");
                 this.result = code;
                 this.plannedAction = action;
-                if (action == LaunchAction.Uninstall) NativeDesktopIntegration.RemoveOwned(NativeSetupOperations.InstalledLauncher());
-                this.window?.ShowSuccess(action);
+                NativeMaintenance.CompleteRelatedAction(code, () =>
+                {
+                    if (action == LaunchAction.Uninstall) NativeDesktopIntegration.RemoveOwned(NativeSetupOperations.InstalledLauncher());
+                    this.window?.ShowSuccess(action);
+                }, message => this.window?.ShowFailure(message, this.BundleLogPath()));
             }
             else await this.BeginPlanAsync(action);
         }
@@ -392,14 +395,21 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
             if (code is null) return;
             this.result = code.Value;
             this.plannedAction = action;
-            if (code is 0 or 3010)
+            if (code is 0 or 3010 or 1641)
             {
-                if (action == LaunchAction.Uninstall)
+                NativeMaintenance.CompleteRelatedAction(code.Value, () =>
                 {
-                    try { NativeDesktopIntegration.RemoveOwned(NativeSetupOperations.InstalledLauncher()); }
-                    catch (Exception) { this.Engine.Log(LogLevel.Error, "NemoClaw was removed, but a desktop shortcut could not be removed safely."); }
-                }
-                this.Ui(() => this.window?.ShowSuccess(action));
+                    if (action == LaunchAction.Uninstall)
+                    {
+                        try { NativeDesktopIntegration.RemoveOwned(NativeSetupOperations.InstalledLauncher()); }
+                        catch (Exception) { this.Engine.Log(LogLevel.Error, "NemoClaw was removed, but a desktop shortcut could not be removed safely."); }
+                    }
+                    this.Ui(() => this.window?.ShowSuccess(action));
+                }, message =>
+                {
+                    this.Engine.Log(LogLevel.Standard, message);
+                    this.Ui(() => this.window?.ShowFailure(message, this.BundleLogPath()));
+                });
             }
             else this.Engine.Log(LogLevel.Error, "The registered previous installer did not complete maintenance successfully.");
         }
@@ -477,7 +487,16 @@ internal sealed class NemoClawBootstrapperApplication : BootstrapperApplication
     private void OnApplyComplete(object? sender, ApplyCompleteEventArgs args)
     {
         this.result = args.Status;
-        if (args.Status >= 0)
+        var restartCode = NativeMaintenance.RestartExitCode(args.Status,
+            args.Restart == ApplyRestart.RestartRequired, args.Restart == ApplyRestart.RestartInitiated);
+        if (restartCode is int code)
+        {
+            this.result = code;
+            var message = NativeMaintenance.RestartMessage(code);
+            this.Engine.Log(LogLevel.Standard, message);
+            this.Ui(() => this.window?.ShowFailure(message, this.BundleLogPath()));
+        }
+        else if (args.Status >= 0)
         {
             if (this.plannedAction is LaunchAction.Install or LaunchAction.Repair)
             {

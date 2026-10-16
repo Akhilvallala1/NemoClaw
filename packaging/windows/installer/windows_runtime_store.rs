@@ -551,52 +551,45 @@ impl WindowsStore {
         // Repair leaves the volume mount point behind when retiring its disk.
         // Reattach before traversing it; assign only if Windows did not restore it.
         attach_virtual_disk(&image)?;
-        if !mount.join("runtime.manifest").is_file() {
-            std::fs::create_dir_all(&mount)
-                .map_err(|error| {
-                    LAST_NATIVE_STATUS.store(
-                        error.raw_os_error().unwrap_or(0) as u32,
-                        Ordering::Relaxed,
-                    );
-                    Error::Native("runtime-image-mount")
-                })
-                .inspect_err(|_| {
-                    let status = LAST_NATIVE_STATUS.load(Ordering::Relaxed);
-                    let _ = detach_virtual_disk(&image);
-                    LAST_NATIVE_STATUS.store(status, Ordering::Relaxed);
-                })?;
-            let image_text = image.to_str().ok_or(Error::Identity)?;
-            // DiskPart's folder-mount grammar takes the empty directory path itself;
-            // a trailing separator makes the quoted `assign mount=` operand invalid.
-            let mount = mount
-                .to_str()
-                .ok_or(Error::Identity)?
-                .trim_end_matches('\\')
-                .to_owned();
-            Self::diskpart(
-                runtime_id,
-                &[
-                    format!("select vdisk file=\"{image_text}\""),
-                    "select partition 1".into(),
-                    format!("assign mount=\"{mount}\""),
-                    "exit".into(),
-                ],
-            )
-            .inspect_err(|_| {
+        super::runtime_image_attachment::finish_attachment(
+            || {
+                if !mount.join("runtime.manifest").is_file() {
+                    std::fs::create_dir_all(&mount).map_err(|error| {
+                        LAST_NATIVE_STATUS
+                            .store(error.raw_os_error().unwrap_or(0) as u32, Ordering::Relaxed);
+                        Error::Native("runtime-image-mount")
+                    })?;
+                    let image_text = image.to_str().ok_or(Error::Identity)?;
+                    // DiskPart's folder-mount grammar takes the empty directory path itself;
+                    // a trailing separator makes the quoted `assign mount=` operand invalid.
+                    let mount = mount
+                        .to_str()
+                        .ok_or(Error::Identity)?
+                        .trim_end_matches('\\')
+                        .to_owned();
+                    Self::diskpart(
+                        runtime_id,
+                        &[
+                            format!("select vdisk file=\"{image_text}\""),
+                            "select partition 1".into(),
+                            format!("assign mount=\"{mount}\""),
+                            "exit".into(),
+                        ],
+                    )?;
+                }
+                authorize_mount_point(&mount, true)?;
+                if !mount.join("runtime.manifest").is_file() {
+                    return Err(Error::Native("runtime-image-mount"));
+                }
+                Ok(())
+            },
+            || {
                 let status = LAST_NATIVE_STATUS.load(Ordering::Relaxed);
-                let _ = detach_virtual_disk(&image);
+                detach_virtual_disk(&image)?;
                 LAST_NATIVE_STATUS.store(status, Ordering::Relaxed);
-            })?;
-        }
-        authorize_mount_point(&mount, true).inspect_err(|_| {
-            let status = LAST_NATIVE_STATUS.load(Ordering::Relaxed);
-            let _ = detach_virtual_disk(&image);
-            LAST_NATIVE_STATUS.store(status, Ordering::Relaxed);
-        })?;
-        if !mount.join("runtime.manifest").is_file() {
-            return Err(Error::Native("runtime-image-mount"));
-        }
-        Ok(())
+                Ok(())
+            },
+        )
     }
     fn detach_image(runtime_id: &str) -> Result<(), Error> {
         let (image, mount) = Self::image_paths(runtime_id)?;

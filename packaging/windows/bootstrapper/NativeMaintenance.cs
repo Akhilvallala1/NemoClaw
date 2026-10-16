@@ -21,6 +21,28 @@ internal static class NativeMaintenance
     internal sealed class RelatedActionPendingException(string message, Exception inner)
         : InvalidOperationException(message, inner);
 
+    internal static void CompleteRelatedAction(int code, Action completed, Action<string> restartRequired)
+    {
+        if (code is 3010 or 1641)
+        {
+            restartRequired(RestartMessage(code));
+            return;
+        }
+        if (code != 0) throw new InvalidOperationException("Windows could not complete maintenance of the previous installation.");
+        completed();
+    }
+
+    internal static int? RestartExitCode(int status, bool restartRequired, bool restartInitiated)
+    {
+        if (status < 0) return null;
+        if (restartInitiated || status == 1641) return 1641;
+        return restartRequired || status == 3010 ? 3010 : null;
+    }
+
+    internal static string RestartMessage(int code) => code == 1641
+        ? "Windows is restarting to finish setup. Close this window and reopen the installer after Windows restarts."
+        : "Windows requires a restart to finish setup. Close this window and restart Windows before reopening the installer.";
+
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
     private static extern uint MsiEnumRelatedProductsW(string upgradeCode, uint reserved, uint index, StringBuilder productCode);
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
