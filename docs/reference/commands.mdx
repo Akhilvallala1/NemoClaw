@@ -2067,7 +2067,7 @@ When onboarding records a non-loopback `CHAT_UI_URL`, the command returns that b
 The host forward remains bound to loopback unless you explicitly configure remote binding.
 If you change or clear `CHAT_UI_URL` when onboarding reuses an existing sandbox, onboarding records the new URL, but the running dashboard keeps accepting only the previous origins.
 Run `$$nemoclaw <sandbox> rebuild` before you open the new URL.
-Onboarding with `--recreate-sandbox` creates a replacement sandbox that starts with the new URL.
+If onboarding recreates the sandbox instead, the replacement starts with the new URL.
 Without a recorded external URL, the command uses the recorded local dashboard port.
 
 <Warning>
