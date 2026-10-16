@@ -63,6 +63,21 @@ describe.each(HOSTED_NATIVE_PROVIDERS)("native $label profile read boundary", (d
     const value = response(definition);
     expect(isManagedNativeHostedProfileResponse(value, definition.profileId)).toBe(value);
   });
+  it.each([
+    ["disabled TLS inspection", { tls: 1 }],
+    ["audit-only enforcement", { enforcement: 2 }],
+    ["unspecified enforcement", { enforcement: 0 }],
+    ["unrestricted read-write access", { access: 2 }],
+    ["an unknown access preset", { access: 999 }],
+    ["legacy string enums", { tls: "", enforcement: "enforce", access: "" }],
+  ])("rejects %s", (_label, mutation) => {
+    const value = response(definition);
+    const profile = {
+      ...value.profile,
+      endpoints: [{ ...value.profile.endpoints[0], ...mutation }],
+    };
+    expect(isManagedNativeHostedProfileResponse({ profile }, definition.profileId)).toBeUndefined();
+  });
   it("rejects extra egress or executable access", () => {
     const value = response(definition);
     expect(
