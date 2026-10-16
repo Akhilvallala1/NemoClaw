@@ -639,9 +639,9 @@ export async function backupSandboxStateForRebuild(
         `  None of the ${dirCount} sandbox state ${dirCount === 1 ? "directory" : "directories"} could be preserved (only ${fileCount} loose ${fileCount === 1 ? "file was" : "files were"} saved).`,
       );
     }
+    const reasons = Object.values(backup.failedDirReasons ?? {});
+    const anyPermissionDenied = reasons.includes(BACKUP_FAILURE_PERMISSION_DENIED);
     if (backup.failedDirs.length > 0) {
-      const reasons = Object.values(backup.failedDirReasons ?? {});
-      const anyPermissionDenied = reasons.includes(BACKUP_FAILURE_PERMISSION_DENIED);
       const allAbsent =
         reasons.length === backup.failedDirs.length &&
         reasons.every((reason) => reason === BACKUP_FAILURE_ABSENT_AFTER_EXTRACTION);
@@ -649,21 +649,6 @@ export async function backupSandboxStateForRebuild(
         console.error(
           "  The sandbox user could not read this state — the mounted files likely have wrong ownership or permissions, for example after a host reboot remapped the mount's UIDs.",
         );
-        if (removedImmutabilityStateRecord) {
-          console.error(
-            `  Sandbox '${sandboxName}' also has a state record from the removed Shields feature.`,
-          );
-          console.error(
-            "  Shields can leave state that only root can read, and this release cannot unlock it.",
-          );
-          console.error(
-            "  If you cannot restore read access, replace the sandbox. Copy only reviewed, credential-free files that the sandbox user can read:",
-          );
-          console.error(`    1. ${CLI_NAME} ${sandboxName} download <sandbox-path> <host-dir>`);
-          console.error(`    2. ${CLI_NAME} ${sandboxName} destroy --yes`);
-          console.error(`    3. ${CLI_NAME} onboard --name ${sandboxName}`);
-          console.error(`    4. ${CLI_NAME} ${sandboxName} upload <host-path> <sandbox-dir>`);
-        }
       } else if (allAbsent) {
         console.error(
           "  The directories were reported by the sandbox but did not materialize on extraction — the mounted state may be unstable or disappearing under the container.",
@@ -673,6 +658,21 @@ export async function backupSandboxStateForRebuild(
           "  Inspect the per-directory failure reasons below along with the mount's ownership and permissions.",
         );
       }
+    }
+    if (removedImmutabilityStateRecord && (anyPermissionDenied || backup.failedFiles.length > 0)) {
+      console.error(
+        `  Sandbox '${sandboxName}' also has a state record from the removed Shields feature.`,
+      );
+      console.error(
+        "  Shields can leave state that only root can read, and this release cannot unlock it.",
+      );
+      console.error(
+        "  If you cannot restore read access, replace the sandbox. Copy only reviewed, credential-free files that the sandbox user can read:",
+      );
+      console.error(`    1. ${CLI_NAME} ${sandboxName} download <sandbox-path> <host-dir>`);
+      console.error(`    2. ${CLI_NAME} ${sandboxName} destroy --yes`);
+      console.error(`    3. ${CLI_NAME} onboard --name ${sandboxName}`);
+      console.error(`    4. ${CLI_NAME} ${sandboxName} upload <host-path> <sandbox-dir>`);
     }
     if (backup.error) console.error(`  Reason: ${backup.error}`);
     if (backup.failedDirs.length > 0)
