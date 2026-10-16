@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { initializeExternalHermesInferenceRoute } from "./initial-hermes-inference-route";
 import type { Session, SessionUpdates } from "../../../state/onboard-session";
 import { initializeOpenclawInferenceRoute as initializeDefaultOpenclawInferenceRoute } from "../../openclaw/initial-inference-route";
 import { advanceTo, type OnboardStateTransitionResult } from "../result";
@@ -17,9 +18,11 @@ export interface AgentSetupStateOptions<Agent> {
   hermesToolGateways: string[];
   managedOpenclawStartup?: boolean;
   initializeNativeInferenceRoute?: boolean;
+  initializeExternalHermesInference?: boolean;
   settleOpenclawStartupBeforeConfiguration?: boolean;
   revalidateSandboxIdentity?: (operation: string) => void;
   deps: {
+    initializeExternalHermesInferenceRoute?: typeof initializeExternalHermesInferenceRoute;
     handleAgentSetup(
       sandboxName: string,
       model: string,
@@ -29,7 +32,10 @@ export interface AgentSetupStateOptions<Agent> {
       session: Session | null,
       context: unknown,
     ): Promise<void>;
-    agentSetupContext(): { gatewayName: string };
+    agentSetupContext(): {
+      gatewayName: string;
+      getSandbox: Parameters<typeof initializeExternalHermesInferenceRoute>[0]["getSandbox"];
+    };
     ensureAgentDashboardForward(sandboxName: string, agent: Agent | null): Promise<number> | number;
     persistDashboardPort(sandboxName: string, dashboardPort: number): void;
     recordStepSkipped(stepName: string): Promise<Session>;
@@ -97,6 +103,7 @@ export async function handleAgentSetupState<Agent>({
   hermesToolGateways,
   managedOpenclawStartup = false,
   initializeNativeInferenceRoute = false,
+  initializeExternalHermesInference = false,
   settleOpenclawStartupBeforeConfiguration = false,
   revalidateSandboxIdentity,
   deps,
@@ -123,6 +130,9 @@ export async function handleAgentSetupState<Agent>({
   };
 
   if (agent) {
+    if (initializeExternalHermesInference && !revalidateSandboxIdentity) {
+      throw new Error("Initial Hermes inference route requires verified sandbox identity.");
+    }
     await deps.handleAgentSetup(
       sandboxName,
       model,
@@ -132,6 +142,19 @@ export async function handleAgentSetupState<Agent>({
       session,
       agentSetupContext,
     );
+    if (initializeExternalHermesInference) {
+      await (deps.initializeExternalHermesInferenceRoute ?? initializeExternalHermesInferenceRoute)(
+        {
+          sandboxName,
+          gatewayName: agentSetupContext.gatewayName,
+          getSandbox: agentSetupContext.getSandbox,
+          model,
+          provider,
+          preferredInferenceApi,
+          revalidateSandboxIdentity: revalidateSandboxIdentity!,
+        },
+      );
+    }
     // ensureAgentDashboardForward returns the port the dashboard forward was
     // actually established on, which may be bumped when the default is already
     // taken by another sandbox. Persist it to the registry so `dashboard-url`

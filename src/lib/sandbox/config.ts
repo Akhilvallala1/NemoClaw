@@ -12,6 +12,7 @@
 // config set:          Validated host mutation for Hermes.
 // config rotate-token: Credential rotation via stdin or env var.
 
+import { writeHermesConfigNatively } from "./hermes-native-config";
 import type { AgentConfigTarget } from "./agent-config";
 import type { OpenShellRuntimeSelection } from "../adapters/openshell/client";
 import {
@@ -60,11 +61,8 @@ const {
   withPrivilegedSandboxExecutionLease,
 }: typeof import("./privileged-exec") = require("./privileged-exec");
 const {
-  buildHermesUpstreamHeader,
-}: typeof import("./hermes-upstream-header") = require("./hermes-upstream-header");
-const {
   parseConfig,
-  serializeConfig,
+  composeSandboxConfigBody,
 }: typeof import("./config-format") = require("./config-format");
 const {
   buildOpenClawNativeConfigBatchInvocation,
@@ -385,20 +383,6 @@ function classifyNewKeyGate(inputs: NewKeyGateInputs): NewKeyGate {
 }
 
 /**
- * Pure body composition for {@link writeSandboxConfig}: serialize the config
- * and prepend agent-specific headers. Extracted so unit tests can assert the
- * exact byte sequence that lands in the sandbox without driving the
- * privileged docker exec path.
- */
-function composeSandboxConfigBody(config: ConfigObject, target: AgentConfigTarget): string {
-  const body = serializeConfig(config, target.format);
-  if (target.agentName === "hermes" && target.format === "yaml") {
-    return `${buildHermesUpstreamHeader(config as Record<string, unknown>)}${body}`;
-  }
-  return body;
-}
-
-/**
  * Parse a CLI-provided config value as JSON when possible, otherwise keep it
  * as a string literal.
  */
@@ -536,6 +520,7 @@ function writeSandboxConfig(
   sandboxName: string,
   target: AgentConfigTarget,
   config: ConfigObject,
+  nativeGatewayName?: string,
 ): void {
   if (target.agentName === "openclaw") {
     throw new Error(
@@ -551,6 +536,17 @@ function writeSandboxConfig(
       throw new Error(
         "Refusing Hermes config write without the digest from the matching sandbox read.",
       );
+    }
+    if (nativeGatewayName) {
+      writeHermesConfigNatively(
+        getOpenshellBinary(),
+        sandboxName,
+        nativeGatewayName,
+        expectedConfigSha256,
+        content,
+        runOpenshellCommand,
+      );
+      return;
     }
     try {
       privilegedSandboxExec(

@@ -749,7 +749,10 @@ describe("rebuild post-restore phase", () => {
     expect(args.bail).not.toHaveBeenCalled();
     expect(processRecovery.beginUnregisteredOpenClawBackupQuiesce).not.toHaveBeenCalled();
     expect(processRecovery.finishUnregisteredOpenClawPostRestoreDoctor).not.toHaveBeenCalled();
-    expect(mutableConfigPerms.inspectMutableHermesConfigPerms).toHaveBeenCalledWith("alpha");
+    expect(mutableConfigPerms.inspectMutableHermesConfigPerms).toHaveBeenCalledWith(
+      "alpha",
+      registry.getSandbox,
+    );
     expect(verification).toEqual({ complete: true, mutableConfigPermissionsVerified: true });
   });
 

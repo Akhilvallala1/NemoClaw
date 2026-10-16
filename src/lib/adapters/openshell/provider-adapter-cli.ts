@@ -691,19 +691,17 @@ export function createCliOpenShellProviderAdapter(
     }
     if (!request.includeCredentialExpirations) return success(metadata);
 
-    for (
-      let offset = 0;
-      offset < 10 * PROVIDER_INVENTORY_LIMIT;
-      offset += PROVIDER_INVENTORY_LIMIT
-    ) {
+    let pageToken = "";
+    const seenPageTokens = new Set<string>();
+    for (let page = 0; page < 10; page += 1) {
       const inventory = invoke(
         [
           "provider",
           "list",
-          "--limit",
+          "--page-size",
           String(PROVIDER_INVENTORY_LIMIT),
-          "--offset",
-          String(offset),
+          "--page-token",
+          pageToken,
           "--output",
           "json",
         ],
@@ -719,7 +717,17 @@ export function createCliOpenShellProviderAdapter(
         commandStdout(inventory),
         request.providerName,
       );
-      if (credentialState === undefined) continue;
+      if (credentialState && "nextPageToken" in credentialState) {
+        if (seenPageTokens.has(credentialState.nextPageToken)) {
+          return failure({
+            kind: "schema",
+            message: "OpenShell repeated a provider inventory page token.",
+          });
+        }
+        pageToken = credentialState.nextPageToken;
+        seenPageTokens.add(pageToken);
+        continue;
+      }
       return credentialState
         ? success({
             ...metadata,

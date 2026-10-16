@@ -12,11 +12,10 @@ const SOURCE_REQUIRE_HOOK = path.join(
   "onboard-script-mocks.cjs",
 );
 
-describe("Hermes host config transaction wiring", () => {
-  it("passes the exact read digest and serialized update to the sealed write transaction", () => {
-    const rawConfig = "model:\n  default: trusted-model\n";
-    const expectedDigest = createHash("sha256").update(rawConfig).digest("hex");
-    const script = String.raw`
+function runConfigWrite(mode: "sealed" | "native") {
+  const rawConfig = "model:\n  default: trusted-model\n";
+  const expectedDigest = createHash("sha256").update(rawConfig).digest("hex");
+  const script = String.raw`
 const Module = require("node:module");
 const path = require("node:path");
 const root = process.cwd();
@@ -49,7 +48,7 @@ installMock(source("agent", "defs.js"), {
 });
 installMock(source("adapters", "openshell", "client.js"), {
   captureOpenshellCommand: () => ({ status: 0, output: rawConfig }),
-  runOpenshellCommand: () => ({ status: 0 }),
+  runOpenshellCommand: (_binary, argv, options) => { captured = { argv, options }; return { status: 0, stdout: "updated=1\\n".replace("\\n", "\n") }; },
 });
 installMock(source("sandbox", "privileged-exec.js"), {
   capturePrivilegedSandboxCommand: (sandboxName, command, options) => {
@@ -64,23 +63,44 @@ const config = require(source("sandbox", "config.js"));
 const target = config.resolveAgentConfig("alpha");
 const parsed = config.readSandboxConfig("alpha", target);
 parsed.model.default = "trusted-model-v2";
-config.writeSandboxConfig("alpha", target, parsed);
+config.writeSandboxConfig("alpha", target, parsed, ${mode === "native" ? JSON.stringify("selected-gateway") : "undefined"});
 process.stdout.write(JSON.stringify({ ...captured, privilegedExec: capturedPrivilegedExec }));
 `;
 
-    const result = spawnSync(process.execPath, ["--require", SOURCE_REQUIRE_HOOK, "-e", script], {
-      cwd: path.join(import.meta.dirname, "../../.."),
-      encoding: "utf-8",
-      env: { ...process.env, NODE_OPTIONS: "" },
-      timeout: 5000,
-    });
+  const result = spawnSync(process.execPath, ["--require", SOURCE_REQUIRE_HOOK, "-e", script], {
+    cwd: path.join(import.meta.dirname, "../../.."),
+    encoding: "utf-8",
+    env: { ...process.env, NODE_OPTIONS: "" },
+    timeout: 5000,
+  });
 
-    expect(result.status, result.stderr).toBe(0);
-    const captured = JSON.parse(result.stdout) as {
-      argv: string[];
-      options: { input: string; timeout: number; sanitizeEnvironment: boolean };
-      privilegedExec: { command: string[]; sanitizeEnvironment: boolean };
-    };
+  expect(result.status, result.stderr).toBe(0);
+  const captured = JSON.parse(result.stdout) as {
+    argv: string[];
+    options: { input: string; timeout: number; sanitizeEnvironment: boolean };
+    privilegedExec: { command: string[]; sanitizeEnvironment: boolean };
+  };
+  return { captured, expectedDigest };
+}
+
+describe("Hermes host config transaction wiring", () => {
+  it("passes the read digest and serialized update to the native transaction", () => {
+    const { captured, expectedDigest } = runConfigWrite("native");
+
+    expect(captured.argv.slice(0, 6)).toEqual([
+      "-g",
+      "selected-gateway",
+      "sandbox",
+      "exec",
+      "--name",
+      "alpha",
+    ]);
+    expect(captured.argv.at(-1)).toBe(expectedDigest);
+    expect(captured.options.input).toContain("default: trusted-model-v2");
+    expect(captured.privilegedExec).toBeNull();
+  });
+  it("passes the read digest and serialized update to the sealed transaction", () => {
+    const { captured, expectedDigest } = runConfigWrite("sealed");
     const digestFlag = captured.argv.indexOf("--expected-config-sha256");
     expect(captured.argv).toEqual(
       expect.arrayContaining([

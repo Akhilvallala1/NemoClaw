@@ -84,6 +84,15 @@ if (command.includes("printf '%s\\\\0%s\\\\0'")) {
 if (command.includes("tar -C")) {
   const procRoot = process.env.NEMOCLAW_TEST_NATIVE_PROC;
   if (procRoot) {
+    if (process.env.NEMOCLAW_TEST_NATIVE_INIT_ANCESTOR === "1") {
+      const parentRoot = path.join(procRoot, String(process.pid));
+      const initRoot = path.join(procRoot, "1");
+      fs.mkdirSync(parentRoot, { recursive: true });
+      fs.mkdirSync(path.join(initRoot, "task", "1"), { recursive: true });
+      fs.writeFileSync(path.join(parentRoot, "status"), "PPid:\\t1\\n");
+      fs.writeFileSync(path.join(initRoot, "status"), "PPid:\\t0\\nUid:\\t" + process.getuid() + "\\n");
+      fs.writeFileSync(path.join(initRoot, "task", "1", "status"), "State:\\tS\\n");
+    }
     const prelude = 'kill() { printf "%s\\\\n" "$*" >> "$NEMOCLAW_TEST_SIGNAL_LOG"; }; sleep() { :; }; tar() { command tar -C "$NEMOCLAW_TEST_NATIVE_ROOT" -cf - .; }; ';
     const capture = spawnSync("sh", ["-c", prelude + command.replaceAll("/proc/", procRoot + "/")], {
       stdio: ["ignore", "inherit", "inherit"],

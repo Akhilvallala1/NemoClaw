@@ -1122,6 +1122,9 @@ Resume retains the recorded digest and requires the same `--from-image` value, o
 Rebuild consumes the same digest without building an image.
 Cleanup retains the published image, and upgrades leave it pinned and publisher-managed.
 
+For Hermes, onboarding applies the selected inference provider and model to the sandbox configuration after image setup.
+It then restarts the Hermes gateway to load that configuration.
+
 </AgentOnly>
 
 #### `--name <sandbox>`

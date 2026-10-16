@@ -191,7 +191,7 @@ if (args[0] === "provider" && args[1] === "get") {
 }
 
 if (args[0] === "provider" && args[1] === "list") {
-  process.stdout.write('[{"name":"nvidia-prod","credential_keys":["NVIDIA_INFERENCE_API_KEY"]}]\\n');
+  process.stdout.write('{"providers":[{"name":"nvidia-prod","credential_keys":["NVIDIA_INFERENCE_API_KEY"]}],"next_page_token":""}\\n');
   process.exit(0);
 }
 

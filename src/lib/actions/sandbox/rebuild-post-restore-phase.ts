@@ -468,7 +468,10 @@ export async function runRebuildPostRestorePhase(
     verifiedAgentVersion = rebuiltVersion.sandboxVersion;
   }
   if (targetAgentName === "hermes") {
-    const mutableConfigVerification = inspectMutableHermesConfigPerms(sandboxName);
+    const mutableConfigVerification = inspectMutableHermesConfigPerms(
+      sandboxName,
+      registry.getSandbox,
+    );
     mutableConfigPermissionsVerified = mutableConfigVerification.verified;
     if (mutableConfigPermissionsVerified) {
       log("Verified the rebuilt Hermes mutable config posture");

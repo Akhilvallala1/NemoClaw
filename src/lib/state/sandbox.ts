@@ -2360,8 +2360,9 @@ function backupNativeSandboxState(
         // owned by that user before reading the complete native tree. Materialize
         // any OpenClaw database plus committed WAL state into a private standalone
         // copy, then stream that copy with the other process-quiescent files.
-        // Keep the SSH ancestry live so the archive can stream, and always resume
-        // processes through the EXIT trap, including tar failures and signals.
+        // Keep the SSH ancestry, including the native PID 1 launcher, live so
+        // the archive can stream. Always resume processes through the EXIT trap,
+        // including tar failures and signals.
         const command = [
           "set -eu",
           `root=${shellQuote(rootResult.root)}`,
@@ -2371,7 +2372,7 @@ function backupNativeSandboxState(
           "self=$$",
           'ancestors=" $self "',
           "cursor=$PPID",
-          'while [ "$cursor" -gt 1 ] 2>/dev/null; do ancestors="$ancestors$cursor "; parent=""; { while IFS=":" read -r key value; do if [ "$key" = "PPid" ]; then set -- $value; parent=${1:-}; break; fi; done; } 2>/dev/null < "/proc/$cursor/status" || break; cursor=$parent; [ -n "$cursor" ] || break; done',
+          'while [ "$cursor" -gt 0 ] 2>/dev/null; do ancestors="$ancestors$cursor "; parent=""; { while IFS=":" read -r key value; do if [ "$key" = "PPid" ]; then set -- $value; parent=${1:-}; break; fi; done; } 2>/dev/null < "/proc/$cursor/status" || break; cursor=$parent; [ -n "$cursor" ] || break; done',
           'collect_candidates() { candidates=""; for proc in /proc/[0-9]*; do pid=${proc##*/}; case "$ancestors" in *" $pid "*) continue ;; esac; owner=""; while IFS=":" read -r key value; do if [ "$key" = "Uid" ]; then set -- $value; owner=${1:-}; break; fi; done 2>/dev/null < "$proc/status" || :; [ "$owner" = "$uid" ] && candidates="$candidates $pid"; done; }',
           'stopped=""',
           'resume() { [ -z "$stopped" ] || kill -CONT $stopped 2>/dev/null || :; rm -rf -- "$db_stage"; }',
