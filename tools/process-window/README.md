@@ -11,7 +11,7 @@ Install the self-contained directory at `tools/process-window/` and the workflow
 
 Run **Process Window** manually with `branch: v1`, `mode: analyze`, and `publish: false`. Download `process-window-v1` and inspect `mapping.yaml`, `revision.json`, and `site/index.html`. Repeat for `main`. The optional `revision` input supports an artifact-only run at a known commit, including a phase 1 comparison revision; supplying it disables publication.
 
-GitHub must first recognize the workflow on the default branch before manual dispatch is available. Pull requests run the tool's checks and browser tests without inference credentials. Before merge, the same analysis can run locally with the copied entry script and an authorized provider credential.
+After GitHub registers the workflow, an artifact-only run can use a PR branch before merge. For example, run `gh workflow run process-window.yaml --repo NVIDIA/NemoClaw --ref codex/process-window-v1 -f branch=v1 -f mode=analyze -f publish=false`. Select the matching branch and ref for main. An explicit `revision` pins a comparison run and disables publication. Pull requests also run the tool's checks and browser tests without inference credentials. The copied entry script supports the same analysis locally with an authorized provider credential.
 
 The example uses `PR_REVIEW_ADVISOR_API_KEY`, already used by NemoClaw for the NVIDIA inference endpoint. It is exposed only to the inference step as `PROCESS_WINDOW_API_KEY`. The YAML owns the provider, model, API protocol, timeout, and environment variable name. The workflow owns the secret binding. Credential values never belong in either file, the mapping, or artifacts. Runner teardown removes the process environment; the tool does not persist credentials.
 
