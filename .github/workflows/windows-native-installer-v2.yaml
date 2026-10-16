@@ -689,6 +689,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\candidate\packaging\windows\hermes\probe-personal-candidate.ps1" `
             -ArtifactDirectory "$work\personal-production" -BootstrapDirectory "$work\personal-bootstrap" `
             -HelperDirectory "$work\system-drive-helper" -NativeCompatibilityDirectory "$work\native-proof\bash-compat-evidence" `
+            -PreparedHostRoot "$work\host" -PreparedSystemRootProof "$work\system-drive-proof" `
             -RustBinDirectory (Split-Path -Parent $rustc)
       - name: Admit the same-run Personal-passing complete Hermes candidate
         if: ${{ needs.windows-finished-request.outputs.agent == 'hermes' }}
@@ -970,6 +971,7 @@ jobs:
             "$work\assembled\*.json", "$work\hermes-input\candidate\*.json",
             "$work\personal-production\*.json", "$work\personal-production\*.log",
             "$work\personal-production\personal-mxc\*.json", "$work\personal-production\personal-mxc\*.log",
+            "$work\personal-production\system-root-proof\*.json", "$work\personal-production\system-root-proof\*.log",
             "$work\personal-production\official-hermes-runtime-build\*.log",
             "$work\package\*.json", "$work\package\build\*.log",
             "$work\*.log", "$work\openshell-logs\*.log"
@@ -3134,8 +3136,8 @@ jobs:
             $pythonResult = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           $pythonText = [string](Get-Content -LiteralPath $pythonLog -Raw)
-          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 187 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
-            throw 'The 187 MSI build and metadata controls did not all pass.'
+          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 192 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
+            throw 'The 192 MSI build and metadata controls did not all pass.'
           }
 
       - name: Build and exercise actual isolated MSI transactions

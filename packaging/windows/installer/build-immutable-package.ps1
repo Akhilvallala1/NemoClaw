@@ -29,7 +29,7 @@ if ($env:OS -cne 'Windows_NT' -or $env:GITHUB_ACTIONS -cne 'true' -or
     throw 'The finished runtime package requires explicit disposable Windows CI inputs.'
 }
 if ($UnqualifiedPackageDirectory -and (-not $ReviewedAvailability -or $RuntimeImage -or $RuntimeImageReceipt)) {
-    throw 'Reviewed recomposition requires an availability decision and the original OpenClaw package without replacement image inputs.'
+    throw 'Reviewed recomposition requires an availability decision and the original single-agent package without replacement image inputs.'
 }
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'The immutable package output must be fresh.' }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)

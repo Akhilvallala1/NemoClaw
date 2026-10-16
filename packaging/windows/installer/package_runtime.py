@@ -251,12 +251,15 @@ def recompose_reviewed(payload: Path, assembly: Path, selection: Path, output: P
     record = read_json(assembly)
     inputs = read_json(payload / "immutable-package-inputs.json")
     identity = validate_identity(record["runtime"])
+    agents = record.get("agents")
     if (
         record.get("classification") != "windows-immutable-runtime-assembly"
         or record.get("buildCompleteForSelectedAgents") is not True
         or record.get("deliveryContract") != "finished-native-app-v1"
-        or record.get("agents") is None
-        or [row.get("agent") for row in record["agents"]] != ["openclaw"]
+        or not isinstance(agents, list)
+        or len(agents) != 1
+        or not isinstance(agents[0], dict)
+        or agents[0].get("agent") not in ("openclaw", "hermes")
         or inputs.get("schemaVersion") != 1
         or inputs.get("classification") != "immutable-package-inputs"
         or inputs.get("deliveryContract") not in {"finished-native-app-v1", "finished-native-image-v1"}
@@ -268,13 +271,13 @@ def recompose_reviewed(payload: Path, assembly: Path, selection: Path, output: P
         or inputs.get("installedAcceptance") is not False
         or inputs.get("completePackage") is not False
     ):
-        raise ValueError("Recomposition requires the original unqualified OpenClaw payload.")
+        raise ValueError("Recomposition requires the original unqualified single-agent payload.")
     unqualified, _ = availability(record, None)
     if read_json(payload / "runtime-package-availability.json") != unqualified:
         raise ValueError("The original runtime availability is not unqualified.")
     document, references = availability(record, read_json(selection))
-    if [row["agent"] for row in references] != ["openclaw"]:
-        raise ValueError("The reviewed decision must qualify the included OpenClaw runtime.")
+    if [row["agent"] for row in references] != [agents[0]["agent"]]:
+        raise ValueError("The reviewed decision must qualify the included runtime.")
     if inputs["deliveryContract"] == "finished-native-image-v1":
         image_base = payload / "images" / identity["runtimeId"]
         image = validate_runtime_image(image_base.with_suffix(".vhdx"), image_base.with_suffix(".json"), identity)

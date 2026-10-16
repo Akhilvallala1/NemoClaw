@@ -6,6 +6,8 @@ param([Parameter(Mandatory)][string]$ArtifactDirectory,
     [Parameter(Mandatory)][string]$HelperDirectory,
     [string]$NativeCompatibilityDirectory = '',
     [string]$RustBinDirectory = '',
+    [string]$PreparedHostRoot = '',
+    [string]$PreparedSystemRootProof = '',
     [switch]$RecordStartup,
     [switch]$CaptureRendererContext,
     [switch]$ColdJobProbe,
@@ -20,6 +22,10 @@ if ($ColdJobProbe -and ($RecordStartup -or $CaptureRendererContext)) { throw 'Th
 if ($RendererWer -and ($ColdJobProbe -or $RecordStartup -or $CaptureRendererContext)) { throw 'The renderer WER diagnostic must run without other diagnostic modes.' }
 if ($RendererPostmortem -and ($RendererWer -or $ColdJobProbe -or $CaptureRendererContext)) { throw 'Postmortem capture requires WER-clone, cold-job and renderer-context modes off.' }
 $nativeProduction = -not [string]::IsNullOrEmpty($NativeCompatibilityDirectory)
+$reuseSystemRoot = -not [string]::IsNullOrEmpty($PreparedSystemRootProof)
+if ($reuseSystemRoot -ne (-not [string]::IsNullOrEmpty($PreparedHostRoot)) -or ($reuseSystemRoot -and -not $nativeProduction)) {
+    throw 'Prepared system-root reuse requires both same-run host and proof inputs for current native production.'
+}
 if ($nativeProduction -and ([string]::IsNullOrEmpty($RustBinDirectory) -or $BrowserFirst -or $ColdJobProbe -or $RendererWer -or $RendererPostmortem -or $CaptureRendererContext)) {
     throw 'Current native production requires its Rust tools and ordinary Personal qualification, without historical replay diagnostics.'
 }
@@ -44,6 +50,41 @@ function Invoke-PersonalChecked([string]$Executable,[string[]]$Arguments,[string
     Write-Host ('[Hermes Personal] '+$Label)
     & $Executable @Arguments 2>&1 | Tee-Object -FilePath (Join-Path $output (($Label -replace '[^a-zA-Z0-9-]','-')+'.log'))
     if ($LASTEXITCODE -ne 0) { throw ($Label+' failed with exit '+$LASTEXITCODE) }
+}
+function Confirm-PersonalPreparedSystemRoot([string]$PythonPath,[string]$HostRoot,[string]$ProofDirectory,
+    [string]$HelperRoot,[string]$EvidenceDirectory,[string]$SystemRoot,[string]$SourceRoot) {
+    $gatePath=Join-Path $EvidenceDirectory 'prepared-system-root-gate.json'
+    Invoke-PersonalChecked $PythonPath @('-I',(Join-Path $SourceRoot 'packaging/windows/installer/verify-system-drive-proof.py'),
+        '--helper',(Join-Path $HelperRoot 'NemoClawHostPreparation.exe'),
+        '--build-receipt',(Join-Path $HelperRoot 'build-receipt.json'),
+        '--proof-directory',$ProofDirectory,'--source-root',$sourceRoot,'--source-revision',$env:GITHUB_SHA,
+        '--node-path',(Join-Path $HostRoot 'bin/node.exe'),'--host-payload-root',$HostRoot,
+        '--output',$gatePath) 'Verify same-run prepared system root'
+    $gate=Get-Content -LiteralPath $gatePath -Raw|ConvertFrom-Json
+    $proofPath=Join-Path $ProofDirectory 'system-root-mxc-proof.json'
+    $file=Get-Item -LiteralPath $proofPath -Force
+    if ($file -isnot [IO.FileInfo] -or ($file.Attributes -band 0x400) -ne 0 -or $file.Length -gt 1048576) {
+        throw 'The prepared system-root proof must remain bounded and ordinary.'
+    }
+    $bytes=[IO.File]::ReadAllBytes($proofPath)
+    $hash=[Security.Cryptography.SHA256]::Create()
+    try {$proofSha=([BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()}finally{$hash.Dispose()}
+    $proof=[Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xfeff)|ConvertFrom-Json
+    if ($env:GITHUB_SHA -cnotmatch '^[a-f0-9]{40}$' -or $env:GITHUB_RUN_ID -cnotmatch '^[1-9][0-9]*$' -or
+        $env:GITHUB_RUN_ATTEMPT -cnotmatch '^[1-9][0-9]*$' -or
+        $SystemRoot -cnotmatch '^[A-Za-z]:\\$' -or
+        $gate.classification -cne 'same-job-system-drive-helper-build-gate' -or
+        $gate.sourceRevision -cne $env:GITHUB_SHA -or $gate.proofSha256 -cne $proofSha -or
+        $gate.sameJobHostAlreadyPrepared -isnot [bool] -or $gate.sameJobHostAlreadyPrepared -cne $true -or
+        $gate.mxcInput.workflowRunId -cne $env:GITHUB_RUN_ID -or
+        $gate.mxcInput.workflowRunAttempt -cne $env:GITHUB_RUN_ATTEMPT -or
+        $proof.systemDriveRoot -cne $systemRoot -or [string]::IsNullOrEmpty($proof.rootSddlAfterMxc) -or
+        (Get-Acl -LiteralPath $systemRoot).Sddl -cne $proof.rootSddlAfterMxc) {
+        throw 'The verified prepared system root no longer matches this source, run or drive permissions.'
+    }
+    return [ordered]@{classification='same-run-prepared-system-root-reuse';proofSha256=$proofSha;
+        gateSha256=(Get-FileHash -LiteralPath $gatePath -Algorithm SHA256).Hash.ToLowerInvariant();
+        systemDriveRoot=$systemRoot;rootPermissionsUnchanged=$true;installedAcceptance=$false}
 }
 function New-PersonalNativeBuildCommand([string]$DeveloperCommand,[string]$PowerShellPath,[string]$ScriptPath,
     [string]$RuntimeRoot,[string]$ArtifactDirectory,[string]$ControllerSource,[string]$InputFile,[object]$Toolchain) {
@@ -317,9 +358,14 @@ try {
     if((Get-FileHash -LiteralPath $sdk -Algorithm SHA256).Hash.ToLowerInvariant() -cne '06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2fbf569da14e'){throw 'The MXC SDK differs from the exact archive.'}
     Invoke-PersonalChecked (Join-Path ([Environment]::SystemDirectory) 'tar.exe') @('-xzf',$sdk,'-C',$downloads,'package/bin/arm64/wxc-exec.exe','package/bin/arm64/wxc-host-prep.exe') 'Pinned MXC extraction'
     $mxc=Join-Path $downloads 'package\bin\arm64'
-    & (Join-Path $PSScriptRoot '..\host-preparation\test-system-root-mxc.ps1') -HelperPath (Join-Path $HelperDirectory 'NemoClawHostPreparation.exe') -MxcDirectory $mxc -NodePath $node -ArtifactDirectory (Join-Path $output 'system-root-proof')
-    $systemProof=Get-Content -LiteralPath (Join-Path $output 'system-root-proof\system-root-mxc-proof.json') -Raw|ConvertFrom-Json
-    if($systemProof.status -cne 'pass'){throw 'The same-run system-root/MXC proof failed.'}
+    if ($reuseSystemRoot) {
+        # The finished builder already owns the fresh-write and no-op proof on this host.
+        $receipt['systemRootPreparation']=Confirm-PersonalPreparedSystemRoot $python $PreparedHostRoot $PreparedSystemRootProof $HelperDirectory $output $root ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..')))
+    } else {
+        & (Join-Path $PSScriptRoot '..\host-preparation\test-system-root-mxc.ps1') -HelperPath (Join-Path $HelperDirectory 'NemoClawHostPreparation.exe') -MxcDirectory $mxc -NodePath $node -ArtifactDirectory (Join-Path $output 'system-root-proof')
+        $systemProof=Get-Content -LiteralPath (Join-Path $output 'system-root-proof\system-root-mxc-proof.json') -Raw|ConvertFrom-Json
+        if($systemProof.status -cne 'pass'){throw 'The same-run system-root/MXC proof failed.'}
+    }
     # Observe only metadata before the timed primary workload; failures stay secondary.
     try {
         $aclObservation=Get-PersonalRuntimeAclObservation $runtime $receipt.derivedCandidateReceiptSha256 $receipt.replayInputSha256

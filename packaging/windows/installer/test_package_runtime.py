@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 import test_assemble_runtime as fixtures
 import package_runtime as package
+from build_runtime_manifest import build as build_manifest
 
 
 class PackageComposition(unittest.TestCase):
@@ -254,7 +255,7 @@ class PackageComposition(unittest.TestCase):
             "agent": "openclaw", "status": "unqualified",
         })
 
-    def reviewed_recomposition_inputs(self, image=False):
+    def reviewed_recomposition_inputs(self, image=False, agent="openclaw"):
         if image:
             self.compose_image()
         else:
@@ -266,7 +267,7 @@ class PackageComposition(unittest.TestCase):
             "schemaVersion": 1,
             "classification": "reviewed-native-runtime-availability",
             "runtime": self.assembly["runtime"],
-            "agents": [{"agent": "openclaw", "evidenceSha256": "d" * 64}],
+            "agents": [{"agent": agent, "evidenceSha256": "d" * 64}],
         }))
         return decision, self.fixture.root / "reviewed-package"
 
@@ -274,6 +275,127 @@ class PackageComposition(unittest.TestCase):
         return package.recompose_reviewed(
             self.output, self.fixture.output / "assembly.json", decision, output
         )
+
+    def hermes_recomposition_inputs(self, image=False):
+        # A separate sealed fixture tests packaging, not Hermes runtime admission.
+        self.fixture.output = self.fixture.root / "hermes-assembly"
+        runtime_id = "c" * 64
+        root = self.fixture.output / "runtimes" / runtime_id
+        (root / "hermes").mkdir(parents=True)
+        (root / "hermes/LICENSE").write_text("Hermes packaging fixture; not executable\n")
+        manifest, identity = build_manifest(root, self.fixture.node, "a" * 40, "22.23.2", runtime_id)
+        (root / "runtime.manifest").write_bytes(manifest)
+        fields = ("runtimeId", "manifestSha256", "sourceRevision", "nodeSha256", "nodeVersion")
+        (root / "runtime.ready").write_bytes(
+            ("NEMOCLAW_RUNTIME_V1\n" + "\n".join(identity[key] for key in fields) + "\n").encode("ascii")
+        )
+        self.assembly = {
+            "classification": "windows-immutable-runtime-assembly",
+            "buildCompleteForSelectedAgents": True,
+            "deliveryContract": "finished-native-app-v1",
+            "runtime": identity,
+            "agents": [{"agent": "hermes"}],
+        }
+        package.write_json(self.fixture.output / "assembly.json", self.assembly)
+        return self.reviewed_recomposition_inputs(image=image, agent="hermes")
+
+    def test_reviewed_hermes_recomposition_preserves_the_sealed_runtime_and_host(self):
+        decision, output = self.hermes_recomposition_inputs()
+        before = package.inventory(self.output)
+        identity = self.recompose_reviewed(decision, output)
+        self.assertEqual(identity, self.assembly["runtime"])
+        package.verify_seal(output / "runtimes" / identity["runtimeId"], identity)
+        self.assertEqual(package.inventory(self.output), before)
+        mutable = {"agent-support.json", "runtime-package-availability.json", "immutable-package-inputs.json"}
+        self.assertEqual(
+            [row for row in package.inventory(output) if row["path"] not in mutable],
+            [row for row in before if row["path"] not in mutable and row["path"].split("/", 1)[0] != "native-ui"],
+        )
+        catalog = package.read_json(output / "agent-support.json")
+        self.assertEqual([row["id"] for row in catalog["agents"] if row["selectable"]], ["hermes"])
+        self.assertEqual(package.read_json(output / "runtime-package-availability.json")["agents"], [
+            {"agent": agent, "status": "qualified" if agent == "hermes" else "not-included"}
+            for agent in package.LAYOUT
+        ])
+        inputs = package.read_json(output / "immutable-package-inputs.json")
+        self.assertEqual(inputs["availabilityEvidence"], package.read_json(decision)["agents"])
+        self.assertIs(inputs["installedAcceptance"], False)
+        self.assertIs(inputs["completePackage"], False)
+        self.assertFalse((output / "native-ui").exists())
+        self.assertEqual(package.read_json(self.output / "runtime-package-availability.json")["agents"][1]["status"], "unqualified")
+
+    def test_reviewed_hermes_image_recomposition_preserves_image_bytes_without_acceptance(self):
+        decision, output = self.hermes_recomposition_inputs(image=True)
+        before = package.inventory(self.output)
+        self.recompose_reviewed(decision, output)
+        self.assertEqual(package.inventory(self.output), before)
+        self.assertEqual(package.inventory(output / "images"), package.inventory(self.output / "images"))
+        inputs = package.read_json(output / "immutable-package-inputs.json")
+        self.assertEqual(inputs["deliveryContract"], "finished-native-image-v1")
+        self.assertEqual(inputs["availabilityEvidence"], package.read_json(decision)["agents"])
+        self.assertIs(inputs["installedAcceptance"], False)
+        self.assertIs(inputs["completePackage"], False)
+        self.assertFalse((output / "native-ui").exists())
+        self.assertEqual(list((output / "runtimes" / self.assembly["runtime"]["runtimeId"]).iterdir()), [])
+
+    def test_reviewed_hermes_recomposition_rejects_missing_wrong_duplicate_and_unbound_review(self):
+        decision, output = self.hermes_recomposition_inputs()
+        value = package.read_json(decision)
+        before = package.inventory(self.output)
+        for change in (
+            {"runtime": {**value["runtime"], "sourceRevision": "e" * 40}},
+            {"runtime": {**value["runtime"], "manifestSha256": "e" * 64}},
+            {"classification": "startup-only"},
+            {"agents": []},
+            {"agents": [{"agent": "openclaw", "evidenceSha256": "d" * 64}]},
+            {"agents": [{"agent": "hermes", "evidenceSha256": "invalid"}]},
+            {"agents": value["agents"] * 2},
+        ):
+            with self.subTest(change=change):
+                decision.write_text(json.dumps({**value, **change}))
+                with self.assertRaises(ValueError):
+                    self.recompose_reviewed(decision, output)
+                self.assertFalse(output.exists())
+                self.assertEqual(package.inventory(self.output), before)
+
+    def test_reviewed_hermes_recomposition_rejects_changed_runtime_and_premature_acceptance(self):
+        decision, output = self.hermes_recomposition_inputs()
+        runtime = self.output / "runtimes" / self.assembly["runtime"]["runtimeId"]
+        inputs_path = self.output / "immutable-package-inputs.json"
+        for path, changed in (
+            (runtime / "hermes/LICENSE", b"changed runtime"),
+            (self.output / "bin/node.exe", b"changed Node"),
+            (self.output / "bin/NemoClaw.exe", b"changed launcher"),
+            (inputs_path, json.dumps({**package.read_json(inputs_path), "installedAcceptance": True}).encode()),
+            (inputs_path, json.dumps({**package.read_json(inputs_path), "completePackage": True}).encode()),
+        ):
+            with self.subTest(path=path, changed=changed):
+                original = path.read_bytes()
+                try:
+                    path.write_bytes(changed)
+                    before = package.inventory(self.output)
+                    with self.assertRaises(ValueError):
+                        self.recompose_reviewed(decision, output)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(package.inventory(self.output), before)
+                finally:
+                    path.write_bytes(original)
+
+    def test_reviewed_recomposition_rejects_unknown_multiple_or_malformed_included_agents(self):
+        decision, output = self.hermes_recomposition_inputs()
+        path = self.fixture.output / "assembly.json"
+        inputs_path = self.output / "immutable-package-inputs.json"
+        inputs = package.read_json(inputs_path)
+        for agents in (None, {}, [], [None], [{}], [{"agent": "pi"}],
+                       [{"agent": "hermes"}, {"agent": "openclaw"}], [{"agent": "hermes"}] * 2):
+            with self.subTest(agents=agents):
+                path.write_text(json.dumps({**self.assembly, "agents": agents}))
+                inputs_path.write_text(json.dumps({**inputs, "assemblyReceiptSha256": package.hash_file(path)[1]}))
+                before = package.inventory(self.output)
+                with self.assertRaisesRegex(ValueError, "original unqualified single-agent"):
+                    self.recompose_reviewed(decision, output)
+                self.assertFalse(output.exists())
+                self.assertEqual(package.inventory(self.output), before)
 
     def test_reviewed_recomposition_preserves_every_runtime_and_host_byte(self):
         decision, output = self.reviewed_recomposition_inputs()
@@ -377,7 +499,7 @@ class PackageComposition(unittest.TestCase):
         decision, output = self.reviewed_recomposition_inputs()
         assembly = self.fixture.output / "assembly.json"
         assembly.write_text(assembly.read_text() + "\n")
-        with self.assertRaisesRegex(ValueError, "original unqualified OpenClaw"):
+        with self.assertRaisesRegex(ValueError, "original unqualified single-agent"):
             self.recompose_reviewed(decision, output)
         self.assertFalse(output.exists())
 
@@ -409,7 +531,7 @@ class PackageComposition(unittest.TestCase):
         ):
             with self.subTest(change=change):
                 path.write_text(json.dumps({**value, **change}))
-                with self.assertRaisesRegex(ValueError, "original unqualified OpenClaw"):
+                with self.assertRaisesRegex(ValueError, "original unqualified single-agent"):
                     self.recompose_reviewed(decision, output)
                 self.assertFalse(output.exists())
         path.write_text(json.dumps(value))

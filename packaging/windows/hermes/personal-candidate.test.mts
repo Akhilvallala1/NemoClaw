@@ -46,6 +46,145 @@ const browserOriginalNonce = "00112233445566778899aabb";
 const browserNewNonce = "ffeeddccbbaa998877665544";
 const browserController = "C:\\NemoClawPersonalNode-001122334455";
 
+test("Personal consumes the strict same-run root proof and refuses stale or changed state", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prepared-root-"));
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:NEMOCLAW_PERSONAL_WRAPPER_PATH,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Personal wrapper parsing failed.'}
+$functions=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Confirm-PersonalPreparedSystemRoot'},$true))
+if($functions.Count -ne 1){throw 'Prepared-root consumer is missing or ambiguous.'}
+Invoke-Expression $functions[0].Extent.Text
+$env:GITHUB_SHA='a'*40;$env:GITHUB_RUN_ID='123';$env:GITHUB_RUN_ATTEMPT='1'
+$proofPath=Join-Path $env:NEMOCLAW_PERSONAL_TEST_ROOT 'system-root-mxc-proof.json'
+$proof=@{systemDriveRoot='C:\';rootSddlAfterMxc='verified fixture descriptor'}
+[IO.File]::WriteAllText($proofPath,($proof|ConvertTo-Json))
+$base=@{classification='same-job-system-drive-helper-build-gate';sourceRevision=$env:GITHUB_SHA;
+ proofSha256=(Get-FileHash $proofPath -Algorithm SHA256).Hash.ToLowerInvariant();sameJobHostAlreadyPrepared=$true;
+ mxcInput=@{workflowRunId='123';workflowRunAttempt='1'}}
+$script:aclReads=0;$script:validatorFailure=$false;$script:observedSddl=$proof.rootSddlAfterMxc
+function Get-Acl {param([string]$LiteralPath) if($LiteralPath -cne 'C:\'){throw 'Wrong observed root'};$script:aclReads++;return @{Sddl=$script:observedSddl}}
+# The existing verifier has its own real positive/negative tests. Replace only its process boundary here.
+function Invoke-PersonalChecked {param($Executable,$Arguments,$Label)
+ $script:invocation=@{executable=$Executable;arguments=$Arguments;label=$Label}
+ if($script:validatorFailure){throw 'Strict verifier rejected proof'}
+ $destination=$Arguments[[Array]::IndexOf($Arguments,'--output')+1]
+ [IO.File]::WriteAllText($destination,($script:gate|ConvertTo-Json -Depth 5))
+}
+$arguments=@{PythonPath='pinned-python';HostRoot=$env:NEMOCLAW_PERSONAL_TEST_ROOT;
+ ProofDirectory=$env:NEMOCLAW_PERSONAL_TEST_ROOT;HelperRoot=$env:NEMOCLAW_PERSONAL_TEST_ROOT;
+ EvidenceDirectory=$env:NEMOCLAW_PERSONAL_TEST_ROOT;SystemRoot='C:\';
+ SourceRoot=[IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $env:NEMOCLAW_PERSONAL_WRAPPER_PATH) '../../..'))}
+$script:gate=$base|ConvertTo-Json -Depth 5|ConvertFrom-Json
+$accepted=Confirm-PersonalPreparedSystemRoot @arguments
+$invocation=$script:invocation
+$rejections=@(foreach($change in @(
+ @{field='classification';value='historical-sdk-system-drive-proof'},
+ @{field='sourceRevision';value=('b'*40)},
+ @{field='proofSha256';value=('0'*64)},
+ @{field='sameJobHostAlreadyPrepared';value=$false},
+ @{field='sameJobHostAlreadyPrepared';value='true'}
+)) {
+ $script:gate=$base|ConvertTo-Json -Depth 5|ConvertFrom-Json
+ $script:gate.($change.field)=$change.value
+ try{$null=Confirm-PersonalPreparedSystemRoot @arguments;$false}catch{$true}
+})
+foreach($field in @('workflowRunId','workflowRunAttempt')) {
+ $script:gate=$base|ConvertTo-Json -Depth 5|ConvertFrom-Json
+ $script:gate.mxcInput.$field='999'
+ $rejections+=try{$null=Confirm-PersonalPreparedSystemRoot @arguments;$false}catch{$true}
+}
+$script:gate=$base|ConvertTo-Json -Depth 5|ConvertFrom-Json
+$script:observedSddl='changed permissions'
+$rejections+=try{$null=Confirm-PersonalPreparedSystemRoot @arguments;$false}catch{$true}
+$script:observedSddl=$proof.rootSddlAfterMxc
+$arguments.SystemRoot='D:\'
+$rejections+=try{$null=Confirm-PersonalPreparedSystemRoot @arguments;$false}catch{$true}
+$arguments.SystemRoot='C:\'
+$env:GITHUB_RUN_ID=''
+$rejections+=try{$null=Confirm-PersonalPreparedSystemRoot @arguments;$false}catch{$true}
+$env:GITHUB_RUN_ID='123'
+$script:validatorFailure=$true;$script:aclReads=0
+$rejections+=try{$null=Confirm-PersonalPreparedSystemRoot @arguments;$false}catch{$true}
+$failureAclReads=$script:aclReads
+$script:validatorFailure=$false
+[IO.File]::AppendAllText($proofPath,' ')
+$rejections+=try{$null=Confirm-PersonalPreparedSystemRoot @arguments;$false}catch{$true}
+$guard=@($ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text.StartsWith('if ($reuseSystemRoot -ne')})
+if($guard.Count -ne 1){throw 'Prepared-root input guard missing'}
+$inputCases=@(foreach($case in @(
+ @{reuse=$true;host='host';native=$true},@{reuse=$false;host='';native=$true},
+ @{reuse=$false;host='';native=$false},@{reuse=$true;host='';native=$true},
+ @{reuse=$false;host='host';native=$true},@{reuse=$true;host='host';native=$false}
+)) {
+ $reuseSystemRoot=$case.reuse;$PreparedHostRoot=$case.host;$nativeProduction=$case.native
+ try{Invoke-Expression $guard[0].Extent.Text;$true}catch{$false}
+})
+ConvertTo-Json -InputObject @{accepted=$accepted;invocation=$invocation;rejections=$rejections;failureAclReads=$failureAclReads;inputCases=$inputCases} -Depth 6 -Compress
+`;
+  try {
+    const child = spawnSync(
+      process.env.NEMOCLAW_TEST_PWSH ?? "pwsh",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(script, "utf16le").toString("base64"),
+      ],
+      {
+        encoding: "utf8",
+        timeout: 20_000,
+        env: {
+          ...process.env,
+          NEMOCLAW_PERSONAL_WRAPPER_PATH: fileURLToPath(
+            new URL("./probe-personal-candidate.ps1", import.meta.url),
+          ),
+          NEMOCLAW_PERSONAL_TEST_ROOT: root,
+        },
+      },
+    );
+    assert.equal(child.status, 0, child.stderr || String(child.error));
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.accepted.classification, "same-run-prepared-system-root-reuse");
+    assert.equal(result.accepted.rootPermissionsUnchanged, true);
+    assert.equal(result.accepted.installedAcceptance, false);
+    assert.match(result.accepted.proofSha256, /^[a-f0-9]{64}$/);
+    assert.match(result.accepted.gateSha256, /^[a-f0-9]{64}$/);
+    assert.deepEqual(result.rejections, Array(12).fill(true));
+    assert.equal(result.failureAclReads, 0);
+    assert.deepEqual(result.inputCases, [true, true, true, false, false, false]);
+    assert.equal(result.invocation.executable, "pinned-python");
+    const args = result.invocation.arguments as string[];
+    assert.deepEqual(args, [
+      "-I",
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../installer/verify-system-drive-proof.py",
+      ),
+      "--helper",
+      path.join(root, "NemoClawHostPreparation.exe"),
+      "--build-receipt",
+      path.join(root, "build-receipt.json"),
+      "--proof-directory",
+      root,
+      "--source-root",
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.."),
+      "--source-revision",
+      "a".repeat(40),
+      "--node-path",
+      path.join(root, "bin/node.exe"),
+      "--host-payload-root",
+      root,
+      "--output",
+      path.join(root, "prepared-system-root-gate.json"),
+    ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Personal build selects locked ARM64 tools before starting its child build", () => {
   const script = String.raw`
 $ErrorActionPreference='Stop'
