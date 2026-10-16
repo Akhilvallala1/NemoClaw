@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
-import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fileIdentity, errorDetail } from "./probe-component-workload.mts";
@@ -32,11 +31,9 @@ export function personalBrowserEnvironment(options: {
   nonce: string;
   relayToken: string;
   cdpPath: string;
-  pagePort: number;
   bootstrapSha256: string;
 }) {
-  const { runtime, controller, state, nonce, relayToken, cdpPath, pagePort, bootstrapSha256 } =
-    options;
+  const { runtime, controller, state, nonce, relayToken, cdpPath, bootstrapSha256 } = options;
   assert.match(runtime, /^[A-Z]:\\NemoClawHermesProbe-[a-f0-9]{12}$/u);
   assert.match(nonce, /^[a-f0-9]{24}$/u);
   assert.equal(
@@ -47,13 +44,14 @@ export function personalBrowserEnvironment(options: {
   assert.equal(path.win32.parse(state).root, path.win32.parse(runtime).root);
   assert.match(relayToken, /^[A-Za-z0-9_-]{43}$/u);
   assert.match(cdpPath, /^\/devtools\/browser\/[A-Za-z0-9-]{1,128}$/u);
-  assert(Number.isInteger(pagePort) && pagePort > 0 && pagePort <= 65535);
   assert.match(bootstrapSha256, /^[a-f0-9]{64}$/u);
   const endpoint = `ws://127.0.0.1:${PERSONAL_BROWSER_PIPE_PORT}${cdpPath}`;
+  // This renderer fixture needs no network access or private-URL exception.
+  const page = `<!doctype html><title>Hermes Personal proof</title><p id="sentinel">${nonce}</p>`;
   return {
     NEMOCLAW_PERSONAL_BROWSER_SESSION: nonce,
     NEMOCLAW_PERSONAL_BROWSER_BOOTSTRAP_SHA256: bootstrapSha256,
-    NEMOCLAW_PERSONAL_BROWSER_PAGE: `http://127.0.0.1:${pagePort}/${nonce}`,
+    NEMOCLAW_PERSONAL_BROWSER_PAGE: `data:text/html;base64,${Buffer.from(page).toString("base64")}`,
     NEMOCLAW_WORKER_ROOT: path.win32.join(controller, "workers"),
     NEMOCLAW_BROWSER_RELAY_ROOT: path.win32.join(state, `browser-relay-${nonce}`),
     NEMOCLAW_BROWSER_RELAY_TOKEN: relayToken,
@@ -94,12 +92,12 @@ export async function startPersonalNativeBrowser(options: {
     identityLauncher: options.identityLauncher,
     transport: "guarded-file-native-pipe",
     generalHostProxy: false,
+    pageKind: "inline-html",
     closed: false,
     cleanupErrors: [],
   });
   let edgeOwner: NativeEdgeBrowserOwner | undefined;
   let relay: Awaited<ReturnType<typeof startNativeBrokerRelay>> | undefined;
-  let server: http.Server | undefined;
   let compilerClosed = true;
   let unhealthy: unknown;
   let closing: Promise<void> | undefined;
@@ -111,19 +109,6 @@ export async function startPersonalNativeBrowser(options: {
         ["relayClosed", () => relay?.close()],
         ["edgeClosed", () => edgeOwner?.close()],
         ["relayOwnerClosed", () => relay?.dispose()],
-        [
-          "pageServerClosed",
-          async () => {
-            if (server?.listening) {
-              const active = server;
-              const closed = new Promise<void>((resolve, reject) =>
-                active.close((error) => (error ? reject(error) : resolve())),
-              );
-              active.closeAllConnections();
-              await closed;
-            }
-          },
-        ],
       ] as const) {
         try {
           await operation();
@@ -181,33 +166,6 @@ export async function startPersonalNativeBrowser(options: {
     const bytecode = fileIdentity(compiled);
     fs.unlinkSync(bootstrap);
     receipt.bootstrap = { source, bytecode, workers: sources };
-    const body = `<!doctype html><title>Hermes Personal proof</title><p id="sentinel">${nonce}</p>`;
-    let pageRequests = 0;
-    server = http.createServer((request, response) => {
-      if (request.method !== "GET" || request.url !== `/${nonce}`) {
-        response.writeHead(404).end();
-        return;
-      }
-      pageRequests++;
-      response.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-      });
-      response.end(body);
-    });
-    const active = server;
-    await new Promise<void>((resolve, reject) => {
-      active.once("error", reject);
-      active.listen(0, "127.0.0.1", () => {
-        active.removeListener("error", reject);
-        resolve();
-      });
-    });
-    active.on("error", (error) => {
-      unhealthy ??= error;
-    });
-    const address = active.address();
-    assert(address && typeof address !== "string");
     const edge = await startNativeEdgeBrowser({
       profileRoot: path.join(options.scratch, "edge-profile"),
       environment,
@@ -229,7 +187,6 @@ export async function startPersonalNativeBrowser(options: {
       ...options,
       relayToken: randomBytes(32).toString("base64url"),
       cdpPath: edge.endpoint.path,
-      pagePort: address.port,
       bootstrapSha256: bytecode.sha256,
     });
     // The native owner creates the relay root with its protected private DACL.
@@ -247,10 +204,8 @@ export async function startPersonalNativeBrowser(options: {
     return {
       environment: selected,
       assertHealthy() {
-        receipt.pageRequests = pageRequests;
         receipt.relay = relay!.diagnostics();
         if (unhealthy) throw unhealthy;
-        assert(pageRequests > 0, "The owned Edge browser never requested its nonce page.");
         verifyNativeEdgeIdentityLauncher(options.identityLauncher);
         assert.equal(fileIdentity(compiled).sha256, bytecode.sha256);
         for (const worker of sources)

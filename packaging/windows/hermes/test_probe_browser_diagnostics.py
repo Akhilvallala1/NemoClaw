@@ -3,6 +3,7 @@
 """Portable controls for fixed browser logging; no real runtime/browser is executed."""
 
 from contextlib import redirect_stdout
+import base64
 import hashlib
 import importlib.util
 import io
@@ -25,7 +26,7 @@ spec.loader.exec_module(owner)
 class BrowserDiagnostics(unittest.TestCase):
     def test_native_browser_check_uses_cdp_and_preserves_operation_and_cleanup_gates(self):
         nonce = "a" * 24
-        url = "http://127.0.0.1:12345/" + nonce
+        url = owner.native_browser_page(nonce)
         page = {"visible": True, "actual": {"url": url, "sentinel": nonce}}
         for failure in (None, "browser", "shutdown"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
@@ -61,7 +62,7 @@ class BrowserDiagnostics(unittest.TestCase):
                 with (
                     patch.dict(sys.modules, modules),
                     patch.dict(os.environ, environment, clear=True),
-                    patch("http.server.ThreadingHTTPServer", side_effect=AssertionError("host owns page")),
+                    patch("http.server.ThreadingHTTPServer", side_effect=AssertionError("inline page needs no server")),
                     patch.object(owner.subprocess, "run", return_value=SimpleNamespace(
                         returncode=0, stderr="",
                         stdout="NEMOCLAW_BROWSER_HARNESS_SHUTDOWN=" + json.dumps(shutdown) + "\nHARNESS_STOPPED",
@@ -77,7 +78,8 @@ class BrowserDiagnostics(unittest.TestCase):
                         self.assertIsNone(result["selectedAgentBrowser"])
                         self.assertIsNone(result["chromiumPath"])
                         self.assertTrue(result["nativeEdgeTransport"])
-                        self.assertEqual(result["pageServerOwner"], "host-job")
+                        self.assertIsNone(result["pageServerOwner"])
+                        self.assertEqual(result["pageKind"], "inline-html")
                         self.assertEqual(result["pageObservation"], page)
                         self.assertTrue(result["browserHarnessProcessExitIndependentlyVerified"])
                     resolver.assert_not_called()
@@ -89,6 +91,22 @@ class BrowserDiagnostics(unittest.TestCase):
                     self.assertEqual(stopped.call_args.kwargs["timeout"], 15)
                     cleanup.assert_called_once_with("bu-named-nc-" + nonce[:12])
                     self.assertIs(modules["tools.browser_tool_session"]._popen_agent_browser, spawn)
+
+    def test_native_page_is_exact_self_contained_html_and_rejects_other_inputs(self):
+        nonce = "a" * 24
+        url = owner.native_browser_page(nonce)
+        self.assertEqual(base64.b64decode(url.removeprefix("data:text/html;base64,")),
+                         ('<!doctype html><title>Hermes Personal proof</title><p id="sentinel">' + nonce + '</p>').encode())
+        self.assertLess(len(url), 512)
+        for invalid in ("", "A" * 24, "a" * 23, '<script>alert(1)</script>'):
+            with self.subTest(nonce=invalid), self.assertRaises(AssertionError):
+                owner.native_browser_page(invalid)
+        environment = {"NEMOCLAW_PERSONAL_BROWSER_SESSION": nonce, "NEMOCLAW_AGENT_SESSION_ID": nonce[:10]}
+        for other in ("http://127.0.0.1:12345/" + nonce, url + "#changed", owner.native_browser_page("b" * 24)):
+            with self.subTest(url=other), patch.dict(os.environ, {
+                **environment, "NEMOCLAW_PERSONAL_BROWSER_PAGE": other,
+            }, clear=True), self.assertRaises(AssertionError):
+                owner.browser_check(Path("unused"), nonce)
 
     def test_renderer_wer_selection_is_bound_to_one_session_and_same_drive(self):
         runtime = r"C:\NemoClawHermesProbe-274d797050ea"

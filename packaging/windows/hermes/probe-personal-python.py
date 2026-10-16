@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fixed canonical tool operations, invoked only inside the owned MXC workload."""
 
+import base64
 import importlib.metadata
 import hashlib
 import json
@@ -1809,17 +1810,23 @@ def browser_page_observation(result):
         return None
 
 
+def native_browser_page(nonce):
+    import re
+
+    assert re.fullmatch(r"[a-f0-9]{24}", nonce)
+    page = '<!doctype html><title>Hermes Personal proof</title><p id="sentinel">' + nonce + '</p>'
+    return "data:text/html;base64," + base64.b64encode(page.encode("ascii")).decode("ascii")
+
+
 def browser_check(root, nonce):
     import nemoclaw_native_windows as native_paths
 
     component_started = time.monotonic()
     native_browser = "NEMOCLAW_PERSONAL_BROWSER_SESSION" in os.environ
     if native_browser:
-        import re
         assert os.environ["NEMOCLAW_PERSONAL_BROWSER_SESSION"] == nonce
         assert os.environ.get("NEMOCLAW_AGENT_SESSION_ID") == nonce[:10]
-        assert re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})/" + nonce,
-                            os.environ.get("NEMOCLAW_PERSONAL_BROWSER_PAGE", ""))
+        assert os.environ.get("NEMOCLAW_PERSONAL_BROWSER_PAGE") == native_browser_page(nonce)
     if os.environ.get("NEMOCLAW_HERMES_WER_CHROME"):
         selected = selected_chrome_file(root, "")
         # The separate diagnostic tree changes only the WER callback DLL.
@@ -2062,7 +2069,8 @@ def browser_check(root, nonce):
         is True,
         "canonicalBrowserCleanupCalled": True,
         "ownedPageServerStopped": not native_browser,
-        "pageServerOwner": "host-job" if native_browser else "contained-probe",
+        "pageServerOwner": None if native_browser else "contained-probe",
+        "pageKind": "inline-html" if native_browser else "localhost-http",
         "nativeEdgeTransport": native_browser,
         "tavilyLiveLookup": "not-tested-user-waiver",
     }

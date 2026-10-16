@@ -380,25 +380,28 @@ class FinishedHermesIntake(unittest.TestCase):
                     "sha256": "97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878"}
             personal.update(feasibilityPassed=True, hostInputs={"node": node})
             nonce = personal["workload"]["nonce"]
-            page = "http://127.0.0.1:34567/" + nonce
+            page = "data:text/html;base64," + owner.base64.b64encode(
+                ('<!doctype html><title>Hermes Personal proof</title><p id="sentinel">' + nonce + '</p>').encode()
+            ).decode()
             relay = personal["nativeState"]["stateRoot"] + "\\browser-relay-" + nonce
             launcher = personal["nativeStateBuild"]["executable"]
             personal["nativeBrowser"] = {
                 "schemaVersion": 1, "classification": "personal-native-edge-browser", "nonce": nonce,
                 "runtime": runtime, "transport": "guarded-file-native-pipe", "generalHostProxy": False,
                 "inheritedKillOnCloseJob": True, "cleanupErrors": [],
-                **dict.fromkeys(("closed", "relayClosed", "edgeClosed", "relayOwnerClosed", "pageServerClosed"), True),
+                **dict.fromkeys(("closed", "relayClosed", "edgeClosed", "relayOwnerClosed"), True),
                 "identityLauncher": {key: launcher[key] for key in ("path", "bytes", "sha256")},
                 "identity": {"classification": "native-arm64-microsoft-edge", "architecture": "arm64",
                              "machine": 0xAA64, "productName": "Microsoft Edge", "signatureStatus": "Valid",
                              "provenance": "standard-windows-microsoft-edge-installation", "bytes": 123, "sha256": "e" * 64},
                 "endpoint": {"port": 45678, "path": "/devtools/browser/owned"},
-                "relayRoot": relay, "pageRequests": 1, "pageUrl": page,
+                "relayRoot": relay, "pageKind": "inline-html", "pageUrl": page,
             }
             personal["cleanup"]["nativeBrowserComplete"] = True
             personal["workload"].update(browserTransport={"attempted": True, "started": True, "closed": True},
                 components=[{"component": "browser", "passed": True, "result": {"details": {
-                    "nativeEdgeTransport": True, "pageServerOwner": "host-job", "canonicalBrowserCleanupCalled": True,
+                    "nativeEdgeTransport": True, "pageServerOwner": None, "pageKind": "inline-html",
+                    "canonicalBrowserCleanupCalled": True,
                     "browserHarnessShutdown": {"complete": True, "processExitObserved": True, "identityReconfirmed": True,
                                                "handleClosed": True, "transport": "native-hermes-browser-pipe"},
                     "pageObservation": {"visible": True, "actual": {"sentinel": nonce, "url": page}},
@@ -412,8 +415,8 @@ class FinishedHermesIntake(unittest.TestCase):
                 "BU_CDP_WS": "ws://127.0.0.1:8124/devtools/browser/owned",
             }.items())
             owner.validate_same_run_browser(personal, request)
-            for keys, value in [(("nativeBrowser", "closed"), False), (("nativeBrowser", "pageRequests"), 0),
-                                (("nativeBrowser", "pageRequests"), True), (("nativeBrowser", "generalHostProxy"), True),
+            for keys, value in [(("nativeBrowser", "closed"), False), (("nativeBrowser", "pageKind"), "localhost-http"),
+                                (("nativeBrowser", "pageUrl"), page + "#changed"), (("nativeBrowser", "generalHostProxy"), True),
                                 (("nativeBrowser", "identity", "machine"), 0x8664),
                                 (("nativeBrowser", "identityLauncher", "sha256"), "f" * 64),
                                 (("workload", "browserTransport", "closed"), False),
@@ -424,6 +427,28 @@ class FinishedHermesIntake(unittest.TestCase):
                 target[keys[-1]] = value
                 with self.subTest(browser_field=keys), self.assertRaises(ValueError):
                     owner.validate_same_run_browser(changed, request)
+            for keys, value in [(("pageKind",), "localhost-http"), (("pageServerOwner",), "host-job"),
+                                (("pageObservation", "visible"), False),
+                                (("pageObservation", "actual", "sentinel"), "b" * 24),
+                                (("pageObservation", "actual", "url"), "about:blank"),
+                                (("browserHarnessShutdown", "processExitObserved"), False),
+                                (("browserHarnessShutdown", "identityReconfirmed"), False)]:
+                changed = copy.deepcopy(personal)
+                target = changed["workload"]["components"][0]["result"]["details"]
+                for key in keys[:-1]: target = target[key]
+                target[keys[-1]] = value
+                with self.subTest(browser_detail=keys), self.assertRaises(ValueError):
+                    owner.validate_same_run_browser(changed, request)
+            for other in ("http://127.0.0.1:34567/" + nonce, page + "#changed"):
+                changed, changed_request = copy.deepcopy(personal), copy.deepcopy(request)
+                changed["nativeBrowser"]["pageUrl"] = other
+                changed["workload"]["components"][0]["result"]["details"]["pageObservation"]["actual"]["url"] = other
+                changed_request["process"]["env"] = [
+                    "NEMOCLAW_PERSONAL_BROWSER_PAGE=" + other if entry.startswith("NEMOCLAW_PERSONAL_BROWSER_PAGE=") else entry
+                    for entry in changed_request["process"]["env"]
+                ]
+                with self.subTest(page=other), self.assertRaises(ValueError):
+                    owner.validate_same_run_browser(changed, changed_request)
             personal_raw = json.dumps(personal).encode()
             (personal_root / "personal-feasibility.json").write_bytes(personal_raw)
             (personal_root / "personal-request.json").write_text(json.dumps(request))

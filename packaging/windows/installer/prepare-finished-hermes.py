@@ -3,6 +3,7 @@
 """Admit a pinned or same-run Personal-passing candidate for CI installer assembly."""
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
@@ -715,7 +716,7 @@ def validate_same_run_browser(personal, request):
             and browser.get("transport") == "guarded-file-native-pipe" and browser.get("generalHostProxy") is False
             and browser.get("inheritedKillOnCloseJob") is True and browser.get("cleanupErrors") == []
             and all(browser.get(key) is True for key in
-                    ("closed", "relayClosed", "edgeClosed", "relayOwnerClosed", "pageServerClosed"))
+                    ("closed", "relayClosed", "edgeClosed", "relayOwnerClosed"))
             and personal.get("cleanup", {}).get("nativeBrowserComplete") is True,
             "Native browser transport or cleanup did not complete")
     launcher = personal["nativeStateBuild"]["executable"]
@@ -751,15 +752,17 @@ def validate_same_run_browser(personal, request):
             and browser.get("relayRoot") == expected["NEMOCLAW_BROWSER_RELAY_ROOT"],
             "Native browser did not use its declared contained transport")
     transport = workload.get("browserTransport", {})
-    require(isinstance(transport, dict) and all(transport.get(key) is True for key in ("attempted", "started", "closed"))
-            and type(browser.get("pageRequests")) is int and browser["pageRequests"] > 0,
-            "Native browser pipe or owned page was not exercised")
+    require(isinstance(transport, dict) and all(transport.get(key) is True for key in ("attempted", "started", "closed")),
+            "Native browser pipe was not exercised")
     components = [row for row in workload.get("components", []) if row.get("component") == "browser"]
     require(len(components) == 1 and components[0].get("passed") is True, "Native browser component did not pass")
     details = components[0].get("result", {}).get("details", {})
     shutdown = details.get("browserHarnessShutdown", {})
     observation = details.get("pageObservation", {})
-    require(details.get("nativeEdgeTransport") is True and details.get("pageServerOwner") == "host-job"
+    page = '<!doctype html><title>Hermes Personal proof</title><p id="sentinel">' + nonce + '</p>'
+    expected_page = "data:text/html;base64," + base64.b64encode(page.encode("ascii")).decode("ascii")
+    require(details.get("nativeEdgeTransport") is True and details.get("pageServerOwner") is None
+            and details.get("pageKind") == "inline-html" and browser.get("pageKind") == "inline-html"
             and details.get("canonicalBrowserCleanupCalled") is True
             and shutdown.get("complete") is True and shutdown.get("processExitObserved") is True
             and shutdown.get("identityReconfirmed") is True and shutdown.get("handleClosed") is True
@@ -767,8 +770,7 @@ def validate_same_run_browser(personal, request):
             and observation.get("visible") is True and observation.get("actual", {}).get("sentinel") == nonce
             and observation.get("actual", {}).get("url") == browser.get("pageUrl")
             and browser.get("pageUrl") == environment.get("NEMOCLAW_PERSONAL_BROWSER_PAGE")
-            and isinstance(browser.get("pageUrl"), str)
-            and re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}/" + nonce, browser["pageUrl"]),
+            and browser.get("pageUrl") == expected_page,
             "Native browser page or authenticated daemon shutdown is incomplete")
 
 

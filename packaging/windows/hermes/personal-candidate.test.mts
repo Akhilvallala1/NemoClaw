@@ -59,7 +59,6 @@ function nativeBrowserSelection() {
     nonce: browserOriginalNonce,
     relayToken: "a".repeat(43),
     cdpPath: "/devtools/browser/owned",
-    pagePort: 34567,
     bootstrapSha256: "b".repeat(64),
   });
 }
@@ -72,7 +71,10 @@ test("Personal browser selects only its owned stage, nonce page and contained pi
   assert.equal(selected.NEMOCLAW_WORKER_ROOT, browserController + "\\workers");
   assert.equal(
     selected.NEMOCLAW_PERSONAL_BROWSER_PAGE,
-    "http://127.0.0.1:34567/" + browserOriginalNonce,
+    "data:text/html;base64," +
+      Buffer.from(
+        `<!doctype html><title>Hermes Personal proof</title><p id="sentinel">${browserOriginalNonce}</p>`,
+      ).toString("base64"),
   );
   const options = {
     runtime: browserRuntime,
@@ -81,7 +83,6 @@ test("Personal browser selects only its owned stage, nonce page and contained pi
     nonce: browserOriginalNonce,
     relayToken: "a".repeat(43),
     cdpPath: "/devtools/browser/owned",
-    pagePort: 34567,
     bootstrapSha256: "b".repeat(64),
   };
   for (const change of [
@@ -90,7 +91,6 @@ test("Personal browser selects only its owned stage, nonce page and contained pi
     { nonce: "other" },
     { relayToken: "short" },
     { cdpPath: "/devtools/page/other" },
-    { pagePort: 0 },
     { bootstrapSha256: "short" },
   ])
     assert.throws(() => personalBrowserEnvironment({ ...options, ...change }));
