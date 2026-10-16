@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SandboxReuseHelpers } from "../../sandbox-reuse";
 import type { OpenShellProviderAdapter } from "../../../adapters/openshell/provider-adapter";
 import { createSession } from "../../../state/onboard-session";
 import type { SandboxEntry } from "../../../state/registry/types";
@@ -34,7 +35,11 @@ const attachment = {
   providerId: "native-provider-id",
 };
 
-function createHarness(selectedGatewayName = gatewayName, pendingRouteReservation = false) {
+function createHarness(
+  selectedGatewayName = gatewayName,
+  pendingRouteReservation = false,
+  observeAvailable = true,
+) {
   const gatewayName = selectedGatewayName;
   const session = createSession({
     sandboxName,
@@ -70,6 +75,13 @@ function createHarness(selectedGatewayName = gatewayName, pendingRouteReservatio
   }));
   const createProvider = vi.fn<OpenShellProviderAdapter["createProvider"]>();
   const updateProvider = vi.fn<OpenShellProviderAdapter["updateProvider"]>();
+  const listProviderAttachments = vi.fn<OpenShellProviderAdapter["listProviderAttachments"]>(
+    async () => ({ ok: true, value: { names: [attachment.providerName] } }),
+  );
+  const getSandboxRecreateObservation = vi.fn<SandboxReuseHelpers["getSandboxRecreateObservation"]>(
+    () => ({ state: "missing", liveIdentityFingerprint: null }),
+  );
+  const attachProvider = vi.fn<OpenShellProviderAdapter["attachProvider"]>();
   const updateSandbox = vi.fn(() => true);
   const verifyOnboardInferenceSmoke = vi.fn(async () => undefined);
   const setupInference = createSetupInference({
@@ -83,6 +95,7 @@ function createHarness(selectedGatewayName = gatewayName, pendingRouteReservatio
     runOpenshell: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
     updateSandbox,
     getSandbox: () => mocks.entry,
+    getSandboxRecreateObservation: observeAvailable ? getSandboxRecreateObservation : undefined,
     localInference: { loadPendingOllamaModelCleanup: () => [] },
     withOllamaModelOwnershipLock: <T>(operation: () => T) => operation(),
     upsertProvider: vi.fn(async () => ({ ok: true })),
@@ -94,6 +107,8 @@ function createHarness(selectedGatewayName = gatewayName, pendingRouteReservatio
       ensureProviderPolicyComposition: vi.fn(async () => ({ ok: true, value: undefined })),
       importProviderProfile: vi.fn(async () => ({ ok: true })),
       getProvider,
+      listProviderAttachments,
+      attachProvider,
       createProvider,
       updateProvider,
     } as unknown as OpenShellProviderAdapter,
@@ -147,7 +162,11 @@ function createHarness(selectedGatewayName = gatewayName, pendingRouteReservatio
   };
   return {
     options,
+    session,
+    attachProvider,
     metadata,
+    listProviderAttachments,
+    getSandboxRecreateObservation,
     ownership,
     providerExistsInGateway,
     getProvider,
@@ -160,6 +179,94 @@ function createHarness(selectedGatewayName = gatewayName, pendingRouteReservatio
 }
 
 describe("native NVIDIA provider resume", () => {
+  it.each(["ready", "not_ready"] as const)(
+    "rejects recovery when a %s sandbox lost its native attachment",
+    async (state) => {
+      const h = createHarness();
+      h.session.steps.sandbox.status = "complete";
+      h.getSandboxRecreateObservation.mockReturnValue({
+        state,
+        liveIdentityFingerprint: "a".repeat(64),
+      });
+      h.listProviderAttachments.mockResolvedValue({ ok: true, value: { names: [] } });
+      await expect(handleProviderInferenceState(h.options)).rejects.toThrow(
+        /native NVIDIA.*provider attached/u,
+      );
+      expect(h.attachProvider).not.toHaveBeenCalled();
+      expect(h.createProvider).not.toHaveBeenCalled();
+      expect(h.updateProvider).not.toHaveBeenCalled();
+      expect(h.updateSandbox).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["ready", "not_ready"] as const)(
+    "retains the credential when a %s sandbox has the recorded attachment",
+    async (state) => {
+      const h = createHarness();
+      h.session.steps.sandbox.status = "complete";
+      h.getSandboxRecreateObservation.mockReturnValue({
+        state,
+        liveIdentityFingerprint: "a".repeat(64),
+      });
+      await expect(handleProviderInferenceState(h.options)).resolves.toMatchObject({
+        provider: "nvidia-prod",
+        model,
+      });
+      expect(h.listProviderAttachments).toHaveBeenCalledExactlyOnceWith({
+        target: { kind: "named", gatewayName },
+        sandboxName,
+      });
+      expect(h.verifyOnboardInferenceSmoke).not.toHaveBeenCalled();
+      expect(h.attachProvider).not.toHaveBeenCalled();
+      expect(h.createProvider).not.toHaveBeenCalled();
+      expect(h.updateProvider).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["gateway unreachable", "sandbox absence is unconfirmed"])(
+    "stops recovery when the sandbox probe reports %s",
+    async (message) => {
+      const h = createHarness();
+      h.getSandboxRecreateObservation.mockImplementationOnce(() => {
+        throw new Error(message);
+      });
+      await expect(handleProviderInferenceState(h.options)).rejects.toThrow(message);
+      expect(h.getProvider).not.toHaveBeenCalled();
+      expect(h.listProviderAttachments).not.toHaveBeenCalled();
+      expect(h.attachProvider).not.toHaveBeenCalled();
+      expect(h.updateSandbox).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses native recovery when the sandbox observation dependency is absent", async () => {
+    const h = createHarness(gatewayName, false, false);
+    await expect(handleProviderInferenceState(h.options)).rejects.toThrow(
+      "Native NVIDIA recovery cannot verify the sandbox attachment.",
+    );
+    expect(h.getProvider).not.toHaveBeenCalled();
+    expect(h.attachProvider).not.toHaveBeenCalled();
+    expect(h.updateSandbox).not.toHaveBeenCalled();
+  });
+
+  it("stops recovery when live attachment verification fails", async () => {
+    const h = createHarness();
+    h.getSandboxRecreateObservation.mockReturnValue({
+      state: "ready",
+      liveIdentityFingerprint: "a".repeat(64),
+    });
+    h.listProviderAttachments.mockResolvedValue({
+      ok: false,
+      error: { kind: "timeout", message: "attachment probe timed out" },
+    });
+    await expect(handleProviderInferenceState(h.options)).rejects.toThrow(
+      "Could not inspect provider attachments",
+    );
+    expect(h.attachProvider).not.toHaveBeenCalled();
+    expect(h.createProvider).not.toHaveBeenCalled();
+    expect(h.updateProvider).not.toHaveBeenCalled();
+    expect(h.updateSandbox).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     mocks.credential = null;
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -201,6 +308,12 @@ describe("native NVIDIA provider resume", () => {
       expect(h.verifyOnboardInferenceSmoke).not.toHaveBeenCalled();
       expect(h.calls.setupNim).not.toHaveBeenCalled();
       expect(h.updateSandbox.mock.calls).toEqual(reservationCalls);
+      expect(h.getSandboxRecreateObservation).toHaveBeenCalledExactlyOnceWith(
+        sandboxName,
+        gatewayName,
+      );
+      expect(h.listProviderAttachments).not.toHaveBeenCalled();
+      expect(h.attachProvider).not.toHaveBeenCalled();
     },
   );
 
@@ -304,6 +417,7 @@ describe("native NVIDIA provider resume", () => {
     await expect(handleProviderInferenceState(h.options)).rejects.toThrow("exit 1");
     expect(h.getProvider).not.toHaveBeenCalled();
     expect(h.updateSandbox).not.toHaveBeenCalled();
+    expect(h.getSandboxRecreateObservation).not.toHaveBeenCalled();
   });
 
   it("uses the NVIDIA credential slot for a retained native provider", async () => {
@@ -323,6 +437,7 @@ describe("native NVIDIA provider resume", () => {
     expect(h.getProvider).not.toHaveBeenCalled();
     expect(h.createProvider).not.toHaveBeenCalled();
     expect(h.updateSandbox).not.toHaveBeenCalled();
+    expect(h.getSandboxRecreateObservation).not.toHaveBeenCalled();
   });
 
   it("keeps invalid host credentials out of native setup", async () => {
@@ -332,6 +447,7 @@ describe("native NVIDIA provider resume", () => {
     expect(h.getProvider).not.toHaveBeenCalled();
     expect(h.createProvider).not.toHaveBeenCalled();
     expect(h.updateProvider).not.toHaveBeenCalled();
+    expect(h.getSandboxRecreateObservation).not.toHaveBeenCalled();
   });
 
   it("keeps a valid host credential on the existing native update path", async () => {
@@ -344,6 +460,7 @@ describe("native NVIDIA provider resume", () => {
     expect(h.createProvider).not.toHaveBeenCalled();
     expect(h.updateProvider).toHaveBeenCalledOnce();
     expect(h.verifyOnboardInferenceSmoke).toHaveBeenCalledOnce();
+    expect(h.getSandboxRecreateObservation).not.toHaveBeenCalled();
   });
 
   it("keeps a registered legacy provider on its existing resume path", async () => {
@@ -356,5 +473,6 @@ describe("native NVIDIA provider resume", () => {
     expect(h.providerExistsInGateway).toHaveBeenCalledWith("nvidia-prod", gatewayName);
     expect(h.getProvider).not.toHaveBeenCalled();
     expect(h.updateSandbox).not.toHaveBeenCalled();
+    expect(h.getSandboxRecreateObservation).not.toHaveBeenCalled();
   });
 });
