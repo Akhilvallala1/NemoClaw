@@ -240,7 +240,11 @@ fn explicit_containers_can_run_the_same_managed_model_configuration() {
 fn container_passes_native_arguments_files_and_http_readiness_without_interpreting_them() {
     let mut value = managed_ollama_service();
     let mut service = container_service();
-    service["command"] = json!(["--config", "/etc/service/settings.yaml"]);
+    service["command"] = json!([
+        "--config",
+        "/etc/service/settings.yaml",
+        "nemoclaw_container_service.voice"
+    ]);
     service["files"] = json!({"/etc/service/settings.yaml": "setting: ${application_value}\n"});
     service["container"] = json!({"cpuLimitMillis":2000,"memoryLimitGiB":2});
     service["readiness"] = json!({"path":"/health","timeoutSeconds":60});
@@ -250,7 +254,11 @@ fn container_passes_native_arguments_files_and_http_readiness_without_interpreti
     let container = &graph["resource"]["docker_container"]["container_service_voice"];
     assert_eq!(
         container["command"],
-        json!(["--config", "/etc/service/settings.yaml"])
+        json!([
+            "--config",
+            "/etc/service/settings.yaml",
+            "nemoclaw_container_service.voice"
+        ])
     );
     assert_eq!(
         container["upload"][0]["content"],

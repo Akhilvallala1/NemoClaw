@@ -191,11 +191,23 @@ pub(crate) fn targets(raw: &[Target]) -> Result<Vec<Target>, Error> {
 }
 fn rewrite(value: &mut Value, old: &str, new: &str) {
     match value {
-        Value::String(text) if text == old => *text = new.into(),
         Value::Array(values) => values.iter_mut().for_each(|value| rewrite(value, old, new)),
-        Value::Object(values) => values
-            .values_mut()
-            .for_each(|value| rewrite(value, old, new)),
+        Value::Object(values) => {
+            for (key, value) in values {
+                // Resource references, not arbitrary application strings.
+                if matches!(key.as_str(), "depends_on" | "replace_triggered_by") {
+                    if let Some(references) = value.as_array_mut() {
+                        for reference in references {
+                            if reference.as_str() == Some(old) {
+                                *reference = json!(new);
+                            }
+                        }
+                    }
+                } else {
+                    rewrite(value, old, new);
+                }
+            }
+        }
         _ => {}
     }
 }
