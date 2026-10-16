@@ -826,13 +826,7 @@ exit 1`,
     }
   });
 
-  // The user-local fallback requires /usr/local/bin to be unwritable.
-  let systemBinWritable = false;
-  try {
-    fs.accessSync("/usr/local/bin", fs.constants.W_OK);
-    systemBinWritable = true;
-  } catch {}
-  it.skipIf(systemBinWritable).each([
+  it.each([
     ["0022", 0o755],
     ["0002", 0o755],
     ["0077", 0o700],
@@ -933,9 +927,22 @@ esac
 chmod 755 "$dest"`,
         );
 
+        // Model an unwritable system target without changing host permissions.
         const result = spawnSync(
           "bash",
-          ["-c", 'umask "$1"; exec bash "$2"', "bash", mask, SCRIPT],
+          [
+            "-c",
+            `function [ {
+  [[ "$#" -eq 3 && "$1" = "-w" && "$2" = "/usr/local/bin" && "$3" = "]" ]] && return 1
+  builtin [ "$@"
+}
+export -f [
+umask "$1"
+exec bash "$2"`,
+            "bash",
+            mask,
+            SCRIPT,
+          ],
           {
             env: {
               ...process.env,
