@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import assert from "node:assert/strict";
+import { once } from "node:events";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -10,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactSink } from "../fixtures/artifacts.ts";
 import {
   collectPortableRegistryReadinessFailure,
+  probePortableRegistry,
   runPortableRegistryReadinessPolicy,
   type PortableRegistryReadinessObservation,
 } from "../fixtures/portable-registry-readiness.ts";
@@ -127,9 +131,19 @@ describe("portable registry readiness policy", () => {
     expect(onEvidence).toHaveBeenCalledWith(result.evidence);
   });
 
-  it("retains failure evidence and runs bounded diagnostics with a minimal environment", async () => {
+  it("retains failure evidence and bounded diagnostics after a response abort", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-registry-readiness-"));
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, { "content-length": "8" });
+      response.flushHeaders();
+      response.write("partial");
+      setImmediate(() => response.destroy());
+    });
     try {
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      assert(address && typeof address !== "string", "HTTP server has no TCP port");
       vi.stubEnv("DOCKER_HOST", "unix:///run/user/1000/podman/podman.sock");
       vi.stubEnv("XDG_RUNTIME_DIR", "/run/user/1000");
       vi.stubEnv("CONTAINERS_CONF", "/tmp/containers.conf");
@@ -148,15 +162,13 @@ describe("portable registry readiness policy", () => {
           artifacts: { stdout: "", stderr: "", result: "" },
         }),
       );
-      const observation = { kind: "http-status", statusCode: 503 } as const;
-
       const result = await collectPortableRegistryReadinessFailure({
         artifacts: new ArtifactSink(root),
-        probe: async () => observation,
+        probe: async () => probePortableRegistry(`http://127.0.0.1:${address.port}/v2/`),
         shellProbe: { run } as unknown as ShellProbe,
       });
 
-      expect(result).toEqual(observation);
+      expect(result).toEqual({ kind: "transport", code: "unexpected" });
       expect(
         JSON.parse(
           fs.readFileSync(path.join(root, "portable-registry-readiness-retry.json"), "utf8"),
@@ -169,7 +181,7 @@ describe("portable registry readiness policy", () => {
         JSON.parse(
           fs.readFileSync(path.join(root, "portable-registry-readiness-failure.json"), "utf8"),
         ),
-      ).toEqual({ observation });
+      ).toEqual({ observation: { kind: "transport", code: "unexpected" } });
       expect(run).toHaveBeenCalledTimes(3);
       expect(run.mock.calls.map(([command]) => command.args[0])).toEqual([
         "container",
@@ -192,6 +204,10 @@ describe("portable registry readiness policy", () => {
       expect(run.mock.calls[1]![1].env).not.toHaveProperty("UNRELATED_API_KEY");
       expect(run.mock.calls[2]![1].env).not.toHaveProperty("UNRELATED_API_KEY");
     } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

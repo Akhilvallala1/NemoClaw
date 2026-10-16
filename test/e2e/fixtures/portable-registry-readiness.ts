@@ -72,12 +72,28 @@ export async function runPortableRegistryReadinessPolicy(options: {
   });
 }
 
-async function probePortableRegistry(): Promise<PortableRegistryReadinessObservation> {
+export async function probePortableRegistry(
+  url = "http://127.0.0.1:5000/v2/",
+): Promise<PortableRegistryReadinessObservation> {
   return new Promise((resolve) => {
-    const request = http.get("http://127.0.0.1:5000/v2/", (response) => {
+    let settled = false;
+    const settle = (observation: PortableRegistryReadinessObservation): void => {
+      if (settled) return;
+      settled = true;
+      resolve(observation);
+    };
+    const request = http.get(url, (response) => {
+      const responseFailure = (): void => {
+        settle({ kind: "transport", code: "unexpected" });
+      };
+      response.once("aborted", responseFailure);
+      response.once("error", responseFailure);
+      response.once("close", () => {
+        if (!response.complete) responseFailure();
+      });
       response.resume();
       response.once("end", () =>
-        resolve(
+        settle(
           response.statusCode === 200
             ? { kind: "ready", statusCode: 200 }
             : { kind: "http-status", statusCode: response.statusCode ?? 0 },
@@ -93,10 +109,10 @@ async function probePortableRegistry(): Promise<PortableRegistryReadinessObserva
             : error.code === "ETIMEDOUT"
               ? "timeout"
               : "unexpected";
-      resolve({ kind: "transport", code });
+      settle({ kind: "transport", code });
     });
     request.setTimeout(500, () => {
-      resolve({ kind: "transport", code: "timeout" });
+      settle({ kind: "transport", code: "timeout" });
       request.destroy();
     });
   });
@@ -162,7 +178,7 @@ export async function collectPortableRegistryReadinessFailure(options: {
   readonly shellProbe: ShellProbe;
 }): Promise<PortableRegistryReadinessObservation | undefined> {
   const result = await runPortableRegistryReadinessPolicy({
-    probe: options.probe ?? probePortableRegistry,
+    probe: options.probe ?? (() => probePortableRegistry()),
     onEvidence: async (evidence) => {
       await options.artifacts.writeJson("portable-registry-readiness-retry.json", evidence);
     },
