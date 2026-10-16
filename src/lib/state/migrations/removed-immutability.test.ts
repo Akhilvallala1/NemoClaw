@@ -12,8 +12,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { withMcpLifecycleLock } from "../mcp-lifecycle-lock-acquisition";
 import { MCP_LIFECYCLE_LOCK_DIRNAME } from "../mcp-lifecycle-lock-storage";
 import {
+  assertRemovedImmutabilityRecoveryDownloadArtifactSafe,
   enforceRemovedImmutabilityMigrationBoundary,
   inspectRemovedImmutabilityMigration,
+  isRemovedImmutabilityRecoveryDownloadPath,
   reportRemovedImmutabilityUpgrade,
   retireRemovedImmutabilityStateRecord,
 } from "./removed-immutability";
@@ -335,5 +337,50 @@ describe("removed immutability migration boundary", () => {
     });
 
     expect(fs.existsSync(record)).toBe(false);
+  });
+
+  it("limits legacy-record recovery downloads to documented credential-free paths and content", () => {
+    const root = stateDir();
+    const safeFile = touch(root, "SOUL.md");
+    fs.writeFileSync(safeFile, "# Soul\nReference: https://example.com\n");
+    const secretFile = touch(root, "secret.md");
+    fs.writeFileSync(secretFile, `OPENAI_API_KEY=${"sk-" + "a".repeat(32)}\n`);
+    const nestedSecretDir = path.join(root, "memory");
+    touch(nestedSecretDir, ".env");
+
+    expect(isRemovedImmutabilityRecoveryDownloadPath("/sandbox/.openclaw/workspace/SOUL.md")).toBe(
+      true,
+    );
+    expect(isRemovedImmutabilityRecoveryDownloadPath("/sandbox/.openclaw/workspace/memory/")).toBe(
+      true,
+    );
+    expect(
+      isRemovedImmutabilityRecoveryDownloadPath("/sandbox/.openclaw/credentials/tokens.json"),
+    ).toBe(false);
+    expect(isRemovedImmutabilityRecoveryDownloadPath("/sandbox/.hermes/.env")).toBe(false);
+    expect(isRemovedImmutabilityRecoveryDownloadPath("/sandbox/.deepagents/.state/auth.json")).toBe(
+      false,
+    );
+    expect(() =>
+      assertRemovedImmutabilityRecoveryDownloadArtifactSafe(
+        safeFile,
+        "/sandbox/.openclaw/workspace/SOUL.md",
+        "alpha",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertRemovedImmutabilityRecoveryDownloadArtifactSafe(
+        secretFile,
+        "/sandbox/.openclaw/workspace/SOUL.md",
+        "alpha",
+      ),
+    ).toThrow(/credential-bearing or uninspectable material/u);
+    expect(() =>
+      assertRemovedImmutabilityRecoveryDownloadArtifactSafe(
+        nestedSecretDir,
+        "/sandbox/.openclaw/workspace/memory/",
+        "alpha",
+      ),
+    ).toThrow(/credential-bearing or uninspectable material/u);
   });
 });

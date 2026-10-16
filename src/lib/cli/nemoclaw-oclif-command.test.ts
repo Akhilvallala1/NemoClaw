@@ -103,7 +103,10 @@ class ParsedSupportedSandboxCommand extends NemoClawCommand {
 
 class ParsedDownloadSandboxCommand extends NemoClawCommand {
   static id = "sandbox:download";
-  static args = { sandboxName: Args.string({ required: true }) };
+  static args = {
+    sandboxName: Args.string({ required: true }),
+    sandboxPath: Args.string({ required: false }),
+  };
   static flags = {};
   static ran = false;
 
@@ -374,24 +377,58 @@ describe("NemoClawCommand", () => {
     expect(RawUnsupportedSandboxCommand.ran).toBe(false);
   });
 
-  it("allows download when a sandbox's only legacy Shields state is an inert record", async () => {
-    fs.writeFileSync(path.join(stateDir, "shields-alpha.json"), "{}\n");
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it.each([
+    "/sandbox/.openclaw/workspace/SOUL.md",
+    "/sandbox/.openclaw/workspace/memory/",
+    "/sandbox/.hermes/state.db",
+    "/sandbox/.deepagents/agent/memories/",
+  ])(
+    "allows download of documented credential-free path %s when a sandbox's only legacy Shields state is an inert record",
+    async (sandboxPath) => {
+      fs.writeFileSync(path.join(stateDir, "shields-alpha.json"), "{}\n");
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    await expect(
-      ParsedDownloadSandboxCommand.run(["alpha"], process.cwd()),
-    ).resolves.toBeUndefined();
+      await expect(
+        ParsedDownloadSandboxCommand.run(["alpha", sandboxPath], process.cwd()),
+      ).resolves.toBeUndefined();
 
-    expect(ParsedDownloadSandboxCommand.ran).toBe(true);
-  });
+      expect(ParsedDownloadSandboxCommand.ran).toBe(true);
+    },
+  );
+
+  it.each([
+    "/sandbox/.openclaw/credentials/tokens.json",
+    "/sandbox/.openclaw/openclaw.json",
+    "/sandbox/.hermes/.env",
+    "/sandbox/.hermes/config.yaml",
+    "/sandbox/.deepagents/.state/auth.json",
+    "/sandbox/.deepagents/.mcp.json",
+    "/sandbox/.openclaw/workspace/memory/.env",
+    "/sandbox",
+  ])(
+    "rejects download of credential-bearing or unapproved path %s when a legacy Shields record exists",
+    async (sandboxPath) => {
+      fs.writeFileSync(path.join(stateDir, "shields-alpha.json"), "{}\n");
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      await expect(
+        ParsedDownloadSandboxCommand.run(["alpha", sandboxPath], process.cwd()),
+      ).rejects.toThrow(/mutable posture cannot be proven/u);
+
+      expect(ParsedDownloadSandboxCommand.ran).toBe(false);
+    },
+  );
 
   it("refuses download while legacy Shields recovery artifacts remain", async () => {
     fs.writeFileSync(path.join(stateDir, "shields-timer-alpha.json"), "{}\n");
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    await expect(ParsedDownloadSandboxCommand.run(["alpha"], process.cwd())).rejects.toThrow(
-      /recovery artifacts from the removed Shields/u,
-    );
+    await expect(
+      ParsedDownloadSandboxCommand.run(
+        ["alpha", "/sandbox/.openclaw/workspace/SOUL.md"],
+        process.cwd(),
+      ),
+    ).rejects.toThrow(/recovery artifacts from the removed Shields/u);
 
     expect(ParsedDownloadSandboxCommand.ran).toBe(false);
   });

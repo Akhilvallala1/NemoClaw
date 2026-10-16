@@ -111,33 +111,47 @@ describe("complete native-home capture failures", () => {
     },
   );
 
-  it.skipIf(process.getuid?.() === 0)(
-    "records a permission denial when the stopped-sandbox copy cannot read the OpenClaw database",
-    () => {
-      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-native-capture-source-"));
-      try {
-        const nativeRoot = path.join(fixture, "native-home");
-        const databasePath = path.join(nativeRoot, ".openclaw", "state", "openclaw.sqlite");
-        fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-        const database = new DatabaseSync(databasePath);
-        database.exec("CREATE TABLE session_state (session_id TEXT PRIMARY KEY)");
-        database.close();
-        fs.chmodSync(databasePath, 0o000);
+  it("records a permission denial when the stopped-sandbox copy cannot read the OpenClaw database", () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-native-capture-source-"));
+    const oldNodeOptions = process.env.NODE_OPTIONS;
+    let databasePath: string | null = null;
+    try {
+      fs.chmodSync(fixture, 0o755);
+      const nativeRoot = path.join(fixture, "native-home");
+      databasePath = path.join(nativeRoot, ".openclaw", "state", "openclaw.sqlite");
+      fs.mkdirSync(path.dirname(databasePath), { recursive: true, mode: 0o755 });
+      fs.chmodSync(nativeRoot, 0o755);
+      fs.chmodSync(path.join(nativeRoot, ".openclaw"), 0o755);
+      fs.chmodSync(path.dirname(databasePath), 0o755);
+      const database = new DatabaseSync(databasePath);
+      database.exec("CREATE TABLE session_state (session_id TEXT PRIMARY KEY)");
+      database.close();
+      fs.chmodSync(databasePath, 0o000);
+      const dropRootScript = path.join(fixture, "drop-root.cjs");
+      fs.writeFileSync(
+        dropRootScript,
+        "process.getuid?.() === 0 && (process.setgroups?.([]), process.setgid?.(65534), process.setuid?.(65534));\n",
+        { mode: 0o644 },
+      );
+      process.env.NODE_OPTIONS = [oldNodeOptions, `--require=${dropRootScript}`]
+        .filter(Boolean)
+        .join(" ");
 
-        const backup = backupPreparedRoot(nativeRoot);
+      const backup = backupPreparedRoot(nativeRoot);
 
-        expect(backup).toMatchObject({
-          success: false,
-          failedDirs: ["."],
-          failedDirReasons: { ".": "permission denied" },
-        });
-        expect(backup.error).toContain(`${DATABASE_COPY_FAILURE}: Permission denied`);
-        expect(publishedBackups()).toEqual([]);
-      } finally {
-        fs.rmSync(fixture, { recursive: true, force: true });
-      }
-    },
-  );
+      expect(backup).toMatchObject({
+        success: false,
+        failedDirs: ["."],
+        failedDirReasons: { ".": "permission denied" },
+      });
+      expect(backup.error).toContain(`${DATABASE_COPY_FAILURE}: Permission denied`);
+      expect(publishedBackups()).toEqual([]);
+    } finally {
+      restoreEnv("NODE_OPTIONS", oldNodeOptions);
+      databasePath && fs.existsSync(databasePath) && fs.chmodSync(databasePath, 0o600);
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
 
   it("reports the stopped-sandbox copy error without a reason when the OpenClaw database path is unsafe", () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-native-capture-source-"));
