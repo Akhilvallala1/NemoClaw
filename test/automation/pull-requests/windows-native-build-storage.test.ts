@@ -56,14 +56,20 @@ describe.each([
       const run = workflow.jobs["windows-finished-installer"].steps!.find(
         (item) => item.name === stepName,
       )!.run!;
-      const cleanup = run.slice(run.lastIndexOf("\n$target ="));
+      const cleanupStart = run.lastIndexOf("\n$completedCargoTarget =");
+      expect(cleanupStart).toBeGreaterThan(0);
+      const cleanup = run.slice(cleanupStart);
       const result = spawnSync(
         pwsh,
         [
           "-NoProfile",
           "-NonInteractive",
           "-Command",
-          `$ErrorActionPreference = 'Stop'\n${cleanup}`,
+          // Match the parameter attributes left by dot-sourcing windows-msvc.ps1.
+          `$ErrorActionPreference = 'Stop'
+. { param([ValidateSet('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc', 'native', 'all')][string] $Target) } 'aarch64-pc-windows-msvc'
+${cleanup}
+if ($Target -cne 'aarch64-pc-windows-msvc') { throw 'Build target parameter was overwritten.' }`,
         ],
         {
           encoding: "utf8",
@@ -77,6 +83,7 @@ describe.each([
         },
       );
       expect(result.status, result.stdout + result.stderr).toBe(scenario.exit);
+      expect(result.stderr).not.toContain("MetadataError");
       expect(readFileSync(join(retained, "verified.exe"), "utf8")).toBe("retained fixture bytes");
       expect(existsSync(target)).toBe(scenario.retained);
     } finally {

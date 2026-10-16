@@ -549,13 +549,13 @@ jobs:
             currentPackageQualification = $false
           } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$output\openshell-build.json" -Encoding utf8NoBOM
           # The verified binaries and logs above are the downstream inputs.
-          $target = [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
-          $expected = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'finished-windows\openshell-target'))
-          if ($target -cne $expected -or (Get-Item -LiteralPath $target).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or
-              @(Get-ChildItem -LiteralPath $target -Recurse -Force -Attributes ReparsePoint).Count -ne 0) {
+          $completedCargoTarget = [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+          $expectedCargoTarget = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'finished-windows\openshell-target'))
+          if ($completedCargoTarget -cne $expectedCargoTarget -or (Get-Item -LiteralPath $completedCargoTarget).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or
+              @(Get-ChildItem -LiteralPath $completedCargoTarget -Recurse -Force -Attributes ReparsePoint).Count -ne 0) {
             throw 'The completed OpenShell build target is not an ordinary runner-owned tree.'
           }
-          Remove-Item -LiteralPath $target -Recurse -Force
+          Remove-Item -LiteralPath $completedCargoTarget -Recurse -Force
       - name: Check out the MXC source used by the Windows-tip qualification
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -615,13 +615,13 @@ jobs:
             files = @($files)
             currentPackageQualification = $false
           } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$output\mxc-build.json" -Encoding utf8NoBOM
-          $target = [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
-          $expected = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'finished-windows\mxc-target'))
-          if ($target -cne $expected -or (Get-Item -LiteralPath $target).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or
-              @(Get-ChildItem -LiteralPath $target -Recurse -Force -Attributes ReparsePoint).Count -ne 0) {
+          $completedCargoTarget = [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+          $expectedCargoTarget = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'finished-windows\mxc-target'))
+          if ($completedCargoTarget -cne $expectedCargoTarget -or (Get-Item -LiteralPath $completedCargoTarget).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or
+              @(Get-ChildItem -LiteralPath $completedCargoTarget -Recurse -Force -Attributes ReparsePoint).Count -ne 0) {
             throw 'The completed MXC build target is not an ordinary runner-owned tree.'
           }
-          Remove-Item -LiteralPath $target -Recurse -Force
+          Remove-Item -LiteralPath $completedCargoTarget -Recurse -Force
       - name: Prepare native host files without any legacy agent tree
         shell: pwsh
         run: |
