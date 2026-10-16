@@ -843,7 +843,7 @@ async function main() {
     isolatedProviderLatencyMeasured: false,
   };
   const cleanupErrors: string[] = [];
-  let phase = "configuration",
+  let phase = "launcher-input-admission",
     primary: unknown,
     configurationOwned = false,
     configurationMutationUnconfirmed = false,
@@ -870,7 +870,6 @@ async function main() {
     return value.stdout;
   };
   try {
-    phase = "launcher-input-admission";
     results.launcherAdmission = admitInstalledHermesLauncher({
       packageRoot: path.resolve(argument("--package-root")),
       launcher,

@@ -30,6 +30,12 @@ for (const agent of ["hermes"] as const) {
     nodeVersion: "22.23.2",
   };
   const configuration = JSON.stringify({ agent, credentialStored: true });
+  const launcherAdmission = {
+    launcherSha256: "e".repeat(64),
+    packageBuildSha256: "f".repeat(64),
+    artifactSourceSnapshotSha256: "1".repeat(64),
+    controllerSourceRevision: "2".repeat(40),
+  };
   const previous = {
     schemaVersion: 1,
     classification: "installed-canonical-hermes-acceptance",
@@ -38,6 +44,7 @@ for (const agent of ["hermes"] as const) {
     runtime: identity,
     cleanupErrors: [],
     results: {
+      launcherAdmission,
       configurationReused: false,
       configurationPreserved: true,
       realTerminal: true,
@@ -106,6 +113,8 @@ for (const agent of ["hermes"] as const) {
   });
 
   for (const scenario of [
+    "launcher-rejected",
+    "changed-launcher-admission",
     "missing-receipt",
     "changed-settings",
     "recreated-state",
@@ -127,6 +136,7 @@ for (const agent of ["hermes"] as const) {
       const calls: string[][] = [];
       const receipts: Record<string, any> = {};
       const evidenceDirectories: string[] = [];
+      const admissions: unknown[] = [];
       const bindings = {
         assert,
         path: path.win32,
@@ -139,6 +149,7 @@ for (const agent of ["hermes"] as const) {
             GITHUB_ACTIONS: "true",
             GITHUB_RUN_ID: "123456",
             GITHUB_RUN_ATTEMPT: "1",
+            GITHUB_SHA: launcherAdmission.controllerSourceRevision,
             NVIDIA_API_KEY: "nvapi-synthetic-fixture",
             LOCALAPPDATA: "C:\\UserData",
             ProgramFiles: "C:\\Program Files",
@@ -152,6 +163,9 @@ for (const agent of ["hermes"] as const) {
             "--output": "C:\\RunnerTemp\\Evidence",
             "--runtime-identity": "identity.json",
             "--previous-acceptance": "previous.json",
+            "--package-root": "C:\\RunnerTemp\\Package",
+            "--artifact-source-snapshot": "C:\\RunnerTemp\\artifact-source.json",
+            "--artifact-source-snapshot-sha256": launcherAdmission.artifactSourceSnapshotSha256,
           })[name] ?? fallback,
         fs: {
           readFileSync: () => JSON.stringify(identity),
@@ -166,11 +180,25 @@ for (const agent of ["hermes"] as const) {
         randomBytes,
         acceptanceProcessesStopped,
         retainedAcceptance,
+        admitInstalledHermesLauncher: (input: unknown) => {
+          admissions.push(input);
+          if (scenario === "launcher-rejected") throw new Error("fixture launcher rejected");
+          return launcherAdmission;
+        },
         readOpenedRegularFile: (name: string) =>
           name === "previous.json"
             ? scenario === "missing-receipt"
               ? null
-              : JSON.stringify(previous)
+              : JSON.stringify({
+                  ...previous,
+                  results: {
+                    ...previous.results,
+                    launcherAdmission:
+                      scenario === "changed-launcher-admission"
+                        ? { ...launcherAdmission, launcherSha256: "3".repeat(64) }
+                        : launcherAdmission,
+                  },
+                })
             : configuration + (scenario === "changed-settings" ? " " : ""),
         nativeCredentialBinding: () => {
           throw new Error("fixture-stop after ownership check");
@@ -204,7 +232,23 @@ for (const agent of ["hermes"] as const) {
       )(...Object.values(bindings));
       await assert.rejects(main());
       assert.deepEqual(evidenceDirectories, ["C:\\RunnerTemp\\Evidence"]);
-      const expected = ["missing-receipt", "changed-settings"].includes(scenario)
+      assert.deepEqual(admissions, [
+        {
+          packageRoot: "C:\\RunnerTemp\\Package",
+          launcher: "C:\\Installed\\bin\\NemoClaw.exe",
+          sourceRevision: identity.sourceRevision,
+          controllerRun: "123456:1",
+          controllerSourceRevision: launcherAdmission.controllerSourceRevision,
+          artifactSourceSnapshot: "C:\\RunnerTemp\\artifact-source.json",
+          artifactSourceSnapshotSha256: launcherAdmission.artifactSourceSnapshotSha256,
+        },
+      ]);
+      const expected = [
+        "launcher-rejected",
+        "changed-launcher-admission",
+        "missing-receipt",
+        "changed-settings",
+      ].includes(scenario)
         ? []
         : [["--state-session", agent]];
       if (scenario === "owned-state") expected.push(["--remove-native-data", "--agent", agent]);
@@ -214,6 +258,18 @@ for (const agent of ["hermes"] as const) {
       assert.equal(receipt.controllerRun, "123456:1");
       assert.equal(receipt.results.configurationPreserved, false);
       assert.deepEqual(receipt.cleanupErrors, []);
+      assert.equal(
+        receipt.failedStage,
+        scenario === "launcher-rejected" ? "launcher-input-admission" : "configuration",
+      );
+      if (scenario === "launcher-rejected")
+        assert.match(receipt.error, /fixture launcher rejected/u);
+      else if (["changed-launcher-admission", "missing-receipt"].includes(scenario))
+        assert.match(receipt.error, /different package or controller/u);
+      else if (scenario === "changed-settings") assert.match(receipt.error, /configuration/u);
+      else if (["recreated-state", "other-state"].includes(scenario))
+        assert.match(receipt.error, /different or recreated agent data/u);
+      else if (scenario === "state-failure") assert.match(receipt.error, /fixture state failure/u);
       if (scenario === "owned-state")
         assert.match(receipt.error, /fixture-stop after ownership check/u);
     });
