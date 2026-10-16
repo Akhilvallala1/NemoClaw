@@ -20,20 +20,28 @@ import {
 } from "./gateway-runtime.mts";
 import { FULL_E2E_STANDARD_PROFILE_JOB_TIMEOUT_MINUTES } from "./full-e2e-timeout-contract.mts";
 import {
+  ONBOARD_REPAIR_TARGET_TIMEOUT_MINUTES,
   ONBOARD_RESUME_TARGET_TIMEOUT_MINUTES,
-  ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES,
+  INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
 } from "./onboard-timeout-contract.mts";
 import { HERMES_ACP_E2E_OWNING_PATHS } from "./hermes-acp-owning-paths.mts";
 import {
   REVIEWED_GATEWAY_REGISTRATION_UPGRADE_FIXTURE,
   REVIEWED_GATEWAY_UPGRADE_FIXTURE,
 } from "./openshell-gateway-upgrade-fixture.mts";
+import { SANDBOX_SURVIVAL_TARGET_TIMEOUT_MINUTES } from "./sandbox-survival-timeout-contract.mts";
 import { normalizeE2eSelectorId } from "./selector-aliases.mts";
+
+import {
+  HOSTED_PROVIDER_SMOKE_CASES,
+  hostedProviderSmokeEnvironment,
+} from "./hosted-provider-smoke.mts";
 
 export const E2E_EXECUTION_PROFILES = [
   "standard",
   "nvidia-api",
   "nvidia-inference",
+  "hosted-inference",
   "github-read",
 ] as const;
 export type E2eExecutionProfile = (typeof E2E_EXECUTION_PROFILES)[number];
@@ -101,6 +109,7 @@ export interface E2eCatalogueTarget {
 }
 
 export interface E2eCatalogueMatrixRow {
+  model_env?: string;
   id: string;
   execution_id: string;
   runtime_provider: E2eRuntimeProvider;
@@ -157,6 +166,7 @@ type TargetOptions = Omit<
   agentRuntime: E2eAgentRuntime;
   environmentOrInferenceEndpoint: string;
   unresolvedReason?: string;
+  releaseRequired?: boolean;
   owningPaths?: readonly string[];
   environment?: Readonly<Record<string, string>>;
   hostPackages?: readonly E2eHostPackage[];
@@ -304,6 +314,10 @@ const PI_IMAGE_SOURCE_OWNING_PATHS = [
   "scripts/security/patches/perl-5.44.0-net-ping-capability-tests.patch",
   "scripts/security/patches/python3.13-htmlparser-cve-2026-15308.patch",
   "scripts/upgrade-bundled-npm.mts",
+  "src/lib/inference/native-provider/agent-config.ts",
+  "src/lib/inference/native-nvidia/contract.ts",
+  "src/lib/inference/native-provider/contract.ts",
+  "src/lib/inference/native-provider/hosted.ts",
   "tools/mcp-tool-discovery-runtime/reviewed-runtime-bundle/managed-startup-direct-image-runtime.bundle",
 ] as const;
 
@@ -879,6 +893,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     runnerKey: "hermes-discord",
     hostPreparation: "hermes-swap",
     runnerComparison: true,
+    owningPaths: ["test/e2e/fixtures/hermes-config-export-live.ts"],
     environment: {
       ...hostedInference,
       NEMOCLAW_AGENT: "hermes",
@@ -892,10 +907,42 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     },
   }),
   managedRuntimeTarget("hermes-inference-switch", {
+    displayName: "Inference: Hermes switches to native NVIDIA and remains responsive",
+    agentRuntime: "hermes",
+    environmentOrInferenceEndpoint: "Ubuntu; native NVIDIA Endpoints provider",
+    profile: "nvidia-api",
+    timeoutMinutes: 55,
+    installMode: "authenticated",
+    installNonInteractive: true,
+    restoreCli: true,
+    exposeCliBin: true,
+    runnerKey: "hermes-inference-switch",
+    hostPreparation: "hermes-swap",
+    runnerComparison: true,
+    shard: "native-nvidia",
+    owningPaths: [
+      "src/lib/actions/inference-set.ts",
+      "src/lib/inference/native-nvidia/index.ts",
+      "managed-inference/provider-profiles/nemoclaw-nvidia-inference-v1.yaml",
+      "test/e2e/live/public-nvidia-switch-provider.ts",
+    ],
+    environment: {
+      ...nonInteractive,
+      NEMOCLAW_AGENT: "hermes",
+      NEMOCLAW_SANDBOX_NAME: "e2e-hm-inf-switch",
+      NEMOCLAW_SWITCH_PROVIDER: "nvidia-prod",
+      NEMOCLAW_SWITCH_MODEL: "nvidia/nemotron-3-super-120b-a12b",
+      NEMOCLAW_SWITCH_INFERENCE_API: "openai-completions",
+      OPENSHELL_GATEWAY: "nemoclaw",
+    },
+  }),
+  managedRuntimeTarget("hermes-compatible-anthropic-inference-switch", {
+    targetId: "hermes-inference-switch",
     displayName: "Inference: Hermes switches to an Anthropic-compatible endpoint",
     agentRuntime: "hermes",
     environmentOrInferenceEndpoint: "Ubuntu; Anthropic-compatible inference fixture",
     profile: "standard",
+    testFile: "test/e2e/live/hermes-inference-switch.test.ts",
     timeoutMinutes: 55,
     installMode: "authenticated",
     installNonInteractive: true,
@@ -908,7 +955,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     environment: {
       ...nonInteractive,
       NEMOCLAW_AGENT: "hermes",
-      NEMOCLAW_SANDBOX_NAME: "e2e-hm-inf-switch",
+      NEMOCLAW_SANDBOX_NAME: "e2e-hm-anthropic",
       NEMOCLAW_SWITCH_PROVIDER: "compatible-anthropic-endpoint",
       NEMOCLAW_SWITCH_MODEL: "mock-anthropic-model",
       NEMOCLAW_SWITCH_INFERENCE_API: "anthropic-messages",
@@ -957,12 +1004,52 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
       NEMOCLAW_SANDBOX_NAME: "e2e-issue-4462",
     },
   }),
+  ...HOSTED_PROVIDER_SMOKE_CASES.map((selected) =>
+    dockerOnlyTarget(`hosted-inference-${selected.selector}`, {
+      displayName:
+        selected.selector === "openrouter"
+          ? "Inference: completes native OpenRouter agent requests"
+          : `Inference: completes a native ${selected.label} agent request`,
+      agentRuntime:
+        selected.selector === "hermes"
+          ? "hermes"
+          : selected.selector === "openrouter"
+            ? "openclaw + langchain-deepagents-code"
+            : "openclaw",
+      prAdvisorSelectable: true,
+      owningPaths: [
+        "test/e2e/live/inference-routing-credential-scan.ts",
+        `managed-inference/provider-profiles/nemoclaw-${selected.selector}-inference-v1.yaml`,
+        ...(["openai", "anthropic", "hermes"].includes(selected.selector)
+          ? ["src/lib/inference/native-provider/", "src/lib/onboard/setup-inference.ts"]
+          : []),
+        ...(selected.selector === "hermes" ? ["src/lib/hermes-provider-auth.ts"] : []),
+        ...(selected.selector === "openrouter"
+          ? [
+              "agents/langchain-deepagents-code/managed-dcode-runtime.py",
+              "agents/langchain-deepagents-code/generate-config.ts",
+              "src/lib/inference/managed-dcode/",
+            ]
+          : []),
+      ],
+      environmentOrInferenceEndpoint: `Ubuntu; ${selected.label} hosted inference`,
+      profile: "hosted-inference",
+      releaseRequired: false,
+      testFile: "test/e2e/live/inference-routing-provider-smoke.test.ts",
+      selector: selected.selector === "openrouter" ? selected.id : `^${selected.id}`,
+      timeoutMinutes: selected.selector === "openrouter" ? 90 : 30,
+      installMode: "none",
+      restoreCli: true,
+      exposeCliBin: true,
+      environment: { NEMOCLAW_INFERENCE_ROUTING_PROVIDER_SMOKE: selected.selector },
+    }),
+  ),
   managedRuntimeTarget("inference-routing", {
     displayName: "Inference: rejects unsafe routes and proves runtime identities",
     agentRuntime: "openclaw + langchain-deepagents-code",
     environmentOrInferenceEndpoint: "Ubuntu; local compatible and HTTPS inference fixtures",
     profile: "standard",
-    timeoutMinutes: ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES,
+    timeoutMinutes: INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
     installMode: "none",
     restoreCli: true,
     exposeCliBin: false,
@@ -1078,10 +1165,11 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     agentRuntime: "openclaw",
     environmentOrInferenceEndpoint: "Ubuntu Docker host; local onboarding fixtures",
     profile: "standard",
-    timeoutMinutes: 75,
+    timeoutMinutes: ONBOARD_REPAIR_TARGET_TIMEOUT_MINUTES,
     installMode: "authenticated",
     restoreCli: true,
     exposeCliBin: true,
+    owningPaths: ["tools/e2e/onboard-timeout-contract.mts"],
     environment: { ...nonInteractive, NEMOCLAW_SANDBOX_NAME: "e2e-repair" },
   }),
   managedRuntimeTarget("onboard-policy-preset-sequencing", {
@@ -1150,16 +1238,31 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     },
   }),
   managedRuntimeTarget("openclaw-inference-switch", {
-    displayName: "Inference: OpenClaw switches providers and remains responsive",
+    displayName: "Inference: OpenClaw switches to native NVIDIA and remains responsive",
     agentRuntime: "openclaw",
-    environmentOrInferenceEndpoint: "Ubuntu; compatible inference fixtures",
-    profile: "standard",
+    environmentOrInferenceEndpoint: "Ubuntu; native NVIDIA Endpoints provider",
+    profile: "nvidia-api",
     timeoutMinutes: 90,
     installMode: "none",
     restoreCli: true,
     exposeCliBin: true,
     owningPaths: [
+      "src/lib/inference/native-nvidia/index.ts",
+      "managed-inference/provider-profiles/nemoclaw-nvidia-inference-v1.yaml",
+      "src/lib/actions/inference-set.ts",
+      "src/lib/onboard.ts",
+      "src/lib/onboard/machine/core-flow-phases.ts",
+      "src/lib/onboard/machine/final-flow-phases.ts",
+      "src/lib/onboard/machine/finalization-deps.ts",
+      "src/lib/onboard/machine/flow-context.ts",
+      "src/lib/onboard/machine/handlers/agent-setup.ts",
+      "src/lib/onboard/machine/handlers/sandbox.ts",
+      "src/lib/onboard/openclaw-setup.ts",
+      "src/lib/onboard/openclaw/initial-inference-route.ts",
+      "src/lib/onboard/sandbox-prebuild.ts",
+      "src/lib/onboard/sandbox-recreate-transaction.ts",
       "test/e2e/live/openclaw-inference-switch-helpers.ts",
+      "test/e2e/live/public-nvidia-switch-provider.ts",
       "scripts/patch-openclaw-device-self-approval.mts",
       "test/e2e/live/openclaw-admin-scope.ts",
       "test/e2e/fixtures/admin-approval-connect.ts",
@@ -1169,12 +1272,43 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     environment: {
       ...nonInteractive,
       NEMOCLAW_AGENT: "openclaw",
-      NEMOCLAW_E2E_SHARD: "anthropic",
+      NEMOCLAW_E2E_SHARD: "native-nvidia",
       NEMOCLAW_SANDBOX_NAME: "e2e-oc-inf-switch",
+      NEMOCLAW_SWITCH_PROVIDER: "nvidia-prod",
+      NEMOCLAW_SWITCH_MODEL: "nvidia/nemotron-3-super-120b-a12b",
+      NEMOCLAW_SWITCH_INFERENCE_API: "openai-completions",
+      OPENSHELL_GATEWAY: "nemoclaw",
+    },
+  }),
+  managedRuntimeTarget("openclaw-compatible-anthropic-inference-switch", {
+    targetId: "openclaw-inference-switch",
+    displayName: "Inference: OpenClaw switches to an Anthropic-compatible endpoint",
+    agentRuntime: "openclaw",
+    environmentOrInferenceEndpoint: "Ubuntu; Anthropic-compatible inference fixture",
+    profile: "standard",
+    testFile: "test/e2e/live/openclaw-inference-switch.test.ts",
+    timeoutMinutes: 90,
+    installMode: "none",
+    restoreCli: true,
+    exposeCliBin: true,
+    shard: "anthropic",
+    owningPaths: [
+      "src/lib/actions/inference-set.ts",
+      "src/lib/actions/inference-set/native.ts",
+      "src/lib/inference/native-provider/",
+      "src/lib/onboard/setup-inference.ts",
+      "test/e2e/live/openclaw-inference-switch-helpers.ts",
+    ],
+    environment: {
+      ...nonInteractive,
+      NEMOCLAW_AGENT: "openclaw",
+      NEMOCLAW_E2E_SHARD: "anthropic",
+      NEMOCLAW_SANDBOX_NAME: "e2e-oc-anthropic",
       NEMOCLAW_SWITCH_PROVIDER: "compatible-anthropic-endpoint",
       NEMOCLAW_SWITCH_MODEL: "mock-anthropic-model",
       NEMOCLAW_SWITCH_INFERENCE_API: "anthropic-messages",
       NEMOCLAW_SWITCH_MOCK_ANTHROPIC: "1",
+      NEMOCLAW_SWITCH_NATIVE_CUSTOM: "1",
       OPENSHELL_GATEWAY: "nemoclaw",
     },
   }),
@@ -1234,7 +1368,10 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
   ...GATEWAY_UPGRADE_TARGETS,
   dockerOnlyTarget("rebuild-openclaw", {
     displayName: "Rebuild: restores OpenClaw state and native readiness",
-    owningPaths: ["test/e2e/live/openclaw-stopped-recovery.ts"],
+    owningPaths: [
+      "test/e2e/live/openclaw-stopped-recovery.ts",
+      "test/e2e/live/openclaw-restoration.ts",
+    ],
     agentRuntime: "openclaw",
     environmentOrInferenceEndpoint: "Ubuntu; NVIDIA hosted inference",
     profile: "nvidia-inference",
@@ -1278,8 +1415,9 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     owningPaths: [
       "src/lib/actions/sandbox/gateway-state.ts",
       "src/lib/onboard/runtime-provider/docker.ts",
+      "tools/e2e/sandbox-survival-timeout-contract.mts",
     ],
-    timeoutMinutes: 30,
+    timeoutMinutes: SANDBOX_SURVIVAL_TARGET_TIMEOUT_MINUTES,
     installMode: "none",
     restoreCli: true,
     exposeCliBin: false,
@@ -1287,6 +1425,22 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
       ...hostedInference,
       ...nonInteractive,
       NEMOCLAW_SANDBOX_NAME: "e2e-survival",
+      OPENSHELL_GATEWAY: "nemoclaw",
+    },
+  }),
+  managedRuntimeTarget("snapshot-commands", {
+    displayName: "Snapshot compatibility: exposes complete-state replacements",
+    agentRuntime: "openclaw",
+    environmentOrInferenceEndpoint: "Ubuntu Docker host; no inference endpoint",
+    profile: "standard",
+    timeoutMinutes: 40,
+    installMode: "none",
+    restoreCli: true,
+    exposeCliBin: false,
+    owningPaths: ["src/lib/cli/public-display-defaults.ts"],
+    environment: {
+      ...nonInteractive,
+      NEMOCLAW_SANDBOX_NAME: "e2e-snapshot",
       OPENSHELL_GATEWAY: "nemoclaw",
     },
   }),
@@ -1411,27 +1565,6 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     },
   }),
 
-  managedRuntimeTarget("snapshot-commands", {
-    displayName: "Snapshot: restores selected sandbox state without credential leaks",
-    agentRuntime: "openclaw",
-    environmentOrInferenceEndpoint: "Ubuntu Docker host; no inference endpoint",
-    profile: "standard",
-    timeoutMinutes: 40,
-    installMode: "none",
-    restoreCli: false,
-    exposeCliBin: false,
-    owningPaths: [
-      "test/e2e/live/snapshot-credential-scanner.ts",
-      "src/lib/actions/sandbox/auto-pair-approval.ts",
-      "src/lib/actions/sandbox/restore-gateway-pairing.ts",
-      "src/lib/adapters/openshell/restore-gateway-pairing.ts",
-    ],
-    environment: {
-      ...nonInteractive,
-      NEMOCLAW_SANDBOX_NAME: "e2e-snapshot",
-      OPENSHELL_GATEWAY: "nemoclaw",
-    },
-  }),
   runtimeAgnosticTarget("spark-install", {
     displayName: "Install: leaves NemoClaw and OpenShell usable after standard installation",
     agentRuntime: "unresolved",
@@ -1468,7 +1601,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     environment: hostedInference,
   }),
   managedRuntimeTarget("state-backup-restore", {
-    displayName: "Backup: restores workspace files and memory",
+    displayName: "Backup: rebuild restores the complete native home",
     agentRuntime: "openclaw",
     environmentOrInferenceEndpoint: "Ubuntu; NVIDIA hosted inference",
     profile: "nvidia-inference",
@@ -1524,16 +1657,27 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     agentRuntime: "openclaw",
     environmentOrInferenceEndpoint: "Ubuntu; NVIDIA hosted inference and Cloudflare tunnel",
     profile: "nvidia-inference",
+    prAdvisorSelectable: true,
     timeoutMinutes: 75,
     installMode: "none",
     restoreCli: true,
     exposeCliBin: true,
     cloudflared: true,
+    owningPaths: [
+      "src/commands/tunnel/start.ts",
+      "src/commands/tunnel/status.ts",
+      "src/commands/tunnel/stop.ts",
+      "src/lib/tunnel/services.ts",
+      "src/lib/tunnel/service-command.ts",
+      "test/e2e/live/tunnel-lifecycle-helpers.ts",
+    ],
     environment: {
       ...hostedInference,
       ...nonInteractive,
+      NEMOCLAW_GATEWAY_PORT: "18080",
       NEMOCLAW_SANDBOX_NAME: "e2e-tunnel-life",
-      OPENSHELL_GATEWAY: "nemoclaw",
+      NEMOCLAW_DASHBOARD_PORT: "18790",
+      OPENSHELL_GATEWAY: "nemoclaw-18080",
     },
   }),
   runtimeAgnosticTarget("whatsapp-qr-compact", {
@@ -1746,12 +1890,17 @@ export function catalogueTargetsForChangedFiles(
   changedFiles: readonly string[],
 ): E2eCatalogueTarget[] {
   const files = [...new Set(changedFiles)];
-  if (files.some((file) => E2E_CATALOGUE_SHARED_PATHS.some((owner) => pathMatches(file, owner)))) {
-    return [...E2E_TARGET_CATALOGUE];
-  }
-  return E2E_TARGET_CATALOGUE.filter((entry) =>
-    files.some((file) => entry.owningPaths.some((owner) => pathMatches(file, owner))),
+  const shared = files.some((file) =>
+    E2E_CATALOGUE_SHARED_PATHS.some((owner) => pathMatches(file, owner)),
   );
+  return E2E_TARGET_CATALOGUE.filter((entry) => {
+    const ownsSource = files.some((file) =>
+      entry.owningPaths.some((owner) => pathMatches(file, owner)),
+    );
+    // Native hosted behavior is qualified only by explicit selection until Slice 2 lands.
+    if (entry.profile === "hosted-inference") return false;
+    return shared || ownsSource || files.includes(entry.testFile);
+  });
 }
 
 export function catalogueHostPackages(
@@ -1773,6 +1922,13 @@ export function catalogueMatrix(
     .filter((entry) => entry.profile === profile)
     .flatMap((entry) =>
       e2eRuntimeProviders(entry.gatewayRuntimes, gatewayRuntimes).map((runtimeProvider) => ({
+        ...(profile === "hosted-inference"
+          ? {
+              model_env: HOSTED_PROVIDER_SMOKE_CASES.find(
+                (selected) => entry.id === `hosted-inference-${selected.selector}`,
+              )!.modelEnv,
+            }
+          : {}),
         id: entry.id,
         execution_id: runtimeExecutionId(entry.id, entry.shard, runtimeProvider),
         runtime_provider: runtimeProvider,
@@ -1808,6 +1964,12 @@ export async function runCatalogueTarget(id: string, testFile: string): Promise<
     throw new Error(`E2E target ${id} does not own test file ${testFile}`);
   }
   Object.assign(process.env, entry.environment);
+  if (entry.profile === "hosted-inference") {
+    const selectedEnvironment = hostedProviderSmokeEnvironment(id, process.env);
+    for (const selected of HOSTED_PROVIDER_SMOKE_CASES) delete process.env[selected.credential];
+    delete process.env.HOSTED_INFERENCE_API_KEY;
+    Object.assign(process.env, selectedEnvironment);
+  }
   if (entry.exposeCliBin) {
     process.env.NEMOCLAW_CLI_BIN = path.join(process.cwd(), "bin", "nemoclaw.js");
   }

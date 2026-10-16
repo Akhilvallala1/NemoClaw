@@ -11,6 +11,13 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { patchOpenClawContainerRestart } from "../../../scripts/lib/patch-openclaw-container-restart.mts";
+import {
+  buildConfig,
+  buildManagedInferenceSafeguardCompaction,
+} from "../../../scripts/generate-openclaw-config.mts";
+import { baseOpenClawGenerationEnv } from "../../helpers/openclaw-env-fixture";
+import { runRealOpenClawAgentReloadProof } from "../../helpers/openclaw-real-agent-reload-proof";
+import { runRealOpenClawCompactionRetryProof } from "../../helpers/openclaw-real-compaction-retry-proof";
 import { runRealOpenClawDeviceSelfApprovalProof } from "../../helpers/openclaw-real-device-self-approval-proof";
 import { runRealOpenClawInstallPathProof } from "../../helpers/openclaw-real-install-path-proof";
 import { runRealOpenClawMcpStartRetryProof } from "../../helpers/openclaw-real-mcp-start-retry-proof";
@@ -359,6 +366,27 @@ function materializeReviewedTarball(
   return tarballPath;
 }
 
+it("bounds reload-proof diagnostics while retaining the final gateway error", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reload-diagnostics-"));
+  try {
+    fs.writeFileSync(
+      path.join(root, "openclaw.mjs"),
+      'process.stdout.write("x".repeat(128 * 1024), () => process.stderr.write("final-gateway-error", () => process.exit(1)));',
+    );
+    const error = await runRealOpenClawAgentReloadProof({
+      dist: path.join(root, "dist"),
+      nodeExecutable: process.execPath,
+      gatewayConfig: { reload: { mode: "hybrid" } },
+    }).catch((error: Error) => error);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain("final-gateway-error");
+    expect(message.length).toBeLessThanOrEqual(64 * 1024 + "gateway did not start: ".length);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 describe("OpenClaw real patched-dist materialization guard", () => {
   it("maps container-only patch helpers to their repository fixtures", () => {
     const command = dockerfilePatchCommand("/tmp/reviewed-openclaw-dist");
@@ -486,8 +514,8 @@ describe.skipIf(process.env.NEMOCLAW_REAL_OPENCLAW_DIST_HARNESS !== "1")(
         "OpenClaw real patched-dist npm runtime",
       );
       const version = readRequiredDockerArg("OPENCLAW_VERSION");
-      const integrity = readRequiredDockerArg("OPENCLAW_2026_9_1_INTEGRITY");
-      const tarballUrl = readRequiredDockerArg("OPENCLAW_2026_9_1_TARBALL");
+      const integrity = readRequiredDockerArg("OPENCLAW_2026_9_2_INTEGRITY");
+      const tarballUrl = readRequiredDockerArg("OPENCLAW_2026_9_2_TARBALL");
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openclaw-real-dist-"));
       try {
         const tarballPath = materializeReviewedTarball(tarballUrl, tmp, integrity);
@@ -794,7 +822,10 @@ describe.skipIf(process.env.NEMOCLAW_REAL_OPENCLAW_DIST_HARNESS !== "1")(
               (source.includes('from "@openclaw/fs-safe/secret";') &&
                 source.includes("PRIVATE_SECRET_DIR_MODE") &&
                 source.includes("PRIVATE_SECRET_FILE_MODE") &&
-                source.includes("writeSecretFileAtomic as writePrivateSecretFileAtomic"))
+                (source.includes("writeSecretFileAtomic as writePrivateSecretFileAtomic") ||
+                  (source.includes("async function writePrivateSecretFileAtomic(params) {") &&
+                    source.includes("await tightenSecretDirectoryModes(params);") &&
+                    source.includes("await writeSecretFileAtomic(params);"))))
             );
           });
         requireRuntimeEqual(
@@ -905,6 +936,26 @@ describe.skipIf(process.env.NEMOCLAW_REAL_OPENCLAW_DIST_HARNESS !== "1")(
           nodeExecutable: nodeRuntime.executable,
           patchScript: PATCH_OPENCLAW_MCP_RELIABILITY,
           timeoutMs: PATCH_COMMAND_TIMEOUT_MS,
+        });
+
+        runRealOpenClawCompactionRetryProof({
+          dist,
+          nodeExecutable: nodeRuntime.executable,
+          compaction: buildManagedInferenceSafeguardCompaction(
+            "inference",
+            "vllm-local",
+            "https://inference.local/v1",
+            "vllm.n1x.single.qwen3-6-35b-a3b-nvfp4",
+            32768,
+            4096,
+          ),
+          timeoutMs: PATCH_COMMAND_TIMEOUT_MS,
+        });
+
+        await runRealOpenClawAgentReloadProof({
+          gatewayConfig: buildConfig(baseOpenClawGenerationEnv()).gateway,
+          dist,
+          nodeExecutable: nodeRuntime.executable,
         });
 
         runRealOpenClawInstallPathProof({
