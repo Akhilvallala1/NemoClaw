@@ -56,7 +56,12 @@ function tarHeader(
 
   // Link name (bytes 157-256) — for symlinks
   if (opts.linkTarget) {
-    header.write(opts.linkTarget, 157, Math.min(opts.linkTarget.length, 100), "utf-8");
+    header.write(
+      opts.linkTarget,
+      157,
+      Math.min(Buffer.byteLength(opts.linkTarget, "utf-8"), 100),
+      "utf-8",
+    );
   }
 
   // USTAR magic (bytes 257-264)
@@ -599,7 +604,7 @@ describe("Fix: stopped-state extraction cannot write through archive symlinks", 
     ]);
   });
 
-  it("preserves backslashes and rejects link traversal when a tar that lists names literally rejects --quoting-style=literal", async () => {
+  it("lists without --quoting-style=literal after tar rejects it and retries the option after the tar executable changes", async () => {
     const {
       rejectHardLinkExtractionTraversal,
       rejectSymlinkExtractionTraversal,
@@ -653,6 +658,27 @@ describe("Fix: stopped-state extraction cannot write through archive symlinks", 
       expect(rejectHardLinkExtractionTraversal(hardLinkTar, hardLinkValidation.entries)).toEqual([
         "hard-link target 'workspace/sym\\link/.config/secret' in 'workspace/stolen' resolves through symlink 'workspace/sym\\link'",
       ]);
+
+      const replacementTar = path.join(fixture, "gnu-like-tar");
+      fs.writeFileSync(
+        replacementTar,
+        [
+          "#!/usr/bin/env node",
+          'const { spawnSync } = require("node:child_process");',
+          "const args = process.argv.slice(2);",
+          'if (!args.includes("--quoting-style=literal")) { process.stderr.write("missing --quoting-style=literal\\n"); process.exit(2); }',
+          `process.exit(spawnSync(${JSON.stringify(systemTar)}, args, { stdio: "inherit" }).status ?? 90);`,
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      fs.unlinkSync(fakeTar);
+      fs.symlinkSync(replacementTar, fakeTar);
+
+      expect(validateTarEntries(safeTar, "/tmp/private-stopped-state")).toEqual({
+        safe: true,
+        entries: [safeEntry],
+        violations: [],
+      });
     } finally {
       oldPath === undefined
         ? Reflect.deleteProperty(process.env, "PATH")

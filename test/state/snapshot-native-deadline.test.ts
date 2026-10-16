@@ -106,12 +106,19 @@ describe("complete native-home backup deadlines", () => {
     const nativeRoot = path.join(fixture, "native-home");
     fs.mkdirSync(nativeRoot, { recursive: true });
     fs.writeFileSync(path.join(nativeRoot, "yarn.lock"), "# yarn lockfile v1\n");
+    const tmpRoot = os.tmpdir();
+    const existingListingDirs = new Set(
+      fs.readdirSync(tmpRoot).filter((entry) => entry.startsWith("nemoclaw-tar-listing-")),
+    );
     const baseNow = Date.now();
     const deadlineMs = baseNow + 60_000;
-    let nowCalls = 0;
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
-      nowCalls += 1;
-      return nowCalls >= 10 ? deadlineMs + 1 : baseNow;
+      const hasActiveListingDir = fs
+        .readdirSync(tmpRoot)
+        .some(
+          (entry) => entry.startsWith("nemoclaw-tar-listing-") && !existingListingDirs.has(entry),
+        );
+      return hasActiveListingDir ? deadlineMs + 1 : baseNow;
     });
     try {
       const backup = sandboxState.backupSandboxState("alpha", {

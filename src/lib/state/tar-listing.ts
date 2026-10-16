@@ -3,11 +3,14 @@
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
+  accessSync,
   closeSync,
+  constants,
   fstatSync,
   mkdtempSync,
   openSync,
   readSync,
+  realpathSync,
   rmSync,
   statSync,
   writeSync,
@@ -24,11 +27,32 @@ const TAR_LISTING_STDERR_MAX_BUFFER_BYTES = 1024 * 1024;
 const TAR_LISTING_MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 const TAR_LISTING_READ_CHUNK_BYTES = 64 * 1024;
 const TAR_LISTING_MAX_LINE_CHARS = 1024 * 1024;
-const TAR_BLOCK_BYTES = 512;
+export const TAR_BLOCK_BYTES = 512;
 const TAR_METADATA_MAX_BYTES = 1024 * 1024;
 const TAR_TOTAL_METADATA_MAX_BYTES = 4 * 1024 * 1024;
 const TAR_MAX_INSPECTED_HEADERS = 65_536;
-let unsupportedLiteralQuotingPath: string | null = null;
+let unsupportedLiteralQuotingExecutable: string | null = null;
+
+/** Resolve the active tar executable and its filesystem identity from PATH. */
+function resolveTarExecutable(): { command: string; identity: string | null } {
+  const pathEnv = process.env.PATH ?? "";
+  for (const entry of pathEnv.split(path.delimiter)) {
+    const candidate = path.resolve(entry || ".", "tar");
+    try {
+      accessSync(candidate, constants.X_OK);
+      const stat = statSync(candidate);
+      if (!stat.isFile()) continue;
+      const realPath = realpathSync(candidate);
+      return {
+        command: realPath,
+        identity: `${realPath}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`,
+      };
+    } catch {
+      // Continue searching PATH entries when a candidate is missing or not executable.
+    }
+  }
+  return { command: "tar", identity: null };
+}
 
 /** Return true when an archive-listing deadline is invalid or has already passed. */
 function listingDeadlineExpired(deadlineMs: number): boolean {
@@ -98,7 +122,7 @@ function hasHeaderLineBreak(value: string): boolean {
 }
 
 /** Read a NUL-padded UTF-8 field from a 512-byte ustar header block. */
-function tarHeaderString(header: Buffer, start: number, length: number): string {
+export function tarHeaderString(header: Buffer, start: number, length: number): string {
   const end = header.indexOf(0, start);
   return header
     .subarray(start, end >= start && end < start + length ? end : start + length)
@@ -106,7 +130,7 @@ function tarHeaderString(header: Buffer, start: number, length: number): string 
 }
 
 /** Decode an octal or base-256 tar member size field. */
-function tarHeaderSize(header: Buffer): number | null {
+export function tarHeaderSize(header: Buffer): number | null {
   const field = header.subarray(124, 136);
   if ((field[0] ?? 0) & 0x80) {
     let value = BigInt((field[0] ?? 0) & 0x7f);
@@ -210,17 +234,15 @@ function inspectArchiveHeadersForLineBreaks(
   return "clean";
 }
 
-/** Read a byte range at a fixed position without moving the file offset. Return null at EOF and "timeout" after deadlineMs. */
-function readDescriptorRange(
+/** Read a byte range at a fixed position without moving the file offset. Return null at EOF. */
+export function readArchiveRange(
   descriptor: number,
   position: number,
   length: number,
-  deadlineMs: number,
-): Buffer | "timeout" | null {
+): Buffer | null {
   const result = Buffer.alloc(length);
   let read = 0;
   while (read < length) {
-    if (listingDeadlineExpired(deadlineMs)) return "timeout";
     const count = readSync(descriptor, result, read, length - read, position + read);
     if (count === 0) return null;
     read += count;
@@ -300,6 +322,7 @@ function openIndependentTarDescriptor(
 
 /** Run one tar listing pass into listingPath, closing descriptors before returning. */
 function spawnTarListingPass(
+  tarCommand: string,
   tarArchive: TarListingSource,
   tempDir: string,
   listingPath: string,
@@ -313,7 +336,7 @@ function spawnTarListingPass(
   try {
     listingFd = openSync(listingPath, "w");
     if (Buffer.isBuffer(tarArchive)) {
-      return spawnSync("tar", args, {
+      return spawnSync(tarCommand, args, {
         input: tarArchive,
         encoding: "utf-8",
         stdio: ["pipe", listingFd, "pipe"],
@@ -322,7 +345,7 @@ function spawnTarListingPass(
       });
     }
     archiveFd = openIndependentTarDescriptor(tarArchive, tempDir, stagedArchivePath, deadlineMs);
-    return spawnSync("tar", args, {
+    return spawnSync(tarCommand, args, {
       encoding: "utf-8",
       stdio: [archiveFd, listingFd, "pipe"],
       timeout: timeoutMs,
@@ -337,9 +360,10 @@ function spawnTarListingPass(
 /**
  * List tar entries through a temporary file so large archives do not overflow
  * spawnSync buffers. Reject archives whose member paths or link targets contain
- * a line break before tar runs. GNU tar lists names literally. Tar implementations
- * that reject --quoting-style=literal, such as bsdtar, keep their default escaping;
- * later member extraction by name then fails closed.
+ * a line break before tar runs. With --quoting-style=literal, GNU tar lists names
+ * without escapes. When tar rejects that option (for example, bsdtar), listing
+ * keeps tar's default escaping; members that NemoClaw then extracts by name fail
+ * closed.
  */
 export function runTarListing(
   tarArchive: TarListingSource,
@@ -381,7 +405,9 @@ export function runTarListing(
           const size = fstatSync(headerFd).size;
           return inspectArchiveHeadersForLineBreaks(
             (position, length) =>
-              readDescriptorRange(headerFd!, position, length, listingDeadlineMs),
+              listingDeadlineExpired(listingDeadlineMs)
+                ? "timeout"
+                : readArchiveRange(headerFd!, position, length),
             size,
             listingDeadlineMs,
           );
@@ -403,13 +429,16 @@ export function runTarListing(
       return `${failureLabel} failed: archive header cannot be inspected for line breaks`;
     }
 
-    const currentPath = process.env.PATH ?? "";
-    const tryLiteralQuoting = unsupportedLiteralQuotingPath !== currentPath;
+    const tarExecutable = resolveTarExecutable();
+    const tryLiteralQuoting =
+      tarExecutable.identity === null ||
+      unsupportedLiteralQuotingExecutable !== tarExecutable.identity;
     const initialTimeoutMs = remainingListingTimeoutMs(listingDeadlineMs, timeoutMs);
     if (initialTimeoutMs === null) {
       return `${failureLabel} failed: archive listing timed out`;
     }
     let result = spawnTarListingPass(
+      tarExecutable.command,
       tarArchive,
       tempDir,
       listingPath,
@@ -419,12 +448,13 @@ export function runTarListing(
       listingDeadlineMs,
     );
     if (tryLiteralQuoting && isUnsupportedQuotingStyle(result)) {
-      unsupportedLiteralQuotingPath = currentPath;
+      unsupportedLiteralQuotingExecutable = tarExecutable.identity;
       const fallbackTimeoutMs = remainingListingTimeoutMs(listingDeadlineMs, timeoutMs);
       if (fallbackTimeoutMs === null) {
         return `${failureLabel} failed: archive listing timed out`;
       }
       result = spawnTarListingPass(
+        tarExecutable.command,
         tarArchive,
         tempDir,
         listingPath,

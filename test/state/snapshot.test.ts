@@ -1438,7 +1438,7 @@ process.exit(result.status ?? 90);
     }
   });
 
-  it("round-trips backslash paths and rejects traversal when a tar that lists names literally rejects --quoting-style=literal", async () => {
+  it("round-trips backslash paths and rejects symlink traversal after tar rejects --quoting-style=literal", async () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-native-bsdtar-fallback-"));
     const oldPath = process.env.PATH;
     const oldOpenshell = process.env.NEMOCLAW_OPENSHELL_BIN;

@@ -77,7 +77,15 @@ import { isSshTransportFailure } from "./ssh-transport.js";
 import { inspectExtractedDcodeSessionsDatabase } from "./snapshot/dcode-session-credential-scan.js";
 import { withoutOpenClawSqliteMachineAuthority } from "./snapshot/openclaw-sqlite-sanitizer.js";
 import { nemoclawStateRoot } from "./state-root.js";
-import { runTarListing, type TarArchiveSource, type TarListingSource } from "./tar-listing.js";
+import {
+  readArchiveRange,
+  runTarListing,
+  TAR_BLOCK_BYTES,
+  type TarArchiveSource,
+  tarHeaderSize,
+  tarHeaderString,
+  type TarListingSource,
+} from "./tar-listing.js";
 
 const HOME_DIR = path.resolve(process.env.HOME || os.homedir());
 const REBUILD_BACKUPS_DIR = path.join(nemoclawStateRoot(HOME_DIR, GATEWAY_PORT), "rebuild-backups");
@@ -588,8 +596,9 @@ function rejectSymlinksOnPath(targetPath: string): void {
 
 /**
  * List tar entries and confirm that every path stays within targetDir.
- * Reject absolute paths, .. traversal, NUL bytes, and member paths or link
- * targets that contain a line break. Stop when deadlineMs passes.
+ * Reject absolute paths, .. traversal, NUL bytes, and line breaks in member
+ * paths or link targets. Return a violation when header inspection fails or
+ * deadlineMs passes.
  */
 export function validateTarEntries(
   tarArchive: TarListingSource,
@@ -1143,7 +1152,6 @@ function readExtractedNativeCredentialCandidate(
   }
 }
 
-const TAR_BLOCK_BYTES = 512;
 const NATIVE_CREDENTIAL_SCAN_CHUNK_BYTES = 64 * 1024;
 const NATIVE_CREDENTIAL_SCAN_OVERLAP_CHARS = 4096;
 const NATIVE_TAR_METADATA_MAX_BYTES = 1024 * 1024;
@@ -1240,37 +1248,6 @@ function dependencyLockfileContainsCredential(name: string, raw: string): boolea
     // contents can cross the host-side persistence boundary.
     return true;
   }
-}
-
-function tarHeaderString(header: Buffer, start: number, length: number): string {
-  const end = header.indexOf(0, start);
-  return header
-    .subarray(start, end >= start && end < start + length ? end : start + length)
-    .toString("utf8");
-}
-
-function tarHeaderSize(header: Buffer): number | null {
-  const field = header.subarray(124, 136);
-  if ((field[0] ?? 0) & 0x80) {
-    let value = BigInt((field[0] ?? 0) & 0x7f);
-    for (const byte of field.subarray(1)) value = (value << 8n) | BigInt(byte);
-    return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
-  }
-  const text = field.toString("ascii").replace(/\0.*$/su, "").trim();
-  if (!/^[0-7]*$/u.test(text)) return null;
-  const value = text.length === 0 ? 0 : Number.parseInt(text, 8);
-  return Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
-function readArchiveRange(descriptor: number, position: number, length: number): Buffer | null {
-  const result = Buffer.alloc(length);
-  let read = 0;
-  while (read < length) {
-    const count = readSync(descriptor, result, read, length - read, position + read);
-    if (count === 0) return null;
-    read += count;
-  }
-  return result;
 }
 
 function paxMetadata(
