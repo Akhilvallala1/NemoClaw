@@ -49,7 +49,7 @@ An attacker-controlled or customer-controlled suffix requires a pinning-capable 
 The deterministic `TC-INF-12` and `TC-INF-13` protected end-to-end (E2E) scenarios are the conformance gates for this boundary.
 Both run the real blueprint runner against a real OpenShell gateway and sandbox.
 
-On OpenShell `0.0.x`, the scenarios enable provider-derived policy and restore its prior setting.
+The scenarios require attached-provider policy composition without an active global policy override.
 They exchange a refresh token through a public HTTPS OAuth endpoint and prove that the sandbox sees only opaque placeholders.
 They prove that the existing placeholder resolves to the refreshed bearer after credential rotation.
 They prove that OpenShell rejects unreviewed credential delivery before the bearer reaches the protected resource.
@@ -64,18 +64,14 @@ Expanding the trusted hostname policy requires upstream pinning and new conforma
 
 ## Enable Provider-Derived Policy
 
-On an OpenShell `0.0.x` gateway only, enable provider-derived policy before you apply the blueprint.
+OpenShell `0.1.3` composes attached-provider policies automatically when no active global policy overrides them.
+The `providers_v2_enabled` setting no longer exists.
+Use a gateway without an active global policy override for this experimental flow.
+Ask the gateway operator to review an existing override before retrying; changing global policy can affect other sandboxes.
 
-```bash
-openshell settings set --global --key providers_v2_enabled --value true --yes
-```
-
-The direct runner reads that gateway-global setting before identity mutation and again before attachment.
-It stops unless the JSON value is exactly `true`.
-
-OpenShell `0.1.3` rejects the removed `providers_v2_enabled` setting.
-The direct runner still requires it, so identity apply cannot complete on `0.1.3`.
-Keep this experimental flow disabled until the provider-policy migration in [NemoClaw#13201](https://github.com/NVIDIA/NemoClaw/issues/13201) and its conformance tests pass.
+Apply inspects global policy history and the current global policy before identity mutation and again before attachment.
+It stops if an override is active or the response cannot be verified.
+Apply does not change gateway settings.
 
 ## Configure the Okta Reference Profile
 

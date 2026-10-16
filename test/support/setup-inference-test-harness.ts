@@ -52,6 +52,8 @@ export type DirectRunStubResult = {
 };
 
 export type DirectSetupHarnessOptions = {
+  /** Exercise an existing custom sandbox's shared inference route. */
+  legacyCustomRoute?: boolean;
   runOpenshell?: (
     args: string[],
     options: DirectRunOptions,
@@ -195,8 +197,8 @@ if (nativeProfile) {
   if (argv[0] === "provider" && argv[1] === "profile" && argv.includes("export")) {
     process.stdout.write(JSON.stringify(nativeProfile)); process.exit(0);
   }
-  if (argv[0] === "settings" && argv[1] === "get") {
-    process.stdout.write(JSON.stringify({ scope: "global", settings: { providers_v2_enabled: "true" } })); process.exit(0);
+  if (argv[0] === "policy" && argv[1] === "list") {
+    process.stdout.write(JSON.stringify({ revisions: [], next_page_token: "" })); process.exit(0);
   }
   if (argv[0] === "provider" && argv[1] === "create") {
     fs.writeFileSync(created, "created"); process.exit(0);
@@ -383,6 +385,7 @@ export function createDirectSetupInferenceHarnessFactory(
   createSetupInference: CreateSetupInference,
 ) {
   return function createDirectSetupInferenceHarness(options: DirectSetupHarnessOptions = {}) {
+    let legacySandbox: ReturnType<NonNullable<SetupInferenceDeps["getSandbox"]>> = null;
     const commands: DirectCommandEntry[] = [];
     const errors: string[] = [];
     const logs: string[] = [];
@@ -544,7 +547,7 @@ export function createDirectSetupInferenceHarnessFactory(
       // #9110: neutralize the GPU-release seams so harness consumers backed by
       // the production defaults never read the developer's real registry or
       // curl a live Ollama daemon.
-      getSandbox: () => null,
+      getSandbox: () => legacySandbox,
       listSandboxes: () => ({ sandboxes: [], defaultSandbox: null }),
       unloadOllamaModels,
       withOllamaModelOwnershipLock: (operation) => operation(),
@@ -571,6 +574,9 @@ export function createDirectSetupInferenceHarnessFactory(
       hermesToolGateways,
       inferenceOptions = {},
     ) => {
+      if (options.legacyCustomRoute && sandboxName) {
+        legacySandbox = { name: sandboxName, provider, model, endpointUrl, credentialEnv };
+      }
       const nativeLocal = usesNativeLocalInference(provider, endpointUrl);
       const operation = () =>
         (nativeLocal ? setupNativeInference : setupInferenceWithoutPolicyAuthority)(

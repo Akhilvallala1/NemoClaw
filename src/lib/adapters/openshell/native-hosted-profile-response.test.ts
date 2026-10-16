@@ -7,19 +7,29 @@ import { managedBraveProfile } from "../../../../test/fixtures/openshell-provide
 import {
   hostedNativeProvider,
   HOSTED_NATIVE_PROVIDERS,
+  type HostedProviderDefinition,
 } from "../../inference/native-provider/hosted";
 import { nativeProviderLifecycle } from "../../inference/native-provider";
+import {
+  customNativeProvider,
+  boundCustomNativeProfile,
+} from "../../inference/native-provider/custom";
 import { parseCheckedInProviderProfileContract } from "./provider-profile";
 import { isManagedNativeHostedProfileResponse } from "./native-hosted-profile-response";
 
-function response(definition: (typeof HOSTED_NATIVE_PROVIDERS)[number]) {
+function response(definition: HostedProviderDefinition) {
+  const profilePath = nativeProviderLifecycle(definition).nativeProviderProfilePath();
   const contract = parseCheckedInProviderProfileContract(
-    fs.readFileSync(nativeProviderLifecycle(definition).nativeProviderProfilePath(), "utf8"),
+    definition.custom
+      ? boundCustomNativeProfile(definition, profilePath)
+      : fs.readFileSync(profilePath, "utf8"),
   )!;
   const base = managedBraveProfile();
   const credential = contract.boundary.credentials[0];
   const endpoint = contract.boundary.endpoints[0] as {
     host: string;
+    port: number;
+    allowed_ips?: string[];
     rules: { allow: { method: string; path: string } }[];
   };
   return {
@@ -39,6 +49,9 @@ function response(definition: (typeof HOSTED_NATIVE_PROVIDERS)[number]) {
         {
           ...base.endpoints[0],
           host: endpoint.host,
+          port: endpoint.port,
+          tls: 0,
+          allowedIps: endpoint.allowed_ips ?? [],
           access: 0,
           rules: endpoint.rules.map((rule) => ({
             allow: {
@@ -65,6 +78,8 @@ describe.each(HOSTED_NATIVE_PROVIDERS)("native $label profile read boundary", (d
   });
   it.each([
     ["disabled TLS inspection", { tls: 1 }],
+    ["removed explicit TLS termination", { tls: 2 }],
+    ["removed TLS passthrough", { tls: 3 }],
     ["audit-only enforcement", { enforcement: 2 }],
     ["unspecified enforcement", { enforcement: 0 }],
     ["unrestricted read-write access", { access: 2 }],
@@ -129,6 +144,83 @@ describe.each(HOSTED_NATIVE_PROVIDERS)("native $label profile read boundary", (d
     ).toBeUndefined();
   });
 });
+
+it.each([
+  ["compatible-endpoint", "openai-completions", "http://custom.example/team/v1", ["8.8.8.8"]],
+  ["compatible-endpoint", "openai-responses", "https://custom.example/team/v1", ["8.8.8.8"]],
+  [
+    "compatible-anthropic-endpoint",
+    "anthropic-messages",
+    "https://custom.example/team",
+    ["10.0.0.8"],
+  ],
+] as const)(
+  "verifies custom %s %s against its complete binding",
+  (provider, api, endpointUrl, allowedIps) => {
+    const definition = customNativeProvider({
+      provider,
+      api,
+      endpointUrl,
+      allowedIps,
+      credentialEnv: "TEAM_KEY",
+    });
+    const value = response(definition);
+    const read = (observed: unknown, binding = definition.custom) =>
+      isManagedNativeHostedProfileResponse(
+        observed,
+        definition.profileId,
+        definition.endpointUrl,
+        definition.allowedIps,
+        binding,
+      );
+    expect(read(value)).toBe(value);
+    expect(
+      read({
+        profile: {
+          ...value.profile,
+          endpoints: [
+            {
+              ...value.profile.endpoints[0],
+              tls: 1,
+            },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      read(value, { ...definition.custom!, credentialEnv: "DIFFERENT_SOURCE" }),
+    ).toBeUndefined();
+    expect(
+      read({
+        profile: {
+          ...value.profile,
+          endpoints: [{ ...value.profile.endpoints[0], allowedIps: ["1.1.1.1"] }],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      read({
+        profile: {
+          ...value.profile,
+          credentials: [{ ...value.profile.credentials[0], envVars: ["TEAM_KEY"] }],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      read({
+        profile: {
+          ...value.profile,
+          endpoints: [
+            {
+              ...value.profile.endpoints[0],
+              rules: [...value.profile.endpoints[0].rules, value.profile.endpoints[0].rules[0]],
+            },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+  },
+);
 
 it("requires the exact public IP restriction on a Hermes bound profile", () => {
   const endpointUrl = "https://staging.nous.example/v1";

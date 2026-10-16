@@ -44,8 +44,8 @@ describe("onboard build recreate credential reuse (#5441)", () => {
       fs.writeFileSync(
         path.join(fakeBin, "openshell"),
         `#!/usr/bin/env bash
-if [ "$1" = "settings" ] && [ "$2" = "get" ]; then
-  printf '%s\\n' '{"scope":"global","settings":{"providers_v2_enabled":"true"}}'
+if [ "$1" = "policy" ] && [ "$2" = "list" ]; then
+  printf '%s\\n' '{"revisions":[],"next_page_token":""}'
   exit 0
 fi
 if [ "$1" = "inference" ] && [ "$2" = "get" ]; then

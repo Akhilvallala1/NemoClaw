@@ -35,8 +35,8 @@
       "throwGuards": 525,
       "objectFieldAssertions": 253,
       "assertionPoints": 3221,
-      "generatedProbeBlocks": 206,
-      "generatedProbeConditions": 718
+      "generatedProbeBlocks": 207,
+      "generatedProbeConditions": 719
     },
     "fileMetricOrder": [
       "directExpectCalls",
@@ -62,7 +62,7 @@
       "test/e2e/live/dgx-express.test.ts": [35,45,44,62,3],
       "test/e2e/live/double-onboard.test.ts": [42,47,42,47,0],
       "test/e2e/live/external-gateway-health.test.ts": [4,5,4,11,0],
-      "test/e2e/live/full-e2e.test.ts": [27,30,28,60,7],
+      "test/e2e/live/full-e2e.test.ts": [27,30,28,60,8],
       "test/e2e/live/gpu-double-onboard.test.ts": [21,24,21,24,0],
       "test/e2e/live/gpu-e2e.test.ts": [36,44,69,90,3],
       "test/e2e/live/hermes-discord.test.ts": [10,22,17,61,14],
