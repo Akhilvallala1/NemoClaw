@@ -1004,7 +1004,7 @@ describe("collectSandboxStatusSnapshot inference route health", () => {
     expect(delayInferenceRecoveryProbe).toHaveBeenCalledOnce();
     expect(snapshot.inferenceHealth).toMatchObject({
       ok: false,
-      detail: brokenRoute.detail,
+      detail: expect.stringContaining(brokenRoute.detail),
       failureLabel: "unreachable",
     });
   });

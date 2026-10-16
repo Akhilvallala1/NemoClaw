@@ -174,7 +174,9 @@ async function checkStartedSandboxInference(
   const input = {
     sandboxName,
     gatewayName,
-    ...(sandbox.agent === "langchain-deepagents-code" || sandbox.agent === "pi"
+    ...(sandbox.agent === "langchain-deepagents-code" ||
+    sandbox.agent === "openclaw" ||
+    sandbox.agent === "pi"
       ? { agentName: sandbox.agent }
       : {}),
     provider,

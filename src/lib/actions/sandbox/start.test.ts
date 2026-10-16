@@ -791,9 +791,13 @@ describe("startSandbox persisted native inference selection", () => {
     ["langchain-deepagents-code", "authenticated"],
     ["langchain-deepagents-code", "sentinel"],
     ["pi", "authenticated"],
+    ["openclaw", "authenticated"],
+    ["openclaw", "sentinel"],
   ] as const)("restarts %s through its recorded %s local provider", async (agentName, authMode) => {
     const binding = {
-      provider: "compatible-endpoint" as const,
+      provider:
+        agentName === "openclaw" ? ("vllm-local" as const) : ("compatible-endpoint" as const),
+      ...(agentName === "openclaw" ? { agent: agentName } : {}),
       endpointUrl: "http://host.openshell.internal:8000/v1",
       credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
       authMode,
@@ -827,6 +831,7 @@ describe("startSandbox persisted native inference selection", () => {
     );
 
     await expect(startSandbox("my-sandbox", h.deps)).resolves.toEqual({ exitCode: 0 });
+    expect(endpoints).toEqual([`${binding.endpointUrl}/chat/completions`]);
     expect(probeInferenceInvocation).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         sandboxName: binding.sandboxName,
@@ -839,7 +844,6 @@ describe("startSandbox persisted native inference selection", () => {
       {},
       expect.any(Number),
     );
-    expect(endpoints).toEqual([`${binding.endpointUrl}/chat/completions`]);
     expect(h.updateSandbox).toHaveBeenCalledWith(
       "my-sandbox",
       expect.objectContaining({ stopped: false }),
