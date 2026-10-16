@@ -46,9 +46,15 @@ export function nativeLocalCredentialReference(
     )
   )
     return null;
-  return qualifiedNativeLocalEndpointUrl(endpointUrl)
-    ? `openshell:resolve:env:${NATIVE_LOCAL_CREDENTIAL_ENV}`
-    : null;
+  const endpoint = qualifiedNativeLocalEndpointUrl(endpointUrl);
+  if (!endpoint) return null;
+  // Compatible private IP endpoints belong to custom hosted inference.
+  if (
+    provider === "compatible-endpoint" &&
+    !["host.openshell.internal", "host.docker.internal"].includes(new URL(endpoint).hostname)
+  )
+    return null;
+  return `openshell:resolve:env:${NATIVE_LOCAL_CREDENTIAL_ENV}`;
 }
 
 /** Endpoint-bound credentials require a supervisor-issued revision or stable identity. */

@@ -1082,7 +1082,8 @@ def managed_inference_api_key(base_url: str) -> str:
     """Select the non-secret credential for the validated image-owned route."""
     parsed = urlparse(base_url)
     host = parsed.hostname or ""
-    local_host = host in {"host.openshell.internal", "host.docker.internal"}
+    local_alias = host in {"host.openshell.internal", "host.docker.internal"}
+    local_host = local_alias
     try:
         address = ipaddress.IPv4Address(host)
         local_host = any(address in ipaddress.IPv4Network(network) for network in (
@@ -1092,9 +1093,10 @@ def managed_inference_api_key(base_url: str) -> str:
         # Keep the host-alias result above; every other non-IPv4 name remains untrusted.
         pass
     upstream_provider = _managed_upstream_provider()
-    if parsed.scheme == "http" and local_host and upstream_provider in {
-        "ollama-local", "vllm-local", "llama-cpp-local", "compatible-endpoint"
-    }:
+    if parsed.scheme == "http" and local_host and (
+        upstream_provider in {"ollama-local", "vllm-local", "llama-cpp-local"}
+        or (upstream_provider == "compatible-endpoint" and local_alias)
+    ):
         value = os.environ.get("NEMOCLAW_LOCAL_INFERENCE_TOKEN", "")
         if re.fullmatch(
             r"openshell:resolve:env:(?:v[0-9]{1,20}|s[a-f0-9]{64})_NEMOCLAW_LOCAL_INFERENCE_TOKEN",
@@ -1102,7 +1104,7 @@ def managed_inference_api_key(base_url: str) -> str:
         ) is None:
             raise RuntimeError("native local inference requires an issued OpenShell credential reference")
         return value
-    if base_url == "https://integrate.api.nvidia.com/v1":
+    if base_url == "https://integrate.api.nvidia.com/v1" and upstream_provider in _NVIDIA_DISPLAY_PROVIDER_ALIASES:
         name = "NVIDIA_INFERENCE_API_KEY"
         provider = "NVIDIA"
     elif base_url == "https://openrouter.ai/api/v1" and upstream_provider in (
@@ -1114,6 +1116,28 @@ def managed_inference_api_key(base_url: str) -> str:
             else "OPENROUTER_API_KEY"
         )
         provider = "OpenRouter"
+    elif upstream_provider in {"compatible-endpoint", "compatible-anthropic-endpoint"}:
+        normalized_host = host.lower().rstrip(".")
+        if normalized_host in {
+            "inference.local", "host.openshell.internal", "host.docker.internal",
+            "host.containers.internal", "localhost",
+        } or normalized_host.endswith(".localhost"):
+            return "nemoclaw-managed-inference"
+        try:
+            if ipaddress.ip_address(normalized_host).is_loopback:
+                return "nemoclaw-managed-inference"
+        except ValueError:
+            pass
+        name = (
+            "COMPATIBLE_API_KEY" if upstream_provider == "compatible-endpoint"
+            else "COMPATIBLE_ANTHROPIC_API_KEY"
+        )
+        value = os.environ.get(name, "")
+        if re.fullmatch(
+            rf"openshell:resolve:env:(?:v[0-9]{{1,20}}|s[a-f0-9]{{64}})_{name}", value,
+        ) is None:
+            raise RuntimeError("custom hosted inference requires an issued OpenShell credential reference")
+        return value
     else:
         return "nemoclaw-managed-inference"
     value = os.environ.get(name, "")

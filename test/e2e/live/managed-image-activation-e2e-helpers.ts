@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import { discoverHostInterfaceAddress } from "../fixtures/host-address.ts";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -346,6 +347,7 @@ function commandEnv(
     NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1",
     NEMOCLAW_COMPAT_MODEL: MODEL,
     NEMOCLAW_ENDPOINT_URL: endpointUrl,
+    NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS: new URL(endpointUrl).hostname,
     NEMOCLAW_IGNORE_RUNTIME_RESOURCES: "1",
     NEMOCLAW_GATEWAY_RUNTIME: gatewayRuntime,
     NEMOCLAW_MANAGED_ACTIVATION_CATALOG: catalogPath,
@@ -1268,13 +1270,17 @@ export async function qualifyManagedImageActivation(
     env: guard.env,
     timeoutMs: 30_000,
   });
+  const inferenceHost = await discoverHostInterfaceAddress(
+    host,
+    "managed-activation-inference-host-address",
+  );
   const inference = await startFakeOpenAiCompatibleServer({
     apiKey: API_KEY,
     chatContent: "PONG",
     host: "0.0.0.0",
     model: MODEL,
     progress,
-    publicHost: "host.openshell.internal",
+    publicHost: inferenceHost.address,
     requireAuth: true,
     requireAuthModels: true,
     requestCanaryMarker: "NEMOCLAW_MANAGED_SUBAGENT",

@@ -1160,7 +1160,7 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
             } as never,
             { env: {} } as never,
             "/unused-catalog.json",
-            "http://inference.invalid/v1",
+            "http://10.20.30.40:43123/v1",
             "langchain-deepagents-code",
             {} as never,
             {
@@ -1176,6 +1176,10 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
             } as never,
           ),
         ).rejects.toThrow(error);
+        expect(nemoclaw.mock.calls[0]?.[1]?.env).toMatchObject({
+          NEMOCLAW_ENDPOINT_URL: "http://10.20.30.40:43123/v1",
+          NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS: "10.20.30.40",
+        });
         expect(events).toEqual(expectedEvents);
         expect(
           copy.mock.calls.map(() =>
