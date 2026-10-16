@@ -263,6 +263,7 @@ def conpty_check(_root, nonce):
         "exitCode": None,
         "childExitObserved": False,
         "eofObserved": False,
+        "eofObservation": None,
         "deadlineExpired": False,
     }
     try:
@@ -270,17 +271,32 @@ def conpty_check(_root, nonce):
         details["pid"] = pty.pid
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
+            empty_read = False
             if not details["eofObserved"]:
                 try:
-                    output += pty.read(4096, blocking=False)
+                    chunk = pty.read(4096, blocking=False)
+                    output += chunk
+                    empty_read = chunk == ""
                 except WinptyError as error:
                     # Locked winpty-rs0.4.1 emits this only after EOF and an
                     # empty output cache. It proves draining, not child success.
                     if str(error) != "Standard out reached EOF":
                         raise
                     details["eofObserved"] = True
+                    details["eofObservation"] = "read-exception"
                 assert len(output) <= 65536, "ConPTY output exceeded its bound"
             details["childExitObserved"] = not pty.isalive()
+            # The pinned reader can block before child exit without sending its
+            # cache EOF exception. Use its public EOF query only after the full
+            # sentinel, a completed child and an empty cache read are observed.
+            if (
+                empty_read
+                and details["childExitObserved"]
+                and nonce in output
+                and pty.iseof()
+            ):
+                details["eofObserved"] = True
+                details["eofObservation"] = "empty-read-and-query"
             if details["childExitObserved"] and details["eofObserved"]:
                 break
             time.sleep(0.02)

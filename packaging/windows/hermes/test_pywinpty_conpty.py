@@ -76,8 +76,13 @@ class PersonalConptyDrain(unittest.TestCase):
     class WinptyError(Exception):
         pass
 
-    def run_probe(self, reads, *, alive=0, exit_code=0, status_error=None):
-        state = {"reads": 0, "aliveQueries": 0, "seconds": 0, "released": False}
+    def run_probe(
+        self, reads, *, alive=0, exit_code=0, status_error=None, eof=False
+    ):
+        state = {
+            "reads": 0, "aliveQueries": 0, "eofQueries": 0,
+            "seconds": 0, "released": False,
+        }
         self.state = state
         self.nonce = "personal-conpty-sentinel"
 
@@ -112,6 +117,12 @@ class PersonalConptyDrain(unittest.TestCase):
                 if status_error:
                     raise status_error
                 return exit_code
+
+            def iseof(self):
+                state["eofQueries"] += 1
+                if isinstance(eof, BaseException):
+                    raise eof
+                return eof
 
             def __del__(self):
                 state["released"] = True
@@ -155,12 +166,51 @@ class PersonalConptyDrain(unittest.TestCase):
             alive=4,
         )
         self.assertTrue(result["eofObserved"])
+        self.assertEqual(result["eofObservation"], "read-exception")
         self.assertTrue(result["childExitObserved"])
         self.assertEqual(result["exitCode"], 0)
         self.assertEqual(result["output"], self.nonce)
         self.assertEqual(self.state["reads"], 3)
         self.assertTrue(self.state["released"])
         self.assertLess(self.state["seconds"], 15)
+
+    def test_public_eof_query_finishes_after_exit_sentinel_and_empty_read(self):
+        result = self.run_probe(
+            ["personal-conpty-", "", "sentinel", ""], eof=True
+        )
+        self.assertTrue(result["eofObserved"])
+        self.assertEqual(result["eofObservation"], "empty-read-and-query")
+        self.assertTrue(result["childExitObserved"])
+        self.assertEqual(result["exitCode"], 0)
+        self.assertEqual(result["output"], self.nonce)
+        self.assertEqual(self.state["reads"], 4)
+        self.assertEqual(self.state["eofQueries"], 1)
+        self.assertTrue(self.state["released"])
+        self.assertLess(self.state["seconds"], 15)
+
+    def test_public_eof_cannot_replace_exit_output_or_an_empty_read(self):
+        for reads, alive, code, eof in (
+            (["personal-conpty-sentinel", ""], True, 0, True),
+            (["personal-conpty-", ""], 0, 0, True),
+            (["personal-conpty-sentinel", "x"], 0, 0, True),
+            (["personal-conpty-sentinel", ""], 0, 1, True),
+            (["personal-conpty-sentinel", ""], 0, None, True),
+            (["personal-conpty-sentinel", ""], 0, 0, False),
+        ):
+            with self.subTest(reads=reads, alive=alive, code=code, eof=eof):
+                with self.assertRaisesRegex(AssertionError, "exit successfully"):
+                    self.run_probe(reads, alive=alive, exit_code=code, eof=eof)
+                if alive or "sentinel" not in "".join(reads) or reads[-1]:
+                    self.assertEqual(self.state["eofQueries"], 0)
+                if code == 0:
+                    self.assertGreaterEqual(self.state["seconds"], 15)
+
+    def test_public_eof_query_error_is_preserved(self):
+        error = self.WinptyError("EOF query failed")
+        with self.assertRaises(self.WinptyError) as caught:
+            self.run_probe(["personal-conpty-sentinel", ""], eof=error)
+        self.assertIs(caught.exception, error)
+        self.assertIn(self.nonce, caught.exception.__notes__[0])
 
     def test_eof_alone_missing_sentinel_or_unsuccessful_exit_still_fails(self):
         for output, code in (
