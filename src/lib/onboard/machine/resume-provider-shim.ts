@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 import { runOpenshell } from "../../adapters/openshell/runtime";
+import {
+  recordedCustomCredentialEnv,
+  usesCustomNativeOnboarding,
+} from "../../inference/native-provider/custom-setup";
 import { D, R } from "../../cli/terminal-style";
 import { isBedrockRuntimeEndpoint } from "../../inference/bedrock-runtime";
 import { DEFAULT_ROUTE_CREDENTIAL_ENV } from "../../inference/config";
 import { NVIDIA_HOSTED_CREDENTIAL_ENV } from "../../inference/native-nvidia/contract";
 import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
-import { load } from "../../state/registry/persistence";
 import { validateNvidiaApiKeyValue } from "../../validation";
 import { hydrateCredentialEnv } from "../credential-env";
 import { resolveSandboxGatewayName } from "../gateway-binding/identity";
@@ -23,9 +26,18 @@ import {
 const onboardProviders = require("../providers") as {
   REMOTE_PROVIDER_CONFIG: ResumeProviderRecoveryDeps["remoteProviderConfig"];
   getProviderLabel: ResumeProviderRecoveryDeps["getProviderLabel"];
+  getRemoteProviderConfigForName(name: string): { credentialEnv: string } | null;
 };
 
 export type ResumeProviderShimDeps = {
+  getSandbox?: (
+    name: string,
+  ) =>
+    | (NonNullable<Parameters<typeof usesCustomNativeOnboarding>[3]> &
+        Parameters<typeof recordedNativeProviderAttachment>[0] &
+        NonNullable<Parameters<typeof resolveSandboxGatewayName>[0]>)
+    | null
+    | undefined;
   isNonInteractive: ResumeProviderRecoveryDeps["isNonInteractive"];
   providerExistsInGateway(name: string, gatewayName: string): boolean | Promise<boolean>;
   isRoutedInferenceProvider: ResumeProviderRecoveryDeps["isRoutedInferenceProvider"];
@@ -54,10 +66,19 @@ export function createResumeProviderShim(deps: ResumeProviderShimDeps) {
       provider: string | null | undefined,
       credentialEnv: string | null | undefined,
       revalidateSandboxIdentity?: (operation: string) => void,
-      recovery?: { sandboxName: string | null; recoverRecordedProvider: boolean },
+      selection?: {
+        sandboxName: string | null;
+        endpointUrl: string | null;
+        recoverRecordedProvider?: boolean;
+      },
     ): Promise<ResumeProviderRecoveryResult & { nativeNvidiaRecovery?: boolean }> {
-      if (provider === "nvidia-prod" && recovery?.recoverRecordedProvider && recovery.sandboxName) {
-        const recorded = load().sandboxes[recovery.sandboxName];
+      const recorded =
+        provider && selection?.sandboxName ? deps.getSandbox?.(selection.sandboxName) : undefined;
+      if (
+        provider === "nvidia-prod" &&
+        selection?.recoverRecordedProvider &&
+        selection.sandboxName
+      ) {
         if (recorded?.nativeNvidiaProviderAttachment !== undefined) {
           recordedNativeProviderAttachment(recorded);
           if (resolveSandboxGatewayName(recorded) !== gatewayName) {
@@ -70,6 +91,28 @@ export function createResumeProviderShim(deps: ResumeProviderShimDeps) {
             return { forceInferenceSetup: true, credentialEnv, nativeNvidiaRecovery: true };
           }
         }
+      }
+      if (
+        provider &&
+        selection?.sandboxName &&
+        deps.getSandbox &&
+        usesCustomNativeOnboarding(provider, selection.endpointUrl, selection.sandboxName, recorded)
+      ) {
+        // Setup verifies the endpoint-bound receipt and live resource identity.
+        // Looking up the logical name here would demand a key before that check.
+        return {
+          forceInferenceSetup: true,
+          credentialEnv:
+            credentialEnv ||
+            recordedCustomCredentialEnv(
+              provider,
+              selection.endpointUrl,
+              recorded?.nativeHostedProviderAttachment,
+            ) ||
+            onboardProviders.getRemoteProviderConfigForName(provider)?.credentialEnv ||
+            null,
+          nativeCustomSetup: true,
+        };
       }
       return ensureResumeProviderReadyImpl(provider, credentialEnv, {
         remoteProviderConfig: onboardProviders.REMOTE_PROVIDER_CONFIG,

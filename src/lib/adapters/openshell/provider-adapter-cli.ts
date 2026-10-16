@@ -85,6 +85,10 @@ export type CliOpenShellProviderAdapter = Omit<OpenShellProviderAdapter, "import
     importProviderProfile(
       request: ImportOpenShellProviderProfileRequest,
     ): CliOpenShellProviderProfileResult;
+    warnIfVerifiedProfilesChangedAfterSandboxCreate(
+      request: OpenShellProviderRequest,
+      profileIds: readonly string[],
+    ): void;
   }>;
 
 export type CliOpenShellProviderProfileOperation = OpenShellProviderProfileOperation;
@@ -545,6 +549,13 @@ export function createCliOpenShellProviderAdapter(
     }
   };
 
+  const warnIfVerifiedProfilesChangedAfterSandboxCreate: CliOpenShellProviderAdapter["warnIfVerifiedProfilesChangedAfterSandboxCreate"] =
+    (request, profileIds) => {
+      for (const profileId of new Set(profileIds)) {
+        warnIfVerifiedProfileChanged(request, profileId);
+      }
+    };
+
   const ensureProviderPolicyComposition: OpenShellProviderAdapter["ensureProviderPolicyComposition"] =
     async (request) => {
       const targetError = namedGatewayEndpointOverrideError(request.target, environment);
@@ -819,6 +830,17 @@ export function createCliOpenShellProviderAdapter(
     );
     const error = commandError(result);
     if (error) return failure(error);
+    if (
+      request.expectedProfile &&
+      (request.expectedProfile.profileId !== request.profileType ||
+        !exportedProviderProfileMatchesContract(commandStdout(result), request.expectedProfile))
+    ) {
+      return failure({
+        kind: "command",
+        reason: "profile_incompatible",
+        message: "The OpenShell provider profile does not match the expected security boundary.",
+      });
+    }
     const credentialKeys = parseProfileCredentialKeys(commandStdout(result), request.profileType);
     return credentialKeys
       ? success({ credentialKeys })
@@ -1059,6 +1081,7 @@ export function createCliOpenShellProviderAdapter(
     getProvider,
     updateProvider,
     importProviderProfile,
+    warnIfVerifiedProfilesChangedAfterSandboxCreate,
     inspectProviderProfile,
     deleteProvider,
     detachProvider,

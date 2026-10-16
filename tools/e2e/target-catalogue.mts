@@ -20,8 +20,9 @@ import {
 } from "./gateway-runtime.mts";
 import { FULL_E2E_STANDARD_PROFILE_JOB_TIMEOUT_MINUTES } from "./full-e2e-timeout-contract.mts";
 import {
+  ONBOARD_REPAIR_TARGET_TIMEOUT_MINUTES,
   ONBOARD_RESUME_TARGET_TIMEOUT_MINUTES,
-  ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES,
+  INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
 } from "./onboard-timeout-contract.mts";
 import { HERMES_ACP_E2E_OWNING_PATHS } from "./hermes-acp-owning-paths.mts";
 import {
@@ -1005,8 +1006,16 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
   }),
   ...HOSTED_PROVIDER_SMOKE_CASES.map((selected) =>
     dockerOnlyTarget(`hosted-inference-${selected.selector}`, {
-      displayName: `Inference: completes a native ${selected.label} agent request`,
-      agentRuntime: selected.selector === "hermes" ? "hermes" : "openclaw",
+      displayName:
+        selected.selector === "openrouter"
+          ? "Inference: completes native OpenRouter agent requests"
+          : `Inference: completes a native ${selected.label} agent request`,
+      agentRuntime:
+        selected.selector === "hermes"
+          ? "hermes"
+          : selected.selector === "openrouter"
+            ? "openclaw + langchain-deepagents-code"
+            : "openclaw",
       prAdvisorSelectable: true,
       owningPaths: [
         "test/e2e/live/inference-routing-credential-scan.ts",
@@ -1015,13 +1024,20 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
           ? ["src/lib/inference/native-provider/", "src/lib/onboard/setup-inference.ts"]
           : []),
         ...(selected.selector === "hermes" ? ["src/lib/hermes-provider-auth.ts"] : []),
+        ...(selected.selector === "openrouter"
+          ? [
+              "agents/langchain-deepagents-code/managed-dcode-runtime.py",
+              "agents/langchain-deepagents-code/generate-config.ts",
+              "src/lib/inference/managed-dcode/",
+            ]
+          : []),
       ],
       environmentOrInferenceEndpoint: `Ubuntu; ${selected.label} hosted inference`,
       profile: "hosted-inference",
       releaseRequired: false,
       testFile: "test/e2e/live/inference-routing-provider-smoke.test.ts",
-      selector: `^${selected.id}`,
-      timeoutMinutes: 30,
+      selector: selected.selector === "openrouter" ? selected.id : `^${selected.id}`,
+      timeoutMinutes: selected.selector === "openrouter" ? 90 : 30,
       installMode: "none",
       restoreCli: true,
       exposeCliBin: true,
@@ -1033,7 +1049,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     agentRuntime: "openclaw + langchain-deepagents-code",
     environmentOrInferenceEndpoint: "Ubuntu; local compatible and HTTPS inference fixtures",
     profile: "standard",
-    timeoutMinutes: ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES,
+    timeoutMinutes: INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
     installMode: "none",
     restoreCli: true,
     exposeCliBin: false,
@@ -1149,10 +1165,11 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     agentRuntime: "openclaw",
     environmentOrInferenceEndpoint: "Ubuntu Docker host; local onboarding fixtures",
     profile: "standard",
-    timeoutMinutes: 75,
+    timeoutMinutes: ONBOARD_REPAIR_TARGET_TIMEOUT_MINUTES,
     installMode: "authenticated",
     restoreCli: true,
     exposeCliBin: true,
+    owningPaths: ["tools/e2e/onboard-timeout-contract.mts"],
     environment: { ...nonInteractive, NEMOCLAW_SANDBOX_NAME: "e2e-repair" },
   }),
   managedRuntimeTarget("onboard-policy-preset-sequencing", {
@@ -1277,6 +1294,9 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     shard: "anthropic",
     owningPaths: [
       "src/lib/actions/inference-set.ts",
+      "src/lib/actions/inference-set/native.ts",
+      "src/lib/inference/native-provider/",
+      "src/lib/onboard/setup-inference.ts",
       "test/e2e/live/openclaw-inference-switch-helpers.ts",
     ],
     environment: {
@@ -1288,6 +1308,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
       NEMOCLAW_SWITCH_MODEL: "mock-anthropic-model",
       NEMOCLAW_SWITCH_INFERENCE_API: "anthropic-messages",
       NEMOCLAW_SWITCH_MOCK_ANTHROPIC: "1",
+      NEMOCLAW_SWITCH_NATIVE_CUSTOM: "1",
       OPENSHELL_GATEWAY: "nemoclaw",
     },
   }),

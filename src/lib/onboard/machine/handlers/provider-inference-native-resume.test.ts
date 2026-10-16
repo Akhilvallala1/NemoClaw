@@ -23,10 +23,6 @@ vi.mock("../../../credentials/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../credentials/store")>()),
   resolveProviderCredential: vi.fn(() => mocks.credential),
 }));
-vi.mock("../../../state/registry/persistence", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../state/registry/persistence")>()),
-  load: vi.fn(() => ({ sandboxes: { "dcode-upgrade": mocks.entry } })),
-}));
 
 const gatewayName = "nemoclaw-19333";
 const sandboxName = "dcode-upgrade";
@@ -38,7 +34,7 @@ const attachment = {
   providerId: "native-provider-id",
 };
 
-function createHarness(selectedGatewayName = gatewayName) {
+function createHarness(selectedGatewayName = gatewayName, pendingRouteReservation = false) {
   const gatewayName = selectedGatewayName;
   const session = createSession({
     sandboxName,
@@ -56,6 +52,9 @@ function createHarness(selectedGatewayName = gatewayName) {
     provider: "nvidia-prod",
     model,
     nativeNvidiaProviderAttachment: attachment,
+    ...(pendingRouteReservation
+      ? { pendingRouteReservation: true as const, reservationSessionId: session.sessionId }
+      : {}),
   };
   const ownership = { valid: true };
   const metadata = {
@@ -109,6 +108,7 @@ function createHarness(selectedGatewayName = gatewayName) {
   } as unknown as SetupInferenceDeps);
   const providerExistsInGateway = vi.fn((name: string) => name === attachment.providerName);
   const shim = createResumeProviderShim({
+    getSandbox: () => mocks.entry,
     isNonInteractive: () => true,
     providerExistsInGateway,
     isRoutedInferenceProvider: () => false,
@@ -168,28 +168,41 @@ describe("native NVIDIA provider resume", () => {
     });
   });
 
-  it("resumes a recorded native provider without a host key (#13168)", async () => {
-    const h = createHarness();
-    await expect(handleProviderInferenceState(h.options)).resolves.toMatchObject({
-      provider: "nvidia-prod",
-      model,
-    });
-    expect(h.providerExistsInGateway).not.toHaveBeenCalled();
-    expect(h.getProvider).toHaveBeenCalledWith(
-      expect.objectContaining({
-        providerName: attachment.providerName,
-        target: { kind: "named", gatewayName },
-      }),
-    );
-    expect(h.createProvider).not.toHaveBeenCalled();
-    expect(h.updateProvider).not.toHaveBeenCalled();
-    expect(h.verifyOnboardInferenceSmoke).not.toHaveBeenCalled();
-    expect(h.calls.setupNim).not.toHaveBeenCalled();
-    expect(h.updateSandbox).toHaveBeenCalledWith(
-      sandboxName,
-      expect.objectContaining({ nativeNvidiaProviderAttachment: attachment }),
-    );
-  });
+  it.each([
+    {
+      state: "a pending route reservation",
+      pendingRouteReservation: true,
+      reservationCalls: [
+        [sandboxName, expect.objectContaining({ nativeNvidiaProviderAttachment: attachment })],
+      ],
+    },
+    {
+      state: "a published route before backup",
+      pendingRouteReservation: false,
+      reservationCalls: [],
+    },
+  ])(
+    "resumes a native provider from $state without a host key (#13168)",
+    async ({ pendingRouteReservation, reservationCalls }) => {
+      const h = createHarness(gatewayName, pendingRouteReservation);
+      await expect(handleProviderInferenceState(h.options)).resolves.toMatchObject({
+        provider: "nvidia-prod",
+        model,
+      });
+      expect(h.providerExistsInGateway).not.toHaveBeenCalled();
+      expect(h.getProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerName: attachment.providerName,
+          target: { kind: "named", gatewayName },
+        }),
+      );
+      expect(h.createProvider).not.toHaveBeenCalled();
+      expect(h.updateProvider).not.toHaveBeenCalled();
+      expect(h.verifyOnboardInferenceSmoke).not.toHaveBeenCalled();
+      expect(h.calls.setupNim).not.toHaveBeenCalled();
+      expect(h.updateSandbox.mock.calls).toEqual(reservationCalls);
+    },
+  );
 
   it.each([
     {
