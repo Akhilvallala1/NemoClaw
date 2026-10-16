@@ -34,7 +34,7 @@ const routes = [
   },
 ] as const;
 
-type AgentName = "openclaw" | "hermes" | "langchain-deepagents-code";
+type AgentName = "openclaw" | "hermes" | "langchain-deepagents-code" | "pi";
 
 function prepareProfile(
   agentName: AgentName,
@@ -68,7 +68,7 @@ function prepareProfile(
         chatUiUrl: "http://localhost:18789",
         effectiveDashboardPort: 18789,
         dashboardBindAddress: undefined,
-        manageDashboard: agentName !== "langchain-deepagents-code",
+        manageDashboard: agentName !== "langchain-deepagents-code" && agentName !== "pi",
         wslExposure: false,
         hermesDashboardState: {
           config: { enabled: false, port: 19189, internalPort: 29189, tuiEnabled: false },
@@ -90,12 +90,14 @@ function prepareProfile(
   return runtime.ensurePreparedProfile({ source: { kind: "managed-image" } } as never);
 }
 
-describe.each(["openclaw", "hermes", "langchain-deepagents-code"] as const)(
+describe.each(["openclaw", "hermes", "langchain-deepagents-code", "pi"] as const)(
   "%s managed startup inference",
   (agentName) => {
     it.each(routes)("keeps $name on its selected transport (#12558)", (route) => {
       const expected =
-        agentName === "langchain-deepagents-code" ? route.expected : "https://inference.local/v1";
+        agentName === "langchain-deepagents-code" || agentName === "pi"
+          ? route.expected
+          : "https://inference.local/v1";
       const prepared = prepareProfile(agentName, route);
       expect(prepared?.profile.inference).toMatchObject({
         model: "fixture-model",
@@ -120,6 +122,20 @@ it("rejects unattached Deep Agents Code native inference (#13197)", () => {
   expect(() =>
     prepareProfile("langchain-deepagents-code", { endpointUrl: nativeBinding.endpointUrl }),
   ).toThrow("requires its native provider attachment");
+});
+
+it("rejects unattached Pi native inference (#12975)", () => {
+  expect(() => prepareProfile("pi", { endpointUrl: nativeBinding.endpointUrl })).toThrow(
+    "requires its native provider attachment",
+  );
+});
+
+it("keeps Pi hosted inference when a stale native attachment exists (#12975)", () => {
+  const prepared = prepareProfile("pi", {
+    endpointUrl: "https://example.com/v1",
+    attachment: nativeAttachment,
+  });
+  expect(prepared?.profile.inference?.routedBaseUrl).toBe("https://inference.local/v1");
 });
 
 it("keeps owned Local NIM on the Deep Agents Code shared route without an attachment (#13116)", () => {

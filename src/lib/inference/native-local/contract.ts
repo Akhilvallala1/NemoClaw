@@ -168,7 +168,38 @@ export function usesNativeLocalInferenceForAgent(
 ): boolean {
   return (
     !(provider === "vllm-local" && localNimSelected) &&
-    agentName === "langchain-deepagents-code" &&
+    (agentName === "langchain-deepagents-code" || agentName === "pi") &&
     usesNativeLocalInference(provider, endpointUrl)
+  );
+}
+
+/** Preserve only a published Pi selection that still uses its recorded shared route. */
+export function isPersistedPiSharedLocalInferenceRoute(
+  recorded:
+    | {
+        agent?: string | null;
+        provider?: string | null;
+        model?: string | null;
+        endpointUrl?: string | null;
+        createdAt?: string | null;
+        pendingRouteReservation?: boolean;
+        nimContainer?: string | null;
+        nativeLocalProviderAttachment?: unknown;
+      }
+    | null
+    | undefined,
+  selected?: { provider?: string | null; model?: string | null; endpointUrl?: string | null },
+): boolean {
+  return Boolean(
+    recorded?.agent === "pi" &&
+    typeof recorded.createdAt === "string" &&
+    recorded.pendingRouteReservation !== true &&
+    recorded.nativeLocalProviderAttachment === undefined &&
+    !(recorded.provider === "vllm-local" && recorded.nimContainer) &&
+    usesNativeLocalInferenceForAgent("pi", recorded.provider, recorded.endpointUrl) &&
+    (!selected ||
+      (recorded.provider === selected.provider &&
+        recorded.model === selected.model &&
+        (recorded.endpointUrl ?? null) === (selected.endpointUrl ?? null))),
   );
 }

@@ -768,7 +768,9 @@ export async function collectSandboxStatusSnapshot(
                   {
                     sandboxName,
                     gatewayName: gatewayName ?? undefined,
-                    ...(sb?.agent === "langchain-deepagents-code" ? { agentName: sb.agent } : {}),
+                    ...(sb?.agent === "langchain-deepagents-code" || sb?.agent === "pi"
+                      ? { agentName: sb.agent }
+                      : {}),
                     provider: invocationProvider,
                     model: invocationModel,
                     preferredInferenceApi: invocationRoute.preferredInferenceApi,

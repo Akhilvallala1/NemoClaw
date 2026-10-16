@@ -398,12 +398,13 @@ export function createManagedWorkloadOnboardRuntime(
       return input.managedWorkloadRebuild.replacementProfile;
     }
     if (preparedProfile) return preparedProfile;
-    const nativeLocalProviderAttachment =
-      input.agentName === "langchain-deepagents-code"
-        ? input.nativeLocalProviderAttachment
-        : undefined;
     const selectedModel = input.model?.trim() || "";
     const selectedProvider = input.provider?.trim() || null;
+    const nativeLocalProviderAttachment =
+      input.agentName === "langchain-deepagents-code" ||
+      (input.agentName === "pi" && !input.localNimSelected)
+        ? input.nativeLocalProviderAttachment
+        : undefined;
     const endpointUrl = resolveManagedStartupInferenceEndpoint({
       agentName: input.agentName,
       provider: selectedProvider,
@@ -412,7 +413,7 @@ export function createManagedWorkloadOnboardRuntime(
       nativeLocalProviderAttachment,
     });
     const inferenceApi =
-      input.agentName === "langchain-deepagents-code"
+      input.agentName === "langchain-deepagents-code" || input.agentName === "pi"
         ? "openai-completions"
         : dependencies.resolveAgentInferenceApi(
             input.agentName,

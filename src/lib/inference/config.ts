@@ -33,7 +33,10 @@ export {
   usesNativeLocalInference,
   usesNativeLocalInferenceForAgent,
 };
-export { normalizeNativeLocalProviderAttachment } from "./native-local/contract";
+export {
+  isPersistedPiSharedLocalInferenceRoute,
+  normalizeNativeLocalProviderAttachment,
+} from "./native-local/contract";
 export { hasLegacySharedLocalInferenceRoute } from "./selection";
 export type { NativeLocalProviderAttachment } from "./native-local/contract";
 export { OLLAMA_LOCAL_CREDENTIAL_ENV };
@@ -431,7 +434,7 @@ export function getSandboxInferenceConfig(
 
   if (
     useNativeProvider &&
-    agentName === "langchain-deepagents-code" &&
+    (agentName === "langchain-deepagents-code" || agentName === "pi") &&
     nativeEndpointUrl &&
     usesNativeLocalInference(provider, nativeEndpointUrl) &&
     nativeLocalCredentialReference(provider, nativeEndpointUrl)

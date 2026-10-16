@@ -8,6 +8,7 @@ import type {
 import {
   requireNativeProviderPolicy,
   normalizeNativeLocalProviderAttachment,
+  isPersistedPiSharedLocalInferenceRoute,
   usesNativeLocalInference,
   usesNativeLocalInferenceForAgent,
   prepareNativeLocalSelection,
@@ -1919,21 +1920,36 @@ export function createSetupInference(
       const selectedAgent = options.agentName ?? options.hostLocalInference?.request.application;
       let recordedAgent: string | null | undefined;
       let recordedNimContainer: string | null | undefined;
+      let preservingLegacyPiRoute = false;
       try {
         const recorded = sandboxName ? (deps.getSandbox?.(sandboxName) ?? null) : null;
         previousSandbox = recorded;
         recordedAgent = recorded?.agent;
         recordedNimContainer = recorded?.nimContainer;
+        if (options.preserveLegacyPiSharedLocalRoute) {
+          preservingLegacyPiRoute = isPersistedPiSharedLocalInferenceRoute(recorded, {
+            provider,
+            model,
+            endpointUrl,
+          });
+          if (!preservingLegacyPiRoute)
+            throw new Error("Recorded Pi shared local inference route changed before setup.");
+        }
       } catch (error) {
-        if (!selectedAgent && usesNativeLocalInference(provider, endpointUrl)) throw error;
+        if (
+          options.preserveLegacyPiSharedLocalRoute ||
+          (!selectedAgent && usesNativeLocalInference(provider, endpointUrl))
+        )
+          throw error;
         /* An unreadable registry skips GPU release; it must not fail onboarding. */
       }
-      selectingNativeLocal = usesNativeLocalInferenceForAgent(
-        selectedAgent ?? recordedAgent,
-        provider,
-        endpointUrl,
-        options.localNimSelected ?? (provider === "vllm-local" && Boolean(recordedNimContainer)),
-      );
+      selectingNativeLocal =
+        usesNativeLocalInferenceForAgent(
+          selectedAgent ?? recordedAgent,
+          provider,
+          endpointUrl,
+          options.localNimSelected ?? (provider === "vllm-local" && Boolean(recordedNimContainer)),
+        ) && !preservingLegacyPiRoute;
       if (selectingNativeLocal)
         await (deps.requireNativeProviderPolicy ?? requireNativeProviderPolicy)(gatewayName);
       const result = await mutateGatewayRoute();

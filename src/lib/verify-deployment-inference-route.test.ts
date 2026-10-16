@@ -60,7 +60,7 @@ describe("verifyDeployment inference route model-catalog validation", () => {
   it.each([
     ["openclaw", false],
     [DCODE_AGENT, true],
-    ["pi", false],
+    ["pi", true],
     ["hermes", false],
   ])("selects the same onboarding verification route for %s", (agentName, expected) => {
     const context = onboardInferenceVerificationContext("my-sandbox", "my-gateway", agentName, {
@@ -102,6 +102,26 @@ describe("verifyDeployment inference route model-catalog validation", () => {
     expect(nim.route.nativeLocalProviderAttachment).toBeUndefined();
     expect(nim.invocation.nativeLocalProviderAttachment).toBeUndefined();
     expect(vllm.route.nativeLocalExpected).toBe(true);
+  });
+
+  it("probes an unchanged published Pi selection over its recorded shared route", async () => {
+    const selection = {
+      provider: "ollama-local",
+      model: "qwen3:8b",
+      endpointUrl: "http://host.openshell.internal:11435/v1",
+      preferredInferenceApi: "openai-completions",
+    };
+    const context = onboardInferenceVerificationContext(
+      "my-sandbox",
+      "my-gateway",
+      "pi",
+      selection,
+      { agent: "pi", ...selection, createdAt: "2026-09-01T00:00:00Z" },
+    );
+    expect(context.route.nativeLocalExpected).toBe(false);
+    const probe = vi.fn(async () => ({ ok: true }) as const);
+    expect(await probeOnboardInferenceInvocation(context.invocation, probe)).toEqual({ ok: true });
+    expect(probe).toHaveBeenCalledWith(expect.not.objectContaining({ nativeProvider: true }));
   });
 
   it("uses the recorded native local attachment instead of the shared models route", async () => {

@@ -5,6 +5,7 @@ import { SandboxCommandTransportError } from "../../adapters/sandbox/command-tra
 import { spawnSync } from "node:child_process";
 import { getChatCompletionsProbePayload } from "../../inference/openai-probe-models";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../inference/native-nvidia/contract";
+import { nativeLocalIdentity } from "../../inference/native-local/contract";
 import {
   existsSync,
   mkdtempSync,
@@ -24,6 +25,7 @@ import {
   buildSandboxInferenceInvocationCommand,
   probeSandboxInferenceInvocation,
   READINESS_INFERENCE_INVOCATION_TIMEOUT_MS,
+  resolveSandboxInferenceInvocationEndpoint,
   type SandboxInferenceInvocationInput,
 } from "./inference-invocation-probe";
 
@@ -99,6 +101,37 @@ const NVCF_BODY_VARIANTS = [
 ] as const;
 
 describe("sandbox inference invocation probe", () => {
+  it("uses Pi's attached local endpoint for a selected model request", () => {
+    const binding = {
+      provider: "ollama-local" as const,
+      endpointUrl: "http://host.openshell.internal:11435/v1",
+      credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+      authMode: "sentinel" as const,
+      gatewayName: "nemoclaw",
+      sandboxName: "pi-workspace",
+    };
+    const attachment = {
+      ...binding,
+      ...nativeLocalIdentity(binding),
+      schemaVersion: 1 as const,
+      providerId: "pi-local-provider",
+    };
+    const selection = {
+      sandboxName: binding.sandboxName,
+      gatewayName: binding.gatewayName,
+      agentName: "pi",
+      provider: binding.provider,
+      model: "qwen3:8b",
+      preferredInferenceApi: "openai-completions",
+      nativeLocalProviderAttachment: attachment,
+    };
+    expect(resolveSandboxInferenceInvocationEndpoint(selection)).toBe(
+      `${binding.endpointUrl}/chat/completions`,
+    );
+    expect(buildSandboxInferenceInvocationCommand(selection)).toContain(
+      `${binding.endpointUrl}/chat/completions`,
+    );
+  });
   it("ignores personal curl configuration when an inference request fails (#11520)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "nemoclaw-curl-config-"));
     try {

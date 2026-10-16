@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import { OLLAMA_PROXY_PORT } from "../core/ollama-proxy-port";
 import { isProtectedLocalInferencePort } from "./gateway/local-endpoint-ports";
+import { getSandboxInferenceConfig } from "./config";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenShellProviderAdapter } from "../adapters/openshell/provider-adapter";
 import {
@@ -240,7 +241,7 @@ describe("native local inference", () => {
   it.each([
     ["openclaw", false],
     ["langchain-deepagents-code", true],
-    ["pi", false],
+    ["pi", true],
     ["hermes", false],
   ])("selects native local routing only for migrated %s", (agent, expected) => {
     expect(usesNativeLocalInferenceForAgent(agent, binding.provider, binding.endpointUrl)).toBe(
@@ -260,11 +261,35 @@ describe("native local inference", () => {
     expect(
       usesNativeLocalInferenceForAgent("langchain-deepagents-code", "llama-cpp-local", null, true),
     ).toBe(true);
+    expect(usesNativeLocalInferenceForAgent("pi", "vllm-local", null, true)).toBe(false);
+    expect(usesNativeLocalInferenceForAgent("pi", "vllm-local", null)).toBe(true);
+  });
+
+  it("sets Pi's native local route only when its attachment selects the endpoint", () => {
+    const native = getSandboxInferenceConfig(
+      "qwen3:8b",
+      binding.provider,
+      "openai-completions",
+      true,
+      binding.endpointUrl,
+      "pi",
+    );
+    const shared = getSandboxInferenceConfig(
+      "qwen3:8b",
+      binding.provider,
+      "openai-completions",
+      false,
+      binding.endpointUrl,
+      "pi",
+    );
+    expect(native.inferenceBaseUrl).toBe(binding.endpointUrl);
+    expect(shared.inferenceBaseUrl).toBe("https://inference.local/v1");
   });
 
   it("restricts the selected bridge to models and chat requests (#12558)", () => {
     const profile = prepareNativeLocalProfile(binding);
     expect(profile.document.binaries).toContain("/usr/bin/python3");
+    expect(profile.document.binaries).toContain("/usr/local/bin/pi");
     expect(profile.document.binaries).not.toContain("/usr/local/bin/openclaw");
     expect(profile.document.binaries).not.toContain("/opt/hermes/.venv/bin/python");
     expect(profile.document.endpoints).toEqual([

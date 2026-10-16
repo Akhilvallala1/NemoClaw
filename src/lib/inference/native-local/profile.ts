@@ -69,6 +69,9 @@ export function prepareNativeLocalProfile(input: NativeLocalBinding) {
         },
       ],
       binaries: [
+        "/usr/local/bin/pi",
+        "/usr/local/bin/node",
+        "/usr/bin/node",
         "/usr/bin/python3",
         "/opt/venv/bin/python3",
         "/usr/local/bin/curl",
@@ -163,7 +166,7 @@ export async function verifyRecordedNativeLocalProviderAttachment(input: {
   const expected = normalizeNativeLocalProviderAttachment(input.expected);
   if (
     !expected ||
-    input.agent !== "langchain-deepagents-code" ||
+    (input.agent !== "langchain-deepagents-code" && input.agent !== "pi") ||
     expected.provider !== input.provider ||
     expected.sandboxName !== input.sandboxName ||
     (input.gatewayName !== undefined && expected.gatewayName !== input.gatewayName)

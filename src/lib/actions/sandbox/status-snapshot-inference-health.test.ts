@@ -111,6 +111,48 @@ describe("collectSandboxStatusSnapshot inference route health", () => {
     },
   );
 
+  it("probes a Pi native local attachment with Pi route identity", async () => {
+    const binding = {
+      provider: "ollama-local" as const,
+      endpointUrl: "http://host.openshell.internal:11434/v1",
+      credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+      authMode: "sentinel" as const,
+      gatewayName: "nemoclaw",
+      sandboxName: "alpha",
+    };
+    const receipt = {
+      ...binding,
+      ...nativeLocalIdentity(binding),
+      schemaVersion: 1 as const,
+      providerId: "owned-local-provider",
+    };
+    const options = snapshotDeps(
+      null,
+      null,
+      { ok: true },
+      {
+        agent: "pi",
+        provider: binding.provider,
+        gatewayName: binding.gatewayName,
+        nativeLocalProviderAttachment: receipt,
+      },
+    );
+    const probe = vi.fn(async () => ({ ok: true as const }));
+    await collectSandboxStatusSnapshot("alpha", {
+      ...options,
+      deps: {
+        ...options.deps,
+        verifyNativeLocalProviderAttachmentImpl: vi.fn(async () => undefined),
+        probeSandboxInferenceInvocationImpl: probe,
+      },
+    });
+    expect(probe).toHaveBeenCalledWith(
+      expect.objectContaining({ agentName: "pi", nativeLocalProviderAttachment: receipt }),
+      {},
+      95_000,
+    );
+  });
+
   it("reports bounded redacted native local verification details and recovery (#12558)", async () => {
     const binding = {
       provider: "ollama-local",
@@ -749,7 +791,7 @@ describe("collectSandboxStatusSnapshot inference route health", () => {
         {
           sandboxName: "alpha",
           gatewayName: "nemoclaw-19080",
-          ...(agentName === "langchain-deepagents-code" ? { agentName } : {}),
+          ...(agentName === "langchain-deepagents-code" || agentName === "pi" ? { agentName } : {}),
           provider: "openrouter-api",
           model: "openai/gpt-4o-mini",
           preferredInferenceApi: null,

@@ -331,6 +331,7 @@ export async function probeSandboxInferenceInvocation(
       input.nativeProvider ?? Boolean(input.nativeLocalProviderAttachment),
       normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment)?.endpointUrl ??
         null,
+      input.agentName,
     ).inferenceApi;
     if (httpStatus !== null && validateInferenceResponseBody(inferenceApi, body).ok) {
       return { ok: true };
