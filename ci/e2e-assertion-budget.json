@@ -15,26 +15,26 @@
     "testFileCount": 77,
     "liveFileCount": 186,
     "direct": {
-      "expectCalls": 1272,
-      "matcherAssertions": 1251,
+      "expectCalls": 1277,
+      "matcherAssertions": 1256,
       "nodeAssertions": 104,
       "namedAssertionHelpers": 420,
       "failCalls": 0,
       "throwGuards": 50,
       "objectFieldAssertions": 181,
-      "assertionPoints": 2006,
+      "assertionPoints": 2011,
       "generatedProbeBlocks": 86,
       "generatedProbeConditions": 215
     },
     "unique": {
-      "expectCalls": 1694,
-      "matcherAssertions": 1668,
+      "expectCalls": 1699,
+      "matcherAssertions": 1673,
       "nodeAssertions": 127,
       "namedAssertionHelpers": 664,
       "failCalls": 1,
       "throwGuards": 526,
       "objectFieldAssertions": 258,
-      "assertionPoints": 3244,
+      "assertionPoints": 3249,
       "generatedProbeBlocks": 208,
       "generatedProbeConditions": 720
     },
@@ -124,10 +124,10 @@
         0
       ],
       "test/e2e/live/dashboard-remote-bind.test.ts": [
-        16,
-        14,
-        16,
-        16,
+        21,
+        19,
+        21,
+        21,
         3
       ],
       "test/e2e/live/deferred-onboarding.test.ts": [

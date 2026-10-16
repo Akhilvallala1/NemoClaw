@@ -716,7 +716,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     agentRuntime: "openclaw",
     environmentOrInferenceEndpoint: "Ubuntu; NVIDIA hosted inference",
     profile: "nvidia-inference",
-    timeoutMinutes: 65,
+    timeoutMinutes: 80,
     installMode: "none",
     restoreCli: true,
     exposeCliBin: true,
