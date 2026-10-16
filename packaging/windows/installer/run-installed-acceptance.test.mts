@@ -1693,10 +1693,11 @@ Write-Output $count
       [
         "-NoProfile",
         "-NonInteractive",
-        "-EncodedCommand",
-        Buffer.from(script, "utf16le").toString("base64"),
+        "-Command",
+        "& ([scriptblock]::Create([Console]::In.ReadToEnd()))",
       ],
       {
+        input: script,
         env: powershellEnvironment({ NEMOCLAW_ACCEPTANCE_SOURCE: source, TEST_AGENT: agent }),
         encoding: "utf8",
         windowsHide: true,

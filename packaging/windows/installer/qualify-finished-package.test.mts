@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
+import { stripInheritedAcceptanceEnvironment } from "./qualify-installed-openclaw.mts";
 import {
   environment,
   acceptanceProcessesStopped,
@@ -160,7 +161,7 @@ for (const agent of ["hermes"] as const) {
             receipts[name] = JSON.parse(value);
           },
         },
-        childEnvironment: () => ({}),
+        stripInheritedAcceptanceEnvironment,
         createHermesEvidenceDirectory: (output: string) => evidenceDirectories.push(output),
         randomBytes,
         acceptanceProcessesStopped,
@@ -174,7 +175,12 @@ for (const agent of ["hermes"] as const) {
         nativeCredentialBinding: () => {
           throw new Error("fixture-stop after ownership check");
         },
-        captureOwned: async (_launcher: string, args: string[]) => {
+        captureOwned: async (_launcher: string, args: string[], environment: NodeJS.ProcessEnv) => {
+          assert.deepEqual(environment, {
+            LOCALAPPDATA: "C:\\UserData",
+            ProgramFiles: "C:\\Program Files",
+            SystemRoot: "C:\\Windows",
+          });
           calls.push(args);
           return {
             failure: scenario === "state-failure" ? "fixture state failure" : null,
@@ -205,6 +211,7 @@ for (const agent of ["hermes"] as const) {
       assert.deepEqual(calls, expected);
       const receipt = receipts[`C:\\RunnerTemp\\Evidence\\installed-${agent}-acceptance.json`];
       assert.equal(receipt.verdict, "fail");
+      assert.equal(receipt.controllerRun, "123456:1");
       assert.equal(receipt.results.configurationPreserved, false);
       assert.deepEqual(receipt.cleanupErrors, []);
       if (scenario === "owned-state")
