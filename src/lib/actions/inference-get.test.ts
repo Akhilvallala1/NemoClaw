@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
+import { customNativeProvider } from "../inference/native-provider/custom";
 import { HOSTED_NATIVE_PROVIDERS } from "../inference/native-provider/hosted";
 import { nativeLocalIdentity, type NativeLocalBinding } from "../inference/native-local/contract";
 import { buildHttpsPinRouteBaseUrl } from "../inference/https-pin-runtime";
@@ -207,6 +208,12 @@ describe("runInferenceGet", () => {
       endpointUrl: "http://host.openshell.internal:11435/v1",
     },
     {
+      agent: "openclaw",
+      provider: "ollama-local",
+      sandboxName: "alpha",
+      endpointUrl: "http://host.openshell.internal:11435/v1",
+    },
+    {
       agent: "langchain-deepagents-code",
       provider: "compatible-endpoint",
       sandboxName: "alpha",
@@ -217,7 +224,12 @@ describe("runInferenceGet", () => {
     async ({ agent, provider, sandboxName, endpointUrl }) => {
       const deps = createDeps(configuredRoute("stale-shared-provider", "stale-shared-model"));
       const sandbox = nativeLocalSandbox();
-      const binding = { ...sandbox.nativeLocalProviderAttachment, provider, endpointUrl };
+      const binding = {
+        ...sandbox.nativeLocalProviderAttachment,
+        provider,
+        endpointUrl,
+        ...(agent === "openclaw" ? { agent: "openclaw" as const } : {}),
+      };
       deps.getSandbox = () =>
         nativeLocalSandbox({
           agent,
@@ -1214,7 +1226,21 @@ describe("runInferenceGet", () => {
 });
 
 describe("native hosted inference get", () => {
-  it.each(HOSTED_NATIVE_PROVIDERS)(
+  it.each([
+    ...HOSTED_NATIVE_PROVIDERS.map((definition) => ({
+      ...definition,
+      endpointUrl: undefined,
+      allowedIps: undefined,
+      custom: undefined,
+    })),
+    customNativeProvider({
+      provider: "compatible-endpoint",
+      endpointUrl: "https://custom.example/v1",
+      api: "openai-completions",
+      credentialEnv: "CUSTOM_KEY",
+      allowedIps: ["8.8.8.8"],
+    }),
+  ])(
     "reports $logicalProvider from the selected sandbox rather than the shared route",
     async (definition) => {
       const deps = createDeps(configuredRoute("ollama-local", "other-sandbox-model"));
@@ -1227,6 +1253,9 @@ describe("native hosted inference get", () => {
           profileId: definition.profileId,
           providerName: definition.providerName,
           providerId: "owned-provider-id",
+          endpointUrl: definition.endpointUrl,
+          allowedIps: definition.allowedIps,
+          custom: definition.custom,
         },
       });
       await expect(runInferenceGet({ sandboxName: "alpha", quiet: true }, deps)).resolves.toEqual({

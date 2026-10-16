@@ -153,6 +153,25 @@ function rebuildProviderAdapter(
   );
 }
 
+/** Recheck the recorded local attachment at the last boundary before deletion. */
+export async function verifyRebuildNativeLocalProviderBeforeDelete(
+  sandboxName: string,
+  config: RebuildResumeConfig,
+  gatewayName: string,
+  runtimeSelection?: OpenShellRuntimeSelection,
+): Promise<void> {
+  if (runtimeSelection && runtimeSelection.gatewayName !== gatewayName)
+    throw new Error("Native local provider runtime does not match the rebuild gateway.");
+  await verifyRecordedNativeLocalProviderAttachment({
+    adapter: rebuildProviderAdapter(runtimeSelection),
+    expected: config.nativeLocalProviderAttachment,
+    sandboxName,
+    gatewayName,
+    agent: config.agent,
+    provider: config.provider,
+  });
+}
+
 export async function inspectRebuildGatewayProviderRegistration(
   provider: string,
   log: (msg: string) => void,
@@ -514,7 +533,11 @@ export async function checkRebuildGatewayCredentialReuseOrBail(
   console.error(
     `  ${_RD}Rebuild preflight failed:${R} cannot safely reuse the recorded gateway credential.`,
   );
-  console.error(`  ${rebuildCredentialReuseCondition(decision.condition)}`);
+  console.error(
+    `  ${rebuildCredentialReuseCondition(
+      decision.kind === "reject" ? decision.condition : "gateway-provider-identity",
+    )}`,
+  );
   console.error("  Export the provider credential to use normal validation and upsert.");
   console.error("  Sandbox is untouched — no data was lost.");
   bail("Unsafe gateway credential reuse");
