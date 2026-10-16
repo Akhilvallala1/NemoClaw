@@ -43,7 +43,7 @@ describe("connectSandbox route lifecycle", () => {
       gatewayName: "nemoclaw",
       sandboxName: "alpha",
     };
-    const detail = "sandbox inference invocation probe returned HTTP 503";
+    const detail = `sandbox inference invocation probe returned HTTP 503; OPENAI_API_KEY=sk-test-not-real ${"x".repeat(300)}`;
     const launchReadiness = requireDist(
       "../../src/lib/actions/sandbox/launch-readiness.js",
     ) as typeof import("./launch-readiness");
@@ -73,9 +73,16 @@ describe("connectSandbox route lifecycle", () => {
       "process.exit(1)",
     );
     const errorOutput = harness.errorSpy.mock.calls.map((call) => String(call[0] ?? "")).join("\n");
-    expect(errorOutput).toContain(detail);
+    expect(errorOutput).toContain("sandbox inference invocation probe returned HTTP 503");
+    expect(errorOutput).not.toContain("sk-test-not-real");
+    expect(errorOutput).not.toContain("x".repeat(300));
     expect(errorOutput).not.toContain("inference.local");
     expect(harness.withGatewayRouteMutationLockSpy).not.toHaveBeenCalled();
+    expect(
+      harness.runOpenshellSpy.mock.calls.filter(
+        ([args]) => Array.isArray(args) && args[0] === "inference" && args[1] === "set",
+      ),
+    ).toEqual([]);
   });
 
   it("skips the vLLM model preflight only for probe-only connects (#4585)", async () => {

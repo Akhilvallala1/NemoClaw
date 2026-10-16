@@ -571,7 +571,7 @@ describe("OpenClaw native restart diagnostics", () => {
 
   it("does not probe when restart did not fail with the native HTTP 503 signature (#12975)", async () => {
     const exec = vi.fn();
-    await captureNativeRestart503Diagnostic({ exitCode: 0, stderr: "" } as never, {
+    await captureNativeRestart503Diagnostic({ exitCode: 1, stderr: "HTTP 401" } as never, {
       owner: "owner",
       apiKey: "sk-native-test-not-real",
       attachment: { endpointUrl: "http://host.openshell.internal:8081/v1" },

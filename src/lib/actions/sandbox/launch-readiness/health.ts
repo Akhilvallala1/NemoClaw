@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { normalizeNativeLocalProviderAttachment } from "../../../inference/native-local/contract";
 import { verifyNativeLocalStatusAttachment } from "../inference-route-health";
+import { retryUntilAsync } from "../../../core/retry";
 
 import { captureOpenshell } from "../../../adapters/openshell/runtime";
 import { createCliOpenShellProviderAdapter } from "../../../adapters/openshell/provider-adapter-cli";
@@ -84,6 +87,7 @@ export interface LaunchReadinessHealthDeps {
     gatewayName: string,
   ) => Promise<ReturnType<typeof parseSandboxInferenceRouteProbeResult>>;
   inferenceInvocationProbe?: typeof runSandboxInferenceInvocationProbe;
+  nativeLocalInferenceRetrySleep?: (ms: number) => Promise<void>;
   verifyNativeLocalAttachment?: typeof verifyNativeLocalStatusAttachment;
   verifyNativeNvidiaAttachment?: (input: {
     sandboxName: string;
@@ -240,9 +244,7 @@ export async function requireNativeInferenceHealth(input: {
       gatewayName: input.gatewayName,
       expected,
     });
-    const result = await (
-      input.deps.inferenceInvocationProbe ?? runSandboxInferenceInvocationProbe
-    )({
+    const probeInput = {
       sandboxName: input.sandboxName,
       gatewayName: input.gatewayName,
       agentName: input.agentName,
@@ -250,7 +252,23 @@ export async function requireNativeInferenceHealth(input: {
       model: input.entry.model,
       preferredInferenceApi: "openai-completions",
       nativeLocalProviderAttachment: expected,
-    });
+    } as const;
+    const probe = () =>
+      (input.deps.inferenceInvocationProbe ?? runSandboxInferenceInvocationProbe)(probeInput);
+    // A health request cannot mutate the route. A new native-local OpenClaw
+    // process can briefly return 503 even after its previous request succeeded.
+    const result =
+      input.agentName === "openclaw" && expected.agent === "openclaw"
+        ? await retryUntilAsync(probe, {
+            accept: (value) => value.ok || value.httpStatus !== 503,
+            retryDelaysMs: [2_000, 2_000],
+            onRetry: (_value, delayMs, attempt) =>
+              console.error(
+                `  Native local inference returned HTTP 503; checking again in ${delayMs / 1_000} seconds (attempt ${attempt + 1}/3)…`,
+              ),
+            sleep: input.deps.nativeLocalInferenceRetrySleep ?? sleep,
+          })
+        : await probe();
     if (!result.ok)
       throw new LaunchReadinessObservationError("health", "inference request", result.detail);
     return true;

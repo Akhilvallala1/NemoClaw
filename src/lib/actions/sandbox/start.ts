@@ -192,15 +192,10 @@ async function checkStartedSandboxInference(
       {},
       READINESS_INFERENCE_INVOCATION_TIMEOUT_MS,
     );
-  const nativeLocalOpenClaw =
-    sandbox.agent === "openclaw" && sandbox.nativeLocalProviderAttachment !== undefined;
-  if (sandbox.agent !== "hermes" && sandbox.agent !== "pi" && !nativeLocalOpenClaw)
-    return await probe();
-  // A native local health request does not mutate the route. Repeat only a
-  // startup HTTP 503, using the same bounded settlement and attempt log as Pi.
+  if (sandbox.agent !== "hermes" && sandbox.agent !== "pi") return await probe();
   return await retryUntilAsync(probe, {
     accept: (result) =>
-      sandbox.agent === "pi" || nativeLocalOpenClaw
+      sandbox.agent === "pi"
         ? result.ok || result.httpStatus !== 503
         : !isTransientInferenceInvocationFailure(result),
     retryDelaysMs: START_INFERENCE_SETTLEMENT_DELAYS_MS,
@@ -341,35 +336,20 @@ async function startSandboxWithinLifecycleFence(
     log,
   );
   if (readiness.gatewayProcess !== false) {
-    // The native local route can report 503 for a brief period after startup.
-    // Settle it before connect's own single-shot native health check.
-    if (
-      resolved.sandbox.agent === "openclaw" &&
-      resolved.sandbox.nativeLocalProviderAttachment !== undefined
-    ) {
-      readiness.inference = await checkStartedSandboxInference(
-        sandboxName,
-        resolved.sandbox,
-        deps,
-        log,
-      );
+    log("  Checking gateway health and host forwards…");
+    if (deps.verifyGateway) {
+      await deps.verifyGateway(sandboxName);
+    } else if (resolved.sandbox.agent === "hermes" && readiness.gatewayProcess === true) {
+      await verifyGateway(sandboxName, { managedHermesGatewayProcessObserved: true });
+    } else {
+      await verifyGateway(sandboxName);
     }
-    if (readiness.inference?.ok !== false) {
-      log("  Checking gateway health and host forwards…");
-      if (deps.verifyGateway) {
-        await deps.verifyGateway(sandboxName);
-      } else if (resolved.sandbox.agent === "hermes" && readiness.gatewayProcess === true) {
-        await verifyGateway(sandboxName, { managedHermesGatewayProcessObserved: true });
-      } else {
-        await verifyGateway(sandboxName);
-      }
-      readiness.inference ??= await checkStartedSandboxInference(
-        sandboxName,
-        resolved.sandbox,
-        deps,
-        log,
-      );
-    }
+    readiness.inference = await checkStartedSandboxInference(
+      sandboxName,
+      resolved.sandbox,
+      deps,
+      log,
+    );
   }
   if (readiness.gatewayProcess === false) {
     log(

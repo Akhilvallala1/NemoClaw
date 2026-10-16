@@ -813,31 +813,24 @@ describe("startSandbox persisted native inference selection", () => {
       nativeLocalProviderAttachment: openClawAttachment,
     });
 
-  it("settles only a transient native local OpenClaw HTTP 503 before connect (#12975)", async () => {
-    const probeInferenceInvocation = vi
-      .fn<NonNullable<SandboxStartDeps["probeInferenceInvocation"]>>()
-      .mockResolvedValueOnce({ ok: false, detail: "HTTP 503", httpStatus: 503 })
-      .mockResolvedValueOnce({ ok: true });
+  it("checks native local OpenClaw inference after connect (#12975)", async () => {
+    const probeInferenceInvocation = vi.fn(async () => ({ ok: true as const }));
     const delayInferenceInvocationProbe = vi.fn(async () => {});
     const h = harness({ probeInferenceInvocation, delayInferenceInvocationProbe });
     h.getSandbox.mockReturnValue(stoppedNativeOpenClaw());
 
     await expect(startSandbox("my-sandbox", h.deps)).resolves.toEqual({ exitCode: 0 });
-    expect(probeInferenceInvocation).toHaveBeenCalledTimes(2);
-    expect(delayInferenceInvocationProbe).toHaveBeenCalledExactlyOnceWith(2_000);
-    expect(h.verifyGateway.mock.invocationCallOrder[0]).toBeGreaterThan(
-      probeInferenceInvocation.mock.invocationCallOrder[1],
+    expect(probeInferenceInvocation).toHaveBeenCalledOnce();
+    expect(delayInferenceInvocationProbe).not.toHaveBeenCalled();
+    expect(probeInferenceInvocation.mock.invocationCallOrder[0]).toBeGreaterThan(
+      h.verifyGateway.mock.invocationCallOrder[0],
     );
-    expect(h.log.mock.calls.map(([line]) => line).join("\n")).toContain("attempt 2/3");
     expect(h.updateSandbox).toHaveBeenCalledWith("my-sandbox", { stopped: false });
   });
 
-  it.each([
-    [503, 3, 2],
-    [401, 1, 0],
-  ] as const)(
-    "fails closed after bounded native local OpenClaw HTTP %s startup checks (#12975)",
-    async (httpStatus, attempts, delays) => {
+  it.each([503, 401] as const)(
+    "fails closed after native local OpenClaw HTTP %s post-connect check (#12975)",
+    async (httpStatus) => {
       const probeInferenceInvocation = vi.fn(async () => ({
         ok: false as const,
         detail: `HTTP ${httpStatus}`,
@@ -848,9 +841,9 @@ describe("startSandbox persisted native inference selection", () => {
       h.getSandbox.mockReturnValue(stoppedNativeOpenClaw());
 
       await expect(startSandbox("my-sandbox", h.deps)).resolves.toEqual({ exitCode: 1 });
-      expect(probeInferenceInvocation).toHaveBeenCalledTimes(attempts);
-      expect(delayInferenceInvocationProbe).toHaveBeenCalledTimes(delays);
-      expect(h.verifyGateway).not.toHaveBeenCalled();
+      expect(probeInferenceInvocation).toHaveBeenCalledOnce();
+      expect(delayInferenceInvocationProbe).not.toHaveBeenCalled();
+      expect(h.verifyGateway).toHaveBeenCalledOnce();
       expect(h.updateSandbox).not.toHaveBeenCalled();
     },
   );
