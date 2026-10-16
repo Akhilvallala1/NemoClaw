@@ -5,7 +5,7 @@ import { existsSync as defaultExistsSync } from "node:fs";
 import path from "node:path";
 
 import { dockerSpawnSync } from "./adapters/docker/exec";
-import { isWsl, type WslDetectionOptions } from "./core/wsl";
+import { isWsl as detectWsl, type WslDetectionOptions } from "./core/wsl";
 import { isSupportedDockerContextName, isSupportedGatewayDockerHost } from "./domain/docker-host";
 import { buildDockerSubprocessEnv } from "./subprocess-env";
 
@@ -261,7 +261,9 @@ function getColimaDockerSocketCandidates(opts: PlatformLookupOptions = {}): stri
 }
 
 function findColimaDockerSocket(
-  opts: PlatformLookupOptions & { existsSync?: (filePath: string) => boolean } = {},
+  opts: PlatformLookupOptions & {
+    existsSync?: (filePath: string) => boolean;
+  } = {},
 ): string | null {
   const fileExists = opts.existsSync ?? defaultExistsSync;
   return getColimaDockerSocketCandidates(opts).find((socketPath) => fileExists(socketPath)) ?? null;
@@ -353,13 +355,25 @@ interface DockerAuthoritySelection {
  */
 function selectDockerAuthority(opts: DockerHostDetectionOptions = {}): DockerAuthoritySelection {
   const env = opts.env ?? process.env;
-  // DOCKER_CONTEXT overrides DOCKER_HOST in the Docker CLI. It selects the
-  // daemon authority exactly as DOCKER_HOST does, so
+  // The Docker CLI gives an explicit DOCKER_HOST precedence when both selectors
+  // are set. A context still selects the daemon when DOCKER_HOST is absent, so
   // a discovered fallback socket must never replace it: redirecting a host that
   // named its own authority runs NemoClaw against a daemon the operator did not
   // choose, and reports readiness for that other daemon (#11719). Resolving the
   // context to its endpoint keeps every later consumer — readiness probes,
   // preflight, and the container-engine authority — measuring the same daemon.
+  const dockerHost = String(env.DOCKER_HOST ?? "").trim();
+  if (dockerHost) {
+    return {
+      selection: {
+        dockerHost,
+        source: "env",
+        socketPath: null,
+      },
+      conflict: null,
+    };
+  }
+
   const context = String(env.DOCKER_CONTEXT ?? "").trim();
   if (context) {
     const resolveContextHost =
@@ -373,17 +387,6 @@ function selectDockerAuthority(opts: DockerHostDetectionOptions = {}): DockerAut
         contextHost && isSupportedGatewayDockerHost(contextHost)
           ? { dockerHost: contextHost, source: "context", socketPath: null }
           : null,
-      conflict: null,
-    };
-  }
-
-  if (env.DOCKER_HOST) {
-    return {
-      selection: {
-        dockerHost: env.DOCKER_HOST,
-        source: "env",
-        socketPath: null,
-      },
       conflict: null,
     };
   }
@@ -407,7 +410,9 @@ function selectDockerAuthority(opts: DockerHostDetectionOptions = {}): DockerAut
     if (selected && observation.identity !== selected.identity) {
       return {
         selection: null,
-        conflict: { candidates: [selected, { socketPath, identity: observation.identity }] },
+        conflict: {
+          candidates: [selected, { socketPath, identity: observation.identity }],
+        },
       };
     }
     if (selection) continue;
@@ -421,6 +426,11 @@ function selectDockerAuthority(opts: DockerHostDetectionOptions = {}): DockerAut
 /** Select the Docker authority the CLI should use, or null to keep the host default. */
 function detectDockerHost(opts: DockerHostDetectionOptions = {}): DockerHostDetection | null {
   return selectDockerAuthority(opts).selection;
+}
+
+/** Detect whether the current host or supplied probe inputs run under WSL. */
+function isWsl(opts: WslDetectionOptions = {}): boolean {
+  return detectWsl(opts);
 }
 
 /**

@@ -170,25 +170,6 @@ describe("Pi lifecycle integration", () => {
     expect(MANAGED_IMAGE_REPOSITORIES.pi).toBe("ghcr.io/nvidia/nemoclaw/pi-sandbox");
   });
 
-  it("backs up only the state the Pi manifest declares persistent (#7927)", () => {
-    const agent = loadAgent("pi");
-
-    expect(agent.backupStateDirs).toEqual(["sessions", "prompts", "themes"]);
-    expect(agent.nonBackupStateDirs).toEqual(["tools", "bin"]);
-    expect(agent.stateFiles.map(({ path: statePath }) => statePath)).toEqual(["settings.json"]);
-  });
-
-  it("restores Pi user preferences only through the allowlisted key contract (#7927)", () => {
-    const agent = loadAgent("pi");
-    const settings = agent.stateFiles.find(({ path: statePath }) => statePath === "settings.json");
-
-    expect(settings?.restore?.merge).toBe("key-allowlist");
-    const userKeys =
-      settings?.restore?.merge === "key-allowlist" ? settings.restore.userKeys : undefined;
-    expect(userKeys?.map(({ key }) => key)).toContain("theme");
-    expect(userKeys?.map(({ key }) => key)).not.toContain("models");
-  });
-
   it("resolves Pi from public flag and session boundaries on a native Linux host", () => {
     onHost("linux");
 

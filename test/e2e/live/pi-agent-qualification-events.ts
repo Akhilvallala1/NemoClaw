@@ -7,7 +7,7 @@ import {
   type ManagedImagePlatform,
   managedImagePlatformForNodeArchitecture,
 } from "../../../src/lib/onboard/managed-image/contract.ts";
-import { INFERENCE_ROUTE_URL } from "../../../src/lib/inference/config.ts";
+import { NVIDIA_HOSTED_NATIVE_ENDPOINT } from "../../../src/lib/inference/native-nvidia/contract.ts";
 import { shellQuote } from "../fixtures/clients/command.ts";
 import { redactString } from "../fixtures/redaction.ts";
 import type { ShellProbeResult } from "../fixtures/shell-probe.ts";
@@ -114,7 +114,7 @@ export function parsePiInferenceEvidence(
   const model = Array.isArray(models) ? record(models[0], "Pi managed inference model").id : null;
   if (
     openshell.api !== "openai-completions" ||
-    openshell.baseUrl !== INFERENCE_ROUTE_URL ||
+    openshell.baseUrl !== NVIDIA_HOSTED_NATIVE_ENDPOINT ||
     model !== expectedModel
   ) {
     throw new Error("Pi managed inference configuration does not match the qualified route");

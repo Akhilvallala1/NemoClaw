@@ -16,6 +16,7 @@ const HOST_OS_NAMES: Readonly<Record<AgentHostOs, string>> = {
   windows: "Windows",
 };
 
+/** Return true when `value` is a supported `AgentHostOs` identifier. */
 function isAgentHostOs(value: unknown): value is AgentHostOs {
   return typeof value === "string" && (AGENT_HOST_OS_VALUES as readonly string[]).includes(value);
 }
@@ -42,6 +43,7 @@ export interface AgentHostOsDetectionOptions {
   readonly isWsl?: boolean;
 }
 
+/** Classify the host operating system for agent manifest qualification checks. */
 export function detectAgentHostOs(options: AgentHostOsDetectionOptions = {}): AgentHostOs | null {
   const platform = options.platform ?? process.platform;
   if (platform === "darwin") return "macos";

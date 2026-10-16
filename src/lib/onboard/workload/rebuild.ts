@@ -3,6 +3,7 @@
 
 import { isDeepStrictEqual } from "node:util";
 import { cloneAndDeepFreeze } from "../../core/immutable";
+import { REPOSITORY_ROOT } from "../../core/repository-root";
 import { getVersion } from "../../core/version";
 import type { SandboxEntry } from "../../state/registry/types";
 import { cloneSandboxWorkloadReceipt } from "../../state/registry/workload";
@@ -34,6 +35,7 @@ import {
 export type { ManagedWorkloadReceipt } from "./authority";
 
 import {
+  installedManagedImageCatalogRevision,
   liveE2eManagedImageCatalog,
   liveE2eManagedImageRevision,
   type PreparedSandboxWorkloadSource,
@@ -133,6 +135,7 @@ export async function prepareManagedWorkloadRebuildHandoff(
     readonly runtime: SandboxWorkloadRuntimeCapabilities;
     readonly provider: RuntimeProviderBundle;
     readonly version?: string;
+    readonly rootDir?: string;
   },
 ): Promise<ManagedWorkloadRebuildCatalogHandoff | null> {
   const authority = readManagedWorkloadAuthority(entry);
@@ -148,11 +151,17 @@ export async function prepareManagedWorkloadRebuildHandoff(
     );
   }
   try {
+    // Source installs publish a SHA pointer, not a Git-describe release alias.
+    // Keep rebuild on the same installed-build authority as onboarding.
+    const rootDir = options.rootDir ?? REPOSITORY_ROOT;
+    const catalogRevision =
+      qualificationRevision ??
+      (liveCatalog ? null : installedManagedImageCatalogRevision(process.env, rootDir));
     replacement = await managedWorkloadRebuildDependencies.prepareSandboxWorkloadSource({
       agentName: authority.agent,
       legacyDockerfilePath: "managed-rebuild-must-not-stage-this-dockerfile",
       runtime: options.runtime,
-      version: options.version ?? getVersion(),
+      version: options.version ?? getVersion({ rootDir }),
       policy: "require-managed",
       ...(liveCatalog
         ? {
@@ -161,7 +170,7 @@ export async function prepareManagedWorkloadRebuildHandoff(
             expectedCatalogRevision: liveCatalog.revision,
           }
         : {}),
-      ...(qualificationRevision ? { catalogRevision: qualificationRevision } : {}),
+      ...(catalogRevision ? { catalogRevision } : {}),
     });
   } catch (error) {
     throw new ManagedWorkloadRebuildError(

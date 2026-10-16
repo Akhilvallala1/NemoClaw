@@ -10,7 +10,7 @@ import {
 const TIMEOUT_MS = 75 * 60_000;
 
 test(
-  "candidate CLI activates exact managed images for every shipped agent without a Dockerfile build (#7744)",
+  "candidate CLI activates managed images without builds and the selected runtime adopts public agent digests (#7744, #11932, #12241)",
   {
     timeout: TIMEOUT_MS,
     meta: {
@@ -25,7 +25,7 @@ test(
         "stop and start Deep Agents Code through public NemoClaw lifecycle, then verify cleanup",
         "onboard and exercise Pi",
         "stop and start Pi through public NemoClaw lifecycle, then verify cleanup",
-        "prove buildless all-agent activation",
+        "prove buildless external-image onboarding, drift rejection, rebuild, and retention",
       ],
     },
   },
@@ -33,7 +33,7 @@ test(
     const containerEngine = process.env.NEMOCLAW_GATEWAY_RUNTIME === "podman" ? "Podman" : "Docker";
     await artifacts.target.declare({
       id: "managed-image-activation",
-      boundary: `exact candidate CLI and published all-agent managed-image digests through real ${containerEngine}, OpenShell, agent turns, gateway restart readiness, and exact cleanup`,
+      boundary: `exact candidate CLI and published all-agent managed-image digests through real ${containerEngine}, OpenShell, agent turns, gateway restart readiness, and exact cleanup; the selected runtime also adopts and retains the public OpenClaw and Hermes digests as external images, rejects identity drift before replacement, and rebuilds OpenClaw from its recorded digest`,
       agents: managedActivationAgents(),
       syntheticBoundary:
         "Only the OpenAI-compatible inference response is synthetic; runtime construction and agent execution are real.",

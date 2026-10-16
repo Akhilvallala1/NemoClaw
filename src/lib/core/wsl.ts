@@ -11,6 +11,7 @@ export interface WslDetectionOptions {
   procVersion?: string;
 }
 
+/** Detect whether the current host or supplied probe inputs run under WSL. */
 export function isWsl(opts: WslDetectionOptions = {}): boolean {
   // Explicit override — lets tests pin behavior regardless of the host kernel.
   // Useful because the WSL detection below consults `os.release()`, which
