@@ -26,6 +26,7 @@ function hasResourceEnvOverrides(env: NodeJS.ProcessEnv): boolean {
   return !!(env.NEMOCLAW_CPU || env.NEMOCLAW_RAM);
 }
 
+/** Apply NEMOCLAW_CPU and NEMOCLAW_RAM overrides. Exit the process when an override contains an invalid percentage. */
 function applyResourceEnvOverrides(
   selectedProfile: ResourceProfile | null,
   deps: ResourceProfileSelectionDeps,
@@ -60,6 +61,7 @@ function printResolvedResourceProfile(
   console.log(`  Resolved: CPU=${resolvedCpu}, RAM=${resolvedMemory}`);
 }
 
+/** Select and validate a sandbox CPU and memory profile from environment overrides or the interactive menu. */
 export async function selectResourceProfileForSandbox(
   deps: ResourceProfileSelectionDeps,
 ): Promise<ResourceProfile | null> {
@@ -128,6 +130,7 @@ export async function selectResourceProfileForSandbox(
   return applyResourceEnvOverrides(selectedProfile, deps);
 }
 
+/** Append OpenShell resource flags for a profile, or print a note when OpenShell lacks --cpu or --memory. Throws on an invalid percentage. */
 export function appendResourceFlagsForProfile(
   args: string[],
   profile: ResourceProfile | null,

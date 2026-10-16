@@ -272,6 +272,7 @@ export function printHardwareResources(json: boolean): HardwareResources {
   return hw;
 }
 
+/** Validate a CPU or memory resource value and throw when a percentage is not an integer from 1% to 100%. */
 export function validateResourceValue(value: string): void {
   const trimmed = value.trim();
   // Kubernetes quantities never contain "%", so a value with "%" must be a whole-number percentage.
