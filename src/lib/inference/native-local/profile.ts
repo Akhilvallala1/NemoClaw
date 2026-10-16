@@ -72,7 +72,7 @@ export function prepareNativeLocalProfile(input: NativeLocalBinding) {
       binaries: [
         // The provider-neutral onboarding smoke probe uses Python urllib.
         "/usr/bin/python3",
-        ...(binding.agent === "openclaw"
+        ...(binding.agent === "openclaw" || binding.agent === "pi"
           ? ["/usr/local/bin/node", "/usr/bin/node"]
           : ["/opt/venv/bin/python3"]),
         "/usr/local/bin/curl",
@@ -167,8 +167,12 @@ export async function verifyRecordedNativeLocalProviderAttachment(input: {
   const expected = normalizeNativeLocalProviderAttachment(input.expected);
   if (
     !expected ||
-    (input.agent !== "langchain-deepagents-code" && input.agent !== "openclaw") ||
-    (input.agent === "openclaw" ? expected.agent !== "openclaw" : expected.agent !== undefined) ||
+    (input.agent !== "langchain-deepagents-code" &&
+      input.agent !== "openclaw" &&
+      input.agent !== "pi") ||
+    (input.agent === "langchain-deepagents-code"
+      ? expected.agent !== undefined
+      : expected.agent !== input.agent) ||
     expected.provider !== input.provider ||
     expected.sandboxName !== input.sandboxName ||
     (input.gatewayName !== undefined && expected.gatewayName !== input.gatewayName)

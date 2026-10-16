@@ -653,7 +653,8 @@ describe("formatInferenceRouteDriftForDisplay", () => {
 it.each([
   ["openclaw", true, "https://inference.local/v1"],
   ["hermes", true, "https://inference.local/v1"],
-  ["pi", true, "https://inference.local/v1"],
+  ["pi", true, "http://host.openshell.internal:8000/v1"],
+  ["pi", false, "https://inference.local/v1"],
   ["langchain-deepagents-code", false, "https://inference.local/v1"],
   ["langchain-deepagents-code", true, "http://host.openshell.internal:8000/v1"],
 ] as const)("routes %s with native attachment %s to %s (#13197)", (agent, attached, expected) => {
@@ -673,7 +674,8 @@ it.each([
   ["openclaw", true, "http://host.openshell.internal:8000/v1"],
   ["openclaw", false, "https://inference.local/v1"],
   ["hermes", true, "https://inference.local/v1"],
-  ["pi", true, "https://inference.local/v1"],
+  ["pi", true, "http://host.openshell.internal:8000/v1"],
+  ["pi", false, "https://inference.local/v1"],
 ] as const)(
   "routes %s standalone vLLM with native attachment %s to %s",
   (agent, attached, expected) => {
