@@ -102,9 +102,9 @@ describe("getCompatibleAnthropicOpenAiSurfaceBaseUrl", () => {
 describe("inference selection config", () => {
   it("exposes the curated cloud model picker options", () => {
     expect(CLOUD_MODEL_OPTIONS).toEqual([
-      { id: "nvidia/nemotron-3.5-super-vl-120b-a12b", label: "Nemotron 3.5 Super VL 120B" },
       { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra 550B" },
       { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super 120B" },
+      { id: "nvidia/nemotron-3.5-super-vl-120b-a12b", label: "Nemotron 3.5 Super VL 120B" },
     ]);
     expect(CLOUD_MODEL_OPTIONS.map((option: { id: string }) => option.id)).not.toContain(
       "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
