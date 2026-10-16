@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-  type NativeCustomProviderAttachment,
-  normalizeNativeCustomProviderAttachment,
-} from "../../inference/native-custom";
+import { nativeHostedAuthHeaderScript } from "../../inference/native-provider/contract";
 import { NATIVE_LOCAL_AUTH_HEADER_SCRIPT } from "../../inference/native-local/agent-config";
-import { hostedNativeProvider } from "../../inference/native-provider/hosted";
-import { nativeHostedAgentConfig } from "../../inference/native-provider/agent-config";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../inference/native-nvidia/contract";
+import {
+  hostedNativeProvider,
+  customNativeCredentialEnv,
+  isCustomHostedProvider,
+} from "../../inference/native-provider/hosted";
+import { nativeHostedAgentConfig } from "../../inference/native-provider/agent-config";
 import { SandboxCommandTransportError } from "../../adapters/sandbox/command-transport";
 import type {
   OpenShellSandboxBufferedCommandExecutor,
@@ -47,7 +48,6 @@ import {
   buildSandboxCommandEnvironment,
   executeSandboxExecCommand,
   type SandboxCommandResult,
-  type SandboxExecCommandExecutionOptions,
   type SandboxExecCommandOptions,
 } from "../../adapters/sandbox/command-transport";
 import { DCODE_AGENT_NAME } from "./rebuild-dcode-target";
@@ -63,7 +63,6 @@ export type SandboxInferenceInvocationInput = {
   nativeProvider?: boolean;
   nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeEndpointUrl?: string;
-  nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
 };
 
 export type SandboxInferenceInvocationResult =
@@ -91,20 +90,31 @@ export const INFERENCE_INVOCATION_REQUEST_TIMEOUT_SECONDS = 90;
 export const READINESS_INFERENCE_INVOCATION_TIMEOUT_MS = 95_000;
 const INFERENCE_INVOCATION_MAX_RESPONSE_BYTES = 64 * 1024;
 
+function nativeProbeDefinition(input: SandboxInferenceInvocationInput) {
+  if (input.nativeLocalProviderAttachment) return undefined;
+  if (input.nativeProvider && isCustomHostedProvider(input.provider)) {
+    if (!input.nativeEndpointUrl)
+      throw new Error("Custom native inference probe is missing its endpoint");
+    return {
+      logicalProvider: input.provider,
+      endpoint: input.nativeEndpointUrl,
+      credentialEnv: customNativeCredentialEnv(input.provider),
+      api:
+        input.preferredInferenceApi ??
+        (input.provider === "compatible-anthropic-endpoint"
+          ? "anthropic-messages"
+          : "openai-completions"),
+    };
+  }
+  return hostedNativeProvider(input.provider, input.nativeEndpointUrl);
+}
+
 /** Build the protocol-specific request used to verify sandbox inference. */
 function buildProbeRequest(input: SandboxInferenceInvocationInput): {
   endpoint: string;
   headers: string[];
   payload: Record<string, unknown>;
 } {
-  if (
-    input.nativeCustomProviderAttachment &&
-    !normalizeNativeCustomProviderAttachment(
-      input.nativeCustomProviderAttachment,
-      input.sandboxName,
-    )
-  )
-    throw new Error("Native custom inference authority does not match the selected sandbox.");
   const local = normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment);
   if (
     input.nativeLocalProviderAttachment &&
@@ -118,12 +128,12 @@ function buildProbeRequest(input: SandboxInferenceInvocationInput): {
     input.model,
     input.provider,
     input.preferredInferenceApi,
-    input.nativeCustomProviderAttachment ?? input.nativeProvider ?? Boolean(local),
-    local?.endpointUrl ?? input.nativeEndpointUrl,
+    input.nativeProvider ?? Boolean(local),
+    local?.endpointUrl ?? input.nativeEndpointUrl ?? null,
     input.agentName,
   );
   const useNativeNvidia = input.nativeProvider === true && isNativeNvidiaProvider(input.provider);
-  const hosted = hostedNativeProvider(input.provider, input.nativeEndpointUrl);
+  const hosted = nativeProbeDefinition(input);
   const nativeHosted = input.nativeProvider === true ? hosted : undefined;
   if (input.nativeProvider === true && !useNativeNvidia && !nativeHosted && !local) {
     throw new Error("Unsupported native inference probe selection");
@@ -133,8 +143,7 @@ function buildProbeRequest(input: SandboxInferenceInvocationInput): {
       ? NVIDIA_HOSTED_NATIVE_ENDPOINT
       : nativeHosted
         ? nativeHosted.endpoint
-        : !input.nativeCustomProviderAttachment &&
-            (isNativeNvidiaProvider(input.provider) || hosted)
+        : isNativeNvidiaProvider(input.provider) || hosted
           ? "https://inference.local/v1"
           : config.inferenceBaseUrl
   ).replace(/\/+$/u, "");
@@ -191,33 +200,6 @@ export function resolveSandboxInferenceInvocationEndpoint(
   return buildProbeRequest(input).endpoint;
 }
 
-/** Accept only an OpenShell-issued placeholder, never a host credential. */
-function nativeHostedAuthHeaderScript(provider: string): string {
-  const definition = hostedNativeProvider(provider);
-  if (!definition) throw new Error("Unsupported native hosted inference probe");
-  const env = definition.credentialEnv;
-  const value = "${" + env + ":-}";
-  const header = definition.api === "anthropic-messages" ? "x-api-key:" : "Authorization: Bearer";
-  return [
-    `case "${value}" in *[!a-zA-Z0-9:_]*) exit 2 ;; esac`,
-    `printf '%s' "${value}" | LC_ALL=C grep -Eq '^openshell:resolve:env:((v[0-9]{1,20}|s[a-f0-9]{64})_)?${env}$' || exit 2`,
-    `AUTH_HEADER="${header} ${value}"`,
-  ].join("; ");
-}
-
-/** Require an identity-bound supervisor placeholder; never accept a host secret or bare alias. */
-function nativeCustomAuthHeaderScript(receipt: NativeCustomProviderAttachment): string {
-  const authority = normalizeNativeCustomProviderAttachment(receipt);
-  if (!authority) throw new Error("Invalid native custom inference attachment authority.");
-  const key = authority.credentialEnv;
-  const prefix = authority.api === "anthropic-messages" ? "x-api-key: " : "Authorization: Bearer ";
-  return [
-    `case "\${${key}:-}" in *[!a-zA-Z0-9:_]*) exit 2 ;; esac`,
-    `printf '%s' "\${${key}:-}" | LC_ALL=C grep -Eq '^openshell:resolve:env:(v[0-9]{1,20}|s[a-f0-9]{64})_${key}$' || exit 2`,
-    `AUTH_HEADER="${prefix}\${${key}}"`,
-  ].join("; ");
-}
-
 export function buildSandboxInferenceInvocationCommand(
   input: SandboxInferenceInvocationInput,
 ): string {
@@ -226,28 +208,23 @@ export function buildSandboxInferenceInvocationCommand(
   const useNativeLocal = Boolean(
     normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment),
   );
-  const nativeHosted =
-    input.nativeProvider === true
-      ? hostedNativeProvider(input.provider, input.nativeEndpointUrl)
-      : undefined;
-  const authScript = input.nativeCustomProviderAttachment
-    ? nativeCustomAuthHeaderScript(input.nativeCustomProviderAttachment)
-    : useNativeNvidia
-      ? NATIVE_NVIDIA_AUTH_HEADER_SCRIPT
-      : useNativeLocal
-        ? NATIVE_LOCAL_AUTH_HEADER_SCRIPT
-        : nativeHosted
-          ? nativeHostedAuthHeaderScript(nativeHosted.logicalProvider)
-          : null;
+  const nativeHosted = input.nativeProvider === true ? nativeProbeDefinition(input) : undefined;
+  const nativeAuth = useNativeNvidia
+    ? NATIVE_NVIDIA_AUTH_HEADER_SCRIPT
+    : useNativeLocal
+      ? NATIVE_LOCAL_AUTH_HEADER_SCRIPT
+      : nativeHosted
+        ? nativeHostedAuthHeaderScript(nativeHosted)
+        : undefined;
   const headerArgs =
     ["Content-Type: application/json", ...request.headers]
       .map((header) => `-H ${shellQuote(header)}`)
-      .join(" ") + (authScript ? ' -H "$AUTH_HEADER"' : "");
+      .join(" ") + (nativeAuth ? ' -H "$AUTH_HEADER"' : "");
   const payload = shellQuote(JSON.stringify(request.payload));
   const endpoint = shellQuote(request.endpoint);
   return [
     "umask 077",
-    ...(authScript ? [authScript] : []),
+    ...(nativeAuth ? [nativeAuth] : []),
     "body=$(mktemp /tmp/nemoclaw-inference-invocation.XXXXXX) || exit 1",
     "trap 'rm -f \"$body\"' EXIT HUP INT TERM",
     `code=$(curl -q -sS --connect-timeout 5 --max-time ${INFERENCE_INVOCATION_REQUEST_TIMEOUT_SECONDS} --max-filesize ${INFERENCE_INVOCATION_MAX_RESPONSE_BYTES} -o "$body" -w '%{http_code}' ${headerArgs} --data-binary ${payload} ${endpoint}) || { rc=$?; printf 'curl-error:%s\\n' "$rc"; exit "$rc"; }`,
@@ -327,12 +304,9 @@ export async function probeSandboxInferenceInvocation(
     result = await executeDcodeSandboxInferenceInvocation(input, deps, timeoutMs);
   } else {
     const execute = deps.execute ?? executeSandboxExecCommand;
-    const execOptions: SandboxExecCommandExecutionOptions = {
+    const execOptions: SandboxExecCommandOptions = {
       ...(input.gatewayName ? { gatewayName: input.gatewayName } : {}),
       ...(input.runtimeSelection ? { runtimeSelection: input.runtimeSelection } : {}),
-      ...(deps.commandExecutor
-        ? { commandExecutor: deps.commandExecutor, honorCallerTimeout: true }
-        : {}),
     };
     result = await execute(
       input.sandboxName,
@@ -361,11 +335,10 @@ export async function probeSandboxInferenceInvocation(
       input.model,
       input.provider,
       input.preferredInferenceApi,
-      input.nativeCustomProviderAttachment ??
-        input.nativeProvider ??
-        Boolean(input.nativeLocalProviderAttachment),
+      input.nativeProvider ?? Boolean(input.nativeLocalProviderAttachment),
       normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment)?.endpointUrl ??
-        input.nativeEndpointUrl,
+        input.nativeEndpointUrl ??
+        null,
       input.agentName,
     ).inferenceApi;
     if (httpStatus !== null && validateInferenceResponseBody(inferenceApi, body).ok) {
@@ -387,12 +360,18 @@ export async function probeSandboxInferenceInvocation(
   const detail = httpStatus
     ? `sandbox inference invocation probe returned HTTP ${httpStatus}`
     : `sandbox inference invocation probe exited with status ${result.status}`;
+  const legacyDnsFailure =
+    input.nativeProvider !== true &&
+    result.stdout.split("\n").some((line) => line.trim() === "curl-error:6") &&
+    new URL(resolveSandboxInferenceInvocationEndpoint(input)).hostname === "inference.local";
   return {
     ok: false,
     detail:
       httpStatus === "404" && nvcfFunctionNotFound
         ? `${detail}: ${nvcfFunctionNotFoundMessage(input.model).replace(/\.$/, "")}`
-        : detail,
+        : legacyDnsFailure
+          ? `${detail}. The legacy inference route could not be resolved. If that route is no longer available, recreate this sandbox to use native inference.`
+          : detail,
     httpStatus: httpStatus ? Number.parseInt(httpStatus, 10) : null,
     endpoint: resolveSandboxInferenceInvocationEndpoint(input),
   };

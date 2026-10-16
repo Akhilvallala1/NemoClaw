@@ -5,8 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkGatewayRouteCompatibility } from "../inference/gateway-route-compatibility";
 import type { SandboxEntry } from "../state/registry";
 import { createSetupInference, type SetupInferenceDeps } from "./setup-inference";
-import { createNativeCustomSetupDependencies } from "../../../test/support/setup-inference-test-harness";
-import { computeHttpsPinRouteId } from "../inference/https-pin-runtime";
 
 const revalidateSandboxIdentity = () => undefined;
 const successfulInferenceRouteMutator = (
@@ -44,10 +42,9 @@ vi.mock("./sandbox-lifecycle", async (importOriginal) => ({
 describe("onboard shared gateway route containment", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  // Host-local compatible endpoints retain the shared route; hosted endpoints use native attachments.
   it.each([
-    { scenario: "matching provider", sourceEndpointUrl: "http://host.openshell.internal:8000/v1" },
-    { scenario: "changed endpoint", sourceEndpointUrl: "http://host.openshell.internal:8001/v1" },
+    { scenario: "matching provider", sourceEndpointUrl: "https://api.example/v1" },
+    { scenario: "changed endpoint", sourceEndpointUrl: "https://old.example/v1" },
   ])(
     "keeps a published source route active with $scenario (#13018)",
     async ({ sourceEndpointUrl }) => {
@@ -120,7 +117,7 @@ describe("onboard shared gateway route containment", () => {
             providerName: "compatible-endpoint",
             providerType: "openai",
             credentialEnv: "COMPATIBLE_API_KEY",
-            endpointUrl: "http://host.openshell.internal:8000/v1",
+            endpointUrl: "https://api.example/v1",
             helpUrl: null,
             modelMode: "input",
             defaultModel: "old-model",
@@ -149,20 +146,17 @@ describe("onboard shared gateway route containment", () => {
         "sandbox-a",
         "new-model",
         "compatible-endpoint",
-        "http://host.openshell.internal:8000/v1",
+        "https://api.example/v1",
         "COMPATIBLE_API_KEY",
         null,
         [],
-        {
-          deferPublishedRouteReservation: true,
-          onboardEndpointUrl: "http://host.openshell.internal:8000/v1",
-        },
+        { deferPublishedRouteReservation: true, onboardEndpointUrl: "https://api.example/v1" },
       );
       const outcome = await operation.then(
         (result) => ({ result, error: null as Error | null }),
         (error: Error) => ({ result: null, error }),
       );
-      const matchingProvider = sourceEndpointUrl === "http://host.openshell.internal:8000/v1";
+      const matchingProvider = sourceEndpointUrl === "https://api.example/v1";
       expect(outcome.error?.message ?? null).toBe(matchingProvider ? null : "exit 1");
       expect(outcome.result && "ok" in outcome.result ? outcome.result.ok : false).toBe(
         matchingProvider,
@@ -197,10 +191,7 @@ describe("onboard shared gateway route containment", () => {
     async (failure) => {
       const sourceProvider = failure === "provider" ? "old-provider" : "compatible-endpoint";
       let liveRoute = { provider: sourceProvider, model: "old-model" };
-      const providerProfile = {
-        endpointUrl: "http://host.openshell.internal:8000/v1",
-        credential: "old-secret",
-      };
+      const providerProfile = { endpointUrl: "https://api.example/v1", credential: "old-secret" };
       let observations = 0;
       const inferenceRouteMutator = {
         setInferenceRoute: vi.fn(async (request: { route: typeof liveRoute }) => {
@@ -231,7 +222,7 @@ describe("onboard shared gateway route containment", () => {
           ({
             provider: sourceProvider,
             model: "old-model",
-            endpointUrl: "http://host.openshell.internal:8000/v1",
+            endpointUrl: "https://api.example/v1",
             credentialEnv: "COMPATIBLE_API_KEY",
             pendingRouteReservation: false,
           }) as unknown as SandboxEntry,
@@ -250,9 +241,7 @@ describe("onboard shared gateway route containment", () => {
               : { ok: true };
           Object.assign(
             providerProfile,
-            result.ok
-              ? { endpointUrl: "http://host.openshell.internal:8002/v1", credential: "new-secret" }
-              : {},
+            result.ok ? { endpointUrl: "https://new.example/v1", credential: "new-secret" } : {},
           );
           return result;
         }),
@@ -266,7 +255,7 @@ describe("onboard shared gateway route containment", () => {
             providerName: "compatible-endpoint",
             providerType: "openai",
             credentialEnv: "COMPATIBLE_API_KEY",
-            endpointUrl: "http://host.openshell.internal:8000/v1",
+            endpointUrl: "https://api.example/v1",
             helpUrl: null,
             modelMode: "input",
             defaultModel: "old-model",
@@ -295,14 +284,11 @@ describe("onboard shared gateway route containment", () => {
         "sandbox-a",
         "new-model",
         "compatible-endpoint",
-        "http://host.openshell.internal:8000/v1",
+        "https://api.example/v1",
         "COMPATIBLE_API_KEY",
         null,
         [],
-        {
-          deferPublishedRouteReservation: true,
-          onboardEndpointUrl: "http://host.openshell.internal:8000/v1",
-        },
+        { deferPublishedRouteReservation: true, onboardEndpointUrl: "https://api.example/v1" },
       );
       expect(result).toMatchObject({ ok: true });
       const deferredRoute = (
@@ -323,7 +309,7 @@ describe("onboard shared gateway route containment", () => {
       );
       expect(liveRoute).toEqual({ provider: sourceProvider, model: "old-model" });
       expect(providerProfile).toEqual({
-        endpointUrl: "http://host.openshell.internal:8000/v1",
+        endpointUrl: "https://api.example/v1",
         credential: "old-secret",
       });
       expect(inferenceRouteMutator.setInferenceRoute).toHaveBeenCalledTimes(
@@ -335,352 +321,131 @@ describe("onboard shared gateway route containment", () => {
 
   it.each([
     {
-      failure: "creation",
-      createFails: true,
-      smokeFails: false,
-      cleanupConfirmed: true,
-      registryFails: false,
+      scenario: "public",
+      endpointUrl: "https://public-name.example/v1",
+      resolvedAddress: "93.184.216.34",
+      trustedHosts: "",
+      expectedError: null,
+      expectedPinnedAddresses: ["93.184.216.34"],
+      expectedTrustedPrivateAddresses: [],
     },
     {
-      failure: "smoke",
-      createFails: false,
-      smokeFails: true,
-      cleanupConfirmed: true,
-      registryFails: false,
+      scenario: "operator-trusted private",
+      endpointUrl: "https://llm.corp.example/v1",
+      resolvedAddress: "10.0.0.8",
+      trustedHosts: "llm.corp.example",
+      expectedError: null,
+      expectedPinnedAddresses: ["10.0.0.8"],
+      expectedTrustedPrivateAddresses: ["10.0.0.8"],
     },
     {
-      failure: "unconfirmed cleanup",
-      createFails: true,
-      smokeFails: false,
-      cleanupConfirmed: false,
-      registryFails: false,
+      scenario: "unlisted private",
+      endpointUrl: "https://unlisted.corp.example/v1",
+      resolvedAddress: "10.0.0.8",
+      trustedHosts: "",
+      expectedError: "exit 1",
+      expectedPinnedAddresses: [],
+      expectedTrustedPrivateAddresses: [],
     },
-    {
-      failure: "registry publication",
-      createFails: false,
-      smokeFails: false,
-      cleanupConfirmed: true,
-      registryFails: true,
-    },
-  ])(
-    "preserves HTTPS rollback ownership after onboarding $failure fails (#12636)",
-    async ({ createFails, smokeFails, cleanupConfirmed, registryFails }) => {
-      const native = createNativeCustomSetupDependencies();
-      const endpointUrl = "https://api.example.com/v1";
-      const routeId = computeHttpsPinRouteId(
-        "nemoclaw",
-        "compatible-endpoint",
-        endpointUrl,
-        "alpha",
-      );
-      const smoke = vi.fn(() =>
-        smokeFails ? Promise.reject(new Error("setup operation failed")) : Promise.resolve(),
-      );
-      vi.mocked(native.providerAdapter.createProvider).mockImplementationOnce(
-        createFails
-          ? async () => {
-              throw new Error("setup operation failed");
-            }
-          : vi.mocked(native.providerAdapter.createProvider).getMockImplementation()!,
-      );
-      native.revokeHttpsPinRuntimeAdapterRoute.mockResolvedValueOnce(cleanupConfirmed);
-      const updateSandbox = vi.fn(
-        registryFails
-          ? () => {
-              throw new Error("setup operation failed");
-            }
-          : () => true,
-      );
-      const setup = createSetupInference({
-        ...native,
-        localInference: { loadPendingOllamaModelCleanup: () => [] },
-        withOllamaModelOwnershipLock: <T>(operation: () => T) => operation(),
-        updateSandbox,
-        hydrateCredentialEnv: () => "host-credential",
-        resolveEndpointHost: async () => [{ address: "8.8.8.8", family: 4 }],
-        checkGatewayRouteCompatibility: vi.fn(() => ({ ok: true })),
-        withSandboxMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
-          operation(),
-        withGatewayRouteMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
-          operation(),
-        step: vi.fn(),
-        getGatewayName: () => "nemoclaw",
-        inferenceRouteMutator: successfulInferenceRouteMutator(),
-        inferenceRouteObserver: successfulInferenceRouteObserver(),
-        hermesProviderAuth: { HERMES_PROVIDER_NAME: "hermes-provider" },
-        verifyOnboardInferenceSmoke: smoke,
-        verifyInferenceRoute: vi.fn(),
-        log: vi.fn(),
-      } as unknown as SetupInferenceDeps);
-      const result = setup(
-        "alpha",
-        "model-a",
-        "compatible-endpoint",
-        endpointUrl,
-        "COMPATIBLE_API_KEY",
-      );
-      await expect(result).rejects.toThrow(
-        !cleanupConfirmed
-          ? "Native custom inference setup failed, and adapter route rollback was not confirmed."
-          : "setup operation failed",
-      );
-      await expect(result).rejects.toMatchObject(
-        cleanupConfirmed
-          ? {}
-          : {
-              errors: [
-                { message: "setup operation failed" },
-                {
-                  message: expect.stringContaining(
-                    `route '${routeId}' cleanup could not be confirmed`,
-                  ),
-                },
-              ],
-            },
-      );
-      expect(native.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledOnce();
-      expect(native.revokeHttpsPinRuntimeAdapterRoute.mock.calls).toEqual(
-        registryFails ? [] : [[routeId]],
-      );
-      expect(updateSandbox.mock.calls.length).toBe(registryFails ? 1 : 0);
-    },
-  );
-
-  it.each(["retained", "deleted", "malformed-current"] as const)(
-    "reconciles %s native adapter authority without rotating credentials (#12636)",
-    async (state) => {
-      const native = createNativeCustomSetupDependencies();
-      let recorded: SandboxEntry | null = null;
-      let credential = "host-credential";
-      const shared = successfulInferenceRouteMutator();
-      const setup = createSetupInference({
-        ...native,
-        localInference: { loadPendingOllamaModelCleanup: () => [] },
-        withOllamaModelOwnershipLock: <T>(operation: () => T) => operation(),
-        getSandbox: () => recorded,
-        updateSandbox: (_name: string, patch: Partial<SandboxEntry>) => {
-          recorded = { ...recorded, ...patch, name: "alpha" };
-          return true;
+  ])("handles a resumed $scenario endpoint at the shared preflight", async (scenario) => {
+    vi.stubEnv("NEMOCLAW_TRUSTED_PRIVATE_HOSTS", scenario.trustedHosts);
+    let lookupCount = 0;
+    const resolveEndpointHost = vi.fn(async () => {
+      lookupCount += 1;
+      return lookupCount === 1
+        ? [{ address: scenario.resolvedAddress, family: 4 }]
+        : [{ address: "10.0.0.8", family: 4 }];
+    });
+    const verifyOnboardInferenceSmoke = vi.fn();
+    const setupInference = createSetupInference({
+      getSandbox: () => ({ name: "sandbox-a", provider: "compatible-endpoint" }),
+      localInference: { loadPendingOllamaModelCleanup: () => [] },
+      withOllamaModelOwnershipLock: (operation: () => unknown) => operation(),
+      checkGatewayRouteCompatibility: vi.fn(() => ({ ok: true as const })),
+      withSandboxMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
+        await operation(),
+      withGatewayRouteMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
+        await operation(),
+      step: vi.fn(),
+      getGatewayName: () => "nemoclaw",
+      runOpenshell: vi.fn((args: string[]) => ({
+        status: 0,
+        stdout: args.includes("export")
+          ? JSON.stringify({
+              id: "openai",
+              credentials: [],
+              endpoints: [],
+              binaries: [],
+              inference_capable: true,
+            })
+          : "",
+        stderr: "",
+      })),
+      inferenceRouteMutator: successfulInferenceRouteMutator(),
+      inferenceRouteObserver: successfulInferenceRouteObserver(),
+      updateSandbox: vi.fn(() => true),
+      upsertProvider: vi.fn(async () => ({ ok: true })),
+      verifyInferenceRoute: vi.fn(),
+      verifyOnboardInferenceSmoke,
+      resolveEndpointHost,
+      isNonInteractive: () => true,
+      hermesProviderAuth: { HERMES_PROVIDER_NAME: "hermes-provider" },
+      REMOTE_PROVIDER_CONFIG: {
+        custom: {
+          label: "Other OpenAI-compatible endpoint",
+          providerName: "compatible-endpoint",
+          providerType: "openai",
+          credentialEnv: "COMPATIBLE_API_KEY",
+          endpointUrl: scenario.endpointUrl,
+          helpUrl: null,
+          modelMode: "input",
+          defaultModel: "model-a",
         },
-        hydrateCredentialEnv: () => credential,
-        resolveEndpointHost: async () => [{ address: "8.8.8.8", family: 4 }],
-        checkGatewayRouteCompatibility: vi.fn(() => ({ ok: true })),
-        withSandboxMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
-          operation(),
-        withGatewayRouteMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
-          operation(),
-        step: vi.fn(),
-        getGatewayName: () => "nemoclaw",
-        inferenceRouteMutator: shared,
-        inferenceRouteObserver: successfulInferenceRouteObserver(),
-        hermesProviderAuth: { HERMES_PROVIDER_NAME: "hermes-provider" },
-        verifyOnboardInferenceSmoke: vi.fn(),
-        verifyInferenceRoute: vi.fn(),
-        log: vi.fn(),
-      } as unknown as SetupInferenceDeps);
-      expect(
-        await setup(
-          "alpha",
-          "model-a",
-          "compatible-endpoint",
-          "https://api.example.com/v1",
-          "COMPATIBLE_API_KEY",
-        ),
-      ).toEqual({ ok: true });
-      const before = structuredClone(recorded as SandboxEntry | null);
-      const attachment = (before as SandboxEntry | null)?.nativeCustomProviderAttachment;
-      expect(attachment).toBeDefined();
-      recorded = state === "deleted" ? null : recorded;
-      recorded =
-        state === "malformed-current"
-          ? ({ ...before, nativeCustomProviderAttachment: null } as unknown as SandboxEntry)
-          : recorded;
-      credential = "";
-      expect(
-        await setup(
-          "alpha",
-          "model-a",
-          "compatible-endpoint",
-          "https://api.example.com/v1",
-          "COMPATIBLE_API_KEY",
-          null,
-          [],
-          {
-            reuseGatewayCredentialWithoutLocalKey: true,
-            skipHostInferenceSmoke: true,
-            ...(state !== "retained" ? { nativeCustomProviderAttachment: attachment } : {}),
-          },
-        ).catch((error: Error) => ({ ok: false, message: error.message })),
-      ).toEqual(
-        state === "malformed-current"
-          ? { ok: false, message: "Native custom rebuild and sandbox authority disagree." }
-          : { ok: true },
-      );
-      expect(native.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledOnce();
-      expect(native.providerAdapter.createProvider).toHaveBeenCalledOnce();
-      expect(shared.setInferenceRoute).not.toHaveBeenCalled();
-      expect(recorded).toEqual(
-        state === "malformed-current"
-          ? { ...before, nativeCustomProviderAttachment: null }
-          : before,
-      );
-    },
-  );
-
-  it.each(
-    [
-      {
-        scenario: "public",
-        endpointUrl: "https://public-name.example/v1",
-        resolvedAddress: "93.184.216.34",
-        trustedHosts: "",
-        expectedError: null,
-        expectedPinnedAddresses: ["93.184.216.34"],
-        expectedTrustedPrivateAddresses: [],
       },
-      {
-        scenario: "operator-trusted private",
-        endpointUrl: "https://llm.corp.example/v1",
-        resolvedAddress: "10.0.0.8",
-        trustedHosts: "llm.corp.example",
-        expectedError: null,
-        expectedPinnedAddresses: ["10.0.0.8"],
-        expectedTrustedPrivateAddresses: ["10.0.0.8"],
+      hydrateCredentialEnv: vi.fn(() => "secret"),
+      promptValidationRecovery: vi.fn(),
+      classifyApplyFailure: vi.fn(),
+      localInferenceTimeoutSecs: 60,
+      bedrockRuntimeOnboard: {
+        setupBedrockRuntimeInference: vi.fn(async () => ({ handled: false as const })),
       },
-      {
-        scenario: "unlisted private",
-        endpointUrl: "https://unlisted.corp.example/v1",
-        resolvedAddress: "10.0.0.8",
-        trustedHosts: "",
-        expectedError:
-          "Custom inference endpoint rejected: Endpoint resolves to a private or internal address. Set NEMOCLAW_TRUSTED_PRIVATE_HOSTS to trust this exact host.",
-        expectedPinnedAddresses: [],
-        expectedTrustedPrivateAddresses: [],
+      openrouterRuntimeOnboard: {
+        setupOpenRouterRuntimeInference: vi.fn(async () => ({ handled: false as const })),
       },
-    ].flatMap((scenario) =>
-      [true, false].map((nonInteractive) => ({ ...scenario, nonInteractive })),
-    ),
-  )(
-    "enforces native $scenario admission with noninteractive=$nonInteractive (#12636)",
-    async (scenario) => {
-      vi.stubEnv("NEMOCLAW_TRUSTED_PRIVATE_HOSTS", scenario.trustedHosts);
-      let lookupCount = 0;
-      const resolveEndpointHost = vi.fn(async () => {
-        lookupCount += 1;
-        return lookupCount === 1
-          ? [{ address: scenario.resolvedAddress, family: 4 }]
-          : [{ address: "10.0.0.8", family: 4 }];
-      });
-      const verifyOnboardInferenceSmoke = vi.fn();
-      const native = createNativeCustomSetupDependencies();
-      const errorLog = vi.fn();
-      const setupInference = createSetupInference({
-        ...native,
-        checkGatewayRouteCompatibility: vi.fn(() => ({ ok: true as const })),
-        withSandboxMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
-          await operation(),
-        withGatewayRouteMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
-          await operation(),
-        step: vi.fn(),
-        getGatewayName: () => "nemoclaw",
-        runOpenshell: vi.fn((args: string[]) => ({
-          status: 0,
-          stdout: args.includes("export")
-            ? JSON.stringify({
-                id: "openai",
-                credentials: [],
-                endpoints: [],
-                binaries: [],
-                inference_capable: true,
-              })
-            : "",
-          stderr: "",
-        })),
-        inferenceRouteMutator: successfulInferenceRouteMutator(),
-        inferenceRouteObserver: successfulInferenceRouteObserver(),
-        updateSandbox: vi.fn(() => true),
-        upsertProvider: vi.fn(async () => ({ ok: true })),
-        verifyInferenceRoute: vi.fn(),
-        verifyOnboardInferenceSmoke,
-        resolveEndpointHost,
-        isNonInteractive: () => scenario.nonInteractive,
-        hermesProviderAuth: { HERMES_PROVIDER_NAME: "hermes-provider" },
-        REMOTE_PROVIDER_CONFIG: {
-          custom: {
-            label: "Other OpenAI-compatible endpoint",
-            providerName: "compatible-endpoint",
-            providerType: "openai",
-            credentialEnv: "COMPATIBLE_API_KEY",
-            endpointUrl: scenario.endpointUrl,
-            helpUrl: null,
-            modelMode: "input",
-            defaultModel: "model-a",
-          },
-        },
-        hydrateCredentialEnv: vi.fn(() => "secret"),
-        promptValidationRecovery: vi.fn(),
-        classifyApplyFailure: vi.fn(),
-        localInferenceTimeoutSecs: 60,
-        bedrockRuntimeOnboard: {
-          setupBedrockRuntimeInference: vi.fn(async () => ({ handled: false as const })),
-        },
-        openrouterRuntimeOnboard: {
-          setupOpenRouterRuntimeInference: vi.fn(async () => ({ handled: false as const })),
-        },
-        redact: (value: string) => value,
-        compactText: (value: string) => value,
-        log: vi.fn(),
-        error: errorLog,
-        exitProcess: vi.fn((code: number): never => {
-          throw new Error(`exit ${code}`);
-        }),
-      } as unknown as SetupInferenceDeps);
+      redact: (value: string) => value,
+      compactText: (value: string) => value,
+      log: vi.fn(),
+      error: vi.fn(),
+      exitProcess: vi.fn((code: number): never => {
+        throw new Error(`exit ${code}`);
+      }),
+    } as unknown as SetupInferenceDeps);
 
-      const outcome = await setupInference(
-        "sandbox-a",
-        "model-a",
-        "compatible-endpoint",
-        scenario.endpointUrl,
-        "COMPATIBLE_API_KEY",
-        null,
-        [],
-        { revalidateSandboxIdentity },
-      ).then(
-        (result) => result,
-        (error: Error) => error.message,
-      );
+    const errorMessage = await setupInference(
+      "sandbox-a",
+      "model-a",
+      "compatible-endpoint",
+      scenario.endpointUrl,
+      "COMPATIBLE_API_KEY",
+      null,
+      [],
+      { revalidateSandboxIdentity },
+    ).then(
+      () => null,
+      (error: Error) => error.message,
+    );
 
-      expect(outcome).toEqual(
-        scenario.expectedError
-          ? scenario.nonInteractive
-            ? "exit 1"
-            : { retry: "selection" }
-          : { ok: true },
-      );
-      expect(errorLog.mock.calls).toEqual(
-        scenario.expectedError
-          ? [[expect.stringMatching(/rejected.*private|rejected.*internal/)]]
-          : [],
-      );
-      expect(native.providerAdapter.createProvider).toHaveBeenCalledTimes(
-        scenario.expectedError ? 0 : 1,
-      );
-      expect(native.nativeCustomTransportDeps.ensureHttpsAdapter).toHaveBeenCalledTimes(
-        scenario.expectedError ? 0 : 1,
-      );
-      expect(resolveEndpointHost).toHaveBeenCalledOnce();
-      expect(
-        verifyOnboardInferenceSmoke.mock.calls.flatMap(
-          ([request]) => request.pinnedAddresses ?? [],
-        ),
-      ).toEqual(scenario.expectedPinnedAddresses);
-      expect(
-        verifyOnboardInferenceSmoke.mock.calls.flatMap(
-          ([request]) => request.trustedPrivateCapability?.addresses ?? [],
-        ),
-      ).toEqual(scenario.expectedTrustedPrivateAddresses);
-    },
-  );
+    expect(errorMessage).toBe(scenario.expectedError);
+    expect(resolveEndpointHost).toHaveBeenCalledOnce();
+    expect(
+      verifyOnboardInferenceSmoke.mock.calls.flatMap(([request]) => request.pinnedAddresses ?? []),
+    ).toEqual(scenario.expectedPinnedAddresses);
+    expect(
+      verifyOnboardInferenceSmoke.mock.calls.flatMap(
+        ([request]) => request.trustedPrivateCapability?.addresses ?? [],
+      ),
+    ).toEqual(scenario.expectedTrustedPrivateAddresses);
+  });
 
   it("warns once inside the gateway lock before applying a valid conflicting route (#6315)", async () => {
     const events: string[] = [];
@@ -803,7 +568,7 @@ describe("onboard shared gateway route containment", () => {
     expect(exitProcess).not.toHaveBeenCalled();
   });
 
-  it("leaves a legacy peer route unchanged when a selected sandbox admits a different native endpoint (#12636)", async () => {
+  it("fails before provider mutation when endpoint or credential identity differs (#6315)", async () => {
     const runOpenshell = vi.fn(() => ({ status: 0 }));
     const updateSandbox = vi.fn(() => true);
     const upsertProvider = vi.fn(async () => ({ ok: true }));
@@ -820,21 +585,11 @@ describe("onboard shared gateway route containment", () => {
       credentialEnv: "KEY_A",
       preferredInferenceApi: "openai-completions",
     };
-    const peerBefore = structuredClone(peer);
-    const compatibility = vi.fn(
-      (request: Parameters<SetupInferenceDeps["checkGatewayRouteCompatibility"]>[0]) =>
-        checkGatewayRouteCompatibility({ ...request, sandboxes: [peer] }),
-    );
     const setupInference = createSetupInference({
-      ...createNativeCustomSetupDependencies(),
-      checkGatewayRouteCompatibility: compatibility,
-      step: vi.fn(),
-      resolveEndpointHost: async () => [{ address: "8.8.8.8", family: 4 }],
-      hydrateCredentialEnv: () => "selected-host-credential",
-      verifyOnboardInferenceSmoke: vi.fn(),
-      verifyInferenceRoute: vi.fn(),
-      hermesProviderAuth: { HERMES_PROVIDER_NAME: "hermes-provider" },
-      log: vi.fn(),
+      checkGatewayRouteCompatibility: (
+        request: Parameters<SetupInferenceDeps["checkGatewayRouteCompatibility"]>[0],
+      ) => checkGatewayRouteCompatibility({ ...request, sandboxes: [peer] }),
+      getSandbox: () => ({ name: "new-custom", provider: "compatible-endpoint" }),
       withSandboxMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
         await operation(),
       withGatewayRouteMutationLock: async <T>(_name: string, operation: () => Promise<T> | T) =>
@@ -860,21 +615,12 @@ describe("onboard shared gateway route containment", () => {
         [],
         { preferredInferenceApi: "openai-completions", revalidateSandboxIdentity },
       ),
-    ).resolves.toEqual({ ok: true });
+    ).rejects.toThrow("exit 1");
 
-    expect(compatibility).not.toHaveBeenCalled();
-    expect(error).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("provider-global configuration"));
     expect(upsertProvider).not.toHaveBeenCalled();
     expect(runOpenshell).not.toHaveBeenCalled();
-    expect(updateSandbox).toHaveBeenCalledWith(
-      "new-custom",
-      expect.objectContaining({
-        nativeCustomProviderAttachment: expect.objectContaining({ sandboxName: "new-custom" }),
-        endpointUrl: "https://endpoint-b.example/v1",
-        credentialEnv: "KEY_B",
-      }),
-    );
-    expect(peer).toEqual(peerBefore);
+    expect(updateSandbox).not.toHaveBeenCalled();
   });
 
   it("rechecks recovered-route ownership inside both mutation locks before setup (#6630)", async () => {
@@ -1070,10 +816,6 @@ describe("onboard shared gateway route containment", () => {
     });
     expect(reservations).toHaveLength(2);
     expect(updateSandbox).toHaveBeenCalledTimes(2);
-    expect(updateSandbox.mock.calls[1]?.[1]).toHaveProperty(
-      "nativeCustomProviderAttachment",
-      undefined,
-    );
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("Affected registered sandboxes: 'alpha'"),
     );
@@ -1404,7 +1146,7 @@ describe("onboard shared gateway route containment", () => {
             providerName: "compatible-endpoint",
             providerType: "openai",
             credentialEnv: "COMPATIBLE_API_KEY",
-            endpointUrl: "http://host.openshell.internal:8000/v1",
+            endpointUrl: "http://host.openshell.internal:1234/v1",
             helpUrl: null,
             modelMode: "input",
             defaultModel: "new-model",
@@ -1437,7 +1179,7 @@ describe("onboard shared gateway route containment", () => {
         "alpha",
         "new-model",
         selectedProvider,
-        selectedProvider === "vllm-local" ? null : "http://host.openshell.internal:8000/v1",
+        selectedProvider === "vllm-local" ? null : "http://host.openshell.internal:1234/v1",
         selectedProvider === "vllm-local" ? null : "COMPATIBLE_API_KEY",
         null,
         [],

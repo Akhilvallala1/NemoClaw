@@ -9,7 +9,7 @@ import {
 import { isDeepStrictEqual } from "node:util";
 
 import { normalizeInferenceSelection, type InferenceSelection } from "../../inference/selection";
-import { normalizeNativeCustomProviderAttachment } from "../../inference/native-custom";
+import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import { hostedNativeProvider } from "../../inference/native-provider/hosted";
 import { requireHostedProviderAttachment } from "../../inference/native-provider/hosted-attachment";
 import { normalizeNativeNvidiaProviderAttachment } from "../../inference/native-nvidia";
@@ -32,7 +32,6 @@ const ROUTE_RESERVATION_KEYS = new Set<keyof SandboxEntry>([
   "name",
   "nativeLocalProviderAttachment",
   "nativeNvidiaProviderAttachment",
-  "nativeCustomProviderAttachment",
   "nativeHostedProviderAttachment",
   "openshellDriver",
   "pendingRouteReservation",
@@ -86,6 +85,7 @@ function validCarriedRouteMetadata(entry: SandboxEntry): boolean {
   } catch {
     return false;
   }
+
   if (
     entry.dashboardPort !== undefined &&
     entry.dashboardPort !== null &&
@@ -109,35 +109,11 @@ function validCarriedRouteMetadata(entry: SandboxEntry): boolean {
   ) {
     return false;
   }
-  if (
-    entry.nativeCustomProviderAttachment !== undefined &&
-    !normalizeNativeCustomProviderAttachment(
-      entry.nativeCustomProviderAttachment,
-      entry.name,
-      entry,
-    )
-  )
-    return false;
   return (
     entry.webSearchProvider === undefined ||
     entry.webSearchProvider === null ||
     isWebSearchProvider(entry.webSearchProvider)
   );
-}
-
-/** Preserve only the selected hosted provider's validated registration/reservation identity. */
-export function nativeHostedReservationAttachment(
-  value: unknown,
-  provider: string | null | undefined,
-  previous?: SandboxEntry,
-) {
-  const receipt = requireHostedProviderAttachment(value, provider);
-  return hostedNativeProvider(provider)
-    ? (receipt ??
-        (previous && previous.provider === provider
-          ? previous.nativeHostedProviderAttachment
-          : undefined))
-    : undefined;
 }
 
 export interface SandboxInferenceRouteReservationAuthority {
@@ -437,4 +413,42 @@ export function retainedNativeLocalProviderAttachment(
     selection.gatewayName === existing.gatewayName
     ? existing.nativeLocalProviderAttachment
     : undefined;
+}
+
+/** Preserve only the selected hosted provider's validated registration/reservation identity. */
+export function nativeHostedReservationAttachment(
+  value: unknown,
+  provider: string | null | undefined,
+  previous?: SandboxEntry,
+  selection?: Pick<
+    SandboxEntry,
+    "provider" | "endpointUrl" | "credentialEnv" | "preferredInferenceApi" | "gatewayName"
+  >,
+) {
+  const receipt = requireHostedProviderAttachment(value, provider);
+  if (receipt) return receipt;
+  if (!previous || previous.provider !== provider) return undefined;
+  const retained = requireHostedProviderAttachment(
+    previous.nativeHostedProviderAttachment,
+    provider,
+  );
+  if (retained?.custom) {
+    if (
+      !selection?.endpointUrl ||
+      !selection.credentialEnv ||
+      !selection.preferredInferenceApi ||
+      selection.gatewayName !== previous.gatewayName
+    )
+      return undefined;
+    try {
+      return recordedNativeProviderAttachment({
+        ...selection,
+        nativeHostedProviderAttachment: retained,
+      });
+    } catch {
+      // A changed binding needs new authority from provider setup.
+      return undefined;
+    }
+  }
+  return hostedNativeProvider(provider) ? retained : undefined;
 }

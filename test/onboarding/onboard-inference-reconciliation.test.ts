@@ -17,6 +17,7 @@ import { createLocalInferenceRouteApplier } from "../../src/lib/onboard/local-in
 import type { SetupInference, SetupInferenceDeps } from "../../src/lib/onboard/setup-inference.js";
 import { writeOkOpenshell } from "../helpers/onboard-openshell-fixture";
 import {
+  bedrockRuntimeOnboard,
   type CommandEntry,
   createDirectSetupInferenceHarness,
   parseStdoutJson,
@@ -24,7 +25,6 @@ import {
 } from "../helpers/onboard-split-context";
 import {
   createDirectCommandRouter,
-  createNativeCustomSetupDependencies,
   runProductionSetupInferenceCredentialBoundary,
   withProcessEnv,
 } from "../support/setup-inference-test-harness.js";
@@ -96,9 +96,9 @@ describe("onboard helpers", () => {
       },
     );
   });
-  it("binds fresh Bedrock Runtime authority to the existing OpenAI adapter", async () => {
+  it("routes Bedrock Runtime custom Anthropic endpoints through the hidden OpenAI adapter", async () => {
     await withProcessEnv({ COMPATIBLE_ANTHROPIC_API_KEY: "bedrock-bearer" }, async () => {
-      const updateSandbox = vi.fn<SetupInferenceDeps["updateSandbox"]>(() => true);
+      const updateSandbox = vi.fn(() => true);
       const ensureAdapter = vi.fn(async () => ({
         baseUrl: "http://host.openshell.internal:11436/v1",
         localBaseUrl: "http://127.0.0.1:11436/v1",
@@ -107,14 +107,19 @@ describe("onboard helpers", () => {
         region: "us-east-1",
         logPath: "/tmp/bedrock-adapter.log",
       }));
-      const native = createNativeCustomSetupDependencies();
+      const setupBedrockRuntimeInference = bedrockRuntimeOnboard.setupBedrockRuntimeInference;
       const harness = createDirectSetupInferenceHarness({
+        legacyCustomRoute: true,
+        runOpenshell: (args) =>
+          args.join(" ") === "provider get -g nemoclaw compatible-anthropic-endpoint"
+            ? { status: 1, stdout: "", stderr: "" }
+            : undefined,
         overrides: {
-          ...native,
           updateSandbox,
-          nativeCustomTransportDeps: {
-            ...native.nativeCustomTransportDeps,
-            ensureBedrockAdapter: ensureAdapter,
+          bedrockRuntimeOnboard: {
+            setupBedrockRuntimeInference: (
+              input: Parameters<typeof setupBedrockRuntimeInference>[0],
+            ) => setupBedrockRuntimeInference({ ...input, ensureAdapter }),
           },
         },
       });
@@ -129,53 +134,62 @@ describe("onboard helpers", () => {
           "compatible-anthropic-endpoint",
           "https://bedrock-runtime.us-east-1.amazonaws.com",
           "COMPATIBLE_ANTHROPIC_API_KEY",
-          null,
-          [],
-          { preferredInferenceApi: "openai-completions" },
         );
       } finally {
         error.mockRestore();
         log.mockRestore();
       }
 
-      const receipt = updateSandbox.mock.lastCall?.[1]?.nativeCustomProviderAttachment;
-      expect(receipt).toMatchObject({
-        sandboxName: "test-box",
-        api: "openai-completions",
-        endpointUrl: "http://host.openshell.internal:11436/v1",
-        transport: {
-          kind: "bedrock-runtime",
-          region: "us-east-1",
-          sourceEndpointUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
-        },
-      });
-      expect(native.providerAdapter.createProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          target: { kind: "named", gatewayName: "nemoclaw" },
-          name: receipt?.providerName,
-          type: receipt?.profileId,
-          credentials: [{ name: "COMPATIBLE_ANTHROPIC_API_KEY", value: "adapter-token" }],
-        }),
+      const commands = harness.commands;
+      const providerCommand = commands.find((entry) => /provider create/.test(entry.command));
+      assert.ok(providerCommand, "expected hidden adapter provider registration");
+      assert.match(providerCommand.command, /--name compatible-anthropic-endpoint/);
+      assert.match(providerCommand.command, /--type openai/);
+      assert.match(providerCommand.command, /--credential NEMOCLAW_BEDROCK_RUNTIME_ADAPTER_TOKEN/);
+      assert.match(
+        providerCommand.command,
+        /OPENAI_BASE_URL=http:\/\/host\.openshell\.internal:11436\/v1/,
       );
-      expect(ensureAdapter).toHaveBeenCalledWith(
-        expect.objectContaining({ compatibleCredential: "bedrock-bearer" }),
+      assert.equal(providerCommand.env?.NEMOCLAW_BEDROCK_RUNTIME_ADAPTER_TOKEN, "adapter-token");
+      assert.ok(
+        !JSON.stringify(commands).includes("bedrock-bearer"),
+        "Bedrock bearer token must not appear in OpenShell argv or env",
       );
-      expect(harness.commands).toEqual([]);
-      expect(harness.verifyInferenceRoute).not.toHaveBeenCalled();
-      expect(harness.verifyOnboardInferenceSmoke).toHaveBeenCalledWith(
-        expect.objectContaining({
-          endpointUrl: "http://127.0.0.1:11436/v1",
-          credentialEnv: "NEMOCLAW_BEDROCK_RUNTIME_ADAPTER_TOKEN",
-          forceOpenAiLike: true,
-        }),
-      );
-      expect(harness.errors).toEqual([]);
-      expect(JSON.stringify(updateSandbox.mock.calls)).not.toMatch(/bedrock-bearer|adapter-token/u);
+      assert.deepEqual(harness.errors, []);
+      assert.deepEqual(harness.logs, [
+        "  Bedrock Runtime adapter ready: region us-east-1, sandbox route http://host.openshell.internal:11436/v1, host log /tmp/bedrock-adapter.log",
+        "  ✓ Inference route set: compatible-anthropic-endpoint / anthropic.claude-3-5-sonnet-20240620-v1:0",
+      ]);
       assert.doesNotMatch(
         [...harness.logs, ...harness.errors, ...consoleOutput].join("\n"),
         /bedrock-bearer|adapter-token/,
         "Bedrock tokens must not appear in onboarding console output",
       );
+      const sandboxCommands = commands.filter((entry) => /\bsandbox\b/.test(entry.command));
+      assert.ok(
+        !sandboxCommands.some((entry) =>
+          JSON.stringify(entry).includes("NEMOCLAW_BEDROCK_RUNTIME_ADAPTER_TOKEN"),
+        ),
+        "adapter credential env must not be passed to sandbox commands",
+      );
+      assert.ok(
+        !sandboxCommands.some((entry) => JSON.stringify(entry).includes("adapter-token")),
+        "adapter token must not be passed to sandbox commands",
+      );
+      assert.match(
+        commands.at(-1)?.command || "",
+        /inference set -g nemoclaw --no-verify --provider compatible-anthropic-endpoint --model anthropic\.claude-3-5-sonnet-20240620-v1:0/,
+      );
+      expect(updateSandbox).toHaveBeenCalledWith("test-box", {
+        model: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        provider: "compatible-anthropic-endpoint",
+        endpointUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        endpointSource: "onboard",
+        credentialEnv: "COMPATIBLE_ANTHROPIC_API_KEY",
+        preferredInferenceApi: null,
+        gatewayName: "nemoclaw",
+        hostLocalInferenceReceipt: null,
+      });
     });
   });
   it(
@@ -844,7 +858,7 @@ const { isInferenceRouteReady } = require(${onboardPath});
 console.log(JSON.stringify({
   same: isInferenceRouteReady("team-gateway", "nvidia-prod", "nvidia/nemotron-3-super-120b-a12b"),
   otherModel: isInferenceRouteReady("team-gateway", "nvidia-prod", "nvidia/other-model"),
-  otherProvider: isInferenceRouteReady("team-gateway", "openai-api", "nvidia/nemotron-3-super-120b-a12b"),
+  otherProvider: isInferenceRouteReady("team-gateway", "compatible-endpoint", "nvidia/nemotron-3-super-120b-a12b"),
 }));
 `,
     );
@@ -944,6 +958,7 @@ const { isOpenclawReady } = require(${onboardPath});
   it("updates OpenAI-compatible providers without passing an unsupported --type flag", async () => {
     await withProcessEnv({ OPENAI_API_KEY: "sk-TEST-NOT-A-REAL-VALUE" }, async () => {
       const harness = createDirectSetupInferenceHarness({
+        legacyCustomRoute: true,
         runOpenshell: (args) =>
           args.slice(0, 2).join(" ") === "provider get"
             ? { status: 0, stdout: COMPATIBLE_PROVIDER_METADATA, stderr: "" }
@@ -954,7 +969,7 @@ const { isOpenclawReady } = require(${onboardPath});
         "test-box",
         "gpt-5.4",
         "compatible-endpoint",
-        "http://host.openshell.internal:8000/v1",
+        "https://api.openai.com/v1",
         "OPENAI_API_KEY",
       );
 
@@ -984,6 +999,7 @@ const { isOpenclawReady } = require(${onboardPath});
         },
       ]);
       const harness = createDirectSetupInferenceHarness({
+        legacyCustomRoute: true,
         runOpenshell: commandRouter.runOpenshell,
         overrides: {
           promptValidationRecovery: async () => {
@@ -998,7 +1014,7 @@ const { isOpenclawReady } = require(${onboardPath});
           "test-box",
           "gpt-5.4",
           "compatible-endpoint",
-          "http://host.openshell.internal:8000/v1",
+          "https://api.openai.com/v1",
           "OPENAI_API_KEY",
         );
       } finally {
@@ -1029,6 +1045,7 @@ const { isOpenclawReady } = require(${onboardPath});
         },
       ]);
       const harness = createDirectSetupInferenceHarness({
+        legacyCustomRoute: true,
         runOpenshell: commandRouter.runOpenshell,
         overrides: { promptValidationRecovery: async () => "selection" },
       });
@@ -1039,7 +1056,7 @@ const { isOpenclawReady } = require(${onboardPath});
           "test-box",
           "gpt-5.4",
           "compatible-endpoint",
-          "http://host.openshell.internal:8000/v1",
+          "https://api.openai.com/v1",
           "OPENAI_API_KEY",
         );
       } finally {
@@ -1413,15 +1430,20 @@ describe("re-onboard Ollama GPU release (#9110)", () => {
     }
     // A serialized re-onboard can neither replace the row under the read nor
     // select the captured model before this cleanup runs.
-    expect(events).toEqual([
+    expect(events.filter((event) => event !== "read-prior-route")).toEqual([
       "lock-enter",
-      "read-prior-route",
       "ownership-lock-enter",
       "peer-scan",
       "unload",
       "ownership-lock-exit",
       "lock-exit",
     ]);
+    const priorReads = events.flatMap((event, index) =>
+      event === "read-prior-route" ? [index] : [],
+    );
+    expect(priorReads.length).toBeGreaterThan(0);
+    expect(Math.min(...priorReads)).toBeGreaterThan(events.indexOf("lock-enter"));
+    expect(Math.max(...priorReads)).toBeLessThan(events.indexOf("ownership-lock-enter"));
   });
 
   it("skips the release when the route returns to selection (#9110)", async () => {

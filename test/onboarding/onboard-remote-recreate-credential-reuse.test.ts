@@ -18,7 +18,7 @@ const REPO_ROOT = path.join(import.meta.dirname, "../..");
 
 describe("onboard recovered remote-provider credential reuse", () => {
   it(
-    "refuses to use a shared beta credential to recreate a fresh native custom route",
+    "re-applies a registered legacy route and requires a new credential after its authority is removed",
     testTimeoutOptions(90_000),
     () => {
       const workspace = createOnboardProcessWorkspace("nemoclaw-remote-recreate-", {
@@ -103,8 +103,11 @@ if (process.env.NEMOCLAW_TEST_CONFLICTING_ENDPOINT === "1") {
     credentialEnv: "COMPATIBLE_API_KEY",
   });
 }
-registry.removeSandbox("recovered-custom");
-const { setupNim, setupInference } = require(${onboardPath});
+if (process.env.NEMOCLAW_TEST_RECREATE === "1") registry.removeSandbox("recovered-custom");
+const { setupNim, createSetupInference } = require(${onboardPath});
+const setupInference = createSetupInference({
+  resolveEndpointHost: async () => [{ address: "8.8.8.8", family: 4 }],
+});
 
 (async () => {
   const selected = await setupNim(null, "recovered-custom", null, true, {
@@ -161,21 +164,51 @@ const { setupNim, setupInference } = require(${onboardPath});
         });
         const output = result.output;
 
-        assert.notEqual(result.status, 0, output);
-        assert.match(
-          output,
-          /Keyless native custom reuse requires the exact recorded native attachment/,
-        );
+        assert.equal(result.status, 0, output);
+        assert.match(output, /Reusing existing gateway credential for 'compatible-endpoint'/);
+        assert.match(output, /Reusing existing gateway credential; skipping host inference smoke/);
+        assert.match(output, /"skipHostInferenceSmoke":true/);
+        assert.match(output, /"reuseGatewayCredentialWithoutLocalKey":true/);
         const curlLog = fs.existsSync(curlLogPath) ? fs.readFileSync(curlLogPath, "utf8") : "";
-        assert.equal(
-          curlLog,
-          "",
-          "rejected legacy credential reuse must not probe an upstream endpoint",
+        const curlUrls = curlLog
+          .split(/\s+/u)
+          .filter((value) => value.startsWith("http://") || value.startsWith("https://"))
+          .map((value) => {
+            const parsed = new URL(value);
+            return `${parsed.protocol}//${parsed.hostname}:${parsed.port}${parsed.pathname}${parsed.search}`;
+          });
+        assert.deepEqual(
+          curlUrls,
+          [],
+          `remote recovery must not run unrelated local endpoint probes: ${curlLog}`,
         );
         const openshellLog = fs.readFileSync(openshellLogPath, "utf8");
+        assert.match(openshellLog, /provider get -g nemoclaw compatible-endpoint/);
+        assert.match(
+          openshellLog,
+          /inference set -g nemoclaw --no-verify --provider compatible-endpoint/,
+        );
         assert.ok(
-          !/provider (create|update)|inference set|provider profile import/.test(openshellLog),
-          "a shared beta credential must not authorize fresh native profile or route mutation",
+          !openshellLog.includes("provider update -g nemoclaw compatible-endpoint"),
+          openshellLog,
+        );
+        assert.ok(!openshellLog.includes("OPENAI_BASE_URL="), openshellLog);
+        assert.ok(!openshellLog.includes("--credential"), openshellLog);
+
+        fs.writeFileSync(openshellLogPath, "");
+        const recreateResult = runOnboardProcess([scriptPath], {
+          env: scenarioEnv({ NEMOCLAW_TEST_RECREATE: "1" }),
+          timeoutMs: 80_000,
+        });
+        assert.notEqual(recreateResult.status, 0, recreateResult.output);
+        assert.match(
+          recreateResult.output,
+          /A new credential is required for this endpoint and API/,
+        );
+        assert.doesNotMatch(recreateResult.output, /Reusing existing gateway credential/);
+        assert.doesNotMatch(
+          fs.readFileSync(openshellLogPath, "utf8"),
+          /provider (create|update)|inference set/,
         );
 
         fs.writeFileSync(openshellLogPath, "");

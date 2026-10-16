@@ -673,10 +673,7 @@ const {
 });
 const sandboxExec = sandboxCommandCli.createCliOpenShellSandboxCommandExecutor({ hostCwd: ROOT });
 
-const compatibleSmoke = createSmoke(runOpenshell, sandboxExec, redact, {
-  getSandbox: registry.getSandbox,
-  resolveGatewayName: gatewayBinding.resolveSandboxGatewayName,
-});
+const compatibleSmoke = createSmoke(runOpenshell, sandboxExec, redact, registry.getSandbox);
 
 const { isSandboxReady, parseSandboxStatus, getSandboxStateFromOutputs } = gatewayState;
 const waitForSandboxReady = sandboxReadinessTracing.createCliSandboxReadyWaiter({
@@ -2026,8 +2023,7 @@ async function handleRemoteProviderSelection(
       log: (message) => console.log(message),
     });
     if (bedrockSelection.action === "retry-selection") {
-      console.log("  Returning to provider selection.");
-      console.log("");
+      console.log("  Returning to provider selection.\n");
       return "retry-selection";
     }
     if (bedrockSelection.action === "selected") {
@@ -2055,6 +2051,7 @@ async function handleRemoteProviderSelection(
           },
           {
             resolveProviderCredential,
+            getSandbox: registry.getSandbox,
             readRecordedInferenceRoute: (name) =>
               readRecordedInferenceRoute(name, args.recoverySessionId),
             readRecordedProviderEndpoints,
@@ -2269,67 +2266,65 @@ function getSetupNimDeps(): SetupNimDeps {
 }
 const setupNim = setupNimFlow.createSetupNim(getSetupNimDeps());
 // ── Step 4: Inference provider ───────────────────────────────────
-function getSetupInferenceDeps(): SetupInferenceDeps {
-  return {
-    checkGatewayRouteCompatibility,
-    withGatewayRouteMutationLock: gatewayRouteMutationLock.withGatewayRouteMutationLock,
-    withSandboxMutationLock: sandboxMutationLock.withSandboxMutationLock,
-    step,
-    getGatewayName: () => GATEWAY_NAME,
-    runOpenshell,
-    inferenceRouteMutator,
-    inferenceRouteObserver,
-    upsertProvider,
-    recordMigratedCredential: registration.recordMigratedCredential,
-    verifyInferenceRoute,
-    verifyOnboardInferenceSmoke,
-    isNonInteractive,
-    updateSandbox: registry.reserveSandboxInferenceRoute,
-    getSandbox: registry.getSandbox,
-    listSandboxes: registry.listSandboxes,
-    unloadOllamaModels,
-    hermesProviderAuth,
-    getHermesToolGatewayBroker,
-    ...onboardProviders.setupInferenceProviderDeps(runOpenshell),
-    normalizeHermesAuthMethod,
-    resolveHermesNousApiKey,
-    checkHermesProviderStoreReachable,
-    hermesAuthMethodLabel,
-    hermesConstants: {
-      HERMES_NOUS_API_KEY_CREDENTIAL_ENV,
-      HERMES_AUTH_METHOD_API_KEY,
-      HERMES_AUTH_METHOD_OAUTH,
-    },
-    requireValue,
-    redact,
-    compactText,
-    REMOTE_PROVIDER_CONFIG,
-    hydrateCredentialEnv,
-    promptValidationRecovery,
-    classifyApplyFailure,
-    localInferenceTimeoutSecs: LOCAL_INFERENCE_TIMEOUT_SECS,
-    bedrockRuntimeOnboard,
-    openrouterRuntimeOnboard,
-    validateLocalProvider,
-    getLocalProviderHealthCheck,
-    getLocalProviderBaseUrl,
-    run,
-    vllmLocalCredentialEnv: VLLM_LOCAL_CREDENTIAL_ENV,
-    shouldFrontOllamaWithProxy,
-    ensureOllamaAuthProxy,
-    isProxyHealthy,
-    getOllamaProxyToken,
-    persistAndProbeOllamaProxy,
-    localInference,
-    ollamaProxyCredentialEnv: OLLAMA_PROXY_CREDENTIAL_ENV,
-    isRoutedInferenceProvider,
-    reconcileModelRouter,
-    routedInference,
-    log: (message: string) => console.log(message),
-    error: (message: string) => console.error(message),
-    exitProcess: (code: number): never => process.exit(code),
-  };
-}
+const getSetupInferenceDeps = (): SetupInferenceDeps => ({
+  checkGatewayRouteCompatibility,
+  withGatewayRouteMutationLock: gatewayRouteMutationLock.withGatewayRouteMutationLock,
+  withSandboxMutationLock: sandboxMutationLock.withSandboxMutationLock,
+  step,
+  getGatewayName: () => GATEWAY_NAME,
+  runOpenshell,
+  inferenceRouteMutator,
+  inferenceRouteObserver,
+  upsertProvider,
+  recordMigratedProviderCredential: registration.recordMigratedProviderCredential,
+  verifyInferenceRoute,
+  verifyOnboardInferenceSmoke,
+  isNonInteractive,
+  updateSandbox: registry.reserveSandboxInferenceRoute,
+  getSandbox: registry.getSandbox,
+  listSandboxes: registry.listSandboxes,
+  unloadOllamaModels,
+  hermesProviderAuth,
+  getHermesToolGatewayBroker,
+  ...onboardProviders.setupInferenceProviderDeps(runOpenshell),
+  normalizeHermesAuthMethod,
+  resolveHermesNousApiKey,
+  checkHermesProviderStoreReachable,
+  hermesAuthMethodLabel,
+  hermesConstants: {
+    HERMES_NOUS_API_KEY_CREDENTIAL_ENV,
+    HERMES_AUTH_METHOD_API_KEY,
+    HERMES_AUTH_METHOD_OAUTH,
+  },
+  requireValue,
+  redact,
+  compactText,
+  REMOTE_PROVIDER_CONFIG,
+  hydrateCredentialEnv,
+  promptValidationRecovery,
+  classifyApplyFailure,
+  localInferenceTimeoutSecs: LOCAL_INFERENCE_TIMEOUT_SECS,
+  bedrockRuntimeOnboard,
+  openrouterRuntimeOnboard,
+  validateLocalProvider,
+  getLocalProviderHealthCheck,
+  getLocalProviderBaseUrl,
+  run,
+  vllmLocalCredentialEnv: VLLM_LOCAL_CREDENTIAL_ENV,
+  shouldFrontOllamaWithProxy,
+  ensureOllamaAuthProxy,
+  isProxyHealthy,
+  getOllamaProxyToken,
+  persistAndProbeOllamaProxy,
+  localInference,
+  ollamaProxyCredentialEnv: OLLAMA_PROXY_CREDENTIAL_ENV,
+  isRoutedInferenceProvider,
+  reconcileModelRouter,
+  routedInference,
+  log: (message: string) => console.log(message),
+  error: (message: string) => console.error(message),
+  exitProcess: (code: number): never => process.exit(code),
+});
 export type SetupInferenceDeps = import("./onboard/setup-inference").SetupInferenceDeps;
 export type SetupInference = import("./onboard/setup-inference").SetupInference;
 function createSetupInference(overrides: Partial<SetupInferenceDeps> = {}): SetupInference {
@@ -2919,6 +2914,7 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
         import("./resources-cmd").ResourceProfile
       >({
         resumeProvider: {
+          getSandbox: registry.getSandbox,
           isNonInteractive,
           isRoutedInferenceProvider,
           providerExistsInGateway,
@@ -3144,8 +3140,6 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
             step,
             sandboxCommandExecutor: sandboxExec,
             gatewayName: GATEWAY_NAME!,
-            nativeCustomProviderAttachment: registry.getSandbox(finalFlowContext.sandboxName)
-              ?.nativeCustomProviderAttachment,
             startRecordedStep,
             recordStepComplete,
             recordStepFailed,
@@ -3214,13 +3208,9 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
               liveFinalFlowContext,
               registry.getSandbox(name),
             );
-            return verifyDeploymentModule.verifyOnboardDeployment(
+            return verifyDeploymentModule.verifyDeployment(
               name,
               chain,
-              {
-                ...liveFinalFlowContext,
-                ...inference.invocation,
-              },
               {
                 executeSandboxCommand: (sandbox: string, script: string) =>
                   executeSandboxCommandForVerification(sandbox, script, sandboxExec),
@@ -3228,6 +3218,16 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
                 getMessagingChannels: () => liveFinalFlowContext.selectedMessagingChannels || [],
                 providerExistsInGateway: (providerName: string) =>
                   providerExistsInGateway(providerName),
+                probeInferenceInvocation: () =>
+                  verifyDeploymentModule.probeOnboardInferenceInvocation(inference.invocation),
+              },
+              {
+                diagnoseCustomOpenClawRuntime:
+                  verifyDeploymentModule.shouldDiagnoseCustomOpenClawRuntime(
+                    liveFinalFlowContext.fromDockerfile,
+                    agent?.name,
+                  ),
+                inferenceRouteContext: inference.route,
               },
             );
           },

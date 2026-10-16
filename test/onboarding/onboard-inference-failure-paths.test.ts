@@ -1,13 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  bindGatewayUpsertProvider,
-  type SetupInference,
-  type SetupInferenceDeps,
-} from "../../src/lib/onboard/setup-inference.js";
+import type { SetupInference, SetupInferenceDeps } from "../../src/lib/onboard/setup-inference.js";
 import {
   createDirectCommandRouter,
   createDirectSetupInferenceHarnessFactory,
@@ -21,46 +16,6 @@ const bedrockRuntimeOnboard =
   require("../../src/lib/onboard/bedrock-runtime") as typeof import("../../src/lib/onboard/bedrock-runtime.js");
 const createDirectSetupInferenceHarness = createDirectSetupInferenceHarnessFactory(
   onboard.createSetupInference,
-);
-
-// These retained cases exercise the legacy shared-route helper directly.
-// Fresh hosted selections are qualified through native-custom/transport and the
-// onboarding native-authority cases; they do not call this legacy helper.
-const createLegacyBedrockHarness = createDirectSetupInferenceHarnessFactory(
-  (overrides = {}) =>
-    async (sandboxName, model, provider, endpointUrl = null, credentialEnv = null) => {
-      const deps = overrides as SetupInferenceDeps;
-      const gatewayName = deps.getGatewayName();
-      const result = await deps.bedrockRuntimeOnboard.setupBedrockRuntimeInference({
-        sandboxName,
-        model,
-        provider,
-        endpointUrl,
-        credentialEnv,
-        gatewayName,
-        isNonInteractive: deps.isNonInteractive,
-        inferenceRouteMutator: deps.inferenceRouteMutator,
-        upsertProvider: bindGatewayUpsertProvider(deps.upsertProvider, gatewayName),
-        verifyInferenceRoute: (selectedProvider, selectedModel) =>
-          deps.verifyInferenceRoute(gatewayName, selectedProvider, selectedModel),
-        verifyOnboardInferenceSmoke: deps.verifyOnboardInferenceSmoke,
-        updateSandbox: (name, patch) =>
-          deps.updateSandbox(name, {
-            provider: patch.provider ?? provider,
-            model: patch.model ?? model,
-            endpointUrl,
-            endpointSource: "onboard",
-            credentialEnv,
-            preferredInferenceApi: null,
-            gatewayName,
-          }),
-        error: deps.error,
-        log: deps.log,
-        exitProcess: deps.exitProcess,
-      });
-      assert.ok(result.handled, "The legacy fixture requires a classified Bedrock endpoint.");
-      return result.result;
-    },
 );
 
 type DirectSetupInferenceHarness = ReturnType<typeof createDirectSetupInferenceHarness>;
@@ -647,7 +602,8 @@ describe("setupInference dependency failures", () => {
     const exitProcess = createInjectedExit();
     const ensureAdapter = vi.fn(async () => successfulBedrockAdapter());
     const upsertProvider = vi.fn(async () => ({ ok: true }));
-    const harness = createLegacyBedrockHarness({
+    const harness = createDirectSetupInferenceHarness({
+      legacyCustomRoute: true,
       overrides: {
         isNonInteractive: () => true,
         exitProcess,
@@ -684,7 +640,8 @@ describe("setupInference dependency failures", () => {
       throw new Error("adapter unavailable");
     });
     const upsertProvider = vi.fn(async () => ({ ok: true }));
-    const harness = createLegacyBedrockHarness({
+    const harness = createDirectSetupInferenceHarness({
+      legacyCustomRoute: true,
       overrides: {
         exitProcess,
         upsertProvider,
@@ -719,7 +676,8 @@ describe("setupInference dependency failures", () => {
       throw new Error("adapter unavailable");
     });
     const upsertProvider = vi.fn(async () => ({ ok: true }));
-    const harness = createLegacyBedrockHarness({
+    const harness = createDirectSetupInferenceHarness({
+      legacyCustomRoute: true,
       overrides: {
         isNonInteractive: () => true,
         exitProcess,
@@ -758,7 +716,8 @@ describe("setupInference dependency failures", () => {
       status: 23,
       message: "Bedrock provider registration failed",
     }));
-    const harness = createLegacyBedrockHarness({
+    const harness = createDirectSetupInferenceHarness({
+      legacyCustomRoute: true,
       overrides: {
         isNonInteractive: () => true,
         exitProcess,
@@ -795,7 +754,8 @@ describe("setupInference dependency failures", () => {
       status: 0,
       message: "Bedrock provider registration failed without status",
     }));
-    const harness = createLegacyBedrockHarness({
+    const harness = createDirectSetupInferenceHarness({
+      legacyCustomRoute: true,
       overrides: {
         isNonInteractive: () => true,
         exitProcess,
@@ -828,7 +788,8 @@ describe("setupInference dependency failures", () => {
     const exitProcess = createInjectedExit();
     const ensureAdapter = vi.fn(async () => successfulBedrockAdapter());
     const upsertProvider = vi.fn(async () => ({ ok: true }));
-    const harness = createLegacyBedrockHarness({
+    const harness = createDirectSetupInferenceHarness({
+      legacyCustomRoute: true,
       runOpenshell: (args) =>
         args.slice(0, 2).join(" ") === "inference set"
           ? { status: 37, stdout: "", stderr: "route denied" }
@@ -869,7 +830,8 @@ describe("setupInference dependency failures", () => {
     const exitProcess = createInjectedExit();
     const ensureAdapter = vi.fn(async () => successfulBedrockAdapter());
     const upsertProvider = vi.fn(async () => ({ ok: true }));
-    const harness = createLegacyBedrockHarness({
+    const harness = createDirectSetupInferenceHarness({
+      legacyCustomRoute: true,
       runOpenshell: (args) =>
         args.slice(0, 2).join(" ") === "inference set"
           ? { status: null, stdout: "", stderr: "" }

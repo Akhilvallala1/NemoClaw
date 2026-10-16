@@ -9,25 +9,21 @@ import { verifyNativeLocalProviderAttachment } from "../../inference/native-loca
 import type { SandboxEntry } from "../../state/registry/types";
 import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import { hostedNativeProvider } from "../../inference/native-provider/hosted";
+import { hostedNativeProviderForAttachment } from "../../inference/native-provider/hosted-attachment";
 import {
   fixedNativeProvider,
   fixedNativeProviderForAttachment,
 } from "../../inference/native-provider/fixed";
 import { nativeProviderLifecycle } from "../../inference/native-provider";
 import type { NativeProviderAttachment } from "../../inference/native-provider/contract";
-import {
-  verifyNativeCustomProviderAttachment,
-  type NativeCustomProviderAttachment,
-} from "../../inference/native-custom";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../inference/native-nvidia/contract";
-import {
-  createRepositorySandboxCommandExecutor,
-  buildSandboxCommandEnvironment,
-} from "../../adapters/sandbox/command-transport";
+import { buildSandboxCommandEnvironment } from "../../adapters/sandbox/command-transport";
 import type { OpenShellSandboxBufferedCommandExecutor } from "../../adapters/openshell/sandbox-command";
+import { createCliOpenShellSandboxCommandExecutor } from "../../adapters/openshell/sandbox-command-cli";
 import { createCliOpenShellProviderAdapter } from "../../adapters/openshell/provider-adapter-cli";
 import { OPENSHELL_INFERENCE_ROUTE_PROBE_TIMEOUT_MS } from "../../adapters/openshell/timeouts";
 import * as agentRuntime from "../../agent/runtime";
+import { REPOSITORY_ROOT } from "../../core/repository-root";
 import type { ProviderHealthStatus } from "../../inference/health";
 import {
   NVIDIA_HOSTED_NATIVE_ENDPOINT,
@@ -126,22 +122,6 @@ export async function verifyNativeHostedStatusAttachment(input: {
   });
 }
 
-export async function verifyNativeCustomStatusAttachment(input: {
-  gatewayName: string;
-  sandboxName: string;
-  expected: NativeCustomProviderAttachment;
-  environment?: NodeJS.ProcessEnv;
-}): Promise<void> {
-  await verifyNativeCustomProviderAttachment({
-    adapter: createCliOpenShellProviderAdapter(
-      input.environment ? { environment: input.environment } : {},
-    ),
-    target: { kind: "named", gatewayName: input.gatewayName },
-    sandboxName: input.sandboxName,
-    expected: input.expected,
-  });
-}
-
 export type SandboxInferenceRouteHealth = {
   ok: boolean;
   endpoint: string;
@@ -165,7 +145,9 @@ export async function probeSandboxNativeNvidiaModelsHealth(
     commandExecutor?: OpenShellSandboxBufferedCommandExecutor;
   },
 ): Promise<SandboxInferenceRouteHealth | null> {
-  const commandExecutor = options.commandExecutor ?? createRepositorySandboxCommandExecutor();
+  const commandExecutor =
+    options.commandExecutor ??
+    createCliOpenShellSandboxCommandExecutor({ hostCwd: REPOSITORY_ROOT });
   const dcode = options.agentName === DCODE_AGENT_NAME;
   try {
     const completed = await commandExecutor.runBuffered({
@@ -224,7 +206,9 @@ export async function probeSandboxInferenceGatewayHealth(
   } = {},
 ): Promise<SandboxInferenceRouteHealth | null> {
   const endpoint = "https://inference.local/v1/models";
-  const commandExecutor = options.commandExecutor ?? createRepositorySandboxCommandExecutor();
+  const commandExecutor =
+    options.commandExecutor ??
+    createCliOpenShellSandboxCommandExecutor({ hostCwd: REPOSITORY_ROOT });
   const getSessionAgent = options.getSessionAgentImpl ?? agentRuntime.getSessionAgent;
   let result: { status: number; output: string; stderr: string };
   try {
@@ -415,7 +399,6 @@ export type SandboxInferenceRouteHealthContext = {
   nativeLocalEndpoint?: string;
   nativeProvider?: boolean;
   nativeEndpointUrl?: string;
-  nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
   model?: string | null;
   preferredInferenceApi?: string | null;
 };
@@ -469,24 +452,24 @@ export function buildSandboxInferenceRouteHealth(
       subprobes: providerHealthDiagnostics(providerHealth, invocation?.ok === true),
     };
   }
-  const definition = context.nativeCustomProviderAttachment
-    ? { logicalProvider: context.provider ?? "", label: "custom" }
-    : fixedNativeProvider(context.provider);
-  if (
-    (context.nativeCustomProviderAttachment || context.nativeProvider || context.nativeNvidia) &&
-    definition
-  ) {
+  const definition =
+    fixedNativeProvider(context.provider) ??
+    (context.nativeProvider &&
+    (context.provider === "compatible-endpoint" ||
+      context.provider === "compatible-anthropic-endpoint")
+      ? { logicalProvider: context.provider, label: "custom hosted" }
+      : undefined);
+  if ((context.nativeProvider || context.nativeNvidia) && definition) {
     const endpoint =
       invocation && !invocation.ok && invocation.endpoint
         ? invocation.endpoint
         : resolveSandboxInferenceInvocationEndpoint({
-            sandboxName: context.nativeCustomProviderAttachment?.sandboxName ?? "",
+            sandboxName: "",
             provider: definition.logicalProvider,
             model: context.model ?? "",
             preferredInferenceApi: context.preferredInferenceApi ?? null,
-            nativeProvider: context.nativeCustomProviderAttachment ? undefined : true,
+            nativeProvider: true,
             nativeEndpointUrl: context.nativeEndpointUrl,
-            nativeCustomProviderAttachment: context.nativeCustomProviderAttachment,
           });
     const diagnostics = providerHealthDiagnostics(providerHealth, Boolean(invocation?.ok));
     const nativeHealth: ProviderHealthStatus = invocation?.ok
@@ -504,9 +487,7 @@ export function buildSandboxInferenceRouteHealth(
           endpoint,
           detail: invocation
             ? `The native ${definition.label} route did not serve an inference request: ${invocation.detail}.`
-            : context.nativeCustomProviderAttachment
-              ? "Could not probe the selected native custom route from inside the sandbox. Check the sandbox and its named gateway."
-              : `Could not probe the native ${definition.label} route from inside the sandbox. Recreate legacy beta sandboxes before using this route.`,
+            : `Could not probe the native ${definition.label} route from inside the sandbox. Recreate legacy beta sandboxes before using this route.`,
           failureLabel: classifyInferenceInvocationFailureLabel(invocation?.httpStatus ?? null),
         };
     return diagnostics.length > 0 ? { ...nativeHealth, subprobes: diagnostics } : nativeHealth;
@@ -561,6 +542,13 @@ export function buildSandboxInferenceRouteHealth(
       detail: `Could not probe ${endpoint} from inside the sandbox.`,
     };
   }
+  if (
+    !routeHealth.ok &&
+    gateway?.httpStatus === 0 &&
+    new URL(endpoint).hostname === "inference.local"
+  )
+    routeHealth.detail +=
+      " If this legacy route is no longer available, recreate the sandbox to use native inference.";
   const subprobes = [...(routeHealth.subprobes ?? []), ...diagnostics];
   return subprobes.length > 0 ? { ...routeHealth, subprobes } : routeHealth;
 }
@@ -602,7 +590,11 @@ export function readNativeStatusSelection(entry: SandboxEntry | null | undefined
     failure = "Recorded native provider ownership is invalid; no inference request was sent.";
   }
   const local = entry?.nativeLocalProviderAttachment !== undefined;
-  const definition = local ? null : hostedNativeProvider(entry?.provider, attachment?.endpointUrl);
+  const definition = local
+    ? null
+    : attachment
+      ? hostedNativeProviderForAttachment(attachment)
+      : hostedNativeProvider(entry?.provider);
   return {
     attachment,
     failure,

@@ -32,7 +32,6 @@ import {
 } from "../../host-service-reachability";
 import { checkpointSandboxIdentityMatches } from "../../checkpoint-replay";
 import type { OnboardInferenceCapabilityCache } from "../../inference-capability-cache";
-import type { RetainedNativeCustomSelection } from "../../resume/native-custom";
 import type { RepairLocalInferenceSystemdOverrideOptions } from "../../local-inference-topology";
 import { resolveModelRouterPort } from "../../model-router";
 import { promptOnboardConfigurationReview } from "../../prompt-helpers";
@@ -89,12 +88,6 @@ function selectedNativeInference(
   return nativeInference ?? { endpointUrl, credentialEnv };
 }
 
-function nativeCustomRebuildAttachmentOptions(session: Session | null | undefined, reuse = true) {
-  return reuse && session?.nativeCustomProviderAttachment
-    ? { nativeCustomProviderAttachment: session.nativeCustomProviderAttachment }
-    : {};
-}
-
 export interface ProviderInferenceSetupOptions {
   agentName?: string;
   /** Local NIM shares vllm-local's provider ID but keeps its existing route. */
@@ -103,7 +96,6 @@ export interface ProviderInferenceSetupOptions {
   allowToolsIncompatible?: boolean;
   skipHostInferenceSmoke?: boolean;
   reuseGatewayCredentialWithoutLocalKey?: boolean;
-  nativeCustomProviderAttachment?: import("../../../inference/native-custom").NativeCustomProviderAttachment;
   /** Exact onboarding-provenanced endpoint permitted to skip DNS re-resolution. */
   onboardEndpointUrl?: string;
   /**
@@ -286,10 +278,12 @@ export interface ProviderInferenceStateOptions<Gpu, Agent, Host> {
       provider: string | null | undefined,
       credentialEnv: string | null | undefined,
       revalidateSandboxIdentity?: (operation: string) => void,
-    ): Promise<{ forceInferenceSetup: boolean; credentialEnv: string | null }>;
-    hasRetainedNativeCustomSelection?: (
-      input: RetainedNativeCustomSelection,
-    ) => boolean | Promise<boolean>;
+      selection?: { sandboxName: string | null; endpointUrl: string | null },
+    ): Promise<{
+      forceInferenceSetup: boolean;
+      credentialEnv: string | null;
+      nativeCustomSetup?: boolean;
+    }>;
     ensureManagedLlamaCppResumeReady(
       provider: string | null | undefined,
       sandboxName: string | null | undefined,
@@ -981,10 +975,10 @@ function shouldRefreshCompatibleEndpointRouteForMessaging(
   selectedMessagingChannels: string[],
   session: Session | null,
   agent: unknown,
-  retainedNativeCustom: boolean,
+  nativeCustomSetup: boolean | undefined,
 ): boolean {
   return (
-    !retainedNativeCustom &&
+    !nativeCustomSetup &&
     provider === "compatible-endpoint" &&
     agentName(agent) === "openclaw" &&
     hasActiveMessagingChannels(selectedMessagingChannels, session)
@@ -1297,17 +1291,6 @@ async function resolveSelectionSandboxName<Agent>(
   return deps.promptValidatedSandboxName(agent);
 }
 
-function nativeLocalRecreationOptions(
-  fresh: boolean,
-  effectiveResume: boolean,
-  recreateSandbox: boolean,
-  sessionId: string | undefined,
-) {
-  return fresh && !effectiveResume && recreateSandbox
-    ? { recreatePublishedSandbox: true, reservationSessionId: sessionId }
-    : {};
-}
-
 function nativeLocalAgentOptions(
   agent: unknown,
   provider: string,
@@ -1590,24 +1573,13 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         sandboxName,
         deps.ensureManagedLlamaCppResumeReady,
       );
-      const retainedNativeCustom =
-        (await deps.hasRetainedNativeCustomSelection?.({
-          gatewayName,
-          sandboxName,
-          provider,
-          endpointUrl,
-          api: preferredInferenceApi,
-          credentialEnv,
-          ...nativeCustomRebuildAttachmentOptions(session),
-        })) === true;
-      // Native providers have endpoint-specific names. The legacy logical-name
-      // lookup cannot recover them and must not demand an exported host key.
-      // Force setup to verify the live profile/ID before reattaching the sandbox.
-      const recovery = retainedNativeCustom
-        ? { forceInferenceSetup: true, credentialEnv }
-        : await deps.ensureResumeProviderReady(gatewayName, provider, credentialEnv);
-      reuseGatewayCredentialWithoutLocalKey ||= retainedNativeCustom;
-      skipHostInferenceSmoke ||= retainedNativeCustom;
+      const recovery = await deps.ensureResumeProviderReady(
+        gatewayName,
+        provider,
+        credentialEnv,
+        undefined,
+        { sandboxName: reusableResumeSandboxName, endpointUrl },
+      );
       forceInferenceSetup ||= recovery.forceInferenceSetup;
       credentialEnv = recovery.credentialEnv;
       // Rebuild may be resuming a legacy session whose step marker was never
@@ -1665,7 +1637,7 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
           selectedMessagingChannels,
           session,
           agent,
-          retainedNativeCustom,
+          recovery.nativeCustomSetup,
         )
       ) {
         if (!hydratedCredential) {
@@ -2314,7 +2286,6 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         ...(preparedOllamaProxyToken ? { preparedOllamaProxyToken } : {}),
         ...(skipHostInferenceSmoke ? { skipHostInferenceSmoke } : {}),
         ...(reuseGatewayCredentialWithoutLocalKey ? { reuseGatewayCredentialWithoutLocalKey } : {}),
-        ...nativeCustomRebuildAttachmentOptions(session, reuseGatewayCredentialWithoutLocalKey),
         ...(preferredInferenceApi ? { preferredInferenceApi } : {}),
         ...(endpointPinnedAddresses ? { endpointPinnedAddresses } : {}),
         endpointSource,
@@ -2322,12 +2293,9 @@ export async function handleProviderInferenceState<Gpu, Agent, Host>({
         ...(endpointTrustedPrivateCapability ? { endpointTrustedPrivateCapability } : {}),
         ...(inferenceCapabilityCache ? { inferenceCapabilityCache } : {}),
         ...(freshManagedOllama ? { reservationSessionId: session?.sessionId } : {}),
-        ...nativeLocalRecreationOptions(
-          fresh,
-          effectiveResume,
-          recreateSandbox,
-          session?.sessionId,
-        ),
+        ...(fresh && !effectiveResume && recreateSandbox
+          ? { recreatePublishedSandbox: true, reservationSessionId: session?.sessionId }
+          : {}),
         ...preBackupRouteReservationOptions(
           effectiveResume,
           session?.steps?.sandbox?.status === "complete",

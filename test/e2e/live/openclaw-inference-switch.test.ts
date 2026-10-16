@@ -17,13 +17,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { NVIDIA_HOSTED_NATIVE_ENDPOINT } from "../../../src/lib/inference/native-nvidia/index.ts";
-import { DEFAULT_CLOUD_MODEL } from "../../../src/lib/inference/config.ts";
-import { BUILD_ENDPOINT_URL } from "../../../src/lib/inference/provider-models.ts";
-import {
-  buildHttpsPinRouteBaseUrl,
-  computeHttpsPinRouteId,
-  isHttpsPinRuntimeEligible,
-} from "../../../src/lib/inference/https-pin-runtime.ts";
+import { nativeHostedAuthHeaderScript } from "../../../src/lib/inference/native-provider/contract.ts";
+import { discoverHostAddress } from "../fixtures/host-address.ts";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../../src/lib/inference/native-nvidia/contract.ts";
 import { execTimeout, testTimeout } from "../../helpers/timeouts.ts";
 import type { ArtifactSink } from "../fixtures/artifacts.ts";
@@ -83,6 +78,7 @@ const SWITCH_PROVIDER = process.env.NEMOCLAW_SWITCH_PROVIDER ?? PUBLIC_NVIDIA_SW
 const SWITCH_MODEL = process.env.NEMOCLAW_SWITCH_MODEL ?? PUBLIC_NVIDIA_SWITCH_MODEL;
 const SWITCH_INFERENCE_API = process.env.NEMOCLAW_SWITCH_INFERENCE_API ?? "openai-completions";
 const SWITCH_MOCK_ANTHROPIC = process.env.NEMOCLAW_SWITCH_MOCK_ANTHROPIC ?? "0";
+const SWITCH_NATIVE_CUSTOM = process.env.NEMOCLAW_SWITCH_NATIVE_CUSTOM === "1";
 const SWITCH_MOCK_PORT = parsePortEnv("NEMOCLAW_SWITCH_MOCK_PORT", 0);
 const TEST_TIMEOUT_MS = testTimeout(75 * 60_000);
 const INSTALL_TIMEOUT_MS = execTimeout(30 * 60_000);
@@ -175,7 +171,7 @@ interface MockAnthropicRequest {
 }
 
 function proveMockBaselineAuthentication(
-  baseline: Pick<FakeOpenAiCompatibleServer, "requests"> | undefined,
+  baseline: Pick<FakeOpenAiCompatibleServer, "requests" | "baseUrl"> | undefined,
   sandbox: SandboxClient,
   home: string,
   artifacts: { writeJson(path: string, value: unknown): Promise<string> },
@@ -186,7 +182,7 @@ function proveMockBaselineAuthentication(
 }
 
 async function proveSelectedMockBaselineAuthentication(
-  baseline: Pick<FakeOpenAiCompatibleServer, "requests">,
+  baseline: Pick<FakeOpenAiCompatibleServer, "requests" | "baseUrl">,
   sandbox: SandboxClient,
   home: string,
   artifacts: { writeJson(path: string, value: unknown): Promise<string> },
@@ -203,7 +199,9 @@ async function proveSelectedMockBaselineAuthentication(
   const probe = await sandboxShell(
     sandbox,
     home,
-    `curl -fsS --max-time 60 https://inference.local/v1/chat/completions -H 'Content-Type: application/json' --data ${shellQuote(JSON.stringify(payload))} >/dev/null`,
+    SWITCH_NATIVE_CUSTOM
+      ? `${nativeHostedAuthHeaderScript({ credentialEnv: "COMPATIBLE_API_KEY", api: "openai-completions" })}; curl -fsS --max-time 60 ${shellQuote(`${baseline.baseUrl}/chat/completions`)} -H "$AUTH_HEADER" -H 'Content-Type: application/json' --data ${shellQuote(JSON.stringify(payload))} >/dev/null`
+      : `curl -fsS --max-time 60 https://inference.local/v1/chat/completions -H 'Content-Type: application/json' --data ${shellQuote(JSON.stringify(payload))} >/dev/null`,
     {
       artifactName: "baseline-explicit-authenticated-inference-post",
       timeoutMs: 90_000,
@@ -395,7 +393,12 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-async function startMockAnthropicProvider(): Promise<MockAnthropicProvider> {
+async function startMockAnthropicProvider(host: HostCliClient): Promise<MockAnthropicProvider> {
+  const nativeHost = SWITCH_NATIVE_CUSTOM
+    ? (await discoverHostAddress(host, "native-anthropic-endpoint-address")).address
+    : undefined;
+  let binding: CompatibleAnthropicSwitchBinding;
+
   const requests: MockAnthropicRequest[] = [];
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://mock.local");
@@ -410,8 +413,13 @@ async function startMockAnthropicProvider(): Promise<MockAnthropicProvider> {
       jsonResponse(res, 200, { data: [{ id: "mock-anthropic-model" }] });
       return;
     }
-    if (req.method !== "POST" || url.pathname !== "/v1/messages") {
-      jsonResponse(res, 404, { error: "not found", path: url.pathname });
+    const invalidCredential =
+      SWITCH_NATIVE_CUSTOM && req.headers["x-api-key"] !== binding.credentialValue;
+    if (req.method !== "POST" || url.pathname !== "/v1/messages" || invalidCredential) {
+      jsonResponse(res, invalidCredential ? 401 : 404, {
+        error: "request rejected",
+        path: url.pathname,
+      });
       return;
     }
 
@@ -502,8 +510,12 @@ async function startMockAnthropicProvider(): Promise<MockAnthropicProvider> {
     throw new Error("mock Anthropic provider did not expose a TCP port");
   }
   const port = (address as AddressInfo).port;
+  const endpointUrl = nativeHost
+    ? `http://${nativeHost}:${port}`
+    : compatibleAnthropicMockEndpointUrl(port);
+  binding = compatibleAnthropicSwitchBinding(endpointUrl);
   return {
-    endpointUrl: compatibleAnthropicMockEndpointUrl(port),
+    endpointUrl,
     requests: () => requests,
     close: () => closeServer(server),
   };
@@ -622,6 +634,7 @@ async function readAndAssertOpenClawConfig(
 ): Promise<OpenClawModelConfig | undefined> {
   const configResult = await readOpenClawConfig(sandbox, SANDBOX_NAME, {
     nativeNvidia: expected.nativeNvidia,
+    nativeCustomApi: expected.nativeCustomEndpoint ? expected.inferenceApi : undefined,
     artifactName: expected.artifactName,
     env: commandEnv(home),
     timeoutMs: COMMAND_TIMEOUT_MS,
@@ -643,15 +656,8 @@ async function readAndAssertOpenClawConfig(
           ? "https://inference.local"
           : "https://inference.local/v1"),
   );
-  // The fresh sandbox exec verifies the scoped native handle before removing
-  // it from output, so credentials never reach test artifacts.
-  expect(provider?.apiKey === undefined).toBe(expected.nativeNvidia === true);
-  expect(provider?.apiKey ?? "").toMatch(
-    expected.nativeNvidia
-      ? /^$/u
-      : expected.nativeCustomEndpoint
-        ? /^openshell:resolve:env:(?:v[0-9]{1,20}|s[a-f0-9]{64})_COMPATIBLE_API_KEY$/u
-        : /^unused$/u,
+  expect(provider?.apiKey).toBe(
+    expected.nativeNvidia || expected.nativeCustomEndpoint ? undefined : "unused",
   );
   expect(provider?.api).toBe(expected.inferenceApi);
   expect(selectedModel?.name).toBe(expectedPrimary);
@@ -739,6 +745,7 @@ async function checkSandboxInference(
   sandbox: SandboxClient,
   artifacts: ArtifactSink,
   home: string,
+  nativeCustomEndpoint?: string,
 ): Promise<"ok" | { skipped: string }> {
   const payload =
     SWITCH_INFERENCE_API === "anthropic-messages"
@@ -753,17 +760,25 @@ async function checkSandboxInference(
           max_tokens: 100,
         };
   const payloadB64 = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
-  const curlCommand =
-    SWITCH_PROVIDER === PUBLIC_NVIDIA_SWITCH_PROVIDER
+  const curlCommand = nativeCustomEndpoint
+    ? `curl -sS -o "$tmp" -w '%{http_code}' --max-time 90 ${shellQuote(`${nativeCustomEndpoint}/v1/messages`)} -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' -H "$AUTH_HEADER" --data-binary @/tmp/nemoclaw-switch-payload.json`
+    : SWITCH_PROVIDER === PUBLIC_NVIDIA_SWITCH_PROVIDER
       ? `curl -sS -o "$tmp" -w '%{http_code}' --max-time 90 ${NVIDIA_HOSTED_NATIVE_ENDPOINT}/chat/completions -H 'Content-Type: application/json' -H "$AUTH_HEADER" --data-binary @/tmp/nemoclaw-switch-payload.json`
       : SWITCH_INFERENCE_API === "anthropic-messages"
         ? `curl -sS -o "$tmp" -w '%{http_code}' --max-time 90 https://inference.local/v1/messages -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' --data-binary @/tmp/nemoclaw-switch-payload.json`
         : `curl -sS -o "$tmp" -w '%{http_code}' --max-time 90 https://inference.local/v1/chat/completions -H 'Content-Type: application/json' --data-binary @/tmp/nemoclaw-switch-payload.json`;
   const script = [
     "set -u",
-    ...(SWITCH_PROVIDER === PUBLIC_NVIDIA_SWITCH_PROVIDER
-      ? [NATIVE_NVIDIA_AUTH_HEADER_SCRIPT]
-      : []),
+    ...(nativeCustomEndpoint
+      ? [
+          nativeHostedAuthHeaderScript({
+            credentialEnv: "COMPATIBLE_ANTHROPIC_API_KEY",
+            api: "anthropic-messages",
+          }),
+        ]
+      : SWITCH_PROVIDER === PUBLIC_NVIDIA_SWITCH_PROVIDER
+        ? [NATIVE_NVIDIA_AUTH_HEADER_SCRIPT]
+        : []),
     "tmp=$(mktemp)",
     `printf '%s' ${shellQuote(payloadB64)} | base64 -d >/tmp/nemoclaw-switch-payload.json`,
     "set +e",
@@ -982,12 +997,12 @@ exit "$rc"
 }
 
 async function runInitialRouteLifecycle(options: {
+  nativeCustomEndpoint?: string;
   artifacts: ArtifactSink;
   baselineProvider?: Pick<FakeOpenAiCompatibleServer, "requests">;
   home: string;
   host: HostCliClient;
   model: string;
-  nativeCustomEndpoint?: string;
   progress: Pick<TestProgress, "phase">;
   redactionValues: string[];
   sandbox: SandboxClient;
@@ -1102,6 +1117,12 @@ async function runOpenClawInferenceSetWithRetry(
         artifactName: `nemoclaw-inference-set-${attempt}`,
         env: {
           ...compatibleAnthropicSwitchEnv(switchBinding),
+          ...(SWITCH_NATIVE_CUSTOM && switchBinding
+            ? {
+                NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS: new URL(switchBinding.endpointUrl)
+                  .hostname,
+              }
+            : {}),
           ...(publicNvidiaApiKey ? { NVIDIA_INFERENCE_API_KEY: publicNvidiaApiKey } : {}),
         },
         redactionValues,
@@ -1175,24 +1196,20 @@ test(
       (SWITCH_PROVIDER === "compatible-anthropic-endpoint" && SWITCH_MOCK_ANTHROPIC === "1");
     // OpenShell reaches this fixture from its gateway network namespace, where
     // the runner's loopback address is not routable.
+    const nativeBaselineHost = SWITCH_NATIVE_CUSTOM
+      ? (await discoverHostAddress(host, "native-baseline-endpoint-address")).address
+      : undefined;
     const baselineProvider: FakeOpenAiCompatibleServer | undefined = useMockBaseline
-      ? await startMockOpenClawBaselineProvider(progress)
+      ? await startMockOpenClawBaselineProvider(progress, nativeBaselineHost)
       : undefined;
     cleanup.trackDisposable("close baseline inference provider", async () => {
       await baselineProvider?.close();
     });
     const baseline = baselineProvider
       ? mockBaselineInference(baselineProvider.baseUrl)
-      : requireHostedInferenceConfig(
-          { required: (name) => publicApiKey ?? secrets.required(name) },
-          publicApiKey
-            ? {
-                ...process.env,
-                NEMOCLAW_ENDPOINT_URL: BUILD_ENDPOINT_URL,
-                NEMOCLAW_MODEL: DEFAULT_CLOUD_MODEL,
-              }
-            : process.env,
-        );
+      : requireHostedInferenceConfig({
+          required: (name) => publicApiKey ?? secrets.required(name),
+        });
     const apiKey = baseline.apiKey;
     const redactionValues = [apiKey, publicApiKey].filter(
       (value): value is string => typeof value === "string",
@@ -1238,6 +1255,9 @@ test(
         artifactName: "onboard-custom-image-openclaw-inference-switch",
         env: commandEnv(home, {
           ...baseline.env,
+          ...(nativeBaselineHost
+            ? { NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS: nativeBaselineHost }
+            : {}),
           NEMOCLAW_RECREATE_SANDBOX: "1",
         }),
         redactionValues,
@@ -1272,16 +1292,12 @@ test(
       false,
     );
     await runInitialRouteLifecycle({
+      nativeCustomEndpoint: nativeBaselineHost ? baseline.endpointUrl : undefined,
       artifacts,
       baselineProvider,
       home,
       host,
       model: baseline.model,
-      nativeCustomEndpoint: baselineProvider
-        ? undefined
-        : isHttpsPinRuntimeEligible(baseline.endpointUrl)
-          ? `${buildHttpsPinRouteBaseUrl(computeHttpsPinRouteId(process.env.OPENSHELL_GATEWAY ?? "nemoclaw", "compatible-endpoint", baseline.endpointUrl, SANDBOX_NAME))}/v1`
-          : baseline.endpointUrl,
       progress,
       redactionValues,
       sandbox,
@@ -1289,7 +1305,7 @@ test(
 
     progress.phase("prepare the switched provider and endpoint");
     if (SWITCH_PROVIDER === "compatible-anthropic-endpoint" && SWITCH_MOCK_ANTHROPIC === "1") {
-      mockProvider = await startMockAnthropicProvider();
+      mockProvider = await startMockAnthropicProvider(host);
       await artifacts.writeJson("mock-anthropic-provider.json", {
         endpointUrl: mockProvider.endpointUrl,
       });
@@ -1356,11 +1372,17 @@ test(
       inferenceApi: SWITCH_INFERENCE_API,
       artifactName: "read-openclaw-config-after-inference-switch",
       nativeNvidia: SWITCH_PROVIDER === PUBLIC_NVIDIA_SWITCH_PROVIDER,
+      nativeCustomEndpoint: SWITCH_NATIVE_CUSTOM ? switchBinding!.endpointUrl : undefined,
     });
     await assertRegistryAndSession(home, { mockProvider, sandbox });
 
     progress.phase("prove sandbox and OpenClaw gateway inference");
-    const inference = await checkSandboxInference(sandbox, artifacts, home);
+    const inference = await checkSandboxInference(
+      sandbox,
+      artifacts,
+      home,
+      SWITCH_NATIVE_CUSTOM ? switchBinding!.endpointUrl : undefined,
+    );
     if (inference !== "ok") {
       await artifacts.target.complete({
         id: "openclaw-inference-switch",

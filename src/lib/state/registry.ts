@@ -843,6 +843,7 @@ export function reserveSandboxInferenceRoute(
         nativeHostedProviderAttachment,
         normalized.provider,
         existing ?? undefined,
+        { ...normalized, gatewayName: route.gatewayName },
       ),
       nativeCustomProviderAttachment: isNativeCustomProvider(normalized.provider)
         ? (nativeCustomProviderAttachment ?? retainedCustomAttachment)

@@ -5,7 +5,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { normalizeNativeCustomProviderAttachment } from "../../../src/lib/inference/native-custom/index.ts";
+import type { SandboxEntry } from "../../../src/lib/state/registry/types.ts";
+import { recordedNativeProviderAttachment } from "../../../src/lib/inference/native-provider/recorded-selection.ts";
+import { buildSandboxInferenceChatCommand } from "../fixtures/inference-adapter.ts";
 import { HERMES_E2E_TEST_TIMEOUT_MS } from "../../../tools/e2e/hermes-timeout-contract.mts";
 import { execTimeout, testTimeout } from "../../helpers/timeouts.ts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
@@ -31,7 +33,6 @@ import {
 } from "../fixtures/security-posture.ts";
 import { verifyHermesConfigExportLive } from "../fixtures/hermes-config-export-live.ts";
 import type { ShellProbeResult } from "../fixtures/shell-probe.ts";
-import { buildFullE2eSandboxInferenceCommand } from "./full-e2e-inference-probe.ts";
 import { assertHermesCliAdapterLiveContract } from "./hermes-cli-adapter-live.ts";
 import { HERMES_E2E_PHASES } from "./hermes-e2e-phases.ts";
 import { assertHermesSkillLifecycle } from "./hermes-skill-lifecycle.ts";
@@ -355,6 +356,26 @@ test(
       sandboxName: SANDBOX_NAME,
     });
 
+    const cliProbe = await host.command(
+      "bash",
+      ["-lc", "command -v nemoclaw && command -v openshell"],
+      {
+        artifactName: "phase-2-cli-probe",
+        env: commandEnv(),
+        timeoutMs: 30_000,
+      },
+    );
+    expect(cliProbe.exitCode, resultText(cliProbe)).toBe(0);
+    expect(cliProbe.stdout).toContain("nemoclaw");
+    expect(cliProbe.stdout).toContain("openshell");
+
+    const help = await host.command("nemoclaw", ["--help"], {
+      artifactName: "phase-2-nemoclaw-help",
+      env: commandEnv(),
+      timeoutMs: 30_000,
+    });
+    expect(help.exitCode, resultText(help)).toBe(0);
+
     progress.phase("validate sandbox layout, health, and skill activation");
     // Phase 3: sandbox verification.
     const list = await host.command("nemoclaw", ["list"], {
@@ -374,6 +395,22 @@ test(
 
     expect(fs.existsSync(SESSION_FILE), `${SESSION_FILE} missing`).toBe(true);
     expect(readJsonFile(SESSION_FILE)).toMatchObject({ agent: "hermes" });
+
+    const inferenceGet = await host.command("nemoclaw", ["inference", "get", "--json"], {
+      artifactName: "phase-3-nemoclaw-inference-get",
+      env: commandEnv(),
+      timeoutMs: 30_000,
+    });
+    expect(inferenceGet.exitCode, resultText(inferenceGet)).toBe(0);
+    const inferenceState = JSON.parse(inferenceGet.stdout) as {
+      provider: string | null;
+      model: string | null;
+    };
+    expect(
+      inferenceState.provider,
+      `expected route provider ${inference.expectedRouteProvider}`,
+    ).toBe(inference.expectedRouteProvider);
+    expect(inferenceState.model, `expected model ${inference.model}`).toBe(inference.model);
 
     const policy = await sandbox.openshell(["policy", "get", "--full", SANDBOX_NAME], {
       artifactName: "phase-3-openshell-policy-get",
@@ -839,26 +876,17 @@ test(
     ).toBe(false);
     expectPong(`${inference.mode} direct chat`, directChat);
 
-    const recorded = registryEntry(SANDBOX_NAME);
-    const recordedProvider = recorded?.provider;
-    expect(
-      recordedProvider,
-      "Hermes inference probe requires its recorded provider selection",
-    ).toEqual(expect.any(String));
-    const nativeCustom = normalizeNativeCustomProviderAttachment(
-      recorded?.nativeCustomProviderAttachment,
-      SANDBOX_NAME,
-    );
+    const chatSelection = registryEntry(SANDBOX_NAME) as unknown as SandboxEntry;
+    const chatAttachment = recordedNativeProviderAttachment(chatSelection);
     const sandboxChat = await sandbox.exec(
       SANDBOX_NAME,
-      buildFullE2eSandboxInferenceCommand(
+      buildSandboxInferenceChatCommand(
         chatPayload(inference.model, "Reply with exactly one word: PONG", 1024),
-        recordedProvider as string,
-        nativeCustom,
-        typeof recorded?.endpointUrl === "string" ? recorded.endpointUrl : undefined,
+        chatSelection.provider!,
+        chatAttachment?.endpointUrl,
       ),
       {
-        artifactName: "phase-5-sandbox-inference-chat",
+        artifactName: "phase-5-selected-route-chat",
         env: commandEnv(),
         timeoutMs: 120_000,
       },

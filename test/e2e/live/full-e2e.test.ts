@@ -3,6 +3,7 @@
 
 import { approveOpenClawAdminScope } from "./openclaw-admin-scope.ts";
 import fs from "node:fs";
+import { buildSandboxInferenceChatCommand } from "../fixtures/inference-adapter.ts";
 import os from "node:os";
 import path from "node:path";
 import { shellQuote } from "../../../src/lib/core/shell-quote.ts";
@@ -47,7 +48,7 @@ import {
 } from "../fixtures/openclaw-agent-output.ts";
 import { buildOpenClawFirstTurnLatencyEvidence } from "./agent-turn-latency-helpers.ts";
 import {
-  buildFullE2eSandboxInferenceCommand,
+  readFullE2eInferenceRoute,
   FULL_E2E_INFERENCE_CAPTURE_LIMIT_BYTES,
   fullE2eInferenceProbeEvidence,
   runFullE2eInferenceProbe,
@@ -67,17 +68,11 @@ import {
   cleanupWhenOpenShellAvailable,
 } from "../fixtures/cleanup-resources.ts";
 import { getSandbox } from "../../../src/lib/state/registry.ts";
-import type { NativeCustomProviderAttachment } from "../../../src/lib/inference/native-custom/index.ts";
 import { buildNativeModelRestartFixture, withNativeModelCleanup } from "./full-e2e-native-model.ts";
 import {
   agentReplyContainsToken,
   parseOpenClawGatewayModelRun,
 } from "./openclaw-inference-switch-helpers.ts";
-import {
-  PUBLIC_NVIDIA_SWITCH_ATTACHMENT_EVIDENCE,
-  readPublicNvidiaSwitchAttachmentEvidence,
-  NATIVE_CUSTOM_ATTACHMENT_EVIDENCE,
-} from "./public-nvidia-switch-provider.ts";
 import { createCliOpenShellGatewayReuseObserver } from "../../../src/lib/adapters/openshell/gateway-reuse-cli.ts";
 import type { OpenShellGatewayReuseObservation } from "../../../src/lib/adapters/openshell/gateway-reuse.ts";
 
@@ -441,7 +436,7 @@ async function runOpenClawLaunchTurns(input: {
   host: HostCliClient;
   model: string;
   logicalProvider: string;
-  nativeCustom?: NativeCustomProviderAttachment;
+  endpointUrl?: string;
   redactionValues: string[];
   sandbox: SandboxClient;
 }): Promise<void> {
@@ -485,7 +480,7 @@ sha256sum /sandbox/.bashrc /sandbox/.profile > /tmp/nemoclaw-e2e-profiles.sha256
   const nativeModel = buildNativeModelRestartFixture(
     input.model,
     input.logicalProvider,
-    input.nativeCustom,
+    input.endpointUrl,
   );
   const editNativeModel = await input.sandbox.exec(
     SANDBOX_NAME,
@@ -1217,34 +1212,17 @@ test(
       },
     );
 
-    const nativeCustom = getSandbox(SANDBOX_NAME)?.nativeCustomProviderAttachment;
-    const nativeAttachment = await readPublicNvidiaSwitchAttachmentEvidence({
-      artifactName: "phase-3-native-provider-attachment",
-      env: env(),
-      logicalProvider: PORTABLE_PROFILE ? "portable" : hosted.providerName,
-      receipt: nativeCustom ?? getSandbox(SANDBOX_NAME)?.nativeNvidiaProviderAttachment,
+    const nativeEndpointUrl = getSandbox(SANDBOX_NAME)?.nativeHostedProviderAttachment?.endpointUrl;
+    const inferenceRoute = await readFullE2eInferenceRoute({
       sandbox,
       sandboxName: SANDBOX_NAME,
+      entry: getSandbox(SANDBOX_NAME),
+      logicalProvider: hosted.providerName,
+      model: hosted.model,
+      env: env(),
+      redactionValues,
     });
-    const inference =
-      nativeAttachment === null
-        ? await sandbox.openshell(["inference", "get"], {
-            artifactName: "phase-3-openshell-inference-get",
-            env: env(),
-            timeoutMs: 60_000,
-          })
-        : null;
-    expect(
-      inference !== null
-        ? inference.exitCode === 0 && resultText(inference).includes(hosted.model)
-        : nativeAttachment ===
-            (nativeCustom
-              ? NATIVE_CUSTOM_ATTACHMENT_EVIDENCE
-              : PUBLIC_NVIDIA_SWITCH_ATTACHMENT_EVIDENCE),
-      inference !== null
-        ? resultText(inference)
-        : (nativeAttachment ?? "missing native attachment"),
-    ).toBe(true);
+    expect(inferenceRoute.ok, inferenceRoute.detail).toBe(true);
 
     const policy = await sandbox.openshell(["policy", "get", "--full", SANDBOX_NAME], {
       artifactName: "phase-3-openshell-policy-get",
@@ -1268,36 +1246,30 @@ test(
       true,
     );
 
-    const probeSandboxInference = (
-      receipt: NativeCustomProviderAttachment | undefined,
-      prefix = "",
-    ) =>
-      runFullE2eInferenceProbe(hosted.model, async (attempt) =>
-        runFullE2eInferenceCommand({
-          onEvidence: (evidence) =>
-            retainFullE2eInferenceAvailability(attempt.attempt, evidence, () =>
-              artifacts.writeJson(`${prefix}${attempt.artifactName}-availability.json`, evidence),
+    const sandboxInference = await runFullE2eInferenceProbe(hosted.model, async (attempt) =>
+      runFullE2eInferenceCommand({
+        onEvidence: (evidence) =>
+          retainFullE2eInferenceAvailability(attempt.attempt, evidence, () =>
+            artifacts.writeJson(`${attempt.artifactName}-availability.json`, evidence),
+          ),
+        run: (availabilityAttempt) =>
+          sandbox.exec(
+            SANDBOX_NAME,
+            buildSandboxInferenceChatCommand(
+              attempt.requestBody,
+              hosted.providerName,
+              nativeEndpointUrl,
             ),
-          run: (availabilityAttempt) =>
-            sandbox.exec(
-              SANDBOX_NAME,
-              buildFullE2eSandboxInferenceCommand(
-                attempt.requestBody,
-                PORTABLE_PROFILE ? "portable" : hosted.providerName,
-                receipt,
-                hosted.endpointUrl,
-              ),
-              {
-                artifactName: `${prefix}${attempt.artifactName}-availability-${availabilityAttempt}`,
-                captureLimitBytes: FULL_E2E_INFERENCE_CAPTURE_LIMIT_BYTES,
-                env: env(),
-                redactionValues,
-                timeoutMs: 120_000,
-              },
-            ),
-        }),
-      );
-    const sandboxInference = await probeSandboxInference(nativeCustom);
+            {
+              artifactName: `${attempt.artifactName}-availability-${availabilityAttempt}`,
+              captureLimitBytes: FULL_E2E_INFERENCE_CAPTURE_LIMIT_BYTES,
+              env: env(),
+              redactionValues,
+              timeoutMs: 120_000,
+            },
+          ),
+      }),
+    );
     const sandboxInferenceEvidence = fullE2eInferenceProbeEvidence(sandboxInference);
     await artifacts.writeJson(
       "phase-4-sandbox-inference-local-attempts.json",
@@ -1336,8 +1308,8 @@ test(
       ? runOpenClawLaunchTurns({
           host,
           model: hosted.model,
-          logicalProvider: PORTABLE_PROFILE ? "portable" : hosted.providerName,
-          nativeCustom,
+          logicalProvider: hosted.providerName,
+          endpointUrl: nativeEndpointUrl,
           redactionValues,
           sandbox,
         })
@@ -1413,8 +1385,33 @@ test(
             [SANDBOX_NAME, "status"],
             "phase-7-status-after-retained-gateway-onboard",
           );
-          const retainedCustom = getSandbox(SANDBOX_NAME)?.nativeCustomProviderAttachment;
-          const inference = await probeSandboxInference(retainedCustom, "retained-");
+          const inference = await runFullE2eInferenceProbe(hosted.model, async (attempt) =>
+            runFullE2eInferenceCommand({
+              onEvidence: (evidence) =>
+                retainFullE2eInferenceAvailability(attempt.attempt, evidence, () =>
+                  artifacts.writeJson(
+                    `retained-${attempt.artifactName}-availability.json`,
+                    evidence,
+                  ),
+                ),
+              run: (availabilityAttempt) =>
+                sandbox.exec(
+                  SANDBOX_NAME,
+                  buildSandboxInferenceChatCommand(
+                    attempt.requestBody,
+                    hosted.providerName,
+                    nativeEndpointUrl,
+                  ),
+                  {
+                    artifactName: `retained-${attempt.artifactName}-availability-${availabilityAttempt}`,
+                    captureLimitBytes: FULL_E2E_INFERENCE_CAPTURE_LIMIT_BYTES,
+                    env: env(),
+                    redactionValues,
+                    timeoutMs: 120_000,
+                  },
+                ),
+            }),
+          );
           const afterOnboard = await captureGatewayRegistration(
             host,
             "phase-7-gateway-registration-after-onboard",

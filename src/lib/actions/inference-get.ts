@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { normalizeNativeCustomProviderAttachment } from "../inference/native-custom";
-import { getSandboxInferenceConfig } from "../inference/config";
-import { verifyNativeCustomStatusAttachment } from "./sandbox/inference-route-health";
 import { captureOpenshell } from "../adapters/openshell/runtime";
 import { createSynchronousCliOpenShellInferenceRouteObserver } from "../adapters/openshell/inference-route-cli";
 import type {
@@ -25,7 +22,7 @@ import {
 import { parseHttpsPinRouteId } from "../inference/https-pin-runtime";
 import { NVIDIA_HOSTED_NATIVE_ENDPOINT } from "../inference/native-nvidia";
 import { NATIVE_LOCAL_CREDENTIAL_ENV } from "../inference/native-local/agent-config";
-import { normalizeNativeLocalProviderAttachment } from "../inference/native-local/contract";
+import { normalizeNativeLocalProviderAttachment } from "../inference/selection";
 import { recordedNativeProviderAttachment } from "../inference/native-provider/recorded-selection";
 import { hostedNativeProvider } from "../inference/native-provider/hosted";
 import { inspectManagedLlamaCppOwnership } from "../inference/llama-cpp/managed-state";
@@ -75,7 +72,6 @@ export interface InferenceGetDeps {
   listSandboxes: typeof listPersistedSandboxTargets;
   log: (message?: string) => void;
   inspectManagedLlamaCppOwnership?: typeof inspectManagedLlamaCppOwnership;
-  verifyNativeCustomAttachment?: typeof verifyNativeCustomStatusAttachment;
 }
 
 export class InferenceGetError extends Error {
@@ -317,78 +313,21 @@ export async function runInferenceGet(
   const selectedSandbox = selectedSandboxName
     ? (deps.getSandbox ?? getKnownSandboxTarget)(selectedSandboxName)
     : null;
-  if (selectedSandbox?.nativeCustomProviderAttachment !== undefined) {
-    const receipt = normalizeNativeCustomProviderAttachment(
-      selectedSandbox.nativeCustomProviderAttachment,
-      selectedSandboxName ?? undefined,
-    );
-    if (
-      !receipt ||
-      selectedSandbox.nativeNvidiaProviderAttachment !== undefined ||
-      !selectedSandboxName ||
-      !selectedSandbox.provider ||
-      !selectedSandbox.model
-    )
-      throw new InferenceGetError(
-        "The selected sandbox has invalid native inference attachment authority.",
-      );
-    try {
-      getSandboxInferenceConfig(
-        selectedSandbox.model,
-        selectedSandbox.provider,
-        selectedSandbox.preferredInferenceApi ?? null,
-        receipt,
-      );
-    } catch {
-      throw new InferenceGetError(
-        "The selected sandbox's native inference selection disagrees with its attachment. Recreate the sandbox to restore its native provider.",
-      );
-    }
-    try {
-      const gatewayName = deps.getSandboxTargetGatewayName(selectedSandboxName);
-      await (deps.verifyNativeCustomAttachment ?? verifyNativeCustomStatusAttachment)({
-        gatewayName,
-        sandboxName: selectedSandboxName,
-        expected: receipt,
-      });
-    } catch {
-      throw new InferenceGetError(
-        `The selected sandbox's native inference attachment could not be verified. ${formatStatusRecovery(options.cliName ?? "nemoclaw", selectedSandboxName)}`,
-      );
-    }
-    const endpointUrl = receipt.transport?.sourceEndpointUrl ?? receipt.endpointUrl;
-    const payload: InferenceGetResult = {
-      provider: selectedSandbox.provider,
-      model: selectedSandbox.model,
-      ...(endpointPathIsCredentialFreeForDisplay(endpointUrl)
-        ? { endpointUrl }
-        : endpointOmission("withheld")),
-    };
-    if (!options.quiet) {
-      if (options.json) deps.log(JSON.stringify(payload, null, 2));
-      else {
-        deps.log(`Provider: ${formatRouteValueForDisplay(payload.provider)}`);
-        deps.log(`Model:    ${formatRouteValueForDisplay(payload.model)}`);
-        if (payload.endpointUrl)
-          deps.log(`Endpoint: ${formatRouteValueForDisplay(payload.endpointUrl)}`);
-        else deps.log("Endpoint: withheld because its path may contain a credential.");
-      }
-    }
-    return payload;
-  }
-  if (
+  const nativeAttachment =
     selectedSandbox &&
     selectedSandbox.nativeLocalProviderAttachment === undefined &&
-    recordedNativeProviderAttachment(selectedSandbox)
-  ) {
+    recordedNativeProviderAttachment(selectedSandbox);
+  if (selectedSandbox && nativeAttachment) {
     const payload: InferenceGetResult = {
       provider: selectedSandbox.provider ?? null,
       model: selectedSandbox.model ?? null,
       endpointUrl:
+        nativeAttachment.endpointUrl ??
         hostedNativeProvider(
           selectedSandbox.provider,
           selectedSandbox.nativeHostedProviderAttachment?.endpointUrl,
-        )?.endpoint ?? NVIDIA_HOSTED_NATIVE_ENDPOINT,
+        )?.endpoint ??
+        NVIDIA_HOSTED_NATIVE_ENDPOINT,
     };
     if (!options.quiet) {
       if (options.json) {
@@ -515,7 +454,7 @@ export async function runInferenceGet(
       deps.log(`Provider: ${formatRouteValueForDisplay(payload.provider)}`);
       deps.log(`Model:    ${formatRouteValueForDisplay(payload.model)}`);
       if (payload.endpointUrl) {
-        deps.log(`Endpoint: ${formatRouteValueForDisplay(payload.endpointUrl)}`);
+        deps.log(`Endpoint: ${formatRouteValueForDisplay(payload.endpointUrl ?? null)}`);
       } else if (payload.endpointStatus && payload.endpointRecovery) {
         deps.log(`Endpoint: unavailable (${payload.endpointStatus})`);
         if (payload.affectedSandboxes?.length) {

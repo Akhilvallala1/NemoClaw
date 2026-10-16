@@ -3,6 +3,7 @@
 
 import path from "node:path";
 import { withHermesNativeProfile } from "./hermes-profile";
+import { withCustomNativeProfile } from "./custom";
 
 import type {
   OpenShellGatewayTarget,
@@ -24,25 +25,23 @@ export class NativeProviderError extends Error {
   }
 }
 
-/** The shared lifecycle for fixed hosted and endpoint-specific native providers. */
+/** The shared lifecycle for NemoClaw's fixed hosted provider profiles. */
 export class NativeProviderLifecycle<ProfileId extends string, ProviderName extends string> {
-  constructor(
-    readonly definition: NativeProviderDefinition<ProfileId, ProviderName>,
-    private readonly ProviderError: new (message: string) => Error = NativeProviderError,
-    private readonly profilePath?: string,
-  ) {}
+  constructor(readonly definition: NativeProviderDefinition<ProfileId, ProviderName>) {}
   private requireExpectedReceipt(receipt: NativeProviderAttachment<ProfileId, ProviderName>): void {
     if (!normalizeNativeProviderAttachment(receipt, this.definition)) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Invalid ownership receipt for OpenShell provider '${this.definition.providerName}'. No provider was changed.`,
       );
     }
   }
 
   nativeProviderProfilePath(root = REPOSITORY_ROOT): string {
-    return (
-      this.profilePath ??
-      path.join(root, "managed-inference", "provider-profiles", `${this.definition.profileId}.yaml`)
+    return path.join(
+      root,
+      "managed-inference",
+      "provider-profiles",
+      `${this.definition.custom ? (this.definition.custom.api === "anthropic-messages" ? "nemoclaw-anthropic-inference-v1" : "nemoclaw-openai-inference-v1") : this.definition.profileId}.yaml`,
     );
   }
 
@@ -63,7 +62,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       }
     }
     if (authorities.size > 1) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Gateway '${input.gatewayName}' has conflicting native ${this.definition.label} provider ownership receipts. No provider was changed.`,
       );
     }
@@ -84,15 +83,21 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     target: OpenShellGatewayTarget,
     profilePath = this.nativeProviderProfilePath(),
   ): Promise<void> {
-    const imported = this.definition.endpointUrl
-      ? await withHermesNativeProfile(this.definition, (boundPath) =>
-          adapter.importProviderProfile({ target, profilePath: boundPath }),
+    const imported = this.definition.custom
+      ? await withCustomNativeProfile(
+          this.definition,
+          (boundPath) => adapter.importProviderProfile({ target, profilePath: boundPath }),
+          profilePath,
         )
-      : await adapter.importProviderProfile({ target, profilePath });
+      : this.definition.endpointUrl
+        ? await withHermesNativeProfile(this.definition, (boundPath) =>
+            adapter.importProviderProfile({ target, profilePath: boundPath }),
+          )
+        : await adapter.importProviderProfile({ target, profilePath });
     if (imported.ok) return;
     const collision =
       imported.error.kind === "command" && imported.error.reason === "profile_incompatible";
-    throw new this.ProviderError(
+    throw new NativeProviderError(
       collision
         ? `OpenShell provider profile '${this.definition.profileId}' conflicts with NemoClaw's checked-in security boundary. No provider was changed.`
         : `Could not verify OpenShell provider profile '${this.definition.profileId}': ${this.providerErrorDetail(imported.error)}`,
@@ -114,7 +119,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     metadata: OpenShellProviderMetadata,
   ): NativeProviderAttachment<ProfileId, ProviderName> {
     if (!this.exactNativeProvider(metadata) || !metadata.revision) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell provider '${this.definition.providerName}' does not match the NemoClaw-owned ${this.definition.label} inference boundary. No provider was changed.`,
       );
     }
@@ -125,6 +130,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       providerId: metadata.revision.id,
       ...(this.definition.endpointUrl ? { endpointUrl: this.definition.endpointUrl } : {}),
       ...(this.definition.allowedIps ? { allowedIps: [...this.definition.allowedIps] } : {}),
+      ...(this.definition.custom ? { custom: this.definition.custom } : {}),
     };
   }
 
@@ -138,7 +144,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     });
     if (observed.ok) return observed.value;
     if (observed.error.kind === "command" && observed.error.reason === "not_found") return null;
-    throw new this.ProviderError(
+    throw new NativeProviderError(
       `Could not inspect OpenShell provider '${this.definition.providerName}': ${this.providerErrorDetail(observed.error)}`,
     );
   }
@@ -153,7 +159,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
   }
 
   authorityPersistenceRecovery(gatewayName: string): string {
-    return `Run 'nemoclaw credentials reset ${this.definition.logicalProvider} --yes' against gateway '${gatewayName}', then retry.`;
+    return `Run 'nemoclaw credentials reset ${this.definition.custom ? this.definition.providerName : this.definition.logicalProvider} --yes' against gateway '${gatewayName}', then retry.`;
   }
 
   async removeNewNativeProvider(input: {
@@ -166,7 +172,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     if (!provider) return;
     const current = this.nativeProviderAttachmentFromMetadata(provider);
     if (current.providerId !== input.expected.providerId) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Refusing to remove OpenShell provider '${this.definition.providerName}' because its identity changed.`,
       );
     }
@@ -175,7 +181,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       providerName: this.definition.providerName,
     });
     if (!removed.ok && !this.mutationOutcomeMayBeAmbiguous(removed.error)) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Could not remove OpenShell provider '${this.definition.providerName}': ${this.providerErrorDetail(removed.error)}`,
       );
     }
@@ -184,7 +190,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       const observed = this.nativeProviderAttachmentFromMetadata(after);
       const identity =
         observed.providerId === input.expected.providerId ? "still exists" : "changed identity";
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell provider '${this.definition.providerName}' ${identity} after cleanup.`,
       );
     }
@@ -217,13 +223,13 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
         observed = input.readAuthority(input.gatewayName);
       } catch (readError) {
         const readDetail = readError instanceof Error ? readError.message : String(readError);
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `NemoClaw could not record or confirm ownership of OpenShell provider '${this.definition.providerName}' for gateway '${input.gatewayName}'. The provider was retained. ${this.authorityPersistenceRecovery(input.gatewayName)}\n  Write failure: ${writeDetail}\n  Read failure: ${readDetail}`,
         );
       }
       if (observed?.providerId === input.receipt.providerId) return;
       if (input.existing || observed) {
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `NemoClaw could not record ownership of OpenShell provider '${this.definition.providerName}' for gateway '${input.gatewayName}'. The provider was retained because this operation cannot prove that it is unreferenced. ${this.authorityPersistenceRecovery(input.gatewayName)}\n  ${writeDetail}`,
         );
       }
@@ -236,11 +242,11 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       } catch (cleanupError) {
         const cleanupDetail =
           cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `NemoClaw could not record ownership of OpenShell provider '${this.definition.providerName}' for gateway '${input.gatewayName}', and cleanup did not complete. ${this.authorityPersistenceRecovery(input.gatewayName)}\n  Write failure: ${writeDetail}\n  Cleanup failure: ${cleanupDetail}`,
         );
       }
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `NemoClaw could not record ownership of OpenShell provider '${this.definition.providerName}' for gateway '${input.gatewayName}'. The newly created provider was removed. Retry the command.\n  ${writeDetail}`,
       );
     }
@@ -266,7 +272,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     const activatePolicy = async () => {
       const policy = await adapter.ensureProviderPolicyComposition({ target });
       if (!policy.ok) {
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `Could not activate native ${this.definition.label} provider policy: ${this.providerErrorDetail(policy.error)}`,
         );
       }
@@ -276,12 +282,12 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     if (before) {
       const receipt = this.nativeProviderAttachmentFromMetadata(before);
       if (!input.expected) {
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `OpenShell provider '${this.definition.providerName}' already exists without a matching NemoClaw ownership receipt. No provider was changed.`,
         );
       }
       if (input.expected.providerId !== receipt.providerId) {
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `OpenShell provider '${this.definition.providerName}' changed identity. Recreate the sandbox before using native ${this.definition.label} inference. No provider was changed.`,
         );
       }
@@ -294,26 +300,24 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
         config: [],
       });
       if (!updated.ok && this.mutationOutcomeMayBeAmbiguous(updated.error)) {
-        // Metadata proves identity, not which credential an uncertain update stored.
-        await this.inspectNativeProvider(adapter, target);
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `OpenShell did not confirm whether provider '${this.definition.providerName}' accepted its credential update. No provider receipt was recorded.`,
         );
       }
       if (!updated.ok) {
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `Could not update OpenShell provider '${this.definition.providerName}': ${this.providerErrorDetail(updated.error)}`,
         );
       }
       const observed = await this.inspectNativeProvider(adapter, target);
       if (!observed) {
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `OpenShell did not confirm provider '${this.definition.providerName}' after its credential update.`,
         );
       }
       const observedReceipt = this.nativeProviderAttachmentFromMetadata(observed);
       if (observedReceipt.providerId !== input.expected.providerId) {
-        throw new this.ProviderError(
+        throw new NativeProviderError(
           `OpenShell provider '${this.definition.providerName}' changed identity during its credential update. No provider receipt was recorded.`,
         );
       }
@@ -321,13 +325,13 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     }
 
     if (input.expected) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell provider '${this.definition.providerName}' is missing. Recreate the sandbox before using native ${this.definition.label} inference. No provider was changed.`,
       );
     }
 
     if (!input.credentialValue && !input.reuseExistingCredential) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `A host credential is required to create OpenShell provider '${this.definition.providerName}'.`,
       );
     }
@@ -343,13 +347,13 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       fromExisting: !input.credentialValue,
     });
     if (!created.ok && !this.mutationOutcomeMayBeAmbiguous(created.error)) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Could not create OpenShell provider '${this.definition.providerName}': ${this.providerErrorDetail(created.error)}`,
       );
     }
     const observed = await this.inspectNativeProvider(adapter, target);
     if (!observed) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell did not confirm provider '${this.definition.providerName}' after creation.`,
       );
     }
@@ -367,13 +371,13 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     await this.requireNativeProviderProfileBoundary(input.adapter, input.target);
     const provider = await this.inspectNativeProvider(input.adapter, input.target);
     if (!provider) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell provider '${this.definition.providerName}' is missing. Recreate the sandbox to restore native ${this.definition.label} inference.`,
       );
     }
     const receipt = this.nativeProviderAttachmentFromMetadata(provider);
     if (input.expected && input.expected.providerId !== receipt.providerId) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell provider '${this.definition.providerName}' changed identity. Recreate the sandbox before using native ${this.definition.label} inference.`,
       );
     }
@@ -382,12 +386,12 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       sandboxName: input.sandboxName,
     });
     if (!attachments.ok) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Could not inspect provider attachments for sandbox '${input.sandboxName}': ${this.providerErrorDetail(attachments.error)}`,
       );
     }
     if (!attachments.value.names.includes(this.definition.providerName)) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Sandbox '${input.sandboxName}' does not have its native ${this.definition.label} inference provider attached. Recreate the sandbox; NemoClaw does not migrate existing beta sandboxes automatically.`,
       );
     }
@@ -405,13 +409,13 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     await this.requireNativeProviderProfileBoundary(input.adapter, input.target);
     const provider = await this.inspectNativeProvider(input.adapter, input.target);
     if (!provider) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell provider '${this.definition.providerName}' is missing. Recreate the sandbox to restore native ${this.definition.label} inference.`,
       );
     }
     const receipt = this.nativeProviderAttachmentFromMetadata(provider);
     if (receipt.providerId !== input.expected.providerId) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell provider '${this.definition.providerName}' changed identity. Recreate the sandbox before using native ${this.definition.label} inference.`,
       );
     }
@@ -420,7 +424,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       sandboxName: input.sandboxName,
     });
     if (!before.ok) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Could not inspect provider attachments for sandbox '${input.sandboxName}': ${this.providerErrorDetail(before.error)}`,
       );
     }
@@ -436,7 +440,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       providerName: this.definition.providerName,
     });
     if (!attached.ok && !this.mutationOutcomeMayBeAmbiguous(attached.error)) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Could not attach native ${this.definition.label} provider to sandbox '${input.sandboxName}': ${this.providerErrorDetail(attached.error)}`,
       );
     }
@@ -452,7 +456,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
         const detail = error instanceof Error ? error.message : String(error);
         const detachDetail =
           detachError instanceof Error ? detachError.message : String(detachError);
-        throw new this.ProviderError(`${detail}\n  ${detachDetail}`);
+        throw new NativeProviderError(`${detail}\n  ${detachDetail}`);
       }
       throw error;
     }
@@ -470,7 +474,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
     if (!provider) return;
     const current = this.nativeProviderAttachmentFromMetadata(provider);
     if (current.providerId !== input.expected.providerId) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Refusing to detach OpenShell provider '${this.definition.providerName}' because its identity changed.`,
       );
     }
@@ -480,7 +484,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       providerName: this.definition.providerName,
     });
     if (!detached.ok && !this.mutationOutcomeMayBeAmbiguous(detached.error)) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `Could not detach native ${this.definition.label} provider from sandbox '${input.sandboxName}': ${this.providerErrorDetail(detached.error)}`,
       );
     }
@@ -489,7 +493,7 @@ export class NativeProviderLifecycle<ProfileId extends string, ProviderName exte
       sandboxName: input.sandboxName,
     });
     if (!after.ok || after.value.names.includes(this.definition.providerName)) {
-      throw new this.ProviderError(
+      throw new NativeProviderError(
         `OpenShell did not confirm removal of native provider access from sandbox '${input.sandboxName}'.`,
       );
     }
