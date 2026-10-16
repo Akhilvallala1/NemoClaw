@@ -22,7 +22,7 @@ import { FULL_E2E_STANDARD_PROFILE_JOB_TIMEOUT_MINUTES } from "./full-e2e-timeou
 import {
   ONBOARD_REPAIR_TARGET_TIMEOUT_MINUTES,
   ONBOARD_RESUME_TARGET_TIMEOUT_MINUTES,
-  ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES,
+  INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
 } from "./onboard-timeout-contract.mts";
 import { HERMES_ACP_E2E_OWNING_PATHS } from "./hermes-acp-owning-paths.mts";
 import {
@@ -1049,7 +1049,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     agentRuntime: "openclaw + langchain-deepagents-code",
     environmentOrInferenceEndpoint: "Ubuntu; local compatible and HTTPS inference fixtures",
     profile: "standard",
-    timeoutMinutes: ONBOARD_SINGLE_FINAL_HANDOFF_TARGET_TIMEOUT_MINUTES,
+    timeoutMinutes: INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
     installMode: "none",
     restoreCli: true,
     exposeCliBin: false,
@@ -1294,6 +1294,9 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
     shard: "anthropic",
     owningPaths: [
       "src/lib/actions/inference-set.ts",
+      "src/lib/actions/inference-set/native.ts",
+      "src/lib/inference/native-provider/",
+      "src/lib/onboard/setup-inference.ts",
       "test/e2e/live/openclaw-inference-switch-helpers.ts",
     ],
     environment: {
@@ -1305,6 +1308,7 @@ export const E2E_TARGET_CATALOGUE: readonly E2eCatalogueTarget[] = [
       NEMOCLAW_SWITCH_MODEL: "mock-anthropic-model",
       NEMOCLAW_SWITCH_INFERENCE_API: "anthropic-messages",
       NEMOCLAW_SWITCH_MOCK_ANTHROPIC: "1",
+      NEMOCLAW_SWITCH_NATIVE_CUSTOM: "1",
       OPENSHELL_GATEWAY: "nemoclaw",
     },
   }),
