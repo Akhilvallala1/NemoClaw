@@ -50,7 +50,15 @@ export async function cleanupBootstrapState(input: {
       artifactName: `cleanup-bootstrap-${command}-available`,
       timeoutMs: 30_000,
     });
-    if (result.exitCode === 1 && !result.timedOut && result.signal === null) return false;
+    // Shells report a missing command with either status; diagnostics remain failures.
+    if (
+      (result.exitCode === 1 || result.exitCode === 127) &&
+      !result.timedOut &&
+      result.signal === null &&
+      !result.stdout.trim() &&
+      !result.stderr.trim()
+    )
+      return false;
     assertExitZero(result, `inspect ${command} availability`);
     return true;
   };

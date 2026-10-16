@@ -41,9 +41,9 @@ describe("bootstrap teardown", () => {
       expect(events).toEqual(["destroy", "delete", "gateway", "clone"]);
     },
   );
-  it("removes the clone when bootstrap has not installed either CLI", async () => {
+  it.each([1, 127])("removes the clone when missing CLIs return exit %s", async (exitCode) => {
     const command = vi.fn(async (executable: string) =>
-      result("", { exitCode: executable === "sh" ? 1 : 0 }),
+      result("", { exitCode: executable === "sh" ? exitCode : 0 }),
     );
     const cleanupGatewayRegistration = vi.fn();
     await cleanupBootstrapState({
@@ -59,5 +59,17 @@ describe("bootstrap teardown", () => {
       expect.any(Object),
     );
     expect(cleanupGatewayRegistration).not.toHaveBeenCalled();
+  });
+  it.each([
+    { exitCode: 127, stderr: "cannot start shell" },
+    { exitCode: 1, stderr: "lookup failed" },
+    { exitCode: 127, stdout: "unexpected output" },
+    { exitCode: 127, timedOut: true },
+    { exitCode: 127, signal: "SIGTERM" as const },
+    { exitCode: 2 },
+  ])("reports unsuccessful CLI inspection %j and still removes the clone", async (status) => {
+    const { input, events } = bootstrapCleanupHarness("none", result("", status));
+    await expect(cleanupBootstrapState(input)).rejects.toThrow("Bootstrap cleanup failed");
+    expect(events).toEqual(["clone"]);
   });
 });

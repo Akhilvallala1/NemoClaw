@@ -24,10 +24,13 @@ export function cleanupResult(
   };
 }
 
-export function bootstrapCleanupHarness(failure = "none") {
+export function bootstrapCleanupHarness(
+  failure = "none",
+  availability = cleanupResult("/usr/local/bin/tool"),
+) {
   const events: string[] = [];
   const command = vi.fn(async (executable: string) => {
-    if (executable === "sh") return cleanupResult("/usr/local/bin/tool");
+    if (executable === "sh") return availability;
     const stage = executable === "nemoclaw" ? "destroy" : "clone";
     events.push(stage);
     return cleanupResult("", { exitCode: failure === stage ? 1 : 0 });
