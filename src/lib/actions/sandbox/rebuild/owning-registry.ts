@@ -12,7 +12,10 @@ import type {
 } from "../../../domain/lifecycle/options";
 import { resolveGatewayName } from "../../../gateway-runtime-action";
 import { webSearchEnvFor } from "../../../inference/web-search";
-import { resolveGatewayStateDirForPort } from "../../../onboard/gateway/state-dir";
+import {
+  managedGatewayStateRootOwnershipFailure,
+  resolveGatewayStateDirForPort,
+} from "../../../onboard/gateway/state-dir";
 import { snapshotCredentialEnv } from "../../../onboard/credential-env";
 import {
   assertGatewayStatePathSafe,
@@ -176,15 +179,25 @@ function resolveRecordedDestroyGatewayStateDir(
   if (typeof recorded !== "string" || !recorded || path.resolve(recorded) !== recorded) {
     throw new Error("Cannot destroy with an invalid recorded OpenShell gateway state directory.");
   }
-  return resolveGatewayStateDirForPort({
+  const port = registryEntryGatewayPort({
+    name: entry.name,
+    gatewayName: entry.gatewayName,
+    gatewayPort: entry.gatewayPort ?? gatewayPort,
+  });
+  const stateDir = resolveGatewayStateDirForPort({
     configured: recorded,
     home: homeDir,
-    port: registryEntryGatewayPort({
-      name: entry.name,
-      gatewayName: entry.gatewayName,
-      gatewayPort: entry.gatewayPort ?? gatewayPort,
-    }),
+    port,
   });
+  const ownershipFailure = managedGatewayStateRootOwnershipFailure({
+    gatewayName: resolveGatewayName(port),
+    gatewayPort: port,
+    stateDir,
+  });
+  if (ownershipFailure) {
+    throw new Error(`Unsafe OpenShell gateway state directory: ${ownershipFailure}.`);
+  }
+  return stateDir;
 }
 
 function owningRegistryWorkerEnv(

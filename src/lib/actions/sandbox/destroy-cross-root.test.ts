@@ -12,6 +12,10 @@ import {
   resetDestroyModuleCache,
 } from "../../../../test/helpers/destroy-flow-test-harness";
 import { testTimeoutOptions } from "../../../../test/helpers/timeouts";
+import {
+  MANAGED_GATEWAY_STATE_ROOT_MARKER,
+  ensureManagedGatewayStateRoot,
+} from "../../onboard/gateway/state-dir";
 
 const SIBLING_PORT = 8245;
 
@@ -221,24 +225,89 @@ describe("destroySandbox cross-root registry authority", testTimeoutOptions(30_0
   });
 
   it("binds a sibling-root destroy worker to the owning entry's gateway state directory instead of the caller's override", async () => {
-    const callerStateDir = path.join(home, "caller-gateway-state");
-    const owningStateDir = path.join(home, "sibling-gateway-state");
-    vi.stubEnv("NEMOCLAW_OPENSHELL_GATEWAY_STATE_DIR", callerStateDir);
-    writeSiblingRegistry(["alpha"], { openshellGatewayStateDir: owningStateDir });
-    const harness = createDestroyHarness();
-
-    await expect(
-      harness.destroySandbox("alpha", { yes: true, cleanupGateway: false }),
-    ).resolves.toBeUndefined();
-
-    expect(harness.runOwningRegistryWorkerSpy).toHaveBeenCalledWith(
-      {
-        operation: "destroy",
-        sandboxName: "alpha",
-        options: { yes: true, cleanupGateway: false },
-      },
-      SIBLING_PORT,
-      { gatewayStateDir: owningStateDir },
+    const stateRootParent = fs.mkdtempSync(
+      path.join(process.cwd(), "nemoclaw-destroy-gateway-state-"),
     );
+    try {
+      const callerStateDir = path.join(home, "caller-gateway-state");
+      const owningStateDir = path.join(stateRootParent, "sibling-gateway-state");
+      ensureManagedGatewayStateRoot({
+        gatewayName: `nemoclaw-${String(SIBLING_PORT)}`,
+        gatewayPort: SIBLING_PORT,
+        stateDir: owningStateDir,
+      });
+      vi.stubEnv("NEMOCLAW_OPENSHELL_GATEWAY_STATE_DIR", callerStateDir);
+      writeSiblingRegistry(["alpha"], { openshellGatewayStateDir: owningStateDir });
+      const harness = createDestroyHarness();
+
+      await expect(
+        harness.destroySandbox("alpha", { yes: true, cleanupGateway: false }),
+      ).resolves.toBeUndefined();
+
+      expect(harness.runOwningRegistryWorkerSpy).toHaveBeenCalledWith(
+        {
+          operation: "destroy",
+          sandboxName: "alpha",
+          options: { yes: true, cleanupGateway: false },
+        },
+        SIBLING_PORT,
+        { gatewayStateDir: owningStateDir },
+      );
+    } finally {
+      fs.rmSync(stateRootParent, { force: true, recursive: true });
+    }
   });
+
+  it.each([
+    [
+      "a missing managed-root marker",
+      (stateDir: string) => {
+        fs.mkdirSync(stateDir, { mode: 0o700, recursive: true });
+      },
+      /managed gateway state root marker and legacy managed configuration are both missing/,
+    ],
+    [
+      "a managed-root marker for another gateway",
+      (stateDir: string) => {
+        ensureManagedGatewayStateRoot({
+          gatewayName: "nemoclaw-9999",
+          gatewayPort: 9999,
+          stateDir,
+        });
+      },
+      /does not identify the selected gateway and directory/,
+    ],
+    [
+      "an unsafe managed-root marker mode",
+      (stateDir: string) => {
+        ensureManagedGatewayStateRoot({
+          gatewayName: `nemoclaw-${String(SIBLING_PORT)}`,
+          gatewayPort: SIBLING_PORT,
+          stateDir,
+        });
+        fs.chmodSync(path.join(stateDir, MANAGED_GATEWAY_STATE_ROOT_MARKER), 0o644);
+      },
+      /not a private owned regular file/,
+    ],
+  ])(
+    "rejects a sibling-root destroy before starting the worker when openshellGatewayStateDir has %s",
+    async (_caseLabel, prepareStateDir, expectedError) => {
+      const stateRootParent = fs.mkdtempSync(
+        path.join(process.cwd(), "nemoclaw-destroy-untrusted-gateway-state-"),
+      );
+      try {
+        const owningStateDir = path.join(stateRootParent, "sibling-gateway-state");
+        prepareStateDir(owningStateDir);
+        writeSiblingRegistry(["alpha"], { openshellGatewayStateDir: owningStateDir });
+        const harness = createDestroyHarness();
+
+        await expect(harness.destroySandbox("alpha", { yes: true })).rejects.toThrow(expectedError);
+
+        expect(harness.promptSpy).not.toHaveBeenCalled();
+        expect(harness.runOwningRegistryWorkerSpy).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(stateRootParent, { force: true, recursive: true });
+      }
+    },
+  );
 });

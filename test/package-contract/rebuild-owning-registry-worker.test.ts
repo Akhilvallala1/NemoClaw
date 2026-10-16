@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { rebuildOwningRegistryDependencies } from "../../dist/lib/actions/sandbox/rebuild/owning-registry";
 import { withSandboxLifecycleLock } from "../../dist/lib/actions/sandbox/lifecycle/lock";
+import { ensureManagedGatewayStateRoot } from "../../dist/lib/onboard/gateway/state-dir";
 import { recordRetainedSandboxRecovery } from "../../dist/lib/state/onboard-session/retained-sandbox-recovery";
 import { execTimeout, testTimeout } from "../helpers/timeouts";
 
@@ -599,9 +600,17 @@ describe("compiled rebuild owning-registry worker", () => {
     "completes a delegated destroy in the owning root and replaces the caller's gateway state directory override",
     async () => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-worker-destroy-success-"));
+      const stateRootParent = fs.mkdtempSync(
+        path.join(process.cwd(), "nemoclaw-worker-gateway-state-"),
+      );
       try {
         const callerStateDir = path.join(home, "caller-gateway-state");
-        const owningStateDir = path.join(home, "owning-gateway-state");
+        const owningStateDir = path.join(stateRootParent, "owning-gateway-state");
+        ensureManagedGatewayStateRoot({
+          gatewayName: "nemoclaw-9000",
+          gatewayPort: 9000,
+          stateDir: owningStateDir,
+        });
         const envMarker = path.join(home, "worker-env.json");
         const openshellBin = writeSuccessfulDestroyOpenShell(home, envMarker);
         writeSiblingRegistry(home, {
@@ -677,6 +686,7 @@ describe("compiled rebuild owning-registry worker", () => {
           ),
         ).toBe(false);
       } finally {
+        fs.rmSync(stateRootParent, { recursive: true, force: true });
         fs.rmSync(home, { recursive: true, force: true });
       }
     },
