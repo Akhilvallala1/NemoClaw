@@ -159,14 +159,20 @@ describe("full E2E sandbox inference probe", () => {
           mode: 0o700,
         });
         const body = JSON.stringify({ prompt: 'literal $(exit 99) "quote"' });
-        const [command, ...args] = buildSandboxInferenceChatCommand(body, provider, endpointUrl);
+        const timeout = provider === "compatible-endpoint" ? 60 : 90;
+        const [command, ...args] = buildSandboxInferenceChatCommand(
+          body,
+          provider,
+          endpointUrl,
+          timeout,
+        );
         const handle = `openshell:resolve:env:v3_${credentialEnv}`;
         const env = { PATH: `${directory}:/usr/bin:/bin`, [credentialEnv]: handle };
         const result = execFileSync(command, args, { env, encoding: "utf8" });
         expect(result.split("\n")).toEqual([
           "-fsS",
           "--max-time",
-          "90",
+          String(timeout),
           `${endpointUrl}/chat/completions`,
           "-H",
           "Content-Type: application/json",
@@ -214,19 +220,22 @@ describe("full E2E sandbox inference probe", () => {
     },
   );
 
-  it("retains the credential-free local probe for a compatible provider", () => {
-    expect(buildSandboxInferenceChatCommand("{}", "compatible-endpoint")).toEqual([
-      "curl",
-      "-fsS",
-      "--max-time",
-      "90",
-      "https://inference.local/v1/chat/completions",
-      "-H",
-      "Content-Type: application/json",
-      "--data-raw",
-      "{}",
-    ]);
-  });
+  it.each([undefined, "http://127.0.0.1:1234/v1", "https://inference.local/v1"])(
+    "retains the shared route for endpoint %s",
+    (endpoint) => {
+      expect(buildSandboxInferenceChatCommand("{}", "compatible-endpoint", endpoint)).toEqual([
+        "curl",
+        "-fsS",
+        "--max-time",
+        "90",
+        "https://inference.local/v1/chat/completions",
+        "-H",
+        "Content-Type: application/json",
+        "--data-raw",
+        "{}",
+      ]);
+    },
+  );
   it("uses deterministic sampling and the requested reply budget for Nemotron", () => {
     expect(JSON.parse(buildFullE2eInferenceRequest("nvidia/nvidia/nemotron-3-ultra", 512))).toEqual(
       {
