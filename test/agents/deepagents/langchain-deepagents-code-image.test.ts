@@ -1031,7 +1031,7 @@ describe("LangChain Deep Agents Code image contracts", () => {
     "references_attached_provider_placeholder_key",
     'api_key_env[[:space:]]*=[[:space:]]*"NVIDIA_INFERENCE_API_KEY"',
     "references_native_compatible_route",
-    "https://inference-api\\.nvidia\\.com/v1",
+    'HOSTED_ENDPOINT="${NEMOCLAW_ENDPOINT_URL:-https://inference-api.nvidia.com/v1}"',
     "references_compatible_provider_placeholder_key",
     'api_key_env[[:space:]]*=[[:space:]]*"COMPATIBLE_API_KEY"',
     "configured_inference_route_contract",
@@ -1182,6 +1182,30 @@ describe("LangChain Deep Agents Code image contracts", () => {
     expect(runHeadlessCheckHelper("inference-route-contract", { CONFIG: config })).toBe(
       `${expected}\n`,
     );
+  });
+
+  it("accepts the selected compatible endpoint and rejects a different endpoint", () => {
+    const endpoint = "https://custom.example.test/v1";
+    const config = (baseUrl: string) =>
+      [`base_url = "${baseUrl}"`, 'api_key_env = "COMPATIBLE_API_KEY"'].join("\n");
+    expect(
+      runHeadlessCheckHelper("inference-route-contract", {
+        CONFIG: config(endpoint),
+        NEMOCLAW_ENDPOINT_URL: endpoint,
+      }),
+    ).toBe("native-compatible\n");
+    expect(() =>
+      runHeadlessCheckHelper("inference-route-contract", {
+        CONFIG: config("https://other.example.test/v1"),
+        NEMOCLAW_ENDPOINT_URL: endpoint,
+      }),
+    ).toThrow();
+    expect(() =>
+      runHeadlessCheckHelper("inference-route-contract", {
+        CONFIG: config(endpoint).replace("COMPATIBLE_API_KEY", "DEEPAGENTS_CODE_OPENAI_API_KEY"),
+        NEMOCLAW_ENDPOINT_URL: endpoint,
+      }),
+    ).toThrow();
   });
 
   it.each([

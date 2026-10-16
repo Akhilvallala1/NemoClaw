@@ -33,6 +33,7 @@ set -euo pipefail
 SANDBOX_NAME="${SANDBOX_NAME:-${NEMOCLAW_SANDBOX_NAME:-e2e-cloud-onboard}}"
 PREFIX="07-deepagents-code-headless-inference"
 HEADLESS_TIMEOUT="${DEEPAGENTS_HEADLESS_TIMEOUT:-120}"
+HOSTED_ENDPOINT="${NEMOCLAW_ENDPOINT_URL:-https://inference-api.nvidia.com/v1}"
 SKILL_CLI_TIMEOUT_SECONDS=180
 
 ok() { printf '%s\n' "${PREFIX}: OK ($*)"; }
@@ -383,7 +384,9 @@ references_attached_provider_placeholder_key() {
 }
 
 references_native_compatible_route() {
-  grep -Eq 'base_url[[:space:]]*=[[:space:]]*"https://inference-api\.nvidia\.com/v1"'
+  local configured_endpoint
+  configured_endpoint="$(sed -n 's/^[[:space:]]*base_url[[:space:]]*=[[:space:]]*"\([^"]*\)"[[:space:]]*$/\1/p')"
+  [ "$configured_endpoint" = "$HOSTED_ENDPOINT" ]
 }
 
 references_compatible_provider_placeholder_key() {
