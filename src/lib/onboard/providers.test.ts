@@ -497,6 +497,21 @@ describe("onboard provider helpers", () => {
     },
   );
 
+  it("does not restage Deep Agents NEMOCLAW_PROVIDER_KEY when NEMOCLAW_ENDPOINT_URL names another endpoint", () => {
+    withProviderEnv(
+      {
+        NEMOCLAW_ENDPOINT_URL: "https://93.184.216.34/v1",
+        NEMOCLAW_PROVIDER_KEY: "repo-hosted-key",
+      },
+      () => {
+        expect(stageHostedInferenceSourceSecretEnv("dcode")).toBe(false);
+        expect(getRequestedProviderHint(true, true, "dcode")).toBeNull();
+        expect(process.env.NEMOCLAW_PROVIDER).toBeUndefined();
+        expect(process.env.COMPATIBLE_API_KEY).toBeUndefined();
+      },
+    );
+  });
+
   it.each([
     ["OpenClaw", null],
     ["Hermes", "hermes"],

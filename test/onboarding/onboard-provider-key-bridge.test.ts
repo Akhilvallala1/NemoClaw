@@ -17,6 +17,7 @@ const TRACKED_ENV_KEYS = [
   "COMPATIBLE_ANTHROPIC_API_KEY",
   "GEMINI_API_KEY",
   "NEMOCLAW_AGENT",
+  "NEMOCLAW_ENDPOINT_URL",
   "NEMOCLAW_MODEL",
   "NEMOCLAW_NON_INTERACTIVE",
   "NEMOCLAW_PROVIDER",
@@ -109,6 +110,7 @@ Object.assign(process.env, env, {
         HOME: home,
         PATH: `${fakeBin}:${process.env.PATH || ""}`,
         NEMOCLAW_TEST_NO_SLEEP: "1",
+        NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS: "inference-api.nvidia.com",
       },
       timeout: 60_000,
     });
@@ -206,7 +208,6 @@ describe("onboard provider-key compatibility bridges", () => {
     () => {
       const payload = runSetupNimBridgeScenario(
         {
-          NEMOCLAW_ENDPOINT_URL: "https://93.184.216.34/v1",
           NEMOCLAW_PROVIDER_KEY: "sk-hosted-fallback",
         },
         "langchain-deepagents-code",
@@ -215,6 +216,7 @@ describe("onboard provider-key compatibility bridges", () => {
       assert.equal(payload.outcome, "completed");
       assert.equal(payload.result?.provider, "compatible-endpoint");
       assert.equal(payload.result?.credentialEnv, "COMPATIBLE_API_KEY");
+      assert.equal(payload.env.NEMOCLAW_ENDPOINT_URL, "https://inference-api.nvidia.com/v1");
       assert.equal(payload.env.COMPATIBLE_API_KEY, "sk-hosted-fallback");
       assert.equal(payload.env.NVIDIA_INFERENCE_API_KEY, null);
     },

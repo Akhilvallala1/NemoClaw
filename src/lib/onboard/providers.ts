@@ -266,8 +266,13 @@ function getNonInteractiveProvider(allowHostedInferenceStaging = true, agentName
 }
 
 function stageHostedInferenceSourceSecretEnv(agentName = null) {
+  const endpointUrl = (process.env.NEMOCLAW_ENDPOINT_URL || "").trim();
+  const hasHostedInferenceEndpoint = !endpointUrl || endpointUrl === HOSTED_INFERENCE_ENDPOINT_URL;
   let providerKeySource = "";
-  if (resolveAgentNameAlias(agentName, [HOSTED_INFERENCE_PROVIDER_KEY_AGENT])) {
+  if (
+    hasHostedInferenceEndpoint &&
+    resolveAgentNameAlias(agentName, [HOSTED_INFERENCE_PROVIDER_KEY_AGENT])
+  ) {
     const rawProviderKeySource = normalizeCredentialValue(
       // check-direct-credential-env-ignore -- Deep Agents provider-key alias is immediately route-filtered and restaged as COMPATIBLE_API_KEY.
       process.env[HOSTED_INFERENCE_PROVIDER_KEY_ENV] ?? "",
@@ -308,8 +313,7 @@ function stageHostedInferenceSourceSecretEnv(agentName = null) {
   if (!normalizedProvider) {
     process.env.NEMOCLAW_PROVIDER = "custom";
   }
-  process.env.NEMOCLAW_ENDPOINT_URL =
-    (process.env.NEMOCLAW_ENDPOINT_URL || "").trim() || HOSTED_INFERENCE_ENDPOINT_URL;
+  process.env.NEMOCLAW_ENDPOINT_URL = endpointUrl || HOSTED_INFERENCE_ENDPOINT_URL;
   const model =
     getRequestedModelFromEnv() ||
     (process.env.NEMOCLAW_COMPAT_MODEL || "").trim() ||
