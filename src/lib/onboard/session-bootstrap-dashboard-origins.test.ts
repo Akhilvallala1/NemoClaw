@@ -69,8 +69,8 @@ async function interruptedSessionWithOrigins(): Promise<Session> {
     createDeps(),
   );
   const persisted = normalizeSession(JSON.parse(JSON.stringify(started.session)));
-  if (!persisted) throw new Error("session did not round-trip");
-  return persisted;
+  expect(persisted).not.toBeNull();
+  return persisted as Session;
 }
 
 describe("onboard resume keeps dashboard origins (#13177)", () => {
