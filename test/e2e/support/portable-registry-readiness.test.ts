@@ -1,12 +1,28 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { ArtifactSink } from "../fixtures/artifacts.ts";
 import {
+  collectPortableRegistryReadinessFailure,
   runPortableRegistryReadinessPolicy,
   type PortableRegistryReadinessObservation,
 } from "../fixtures/portable-registry-readiness.ts";
+import type {
+  ShellProbe,
+  ShellProbeResult,
+  ShellProbeRunOptions,
+  TrustedShellCommand,
+} from "../fixtures/shell-probe.ts";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("portable registry readiness policy", () => {
   it("records first-attempt readiness without sleeping", async () => {
@@ -109,5 +125,74 @@ describe("portable registry readiness policy", () => {
       },
     ]);
     expect(onEvidence).toHaveBeenCalledWith(result.evidence);
+  });
+
+  it("retains failure evidence and runs bounded diagnostics with a minimal environment", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-registry-readiness-"));
+    try {
+      vi.stubEnv("DOCKER_HOST", "unix:///run/user/1000/podman/podman.sock");
+      vi.stubEnv("XDG_RUNTIME_DIR", "/run/user/1000");
+      vi.stubEnv("CONTAINERS_CONF", "/tmp/containers.conf");
+      vi.stubEnv("UNRELATED_API_KEY", "must-not-reach-podman");
+      const run = vi.fn(
+        async (
+          _command: TrustedShellCommand,
+          _options: ShellProbeRunOptions,
+        ): Promise<ShellProbeResult> => ({
+          command: [],
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          artifacts: { stdout: "", stderr: "", result: "" },
+        }),
+      );
+      const observation = { kind: "http-status", statusCode: 503 } as const;
+
+      const result = await collectPortableRegistryReadinessFailure({
+        artifacts: new ArtifactSink(root),
+        probe: async () => observation,
+        shellProbe: { run } as unknown as ShellProbe,
+      });
+
+      expect(result).toEqual(observation);
+      expect(
+        JSON.parse(
+          fs.readFileSync(path.join(root, "portable-registry-readiness-retry.json"), "utf8"),
+        ),
+      ).toMatchObject({
+        outcome: "failed-no-retry",
+        attempts: [{ attempt: 1, retryScheduled: false }],
+      });
+      expect(
+        JSON.parse(
+          fs.readFileSync(path.join(root, "portable-registry-readiness-failure.json"), "utf8"),
+        ),
+      ).toEqual({ observation });
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(run.mock.calls.map(([command]) => command.args[0])).toEqual([
+        "container",
+        "port",
+        "logs",
+      ]);
+      const expectedOptions = expect.objectContaining({
+        captureLimitBytes: 32 * 1024,
+        env: expect.objectContaining({
+          CONTAINERS_CONF: "/tmp/containers.conf",
+          DOCKER_HOST: "unix:///run/user/1000/podman/podman.sock",
+          XDG_RUNTIME_DIR: "/run/user/1000",
+        }),
+        timeoutMs: 10_000,
+      });
+      expect(run).toHaveBeenNthCalledWith(1, expect.anything(), expectedOptions);
+      expect(run).toHaveBeenNthCalledWith(2, expect.anything(), expectedOptions);
+      expect(run).toHaveBeenNthCalledWith(3, expect.anything(), expectedOptions);
+      expect(run.mock.calls[0]![1].env).not.toHaveProperty("UNRELATED_API_KEY");
+      expect(run.mock.calls[1]![1].env).not.toHaveProperty("UNRELATED_API_KEY");
+      expect(run.mock.calls[2]![1].env).not.toHaveProperty("UNRELATED_API_KEY");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

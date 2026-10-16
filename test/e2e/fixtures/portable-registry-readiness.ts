@@ -9,6 +9,7 @@ import {
   type RetryEvidence,
 } from "../../../tools/e2e/retry-evidence.mts";
 import type { ArtifactSink } from "./artifacts.ts";
+import { buildChildEnv } from "./redaction.ts";
 import { type ShellProbe, trustedShellCommand } from "./shell-probe.ts";
 
 export type PortableRegistryReadinessObservation =
@@ -21,6 +22,15 @@ export type PortableRegistryReadinessObservation =
 
 export const PORTABLE_REGISTRY_READINESS_MAX_ATTEMPTS = 10;
 export const PORTABLE_REGISTRY_READINESS_DELAY_MS = 1_000;
+
+const PORTABLE_REGISTRY_DIAGNOSTIC_ENV_KEYS = [
+  "CONTAINERS_CONF",
+  "CONTAINERS_STORAGE_CONF",
+  "DOCKER_HOST",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_RUNTIME_DIR",
+] as const;
 
 function retryableTransport(observation: PortableRegistryReadinessObservation): boolean {
   return observation.kind === "transport" && observation.code !== "unexpected";
@@ -93,6 +103,10 @@ async function probePortableRegistry(): Promise<PortableRegistryReadinessObserva
 }
 
 async function captureRegistryFailureDiagnostics(shellProbe: ShellProbe): Promise<void> {
+  const env = buildChildEnv(process.env, {
+    additionalAllowedEnv: PORTABLE_REGISTRY_DIAGNOSTIC_ENV_KEYS,
+    fixtureOverlay: {},
+  });
   const commands = [
     {
       artifactName: "portable-registry-container-inspect",
@@ -134,7 +148,7 @@ async function captureRegistryFailureDiagnostics(shellProbe: ShellProbe): Promis
         {
           artifactName: command.artifactName,
           captureLimitBytes: 32 * 1024,
-          env: process.env,
+          env,
           timeoutMs: 10_000,
         },
       ),
@@ -144,10 +158,11 @@ async function captureRegistryFailureDiagnostics(shellProbe: ShellProbe): Promis
 
 export async function collectPortableRegistryReadinessFailure(options: {
   readonly artifacts: ArtifactSink;
+  readonly probe?: (attempt: number) => Promise<PortableRegistryReadinessObservation>;
   readonly shellProbe: ShellProbe;
 }): Promise<PortableRegistryReadinessObservation | undefined> {
   const result = await runPortableRegistryReadinessPolicy({
-    probe: probePortableRegistry,
+    probe: options.probe ?? probePortableRegistry,
     onEvidence: async (evidence) => {
       await options.artifacts.writeJson("portable-registry-readiness-retry.json", evidence);
     },
