@@ -1279,7 +1279,7 @@ export function ownSandboxRecreateTransaction(
           sandboxName: input.sandboxName,
           gatewayName: input.gatewayName,
           gatewayPort: input.gatewayPort,
-          freshOnboard: expectedOld ? undefined : input.freshOnboard,
+          freshOnboard: expectedOld ? expectedOld.freshOnboard : input.freshOnboard,
           reconcileOpenClawInference: input.reconcileOpenClawInference,
           sourceEntry: freshRegistryEntry,
           observation: freshObservation,
