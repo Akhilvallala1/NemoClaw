@@ -188,7 +188,8 @@ def personal_fixture(source_revision=CURRENT):
 class NativeAdmission(unittest.TestCase):
     def test_browser_startup_is_only_current_additive_hooks_and_marker(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            # Match the production caller, including Windows short-name temp paths.
+            root = Path(directory).resolve(strict=True)
             here = Path(__file__).parent
             native = (here / "nemoclaw_native_windows.py").read_bytes()
             hook = (here / "nemoclaw_browser_use.py").read_bytes()

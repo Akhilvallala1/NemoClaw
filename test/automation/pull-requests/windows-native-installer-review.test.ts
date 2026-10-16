@@ -190,10 +190,13 @@ const mutations: Mutation[] = [
     },
   })),
   {
-    name: "bootstrap runtime gate loses OpenClaw scope",
+    name: "bootstrap runtime gate loses its selected-agent scope",
     mutate: (value) => {
       const job = value.trusted.jobs["full-installed-acceptance"];
-      job.if = job.if!.replace(" && inputs.agent == 'openclaw'", "");
+      job.if = job.if!.replace(
+        ' && contains(fromJSON(\'["openclaw","hermes"]\'), inputs.agent)',
+        "",
+      );
     },
   },
   {
@@ -346,7 +349,7 @@ const phaseCases = [
     change: { QUALIFICATION_PHASE: "runtime-bootstrap" },
   },
   {
-    name: "Hermes bootstrap",
+    name: "Hermes bootstrap with OpenClaw cache",
     accepted: false,
     change: {
       QUALIFICATION_PHASE: "runtime-bootstrap",
@@ -391,7 +394,9 @@ const phaseCases = [
 describe("reviewed OpenClaw installer workflow", () => {
   it.each(mutations)("rejects $name", ({ mutate }) => {
     const value = sources();
+    const before = JSON.stringify(value);
     mutate(value);
+    expect(JSON.stringify(value)).not.toBe(before);
     expect(() => assertWindowsInstallerWorkflow(value)).toThrow();
   });
   it.skipIf(process.platform !== "linux").each(phaseCases)(
