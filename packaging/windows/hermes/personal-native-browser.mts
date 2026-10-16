@@ -232,7 +232,7 @@ export async function startPersonalNativeBrowser(options: {
       pagePort: address.port,
       bootstrapSha256: bytecode.sha256,
     });
-    fs.mkdirSync(selected.NEMOCLAW_BROWSER_RELAY_ROOT);
+    // The native owner creates the relay root with its protected private DACL.
     relay = await startNativeBrokerRelay({
       relayRoot: selected.NEMOCLAW_BROWSER_RELAY_ROOT,
       relayToken: selected.NEMOCLAW_BROWSER_RELAY_TOKEN,
