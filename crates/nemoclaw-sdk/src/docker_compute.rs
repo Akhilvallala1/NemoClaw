@@ -228,13 +228,28 @@ fn container(target: &Target) -> Result<Value, Error> {
         .ok_or(Error::State("missing runtime process"))?;
     let launch = spec.container("/data")?;
     let mut attrs = json!({"name":spec.name,"labels":[{"label":crate::managed::OWNER_LABEL,"value":spec.owner}],"entrypoint":launch.entrypoint,"command":launch.cmd,"env":launch.env,"network_mode":spec.network(),"mounts":[{"type":"volume","source":spec.volume(),"target":process.mount_target}],"capabilities":[{"drop":["ALL"]}],"security_opts":["no-new-privileges"],"restart":"no","memory":process.memory_bytes/(1<<20),"memory_swap":process.memory_bytes/(1<<20),"shm_size":process.shared_memory_bytes/(1<<20),"ipc_mode":if process.host_ipc {"host"} else {"private"},"ulimit":[{"name":"memlock","soft":-1,"hard":-1},{"name":"stack","soft":67108864,"hard":67108864}],"ports":[{"internal":process.port,"external":process.port,"ip":process.bind_address,"protocol":"tcp"}],"log_driver":"json-file","log_opts":{"max-size":"32m","max-file":"3"},"must_run":true,"wait":false,"remove_volumes":false,"destroy_grace_seconds":60});
-    if process.image_owned.is_some() {
+    if let Some(image) = &process.image_owned {
         let attrs_map = attrs.as_object_mut().unwrap();
         attrs_map.remove("entrypoint");
-        attrs_map.remove("command");
+        if image.command.is_none() {
+            attrs_map.remove("command");
+        }
         attrs_map.remove("ulimit");
-        if process.port == 0 {
+        if process.port == 0 || process.bind_address.is_empty() {
             attrs_map.remove("ports");
+        }
+        if !image.ulimits.is_empty() {
+            attrs["ulimit"] = json!(
+                image
+                    .ulimits
+                    .iter()
+                    .map(|(name, value)| json!({"name":name,"soft":value,"hard":value}))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if !image.files.is_empty() {
+            attrs["upload"] = json!(image.files.iter().map(|(path, content)|
+                json!({"file":path,"content":content,"permissions":"0444","owner":"0","group":"0"})).collect::<Vec<_>>());
         }
         attrs["user"] = json!(launch.user);
         attrs["labels"] = json!(
@@ -272,7 +287,7 @@ fn container(target: &Target) -> Result<Value, Error> {
     // Containers created before memory limits were configurable used the
     // default and have no label; keep them unchanged.
     let memory_gib = process.memory_bytes / nemoclaw_runtime::hardware::GIB;
-    if memory_gib != crate::services::installers::vllm::DEFAULT_MEMORY_LIMIT_GIB {
+    if memory_gib != crate::services::installers::container::DEFAULT_MEMORY_LIMIT_GIB {
         push_label(
             &mut attrs,
             "nemoclaw.nvidia.com/memory-limit-gib",

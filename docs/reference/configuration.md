@@ -162,7 +162,7 @@ Paths:
 
 ## ContainerData
 
-An owned disposable data volume. The image must supply the writable non-root mount directory.
+An owned disposable data volume. The image must supply a mount directory writable by its configured user.
 
 Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
 
@@ -172,7 +172,26 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `mountPath` | string | Yes | — | One application directory below /var/lib, owned by the image's non-root user. Constraints: pattern `^/var/lib/[a-z][a-z0-9-]{0,62}$`. |
+| `mountPath` | string | Yes | — | /data or one application directory below /var/lib. Constraints: pattern `^(/data\|/var/lib/[a-z][a-z0-9-]{0,62})$`. |
+
+## ContainerExecution
+
+Container execution limits, independent of application/model memory policy.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.container`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `cpuLimitMillis` | integer | No | — | CPU limit in millicores. Omission leaves CPU usage unrestricted. Constraints: minimum 1; maximum 4294967295. |
+| `gpu` | boolean | No | — | Expose the engine's GPU devices. Omission leaves GPU access disabled. |
+| `ipc` | [ServiceIpc](#serviceipc) | No | — | Private IPC by default; host shares the host IPC namespace. |
+| `memoryLimitGiB` | integer | No | — | Container memory limit in GiB; not a GPU-memory reservation. Omission selects 1 GiB. Constraints: minimum 1; maximum 8589934591. |
+| `sharedMemoryGiB` | integer | No | — | Shared memory in GiB. Omission selects 64 MiB. Constraints: minimum 1; maximum 64. |
+| `ulimits` | map of integer | No | — | Process limits by Docker limit name. Each value sets both soft and hard limits; -1 means unlimited. |
 
 ## ContainerPublication
 
@@ -188,6 +207,22 @@ Paths:
 |---|---|---|---|---|
 | `bindAddress` | string | Yes | — | Loopback or private host IPv4 address. |
 | `port` | integer | Yes | — | Same unprivileged TCP port inside the container and on the host. Constraints: minimum 1024; maximum 65535. |
+
+## ContainerReadiness
+
+Readiness observation. Omission uses the image's Docker HEALTHCHECK.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.readiness`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `path` | any JSON value | No | — | HTTP GET path on the container's listener. Success requires HTTP 200; redirects are not followed. |
+| `runtimeStatus` | any JSON value | No | — | Managed-runtime status file containing phase and updated. Requires a ready report from this container start, not an old volume's report. |
+| `timeoutSeconds` | integer | No | — | Startup wait in seconds, 1–3600. Omission selects 300. Constraints: minimum 1; maximum 3600. |
 
 ## Credential
 
@@ -1116,12 +1151,17 @@ Image-owned application with bounded Docker HEALTHCHECK observation.
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `data` | [ContainerData](#containerdata) | Yes | — | Disposable application data. Destroy removes this volume. |
+| `command` | any JSON value | No | — | Optional argument list for the image entrypoint, without implicit shell expansion. |
+| `container` | [ContainerExecution](#containerexecution) | No | — | Execution limits. These do not replace the image's model-memory policy. |
+| `data` | [ContainerData](#containerdata) | No | — | Disposable application data. Omission provides /data; destroy removes this volume. Typed model services retain their own storage policy. |
 | `environment` | map of string | No | — | Literal non-secret application settings. Credentials must not be supplied here. Constraints: keys: pattern `^[A-Z_][A-Z0-9_]{0,127}$`. |
-| `image` | string | Yes | — | Immutable application image. The image owns its entrypoint, CMD, and HEALTHCHECK. Constraints: pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. |
+| `files` | map of string | No | — | Literal nonsecret configuration files uploaded before startup with mode 0444. Contents are retained in plans and state; these are not secret files or immutable mounts. |
+| `image` | string | Yes | — | Immutable application image. The image owns its entrypoint and default command. Constraints: pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. |
 | `kind` | string | Yes | — | Supported installer selected by this service definition. Constraints: `"container"`. |
+| `port` | integer | No | — | Listener inside the container. It must match the application's own configuration; omission uses publication.port when published. Constraints: minimum 1; maximum 65535. |
 | `publication` | [ContainerPublication](#containerpublication) | No | — | Optional loopback or private IPv4 TCP publication. Omission publishes no port. |
-| `user` | string | No | `"65532:65532"` | Numeric non-root UID:GID. Omission selects 65532:65532. Constraints: pattern `^[1-9][0-9]{0,8}:[1-9][0-9]{0,8}$`. |
+| `readiness` | [ContainerReadiness](#containerreadiness) | No | — | HTTP, managed-runtime status, or image HEALTHCHECK readiness on every apply. |
+| `user` | string | No | `"65532:65532"` | Numeric UID:GID. Omission selects 65532:65532; root requires an explicit 0:0 for images that need it. Constraints: pattern `^[0-9]{1,9}:[0-9]{1,9}$`. |
 
 ## ServiceHardware
 

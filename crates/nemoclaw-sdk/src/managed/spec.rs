@@ -71,6 +71,12 @@ pub struct Process {
 pub struct ImageLaunch {
     pub user: String,
     pub environment: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub files: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ulimits: std::collections::BTreeMap<String, i64>,
 }
 /// CFS period for container CPU limits, matching kubelet and `docker --cpus`.
 pub(crate) const CPU_PERIOD_MICROS: u64 = 100_000;
@@ -590,6 +596,18 @@ impl Spec {
             ))?;
             if let Some(image) = &process.image_owned {
                 config["User"] = json!(image.user);
+                if let Some(command) = &image.command {
+                    config["Cmd"] = json!(command);
+                }
+                if !image.ulimits.is_empty() {
+                    host["Ulimits"] = json!(
+                        image
+                            .ulimits
+                            .iter()
+                            .map(|(name, limit)| json!({"Name":name,"Soft":limit,"Hard":limit}))
+                            .collect::<Vec<_>>()
+                    );
+                }
                 config["Env"] = json!(
                     image
                         .environment
@@ -629,7 +647,7 @@ impl Spec {
                         .collect::<Vec<_>>()
                 );
             }
-            if process.port != 0 {
+            if process.port != 0 && !process.bind_address.is_empty() {
                 host["PortBindings"] = json!({format!("{}/tcp",process.port):[{"HostIp":process.bind_address,"HostPort":process.port.to_string()}]});
             }
         }

@@ -34,12 +34,13 @@ Pure policy compilation stays in SDK configuration; OpenShell transport and muta
 The [provider reference](../provider.md) owns resource-specific contracts and protocol details.
 Implementation starts at [Deployment](../../crates/nemoclaw-sdk/src/deployment/mod.rs), [graph compilation](../../crates/nemoclaw-sdk/src/compile.rs), and [backend contracts](../../crates/nemoclaw-backend/src/contract.rs).
 
-Ollama, vLLM, and generic application containers use one internal [Docker installer](../../crates/nemoclaw-sdk/src/services/installers/docker.rs) to assemble owned specifications, storage, process targets, and dependencies.
+Ollama, vLLM, and explicit containers use one internal [container base](../../crates/nemoclaw-sdk/src/services/installers/container/base.rs) to assemble owned specifications, storage, process targets, and dependencies.
+The [container service contract](container-contract.md) defines the public image and input boundary; typed Ollama/vLLM are convenience frontends, not exclusive ways to run those images.
 Service callers supply resource identities, process settings, image acquisition policy, preparation resources, and storage retention requirements.
 Ollama and vLLM supply model and supervisor settings; vLLM also supplies credential storage and source declarations.
 Applications retain image-owned startup and health, literal settings, and publication, on the managed Docker gateway's engine and network.
 The existing Docker compiler maps these plans to OpenTofu resources; providers own mutations and readiness observations.
-The host provider reads application Docker health without changing containers.
+The host provider checks identity and reads Docker health, a configured HTTP endpoint, or fresh managed-runtime status without changing containers.
 Each service owns its storage retention requirements.
 
 ## Managed Kubernetes Ownership

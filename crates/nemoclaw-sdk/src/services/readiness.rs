@@ -23,12 +23,43 @@ pub(crate) fn configure_readiness(
                 .into_iter()
                 .map(|(key, value)| (key, literal(&value)))
                 .collect();
-            graph["data"][super::installers::container::HEALTH_DATA_SOURCE][logical] = json!({
+            let readiness: super::installers::container::ContainerReadiness = target
+                .values
+                .get("readiness")
+                .map(|value| serde_json::from_str(value))
+                .transpose()
+                .map_err(|_| Error::State("invalid container readiness"))?
+                .unwrap_or_default();
+            let mut attributes = json!({
                 "engine":literal(spec.engine()), "name":literal(&spec.name),
                 "container_id":format!("${{{container}.id}}"), "labels":labels,
                 "read_trigger":"${timestamp() != \"\"}",
-                "wait_timeout_seconds":super::installers::container::STARTUP_TIMEOUT_SECONDS
+                "wait_timeout_seconds":readiness.timeout_seconds
             });
+            if let Some(path) = &readiness.runtime_status {
+                attributes["runtime_status"] = json!(literal(path));
+            }
+            if let Some(path) = &readiness.path {
+                let process = spec
+                    .process
+                    .as_ref()
+                    .ok_or(Error::State("missing container process"))?;
+                attributes["http_url"] = if process.bind_address.is_empty() {
+                    json!(format!(
+                        "http://${{{container}.network_data[0].ip_address}}:{}{}",
+                        process.port,
+                        literal(path)
+                    ))
+                } else {
+                    json!(format!(
+                        "http://{}:{}{}",
+                        process.bind_address,
+                        process.port,
+                        literal(path)
+                    ))
+                };
+            }
+            graph["data"][super::installers::container::HEALTH_DATA_SOURCE][logical] = attributes;
             continue;
         }
         let source = if target.kind == super::installers::vllm::SERVICE_KIND {

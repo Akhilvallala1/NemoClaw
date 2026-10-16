@@ -103,12 +103,22 @@ Keep state, diagnose the failure, and reapply after recovery.
 
 ### Run an Application Container
 
-Declare a `kind: container` service with an immutable image, literal environment settings, and an owned data directory below `/var/lib`.
-The image owns startup and its Docker HEALTHCHECK; Docker pulls it for the engine's platform when it is absent.
-On every apply, including unchanged applies, `host_container_health` waits up to 300 seconds for that HEALTHCHECK to report healthy.
+Declare a `kind: container` service with an immutable image and literal nonsecret environment settings.
+The image owns its entrypoint; optional `command` overrides its arguments, and `files` supplies nonsecret configuration with mode 0444.
+Files enter configuration and state; use protected-file delivery for credentials, not `files` or `environment`.
+`container` sets GPU access, CPU/memory limits, shared memory, IPC, and ulimits; omission does not expose GPUs.
+The default user is 65532:65532; images that require root must explicitly request `user: "0:0"`.
 The container runs on the managed local Docker gateway's engine and network.
-Optional publication binds an unprivileged TCP port to loopback or a private IPv4 address.
-Application storage is disposable: destroy removes the owned data volume.
+Optional `publication` binds an unprivileged TCP port to loopback or a private IPv4 address; `port` must agree with the application's listener.
+`readiness.path` selects an HTTP GET expecting 200; `readiness.runtimeStatus` selects a managed-runtime status file such as `/data/status.json`.
+Choose at most one; omission uses Docker HEALTHCHECK, and all modes check on unchanged applies.
+The default readiness timeout is 300 seconds.
+HTTP probes must reach the published or container address from the provider process; virtualized engine networking may require explicit publication.
+A private publication allows an OpenAI-compatible container to be selected by `serviceRef`; registration waits for its readiness and uses /v1.
+Application data defaults to /data, or `data.mountPath` selects a directory below /var/lib.
+This data is disposable: destroy removes the owned volume.
+See the [container contract](design/container-contract.md) for the explicit managed-model form and the manual VoiceClaw interface.
+The typed `ollama` and `vllm` kinds retain their current policies and use this same assembly base.
 The [basic parser fixture](../crates/nemoclaw-sdk/tests/fixtures/config/container.yaml) demonstrates these fields with invented pins and endpoints; it does not qualify an image for live use.
 
 ### Supply Credential References

@@ -335,10 +335,29 @@ impl Installer for ServiceDefinition {
 impl ServiceDefinition {
     fn resolve(&self, document: &Document, name: &str) -> Result<ResolvedInference, ConfigError> {
         Ok(match self {
-            ServiceDefinition::Container(_) => {
-                return Err(ConfigError::new(
-                    "container service cannot be an inference provider",
-                ));
+            ServiceDefinition::Container(service) => {
+                let publication = service.publication.as_ref().ok_or_else(|| {
+                    ConfigError::new("a container inference service requires a private publication")
+                })?;
+                crate::config::validation::require(
+                    publication
+                        .bind_address
+                        .parse::<std::net::Ipv4Addr>()
+                        .is_ok_and(|ip| ip.is_private()),
+                    "a container inference service requires a private address reachable by OpenShell",
+                )?;
+                ResolvedInference {
+                    endpoint: format!(
+                        "http://{}:{}/v1",
+                        publication.bind_address, publication.port
+                    ),
+                    served_model: String::new(),
+                    requires_authentication: false,
+                    resource_dependencies: vec![format!(
+                        "data.{}.container_service_{name}",
+                        installers::container::HEALTH_DATA_SOURCE
+                    )],
+                }
             }
             ServiceDefinition::Ollama(service) => ResolvedInference {
                 endpoint: super::placement::ResolvedPlacement::resolve(
@@ -378,9 +397,7 @@ impl ServiceDefinition {
         model: &str,
     ) -> Result<(), ConfigError> {
         match self {
-            ServiceDefinition::Container(_) => Err(ConfigError::new(
-                "container service cannot be an inference provider",
-            )),
+            ServiceDefinition::Container(_) => Ok(()),
             ServiceDefinition::Ollama(_) => crate::config::validation::require(
                 provider.api.is_none()
                     || provider.api == Some(crate::config::InferenceApi::OpenaiCompletions),
@@ -401,9 +418,7 @@ impl ServiceDefinition {
         generations: &Generations,
     ) -> Result<Option<String>, crate::Error> {
         match self {
-            ServiceDefinition::Container(_) => {
-                Err(ConfigError::new("container service has no inference credential source").into())
-            }
+            ServiceDefinition::Container(_) => Ok(None),
             ServiceDefinition::Ollama(_) => Ok(None),
             ServiceDefinition::OllamaProxy(service) => service
                 .credential_source(document, name, generations)
@@ -587,10 +602,8 @@ pub(crate) fn validate_provider(
     provider: &InferenceProvider,
 ) -> Result<bool, ConfigError> {
     let referenced = definition(document, provider)?;
-    if referenced.is_some_and(|(_, service)| matches!(service, ServiceDefinition::Container(_))) {
-        return Err(ConfigError::new(
-            "container service cannot be an inference provider",
-        ));
+    if let Some((name, definition @ ServiceDefinition::Container(_))) = referenced {
+        definition.resolve(document, name)?;
     }
     Ok(referenced.is_some())
 }
@@ -607,7 +620,7 @@ pub(crate) fn validate_route(
     };
     let resolved = definition.resolve(document, name)?;
     require(
-        model == resolved.served_model,
+        matches!(definition, ServiceDefinition::Container(_)) || model == resolved.served_model,
         "service requires its declared served model",
     )?;
     definition.validate_route(provider, sandbox_runtime, model)
