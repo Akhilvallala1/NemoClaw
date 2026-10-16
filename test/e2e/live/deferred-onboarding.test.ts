@@ -137,7 +137,11 @@ test(
     expect(JSON.parse(deferred.stdout)).toEqual([]);
 
     progress.phase("complete the deferred installation");
-    const onboardEnv = { ...env, NVIDIA_INFERENCE_API_KEY: credential };
+    const onboardEnv = {
+      ...env,
+      NVIDIA_INFERENCE_API_KEY: credential,
+      NEMOCLAW_ONBOARD_VALIDATION_TIMEOUT_SECONDS: "180",
+    };
     const onboarded = await host.command(cli, ["onboard", "--non-interactive", "--yes"], {
       ...commandOptions,
       env: onboardEnv,
