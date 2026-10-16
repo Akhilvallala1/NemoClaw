@@ -12,10 +12,11 @@ content:
 NemoClaw supports operator-run servers and NemoClaw-managed runtime profiles for local inference.
 Choose the option that matches your host, model, and operational needs.
 
-New Deep Agents Code and OpenClaw sandboxes use sandbox-attached OpenShell providers for Ollama, standalone vLLM, and llama.cpp.
-Deep Agents Code also uses an attachment for qualifying local compatible endpoints.
-Local NVIDIA NIM and local selections for Pi and Hermes retain `inference.local`.
-Those shared routes require OpenShell `0.0.x`; migration of these selections to `0.1.3` is incomplete.
+New Deep Agents Code, OpenClaw, and Pi sandboxes use sandbox-attached OpenShell providers for Ollama, standalone vLLM, and llama.cpp.
+Deep Agents Code and Pi also use attachments for qualifying host-local compatible endpoints.
+Local NVIDIA NIM, Hermes local selections, and other retained shared routes use `inference.local` on OpenShell `0.0.x`.
+Unchanged published Pi shared local selections retain their recorded route during resume and rebuild on `0.0.x`.
+OpenShell `0.1.3` removes `inference.local`; migration of those selections is incomplete.
 Native local onboarding on `0.1.3` remains unqualified for this upgrade.
 
 On OpenShell `0.0.x`, existing OpenClaw Ollama, standalone vLLM, and llama.cpp sandboxes without an attachment retain supported shared-route model switches.

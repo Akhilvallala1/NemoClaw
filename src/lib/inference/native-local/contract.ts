@@ -4,7 +4,11 @@
 import { OLLAMA_PROXY_PORT } from "../../core/ollama-proxy-port";
 import { VLLM_PORT } from "../../core/vllm-port";
 import { createHash } from "node:crypto";
-import { isLocalInferenceProvider, qualifiedNativeLocalEndpointUrl } from "./agent-config";
+import {
+  isLocalInferenceProvider,
+  nativeLocalCredentialReference,
+  qualifiedNativeLocalEndpointUrl,
+} from "./agent-config";
 import { isValidName } from "../../../../nemoclaw/dist/shared/sandbox-name.cjs";
 import type { NativeProviderAttachment } from "../native-provider/lifecycle";
 
@@ -21,7 +25,7 @@ export type NativeLocalProvider =
   | "compatible-endpoint";
 export type NativeLocalBinding = Readonly<{
   provider: NativeLocalProvider;
-  agent?: "openclaw";
+  agent?: "openclaw" | "pi";
   endpointUrl: string;
   credentialEnv: string;
   authMode: "authenticated" | "sentinel";
@@ -39,7 +43,7 @@ export function normalizeNativeLocalBinding(value: unknown): NativeLocalBinding 
   if (
     (!isLocalInferenceProvider(input.provider as string) &&
       input.provider !== "compatible-endpoint") ||
-    (input.agent !== undefined && input.agent !== "openclaw") ||
+    (input.agent !== undefined && input.agent !== "openclaw" && input.agent !== "pi") ||
     (input.agent === "openclaw" && !isLocalInferenceProvider(input.provider as string)) ||
     typeof input.endpointUrl !== "string" ||
     typeof input.credentialEnv !== "string" ||
@@ -57,7 +61,7 @@ export function normalizeNativeLocalBinding(value: unknown): NativeLocalBinding 
   if (!endpointUrl) return undefined;
   return {
     provider: input.provider as NativeLocalProvider,
-    ...(input.agent === "openclaw" ? { agent: "openclaw" as const } : {}),
+    ...(input.agent === "openclaw" || input.agent === "pi" ? { agent: input.agent } : {}),
     endpointUrl,
     credentialEnv: input.credentialEnv,
     authMode: input.authMode,
@@ -172,9 +176,45 @@ export function usesNativeLocalInferenceForAgent(
   localNimSelected = false,
 ): boolean {
   if (provider === "vllm-local" && localNimSelected) return false;
+  if (
+    agentName === "pi" &&
+    provider === "compatible-endpoint" &&
+    endpointUrl &&
+    nativeLocalCredentialReference(provider, endpointUrl)
+  )
+    return true;
   return (
-    (agentName === "langchain-deepagents-code" &&
+    ((agentName === "langchain-deepagents-code" || agentName === "pi") &&
       usesNativeLocalInference(provider, endpointUrl)) ||
     (agentName === "openclaw" && isLocalInferenceProvider(provider))
+  );
+}
+
+/** Preserve only a published Pi selection that still uses its recorded shared route. */
+export function isPersistedPiSharedLocalInferenceRoute(
+  recorded:
+    | {
+        agent?: string | null;
+        provider?: string | null;
+        model?: string | null;
+        endpointUrl?: string | null;
+        createdAt?: string | null;
+        pendingRouteReservation?: boolean;
+        nativeLocalProviderAttachment?: unknown;
+      }
+    | null
+    | undefined,
+  selected?: { provider?: string | null; model?: string | null; endpointUrl?: string | null },
+): boolean {
+  return Boolean(
+    recorded?.agent === "pi" &&
+    typeof recorded.createdAt === "string" &&
+    recorded.pendingRouteReservation !== true &&
+    recorded.nativeLocalProviderAttachment === undefined &&
+    usesNativeLocalInferenceForAgent("pi", recorded.provider, recorded.endpointUrl) &&
+    (!selected ||
+      (recorded.provider === selected.provider &&
+        recorded.model === selected.model &&
+        (recorded.endpointUrl ?? null) === (selected.endpointUrl ?? null))),
   );
 }

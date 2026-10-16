@@ -434,7 +434,7 @@ describe("sandbox route publication", () => {
   });
 });
 
-function nativeRecreationHarness(agent: "langchain-deepagents-code" | "openclaw") {
+function nativeRecreationHarness(agent: "langchain-deepagents-code" | "openclaw" | "pi") {
   const session = createSession({ sandboxName: "saved" });
   const row: SandboxEntry = {
     name: "saved",
@@ -447,7 +447,7 @@ function nativeRecreationHarness(agent: "langchain-deepagents-code" | "openclaw"
   };
   const source = structuredClone(row);
   const attachment = nativeLocalSetupReceipt({
-    ...(agent === "openclaw" ? { agent } : {}),
+    ...(agent === "langchain-deepagents-code" ? {} : { agent }),
     provider: "vllm-local",
     sandboxName: "saved",
     gatewayName: "nemoclaw",
@@ -483,7 +483,7 @@ function nativeRecreationHarness(agent: "langchain-deepagents-code" | "openclaw"
   return { row, source, attachment, session, reserve, deps, calls, run };
 }
 
-describe.each(["langchain-deepagents-code", "openclaw"] as const)(
+describe.each(["langchain-deepagents-code", "openclaw", "pi"] as const)(
   "legacy %s recreation publication",
   (agent) => {
     it("publishes the native attachment only at the post-backup replacement seam (#13197)", async () => {
