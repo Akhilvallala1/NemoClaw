@@ -88,10 +88,10 @@ internal static class NativeHostPreparation
         }
         finally
         {
-            if (!child.HasExited)
+            if (!child.WaitForExit(0))
             {
                 child.Kill(entireProcessTree: true);
-                if (!child.WaitForExit(5000)) throw new InvalidOperationException("The owned MXC capability probe did not stop.");
+                if (!await Task.Run(() => child.WaitForExit(5000))) throw new InvalidOperationException("The owned MXC capability probe did not stop.");
             }
         }
     }

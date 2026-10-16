@@ -8,13 +8,14 @@ namespace Nvidia.NemoClaw.Bootstrapper;
 
 internal static class Program
 {
-    private static Process StartChild()
+    private static Process StartChild(int? exitCode = null)
     {
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("The test executable is unavailable.");
         var start = new ProcessStartInfo { FileName = executable, UseShellExecute = false, CreateNoWindow = true };
         if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
             start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
-        start.ArgumentList.Add("--child");
+        start.ArgumentList.Add(exitCode is null ? "--child" : "--exit");
+        if (exitCode is not null) start.ArgumentList.Add(exitCode.Value.ToString());
         return Process.Start(start) ?? throw new InvalidOperationException("The non-exiting maintenance fixture did not start.");
     }
 
@@ -41,16 +42,18 @@ internal static class Program
         }
         finally
         {
-            if (!child.HasExited)
+            if (!child.WaitForExit(0))
             {
                 child.Kill(entireProcessTree: true);
-                await child.WaitForExitAsync();
+                if (!await Task.Run(() => child.WaitForExit(5000)))
+                    throw new InvalidOperationException("The maintenance fixture did not stop.");
             }
         }
     }
 
     internal static async Task<int> Main(string[] args)
     {
+        if (args is ["--exit", var exitCode]) return int.Parse(exitCode);
         if (args is ["--child"])
         {
             await Task.Delay(Timeout.InfiniteTimeSpan);
@@ -58,6 +61,15 @@ internal static class Program
         }
         await AssertBoundedWaitAsync(cancel: true);
         await AssertBoundedWaitAsync(cancel: false);
+        foreach (var action in new[] { "repair", "uninstall" })
+        foreach (var expected in new[] { 0, 7 })
+        {
+            using var child = StartChild(expected);
+            var actual = await NativeMaintenance.WaitForRelatedActionAsync(child, "fixture", action,
+                CancellationToken.None, TimeSpan.FromSeconds(10));
+            if (actual != expected || !child.WaitForExit(0))
+                throw new InvalidOperationException("Completed maintenance lost its exit code or returned before process termination.");
+        }
         await AssertHeadlessRoutingAsync();
         AssertInspectionControls();
         using var cancelled = new CancellationTokenSource();

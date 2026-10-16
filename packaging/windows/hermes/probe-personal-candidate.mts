@@ -566,7 +566,7 @@ export function personalRequest(
   const temp = path.win32.join(stateRoot, "temp");
   const environment = {
     GITHUB_ACTIONS: "true",
-    NEMOCLAW_MSYS_TOKEN_INSPECTION_HOLD: "repair-query",
+    NEMOCLAW_MSYS_TOKEN_INSPECTION_HOLD: stateRoot === share ? "repair-query" : "hermes-query",
     NEMOCLAW_MSYS_DIAGNOSTICS: "0",
     AGENT_BROWSER_ARGS: "--enable-logging=stderr",
     NEMOCLAW_MSYS_ASLR_METADATA: "1",
@@ -610,13 +610,13 @@ export function personalRequest(
         "--no-warnings",
         worker,
         runtime,
-        path.win32.join(share, "result.json"),
+        path.win32.join(stateRoot, "result.json"),
         nonce,
         path.win32.join(path.win32.dirname(worker), "personal-workload-input.json"),
       ]
         .map((value) => `"${value}"`)
         .join(" "),
-      cwd: share,
+      cwd: stateRoot,
       timeout: 120_000,
       inheritDefaultEnv: false,
       env: Object.entries(environment).map(([key, value]) => `${key}=${value}`),
@@ -638,7 +638,7 @@ export function personalRequest(
         path.win32.dirname(worker),
         ...(nativeRoot === externalNativeRoot ? [nativeRoot] : []),
       ],
-      readwritePaths: stateRoot === share ? [share] : [share, stateRoot],
+      readwritePaths: [stateRoot],
     },
     lifecycle: { destroyOnExit: false, preservePolicy: false },
     telemetry: { enabled: false },
@@ -2567,6 +2567,9 @@ async function main() {
         nativeStateReceipt,
       );
       nativeState.assertHeld();
+      // The host derives this root from its actual token; guest variables do not
+      // select its authority. Keep both sides on the leased-state protocol.
+      environment.NEMOCLAW_MSYS_TOKEN_INSPECTION = "hermes-query";
       assert.equal(
         fileIdentity(stateOwnerBuild.launcher).sha256,
         stateOwnerBuild.executable.sha256,
@@ -2661,7 +2664,7 @@ async function main() {
       mxc,
       [policy, "--log-file", path.join(output, "mxc-native.log")],
       environment,
-      share,
+      request.process.cwd,
       120_000,
     );
     receipt.execution = execution;
@@ -2697,7 +2700,7 @@ async function main() {
       nativeExecutionFailure = error;
       receipt.nativeExecutionError = errorDetail(error);
     }
-    const result = path.join(share, "result.json");
+    const result = path.join(request.process.cwd, "result.json");
     if (fs.existsSync(result)) {
       fs.copyFileSync(result, path.join(output, "workload.json"));
       receipt.workload = JSON.parse(fs.readFileSync(result, "utf8"));

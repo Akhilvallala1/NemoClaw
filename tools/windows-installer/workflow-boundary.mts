@@ -1099,9 +1099,9 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     );
     const artifactSource = requiredStep(
       full,
-      "Check out OpenClaw candidate source as comparison data",
+      "Check out selected-agent candidate source as comparison data",
     );
-    assert.strictEqual(artifactSource.if, "${{ inputs.agent == 'openclaw' }}");
+    assert.strictEqual(artifactSource.if, undefined);
     assert.strictEqual(
       artifactSource.uses,
       "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",

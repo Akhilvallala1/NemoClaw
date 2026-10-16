@@ -46,11 +46,11 @@ on:
         type: string
       candidate_migration_evidence_id:
         required: false
-        default: ''
+        default: ""
         type: string
       candidate_migration_proof_sha256:
         required: false
-        default: ''
+        default: ""
         type: string
     outputs:
       availability_id:
@@ -249,8 +249,7 @@ jobs:
           ref: ${{ inputs.workflow_sha }}
           path: controller
           persist-credentials: false
-      - name: Check out OpenClaw candidate source as comparison data
-        if: ${{ inputs.agent == 'openclaw' }}
+      - name: Check out selected-agent candidate source as comparison data
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: NVIDIA/NemoClaw
@@ -370,7 +369,7 @@ jobs:
           $work = "$env:RUNNER_TEMP\finished-windows"
           $inputs = @(
             "$work\installed-smoke", "$work\installed-acceptance",
-            "$work\installed-acceptance-warm", "$work\installed-stage-timings.json", "$work\openclaw-artifact-source.json"
+            "$work\installed-acceptance-warm", "$work\installed-stage-timings.json", "$work\$($env:SELECTED_AGENT)-artifact-source.json"
           )
           foreach ($pattern in @("$work\*.log", "$work\package\*.json")) {
             $inputs += @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | ForEach-Object FullName)

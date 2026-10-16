@@ -84,6 +84,7 @@ if (Test-Path -LiteralPath $installation) { throw 'Fresh preview acceptance requ
 $primary = $null
 $restartCustodyUnresolved = $false
 $openClawRestart = $Agent -ceq 'openclaw' -and $Mode -ceq 'current-build' -and $ValidationScope -ceq 'full-acceptance'
+$sourceBoundAcceptance = $openClawRestart -or $Agent -ceq 'hermes'
 $restartHandoff = if ($openClawRestart) { [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant() } else { '' }
 $build = Get-Content -LiteralPath "$work\package\immutable-package-build.json" -Raw | ConvertFrom-Json
 if ($build.sourceRevision -cne $ArtifactSourceRevision -or $build.status -cne 'candidate-built-for-installed-qualification') { throw 'The preview build receipt differs from this acceptance source.' }
@@ -98,6 +99,8 @@ foreach ($file in $build.files) {
 $expectedOpenClawRuntime = $null
 $expectedOpenClawLauncher = ''
 $expectedOpenClawPackageBuild = ''
+$expectedHermesLauncher = ''
+$expectedHermesPackageBuild = ''
 $artifactSourceSnapshot = ''
 $artifactSourceSnapshotSha256 = ''
 $expectedHermesRuntime = if ($Agent -ceq 'hermes') {
@@ -105,16 +108,16 @@ $expectedHermesRuntime = if ($Agent -ceq 'hermes') {
   if ($runtime.sourceRevision -cne $ArtifactSourceRevision) { throw 'Hermes runtime differs from the selected artifact source.' }
   $runtime
 } else { $null }
-if ($openClawRestart) {
-  if (-not $ArtifactSourceRoot) { throw 'Retained OpenClaw acceptance requires an independent artifact source checkout.' }
-  $artifactSourceSnapshot = Join-Path $work 'openclaw-artifact-source.json'
+if ($sourceBoundAcceptance) {
+  if (-not $ArtifactSourceRoot) { throw 'Installed acceptance requires an independent artifact source checkout.' }
+  $artifactSourceSnapshot = Join-Path $work "$Agent-artifact-source.json"
   # Capture independent source bytes before installation. Product processes cannot
   # replace this caller-held hash with a later read of mutable candidate source.
   $captureArguments = @('--capture-artifact-source', '--artifact-source-root', $ArtifactSourceRoot,
     '--controller-source-root', $SourceRoot, '--artifact-source-revision', $ArtifactSourceRevision,
     '--controller-source-revision', $controllerSource, '--controller-run', ($env:GITHUB_RUN_ID + ':' + $env:GITHUB_RUN_ATTEMPT),
     '--output', $artifactSourceSnapshot)
-  $capturedHash = @(& $ciNode --experimental-strip-types --no-warnings "$SourceRoot\packaging\windows\installer\qualify-installed-openclaw.mts" @captureArguments)
+  $capturedHash = @(& $ciNode --experimental-strip-types --no-warnings "$SourceRoot\packaging\windows\installer\qualify-installed-$Agent.mts" @captureArguments)
   if ($LASTEXITCODE -ne 0 -or $capturedHash.Count -ne 1 -or [string]$capturedHash[0] -cnotmatch '^[a-f0-9]{64}$') {
     throw 'Independent candidate launcher source capture failed.'
   }
@@ -122,9 +125,16 @@ if ($openClawRestart) {
   if ((Get-FileHash -LiteralPath $artifactSourceSnapshot -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifactSourceSnapshotSha256) {
     throw 'Independent candidate launcher source capture changed.'
   }
-  $expectedOpenClawRuntime = Get-Content -LiteralPath "$work\assembled\runtime-identity.json" -Raw | ConvertFrom-Json
-  $expectedOpenClawLauncher = (Get-Content -LiteralPath "$work\package\launcher-build-inputs.json" -Raw | ConvertFrom-Json).retainedLauncher.sha256
-  $expectedOpenClawPackageBuild = (Get-FileHash -LiteralPath "$work\package\immutable-package-build.json" -Algorithm SHA256).Hash.ToLowerInvariant()
+  $selectedLauncher = (Get-Content -LiteralPath "$work\package\launcher-build-inputs.json" -Raw | ConvertFrom-Json).retainedLauncher.sha256
+  $selectedPackageBuild = (Get-FileHash -LiteralPath "$work\package\immutable-package-build.json" -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($openClawRestart) {
+    $expectedOpenClawRuntime = Get-Content -LiteralPath "$work\assembled\runtime-identity.json" -Raw | ConvertFrom-Json
+    $expectedOpenClawLauncher = $selectedLauncher
+    $expectedOpenClawPackageBuild = $selectedPackageBuild
+  } else {
+    $expectedHermesLauncher = $selectedLauncher
+    $expectedHermesPackageBuild = $selectedPackageBuild
+  }
 }
 $timings = [ordered]@{ schemaVersion = 1; sourceRevision = $ArtifactSourceRevision; artifactSourceRevision = $ArtifactSourceRevision; controllerSourceRevision = $controllerSource; currentHeadQualification = ($ArtifactSourceRevision -ceq $controllerSource); mode = $Mode; measurement = 'fresh-runner-installed-preview'; agent = $Agent;
   validationScope = $ValidationScope; fullInstalledQualification = $false; migrationQualified = $false;
@@ -167,6 +177,23 @@ function Invoke-OwnedSetup([string]$Action, [string]$Log) {
 }
 function Assert-HermesCaseReceipt($Receipt, [string]$CaseName, $ColdReceipt) {
   $warm = $CaseName -ceq 'warmInstalledLaunch'
+  $admission = $Receipt.results.launcherAdmission
+  foreach ($pair in @(
+      @('launcherSha256', $expectedHermesLauncher),
+      @('packageBuildSha256', $expectedHermesPackageBuild),
+      @('artifactSourceSnapshotSha256', $artifactSourceSnapshotSha256),
+      @('controllerSourceRevision', $controllerSource))) {
+    if ($admission -isnot [pscustomobject] -or $pair[1] -isnot [string] -or
+        $admission.($pair[0]) -isnot [string] -or $admission.($pair[0]) -cne $pair[1]) {
+      throw 'Hermes launcher admission differs from the independently selected package and source.'
+    }
+  }
+  if ($admission.launcherSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $admission.packageBuildSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $admission.artifactSourceSnapshotSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $admission.controllerSourceRevision -cnotmatch '^[a-f0-9]{40}$') {
+    throw 'Hermes launcher admission lacks complete identities.'
+  }
   if ($CaseName -cnotin @('firstInstalledLaunch','warmInstalledLaunch') -or
       $Receipt -isnot [pscustomobject] -or $Receipt.results -isnot [pscustomobject] -or
       $Receipt.runtime -isnot [pscustomobject] -or $Receipt.results.custody -isnot [pscustomobject] -or
@@ -382,6 +409,8 @@ try {
         throw 'Hermes acceptance refuses a preexisting case receipt.'
       }
       $caseArguments = if ($case.name -ceq 'firstInstalledLaunch') { @('--preserve-configuration') } else { @('--reuse-configuration') }
+      $caseArguments += @('--package-root', "$work\package", '--artifact-source-snapshot', $artifactSourceSnapshot,
+        '--artifact-source-snapshot-sha256', $artifactSourceSnapshotSha256)
     }
     if ($Agent -ceq 'hermes' -and $case.name -ceq 'warmInstalledLaunch') {
       $caseArguments += @('--previous-acceptance', "$work\installed-acceptance\installed-$Agent-acceptance.json")

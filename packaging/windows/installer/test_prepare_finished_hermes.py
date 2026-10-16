@@ -224,7 +224,6 @@ class FinishedHermesIntake(unittest.TestCase):
         (root / "state-owner-build.json").write_bytes(raw)
         sid = "S-1-5-21-111-222-333-1001"
         state_root = "C:\\NemoClawState-" + sid + "-hermes"
-        share = r"C:\NemoClawMsysProof-001122334455-state-start"
         personal = {
             "runtime": r"C:\NemoClawHermesProbe-001122334455",
             "workload": {"nonce": "00112233445566778899aabb"},
@@ -246,9 +245,11 @@ class FinishedHermesIntake(unittest.TestCase):
         }
         environment = {key: state_root + "\\home" for key in
                        ("HERMES_HOME", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")}
-        environment.update(NEMOCLAW_AGENT_HOME=state_root, TEMP=state_root + "\\temp", TMP=state_root + "\\temp")
-        request = {"process": {"cwd": share, "env": [key + "=" + value for key, value in environment.items()]},
-                   "filesystem": {"readwritePaths": [share, state_root]}}
+        environment.update(NEMOCLAW_AGENT_HOME=state_root, TEMP=state_root + "\\temp", TMP=state_root + "\\temp",
+                           NEMOCLAW_MSYS_TOKEN_INSPECTION_HOLD="hermes-query")
+        request = {"containerId": "nm-001122334455-start",
+                   "process": {"cwd": state_root, "env": [key + "=" + value for key, value in environment.items()]},
+                   "filesystem": {"readwritePaths": [state_root]}}
         return build, personal, request
 
     def test_native_state_admission_requires_typed_closed_custody_and_exact_host_authority(self):
@@ -293,8 +294,13 @@ class FinishedHermesIntake(unittest.TestCase):
                     with self.subTest(section=section, value=value), self.assertRaises(ValueError):
                         check({**personal, section: value})
             for mutate in (
+                lambda r: r.update(containerId="nm-ffffffffffff-start"),
                 lambda r: r["process"].update(cwd=r"C:\other"),
+                lambda r: r["process"].update(cwd=r"C:\NemoClawMsysProof-001122334455-state-start"),
                 lambda r: r["filesystem"].update(readwritePaths=["C:\\"]),
+                lambda r: r["filesystem"]["readwritePaths"].insert(0, r"C:\NemoClawMsysProof-001122334455-state-start"),
+                lambda r: r["process"]["env"].append("NEMOCLAW_MSYS_TOKEN_INSPECTION=hermes-query"),
+                lambda r: r["process"]["env"].append("NEMOCLAW_HERMES_PRIVATE_DESKTOP=1"),
                 lambda r: r["process"]["env"].append("home=C:\\foreign"),
                 lambda r: r["process"].update(env=["INVALID"]),
                 lambda r: r.update(process=None),

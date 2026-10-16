@@ -11,6 +11,12 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { reviewOpenClawAvailability } from "./review-openclaw-availability.mts";
 import {
+  captureLauncherArtifactSources,
+  validateLauncherArtifactSourceSnapshot,
+  validateInstalledLauncherInputs,
+} from "./installed-launcher-admission.mts";
+import { admitInstalledHermesLauncher } from "./qualify-installed-hermes.mts";
+import {
   captureFailure,
   terminalAgentError,
   decodeDiagnosticOwnerRead,
@@ -901,7 +907,7 @@ test("OpenClaw fresh-state and cleanup checks reject present, redirected or unre
   }
 });
 
-function inspectionOpenClawFixture() {
+function inspectionOpenClawFixture(agent: "openclaw" | "hermes" = "openclaw") {
   const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
   const bytes = (document: any) => Buffer.from(JSON.stringify(document));
   const sourceRevision = "a".repeat(40),
@@ -970,7 +976,7 @@ function inspectionOpenClawFixture() {
   const sourceBytes = bytes(source);
   const artifactSourceSnapshotBytes = bytes({
     schemaVersion: 1,
-    classification: "independent-openclaw-launcher-source-snapshot",
+    classification: `independent-${agent}-launcher-source-snapshot`,
     artifactSourceRevision: sourceRevision,
     controllerSourceRevision: "b".repeat(40),
     controllerRun,
@@ -1016,146 +1022,245 @@ function inspectionOpenClawFixture() {
   return { input, source, capabilities, materialization, build, rebuild };
 }
 
-test("OpenClaw inspection admission binds package bytes, declared support and complete source/build provenance", () => {
-  const fixture = inspectionOpenClawFixture();
-  const admitted = validateOpenClawInspectionInputs(fixture.input);
-  assert.match(admitted.launcherSha256, /^[a-f0-9]{64}$/u);
-  assert.match(admitted.packageBuildSha256, /^[a-f0-9]{64}$/u);
-  const mutations: ((f: ReturnType<typeof inspectionOpenClawFixture>) => void)[] = [
-    (f) => (f.input.installedBytes = Buffer.from("other")),
-    (f) => (f.input.packagedBytes = Buffer.from("other")),
-    (f) => (f.input.controllerRun = "124:1"),
-    (f) => (f.source.sourceRevision = "b".repeat(40)),
-    (f) => (f.source.target = "x86_64-pc-windows-msvc"),
-    (f) => (f.source.rustToolchain = "other"),
-    (f) => (f.source.features = []),
-    (f) => (f.source.staticCrt = false),
-    (f) => (f.source.invocationAdmitted = true),
-    (f) => (f.source.commandSupportValidated = true),
-    (f) => (f.materialization.outputSha256 = "b".repeat(64)),
-    (f) => (f.materialization.runtimeLaunchCopy = true),
-    (f) => (f.materialization.outputStat.links = 2),
-    (f) => (f.capabilities.capabilities.supportedCommands = []),
-    (f) => (f.capabilities.capabilities.guardianEnabled = false),
-    (f) => f.source.sources.pop(),
-    (f) => (f.source.sources[0].file = "packaging/windows/launcher/../secret"),
-    (f) => f.source.sources.push(f.source.sources[0]),
-    (f) => (f.source.sources[0].sha256 = "b".repeat(64)),
-    (f) => (f.input.artifactSourceSnapshotBytes = Buffer.from("{}")),
-    (f) => (f.input.artifactSourceSnapshotSha256 = "b".repeat(64)),
-    (f) => (f.input.controllerSourceRevision = "c".repeat(40)),
-    (f) => (f.build.sourceRevision = "b".repeat(40)),
-  ];
-  for (const mutate of mutations) {
-    const candidate = inspectionOpenClawFixture();
-    mutate(candidate);
-    candidate.rebuild();
-    assert.throws(() => validateOpenClawInspectionInputs(candidate.input));
+for (const agent of ["openclaw", "hermes"] as const)
+  test(`${agent} inspection admission binds package bytes, declared support and complete source/build provenance`, () => {
+    const validate = (input: Parameters<typeof validateOpenClawInspectionInputs>[0]) =>
+      agent === "openclaw"
+        ? validateOpenClawInspectionInputs(input)
+        : validateInstalledLauncherInputs({ ...input, agent });
+    const fixture = inspectionOpenClawFixture(agent);
+    const admitted = validate(fixture.input);
+    assert.match(admitted.launcherSha256, /^[a-f0-9]{64}$/u);
+    assert.match(admitted.packageBuildSha256, /^[a-f0-9]{64}$/u);
+    const mutations: ((f: ReturnType<typeof inspectionOpenClawFixture>) => void)[] = [
+      (f) => (f.input.installedBytes = Buffer.from("other")),
+      (f) => (f.input.packagedBytes = Buffer.from("other")),
+      (f) => (f.input.controllerRun = "124:1"),
+      (f) => (f.source.sourceRevision = "b".repeat(40)),
+      (f) => (f.source.target = "x86_64-pc-windows-msvc"),
+      (f) => (f.source.rustToolchain = "other"),
+      (f) => (f.source.features = []),
+      (f) => (f.source.staticCrt = false),
+      (f) => (f.source.invocationAdmitted = true),
+      (f) => (f.source.commandSupportValidated = true),
+      (f) => (f.materialization.outputSha256 = "b".repeat(64)),
+      (f) => (f.materialization.runtimeLaunchCopy = true),
+      (f) => (f.materialization.outputStat.links = 2),
+      (f) => (f.capabilities.capabilities.supportedCommands = []),
+      (f) => (f.capabilities.capabilities.guardianEnabled = false),
+      (f) => f.source.sources.pop(),
+      (f) => (f.source.sources[0].file = "packaging/windows/launcher/../secret"),
+      (f) => f.source.sources.push(f.source.sources[0]),
+      (f) => (f.source.sources[0].sha256 = "b".repeat(64)),
+      (f) => (f.input.artifactSourceSnapshotBytes = Buffer.from("{}")),
+      (f) => (f.input.artifactSourceSnapshotSha256 = "b".repeat(64)),
+      (f) => (f.input.controllerSourceRevision = "c".repeat(40)),
+      (f) => (f.build.sourceRevision = "b".repeat(40)),
+    ];
+    for (const mutate of mutations) {
+      const candidate = inspectionOpenClawFixture(agent);
+      mutate(candidate);
+      candidate.rebuild();
+      assert.throws(() => validate(candidate.input));
+    }
+    fixture.input.sourceBytes = Buffer.concat([fixture.input.sourceBytes, Buffer.from(" ")]);
+    assert.throws(() => validate(fixture.input));
+  });
+
+test("Hermes installed admission reads the selected package and rejects changed installed bytes or another agent's snapshot", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-launcher-admission-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const input = inspectionOpenClawFixture("hermes").input;
+  const packageRoot = path.join(root, "package");
+  const launcher = path.join(root, "installed", "NemoClaw.exe");
+  const artifactSourceSnapshot = path.join(root, "snapshot.json");
+  for (const [relative, bytes] of [
+    ["immutable-package-build.json", input.buildBytes],
+    ["launcher-build-inputs.json", input.sourceBytes],
+    ["compiled-launcher.json", input.materializationBytes],
+    ["build/launcher-capabilities.json", input.capabilityBytes],
+    ["build/compiled-native/NemoClaw.exe", input.launcherBytes],
+    ["build/payload/bin/NemoClaw.exe", input.packagedBytes],
+  ] as const) {
+    const file = path.join(packageRoot, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, bytes);
   }
-  fixture.input.sourceBytes = Buffer.concat([fixture.input.sourceBytes, Buffer.from(" ")]);
-  assert.throws(() => validateOpenClawInspectionInputs(fixture.input));
+  fs.mkdirSync(path.dirname(launcher));
+  fs.writeFileSync(launcher, input.installedBytes);
+  fs.writeFileSync(artifactSourceSnapshot, input.artifactSourceSnapshotBytes);
+  const request = {
+    packageRoot,
+    launcher,
+    artifactSourceSnapshot,
+    sourceRevision: input.sourceRevision,
+    controllerRun: input.controllerRun,
+    controllerSourceRevision: input.controllerSourceRevision,
+    artifactSourceSnapshotSha256: input.artifactSourceSnapshotSha256,
+  };
+  assert.deepEqual(
+    admitInstalledHermesLauncher(request),
+    validateInstalledLauncherInputs({ ...input, agent: "hermes" }),
+  );
+  fs.writeFileSync(launcher, "changed inert launcher fixture");
+  assert.throws(() => admitInstalledHermesLauncher(request), /package-selected launcher/u);
+  fs.writeFileSync(launcher, input.installedBytes);
+  const foreign = inspectionOpenClawFixture().input;
+  fs.writeFileSync(artifactSourceSnapshot, foreign.artifactSourceSnapshotBytes);
+  assert.throws(() =>
+    admitInstalledHermesLauncher({
+      ...request,
+      artifactSourceSnapshotSha256: foreign.artifactSourceSnapshotSha256,
+    }),
+  );
 });
 
-test("candidate source capture verifies Git bytes without executing candidate code", (context) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-source-capture-"));
-  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const controller = path.join(root, "controller");
-  const artifact = path.join(root, "artifact");
-  const git = (directory: string, ...args: string[]) => {
-    const result = spawnSync("git", ["-c", "core.hooksPath=", "-C", directory, ...args], {
-      env: {
-        ...process.env,
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_AUTHOR_NAME: "Fixture",
-        GIT_AUTHOR_EMAIL: "fixture@example.invalid",
-        GIT_COMMITTER_NAME: "Fixture",
-        GIT_COMMITTER_EMAIL: "fixture@example.invalid",
-      },
-      encoding: "utf8",
-      timeout: 10000,
-      windowsHide: true,
-    });
-    assert.equal(result.error, undefined);
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const create = (directory: string) => {
-    fs.mkdirSync(directory);
-    git(directory, "init", "--quiet");
-    fs.writeFileSync(path.join(directory, ".gitattributes"), "* text=auto eol=lf\n");
-  };
-  create(controller);
-  git(controller, "add", ".");
-  git(controller, "commit", "--quiet", "-m", "Controller fixture");
-  create(artifact);
-  const launcher = path.join(artifact, "packaging", "windows", "launcher");
-  fs.mkdirSync(path.join(launcher, "src"), { recursive: true });
-  for (const file of [
-    "Cargo.toml",
-    "Cargo.lock",
-    "src/main.rs",
-    "src/state_session.rs",
-    "src/runtime_lease.rs",
-  ])
-    fs.writeFileSync(path.join(launcher, file), "fixture source: " + file + "\n");
-  fs.writeFileSync(
-    path.join(launcher, "README.md"),
-    "Data only. Never execute candidate scripts.\n",
-  );
-  git(artifact, "add", ".");
-  git(artifact, "commit", "--quiet", "-m", "Artifact fixture");
-  const input = {
-    artifactSourceRoot: artifact,
-    controllerSourceRoot: controller,
-    artifactSourceRevision: git(artifact, "rev-parse", "HEAD"),
-    controllerSourceRevision: git(controller, "rev-parse", "HEAD"),
-    controllerRun: "123:1",
-  };
-  const captured = captureOpenClawArtifactSources(input);
-  assert.equal(captured.sources.length, 5);
-  assert.notEqual(captured.artifactSourceRevision, captured.controllerSourceRevision);
-  const original = fs.readFileSync(path.join(launcher, "src/main.rs"));
-  fs.writeFileSync(path.join(launcher, "src/main.rs"), "modified\n");
-  assert.throws(() => captureOpenClawArtifactSources(input), /authorized Git tree/);
-  fs.writeFileSync(path.join(launcher, "src/main.rs"), original);
-  fs.unlinkSync(path.join(launcher, "src/main.rs"));
-  assert.throws(() => captureOpenClawArtifactSources(input), /missing/);
-  fs.writeFileSync(path.join(launcher, "src/main.rs"), original);
-  const unexpected = path.join(launcher, "untracked.rs");
-  fs.writeFileSync(unexpected, "untracked\n");
-  assert.throws(() => captureOpenClawArtifactSources(input), /unexpected file/);
-  fs.unlinkSync(unexpected);
-  fs.mkdirSync(path.join(launcher, "target"));
-  assert.throws(() => captureOpenClawArtifactSources(input), /generated output/);
-  fs.rmdirSync(path.join(launcher, "target"));
-  assert.throws(() =>
-    captureOpenClawArtifactSources({ ...input, artifactSourceRevision: "a".repeat(40) }),
-  );
-  assert.throws(() =>
-    captureOpenClawArtifactSources({ ...input, controllerSourceRevision: "b".repeat(40) }),
-  );
-  assert.throws(
-    () => captureOpenClawArtifactSources({ ...input, artifactSourceRoot: controller }),
-    /separate checkouts/,
-  );
-  const alias = path.join(launcher, "hardlink.rs");
-  fs.linkSync(path.join(launcher, "src/main.rs"), alias);
-  assert.throws(() => captureOpenClawArtifactSources(input));
-  fs.unlinkSync(alias);
-  assert.deepEqual(captureOpenClawArtifactSources(input), captured);
-  const bytes = Buffer.from(JSON.stringify(captured));
-  const snapshot = {
-    bytes,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-    sourceRevision: input.artifactSourceRevision,
-    controllerSourceRevision: input.controllerSourceRevision,
-    controllerRun: input.controllerRun,
-  };
-  assert.equal(validateOpenClawArtifactSourceSnapshot(snapshot).size, 5);
-  fs.writeFileSync(path.join(launcher, "src/main.rs"), "changed after capture\n");
-  assert.equal(validateOpenClawArtifactSourceSnapshot(snapshot).size, 5);
-});
+for (const agent of ["openclaw", "hermes"] as const)
+  test(`${agent} source capture verifies Git bytes without executing candidate code`, (context) => {
+    const capture = (input: Parameters<typeof captureOpenClawArtifactSources>[0]) =>
+      agent === "openclaw"
+        ? captureOpenClawArtifactSources(input)
+        : captureLauncherArtifactSources({ ...input, agent });
+    const validate = (input: Parameters<typeof validateOpenClawArtifactSourceSnapshot>[0]) =>
+      agent === "openclaw"
+        ? validateOpenClawArtifactSourceSnapshot(input)
+        : validateLauncherArtifactSourceSnapshot({ ...input, agent });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-source-capture-"));
+    context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const controller = path.join(root, "controller");
+    const artifact = path.join(root, "artifact");
+    const git = (directory: string, ...args: string[]) => {
+      const result = spawnSync("git", ["-c", "core.hooksPath=", "-C", directory, ...args], {
+        env: {
+          ...process.env,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_AUTHOR_NAME: "Fixture",
+          GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+          GIT_COMMITTER_NAME: "Fixture",
+          GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+        },
+        encoding: "utf8",
+        timeout: 10000,
+        windowsHide: true,
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    const create = (directory: string) => {
+      fs.mkdirSync(directory);
+      git(directory, "init", "--quiet");
+      fs.writeFileSync(path.join(directory, ".gitattributes"), "* text=auto eol=lf\n");
+    };
+    create(controller);
+    git(controller, "add", ".");
+    git(controller, "commit", "--quiet", "-m", "Controller fixture");
+    create(artifact);
+    const launcher = path.join(artifact, "packaging", "windows", "launcher");
+    fs.mkdirSync(path.join(launcher, "src"), { recursive: true });
+    for (const file of [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/main.rs",
+      "src/state_session.rs",
+      "src/runtime_lease.rs",
+    ])
+      fs.writeFileSync(path.join(launcher, file), "fixture source: " + file + "\n");
+    fs.writeFileSync(
+      path.join(launcher, "README.md"),
+      "Data only. Never execute candidate scripts.\n",
+    );
+    git(artifact, "add", ".");
+    git(artifact, "commit", "--quiet", "-m", "Artifact fixture");
+    const input = {
+      artifactSourceRoot: artifact,
+      controllerSourceRoot: controller,
+      artifactSourceRevision: git(artifact, "rev-parse", "HEAD"),
+      controllerSourceRevision: git(controller, "rev-parse", "HEAD"),
+      controllerRun: "123:1",
+    };
+    const captured = capture(input);
+    if (agent === "hermes") {
+      const output = path.join(root, "hermes-captured.json");
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          "--no-warnings",
+          fileURLToPath(new URL("./qualify-installed-hermes.mts", import.meta.url)),
+          "--capture-artifact-source",
+          "--artifact-source-root",
+          artifact,
+          "--controller-source-root",
+          controller,
+          "--artifact-source-revision",
+          input.artifactSourceRevision,
+          "--controller-source-revision",
+          input.controllerSourceRevision,
+          "--controller-run",
+          input.controllerRun,
+          "--output",
+          output,
+        ],
+        { encoding: "utf8", timeout: 10000, windowsHide: true },
+      );
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0, result.stderr);
+      const capturedBytes = fs.readFileSync(output);
+      assert.equal(result.stdout.trim(), createHash("sha256").update(capturedBytes).digest("hex"));
+      assert.deepEqual(JSON.parse(capturedBytes.toString("utf8")), captured);
+    }
+    assert.equal(captured.sources.length, 5);
+    assert.equal(captured.classification, `independent-${agent}-launcher-source-snapshot`);
+    assert.throws(() =>
+      validateLauncherArtifactSourceSnapshot({
+        agent: agent === "hermes" ? "openclaw" : "hermes",
+        bytes: Buffer.from(JSON.stringify(captured)),
+        sha256: createHash("sha256").update(JSON.stringify(captured)).digest("hex"),
+        sourceRevision: input.artifactSourceRevision,
+        controllerSourceRevision: input.controllerSourceRevision,
+        controllerRun: input.controllerRun,
+      }),
+    );
+    assert.notEqual(captured.artifactSourceRevision, captured.controllerSourceRevision);
+    const original = fs.readFileSync(path.join(launcher, "src/main.rs"));
+    fs.writeFileSync(path.join(launcher, "src/main.rs"), "modified\n");
+    assert.throws(() => capture(input), /authorized Git tree/);
+    fs.writeFileSync(path.join(launcher, "src/main.rs"), original);
+    fs.unlinkSync(path.join(launcher, "src/main.rs"));
+    assert.throws(() => capture(input), /missing/);
+    fs.writeFileSync(path.join(launcher, "src/main.rs"), original);
+    const unexpected = path.join(launcher, "untracked.rs");
+    fs.writeFileSync(unexpected, "untracked\n");
+    assert.throws(() => capture(input), /unexpected file/);
+    fs.unlinkSync(unexpected);
+    fs.mkdirSync(path.join(launcher, "target"));
+    assert.throws(() => capture(input), /generated output/);
+    fs.rmdirSync(path.join(launcher, "target"));
+    assert.throws(() => capture({ ...input, artifactSourceRevision: "a".repeat(40) }));
+    assert.throws(() => capture({ ...input, controllerSourceRevision: "b".repeat(40) }));
+    assert.throws(
+      () => capture({ ...input, artifactSourceRoot: controller }),
+      /separate checkouts/,
+    );
+    const alias = path.join(launcher, "hardlink.rs");
+    fs.linkSync(path.join(launcher, "src/main.rs"), alias);
+    assert.throws(() => capture(input));
+    fs.unlinkSync(alias);
+    assert.deepEqual(capture(input), captured);
+    const bytes = Buffer.from(JSON.stringify(captured));
+    const snapshot = {
+      bytes,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sourceRevision: input.artifactSourceRevision,
+      controllerSourceRevision: input.controllerSourceRevision,
+      controllerRun: input.controllerRun,
+    };
+    assert.equal(validate(snapshot).size, 5);
+    fs.writeFileSync(path.join(launcher, "src/main.rs"), "changed after capture\n");
+    assert.equal(validate(snapshot).size, 5);
+  });
 
 test("source snapshots reject changes, foreign identities and malformed inventories", () => {
   const fixture = inspectionOpenClawFixture().input;

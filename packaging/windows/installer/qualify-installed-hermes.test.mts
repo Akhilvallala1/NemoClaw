@@ -503,8 +503,8 @@ test("Hermes continuation retains the old transcript and completes a new turn in
     );
 });
 
-for (const existing of ["configuration", "agent-data"])
-  test(`fresh Hermes rejection preserves pre-existing ${existing} and credentials`, async () => {
+for (const existing of ["configuration", "agent-data", "unadmitted-launcher"])
+  test(`fresh Hermes rejection for ${existing} does not modify existing state or credentials`, async () => {
     const source = fs.readFileSync(
       new URL("./qualify-installed-hermes.mts", import.meta.url),
       "utf8",
@@ -543,6 +543,7 @@ for (const existing of ["configuration", "agent-data"])
           "--install-root": "C:\\Installed",
           "--output": "C:\\RunnerTemp\\Evidence",
           "--runtime-identity": "identity.json",
+          "--package-root": "C:\\Package",
         })[name] ?? fallback,
       fs: {
         readFileSync: () => "{}",
@@ -554,6 +555,10 @@ for (const existing of ["configuration", "agent-data"])
         },
       },
       stripInheritedAcceptanceEnvironment,
+      admitInstalledHermesLauncher: () => {
+        if (existing === "unadmitted-launcher") throw new Error("Launcher admission failed");
+        return { launcherSha256: "fixture-not-executed" };
+      },
       randomBytes,
       nativeCredentialBinding: () => "synthetic-binding",
       acceptanceProcessesStopped,
@@ -583,12 +588,15 @@ for (const existing of ["configuration", "agent-data"])
     )(...Object.values(bindings));
     await assert.rejects(
       main(),
-      /Fresh Hermes acceptance (requires no saved configuration|cannot use pre-existing agent data)/u,
+      /Fresh Hermes acceptance (requires no saved configuration|cannot use pre-existing agent data)|Launcher admission failed/u,
     );
-    assert.deepEqual(calls, existing === "configuration" ? [] : [["--state-session", "hermes"]]);
+    assert.deepEqual(calls, existing === "agent-data" ? [["--state-session", "hermes"]] : []);
     const receipt = receipts["C:\\RunnerTemp\\Evidence\\installed-hermes-acceptance.json"];
     assert.equal(receipt.verdict, "fail");
-    assert.equal(receipt.failedStage, "configuration");
+    assert.equal(
+      receipt.failedStage,
+      existing === "unadmitted-launcher" ? "launcher-input-admission" : "configuration",
+    );
     assert.equal(receipt.controllerRun, "123456:2");
     assert.deepEqual(receipt.cleanupErrors, []);
     assert.deepEqual(bindings.process.env, {
@@ -597,6 +605,41 @@ for (const existing of ["configuration", "agent-data"])
       SystemRoot: "C:\\Windows",
     });
   });
+
+test("Hermes restart rejects a different launcher, package or controller before state acquisition", () => {
+  const source = fs.readFileSync(
+    new URL("./qualify-installed-hermes.mts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf(
+    "    if (reuse)\n      assert.deepEqual(\n        previousAcceptance?.results?.launcherAdmission,",
+  );
+  const end = source.indexOf("    const retainedState =", start);
+  assert(start > 0 && end > start);
+  assert(end < source.indexOf('const ownedState = JSON.parse(await command("private state"'));
+  const check = new Function(
+    "assert",
+    "reuse",
+    "previousAcceptance",
+    "results",
+    source.slice(start, end),
+  );
+  const admission = {
+    launcherSha256: "a".repeat(64),
+    packageBuildSha256: "b".repeat(64),
+    artifactSourceSnapshotSha256: "c".repeat(64),
+    controllerSourceRevision: "d".repeat(40),
+  };
+  const results = { launcherAdmission: admission };
+  check(assert, true, { results: structuredClone(results) }, results);
+  check(assert, false, undefined, results);
+  assert.throws(() => check(assert, true, undefined, results));
+  for (const name of Object.keys(admission)) {
+    const previous = { results: structuredClone(results) };
+    previous.results.launcherAdmission[name] = "changed";
+    assert.throws(() => check(assert, true, previous, results), /different package or controller/u);
+  }
+});
 
 test("Hermes dashboard browser receives only the filtered application environment", async () => {
   const source = fs.readFileSync(

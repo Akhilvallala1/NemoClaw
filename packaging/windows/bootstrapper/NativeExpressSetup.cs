@@ -113,7 +113,15 @@ internal static class NativeExpressSetup
                 : $"The included local model is compatible · driver {driver} · CUDA {cuda}.", driver, cuda, systemDrive.AvailableFreeSpace);
         }
         catch (Exception) { return new(true, false, "The NVIDIA driver check did not complete. You can use hosted inference."); }
-        finally { if (started && !process.HasExited) process.Kill(entireProcessTree: true); }
+        finally
+        {
+            if (started && !process.WaitForExit(0))
+            {
+                process.Kill(entireProcessTree: true);
+                if (!await Task.Run(() => process.WaitForExit(5000)))
+                    throw new NativeModelSetupException("The NVIDIA driver check did not stop within its cleanup deadline.");
+            }
+        }
     }
 
     private static bool VersionAtLeast(string actual, string minimum)

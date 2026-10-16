@@ -189,13 +189,16 @@ internal static class NativeDownloadedModelSetup
         }
         finally
         {
-            if (!process.HasExited)
+            if (!process.WaitForExit(0))
             {
                 try { await process.StandardInput.WriteLineAsync("cancel"); await process.StandardInput.FlushAsync(); }
                 catch (IOException) { }
-                using var grace = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                try { await process.WaitForExitAsync(grace.Token); }
-                catch (OperationCanceledException) { process.Kill(entireProcessTree: true); using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await process.WaitForExitAsync(cleanup.Token); }
+                if (!await Task.Run(() => process.WaitForExit(5000)))
+                {
+                    process.Kill(entireProcessTree: true);
+                    if (!await Task.Run(() => process.WaitForExit(5000)))
+                        throw new NativeModelSetupException("The model setup helper did not stop within its cleanup deadline.");
+                }
             }
         }
     }

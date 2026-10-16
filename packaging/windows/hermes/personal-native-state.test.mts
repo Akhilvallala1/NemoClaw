@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -321,7 +322,13 @@ test("Personal request carries the native owner's authority accepted by the actu
     assert.equal(env.NEMOCLAW_AGENT_HOME, root);
     assert.equal(env.HERMES_HOME, root + "\\home");
     assert.equal(env.TEMP, root + "\\temp");
-    assert.deepEqual(request.filesystem.readwritePaths, [request.process.cwd, root]);
+    assert.equal(request.process.cwd, root);
+    assert.deepEqual(request.filesystem.readwritePaths, [root]);
+    assert(request.process.commandLine.includes(`"${root}\\result.json"`));
+    assert(!request.process.commandLine.includes("NemoClawMsysProof-"));
+    assert.equal(env.NEMOCLAW_MSYS_TOKEN_INSPECTION_HOLD, "hermes-query");
+    assert.equal(env.NEMOCLAW_MSYS_TOKEN_INSPECTION, undefined);
+    assert.equal(env.NEMOCLAW_HERMES_PRIVATE_DESKTOP, undefined);
     assert.deepEqual(request.processContainer.capabilities, []);
     assert.deepEqual(request.network, {
       egress: { default: "deny" },
@@ -349,7 +356,44 @@ print(json.dumps([str(p) for p in m._owned_state_walk(PureWindowsPath(env['HERME
   }
 });
 
-test("Personal state-owner admission binds source files, same run, exact path and ARM64 executable bytes", () => {
+test("current Personal request satisfies the actual Python same-run packaging admission", () => {
+  const request = personalRequest(
+    "C:\\node\\node.exe",
+    "C:\\node\\worker.mts",
+    "C:\\NemoClawHermesProbe-001122334455",
+    "C:\\NemoClawMsysProof-001122334455-state-start",
+    "00112233445566778899aabb",
+    "C:\\Windows",
+    undefined,
+    "C:\\NemoClawState-S-1-5-21-111-222-333-1001-hermes",
+  );
+  const fixture = fileURLToPath(
+    new URL("../installer/test_prepare_finished_hermes.py", import.meta.url),
+  );
+  const script = `import importlib.util,json,sys,tempfile
+from pathlib import Path
+s=importlib.util.spec_from_file_location('intake_fixture',sys.argv[1])
+m=importlib.util.module_from_spec(s)
+s.loader.exec_module(m)
+fixture=m.FinishedHermesIntake()
+fixture.setUp()
+with tempfile.TemporaryDirectory() as directory:
+    root=Path(directory)
+    _,personal,_=fixture.state_owner_fixture(root)
+    raw=m.owner.validate_same_run_state_owner(root,personal,json.loads(sys.argv[2]),fixture.pin['sourceRevision'],'123','2')
+    assert raw==(root/'state-owner-build.json').read_bytes()
+print('request admitted')
+`;
+  const result = spawnSync(
+    process.env.NEMOCLAW_TEST_PYTHON ?? (process.platform === "win32" ? "python" : "python3"),
+    ["-I", "-B", "-c", script, fixture, JSON.stringify(request)],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+  assert.equal(result.stdout.trim(), "request admitted");
+});
+
+test("Personal state-owner admission binds source files, same run, exact path and ARM64 executable bytes", (t) => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "personal-owner-build-"));
   try {
     const source = path.join(temporary, "source");
@@ -395,7 +439,20 @@ test("Personal state-owner admission binds source files, same run, exact path an
       fs.writeFileSync(receipt, JSON.stringify(value));
       return readPersonalStateOwnerBuild(receipt, "a".repeat(40), "123", "1", source);
     };
-    assert.equal(read(build).launcher, launcher);
+    const readFile = fs.readFileSync;
+    t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+      assert.notEqual(args[0], receipt, "The receipt pathname must not be reopened.");
+      return readFile(...args);
+    });
+    const admitted = read(build);
+    assert.equal(admitted.launcher, launcher);
+    assert.deepEqual(admitted.receipt, {
+      path: receipt,
+      bytes: Buffer.byteLength(JSON.stringify(build)),
+      sha256: createHash("sha256").update(JSON.stringify(build)).digest("hex"),
+      peMachine: null,
+      architecture: "non-PE-or-unknown",
+    });
     for (const [key, value] of Object.entries({
       schemaVersion: "1",
       classification: "other",
@@ -425,3 +482,152 @@ test("Personal state-owner admission binds source files, same run, exact path an
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
+
+for (const scenario of [
+  "redirected",
+  "different-file",
+  "oversized",
+  "growth",
+  "truncated",
+  "path-replaced",
+  "invalid-json",
+] as const) {
+  test(`Personal receipt admission rejects ${scenario} and closes its held descriptor`, (t) => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "personal-owner-receipt-"));
+    const receipt = path.join(temporary, "receipt.json");
+    fs.writeFileSync(receipt, scenario === "invalid-json" ? "{" : "{}");
+    const open = fs.openSync;
+    const close = fs.closeSync;
+    const lstat = fs.lstatSync;
+    const read = fs.readSync;
+    let held: number | undefined;
+    let closed = false;
+    let readBytes = 0;
+    let changed = false;
+    t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+      const descriptor = open(...args);
+      if (args[0] === receipt && args[1] === "r") held = descriptor;
+      return descriptor;
+    });
+    t.mock.method(fs, "closeSync", (descriptor: number) => {
+      if (descriptor === held) closed = true;
+      return close(descriptor);
+    });
+    t.mock.method(fs, "lstatSync", (...args: Parameters<typeof lstat>) => {
+      const info = Reflect.apply(lstat, fs, args);
+      if (args[0] !== receipt) return info;
+      if (scenario === "redirected") info.isSymbolicLink = () => true;
+      if (scenario === "different-file") info.ino += typeof info.ino === "bigint" ? 1n : 1;
+      return info;
+    });
+    t.mock.method(
+      fs,
+      "readSync",
+      (descriptor: number, buffer: Buffer, offset: number, length: number, position: number) => {
+        if (descriptor === held && !changed) {
+          changed = true;
+          if (scenario === "growth") fs.appendFileSync(receipt, Buffer.alloc(1024 * 1024 + 1));
+          if (scenario === "truncated") fs.truncateSync(receipt, 0);
+        }
+        const count = read(descriptor, buffer, offset, length, position);
+        if (descriptor === held && scenario === "path-replaced" && readBytes === 0) {
+          fs.renameSync(receipt, receipt + ".previous");
+          fs.writeFileSync(receipt, "{}");
+        }
+        if (descriptor === held) readBytes += count;
+        return count;
+      },
+    );
+    try {
+      if (scenario === "oversized") fs.appendFileSync(receipt, Buffer.alloc(1024 * 1024));
+      assert.throws(
+        () => readPersonalStateOwnerBuild(receipt, "a".repeat(40), "123", "1"),
+        scenario === "invalid-json"
+          ? SyntaxError
+          : /ordinary bounded file|size limit|changed while/u,
+      );
+      assert.notEqual(held, undefined);
+      assert.equal(closed, true);
+      assert(readBytes <= 1024 * 1024 + 1);
+      if (["redirected", "different-file", "oversized"].includes(scenario))
+        assert.equal(readBytes, 0);
+    } finally {
+      t.mock.restoreAll();
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const field of ["dev", "ino"] as const) {
+  test(`Personal receipt admission distinguishes adjacent 64-bit ${field} values`, (t) => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "personal-owner-identity-"));
+    const receipt = path.join(temporary, "receipt.json");
+    fs.writeFileSync(receipt, "{}");
+    const identity = 2n ** 60n;
+    let descriptor: number | undefined;
+    const fstat = fs.fstatSync;
+    const lstat = fs.lstatSync;
+    for (const [method, original, value] of [
+      ["fstatSync", fstat, identity],
+      ["lstatSync", lstat, identity + 1n],
+    ] as const) {
+      t.mock.method(fs, method, (...args: Parameters<typeof original>) => {
+        if (method === "fstatSync") descriptor = args[0] as number;
+        const actual = Reflect.apply(original, fs, args);
+        return new Proxy(actual, {
+          get(target, property) {
+            if (property === field)
+              return typeof target[field] === "bigint" ? value : Number(value);
+            return Reflect.get(target, property);
+          },
+        });
+      });
+    }
+    try {
+      assert.throws(
+        () => readPersonalStateOwnerBuild(receipt, "a".repeat(40), "123", "1"),
+        /ordinary bounded file/u,
+      );
+      assert.notEqual(descriptor, undefined);
+      assert.throws(() => fstat(descriptor!), { code: "EBADF" });
+    } finally {
+      t.mock.restoreAll();
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const field of ["mtime", "ctime"] as const) {
+  test(`Personal receipt admission rejects a same-millisecond ${field} change`, (t) => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "personal-owner-time-"));
+    const receipt = path.join(temporary, "receipt.json");
+    fs.writeFileSync(receipt, "{}");
+    const fstat = fs.fstatSync;
+    let observations = 0;
+    let descriptor: number | undefined;
+    t.mock.method(fs, "fstatSync", (...args: Parameters<typeof fstat>) => {
+      descriptor = args[0];
+      const actual = Reflect.apply(fstat, fs, args);
+      const changed = observations++ > 0;
+      return new Proxy(actual, {
+        get(target, property) {
+          if (property === `${field}Ms`) return typeof target.size === "bigint" ? 1000n : 1000;
+          if (property === `${field}Ns`) return changed ? 1000000001n : 1000000000n;
+          return Reflect.get(target, property);
+        },
+      });
+    });
+    try {
+      assert.throws(
+        () => readPersonalStateOwnerBuild(receipt, "a".repeat(40), "123", "1"),
+        /changed while being read/u,
+      );
+      assert.equal(observations, 2);
+      assert.notEqual(descriptor, undefined);
+      assert.throws(() => fstat(descriptor!), { code: "EBADF" });
+    } finally {
+      t.mock.restoreAll();
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+}

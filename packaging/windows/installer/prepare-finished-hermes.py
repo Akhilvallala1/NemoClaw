@@ -682,7 +682,6 @@ def validate_same_run_state_owner(root, personal, request, source, run_id, run_a
     state_root = runtime[:3] + "NemoClawState-" + sid + "-hermes"
     nonce = personal.get("workload", {}).get("nonce", "")
     require(isinstance(nonce, str) and re.fullmatch(r"[a-f0-9]{24}", nonce), "Personal state nonce is invalid")
-    share = runtime[:3] + "NemoClawMsysProof-" + nonce[:12] + "-state-start"
     process = request.get("process", {})
     environment = process.get("env", [])
     require(isinstance(environment, list) and all(isinstance(entry, str) and "=" in entry for entry in environment),
@@ -692,9 +691,13 @@ def validate_same_run_state_owner(root, personal, request, source, run_id, run_a
     environment = dict(pairs)
     expected_environment = {key: state_root + "\\home" for key in
                             ("HERMES_HOME", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")}
-    expected_environment.update(NEMOCLAW_AGENT_HOME=state_root, TEMP=state_root + "\\temp", TMP=state_root + "\\temp")
-    require(state["stateRoot"] == state_root and process.get("cwd") == share
-            and request.get("filesystem", {}).get("readwritePaths") == [share, state_root]
+    expected_environment.update(NEMOCLAW_AGENT_HOME=state_root, TEMP=state_root + "\\temp", TMP=state_root + "\\temp",
+                                NEMOCLAW_MSYS_TOKEN_INSPECTION_HOLD="hermes-query")
+    require(state["stateRoot"] == state_root and process.get("cwd") == state_root
+            and request.get("containerId") == "nm-" + nonce[:12] + "-start"
+            and request.get("filesystem", {}).get("readwritePaths") == [state_root]
+            and not {key.casefold() for key in environment}.intersection(
+                {"nemoclaw_msys_token_inspection", "nemoclaw_hermes_private_desktop"})
             and all(environment.get(key) == value for key, value in expected_environment.items()),
             "Personal state authority or writable grants differ from its native owner")
     return raw

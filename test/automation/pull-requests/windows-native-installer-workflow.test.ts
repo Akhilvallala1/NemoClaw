@@ -66,17 +66,17 @@ const mutations: Mutation[] = [
     mutate: (sources: WindowsInstallerWorkflowSources) => {
       step(
         sources.trusted.jobs["full-installed-acceptance"],
-        "Check out OpenClaw candidate source as comparison data",
+        "Check out selected-agent candidate source as comparison data",
       ).with![String(field)] = value;
     },
   })),
   {
-    name: "candidate source checkout runs for a different agent",
+    name: "candidate source checkout omits Hermes",
     mutate: (sources) => {
       step(
         sources.trusted.jobs["full-installed-acceptance"],
-        "Check out OpenClaw candidate source as comparison data",
-      ).if = undefined;
+        "Check out selected-agent candidate source as comparison data",
+      ).if = "${{ inputs.agent == 'openclaw' }}";
     },
   },
   {
@@ -84,7 +84,7 @@ const mutations: Mutation[] = [
     mutate: (sources) => {
       step(
         sources.trusted.jobs["full-installed-acceptance"],
-        "Check out OpenClaw candidate source as comparison data",
+        "Check out selected-agent candidate source as comparison data",
       )["continue-on-error"] = true;
     },
   },

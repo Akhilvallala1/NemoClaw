@@ -24,6 +24,47 @@ import {
 import { nativeCredentialBinding, readOpenedRegularFile } from "../runtime/native-security.mts";
 import { sampleInstalledIdle } from "../tests/performance/installed-idle.mts";
 import { sanitizeNativeDiagnostic } from "../runtime/native-session-diagnostics.mts";
+import {
+  captureLauncherArtifactSources,
+  readLauncherAdmissionBytes,
+  validateInstalledLauncherInputs,
+} from "./installed-launcher-admission.mts";
+
+export function admitInstalledHermesLauncher(input: {
+  packageRoot: string;
+  launcher: string;
+  sourceRevision: string;
+  controllerRun: string;
+  controllerSourceRevision: string;
+  artifactSourceSnapshot: string;
+  artifactSourceSnapshotSha256: string;
+}) {
+  const read = readLauncherAdmissionBytes;
+  return validateInstalledLauncherInputs({
+    agent: "hermes",
+    buildBytes: read(path.join(input.packageRoot, "immutable-package-build.json")),
+    sourceBytes: read(path.join(input.packageRoot, "launcher-build-inputs.json")),
+    capabilityBytes: read(
+      path.join(input.packageRoot, "build", "launcher-capabilities.json"),
+      4096,
+    ),
+    materializationBytes: read(path.join(input.packageRoot, "compiled-launcher.json"), 65536),
+    launcherBytes: read(
+      path.join(input.packageRoot, "build", "compiled-native", "NemoClaw.exe"),
+      32 * 1024 * 1024,
+    ),
+    packagedBytes: read(
+      path.join(input.packageRoot, "build", "payload", "bin", "NemoClaw.exe"),
+      32 * 1024 * 1024,
+    ),
+    installedBytes: read(input.launcher, 32 * 1024 * 1024),
+    sourceRevision: input.sourceRevision,
+    controllerRun: input.controllerRun,
+    artifactSourceSnapshotBytes: read(input.artifactSourceSnapshot, 256 * 1024),
+    artifactSourceSnapshotSha256: input.artifactSourceSnapshotSha256,
+    controllerSourceRevision: input.controllerSourceRevision,
+  });
+}
 
 export function createHermesEvidenceDirectory(output: string) {
   fs.mkdirSync(path.dirname(output), { recursive: true });
@@ -785,6 +826,7 @@ async function main() {
     `observer-stop-${randomBytes(32).toString("hex")}.sentinel`,
   );
   const controllerRun = `${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`;
+  const controllerSourceRevision = process.env.GITHUB_SHA ?? "";
   const environment = stripInheritedAcceptanceEnvironment(process.env);
   delete environment.GITHUB_ACTIONS;
   const observerEnvironment = { ...environment, GITHUB_ACTIONS: "true" };
@@ -828,6 +870,17 @@ async function main() {
     return value.stdout;
   };
   try {
+    phase = "launcher-input-admission";
+    results.launcherAdmission = admitInstalledHermesLauncher({
+      packageRoot: path.resolve(argument("--package-root")),
+      launcher,
+      sourceRevision: identity.sourceRevision,
+      controllerRun,
+      controllerSourceRevision,
+      artifactSourceSnapshot: argument("--artifact-source-snapshot"),
+      artifactSourceSnapshotSha256: argument("--artifact-source-snapshot-sha256"),
+    });
+    phase = "configuration";
     const configuration = {
       schemaVersion: 1,
       classification: "nemoclaw-native-windows-agent-configuration",
@@ -851,6 +904,12 @@ async function main() {
           }) ?? "null",
         )
       : undefined;
+    if (reuse)
+      assert.deepEqual(
+        previousAcceptance?.results?.launcherAdmission,
+        results.launcherAdmission,
+        "Hermes restart cannot reuse evidence from a different package or controller.",
+      );
     const retainedState = reuse
       ? retainedAcceptance(
           "hermes",
@@ -1685,9 +1744,24 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const secret = process.env.NVIDIA_API_KEY || process.env.NVIDIA_INFERENCE_API_KEY || "";
-  void main().catch((error) => {
-    console.error(sanitizedFailure(error, secret));
-    process.exitCode = 1;
-  });
+  if (process.argv.includes("--capture-artifact-source")) {
+    const snapshot = captureLauncherArtifactSources({
+      agent: "hermes",
+      artifactSourceRoot: argument("--artifact-source-root"),
+      controllerSourceRoot: argument("--controller-source-root"),
+      artifactSourceRevision: argument("--artifact-source-revision"),
+      controllerSourceRevision: argument("--controller-source-revision"),
+      controllerRun: argument("--controller-run"),
+    });
+    const bytes = Buffer.from(JSON.stringify(snapshot) + "\n");
+    assert(bytes.length <= 256 * 1024, "The candidate source snapshot exceeds its bound.");
+    fs.writeFileSync(argument("--output"), bytes, { flag: "wx" });
+    process.stdout.write(createHash("sha256").update(bytes).digest("hex") + "\n");
+  } else {
+    const secret = process.env.NVIDIA_API_KEY || process.env.NVIDIA_INFERENCE_API_KEY || "";
+    void main().catch((error) => {
+      console.error(sanitizedFailure(error, secret));
+      process.exitCode = 1;
+    });
+  }
 }

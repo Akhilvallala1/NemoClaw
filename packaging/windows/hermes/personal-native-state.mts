@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fileIdentity, errorDetail } from "./probe-component-workload.mts";
 import {
@@ -29,6 +30,57 @@ const operations: StateOperations = {
   remove: acquireNativeStateRemoval,
   mkdir: (directory) => fs.mkdirSync(directory),
 };
+
+function readStateOwnerReceipt(file: string) {
+  const descriptor = fs.openSync(file, "r");
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const requireSameFile = () => {
+      const named = fs.lstatSync(file, { bigint: true });
+      assert(
+        opened.isFile() &&
+          opened.size <= 1024n * 1024n &&
+          named.isFile() &&
+          !named.isSymbolicLink() &&
+          named.dev === opened.dev &&
+          named.ino === opened.ino,
+        "The native state build receipt is not the opened ordinary bounded file.",
+      );
+    };
+    requireSameFile();
+    // Parse and identify the same bounded bytes, without reopening the pathname.
+    const buffer = Buffer.alloc(1024 * 1024 + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = fs.readSync(descriptor, buffer, length, buffer.length - length, length);
+      if (count === 0) break;
+      length += count;
+    }
+    assert(length <= 1024 * 1024, "The native state build receipt exceeds its size limit.");
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    assert(
+      BigInt(length) === opened.size &&
+        after.size === opened.size &&
+        after.mtimeNs === opened.mtimeNs &&
+        after.ctimeNs === opened.ctimeNs,
+      "The native state build receipt changed while being read.",
+    );
+    requireSameFile();
+    const bytes = buffer.subarray(0, length);
+    return {
+      value: JSON.parse(bytes.toString("utf8")),
+      identity: {
+        path: file,
+        bytes: length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        peMachine: null,
+        architecture: "non-PE-or-unknown",
+      },
+    };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
 
 export function readRequestedPersonalStateOwnerBuild(
   file: string | null,
@@ -58,9 +110,8 @@ export function readPersonalStateOwnerBuild(
   assert.match(sourceRevision, /^[a-f0-9]{40}$/u);
   assert.match(runId, /^[1-9]\d*$/u);
   assert.match(runAttempt, /^[1-9]\d*$/u);
-  const info = fs.lstatSync(file);
-  assert(info.isFile() && !info.isSymbolicLink() && info.size <= 1024 * 1024);
-  const record = JSON.parse(fs.readFileSync(file, "utf8"));
+  const document = readStateOwnerReceipt(file);
+  const record = document.value;
   assert.equal(record.schemaVersion, 1);
   assert.equal(record.classification, "personal-native-state-owner-build");
   assert.equal(record.sourceRevision, sourceRevision);
@@ -98,7 +149,7 @@ export function readPersonalStateOwnerBuild(
     assert.equal(actual.bytes, row.bytes, row.file);
     assert.equal(actual.sha256, row.sha256, row.file);
   }
-  return { launcher, executable, receipt: fileIdentity(file), sources: record.sources };
+  return { launcher, executable, receipt: document.identity, sources: record.sources };
 }
 
 export function personalNativeStateReceipt() {

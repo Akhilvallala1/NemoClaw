@@ -323,15 +323,16 @@ Write-Output 'PROVIDER_8_PASS'
   },
 );
 
-test("OpenClaw source capture rejects incomplete provenance before installation", () => {
-  const script = String.raw`
+for (const agent of ["openclaw", "hermes"])
+  test(`${agent} source capture rejects incomplete provenance before installation`, () => {
+    const script = String.raw`
 $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($env:ACCEPTANCE_SOURCE,[ref]$tokens,[ref]$errors)
 if ($errors.Count) {throw 'Acceptance script does not parse.'}
 $capture=$ast.Find({param($node)
   $node -is [Management.Automation.Language.IfStatementAst] -and
-  $node.Clauses[0].Item1.Extent.Text -ceq '$openClawRestart' -and
+  $node.Clauses[0].Item1.Extent.Text -ceq '$sourceBoundAcceptance' -and
   $node.Extent.Text.Contains('--capture-artifact-source')
 },$true)
 if ($null -eq $capture) {throw 'Missing pre-install source capture.'}
@@ -341,11 +342,11 @@ $install=$ast.Find({param($node)
 },$true)
 if ($null -eq $install -or $capture.Extent.EndOffset -ge $install.Extent.StartOffset) {throw 'Source capture follows installation.'}
 $execute=[scriptblock]::Create($capture.Extent.Text.Replace('& $ciNode','& Invoke-CaptureFixture'))
-$openClawRestart=$true;$SourceRoot='trusted-source';$ArtifactSourceRevision='a' * 40;$controllerSource='b' * 40
+$Agent=$env:TEST_AGENT;$sourceBoundAcceptance=$true;$openClawRestart=$Agent -ceq 'openclaw';$SourceRoot='trusted-source';$ArtifactSourceRevision='a' * 40;$controllerSource='b' * 40
 $work='work-fixture';$env:GITHUB_RUN_ID='123';$env:GITHUB_RUN_ATTEMPT='1'
 function Invoke-CaptureFixture {
   $script:calls++
-  if ($args[2] -cne "$SourceRoot\packaging\windows\installer\qualify-installed-openclaw.mts") {throw 'Candidate code selected for capture.'}
+  if ($args[2] -cne "$SourceRoot\packaging\windows\installer\qualify-installed-$Agent.mts") {throw 'Candidate code selected for capture.'}
   foreach ($name in @('--capture-artifact-source','--artifact-source-root','--controller-source-root','--artifact-source-revision','--controller-source-revision','--controller-run','--output')) {
     if ($args -notcontains $name) {throw 'Missing candidate capture input.'}
   }
@@ -364,7 +365,7 @@ function Get-Content {param($LiteralPath,[switch]$Raw)
 function Get-FileHash {param($LiteralPath,$Algorithm)
   if ($Algorithm -cne 'SHA256') {throw 'Wrong hash algorithm.'}
   if ($LiteralPath -ceq "$work\package\immutable-package-build.json") {return @{Hash='e' * 64}}
-  if ($LiteralPath -cne (Join-Path $work 'openclaw-artifact-source.json')) {throw 'Wrong snapshot identity.'}
+  if ($LiteralPath -cne (Join-Path $work "$Agent-artifact-source.json")) {throw 'Wrong snapshot identity.'}
   return @{Hash=$(if ($scenario -ceq 'changed') {'d' * 64} else {'c' * 64})}
 }
 foreach ($scenario in @('pass','missing-root','failed','bad-hash','extra-output','changed')) {
@@ -375,31 +376,34 @@ foreach ($scenario in @('pass','missing-root','failed','bad-hash','extra-output'
   if ($script:calls -ne $(if ($scenario -ceq 'missing-root') {0} else {1})) {throw 'Capture began with missing provenance.'}
   if (-not $failed -and $artifactSourceSnapshotSha256 -cne ('c' * 64)) {throw 'Caller did not retain the pre-install hash.'}
 }
-$openClawRestart=$false;$script:calls=0;. $execute
+$sourceBoundAcceptance=$false;$script:calls=0;. $execute
 if ($script:calls -ne 0) {throw 'Other acceptance routes invoked candidate capture.'}
 Write-Output '6'
 `;
-  const result = spawnSync(
-    process.platform === "win32" ? "pwsh.exe" : "pwsh",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
-    {
-      env: powershellEnvironment({
-        ACCEPTANCE_SOURCE: fileURLToPath(new URL("run-installed-acceptance.ps1", import.meta.url)),
-      }),
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 30000,
-    },
-  );
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.equal(result.stdout.trim(), "6");
-});
+    const result = spawnSync(
+      process.platform === "win32" ? "pwsh.exe" : "pwsh",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(script, "utf16le").toString("base64"),
+      ],
+      {
+        env: powershellEnvironment({
+          ACCEPTANCE_SOURCE: fileURLToPath(
+            new URL("run-installed-acceptance.ps1", import.meta.url),
+          ),
+          TEST_AGENT: agent,
+        }),
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30000,
+      },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(result.stdout.trim(), "6");
+  });
 
 test("OpenClaw acceptance routes retained restart and keeps recovery custody after incomplete evidence", () => {
   const script = String.raw`
@@ -1558,6 +1562,8 @@ $ValidationScope = 'full-acceptance'; $Agent = $env:TEST_AGENT; $SourceRoot = 's
 $work = 'work-fixture'; $installation = 'install-fixture'; $openClawRestart=$false
 $env:GITHUB_RUN_ID='123'; $env:GITHUB_RUN_ATTEMPT='1'
 $expectedHermesRuntime=@{runtimeId=('a' * 64);manifestSha256=('b' * 64);sourceRevision=('c' * 40);nodeSha256=('d' * 64);nodeVersion='22.23.2'}
+$expectedHermesLauncher='2' * 64;$expectedHermesPackageBuild='3' * 64
+$artifactSourceSnapshot='snapshot-fixture';$artifactSourceSnapshotSha256='4' * 64;$controllerSource='5' * 40
 function Invoke-TestAgent {
   if ($args -notcontains (Join-Path $SourceRoot "packaging\windows\installer\qualify-installed-$Agent.mts")) { throw 'Wrong agent controller.' }
   $first = $calls.Count -eq 0
@@ -1566,6 +1572,11 @@ function Invoke-TestAgent {
   if (($previous -ge 0) -ne (-not $first)) { throw 'Incorrect cold-run receipt routing.' }
   if ($previous -ge 0 -and $args[$previous+1] -cne "work-fixture\installed-acceptance\installed-$Agent-acceptance.json") { throw 'Wrong cold-run receipt.' }
   if (-not $restartCustodyUnresolved) { throw 'Hermes launch began without recovery custody.' }
+  foreach ($name in @('--package-root','--artifact-source-snapshot','--artifact-source-snapshot-sha256')) {
+    $position=[array]::IndexOf($args,$name)
+    $expected=switch ($name) { '--package-root' {"$work\package"} '--artifact-source-snapshot' {$artifactSourceSnapshot} '--artifact-source-snapshot-sha256' {$artifactSourceSnapshotSha256} }
+    if ($position -lt 0 -or $args[$position+1] -cne $expected) { throw 'Hermes source admission input is absent or different.' }
+  }
   $calls.Add(@($args))
   $global:LASTEXITCODE = if ($scenario -ceq 'process-failure' -or ($scenario -ceq 'warm-process-failure' -and -not $first)) { 1 } else { 0 }
 }
@@ -1583,6 +1594,7 @@ function Get-Content {
   $warm=$calls.Count -eq 2
   $receipt = @{ schemaVersion=1; classification='installed-canonical-hermes-acceptance'; controllerRun='123:1';runtime=$expectedHermesRuntime.Clone();verdict='pass'; cleanupErrors=@();fullInstalledQualification=$false;results=@{
     configurationReused=$warm;configurationPreserved=(-not $warm)
+    launcherAdmission=@{launcherSha256=$expectedHermesLauncher;packageBuildSha256=$expectedHermesPackageBuild;artifactSourceSnapshotSha256=$artifactSourceSnapshotSha256;controllerSourceRevision=$controllerSource}
     stateRoot='C:\NemoClawState-S-1-5-21-1-hermes';configurationSha256=('e' * 64)
     retainedConversation=@{storedSessionId='saved-session';profileName='personal';messageCount=10;lastMessageId=20;transcriptSha256=('f' * 64)}
     custody=@{configurationMutationUnconfirmed=$false;nativeLaunchAttempted=$true;nativeCleanupConfirmed=$true;processesStopped=$true;uninstallSafe=$true;configurationRetainedForRecovery=$false}
@@ -1597,6 +1609,12 @@ function Get-Content {
     $receipt.results.retainedConversation.transcriptSha256='1' * 64
   }
   switch ($scenario) {
+    'missing-admission' { $receipt.results.Remove('launcherAdmission') }
+    'foreign-launcher' { $receipt.results.launcherAdmission.launcherSha256='9' * 64 }
+    'foreign-build' { $receipt.results.launcherAdmission.packageBuildSha256='9' * 64 }
+    'foreign-snapshot' { $receipt.results.launcherAdmission.artifactSourceSnapshotSha256='9' * 64 }
+    'foreign-controller' { $receipt.results.launcherAdmission.controllerSourceRevision='9' * 40 }
+    'warm-foreign-launcher' { if ($warm) { $receipt.results.launcherAdmission.launcherSha256='9' * 64 } }
     'failed-receipt' { $receipt.verdict='fail' }
     'cleanup-failure' { $receipt.cleanupErrors=@('retained process') }
     'missing-cleanup-errors' { $receipt.Remove('cleanupErrors') }
@@ -1668,6 +1686,7 @@ function Get-Content {
 $count=0
 $scenarios=@('pass','process-failure','warm-process-failure','failed-receipt','cleanup-failure','missing-cleanup-errors','string-schema','wrong-classification','array-classification','array-verdict','array-run','wrong-run','wrong-runtime','wrong-source','missing-custody','no-launch','native-unknown','string-native','process-unknown','unsafe','retained-recovery','string-retained','missing-backend','backend-incomplete','string-backend','wrong-backend-runtime','wrong-backend-agent','wrong-backend-schema','wrong-case','string-case','wrong-preservation','unbound-state','changed-warm-state','changed-warm-config','full-claim','stale-receipt','missing-receipt','malformed-receipt')
 $scenarios+=@('configuration-unconfirmed','string-configuration-custody','missing-configuration-custody','warm-configuration-unconfirmed')
+$scenarios+=@('missing-admission','foreign-launcher','foreign-build','foreign-snapshot','foreign-controller','warm-foreign-launcher')
 $scenarios+=@('missing-retained','retained-array','empty-session','array-session','long-session','empty-profile','long-profile','string-count','single-count','limit-count','fraction-count','string-last','last-before-count','unsafe-last','invalid-hash','array-hash','warm-missing-restored','warm-array-restored','warm-restored-string-count','warm-restored-session','warm-restored-profile','warm-restored-count','warm-restored-last','warm-restored-hash','warm-continued-session','warm-continued-profile','warm-continued-count','warm-continued-last','warm-continued-hash')
 foreach ($scenario in $scenarios) {
   $calls=[Collections.Generic.List[object]]::new(); $timings=@{}; $failed=$false; $restartCustodyUnresolved=$false
@@ -1711,7 +1730,7 @@ Write-Output $count
     );
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(result.stdout.trim(), "71");
+    assert.equal(result.stdout.trim(), "77");
   });
 
 for (const shell of ["powershell.exe", "pwsh.exe"])

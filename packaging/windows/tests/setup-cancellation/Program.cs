@@ -592,7 +592,7 @@ internal static class Program
             }
             catch (OperationCanceledException) { }
             helper.Refresh();
-            if (!helper.HasExited)
+            if (!helper.WaitForExit(0) || !helper.HasExited)
                 throw new InvalidOperationException($"Timed-out preparation helper {helper.Id} is still running.");
             if (File.Exists(Path.Combine(root, "result")))
                 throw new InvalidOperationException("The timed-out preparation helper completed unexpectedly.");

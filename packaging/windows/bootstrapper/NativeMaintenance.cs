@@ -169,6 +169,15 @@ internal static class NativeMaintenance
         try
         {
             await child.WaitForExitAsync(bounded.Token);
+            // An exit code can precede the Windows process-handle signal.
+            await Task.Run(() =>
+            {
+                while (!child.WaitForExit(0))
+                {
+                    bounded.Token.ThrowIfCancellationRequested();
+                    child.WaitForExit(100);
+                }
+            });
             return child.ExitCode;
         }
         catch (OperationCanceledException error)
@@ -228,7 +237,12 @@ internal static class NativeMaintenance
         {
             try
             {
-                if (!child.HasExited) { child.Kill(entireProcessTree: true); using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await child.WaitForExitAsync(cleanup.Token); }
+                if (!child.WaitForExit(0))
+                {
+                    child.Kill(entireProcessTree: true);
+                    if (!await Task.Run(() => child.WaitForExit(5000)))
+                        throw new TimeoutException("The native maintenance helper did not stop within its cleanup deadline.");
+                }
             }
             catch (Exception error) { cleanupError = error; }
         }

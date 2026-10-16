@@ -380,14 +380,16 @@ internal static class NativeSetupOperations
         finally
         {
             timeout.Cancel();
-            if (!process.HasExited)
+            // HasExited can observe an exit code before Windows signals the process handle.
+            // Keep ownership until the kernel wait completes, including after cancellation.
+            if (!process.WaitForExit(0))
             {
-                if (transaction) await process.WaitForExitAsync();
+                if (transaction) await Task.Run(() => process.WaitForExit());
                 else
                 {
                     process.Kill(entireProcessTree: true);
-                    using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await process.WaitForExitAsync(cleanup.Token);
+                    if (!await Task.Run(() => process.WaitForExit(5000)))
+                        throw new TimeoutException("The native setup helper did not stop within its cleanup deadline.");
                 }
             }
         }
