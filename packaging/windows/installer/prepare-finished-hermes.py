@@ -623,7 +623,7 @@ def validate_same_run_state_owner(root, personal, request, source, run_id, run_a
     }
     require(all(type(build.get(key)) is type(value) and build[key] == value
                 for key, value in expected.items()), "Same-run native state helper build differs")
-    launcher = root / "official-hermes-runtime-build/state-owner-target/aarch64-pc-windows-msvc/release/NemoClaw.exe"
+    launcher = root / "official-hermes-runtime-build/state-owner-helper/NemoClaw.exe"
     executable = read_same_run_file(launcher, 32 * 1024 * 1024)
     offset = int.from_bytes(executable[60:64], "little")
     require(len(executable) >= 70 and executable[:2] == b"MZ" and 64 <= offset <= len(executable) - 6

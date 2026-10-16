@@ -202,7 +202,7 @@ class FinishedHermesIntake(unittest.TestCase):
                 owner.validate_personal_composition(changed, proof, compatibility, mxc, native.CURRENT)
 
     def state_owner_fixture(self, root):
-        launcher = root / "official-hermes-runtime-build/state-owner-target/aarch64-pc-windows-msvc/release/NemoClaw.exe"
+        launcher = root / "official-hermes-runtime-build/state-owner-helper/NemoClaw.exe"
         launcher.parent.mkdir(parents=True, exist_ok=True)
         # Parser fixture only: not an executable or native qualification evidence.
         executable = bytearray(128)

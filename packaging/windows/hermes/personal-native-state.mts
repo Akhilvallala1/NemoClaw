@@ -123,9 +123,7 @@ export function readPersonalStateOwnerBuild(
   const launcher = path.join(
     path.dirname(file),
     "official-hermes-runtime-build",
-    "state-owner-target",
-    "aarch64-pc-windows-msvc",
-    "release",
+    "state-owner-helper",
     "NemoClaw.exe",
   );
   assert.equal(record.file, launcher);

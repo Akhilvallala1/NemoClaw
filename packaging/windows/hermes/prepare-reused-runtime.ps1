@@ -81,7 +81,14 @@ try{
         $receipt.stateOwnerBuildClosed=$true
     } finally {$env:RUSTC=$previousRustc}
     foreach($source in $stateInputs){Assert-ReuseBytes (Join-Path $launcherSource $source.file) $source.bytes $source.sha256}
-    $stateLauncher=Join-Path $stateTarget 'aarch64-pc-windows-msvc/release/NemoClaw.exe'
+    $compiledStateLauncher=Join-Path $stateTarget 'aarch64-pc-windows-msvc/release/NemoClaw.exe'
+    $stateHelper=Join-Path $build 'state-owner-helper'
+    $null=New-Item -ItemType Directory -Path $stateHelper
+    $stateLauncher=Join-Path $stateHelper 'NemoClaw.exe'
+    # Cargo may hardlink its output; native host helpers require independent files.
+    Invoke-ReuseTool $python @('-I','-B',(Join-Path $PSScriptRoot '../installer/materialize-compiled-executable.py'),
+        '--source',$compiledStateLauncher,'--output',$stateLauncher,
+        '--receipt',(Join-Path $stateHelper 'materialization.json')) 'materialize-personal-native-state-owner'
     $stateBuild=[ordered]@{schemaVersion=1;classification='personal-native-state-owner-build';sourceRevision=$ControllerSource;
         workflowRunId=$env:GITHUB_RUN_ID;workflowRunAttempt=$env:GITHUB_RUN_ATTEMPT;target='aarch64-pc-windows-msvc';immutableRuntime=$false;
         file=$stateLauncher;bytes=(Get-Item -LiteralPath $stateLauncher).Length;

@@ -18,6 +18,7 @@ import {
 } from "./personal-native-state.mts";
 import { personalRequest } from "./probe-personal-candidate.mts";
 import { fileIdentity } from "./probe-component-workload.mts";
+import { verifyNativeEdgeIdentityLauncher } from "../runtime/native-edge-browser.mts";
 
 const root = "C:\\NemoClawState-S-1-5-21-100-200-300-1001-hermes";
 
@@ -403,9 +404,7 @@ test("Personal state-owner admission binds source files, same run, exact path an
     const launcher = path.join(
       temporary,
       "official-hermes-runtime-build",
-      "state-owner-target",
-      "aarch64-pc-windows-msvc",
-      "release",
+      "state-owner-helper",
       "NemoClaw.exe",
     );
     fs.mkdirSync(path.dirname(launcher), { recursive: true });
@@ -415,7 +414,34 @@ test("Personal state-owner admission binds source files, same run, exact path an
     bytes.writeUInt32LE(64, 60);
     bytes.write("PE\0\0", 64);
     bytes.writeUInt16LE(0xaa64, 68);
-    fs.writeFileSync(launcher, bytes);
+    const compiled = path.join(temporary, "cargo", "NemoClaw.exe");
+    fs.mkdirSync(path.dirname(compiled));
+    fs.writeFileSync(compiled, bytes);
+    fs.linkSync(compiled, path.join(temporary, "cargo-output-alias.exe"));
+    assert.throws(
+      () => verifyNativeEdgeIdentityLauncher(fileIdentity(compiled)),
+      /traverse a link/u,
+    );
+    const materialize = spawnSync(
+      process.env.NEMOCLAW_TEST_PYTHON ?? (process.platform === "win32" ? "python" : "python3"),
+      [
+        "-I",
+        "-B",
+        fileURLToPath(new URL("../installer/materialize-compiled-executable.py", import.meta.url)),
+        "--source",
+        compiled,
+        "--output",
+        launcher,
+        "--receipt",
+        path.join(path.dirname(launcher), "materialization.json"),
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(materialize.status, 0, materialize.stderr || String(materialize.error));
+    assert.equal(fs.statSync(compiled).nlink, 2);
+    assert.equal(fs.statSync(launcher).nlink, 1);
+    assert.deepEqual(fs.readFileSync(launcher), bytes);
+    assert.equal(verifyNativeEdgeIdentityLauncher(fileIdentity(launcher)), launcher);
     const build = {
       schemaVersion: 1,
       classification: "personal-native-state-owner-build",
