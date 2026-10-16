@@ -129,8 +129,11 @@ function stageMcpToolDiscoveryRuntime(rootDir: string, buildCtx: string): void {
 function stageManagedStartupRuntimeSources(rootDir: string, buildCtx: string): void {
   for (const relativePath of [
     "extra-agents-validation.ts",
+    "inference-credential.ts",
     path.join("core", "json-types.ts"),
     path.join("core", "ports.ts"),
+    path.join("core", "endpoint-url-safety.ts"),
+    path.join("inference", "native-local", "agent-config.ts"),
     path.join("security", "credential-hash.ts"),
     path.join("state", "paths.ts"),
     path.join("state", "state-root.ts"),
@@ -154,6 +157,17 @@ function stageReviewedNpmAuditPolicy(rootDir: string, buildCtx: string): void {
     fs.copyFileSync(path.join(rootDir, "ci", fileName), path.join(stagedCiDir, fileName));
   }
   normalizeReadModesForDockerCopy(stagedCiDir);
+}
+
+function stageNativeInferenceConfig(rootDir: string, buildCtx: string): void {
+  const relativeDir = path.join("src", "lib", "inference", "native-provider");
+  fs.mkdirSync(path.join(buildCtx, relativeDir), { recursive: true });
+  for (const fileName of ["agent-config.ts", "hosted.ts", "contract.ts"]) {
+    fs.copyFileSync(
+      path.join(rootDir, relativeDir, fileName),
+      path.join(buildCtx, relativeDir, fileName),
+    );
+  }
 }
 
 function stageLegacySandboxBuildContext(
@@ -193,6 +207,7 @@ function stageLegacySandboxBuildContext(
     path.join(rootDir, "src", "lib", "providerless-inference.ts"),
     path.join(buildCtx, "src", "lib", "providerless-inference.ts"),
   );
+  stageNativeInferenceConfig(rootDir, buildCtx);
   stageManagedStartupRuntimeSources(rootDir, buildCtx);
   normalizeReadModesForDockerCopy(path.join(buildCtx, "src"));
   fs.rmSync(path.join(buildCtx, "nemoclaw", "node_modules"), {
@@ -305,10 +320,6 @@ function stageOptimizedSandboxBuildContext(
     path.join(stagedScriptsDir, "managed-startup-hold.sh"),
   );
   fs.copyFileSync(
-    path.join(rootDir, "scripts", "openclaw-config-guard.py"),
-    path.join(stagedScriptsDir, "openclaw-config-guard.py"),
-  );
-  fs.copyFileSync(
     path.join(rootDir, "scripts", "openclaw-cli-wrapper.sh"),
     path.join(stagedScriptsDir, "openclaw-cli-wrapper.sh"),
   );
@@ -351,10 +362,6 @@ function stageOptimizedSandboxBuildContext(
     path.join(stagedScriptsDir, "lib", "openclaw_pairing_state.py"),
   );
   fs.copyFileSync(
-    path.join(rootDir, "scripts", "lib", "normalize_mutable_config_perms.py"),
-    path.join(stagedScriptsDir, "lib", "normalize_mutable_config_perms.py"),
-  );
-  fs.copyFileSync(
     path.join(rootDir, "scripts", "lib", "refresh-openclaw-wechat-placeholder.py"),
     path.join(stagedScriptsDir, "lib", "refresh-openclaw-wechat-placeholder.py"),
   );
@@ -372,6 +379,7 @@ function stageOptimizedSandboxBuildContext(
     path.join(rootDir, "src", "lib", "providerless-inference.ts"),
     path.join(buildCtx, "src", "lib", "providerless-inference.ts"),
   );
+  stageNativeInferenceConfig(rootDir, buildCtx);
   stageManagedStartupRuntimeSources(rootDir, buildCtx);
   normalizeReadModesForDockerCopy(path.join(buildCtx, "src"));
   fs.copyFileSync(
