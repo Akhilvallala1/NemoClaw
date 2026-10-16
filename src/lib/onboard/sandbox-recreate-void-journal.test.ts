@@ -463,6 +463,7 @@ describe("sandbox recreate recovery from a void journal", () => {
         sandboxRecreate: legacyTransaction,
       };
       const owned = ownSandboxRecreateTransaction({
+        freshOnboard: true,
         sessionStore: deleteStoreFor(owningSession),
         sandboxName: "alpha",
         gatewayName: "nemoclaw",
@@ -474,7 +475,7 @@ describe("sandbox recreate recovery from a void journal", () => {
       });
       expect(owned.recovery).toEqual({ action: "continue_create" });
       expect(owned.replacedTransactionId).toBeNull();
-      expect(owned.openedWithoutPriorTransaction).toBe(false);
+      expect(owned.transaction.freshOnboard).toBeUndefined();
       expect(owned.transaction).toEqual(legacyTransaction);
       expect(owningSession.checkpoint.sandboxRecreate).toEqual(legacyTransaction);
 
@@ -641,6 +642,7 @@ describe("atomic recreate journal ownership", () => {
     const seen: Array<string | null> = [];
     const baseStore = storeFor(session);
     const owned = ownSandboxRecreateTransaction({
+      freshOnboard: true,
       sessionStore: {
         ...baseStore,
         compareAndSwapSession: (matches, mutator) => {
@@ -661,6 +663,7 @@ describe("atomic recreate journal ownership", () => {
     });
 
     expect(owned.transaction.id).not.toBe(TX_ID);
+    expect(owned.transaction.freshOnboard).toBeUndefined();
     expect(seen).toEqual([TX_ID, owned.transaction.id]);
     expect(seen).not.toContain(null);
   });

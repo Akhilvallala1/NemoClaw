@@ -2155,6 +2155,7 @@ class SandboxStateFlow<
       this.options.recreateJournalTargetIntentFingerprint,
     );
     return ownSandboxRecreateTransaction({
+      freshOnboard: this.options.resume ? undefined : true,
       sessionStore: {
         loadSession: this.deps.loadSession,
         updateSession: this.deps.updateSession,
@@ -2213,14 +2214,6 @@ class SandboxStateFlow<
     });
   }
 
-  private freshSelectionReconciliationFields(
-    owned: ReturnType<typeof ownSandboxRecreateTransaction> | null,
-  ): { readonly freshOnboard?: true } {
-    return owned?.openedWithoutPriorTransaction && !this.options.resume
-      ? { freshOnboard: true }
-      : {};
-  }
-
   private async prepareSandboxRecreate(
     state: SandboxStepState<WebSearchConfig>,
     requestedSandboxName: string,
@@ -2256,7 +2249,7 @@ class SandboxStateFlow<
       ...createIntent,
       recreate: true,
       recreateTransaction: {
-        ...this.freshSelectionReconciliationFields(owned),
+        freshOnboard: transaction.freshOnboard,
         id: transaction.id,
         targetGeneration: transaction.targetGeneration,
         targetIntentFingerprint: transaction.targetIntentFingerprint,

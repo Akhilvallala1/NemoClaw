@@ -86,7 +86,7 @@ export interface SandboxCreateIntent {
   readonly reuseRegisteredCredentials?: true;
   /** Internal durable handoff for one journaled same-name replacement. */
   readonly recreateTransaction?: {
-    /** Process-local proof that this non-resumed onboarding run opened the journal. */
+    /** Journaled origin permits selection checks after a pre-delete interruption. */
     readonly freshOnboard?: true;
     readonly id: string;
     readonly targetGeneration: string;
