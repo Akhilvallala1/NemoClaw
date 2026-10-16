@@ -230,16 +230,19 @@ describe("rebuild resume snapshot repair", () => {
         const output =
           "Name: nvidia-router\nType: openai\nCredential keys: <none>\nConfig keys: OPENAI_BASE_URL\n";
         const responses = new Map([
-          ["provider get nvidia-router", { status: 0, output, stdout: output, stderr: "" }],
+          ["provider get nvidia-router", { status: 0, stdout: output, stderr: "" }],
         ]);
-        return (
-          responses.get(args.slice(0, 3).join(" ")) ?? {
-            status: 1,
-            output: "",
-            stdout: "",
-            stderr: "provider not found",
-          }
-        );
+        const response = responses.get(args.slice(0, 3).join(" ")) ?? {
+          status: 1,
+          stdout: "",
+          stderr: "provider not found",
+        };
+        return {
+          ...response,
+          pid: 0,
+          signal: null,
+          output: [null, response.stdout, response.stderr],
+        };
       }),
       vi.spyOn(registry, "updateSandbox").mockReturnValue(true),
       vi.spyOn(registry, "listSandboxes").mockReturnValue({ sandboxes: [] } as never),
