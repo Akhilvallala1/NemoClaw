@@ -13,7 +13,7 @@ fn supplied() -> Value {
     serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml")).unwrap()
 }
 
-fn journey(values: Value, capabilities: &Capabilities) -> nemoclaw_authoring::JourneyState {
+fn journey(values: Value) -> nemoclaw_authoring::JourneyState {
     JourneyDefinition::new(
         "guided",
         PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap(),
@@ -24,14 +24,14 @@ fn journey(values: Value, capabilities: &Capabilities) -> nemoclaw_authoring::Jo
         "inference:preset",
     ])
     .ask([JourneyScope::InferenceApi, JourneyScope::RouteModels])
-    .start(capabilities)
+    .start()
     .unwrap()
 }
 
 #[test]
 fn supplied_values_are_suggestions_for_finite_and_free_text_questions() {
     let capabilities = Capabilities::available();
-    let state = journey(supplied(), &capabilities);
+    let state = journey(supplied());
     let resolved = state.resolve(&capabilities).unwrap();
     let name = resolved.question("/metadata/name").unwrap();
     assert_eq!(name.reason(), JourneyQuestionReason::ExplicitAsk);
@@ -45,7 +45,7 @@ fn supplied_values_are_suggestions_for_finite_and_free_text_questions() {
 #[test]
 fn generated_yaml_reopens_as_the_same_supplied_intent() {
     let capabilities = Capabilities::available();
-    let mut state = journey(supplied(), &capabilities);
+    let mut state = journey(supplied());
     state
         .answer(
             &capabilities,
@@ -69,10 +69,7 @@ fn generated_yaml_reopens_as_the_same_supplied_intent() {
         .clone();
     let yaml = document.yaml().unwrap();
     let reopened = Document::parse(yaml.as_bytes()).unwrap();
-    let again = journey(
-        serde_saphyr::from_slice(yaml.as_bytes()).unwrap(),
-        &capabilities,
-    );
+    let again = journey(serde_saphyr::from_slice(yaml.as_bytes()).unwrap());
     assert_eq!(reopened, document);
     assert_eq!(
         again.values().pointer("/metadata/uid"),
@@ -97,7 +94,7 @@ fn every_advertised_harness_keeps_provider_protocol_choices() {
     let capabilities = Capabilities::available();
     for harness in capabilities.harnesses() {
         for preset in ProviderPreset::ALL {
-            let mut state = journey(supplied(), &capabilities);
+            let mut state = journey(supplied());
             state
                 .answer(
                     &capabilities,
@@ -134,7 +131,7 @@ fn changing_a_model_preserves_an_explicit_target_engine() {
     let capabilities = Capabilities::available();
     let mut values = supplied();
     values["spec"]["gateway"]["engine"] = json!("unix:///tmp/owned-discovery-fixture.sock");
-    let mut state = journey(values, &capabilities);
+    let mut state = journey(values);
     state
         .answer(
             &capabilities,
@@ -163,7 +160,7 @@ fn an_anonymous_local_provider_is_lossless_without_a_credential_reference() {
         .remove("credential");
     values["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["overrides"]["model"] =
         json!("local-model");
-    let mut state = journey(values, &capabilities);
+    let mut state = journey(values);
     state
         .answer(
             &capabilities,
@@ -211,11 +208,13 @@ fn an_anonymous_local_provider_is_lossless_without_a_credential_reference() {
 #[test]
 fn newly_advertised_fabric_harness_is_a_choice_without_code_registration() {
     let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("test.fixture.new-agent");
-    catalog.adapters.push(adapter);
+    catalog
+        .adapters
+        .push(nemoclaw_sdk::fabric_catalog::FabricAdapter {
+            adapter_id: "test.fixture.new-agent".into(),
+        });
     let capabilities = Capabilities::from_catalog(&catalog);
-    let mut state = journey(supplied(), &capabilities);
+    let mut state = journey(supplied());
     let harness = "/spec/sandboxes/0/harness/kind";
     assert!(
         state
@@ -263,7 +262,7 @@ fn offline_catalog_absence_does_not_prevent_an_independent_rename() {
             .unwrap();
     let mut state = JourneyDefinition::new("offline-rename", base)
         .ask(["/metadata/name"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let before = state.values().pointer("/spec").cloned().unwrap();
     state
@@ -288,14 +287,14 @@ fn offline_catalog_absence_does_not_prevent_an_independent_rename() {
 }
 
 #[test]
-fn missing_adapter_schema_keeps_independent_deployment_questions_available() {
+fn an_unlisted_harness_keeps_independent_deployment_questions_available() {
     let capabilities = Capabilities::from_harnesses([]);
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     let state = JourneyDefinition::new("offline-deployment", base)
         .ask([JourneyScope::DeploymentFields])
-        .start(&capabilities)
+        .start()
         .unwrap();
 
     let resolution = state.resolve(&capabilities).unwrap();
@@ -304,7 +303,7 @@ fn missing_adapter_schema_keeps_independent_deployment_questions_available() {
         resolution
             .unverified()
             .iter()
-            .any(|reason| reason.contains("adapter schema unverified"))
+            .any(|reason| reason.contains("is not in the current Fabric catalog"))
     );
     assert!(resolution.materialized_document().is_none());
 }

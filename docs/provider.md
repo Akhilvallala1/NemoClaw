@@ -410,7 +410,7 @@ An observation describes the selected target at the time of its read; it is not 
 | Managed gateway prerequisites for its compute driver | `openshell_gateway_prerequisites`; selected Docker/Podman API | Onboarding target changes and managed deployment planning |
 | Engine features, CPU, memory, and advertised GPU inventory | `host_engine` (`hardware_json`); selected engine API | Onboarding and planning for selected gateway/service engines |
 | GPU memory, driver, compute capability, and disk measurements | Provider `observe_host_hardware` with a selected `HostObserver` | Explicit direct calls or existing configured service-capacity checks; the new passive hardware source does not run collectors |
-| Packaged adapters, APIs, settings, and runtime requirements | `fabric_harnesses`; selected image metadata containing Fabric discovery results | Onboarding image changes and deployment planning |
+| Packaged adapters and runtime requirements | `fabric_harnesses`; selected image metadata the image build records | Onboarding image changes and deployment planning |
 | Required labels and platform of managed images | `host_image`; selected engine image inspection | Plan for present images; after image acquisition before runtime mutations |
 | Advertised models and catalog authentication | Direct SDK `observe_endpoint`; HTTP model-list endpoint from the control host | Onboarding endpoint changes |
 | Credential-reference availability | Direct SDK `observe_credentials`; application's secret resolver | Onboarding, SDK calls, and plan-result discovery; values and local availability do not enter provider state |
@@ -439,9 +439,8 @@ Each backend observation is bounded to five seconds; OpenTofu initialization and
 `unknown` records an unreachable target, missing image labels, invalid metadata, or a timed-out observation.
 A missing image does not establish that the harness is unsupported.
 
-Fabric observations retain the original `catalog`: Fabric adapter and workflow target descriptors and their discovery provenance.
-Native schemas and declared requirements are consumed directly, without a second capability projection.
-Missing declarations remain unknown; an advertised setting does not prove that the selected inference model supports it.
+Fabric observations retain the image's `catalog`: the adapters its build installed, their runtime layout, and the Fabric revision it packages.
+It records no Fabric descriptors; Fabric validates harness settings when the agent is configured ([#13328](https://github.com/NVIDIA/NemoClaw/issues/13328)).
 
 Optional `config_json` supplies the canonical public Fabric configuration, the same document a `fabric_agent`'s inputs compose.
 Optional `filesystem_read` lists the paths the sandbox policy grants for reading; omitting it skips the filesystem check.
@@ -455,12 +454,11 @@ Deployment postconditions name the sandbox and adapter and preserve unsupported 
 Onboarding uses the same assessment; unknown error variants retain a generic rejection.
 Omitting `config_json` preserves metadata-only discovery.
 
-The [agent image builder](build.md#build-agent-images) reads `Fabric.discover()` inside each assembled image and stores the result in `io.nemoclaw.fabric.catalog`.
-It selects installed-package records using Fabric's provenance, without editing their descriptors.
-Harness image stages declare the directories where their layout installs each adapter; the builder records them as `runtime_files`, keyed by adapter ID, beside the descriptors.
-With deployment filesystem grants, every path in the adapter descriptor's `requirements.files`, its `runtime_files` entry, and the image runtime's `required_paths` must fall under a grant.
+The [agent image builder](build.md#build-agent-images) runs `catalog.py` inside each assembled image and stores the result in `io.nemoclaw.fabric.catalog`.
+Each harness stage declares its adapter, the directories its layout installs it in, and the executables it runs; the builder records the directories as `runtime_files`, keyed by adapter ID.
+With deployment filesystem grants, every path in the adapter's `runtime_files` entry and the image runtime's `required_paths` must fall under a grant.
 The bundled snapshot supports offline authoring and carries the same pinned Fabric revision and source checksum.
-See the [image metadata contract](design/fabric-management.md#image-metadata) and [catalog regeneration](build.md#regenerate-the-bundled-catalog).
+See the [image metadata contract](design/fabric-management.md#image-metadata) and [catalog updates](build.md#update-the-bundled-catalog).
 Direct Bake builds without labels remain unverified.
 Catalog identifiers are not restricted to a compiled SDK list.
 The runtime consumes the same canonical public configuration through Fabric; see [discovered harness configuration](sdk.md#configure-a-discovered-fabric-harness).

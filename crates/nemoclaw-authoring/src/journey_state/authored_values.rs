@@ -111,66 +111,6 @@ impl AuthoredValues {
         Ok(())
     }
 
-    pub(super) fn put_setting(
-        &mut self,
-        pointer: &str,
-        value: Option<Value>,
-    ) -> Result<(), Diagnostics> {
-        let harness = self
-            .values
-            .pointer_mut(
-                &harness_path(&self.values)
-                    .ok_or_else(|| diagnostic("journey", "Harness is unavailable."))?,
-            )
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| diagnostic("journey", "Harness must be an object."))?;
-        let settings = harness
-            .entry("settings")
-            .or_insert_with(|| Value::Object(Map::new()));
-        crate::settings::put(settings, pointer, value)
-    }
-
-    pub(super) fn put_native_field(
-        &mut self,
-        owner: NativeSettingOwner,
-        path: &str,
-        value: Option<Value>,
-    ) -> Result<(), Diagnostics> {
-        let root = match owner {
-            NativeSettingOwner::Workflow => harness_path(&self.values)
-                .ok_or_else(|| diagnostic("journey", "Harness is unavailable."))?,
-            NativeSettingOwner::Model(route) => format!(
-                "{}/{}",
-                routes_path(&self.values)
-                    .ok_or_else(|| diagnostic("journey", "Inference routes are unavailable."))?,
-                route
-            ),
-        };
-        let owner_object = self
-            .values
-            .pointer_mut(&root)
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| diagnostic("journey", "The native setting owner is unavailable."))?;
-        let settings = if owner == NativeSettingOwner::Workflow {
-            owner_object
-                .entry("config")
-                .or_insert_with(|| Value::Object(Map::new()))
-                .as_object_mut()
-                .ok_or_else(|| diagnostic("journey", "Harness config must be an object."))?
-                .entry("workflow")
-                .or_insert_with(|| Value::Object(Map::new()))
-        } else {
-            owner_object
-                .entry("overrides")
-                .or_insert_with(|| Value::Object(Map::new()))
-                .as_object_mut()
-                .ok_or_else(|| diagnostic("journey", "Route overrides must be an object."))?
-                .entry("settings")
-                .or_insert_with(|| Value::Object(Map::new()))
-        };
-        crate::settings::put(settings, path, value)
-    }
-
     pub(super) fn put_sdk_field(
         &mut self,
         pointer: &str,

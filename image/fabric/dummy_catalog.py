@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Publish the reference dummy image's catalog without Fabric.
 
-Production images record Fabric's discovery result. The dummy has no Fabric to
-discover with, so it publishes its one explicit descriptor in the same catalog
-form, letting deployments select it like any installed adapter.
+Production images record the adapters their build declared. The dummy
+records its one reference adapter in the same catalog form, letting
+deployments select it like any installed adapter.
 """
 
 import json
@@ -21,24 +21,15 @@ def snapshot(root=ROOT):
     # Not provenance.json: the host reports that file's revision as the Fabric
     # that validated a configuration, and Fabric validates nothing here.
     contract = json.loads((root / "contract.json").read_text())
-    descriptor_path = root / "dummy.fabric-adapter.json"
-    adapters = [
-        {
-            "descriptor": json.loads(descriptor_path.read_text()),
-            "provenance": [
-                {"source": "explicit_local", "path": str(descriptor_path), "root": str(root)}
-            ],
-        }
-    ]
+    adapter_id = json.loads((root / "dummy.fabric-adapter.json").read_text())["adapter_id"]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         # The Fabric revision whose adapter contract the descriptor follows.
         "fabric_revision": contract["fabric_revision"],
         "source_sha256": contract["source_sha256"],
         "bridge": capabilities(HEALTH_CHECKS),
-        "adapters": adapters,
-        "targets": [],
-        "runtime": read_runtime(root / "runtime.json", adapters, required=True),
+        "adapters": [{"adapter_id": adapter_id}],
+        "runtime": read_runtime(root / "runtime.json", {adapter_id: []}, required=True),
     }
 
 

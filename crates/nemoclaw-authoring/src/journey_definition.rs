@@ -14,7 +14,6 @@ use crate::{
 
 pub(crate) const NAME: &str = "/metadata/name";
 pub(crate) const HARNESS: &str = "/spec/sandboxes/0/harness/kind";
-pub(crate) const SETTINGS: &str = "/spec/sandboxes/0/harness/settings";
 pub(crate) const INFERENCE_PRESET: &str = "inference:preset";
 
 /// A schema-discovered family of applicable questions. The schema determines
@@ -22,8 +21,6 @@ pub(crate) const INFERENCE_PRESET: &str = "inference:preset";
 /// supplied values in that family.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum JourneyScope {
-    ActiveAdapterSettings,
-    NativeSettings,
     RouteModels,
     InferenceApi,
     DeploymentFields,
@@ -133,8 +130,8 @@ impl JourneyDefinition {
     }
 
     /// Start mutable resolution over the sparse v1 single-sandbox envelope.
-    pub fn start(&self, capabilities: &Capabilities) -> Result<crate::JourneyState, Diagnostics> {
-        self.validate_guidance(capabilities)?;
+    pub fn start(&self) -> Result<crate::JourneyState, Diagnostics> {
+        self.validate_guidance()?;
         if !self
             .base
             .supplied()
@@ -150,7 +147,7 @@ impl JourneyDefinition {
         crate::JourneyState::new(self.clone())
     }
 
-    pub(crate) fn validate_guidance(&self, capabilities: &Capabilities) -> Result<(), Diagnostics> {
+    pub(crate) fn validate_guidance(&self) -> Result<(), Diagnostics> {
         if let Some(field) = self.ask.intersection(&self.omit).next() {
             return Err(diagnostic(
                 "journey",
@@ -163,11 +160,7 @@ impl JourneyDefinition {
                 &format!("scope {scope:?} cannot be both asked and omitted"),
             ));
         }
-        if let Some(scope) = self
-            .omit_scopes
-            .iter()
-            .find(|scope| **scope != JourneyScope::ActiveAdapterSettings)
-        {
+        if let Some(scope) = self.omit_scopes.iter().next() {
             return Err(diagnostic(
                 "journey",
                 &format!("scope {scope:?} cannot be omitted in this preview"),
@@ -182,16 +175,10 @@ impl JourneyDefinition {
             {
                 continue;
             }
-            if native_field(field) {
-                continue;
-            }
-            let Some((adapter, _)) = adapter_field(field) else {
-                return Err(diagnostic(
-                    "journey",
-                    &format!("cannot ask '{field}' in this preview"),
-                ));
-            };
-            adapter_schema(capabilities, adapter)?;
+            return Err(diagnostic(
+                "journey",
+                &format!("cannot ask '{field}' in this preview"),
+            ));
         }
         for field in &self.omit {
             if field.starts_with('/') {
@@ -216,39 +203,10 @@ impl JourneyDefinition {
                 }
                 continue;
             }
-            if native_field(field) {
-                continue;
-            }
-            let Some((adapter, pointer)) = adapter_field(field) else {
-                return Err(diagnostic(
-                    "journey",
-                    &format!("cannot omit '{field}' in this preview"),
-                ));
-            };
-            if pointer.is_empty() {
-                return Err(diagnostic(
-                    "journey",
-                    "required adapter settings alternatives cannot be omitted",
-                ));
-            }
-            if self
-                .base
-                .supplied()
-                .pointer(HARNESS)
-                .and_then(Value::as_str)
-                == Some(adapter)
-                && self
-                    .base
-                    .supplied()
-                    .pointer(&format!("{SETTINGS}{pointer}"))
-                    .is_some()
-            {
-                return Err(diagnostic(
-                    "journey",
-                    &format!("supplied setting '{field}' cannot be omitted"),
-                ));
-            }
-            adapter_schema(capabilities, adapter)?;
+            return Err(diagnostic(
+                "journey",
+                &format!("cannot omit '{field}' in this preview"),
+            ));
         }
         Ok(())
     }
@@ -257,38 +215,4 @@ impl JourneyDefinition {
     pub fn print_tree(&self, capabilities: &Capabilities) -> Result<String, Diagnostics> {
         crate::journey_tree::print_tree(self, capabilities)
     }
-}
-
-pub(crate) fn adapter_schema<'a>(
-    capabilities: &'a Capabilities,
-    adapter: &str,
-) -> Result<Option<&'a Value>, Diagnostics> {
-    let Some(alternatives) = capabilities.schemas.get(adapter) else {
-        return Ok(None);
-    };
-    let Some((_, schema)) = alternatives.first() else {
-        return Ok(None);
-    };
-    if alternatives.iter().any(|(_, other)| other != schema) {
-        return Err(diagnostic(
-            "journey",
-            &format!("adapter '{adapter}' has ambiguous setting schemas"),
-        ));
-    }
-    Ok(Some(schema))
-}
-
-pub(crate) fn adapter_field(field: &str) -> Option<(&str, &str)> {
-    let suffix = field.strip_prefix("adapter:")?;
-    let (adapter, path) = suffix.split_once(':')?;
-    (!adapter.is_empty() && (path.is_empty() || path.starts_with('/'))).then_some((adapter, path))
-}
-
-pub(crate) fn native_field(field: &str) -> bool {
-    field == "workflow:/target_id"
-        || field == "workflow:/settings"
-        || field.starts_with("workflow:/settings/")
-        || field
-            .strip_prefix("model:/")
-            .is_some_and(|path| !path.is_empty())
 }

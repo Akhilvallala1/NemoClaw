@@ -44,32 +44,12 @@ fn printed_tree_identifies_its_sdk_schema_and_exact_fabric_catalog() {
 }
 
 #[test]
-fn configured_native_questions_appear_in_the_same_definition_tree() {
-    let base =
-        PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    let definition = JourneyDefinition::new("native", base).ask([JourneyScope::NativeSettings]);
-    let capabilities = Capabilities::available();
-    let state = definition.start(&capabilities).unwrap();
-    let resolution = state.resolve(&capabilities).unwrap();
-    let question = resolution
-        .questions()
-        .iter()
-        .find(|question| question.id().starts_with("model:"))
-        .expect("native model question");
-    let tree = definition.print_tree(&capabilities).unwrap();
-    assert!(tree.contains(question.id()), "{tree}");
-}
-
-#[test]
 fn minimum_values_preview_shows_harness_branches_and_optional_omission() {
     let base = PartialDocument::from_yaml(
         b"apiVersion: nemoclaw.nvidia.com/v1alpha1\nkind: NemoClawConfig\nspec:\n  sandboxes:\n    - {}\n",
     )
     .unwrap();
-    let journey = JourneyDefinition::new("minimum-values", base)
-        .ask(["/metadata/name"])
-        .omit(["adapter:nvidia.fabric.openclaw:/cli"]);
+    let journey = JourneyDefinition::new("minimum-values", base).ask(["/metadata/name"]);
     let tree = journey.print_tree(&Capabilities::available()).unwrap();
 
     assert!(tree.contains("/metadata/name"));
@@ -85,7 +65,6 @@ fn minimum_values_preview_shows_harness_branches_and_optional_omission() {
         "{tree}"
     );
     assert!(tree.contains("nvidia.fabric.openclaw"));
-    assert!(tree.contains("/cli: omitted"));
     assert!(tree.contains("Other unresolved SDK constraints"));
 }
 
@@ -94,13 +73,7 @@ fn supplied_document_with_explicit_optional_omissions_has_no_preview_questions()
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    let journey = JourneyDefinition::new("express", base).omit([
-        "adapter:nvidia.fabric.openclaw:/agent_name",
-        "adapter:nvidia.fabric.openclaw:/cli",
-        "adapter:nvidia.fabric.openclaw:/home",
-        "adapter:nvidia.fabric.openclaw:/native_config",
-        "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-    ]);
+    let journey = JourneyDefinition::new("express", base);
     let tree = journey.print_tree(&Capabilities::available()).unwrap();
 
     assert!(tree.contains("No configuration questions"), "{tree}");
@@ -163,68 +136,6 @@ fn inference_preset_preview_shows_custom_endpoint_branch() {
 }
 
 #[test]
-fn preview_does_not_print_supplied_native_setting_values() {
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    base.pointer_mut("/spec/sandboxes/0/harness")
-        .unwrap()
-        .as_object_mut()
-        .unwrap()
-        .insert(
-            "settings".into(),
-            serde_json::json!({"cli":"SECRET_SENTINEL"}),
-        );
-    let base = PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap();
-    let journey =
-        JourneyDefinition::new("secret-safe", base).ask(["adapter:nvidia.fabric.openclaw:/cli"]);
-    let tree = journey.print_tree(&Capabilities::available()).unwrap();
-
-    assert!(tree.contains("/cli"));
-    assert!(!tree.contains("SECRET_SENTINEL"));
-}
-
-#[test]
-fn omission_is_scoped_to_its_adapter() {
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    let harness = base.pointer_mut("/spec/sandboxes/0/harness").unwrap();
-    harness["kind"] = serde_json::json!("nvidia.fabric.hermes");
-    harness["settings"] = serde_json::json!({"cli": "from-other-adapter"});
-    let base = PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap();
-    let journey =
-        JourneyDefinition::new("adapter-scope", base).omit(["adapter:nvidia.fabric.openclaw:/cli"]);
-
-    let tree = journey.print_tree(&Capabilities::available()).unwrap();
-    assert!(!tree.contains("/cli: omitted"));
-}
-
-#[test]
-fn unreachable_adapter_guidance_is_warned_about_without_rejecting_the_journey() {
-    let base =
-        PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    let journey = JourneyDefinition::new("fixed-openclaw", base)
-        .ask(["adapter:nvidia.fabric.hermes:/mode"])
-        .omit(["adapter:nvidia.fabric.hermes:/api_mode"]);
-
-    let tree = journey.print_tree(&Capabilities::available()).unwrap();
-    assert!(
-        tree.contains("Warning: adapter:nvidia.fabric.hermes:/mode"),
-        "{tree}"
-    );
-    assert!(
-        tree.contains("Warning: adapter:nvidia.fabric.hermes:/api_mode"),
-        "{tree}"
-    );
-    assert!(
-        tree.contains("not reachable from selected harness"),
-        "{tree}"
-    );
-}
-
-#[test]
 fn invalid_supplied_name_remains_visible_in_the_preview() {
     let mut base: serde_json::Value =
         serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
@@ -254,43 +165,6 @@ fn invalid_supplied_sdk_leaf_is_visible_without_printing_its_value() {
 }
 
 #[test]
-fn harness_without_a_fabric_schema_does_not_claim_zero_questions() {
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    base["spec"]["sandboxes"][0]["harness"]["kind"] =
-        serde_json::json!("nvidia.fabric.unsupported");
-    let base = PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap();
-    let journey = JourneyDefinition::new("invalid-harness", base);
-
-    let tree = journey.print_tree(&Capabilities::available()).unwrap();
-    assert!(tree.contains("adapter schema unverified"), "{tree}");
-    assert!(!tree.contains("No configuration questions"), "{tree}");
-}
-
-#[test]
-fn invalid_fabric_setting_is_labeled_without_printing_its_value() {
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    base["spec"]["sandboxes"][0]["harness"]["settings"] = serde_json::json!({"cli": 42});
-    let base = PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap();
-
-    let tree = JourneyDefinition::new("invalid-setting", base)
-        .print_tree(&Capabilities::available())
-        .unwrap();
-    assert!(tree.contains("/cli: [omit | <string>]"), "{tree}");
-    assert!(tree.contains("invalid supplied value"), "{tree}");
-    // Schema and catalog digests can contain the digits by chance.
-    assert!(
-        tree.lines()
-            .filter(|line| !line.contains("sha256:"))
-            .all(|line| !line.contains("42")),
-        "{tree}"
-    );
-}
-
-#[test]
 fn tree_branches_on_finite_sdk_choices_from_the_resolver() {
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
@@ -298,11 +172,7 @@ fn tree_branches_on_finite_sdk_choices_from_the_resolver() {
     let definition =
         JourneyDefinition::new("api-choices", base).ask(["/spec/inferenceProviders/0/api"]);
     let capabilities = Capabilities::available();
-    let resolution = definition
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
+    let resolution = definition.start().unwrap().resolve(&capabilities).unwrap();
     let question = resolution
         .question("/spec/inferenceProviders/0/api")
         .unwrap();

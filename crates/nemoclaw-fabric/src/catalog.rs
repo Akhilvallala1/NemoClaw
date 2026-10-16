@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Fabric descriptor metadata, without importing adapters or starting runtimes.
+//! What an agent image provides for Fabric: the adapters its build installed,
+//! their runtime layout, and the Fabric revision it packages. The image build
+//! records these facts itself; NemoClaw doesn't read Fabric's descriptors.
 
 use nemoclaw_openshell::runtime::ImageRuntime;
 use serde::{Deserialize, Serialize};
@@ -10,14 +12,15 @@ use std::path::PathBuf;
 
 pub const IMAGE_CATALOG_LABEL: &str = "io.nemoclaw.fabric.catalog";
 
-/// Source-matched metadata. Bundled records describe possible adapters, not
-/// evidence that an adapter is installed or executable on a selected target.
+/// Image metadata. The bundled catalog lists the adapters NemoClaw builds
+/// images for; it is not evidence that an adapter is installed or executable on
+/// a selected target.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricCatalog {
     pub schema_version: u32,
-    /// The Fabric revision the descriptors come from. The reference dummy
-    /// image has no Fabric; it records the revision whose adapter contract its
-    /// explicit descriptor follows. Planning requires the SDK's pinned revision.
+    /// The Fabric revision the image packages. The reference dummy image has no
+    /// Fabric; it records the revision whose adapter contract it follows.
+    /// Compatibility checks require the SDK's pinned revision.
     pub fabric_revision: String,
     /// That revision's source archive checksum. The reference image records
     /// it without containing the archive.
@@ -26,19 +29,17 @@ pub struct FabricCatalog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge: Option<BridgeCapabilities>,
     pub adapters: Vec<FabricAdapter>,
-    #[serde(default)]
-    pub targets: Vec<serde_json::Value>,
-    /// Absolute paths an adapter reads in this image, keyed by adapter ID.
-    /// The image build records its own layout here and leaves Fabric's
-    /// descriptors unedited; the bundled snapshot describes no image.
+    /// Absolute paths an adapter reads in this image, keyed by adapter ID, as
+    /// the image build records its own layout. The bundled catalog describes
+    /// no image.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub runtime_files: BTreeMap<String, Vec<PathBuf>>,
-    /// Present only for an installed image, never inferred from the bundled descriptors.
+    /// Present only for an installed image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Box<ImageRuntime>>,
 }
 
-/// Image-owned bridge metadata, separate from Fabric adapter descriptors.
+/// Image-owned bridge metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BridgeCapabilities {
@@ -72,13 +73,13 @@ impl BridgeCapabilities {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FabricAdapter {
-    pub descriptor: serde_json::Value,
-    pub provenance: serde_json::Value,
+    pub adapter_id: String,
 }
 impl FabricAdapter {
     pub fn adapter_id(&self) -> &str {
-        self.descriptor["adapter_id"].as_str().unwrap_or_default()
+        &self.adapter_id
     }
 }
 
@@ -88,7 +89,7 @@ impl FabricCatalog {
             .expect("generated Fabric catalog must be valid")
     }
 
-    /// The records of one adapter: what an agent using it is planned against.
+    /// The records of one adapter: what an agent using it is checked against.
     pub fn for_adapter(&self, adapter_id: &str) -> Self {
         let mut catalog = self.clone();
         catalog
@@ -106,33 +107,23 @@ impl FabricCatalog {
         let valid_digest = |value: &str, len| {
             value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
         };
-        if catalog.schema_version != 2
+        let unique: std::collections::BTreeSet<&str> = catalog
+            .adapters
+            .iter()
+            .map(FabricAdapter::adapter_id)
+            .collect();
+        if catalog.schema_version != 3
             || !valid_digest(&catalog.fabric_revision, 40)
             || !valid_digest(&catalog.source_sha256, 64)
-            || catalog.adapters.iter().any(|adapter| {
-                adapter.descriptor["contract_version"] != nemo_fabric_core::ADAPTER_CONTRACT_VERSION
-                    || serde_json::from_value::<nemo_fabric_core::ResolvedAdapterDescriptor>(
-                        serde_json::to_value(adapter).expect("serializable descriptor"),
-                    )
-                    .is_err()
-            })
-            || catalog.targets.iter().any(|target| {
-                target["descriptor"]["contract_version"]
-                    != nemo_fabric_core::ADAPTER_CONTRACT_VERSION
-                    || serde_json::from_value::<nemo_fabric_core::ResolvedAdapterTargetDescriptor>(
-                        target.clone(),
-                    )
-                    .is_err()
-            })
+            || unique.len() != catalog.adapters.len()
+            // Identifiers are Fabric's and opaque here: present and unique.
+            || unique.contains("")
             || catalog
                 .runtime
                 .as_ref()
                 .is_some_and(|runtime| !valid_for(runtime, &catalog.adapters))
             || catalog.runtime_files.iter().any(|(adapter_id, files)| {
-                !catalog
-                    .adapters
-                    .iter()
-                    .any(|adapter| adapter.adapter_id() == adapter_id)
+                !unique.contains(adapter_id.as_str())
                     || files.iter().any(|file| {
                         !file.to_str().is_some_and(|path| {
                             path.starts_with('/') && !path.split('/').any(|part| part == "..")
@@ -188,23 +179,39 @@ mod tests {
         );
     }
 
+    /// The bundled catalog lists the adapters of the harnesses in
+    /// docker-bake.hcl, and nothing from Fabric's descriptors.
     #[test]
-    fn bundled_catalog_keeps_only_canonical_descriptor_records() {
+    fn bundled_catalog_lists_the_adapters_nemoclaw_builds() {
         let catalog = FabricCatalog::bundled();
-        assert!(!catalog.adapters.is_empty());
-        for adapter in catalog.adapters {
-            assert!(!adapter.adapter_id().is_empty());
-            assert!(
-                adapter
-                    .provenance
-                    .as_array()
-                    .is_some_and(|items| !items.is_empty())
-            );
+        let ids: Vec<&str> = catalog
+            .adapters
+            .iter()
+            .map(FabricAdapter::adapter_id)
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "nvidia.fabric.claude",
+                "nvidia.fabric.codex",
+                "nvidia.fabric.hermes",
+                "nvidia.fabric.langchain.deepagents",
+                "nvidia.fabric.mini-swe-agent",
+                "nvidia.fabric.nooa",
+                "nvidia.fabric.nooa.bench-agent",
+                "nvidia.fabric.openclaw",
+                "nvidia.fabric.pi",
+                "nvidia.fabric.remote-agent",
+            ]
+        );
+        let bake = include_str!("../../../docker-bake.hcl");
+        for id in ids {
+            assert!(bake.contains(&format!("\"{id}\"")), "{id} is built");
         }
     }
 
     #[test]
-    fn image_runtime_layout_survives_discovery_without_sdk_path_defaults() {
+    fn image_runtime_layout_survives_without_sdk_path_defaults() {
         let mut encoded = serde_json::to_value(FabricCatalog::bundled()).unwrap();
         let binaries: BTreeMap<_, _> = encoded["adapters"]
             .as_array()
@@ -212,10 +219,7 @@ mod tests {
             .iter()
             .map(|record| {
                 (
-                    record["descriptor"]["adapter_id"]
-                        .as_str()
-                        .unwrap()
-                        .to_owned(),
+                    record["adapter_id"].as_str().unwrap().to_owned(),
                     vec!["/srv/python3.99", "/srv/bun"],
                 )
             })
@@ -251,12 +255,21 @@ mod tests {
 
     #[test]
     fn malformed_image_metadata_is_not_an_empty_capability_list() {
-        let mut catalog = FabricCatalog::bundled();
-        catalog.schema_version = 99;
-        assert!(FabricCatalog::from_json(&serde_json::to_string(&catalog).unwrap()).is_err());
-        catalog.schema_version = 2;
-        catalog.adapters[0].descriptor["contract_version"] = "substituted".into();
-        assert!(FabricCatalog::from_json(&serde_json::to_string(&catalog).unwrap()).is_err());
+        let catalog = FabricCatalog::bundled();
+        let encoded = |catalog: &FabricCatalog| serde_json::to_string(catalog).unwrap();
+        let mut old = catalog.clone();
+        old.schema_version = 2;
+        assert!(FabricCatalog::from_json(&encoded(&old)).is_err());
+        let mut empty = catalog.clone();
+        empty.adapters[0].adapter_id = String::new();
+        assert!(FabricCatalog::from_json(&encoded(&empty)).is_err());
+        let mut duplicated = catalog.clone();
+        duplicated.adapters.push(duplicated.adapters[0].clone());
+        assert!(FabricCatalog::from_json(&encoded(&duplicated)).is_err());
+        // Earlier catalogs carried Fabric's descriptor records.
+        let mut descriptor = serde_json::to_value(&catalog).unwrap();
+        descriptor["adapters"][0]["descriptor"] = serde_json::json!({});
+        assert!(FabricCatalog::from_json(&descriptor.to_string()).is_err());
     }
 
     #[test]

@@ -54,11 +54,7 @@ impl QuestionResolver<'_> {
         }
 
         for field in &self.definition.ask {
-            if field == NAME
-                || field == HARNESS
-                || field == INFERENCE_PRESET
-                || adapter_field(field).is_some()
-            {
+            if field == NAME || field == HARNESS || field == INFERENCE_PRESET {
                 continue;
             }
             if self.decisions.omitted.contains(field) {

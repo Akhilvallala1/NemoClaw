@@ -9,18 +9,18 @@ fn supplied() -> Value {
     serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml")).unwrap()
 }
 
-fn start(values: Value, capabilities: &Capabilities) -> nemoclaw_authoring::JourneyState {
+fn start(values: Value) -> nemoclaw_authoring::JourneyState {
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     JourneyDefinition::new("boundaries", base)
         .ask([JourneyScope::RouteModels])
-        .start(capabilities)
+        .start()
         .unwrap()
 }
 
 #[test]
 fn supplied_hosted_defaults_remain_an_sdk_valid_isolated_document() {
     let capabilities = Capabilities::available();
-    let state = start(supplied(), &capabilities);
+    let state = start(supplied());
     let document = state
         .resolve(&capabilities)
         .unwrap()
@@ -47,7 +47,7 @@ fn explicit_custom_provider_identity_survives_an_unrelated_model_answer() {
     values["spec"]["inferenceProviders"][0]["credential"]["env"] = json!("PRIVATE_MODEL_TOKEN");
     values["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["providerRef"] =
         json!("my-private-service");
-    let mut state = start(values, &capabilities);
+    let mut state = start(values);
     let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
     state
         .answer(&capabilities, model, Some(json!("custom/new-model")))
@@ -88,7 +88,7 @@ fn supplied_automation_values_survive_a_journey_without_reprojection() {
     values["spec"]["inferenceProviders"][0]["credential"]["env"] = json!("AUTOMATED_API_KEY");
     values["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["providerRef"] =
         json!("automated-provider");
-    let state = start(values, &capabilities);
+    let state = start(values);
     let document = state
         .resolve(&capabilities)
         .unwrap()
@@ -118,7 +118,7 @@ fn a_complete_multi_sandbox_document_parses_but_is_outside_the_v1_journey_envelo
     assert_eq!(partial.assess().document(), Some(&expected));
     assert!(
         JourneyDefinition::new("single-sandbox", partial)
-            .start(&Capabilities::available())
+            .start()
             .is_err()
     );
 }
@@ -129,7 +129,7 @@ fn every_advertised_harness_preserves_the_isolated_network_boundary() {
     for harness in capabilities.harnesses() {
         let mut values = supplied();
         values["spec"]["sandboxes"][0]["harness"]["kind"] = json!(harness.as_str());
-        let state = start(values, &capabilities);
+        let state = start(values);
         let document = state
             .resolve(&capabilities)
             .unwrap()
@@ -151,7 +151,7 @@ fn a_missing_fabric_catalog_does_not_rewrite_supplied_harness_intent() {
     let capabilities = Capabilities::from_harnesses([]);
     let mut values = supplied();
     values["spec"]["sandboxes"][0]["harness"]["kind"] = json!("nvidia.fabric.claude");
-    let state = start(values, &capabilities);
+    let state = start(values);
     let resolution = state.resolve(&capabilities).unwrap();
     assert_eq!(
         state.values().pointer("/spec/sandboxes/0/harness/kind"),
@@ -169,7 +169,7 @@ fn unsupported_protocol_answer_is_rejected_without_mutating_the_document() {
             .unwrap();
     let mut state = JourneyDefinition::new("protocol", base)
         .ask([JourneyScope::InferenceApi])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let before = state.values().clone();
     assert!(

@@ -16,19 +16,13 @@ fn express() -> JourneyDefinition {
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    JourneyDefinition::new("express", base).omit([
-        "adapter:nvidia.fabric.openclaw:/agent_name",
-        "adapter:nvidia.fabric.openclaw:/cli",
-        "adapter:nvidia.fabric.openclaw:/home",
-        "adapter:nvidia.fabric.openclaw:/native_config",
-        "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-    ])
+    JourneyDefinition::new("express", base)
 }
 
 #[test]
 fn required_target_compatibility_stays_unverified_without_current_observations() {
     let capabilities = Capabilities::available();
-    let ordinary = express().start(&capabilities).unwrap();
+    let ordinary = express().start().unwrap();
     assert!(
         ordinary
             .resolve(&capabilities)
@@ -40,7 +34,7 @@ fn required_target_compatibility_stays_unverified_without_current_observations()
     let definition = express().require_target([TargetPrerequisite::EngineAndImageCompatible]);
     let tree = definition.print_tree(&capabilities).unwrap();
     assert!(tree.contains("Target prerequisite: Unverified"), "{tree}");
-    let state = definition.start(&capabilities).unwrap();
+    let state = definition.start().unwrap();
     let unresolved = state.resolve(&capabilities).unwrap();
     assert!(unresolved.materialized_document().is_some());
     assert!(unresolved.ready_document().is_none());
@@ -68,7 +62,7 @@ fn required_target_compatibility_stays_unverified_without_current_observations()
 #[test]
 fn observed_target_conflict_blocks_ready_document_without_an_explicit_prerequisite() {
     let capabilities = Capabilities::available();
-    let state = express().start(&capabilities).unwrap();
+    let state = express().start().unwrap();
     let plain = state.resolve(&capabilities).unwrap();
     let document = plain.materialized_document().unwrap();
     assert!(plain.ready_document().is_some());
@@ -91,10 +85,7 @@ fn observed_target_conflict_blocks_ready_document_without_an_explicit_prerequisi
 #[test]
 fn one_resolution_combines_model_suggestions_and_target_compatibility() {
     let capabilities = Capabilities::available();
-    let state = express()
-        .ask([JourneyScope::RouteModels])
-        .start(&capabilities)
-        .unwrap();
+    let state = express().ask([JourneyScope::RouteModels]).start().unwrap();
     let base = state.resolve(&capabilities).unwrap();
     let document = base.assessment().document().unwrap();
     let mut observations = crate::support::target_observations(

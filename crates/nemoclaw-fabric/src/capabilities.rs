@@ -73,7 +73,8 @@ fn overall(checks: &[CapabilityCheck]) -> Support {
 
 /// Whether an image can run a configuration's harness: its catalog matches
 /// NemoClaw's Fabric revision, it provides the selected adapter, and an
-/// explicit filesystem policy lets that adapter read its files. Whether the
+/// explicit filesystem policy lets that adapter read the image's runtime
+/// paths for it. Whether the
 /// harness accepts the configuration is Fabric's to decide, inside the sandbox
 /// when the agent is configured.
 pub fn assess_fabric(catalog: &FabricCatalog, request: &FabricRequirements) -> CompatibilityReport {
@@ -108,17 +109,7 @@ pub fn assess_fabric(catalog: &FabricCatalog, request: &FabricRequirements) -> C
         },
     });
     if let (Some(adapter), Some(grants)) = (adapter, &request.filesystem_read) {
-        // Fabric declares the adapter's own files; the image build declares
-        // where its layout installs the harness. The policy must allow both.
-        let adapter_files: Vec<std::path::PathBuf> = adapter
-            .descriptor
-            .pointer("/requirements/files")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(std::path::PathBuf::from)
-            .collect();
+        // The image build declares where its layout installs the harness.
         let image_files = catalog
             .runtime_files
             .get(adapter.adapter_id())
@@ -135,11 +126,7 @@ pub fn assess_fabric(catalog: &FabricCatalog, request: &FabricRequirements) -> C
                     .collect()
             })
             .unwrap_or_default();
-        for file in adapter_files
-            .iter()
-            .chain(image_files)
-            .chain(runtime_paths.iter())
-        {
+        for file in image_files.chain(runtime_paths.iter()) {
             let allowed = file
                 .to_str()
                 .is_some_and(|path| nemoclaw_openshell::runtime::path_is_granted(path, grants));

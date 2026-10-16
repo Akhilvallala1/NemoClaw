@@ -15,10 +15,9 @@ fn example(name: &str) -> PartialDocument {
 }
 
 fn journey(name: &str) -> nemoclaw_authoring::JourneyState {
-    let capabilities = Capabilities::available();
     JourneyDefinition::new(name, example(name))
         .ask([JourneyScope::DeploymentFields])
-        .start(&capabilities)
+        .start()
         .unwrap()
 }
 
@@ -36,7 +35,7 @@ fn supplied_deployment_field_is_asked_before_unrelated_required_answers() {
     let base = PartialDocument::from_yaml(supplied.to_string().as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("sparse-deployment", base)
         .ask([JourneyScope::DeploymentFields])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let path = "/spec/gateway/endpoint";
     let resolution = state.resolve(&capabilities).unwrap();
@@ -66,7 +65,7 @@ fn unknown_supplied_deployment_field_can_be_removed() {
     let base = PartialDocument::from_yaml(supplied.to_string().as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("unknown-deployment-field", base)
         .ask([JourneyScope::DeploymentFields])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let path = "/spec/gateway/enginee";
     let question = state
@@ -179,7 +178,7 @@ fn optional_supplied_deployment_field_can_be_omitted_through_the_shared_question
     let base = PartialDocument::from_yaml(supplied.to_string().as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("optional-deployment", base)
         .ask([JourneyScope::DeploymentFields])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let path = "/spec/gateway/imagePullPolicy";
     let resolution = state.resolve(&capabilities).unwrap();
@@ -254,7 +253,7 @@ fn single_sandbox_examples_offer_existing_sdk_values_without_changing_them() {
         let base = PartialDocument::from_yaml(&bytes).unwrap();
         let mut state = JourneyDefinition::new("example", base)
             .ask([JourneyScope::DeploymentFields])
-            .start(&capabilities)
+            .start()
             .unwrap();
         let before = serde_json::to_value(&document).unwrap();
         let resolution = state.resolve(&capabilities).unwrap();
@@ -306,7 +305,7 @@ fn reference_scoped_execution_questions_follow_the_selected_harness_only() {
         PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap(),
     )
     .ask([JourneyScope::DeploymentFields])
-    .start(&capabilities)
+    .start()
     .unwrap();
     assert!(
         state
@@ -328,7 +327,7 @@ fn reference_scoped_execution_questions_follow_the_selected_harness_only() {
         PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap(),
     )
     .ask([JourneyScope::DeploymentFields])
-    .start(&capabilities)
+    .start()
     .unwrap();
     assert!(
         state

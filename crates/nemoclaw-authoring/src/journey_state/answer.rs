@@ -125,26 +125,6 @@ impl JourneyState {
                 .expect("advertised preset");
                 candidate.put_inference_preset(preset)?;
             }
-            QuestionTarget::AdapterSetting { adapter, pointer } => {
-                if harness_kind(&candidate.authored.values) != Some(adapter.as_str()) {
-                    return Err(diagnostic("journey", "This adapter setting is not active."));
-                }
-                candidate.authored.put_setting(pointer, value.clone())?;
-            }
-            QuestionTarget::WorkflowSetting { pointer } => {
-                candidate.authored.put_native_field(
-                    NativeSettingOwner::Workflow,
-                    pointer,
-                    value.clone(),
-                )?;
-            }
-            QuestionTarget::ModelSetting { route, pointer } => {
-                candidate.authored.put_native_field(
-                    NativeSettingOwner::Model(*route),
-                    pointer,
-                    value.clone(),
-                )?;
-            }
             QuestionTarget::SdkField { path, role } => {
                 let previous = candidate.authored.values.pointer(path).cloned();
                 let provider_for_dependency = if matches!(
@@ -256,27 +236,6 @@ impl JourneyState {
                     .remove("kind");
                 value
             }
-            QuestionTarget::AdapterSetting { adapter, pointer } => {
-                if harness_kind(&previous.authored.values) != Some(adapter.as_str()) {
-                    return Err(diagnostic(
-                        "journey",
-                        "This question is no longer applicable.",
-                    ));
-                }
-                let value = previous
-                    .authored
-                    .values
-                    .pointer(&format!(
-                        "{}{pointer}",
-                        settings_path(&previous.authored.values).ok_or_else(|| diagnostic(
-                            "journey",
-                            "Harness settings are unavailable."
-                        ))?
-                    ))
-                    .cloned();
-                previous.authored.put_setting(pointer, None)?;
-                value
-            }
             QuestionTarget::InferencePreset { .. } => self
                 .current_preset()
                 .map(|preset| Value::String(preset.id().into())),
@@ -292,25 +251,6 @@ impl JourneyState {
                     .authored
                     .put_sdk_field(&format!("{path}/{}", escape_pointer(&selected)), None)?;
                 Some(Value::String(selected))
-            }
-            QuestionTarget::WorkflowSetting { .. } => {
-                previous.definition.ask.insert(id.into());
-                native_value(
-                    &previous.authored.values,
-                    previous.position.selected_route,
-                    id,
-                )
-                .cloned()
-            }
-            QuestionTarget::ModelSetting { .. } => {
-                let route = previous.position.selected_route.ok_or_else(|| {
-                    diagnostic("journey", "Select a route before model settings.")
-                })?;
-                let key = (route, id.to_owned());
-                previous.decisions.accepted_model_settings.remove(&key);
-                previous.decisions.omitted_model_settings.remove(&key);
-                previous.definition.ask.insert(id.into());
-                native_value(&previous.authored.values, Some(route), id).cloned()
             }
             QuestionTarget::SdkField { path, .. }
                 if sdk_field_schema_for(&self.authored.values, path).is_some()

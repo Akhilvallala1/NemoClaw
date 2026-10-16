@@ -91,6 +91,10 @@ ENV PYTHONPATH=/opt/nemoclaw ADAPTER_PYTHON=/opt/fabric/bin/python
 RUN /opt/fabric/bin/python /opt/nemoclaw/bridge_contract.py > /opt/nemoclaw/bridge.json
 
 FROM runtime-base AS generic
+ARG ADAPTER_ID
+# catalog.py publishes the adapters each harness stage declares here.
+RUN test -n "$ADAPTER_ID" \
+    && printf '{"%s": {"files": [], "binaries": []}}\n' "$ADAPTER_ID" > /opt/nemoclaw/adapters.json
 USER node
 
 FROM runtime-base AS interactive
@@ -103,8 +107,9 @@ COPY --from=openclaw-upstream --chown=0:0 /app /app
 RUN ln -s /app/openclaw.mjs /usr/local/bin/openclaw
 ADD --chown=node:node --checksum=sha256:2b403a4b2d2be7a793235a458e2d376f38588fd913f41b92e208e8421a2a1617 https://registry.npmjs.org/@openclaw/brave-plugin/-/brave-plugin-2026.9.4.tgz /tmp/brave.tgz
 ADD --chown=node:node --checksum=sha256:9b250b5ed8660247947701c4df3fb8b1c6b32fd7e30b7a186c7ae763e30c29e8 https://registry.npmjs.org/@openclaw/tavily-plugin/-/tavily-plugin-2026.9.4.tgz /tmp/tavily.tgz
-# catalog.py records this layout so planning checks explicit filesystem grants.
-RUN printf '%s\n' '{"nvidia.fabric.openclaw": ["/app"]}' > /opt/nemoclaw/runtime-files.json
+# catalog.py publishes this declaration: the files the adapter reads, which
+# explicit filesystem grants must allow, and the executables it runs.
+RUN printf '%s\n' '{"nvidia.fabric.openclaw": {"files": ["/app"], "binaries": ["node"]}}' > /opt/nemoclaw/adapters.json
 USER node
 # Native installation owns extraction and peer dependencies; package its output
 # in OpenClaw's bundled-plugin directory so each runtime discovers it naturally.
@@ -148,7 +153,7 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     uv pip install --python /opt/fabric/bin/python --offline --no-deps --no-build-isolation -e /opt/hermes --config-settings editable_mode=compat
 COPY --from=common-wheels /src/fabric/adapters/python/hermes/src/nemo_fabric_adapters/hermes/plugins/tavily/ /opt/hermes/plugins/web/tavily/
 ENV HERMES_DISABLE_LAZY_INSTALLS=1
-RUN printf '%s\n' '{"nvidia.fabric.hermes": ["/opt/hermes"]}' > /opt/nemoclaw/runtime-files.json
+RUN printf '%s\n' '{"nvidia.fabric.hermes": {"files": ["/opt/hermes"], "binaries": []}}' > /opt/nemoclaw/adapters.json
 USER node
 
 FROM common-wheels AS pi-build
@@ -181,7 +186,7 @@ COPY --from=pi-build /opt/pi /opt/fabric-source
 RUN mkdir -p /opt/fabric/share/nemo-fabric/adapters/pi \
     && ln -s /opt/fabric-source/adapters/typescript/pi/pi.fabric-adapter.json \
         /opt/fabric/share/nemo-fabric/adapters/pi/pi.fabric-adapter.json \
-    && printf '%s\n' '{"nvidia.fabric.pi": ["/opt/fabric-source"]}' > /opt/nemoclaw/runtime-files.json
+    && printf '%s\n' '{"nvidia.fabric.pi": {"files": ["/opt/fabric-source"], "binaries": ["node"]}}' > /opt/nemoclaw/adapters.json
 USER node
 
 FROM base AS lint

@@ -31,7 +31,7 @@ pub async fn author(
         return Err(Error::Cancelled.into());
     }
     let capabilities = Capabilities::available();
-    let state = load_journey(source, &capabilities)?;
+    let state = load_journey(source)?;
     if output.try_exists()? {
         return Err("output already exists; choose a new path with --output".into());
     }
@@ -48,10 +48,7 @@ pub async fn author(
     Ok(true)
 }
 
-fn load_journey(
-    source: Source<'_>,
-    capabilities: &Capabilities,
-) -> Result<JourneyState, Box<dyn std::error::Error>> {
+fn load_journey(source: Source<'_>) -> Result<JourneyState, Box<dyn std::error::Error>> {
     let bytes = match source {
         Source::Defaults => include_bytes!("../../../examples/onboarding/openclaw.yaml").to_vec(),
         Source::Template(path) => read_template(path)?,
@@ -77,10 +74,8 @@ fn load_journey(
         ])
         .ask([JourneyScope::InferenceApi])
         .ask([JourneyScope::RouteModels])
-        .ask([JourneyScope::ActiveAdapterSettings])
-        .ask([JourneyScope::NativeSettings])
         .ask([JourneyScope::DeploymentFields])
-        .start(capabilities)
+        .start()
         .map_err(Into::into)
 }
 
@@ -116,7 +111,7 @@ mod tests {
     #[test]
     fn default_source_starts_a_sparse_journey_with_existing_questions() {
         let capabilities = Capabilities::available();
-        let journey = load_journey(Source::Defaults, &capabilities).unwrap();
+        let journey = load_journey(Source::Defaults).unwrap();
         let resolution = journey.resolve(&capabilities).unwrap();
         assert!(resolution.question("/metadata/name").is_some());
         assert!(resolution.question("inference:preset").is_some());
@@ -130,7 +125,7 @@ mod tests {
     #[test]
     fn tui_accepts_a_resolved_question_through_journey_state() {
         let capabilities = Capabilities::available();
-        let state = load_journey(Source::Defaults, &capabilities).unwrap();
+        let state = load_journey(Source::Defaults).unwrap();
         let mut wizard = tui::JourneyWizard::new(capabilities, state);
         assert_eq!(wizard.question().unwrap().unwrap().id(), "/metadata/name");
         wizard
@@ -148,9 +143,8 @@ mod tests {
         let path = directory.path().join("template.yaml");
         let original = include_bytes!("../../../examples/onboarding/openclaw.yaml");
         std::fs::write(&path, original).unwrap();
-        let capabilities = Capabilities::available();
-        let first = load_journey(Source::Template(&path), &capabilities).unwrap();
-        let second = load_journey(Source::Template(&path), &capabilities).unwrap();
+        let first = load_journey(Source::Template(&path)).unwrap();
+        let second = load_journey(Source::Template(&path)).unwrap();
         let mut first_values = first.values().clone();
         let first_uid = first_values.pointer("/metadata/uid").cloned().unwrap();
         let second_uid = second.values().pointer("/metadata/uid").cloned().unwrap();
@@ -180,12 +174,12 @@ mod tests {
             .push(second);
         let yaml = serde_json::to_vec(&values).unwrap();
         std::fs::write(&path, &yaml).unwrap();
-        assert!(load_journey(Source::Template(&path), &Capabilities::available()).is_err());
+        assert!(load_journey(Source::Template(&path)).is_err());
         assert_eq!(std::fs::read(path).unwrap(), yaml);
     }
 
     #[test]
-    fn unknown_adapter_template_keeps_authored_settings_and_reports_unverified_schema() {
+    fn unknown_adapter_template_keeps_authored_settings_and_reports_it_unlisted() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("unknown.yaml");
         let mut values: serde_json::Value =
@@ -197,7 +191,7 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_vec(&values).unwrap()).unwrap();
         let capabilities = Capabilities::available();
-        let journey = load_journey(Source::Template(&path), &capabilities).unwrap();
+        let journey = load_journey(Source::Template(&path)).unwrap();
         assert_eq!(
             journey
                 .values()
@@ -209,7 +203,7 @@ mod tests {
             resolution
                 .unverified()
                 .iter()
-                .any(|reason| reason.contains("adapter schema"))
+                .any(|reason| reason.contains("is not in the current Fabric catalog"))
         );
         assert!(resolution.materialized_document().is_none());
     }
@@ -229,10 +223,9 @@ mod tests {
 
     #[test]
     fn bundled_template_is_supported_by_the_questionnaire() {
-        let capabilities = Capabilities::available();
         let template =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/onboarding/openclaw.yaml");
-        let state = load_journey(Source::Template(&template), &capabilities).unwrap();
+        let state = load_journey(Source::Template(&template)).unwrap();
         assert_eq!(
             state
                 .values()

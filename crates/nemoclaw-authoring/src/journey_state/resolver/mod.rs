@@ -4,10 +4,9 @@
 use super::*;
 use schema_questions::collect_required_leaf_questions;
 
-mod adapter_questions;
 mod deployment_questions;
+mod harness_question;
 mod inference_questions;
-mod native_questions;
 mod policy;
 mod schema_questions;
 mod sdk_questions;
@@ -46,7 +45,7 @@ impl<'a> QuestionResolver<'a> {
 
     pub(super) fn resolve(&self) -> Result<JourneyResolution, Diagnostics> {
         let capabilities = self.capabilities;
-        self.definition.validate_guidance(capabilities)?;
+        self.definition.validate_guidance()?;
         for field in &self.definition.omit {
             if field.starts_with('/')
                 && sdk_field_schema_for(&self.authored.values, field)
@@ -63,13 +62,7 @@ impl<'a> QuestionResolver<'a> {
         let policy = QuestionPolicy::new(self);
         self.collect_sdk_questions(&assessment, &policy, &mut work);
         self.collect_inference_questions(&policy, &mut work);
-        self.collect_adapter_questions(capabilities, &mut work)?;
-        let native_guidance = self
-            .definition
-            .ask_scopes
-            .contains(&JourneyScope::NativeSettings)
-            || self.definition.ask.iter().any(|field| native_field(field))
-            || self.definition.omit.iter().any(|field| native_field(field));
+        self.collect_harness_question(capabilities, &mut work);
         let inspect_values = assessment
             .document()
             .map(serde_json::to_value)
@@ -77,13 +70,6 @@ impl<'a> QuestionResolver<'a> {
             .map_err(|_| diagnostic("journey", "Cannot read deployment configuration."))?;
         let inspect_values = inspect_values.as_ref().unwrap_or(&self.authored.values);
         self.collect_deployment_questions(inspect_values, &mut work)?;
-        self.collect_native_questions(
-            inspect_values,
-            assessment.document(),
-            capabilities,
-            native_guidance,
-            &mut work,
-        )?;
 
         policy.apply(&self.authored.values, &mut work);
         Ok(self.resolution(work, assessment))

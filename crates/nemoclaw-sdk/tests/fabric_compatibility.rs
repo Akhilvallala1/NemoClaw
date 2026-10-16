@@ -5,17 +5,12 @@ use serde_json::json;
 
 fn catalog() -> FabricCatalog {
     FabricCatalog {
-        schema_version: 2,
+        schema_version: 3,
         fabric_revision: FabricCatalog::bundled().fabric_revision,
         source_sha256: "b".repeat(64),
         bridge: None,
-        targets: Vec::new(),
         adapters: vec![FabricAdapter {
-            provenance: json!([{"source":"explicit_local","path":"/image/fixture.fabric-adapter.json","root":"/image"}]),
-            descriptor: json!({"contract_version":"fabric.adapter/v1alpha2","adapter_id":"org.fixture.new-adapter","adapter_kind":"python","runner":{"module":"never_imported"},
-            "settings_schema":{"type":"object","required":["mode"],"properties":{"mode":{"enum":["simple","advanced"]},"budget":{"type":"integer","minimum":1,"maximum":8}},"if":{"properties":{"mode":{"const":"advanced"}}},"then":{"required":["budget"]}},
-            "model_schema":{"type":"object","properties":{"provider":{"const":"openai"},"model":{"pattern":"^fixture-"}},"required":["provider","model"]},
-            "config":{"accepts":["models"]}}),
+            adapter_id: "org.fixture.new-adapter".into(),
         }],
         runtime_files: Default::default(),
         runtime: None,

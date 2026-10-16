@@ -77,7 +77,7 @@ fn suggested_runtime(host: &RecordedHost, template: &str) -> Option<Value> {
     let base = PartialDocument::from_yaml(yaml.as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("runtime", base)
         .ask([RUNTIME])
-        .start(&capabilities)
+        .start()
         .unwrap();
     state.use_local_engines(&host.candidates, &host.observations);
     state

@@ -5,7 +5,7 @@
 
 NemoClaw owns deployment resources, credential routing, isolation policy, and the lifecycle of the agent runtime.
 Fabric owns adapter identifiers, descriptors, native configuration schemas, and native process behavior.
-Use the descriptor installed in the selected image to establish what that adapter accepts.
+Fabric's documentation for the adapter describes what it accepts, and Fabric validates the configuration when the agent is configured.
 An SDK parser accepting a field does not establish native support.
 
 ## Configure the Harness

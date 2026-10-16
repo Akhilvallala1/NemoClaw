@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::{
     Capabilities, Diagnostics, JourneyDefinition, JourneyQuestionReason, JourneyState,
-    PartialIssueKind, journey_definition::adapter_field, sdk_schema::sdk_schema_identity,
+    PartialIssueKind, sdk_schema::sdk_schema_identity,
 };
 
 const MAX_CHOICES: usize = 32;
@@ -22,7 +22,7 @@ pub(crate) fn print_tree(
     definition: &JourneyDefinition,
     capabilities: &Capabilities,
 ) -> Result<String, Diagnostics> {
-    let state = definition.start(capabilities)?;
+    let state = definition.start()?;
     let mut lines = vec![
         format!("Journey {}", definition.id),
         format!("  SDK schema: {}", sdk_schema_identity()),
@@ -248,7 +248,7 @@ impl TreePrinter<'_> {
 }
 
 fn display_id(id: &str) -> &str {
-    adapter_field(id).map_or(id, |(_, pointer)| pointer)
+    id
 }
 
 fn choice_label(question_id: &str, choice: &Value, index: usize) -> String {

@@ -345,7 +345,7 @@ fn renaming_the_target_keeps_it_compatible() {
     let base = PartialDocument::from_yaml(original.yaml().unwrap().as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("rename", base)
         .ask(["/metadata/name"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     state
         .answer(

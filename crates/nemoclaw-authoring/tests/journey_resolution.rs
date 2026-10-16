@@ -6,7 +6,6 @@ use nemoclaw_authoring::{
     JourneyScope, PartialDocument,
 };
 use nemoclaw_sdk::discovery::DiscoveryObservations;
-use nemoclaw_sdk::fabric_catalog::FabricCatalog;
 use serde_json::json;
 
 fn minimum() -> PartialDocument {
@@ -20,7 +19,7 @@ fn minimum() -> PartialDocument {
 fn empty_sandbox_asks_for_harness_form_before_inline_harness_kind() {
     let capabilities = Capabilities::available();
     let mut inline = JourneyDefinition::new("inline-form", minimum())
-        .start(&capabilities)
+        .start()
         .unwrap();
     let form = "form:/spec/sandboxes/0";
     let initial = inline.resolve(&capabilities).unwrap();
@@ -45,7 +44,7 @@ fn empty_sandbox_asks_for_harness_form_before_inline_harness_kind() {
     );
 
     let mut referenced = JourneyDefinition::new("reference-form", minimum())
-        .start(&capabilities)
+        .start()
         .unwrap();
     referenced
         .answer(&capabilities, form, Some(json!("harnessRef")))
@@ -73,15 +72,8 @@ fn omitted_optional_sdk_field_stays_absent_even_when_its_scope_is_asked() {
     let path = "/spec/inferenceProviders/0/api";
     let state = JourneyDefinition::new("omit-sdk-api", base)
         .ask([JourneyScope::InferenceApi])
-        .omit([
-            path,
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
+        .omit([path])
+        .start()
         .unwrap();
 
     let resolution = state.resolve(&capabilities).unwrap();
@@ -107,7 +99,7 @@ fn exact_and_scope_guidance_share_one_inference_api_question() {
     let mut state = JourneyDefinition::new("same-api-decision", base)
         .ask([path])
         .ask([JourneyScope::InferenceApi])
-        .start(&capabilities)
+        .start()
         .unwrap();
 
     let resolution = state.resolve(&capabilities).unwrap();
@@ -142,7 +134,7 @@ fn exact_and_scope_guidance_keep_route_model_question_kind() {
     let state = JourneyDefinition::new("same-model-decision", base)
         .ask([path])
         .ask([JourneyScope::RouteModels])
-        .start(&capabilities)
+        .start()
         .unwrap();
 
     let resolution = state.resolve(&capabilities).unwrap();
@@ -164,7 +156,7 @@ fn asked_inference_api_precedes_route_model_in_question_order() {
             .unwrap();
     let mut state = JourneyDefinition::new("api-before-model", base)
         .ask([JourneyScope::InferenceApi, JourneyScope::RouteModels])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let api_path = "/spec/inferenceProviders/0/api";
     let model_path = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
@@ -189,92 +181,19 @@ fn asked_inference_api_precedes_route_model_in_question_order() {
 
 #[test]
 fn omit_guidance_rejects_required_or_supplied_sdk_fields() {
-    let capabilities = Capabilities::available();
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     assert!(
         JourneyDefinition::new("required", base.clone())
             .omit(["/metadata/name"])
-            .start(&capabilities)
+            .start()
             .is_err()
     );
     assert!(
         JourneyDefinition::new("supplied", base)
             .omit(["/spec/inferenceProviders/0/api"])
-            .start(&capabilities)
-            .is_err()
-    );
-}
-
-#[test]
-fn adapter_settings_scope_omit_leaves_absent_optional_settings_unset_for_any_harness() {
-    let capabilities = Capabilities::available();
-    let base =
-        PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    let resolution = JourneyDefinition::new("express", base.clone())
-        .omit([JourneyScope::ActiveAdapterSettings])
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
-    assert!(
-        resolution.questions().is_empty(),
-        "{:?}",
-        resolution.questions()
-    );
-    assert!(
-        resolution
-            .omitted()
-            .contains(&"adapter:nvidia.fabric.openclaw:/cli".to_owned())
-    );
-
-    let mut hermes = base.supplied().clone();
-    hermes["spec"]["sandboxes"][0]["harness"]["kind"] = json!("nvidia.fabric.hermes");
-    let hermes = PartialDocument::from_yaml(hermes.to_string().as_bytes()).unwrap();
-    let resolution = JourneyDefinition::new("express-hermes", hermes)
-        .omit([JourneyScope::ActiveAdapterSettings])
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
-    assert!(
-        resolution
-            .questions()
-            .iter()
-            .all(|question| !question.id().starts_with("adapter:")),
-        "{:?}",
-        resolution.questions()
-    );
-
-    let resolution = JourneyDefinition::new("express-with-home", base.clone())
-        .omit([JourneyScope::ActiveAdapterSettings])
-        .ask(["adapter:nvidia.fabric.openclaw:/home"])
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
-    assert_eq!(
-        resolution
-            .questions()
-            .iter()
-            .map(|question| question.id())
-            .collect::<Vec<_>>(),
-        ["adapter:nvidia.fabric.openclaw:/home"]
-    );
-
-    assert!(
-        JourneyDefinition::new("contradictory", base.clone())
-            .ask([JourneyScope::ActiveAdapterSettings])
-            .omit([JourneyScope::ActiveAdapterSettings])
-            .start(&capabilities)
-            .is_err()
-    );
-    assert!(
-        JourneyDefinition::new("unsupported-scope", base)
-            .omit([JourneyScope::RouteModels])
-            .start(&capabilities)
+            .start()
             .is_err()
     );
 }
@@ -304,7 +223,7 @@ fn missing_required_sdk_leaf_values_become_questions_without_guidance() {
         .remove("model");
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("missing-leaves", base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     for (path, value) in [
         ("/metadata/name", "deployment"),
@@ -347,7 +266,7 @@ fn exclusive_sdk_forms_become_choices_then_ask_for_the_selected_field() {
         .remove("inference");
     let agent_base = PartialDocument::from_yaml(agent_values.to_string().as_bytes()).unwrap();
     let mut agent = JourneyDefinition::new("agent-form", agent_base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     let agent_form = "form:/spec/sandboxes/0/agent";
     let question = agent
@@ -405,7 +324,7 @@ fn exclusive_sdk_forms_become_choices_then_ask_for_the_selected_field() {
         .remove("providerRef");
     let route_base = PartialDocument::from_yaml(route_values.to_string().as_bytes()).unwrap();
     let mut route = JourneyDefinition::new("route-form", route_base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     let route_form = "form:/spec/sandboxes/0/agent/inference/routes/0";
     let question = route
@@ -442,7 +361,7 @@ fn missing_object_parent_exposes_its_unconditional_required_fields() {
         .remove("agent");
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("missing-agent", base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     let name = "/spec/sandboxes/0/agent/name";
     assert_eq!(
@@ -476,9 +395,7 @@ fn invalid_supplied_sdk_leaf_is_an_editable_question_without_guidance() {
             .unwrap();
     values["spec"]["sandboxes"][0]["name"] = json!("Bad Name");
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
-    let mut state = JourneyDefinition::new("repair", base)
-        .start(&capabilities)
-        .unwrap();
+    let mut state = JourneyDefinition::new("repair", base).start().unwrap();
     let path = "/spec/sandboxes/0/name";
     assert_eq!(
         state
@@ -511,7 +428,7 @@ fn invalid_optional_sdk_leaf_can_be_omitted_without_guidance() {
     values["spec"]["gateway"]["runtime"]["provider"] = json!("unsupported");
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("repair-optional", base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     let path = "/spec/gateway/runtime/provider";
     let question = state
@@ -534,391 +451,6 @@ fn invalid_optional_sdk_leaf_can_be_omitted_without_guidance() {
 }
 
 #[test]
-fn sparse_journey_follows_nested_fabric_conditionals() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture-schema-agent");
-    adapter.descriptor["settings_schema"] = json!({
-        "type":"object", "properties":{"mode":{"type":"string","enum":["basic","remote"],"default":"basic"}}, "required":["mode"],
-        "if":{"properties":{"mode":{"const":"remote"}},"required":["mode"]},
-        "then":{"properties":{"region":{"type":"string","enum":["west","east"]}},"required":["region"]}
-    });
-    catalog.adapters = vec![adapter];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    base["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture-schema-agent");
-    let mut state = JourneyDefinition::new(
-        "conditional",
-        PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap(),
-    )
-    .start(&capabilities)
-    .unwrap();
-    let mode = "adapter:fixture-schema-agent:/mode";
-    let region = "adapter:fixture-schema-agent:/region";
-    let mode_question = state
-        .resolve(&capabilities)
-        .unwrap()
-        .question(mode)
-        .cloned()
-        .unwrap();
-    assert_eq!(mode_question.suggestion(), Some(&json!("basic")));
-    assert_eq!(mode_question.choices(), &[json!("basic"), json!("remote")]);
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question(region)
-            .is_none()
-    );
-    state
-        .answer(&capabilities, mode, Some(json!("remote")))
-        .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question(region)
-            .is_some()
-    );
-    assert!(
-        state
-            .answer(&capabilities, region, Some(json!("invalid")))
-            .is_err()
-    );
-    state
-        .answer(&capabilities, region, Some(json!("west")))
-        .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .materialized_document()
-            .is_some()
-    );
-}
-
-#[test]
-fn nested_adapter_guidance_asks_omits_and_warns_from_the_active_schema() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture.nested-guidance");
-    adapter.descriptor["settings_schema"] = json!({
-        "type":"object",
-        "properties":{
-            "native":{
-                "type":"object",
-                "properties":{
-                    "region":{"type":"string","enum":["west","east"]},
-                    "flavor":{"type":"string"}
-                },
-                "required":["region"]
-            }
-        }
-    });
-    catalog.adapters = vec![adapter];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    base["spec"]["sandboxes"][0]["harness"] = json!({
-        "kind":"fixture.nested-guidance",
-        "settings":{"native":{"region":"west"}}
-    });
-    let state = JourneyDefinition::new(
-        "nested-guidance",
-        PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap(),
-    )
-    .ask([
-        "adapter:fixture.nested-guidance:/native/region",
-        "adapter:fixture.nested-guidance:/native/typo",
-    ])
-    .omit(["adapter:fixture.nested-guidance:/native/flavor"])
-    .start(&capabilities)
-    .unwrap();
-    let resolution = state.resolve(&capabilities).unwrap();
-    let region = resolution
-        .question("adapter:fixture.nested-guidance:/native/region")
-        .expect("supplied nested setting is asked");
-    assert_eq!(region.reason(), JourneyQuestionReason::ExplicitAsk);
-    assert_eq!(region.suggestion(), Some(&json!("west")));
-    assert!(
-        resolution
-            .omitted()
-            .contains(&"adapter:fixture.nested-guidance:/native/flavor".to_owned())
-    );
-    assert!(
-        resolution
-            .warnings()
-            .iter()
-            .any(|warning| warning.contains("adapter:fixture.nested-guidance:/native/typo"))
-    );
-
-    base["spec"]["sandboxes"][0]["harness"]["settings"]["native"] = json!({});
-    let required_omit = JourneyDefinition::new(
-        "required-nested-omit",
-        PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap(),
-    )
-    .omit(["adapter:fixture.nested-guidance:/native/region"])
-    .start(&capabilities)
-    .unwrap();
-    assert!(
-        required_omit
-            .resolve(&capabilities)
-            .unwrap_err()
-            .to_string()
-            .contains("required setting")
-    );
-}
-
-#[test]
-fn root_fabric_alternatives_are_answered_through_the_journey() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture-root-agent");
-    adapter.descriptor["settings_schema"] = json!({
-        "oneOf": [
-            {"type":"object", "properties":{"token":{"type":"string"}}, "required":["token"], "additionalProperties":false},
-            {"type":"object", "properties":{"port":{"type":"integer"}}, "required":["port"], "additionalProperties":false}
-        ]
-    });
-    catalog.adapters = vec![adapter];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    base["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture-root-agent");
-    base["spec"]["sandboxes"][0]["harness"]
-        .as_object_mut()
-        .unwrap()
-        .remove("settings");
-    let mut state = JourneyDefinition::new(
-        "root-alternatives",
-        PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap(),
-    )
-    .start(&capabilities)
-    .unwrap();
-
-    let root = "adapter:fixture-root-agent:";
-    let resolution = state.resolve(&capabilities).unwrap();
-    let question = resolution.question(root).expect("root settings question");
-    assert!(question.required());
-    assert_eq!(question.reason(), JourneyQuestionReason::Missing);
-    assert!(question.suggestion().is_none());
-    assert!(
-        state
-            .answer(&capabilities, root, Some(json!({"port":"bad"})))
-            .is_err()
-    );
-    state
-        .answer(&capabilities, root, Some(json!({"port":443})))
-        .unwrap();
-    assert_eq!(
-        state.values().pointer("/spec/sandboxes/0/harness/settings"),
-        Some(&json!({"port":443}))
-    );
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .materialized_document()
-            .is_some()
-    );
-
-    let supplied = PartialDocument::from_yaml(state.values().to_string().as_bytes()).unwrap();
-    let review = JourneyDefinition::new("review-root", supplied)
-        .ask([root])
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
-    let question = review
-        .question(root)
-        .expect("supplied root is deliberately asked");
-    assert_eq!(question.reason(), JourneyQuestionReason::ExplicitAsk);
-    assert_eq!(question.suggestion(), Some(&json!({"port":443})));
-}
-
-#[test]
-fn changed_adapter_schema_reopens_an_invalid_answer_without_rewriting_it() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture-schema-agent");
-    adapter.descriptor["settings_schema"] = json!({
-        "type":"object", "properties":{"mode":{"type":"string","enum":["basic"]}}, "required":["mode"]
-    });
-    catalog.adapters = vec![adapter.clone()];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut value: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    value["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture-schema-agent");
-    let base = PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap();
-    let mut state = JourneyDefinition::new("changed-descriptor", base)
-        .start(&capabilities)
-        .unwrap();
-    let field = "adapter:fixture-schema-agent:/mode";
-    state
-        .answer(&capabilities, field, Some(json!("basic")))
-        .unwrap();
-    let before = state.values().clone();
-    adapter.descriptor["settings_schema"] = json!({
-        "type":"object", "properties":{"mode":{"type":"string","enum":["revised"],"default":"revised"}}, "required":["mode"]
-    });
-    catalog.adapters = vec![adapter];
-    let changed = Capabilities::from_catalog(&catalog);
-    let question = state
-        .resolve(&changed)
-        .unwrap()
-        .question(field)
-        .cloned()
-        .unwrap();
-    assert_eq!(question.reason(), JourneyQuestionReason::InvalidSupplied);
-    assert_eq!(question.choices(), &[json!("revised")]);
-    assert_eq!(state.values(), &before);
-    state
-        .answer(&changed, field, Some(json!("revised")))
-        .unwrap();
-    assert_eq!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/harness/settings/mode"),
-        Some(&json!("revised"))
-    );
-}
-
-#[test]
-fn conflicting_adapter_descriptors_do_not_select_a_schema_by_catalog_order() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut first = catalog.adapters[0].clone();
-    first.descriptor["adapter_id"] = json!("fixture-schema-agent");
-    first.descriptor["settings_schema"] =
-        json!({"type":"object","properties":{"a":{"type":"string"}}});
-    let mut second = first.clone();
-    second.descriptor["settings_schema"] =
-        json!({"type":"object","properties":{"b":{"type":"boolean"}}});
-    catalog.adapters = vec![first, second];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut value: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    value["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture-schema-agent");
-    let base = PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap();
-    let state = JourneyDefinition::new("conflicting-descriptors", base)
-        .start(&capabilities)
-        .unwrap();
-    let error = state.resolve(&capabilities).unwrap_err();
-    assert!(
-        error.to_string().contains("ambiguous setting schemas"),
-        "{error}"
-    );
-}
-
-#[test]
-fn omitting_a_nested_optional_setting_does_not_create_its_parent_object() {
-    let mut catalog = FabricCatalog::bundled();
-    catalog.adapters.truncate(1);
-    catalog.adapters[0].descriptor["adapter_id"] = json!("test.optional-settings");
-    catalog.adapters[0].descriptor["settings_schema"] = json!({
-        "type":"object", "properties":{"native":{"type":"object", "properties":{"enabled":{"type":"boolean"}}}}
-    });
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut value: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    value["spec"]["sandboxes"][0]["harness"]["kind"] = json!("test.optional-settings");
-    let base = PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap();
-    let mut state = JourneyDefinition::new("nested-optional", base)
-        .start(&capabilities)
-        .unwrap();
-    let field = "adapter:test.optional-settings:/native";
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question(field)
-            .is_some()
-    );
-    state.answer(&capabilities, field, None).unwrap();
-    assert!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/harness/settings/native")
-            .is_none()
-    );
-}
-
-#[test]
-fn conditional_native_model_settings_survive_a_model_change_and_sdk_roundtrip() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture.model-owner");
-    adapter.descriptor["settings_schema"] = json!({"type":"object","properties":{}});
-    adapter.descriptor["model_schema"] = json!({
-        "type":"object","properties":{"settings":{"type":"object",
-            "properties":{"variant":{"type":"string","enum":["quick","thorough"],"default":"quick"}},
-            "required":["variant"],
-            "if":{"properties":{"variant":{"const":"thorough"}},"required":["variant"]},
-            "then":{"properties":{"budget":{"type":"integer","minimum":1}},"required":["budget"]}
-        }}
-    });
-    catalog.adapters = vec![adapter];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut value: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    value["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture.model-owner");
-    let base = PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap();
-    let mut state = JourneyDefinition::new("conditional-native", base)
-        .ask([JourneyScope::NativeSettings])
-        .ask([JourneyScope::RouteModels])
-        .start(&capabilities)
-        .unwrap();
-    let variant = "model:/variant";
-    let budget = "model:/budget";
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question(variant)
-            .is_some()
-    );
-    state
-        .answer(&capabilities, variant, Some(json!("thorough")))
-        .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question(budget)
-            .is_some()
-    );
-    assert!(state.answer(&capabilities, budget, Some(json!(0))).is_err());
-    state.answer(&capabilities, budget, Some(json!(3))).unwrap();
-    let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
-    state
-        .answer(&capabilities, model, Some(json!("different-model")))
-        .unwrap();
-    assert_eq!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/agent/inference/routes/0/overrides/settings"),
-        Some(&json!({"variant":"thorough","budget":3}))
-    );
-    let document = state
-        .resolve(&capabilities)
-        .unwrap()
-        .assessment()
-        .document()
-        .unwrap()
-        .clone();
-    let reopened =
-        nemoclaw_sdk::config::Document::parse(document.yaml().unwrap().as_bytes()).unwrap();
-    assert_eq!(reopened, document);
-}
-
-#[test]
 fn sparse_journey_asks_existing_deployment_fields_and_checks_complete_sdk_edits() {
     let capabilities = Capabilities::available();
     let base =
@@ -926,7 +458,7 @@ fn sparse_journey_asks_existing_deployment_fields_and_checks_complete_sdk_edits(
             .unwrap();
     let mut state = JourneyDefinition::new("deployment", base)
         .ask([JourneyScope::DeploymentFields])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let path = "/spec/services/qwen/serving/contextTokens";
     let resolution = state.resolve(&capabilities).unwrap();
@@ -948,300 +480,6 @@ fn sparse_journey_asks_existing_deployment_fields_and_checks_complete_sdk_edits(
 }
 
 #[test]
-fn sparse_journey_uses_workflow_and_model_owner_schemas() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture.native-owner");
-    adapter.descriptor["settings_schema"] = json!({"type":"object","properties":{}});
-    adapter.descriptor["config"]["schema"] = json!({"type":"object","required":["workflow"]});
-    adapter.descriptor["model_schema"] = json!({"type":"object","properties":{"settings":{"type":"object","properties":{"variant":{"type":"string","enum":["quick","thorough"]}},"required":["variant"]}}});
-    catalog.adapters = vec![adapter];
-    catalog.targets = vec![json!({"descriptor":{
-        "type":"workflow","id":"fixture.target","adapter_id":"fixture.native-owner",
-        "spec":{"settings_schema":{"type":"object","properties":{"region":{"type":"string","enum":["west","east"]}},"required":["region"]}}
-    },"provenance":[]})];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut partial: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("fixtures/minimum-inline.yaml")).unwrap();
-    partial["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture.native-owner");
-    let mut sparse = JourneyDefinition::new(
-        "sparse-native",
-        PartialDocument::from_yaml(partial.to_string().as_bytes()).unwrap(),
-    )
-    .ask([JourneyScope::NativeSettings])
-    .start(&capabilities)
-    .unwrap();
-    let pending = sparse.resolve(&capabilities).unwrap();
-    assert!(pending.assessment().document().is_none());
-    assert!(pending.question("workflow:/target_id").is_some());
-    sparse
-        .answer(
-            &capabilities,
-            "workflow:/target_id",
-            Some(json!("fixture.target")),
-        )
-        .unwrap();
-    assert!(
-        sparse
-            .resolve(&capabilities)
-            .unwrap()
-            .question("workflow:/settings/region")
-            .is_some()
-    );
-    sparse
-        .answer(
-            &capabilities,
-            "workflow:/settings/region",
-            Some(json!("west")),
-        )
-        .unwrap();
-    assert_eq!(
-        sparse
-            .values()
-            .pointer("/spec/sandboxes/0/harness/config/workflow/settings/region"),
-        Some(&json!("west"))
-    );
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    base["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture.native-owner");
-    let mut state = JourneyDefinition::new(
-        "native",
-        PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap(),
-    )
-    .ask([JourneyScope::NativeSettings])
-    .start(&capabilities)
-    .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question("workflow:/target_id")
-            .is_some()
-    );
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question("model:/variant")
-            .is_some()
-    );
-    state
-        .answer(
-            &capabilities,
-            "workflow:/target_id",
-            Some(json!("fixture.target")),
-        )
-        .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question("workflow:/settings/region")
-            .is_some()
-    );
-    state
-        .answer(
-            &capabilities,
-            "workflow:/settings/region",
-            Some(json!("west")),
-        )
-        .unwrap();
-    state
-        .answer(&capabilities, "model:/variant", Some(json!("quick")))
-        .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .materialized_document()
-            .is_some()
-    );
-}
-
-#[test]
-fn exact_native_guidance_uses_active_fabric_fields_without_asking_the_whole_scope() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture.exact-native");
-    adapter.descriptor["settings_schema"] = json!({"type":"object","properties":{}});
-    adapter.descriptor["config"]["schema"] = json!({"type":"object","required":["workflow"]});
-    adapter.descriptor["model_schema"] = json!({"type":"object","properties":{"settings":{"type":"object","properties":{
-        "variant":{"type":"string","enum":["quick","thorough"]},
-        "temperature":{"type":"number"}
-    }}}});
-    catalog.adapters = vec![adapter];
-    catalog.targets = vec![json!({"descriptor":{
-        "type":"workflow","id":"fixture.target","adapter_id":"fixture.exact-native",
-        "spec":{"settings_schema":{"type":"object","properties":{
-            "region":{"type":"string","enum":["west","east"]}
-        }}}
-    },"provenance":[]})];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut supplied: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    supplied["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture.exact-native");
-    let base = PartialDocument::from_yaml(supplied.to_string().as_bytes()).unwrap();
-    let mut state = JourneyDefinition::new("exact-native", base.clone())
-        .ask(["workflow:/target_id", "model:/variant"])
-        .omit(["workflow:/settings/region"])
-        .start(&capabilities)
-        .unwrap();
-
-    let first = state.resolve(&capabilities).unwrap();
-    assert!(first.question("workflow:/target_id").is_some());
-    assert!(first.question("model:/variant").is_some());
-    assert!(first.question("model:/temperature").is_none());
-    state
-        .answer(
-            &capabilities,
-            "workflow:/target_id",
-            Some(json!("fixture.target")),
-        )
-        .unwrap();
-    let next = state.resolve(&capabilities).unwrap();
-    assert!(next.question("workflow:/settings/region").is_none());
-    assert!(next.omitted().contains(&"workflow:/settings/region".into()));
-    state
-        .answer(&capabilities, "model:/variant", Some(json!("quick")))
-        .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question("model:/variant")
-            .is_none()
-    );
-
-    let mut with_supplied = supplied;
-    with_supplied["spec"]["sandboxes"][0]["agent"]["inference"]["routes"][0]["overrides"]["settings"] =
-        json!({"variant":"quick"});
-    let supplied_model = PartialDocument::from_yaml(with_supplied.to_string().as_bytes()).unwrap();
-    let invalid_omission = JourneyDefinition::new("supplied-model", supplied_model)
-        .omit(["model:/variant"])
-        .start(&capabilities)
-        .unwrap();
-    assert!(
-        invalid_omission
-            .resolve(&capabilities)
-            .unwrap_err()
-            .to_string()
-            .contains("supplied native setting")
-    );
-
-    let mut required_catalog = catalog;
-    required_catalog.targets[0]["descriptor"]["spec"]["settings_schema"]["required"] =
-        json!(["region"]);
-    let required_capabilities = Capabilities::from_catalog(&required_catalog);
-    let mut required_omission = JourneyDefinition::new("required-region", base.clone())
-        .ask(["workflow:/target_id"])
-        .omit(["workflow:/settings/region"])
-        .start(&required_capabilities)
-        .unwrap();
-    let before = required_omission.values().clone();
-    assert!(
-        required_omission
-            .answer(
-                &required_capabilities,
-                "workflow:/target_id",
-                Some(json!("fixture.target")),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("required native setting")
-    );
-    assert_eq!(required_omission.values(), &before);
-    assert!(required_omission.resolve(&required_capabilities).is_ok());
-    let unreachable = JourneyDefinition::new("future-native-field", base)
-        .ask(["model:/future_setting"])
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
-    assert!(unreachable.question("model:/future_setting").is_none());
-    assert!(
-        unreachable
-            .warnings()
-            .iter()
-            .any(|warning| warning.contains("model:/future_setting")),
-        "warnings={:?}",
-        unreachable.warnings()
-    );
-}
-
-#[test]
-fn invalid_complete_native_model_settings_cannot_reach_review() {
-    let capabilities = Capabilities::available();
-    let base =
-        PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    let mut state = JourneyDefinition::new("native-validation", base)
-        .ask([JourneyScope::NativeSettings])
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
-        .unwrap();
-    state
-        .answer(
-            &capabilities,
-            "model:/api",
-            Some(json!("openai-completions")),
-        )
-        .unwrap();
-    let result = state.resolve(&capabilities).unwrap();
-    assert!(
-        !result.unverified().is_empty(),
-        "invalid native model config must be reported"
-    );
-    assert!(result.materialized_document().is_none());
-}
-
-#[test]
-fn invalid_native_settings_block_review_without_native_prompt_guidance() {
-    let capabilities = Capabilities::available();
-    let base =
-        PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    let mut guided = JourneyDefinition::new("make-invalid-native", base)
-        .ask([JourneyScope::NativeSettings])
-        .start(&capabilities)
-        .unwrap();
-    guided
-        .answer(
-            &capabilities,
-            "model:/api",
-            Some(json!("openai-completions")),
-        )
-        .unwrap();
-    let invalid_base = PartialDocument::from_yaml(guided.values().to_string().as_bytes()).unwrap();
-    let resolution = JourneyDefinition::new("express-invalid-native", invalid_base)
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
-
-    assert!(resolution.assessment().document().is_some());
-    assert!(resolution.materialized_document().is_none());
-    assert!(
-        resolution.question("model:/api").is_some() || !resolution.unverified().is_empty(),
-        "invalid Fabric configuration must remain visible without prompt guidance"
-    );
-}
-
-#[test]
 fn discovered_models_extend_the_current_route_question_without_restricting_custom_answers() {
     use nemoclaw_authoring::inference_request_for_document;
     use nemoclaw_sdk::{
@@ -1254,7 +492,7 @@ fn discovered_models_extend_the_current_route_question_without_restricting_custo
             .unwrap();
     let mut state = JourneyDefinition::new("discovered", base)
         .ask([JourneyScope::RouteModels])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let document = state
         .resolve(&capabilities)
@@ -1299,7 +537,7 @@ fn discovered_models_extend_the_current_route_question_without_restricting_custo
             .unwrap(),
     )
     .ask(["inference:preset"])
-    .start(&capabilities)
+    .start()
     .unwrap()
     .resolve(&capabilities)
     .unwrap();
@@ -1355,7 +593,7 @@ fn runtime_question_uses_finite_sdk_schema_choices() {
             .unwrap();
     let state = JourneyDefinition::new("runtime", base)
         .ask(["/spec/gateway/runtime/provider"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let question = state
         .resolve(&capabilities)
@@ -1375,7 +613,7 @@ fn choosing_podman_updates_the_matching_managed_gateway_default() {
             .unwrap();
     let mut state = JourneyDefinition::new("runtime", base)
         .ask(["/spec/gateway/runtime/provider"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let podman = "unix:///run/user/501/podman/podman.sock";
     crate::support::found_local_engines(
@@ -1412,7 +650,7 @@ fn a_runtime_no_local_engine_answered_for_gets_no_guessed_engine() {
             .unwrap();
     let mut state = JourneyDefinition::new("runtime", base)
         .ask(["/spec/gateway/runtime/provider"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let docker = "unix:///home/me/.colima/docker.sock";
     crate::support::found_local_engines(&mut state, &[(docker, ComputeDriver::Docker)]);
@@ -1432,16 +670,13 @@ fn a_runtime_no_local_engine_answered_for_gets_no_guessed_engine() {
 }
 
 /// A journey whose machine was asked about its engines and answered only for Docker.
-fn docker_only_journey(
-    capabilities: &Capabilities,
-    ask: &[&str],
-) -> (nemoclaw_authoring::JourneyState, DiscoveryObservations) {
+fn docker_only_journey(ask: &[&str]) -> (nemoclaw_authoring::JourneyState, DiscoveryObservations) {
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     let mut state = JourneyDefinition::new("runtime", base)
         .ask(ask.iter().copied())
-        .start(capabilities)
+        .start()
         .unwrap();
     let observations = crate::support::found_local_engines(
         &mut state,
@@ -1468,8 +703,7 @@ fn first_target_reason(
 #[test]
 fn a_runtime_no_local_engine_answered_for_is_reported_first() {
     let capabilities = Capabilities::available();
-    let (mut state, observations) =
-        docker_only_journey(&capabilities, &["/spec/gateway/runtime/provider"]);
+    let (mut state, observations) = docker_only_journey(&["/spec/gateway/runtime/provider"]);
     state
         .answer(
             &capabilities,
@@ -1507,7 +741,7 @@ fn accepting_suggestions_never_points_a_runtime_without_a_local_engine_at_docker
     let capabilities = Capabilities::available();
     let engine = "/spec/gateway/engine";
     let (mut state, observations) =
-        docker_only_journey(&capabilities, &["/spec/gateway/runtime/provider", engine]);
+        docker_only_journey(&["/spec/gateway/runtime/provider", engine]);
     state
         .answer(
             &capabilities,
@@ -1533,7 +767,7 @@ fn a_machine_that_was_never_asked_keeps_the_default_engine_suggestion() {
             .unwrap();
     let state = JourneyDefinition::new("runtime", base)
         .ask(["/spec/gateway/engine"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     assert_eq!(
         state
@@ -1549,10 +783,8 @@ fn a_machine_that_was_never_asked_keeps_the_default_engine_suggestion() {
 #[test]
 fn an_explicit_gateway_engine_is_not_reported_as_missing() {
     let capabilities = Capabilities::available();
-    let (mut state, observations) = docker_only_journey(
-        &capabilities,
-        &["/spec/gateway/runtime/provider", "/spec/gateway/engine"],
-    );
+    let (mut state, observations) =
+        docker_only_journey(&["/spec/gateway/runtime/provider", "/spec/gateway/engine"]);
     state
         .answer(
             &capabilities,
@@ -1648,10 +880,8 @@ fn delegation_facts(capabilities: &Capabilities) -> DelegationFacts {
         ])
         .ask([JourneyScope::RouteModels])
         .ask([JourneyScope::InferenceApi])
-        .ask([JourneyScope::ActiveAdapterSettings])
-        .ask([JourneyScope::NativeSettings])
         .ask([JourneyScope::DeploymentFields])
-        .start(capabilities)
+        .start()
         .unwrap();
     state
         .answer(
@@ -1711,7 +941,7 @@ fn sparse_journey_delegation_requires_current_target_observations() {
             .unwrap();
     let mut state = JourneyDefinition::new("delegate", base)
         .ask(["/spec/sandboxes/0/harness/kind", "/metadata/name"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     state
         .answer(
@@ -1914,7 +1144,7 @@ fn delegation_is_refused_for_a_route_backed_by_a_managed_service() {
         .unwrap();
     let mut state = JourneyDefinition::new("delegate", base)
         .ask(["/spec/sandboxes/0/harness/kind"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     state
         .answer(
@@ -1953,7 +1183,7 @@ fn delegation_is_refused_before_a_harness_is_accepted() {
             .unwrap();
     let state = JourneyDefinition::new("delegate", base)
         .ask(["/spec/sandboxes/0/harness/kind"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let refusal = state
         .delegate_remaining(&capabilities, &facts.observations())
@@ -1973,14 +1203,7 @@ fn sparse_journey_visits_each_route_and_keeps_its_model_answers_separate() {
     .unwrap();
     let mut state = JourneyDefinition::new("routes", base)
         .ask([JourneyScope::RouteModels])
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let route = "route:selection";
     let hosted_model = "/spec/sandboxes/0/agent/inference/routes/1/overrides/model";
@@ -2053,7 +1276,7 @@ fn referenced_inference_routes_are_selected_and_edited_through_the_same_journey(
         PartialDocument::from_yaml(serde_json::to_vec(&document).unwrap().as_slice()).unwrap();
     let mut state = JourneyDefinition::new("referenced-routes", base)
         .ask([JourneyScope::RouteModels])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let path = "/spec/inferences/smart-and-fast/routes/1/overrides/model";
     let original = state.values().clone();
@@ -2117,45 +1340,6 @@ fn referenced_inference_routes_are_selected_and_edited_through_the_same_journey(
 }
 
 #[test]
-fn referenced_harness_settings_are_owned_by_the_referenced_definition() {
-    let capabilities = Capabilities::available();
-    let mut document = nemoclaw_sdk::config::Document::parse(
-        &include_bytes!("../../../examples/multiple-models.yaml")[..],
-    )
-    .unwrap();
-    document.spec.sandboxes.truncate(1);
-    let base =
-        PartialDocument::from_yaml(serde_json::to_vec(&document).unwrap().as_slice()).unwrap();
-    let mut state = JourneyDefinition::new("referenced-harness", base)
-        .ask([JourneyScope::ActiveAdapterSettings])
-        .start(&capabilities)
-        .unwrap();
-    let field = "adapter:nvidia.fabric.openclaw:/timeout_seconds";
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question(field)
-            .is_some()
-    );
-    state
-        .answer(&capabilities, field, Some(json!(301)))
-        .unwrap();
-    assert_eq!(
-        state
-            .values()
-            .pointer("/spec/harnesses/assistant/settings/timeout_seconds"),
-        Some(&json!(301))
-    );
-    assert!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/harness")
-            .is_none()
-    );
-}
-
-#[test]
 fn revisiting_a_referenced_harness_choice_does_not_create_an_inline_harness() {
     let capabilities = Capabilities::available();
     let mut document = nemoclaw_sdk::config::Document::parse(
@@ -2167,7 +1351,7 @@ fn revisiting_a_referenced_harness_choice_does_not_create_an_inline_harness() {
         PartialDocument::from_yaml(serde_json::to_vec(&document).unwrap().as_slice()).unwrap();
     let mut state = JourneyDefinition::new("referenced-harness-choice", base)
         .ask(["/spec/sandboxes/0/harness/kind"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let field = "/spec/sandboxes/0/harness/kind";
     state
@@ -2189,99 +1373,6 @@ fn revisiting_a_referenced_harness_choice_does_not_create_an_inline_harness() {
 }
 
 #[test]
-fn referenced_model_settings_are_written_to_the_selected_route() {
-    let capabilities = Capabilities::available();
-    let mut document = nemoclaw_sdk::config::Document::parse(
-        &include_bytes!("../../../examples/multiple-models.yaml")[..],
-    )
-    .unwrap();
-    document.spec.sandboxes.truncate(1);
-    let base =
-        PartialDocument::from_yaml(serde_json::to_vec(&document).unwrap().as_slice()).unwrap();
-    let mut state = JourneyDefinition::new("referenced-model", base)
-        .ask([JourneyScope::RouteModels])
-        .ask([JourneyScope::NativeSettings])
-        .start(&capabilities)
-        .unwrap();
-    state
-        .answer(&capabilities, "route:selection", Some(json!("fast")))
-        .unwrap();
-    let field = "model:/reasoning_effort";
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question(field)
-            .is_some()
-    );
-    state
-        .answer(&capabilities, field, Some(json!("low")))
-        .unwrap();
-    assert_eq!(
-        state.values().pointer(
-            "/spec/inferences/smart-and-fast/routes/1/overrides/settings/reasoning_effort"
-        ),
-        Some(&json!("low"))
-    );
-    assert!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/agent/inference")
-            .is_none()
-    );
-}
-
-#[test]
-fn referenced_workflow_answers_keep_the_named_harness_as_the_owner() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture.workflow-owner");
-    adapter.descriptor["settings_schema"] = json!({"type":"object","properties":{}});
-    adapter.descriptor["config"]["schema"] = json!({"type":"object","required":["workflow"]});
-    catalog.adapters = vec![adapter];
-    catalog.targets = vec![json!({"descriptor":{
-        "type":"workflow","id":"fixture.target","adapter_id":"fixture.workflow-owner",
-        "spec":{"settings_schema":{"type":"object","properties":{}}}
-    },"provenance":[]})];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut document = nemoclaw_sdk::config::Document::parse(
-        &include_bytes!("../../../examples/multiple-models.yaml")[..],
-    )
-    .unwrap();
-    document.spec.sandboxes.truncate(1);
-    let mut value = serde_json::to_value(&document).unwrap();
-    value["spec"]["harnesses"]["assistant"]["kind"] = json!("fixture.workflow-owner");
-    let base = PartialDocument::from_yaml(value.to_string().as_bytes()).unwrap();
-    let mut state = JourneyDefinition::new("referenced-workflow", base)
-        .ask([JourneyScope::NativeSettings])
-        .start(&capabilities)
-        .unwrap();
-    let field = "workflow:/target_id";
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question(field)
-            .is_some()
-    );
-    state
-        .answer(&capabilities, field, Some(json!("fixture.target")))
-        .unwrap();
-    assert_eq!(
-        state
-            .values()
-            .pointer("/spec/harnesses/assistant/config/workflow/target_id"),
-        Some(&json!("fixture.target"))
-    );
-    assert!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/harness")
-            .is_none()
-    );
-}
-
-#[test]
 fn omitting_an_implicit_api_keeps_the_sdk_default_without_writing_an_override() {
     let capabilities = Capabilities::available();
     let bytes = include_bytes!("../../../examples/explicit-policy.yaml");
@@ -2289,7 +1380,7 @@ fn omitting_an_implicit_api_keeps_the_sdk_default_without_writing_an_override() 
     let base = PartialDocument::from_yaml(bytes).unwrap();
     let mut state = JourneyDefinition::new("implicit-api", base)
         .ask([JourneyScope::InferenceApi])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let path = "/spec/inferenceProviders/0/api";
     let question = state
@@ -2314,33 +1405,6 @@ fn omitting_an_implicit_api_keeps_the_sdk_default_without_writing_an_override() 
 }
 
 #[test]
-fn absent_optional_adapter_settings_remain_unsupplied_until_answered() {
-    let capabilities = Capabilities::available();
-    let base = PartialDocument::from_yaml(include_bytes!("../../../examples/explicit-policy.yaml"))
-        .unwrap();
-    let mut state = JourneyDefinition::new("optional-adapter", base)
-        .ask([JourneyScope::ActiveAdapterSettings])
-        .start(&capabilities)
-        .unwrap();
-    let field = "adapter:nvidia.fabric.openclaw:/cli";
-    let question = state
-        .resolve(&capabilities)
-        .unwrap()
-        .question(field)
-        .cloned()
-        .unwrap();
-    assert!(!question.required());
-    assert!(question.suggestion().is_none());
-    state.answer(&capabilities, field, None).unwrap();
-    assert!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/harness/settings/cli")
-            .is_none()
-    );
-}
-
-#[test]
 fn editing_a_route_model_preserves_explicit_credential_references() {
     let capabilities = Capabilities::available();
     let yaml = include_str!("../../../examples/onboarding/openclaw.yaml")
@@ -2348,7 +1412,7 @@ fn editing_a_route_model_preserves_explicit_credential_references() {
     let base = PartialDocument::from_yaml(yaml.as_bytes()).unwrap();
     let mut state = JourneyDefinition::new("credential-reference", base)
         .ask([JourneyScope::RouteModels])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
     state
@@ -2377,7 +1441,7 @@ fn route_preset_changes_only_the_selected_external_provider() {
     let mut state = JourneyDefinition::new("route-presets", base)
         .ask([JourneyScope::RouteModels])
         .ask(["inference:preset"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let before = state.values().clone();
     assert!(
@@ -2443,18 +1507,13 @@ fn route_preset_changes_only_the_selected_external_provider() {
 fn partial_journey_recomputes_questions_after_answers_and_omissions() {
     let capabilities = Capabilities::available();
     let definition = JourneyDefinition::new("minimum", minimum());
-    let mut state = definition.start(&capabilities).unwrap();
+    let mut state = definition.start().unwrap();
     let questions = state.resolve(&capabilities).unwrap();
     assert!(questions.question("/metadata/name").is_some());
     assert!(questions.question("form:/spec/sandboxes/0").is_some());
     assert!(
         questions
             .question("/spec/sandboxes/0/harness/kind")
-            .is_none()
-    );
-    assert!(
-        questions
-            .question("adapter:nvidia.fabric.openclaw:/cli")
             .is_none()
     );
 
@@ -2483,25 +1542,9 @@ fn partial_journey_recomputes_questions_after_answers_and_omissions() {
     assert!(questions.question("/metadata/name").is_none());
     assert!(
         questions
-            .question("adapter:nvidia.fabric.openclaw:/cli")
-            .is_some()
-    );
-
-    state
-        .answer(&capabilities, "adapter:nvidia.fabric.openclaw:/cli", None)
-        .unwrap();
-    let questions = state.resolve(&capabilities).unwrap();
-    assert!(
-        questions
-            .question("adapter:nvidia.fabric.openclaw:/cli")
+            .question("/spec/sandboxes/0/harness/kind")
             .is_none()
     );
-    assert!(
-        questions
-            .omitted()
-            .contains(&"adapter:nvidia.fabric.openclaw:/cli".to_owned())
-    );
-    assert!(questions.assessment().document().is_none());
 }
 
 #[test]
@@ -2511,7 +1554,7 @@ fn accepting_a_supplied_suggestion_resolves_an_explicit_ask() {
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     let definition = JourneyDefinition::new("guided", base).ask(["/metadata/name"]);
-    let mut state = definition.start(&capabilities).unwrap();
+    let mut state = definition.start().unwrap();
     let suggested = state
         .resolve(&capabilities)
         .unwrap()
@@ -2554,14 +1597,8 @@ fn existing_onboarding_fields_resolve_and_materialize_without_a_draft() {
         "/spec/inferenceProviders/0/api",
         "/spec/sandboxes/0/agent/inference/routes/0/overrides/model",
     ];
-    let definition = JourneyDefinition::new("guided", base).ask(fields).omit([
-        "adapter:nvidia.fabric.openclaw:/agent_name",
-        "adapter:nvidia.fabric.openclaw:/cli",
-        "adapter:nvidia.fabric.openclaw:/home",
-        "adapter:nvidia.fabric.openclaw:/native_config",
-        "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-    ]);
-    let mut state = definition.start(&capabilities).unwrap();
+    let definition = JourneyDefinition::new("guided", base).ask(fields);
+    let mut state = definition.start().unwrap();
     assert!(
         state
             .resolve(&capabilities)
@@ -2648,14 +1685,7 @@ fn inference_preset_updates_sparse_values_and_reopens_dependent_answers() {
     let name = "/metadata/name";
     let mut state = JourneyDefinition::new("preset", base)
         .ask([name, preset, api, model, provider_name])
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
+        .start()
         .unwrap();
 
     assert_eq!(
@@ -2782,7 +1812,7 @@ fn compatible_inference_preset_requires_an_endpoint_answer() {
             "inference:preset",
             "/spec/sandboxes/0/agent/inference/routes/0/overrides/model",
         ])
-        .start(&capabilities)
+        .start()
         .unwrap();
     state
         .answer(
@@ -2859,7 +1889,7 @@ fn inference_dependencies_wait_for_preset_and_custom_endpoint() {
     let preset = "inference:preset";
     let mut state = JourneyDefinition::new("order", base)
         .ask([api, model, preset])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let before = state.resolve(&capabilities).unwrap();
     assert_eq!(before.next_question().unwrap().id(), preset);
@@ -2898,7 +1928,7 @@ fn changing_inference_api_reopens_the_accepted_model_but_keeps_identity() {
     let mut state = JourneyDefinition::new("api-dependency", base)
         .ask(["/metadata/name", "/spec/inferenceProviders/0/endpoint"])
         .ask([JourneyScope::InferenceApi, JourneyScope::RouteModels])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let name = "/metadata/name";
     let api = "/spec/inferenceProviders/0/api";
@@ -2968,7 +1998,7 @@ fn changing_the_second_provider_api_reopens_its_route_model() {
     let mut state = JourneyDefinition::new("second-provider-api", base)
         .ask([JourneyScope::RouteModels])
         .ask(["/spec/inferenceProviders/1/api"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let api = "/spec/inferenceProviders/1/api";
     let model = "/spec/sandboxes/0/agent/inference/routes/1/overrides/model";
@@ -3000,14 +2030,7 @@ fn optional_sdk_question_can_be_deliberately_omitted() {
             .unwrap();
     let mut state = JourneyDefinition::new("optional-api", base)
         .ask(["/spec/inferenceProviders/0/api"])
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let question = state
         .resolve(&capabilities)
@@ -3026,7 +2049,7 @@ fn optional_sdk_question_can_be_deliberately_omitted() {
 fn invalid_answer_does_not_mutate_a_sparse_journey() {
     let capabilities = Capabilities::available();
     let mut state = JourneyDefinition::new("minimum", minimum())
-        .start(&capabilities)
+        .start()
         .unwrap();
     assert!(
         state
@@ -3043,61 +2066,10 @@ fn invalid_answer_does_not_mutate_a_sparse_journey() {
 }
 
 #[test]
-fn switching_harness_reopens_the_active_adapter_without_losing_its_values() {
-    let capabilities = Capabilities::available();
-    let base =
-        PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    let definition = JourneyDefinition::new("switch", base).ask(["/spec/sandboxes/0/harness/kind"]);
-    let mut state = definition.start(&capabilities).unwrap();
-    state
-        .answer(
-            &capabilities,
-            "/spec/sandboxes/0/harness/kind",
-            Some(json!("nvidia.fabric.openclaw")),
-        )
-        .unwrap();
-    state
-        .answer(
-            &capabilities,
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            Some(json!("kept-agent")),
-        )
-        .unwrap();
-    state
-        .answer(
-            &capabilities,
-            "/spec/sandboxes/0/harness/kind",
-            Some(json!("nvidia.fabric.hermes")),
-        )
-        .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question("adapter:nvidia.fabric.hermes:/mode")
-            .is_some()
-    );
-    state
-        .answer(
-            &capabilities,
-            "/spec/sandboxes/0/harness/kind",
-            Some(json!("nvidia.fabric.openclaw")),
-        )
-        .unwrap();
-    assert_eq!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/harness/settings/agent_name"),
-        Some(&json!("kept-agent"))
-    );
-}
-
-#[test]
 fn accepted_answers_can_be_revisited_without_losing_other_values() {
     let capabilities = Capabilities::available();
     let mut state = JourneyDefinition::new("minimum", minimum())
-        .start(&capabilities)
+        .start()
         .unwrap();
     state
         .answer(&capabilities, "/metadata/name", Some(json!("first")))
@@ -3119,67 +2091,14 @@ fn accepted_answers_can_be_revisited_without_losing_other_values() {
             Some(json!("nvidia.fabric.openclaw")),
         )
         .unwrap();
-    state
-        .answer(
-            &capabilities,
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            Some(json!("alpha")),
-        )
-        .unwrap();
-    state
-        .answer(
-            &capabilities,
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            Some(json!("beta")),
-        )
-        .unwrap();
 
     assert_eq!(
         state.values().pointer("/metadata/name"),
         Some(&json!("second"))
     );
     assert_eq!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/harness/settings/agent_name"),
-        Some(&json!("beta"))
-    );
-}
-
-#[test]
-fn fabric_invalid_value_reopens_a_question_even_when_sdk_document_is_valid() {
-    let capabilities = Capabilities::available();
-    let mut base: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    base["spec"]["sandboxes"][0]["harness"]["settings"] = json!({"cli": 42});
-    let base = PartialDocument::from_yaml(base.to_string().as_bytes()).unwrap();
-    let mut state = JourneyDefinition::new("fabric-invalid", base)
-        .start(&capabilities)
-        .unwrap();
-    let resolved = state.resolve(&capabilities).unwrap();
-    assert!(resolved.assessment().document().is_some());
-    assert_eq!(
-        resolved
-            .question("adapter:nvidia.fabric.openclaw:/cli")
-            .unwrap()
-            .reason(),
-        JourneyQuestionReason::InvalidSupplied
-    );
-
-    state
-        .answer(
-            &capabilities,
-            "adapter:nvidia.fabric.openclaw:/cli",
-            Some(json!("openclaw")),
-        )
-        .unwrap();
-    assert!(
-        state
-            .resolve(&capabilities)
-            .unwrap()
-            .question("adapter:nvidia.fabric.openclaw:/cli")
-            .is_none()
+        state.values().pointer("/spec/sandboxes/0/harness/kind"),
+        Some(&json!("nvidia.fabric.openclaw"))
     );
 }
 
@@ -3189,45 +2108,12 @@ fn fully_supplied_express_definition_has_no_current_questions() {
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
-    let definition = JourneyDefinition::new("express", base).omit([
-        "adapter:nvidia.fabric.openclaw:/agent_name",
-        "adapter:nvidia.fabric.openclaw:/cli",
-        "adapter:nvidia.fabric.openclaw:/home",
-        "adapter:nvidia.fabric.openclaw:/native_config",
-        "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-    ]);
+    let definition = JourneyDefinition::new("express", base);
 
-    let resolved = definition
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
+    let resolved = definition.start().unwrap().resolve(&capabilities).unwrap();
     assert!(resolved.questions().is_empty());
     assert!(resolved.assessment().document().is_some());
     assert!(resolved.unverified().is_empty());
-}
-
-#[test]
-fn missing_catalog_schema_keeps_unreachable_guidance_as_a_warning() {
-    let capabilities = Capabilities::from_harnesses(["nvidia.fabric.openclaw".parse().unwrap()]);
-    let base =
-        PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    let definition =
-        JourneyDefinition::new("catalog-gap", base).ask(["adapter:nvidia.fabric.hermes:/mode"]);
-
-    let resolved = definition
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
-    assert!(
-        resolved
-            .warnings()
-            .iter()
-            .any(|warning| warning.contains("adapter:nvidia.fabric.hermes:/mode"))
-    );
-    assert!(!resolved.unverified().is_empty());
 }
 
 #[test]
@@ -3237,15 +2123,8 @@ fn supplied_template_can_finish_a_guided_journey_through_one_resolver() {
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
     let definition = JourneyDefinition::new("guided-complete", base)
-        .ask(["/metadata/name", "/spec/sandboxes/0/harness/kind"])
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ]);
-    let mut state = definition.start(&capabilities).unwrap();
+        .ask(["/metadata/name", "/spec/sandboxes/0/harness/kind"]);
+    let mut state = definition.start().unwrap();
     assert_eq!(state.resolve(&capabilities).unwrap().questions().len(), 2);
     assert!(
         state
@@ -3292,7 +2171,7 @@ fn supplied_template_can_finish_a_guided_journey_through_one_resolver() {
 fn absent_harness_catalog_cannot_silently_accept_an_unadvertised_choice() {
     let capabilities = Capabilities::from_harnesses([]);
     let mut state = JourneyDefinition::new("empty-catalog", minimum())
-        .start(&capabilities)
+        .start()
         .unwrap();
     let resolved = state.resolve(&capabilities).unwrap();
     assert!(resolved.question("form:/spec/sandboxes/0").is_some());
@@ -3328,9 +2207,7 @@ fn missing_gateway_asks_for_the_schema_discriminator() {
     )
     .unwrap();
     let capabilities = Capabilities::available();
-    let mut journey = JourneyDefinition::new("gateway", base)
-        .start(&capabilities)
-        .unwrap();
+    let mut journey = JourneyDefinition::new("gateway", base).start().unwrap();
     let question = journey
         .resolve(&capabilities)
         .unwrap()
@@ -3364,14 +2241,7 @@ fn external_gateway_choice_reveals_its_required_endpoint() {
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     let capabilities = Capabilities::available();
     let mut journey = JourneyDefinition::new("external-gateway", base)
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
+        .start()
         .unwrap();
     assert!(
         journey
@@ -3419,7 +2289,7 @@ fn supplied_gateway_discriminator_can_be_deliberately_asked() {
     let capabilities = Capabilities::available();
     let journey = JourneyDefinition::new("gateway-choice", base)
         .ask(["/spec/gateway/management"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let question = journey
         .resolve(&capabilities)
@@ -3439,7 +2309,7 @@ fn sdk_guidance_can_name_a_field_in_a_later_gateway_branch() {
     let capabilities = Capabilities::available();
     let mut journey = JourneyDefinition::new("future-gateway-field", base)
         .ask(["/spec/gateway/management", "/spec/gateway/tls"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let before = journey.resolve(&capabilities).unwrap();
     assert!(before.question("/spec/gateway/tls").is_none());
@@ -3465,7 +2335,7 @@ fn sdk_guidance_can_name_a_field_in_a_later_gateway_branch() {
     let mut omitted = JourneyDefinition::new("omit-future-gateway-field", base)
         .ask(["/spec/gateway/management"])
         .omit(["/spec/gateway/tls"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     omitted
         .answer(
@@ -3492,7 +2362,7 @@ fn invalid_supplied_gateway_discriminator_is_a_repair_question() {
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     let capabilities = Capabilities::available();
     let mut journey = JourneyDefinition::new("repair-gateway", base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     let question = journey
         .resolve(&capabilities)
@@ -3522,7 +2392,7 @@ fn accepted_implicit_gateway_choice_can_be_revisited() {
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     let capabilities = Capabilities::available();
     let mut journey = JourneyDefinition::new("revisit-gateway", base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     journey
         .answer(
@@ -3559,14 +2429,7 @@ fn switching_gateway_management_drops_fields_from_the_previous_branch() {
     let capabilities = Capabilities::available();
     let mut journey = JourneyDefinition::new("switch-gateway", base)
         .ask(["/spec/gateway/runtime/provider", "/spec/gateway/management"])
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let podman = json!("unix:///run/user/501/podman/podman.sock");
     crate::support::found_local_engines(
@@ -3636,7 +2499,7 @@ fn answer_that_leaves_the_journey_unresolvable_is_rejected() {
     let mut journey = JourneyDefinition::new("unresolvable-answer", base)
         .ask(["/spec/gateway/management"])
         .omit(["/spec/gateway/endpoint"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let before = journey.values().clone();
     assert!(
@@ -3653,43 +2516,11 @@ fn answer_that_leaves_the_journey_unresolvable_is_rejected() {
 }
 
 #[test]
-fn adapter_setting_questions_carry_fabric_descriptions() {
-    let mut values: serde_json::Value =
-        serde_saphyr::from_slice(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
-            .unwrap();
-    values["spec"]["sandboxes"][0]["harness"] = json!({"kind": "nvidia.fabric.hermes"});
-    let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
-    let capabilities = Capabilities::available();
-    let resolution = JourneyDefinition::new("described-settings", base)
-        .ask([
-            "adapter:nvidia.fabric.hermes:/api_mode",
-            "adapter:nvidia.fabric.hermes:/mode",
-        ])
-        .start(&capabilities)
-        .unwrap()
-        .resolve(&capabilities)
-        .unwrap();
-    let described = resolution
-        .question("adapter:nvidia.fabric.hermes:/api_mode")
-        .expect("described setting");
-    assert_eq!(
-        described.description(),
-        Some("Explicit native Hermes wire protocol.")
-    );
-    // Fabric does not describe `mode`; no generic text stands in for it.
-    let undescribed = resolution
-        .question("adapter:nvidia.fabric.hermes:/mode")
-        .expect("undescribed setting");
-    assert_eq!(undescribed.title(), None);
-    assert_eq!(undescribed.description(), None);
-}
-
-#[test]
 fn deployment_identity_is_generated_when_missing_and_never_asked() {
     let capabilities = Capabilities::available();
     let base = PartialDocument::from_yaml(include_bytes!("fixtures/minimum-inline.yaml")).unwrap();
     let journey = JourneyDefinition::new("minimum-inline", base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     let uid = journey.values().pointer("/metadata/uid").cloned();
     assert!(
@@ -3712,7 +2543,7 @@ fn deployment_identity_is_generated_when_missing_and_never_asked() {
     values["metadata"] = json!({"uid": supplied});
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
     let journey = JourneyDefinition::new("supplied-identity", base)
-        .start(&capabilities)
+        .start()
         .unwrap();
     assert_eq!(
         journey.values().pointer("/metadata/uid"),
@@ -3725,14 +2556,7 @@ fn minimally_supplied_inline_envelope_materializes_through_one_resolver() {
     let base = PartialDocument::from_yaml(include_bytes!("fixtures/minimum-inline.yaml")).unwrap();
     let capabilities = Capabilities::available();
     let mut journey = JourneyDefinition::new("minimum-inline", base)
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let answers = [
         ("/metadata/name", json!("minimum-inline")),

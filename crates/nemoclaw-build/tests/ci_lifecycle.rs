@@ -143,8 +143,8 @@ case "$1 $2" in
         fi ;;
     'run '*)
         case "$*" in
-            *dummy_catalog.py*) printf '{"bridge":{"protocol":1},"adapters":[{"descriptor":{"adapter_id":"org.nemoclaw.dummy"}}]}\n' ;;
-            *--installed*) printf '{"bridge":{"protocol":1},"adapters":[]}\n' ;;
+            *dummy_catalog.py*) printf '{"bridge":{"protocol":1},"adapters":[{"adapter_id":"org.nemoclaw.dummy"}]}\n' ;;
+            *catalog.py*) printf '{"bridge":{"protocol":1},"adapters":[]}\n' ;;
             *) printf '{"protocol":1}\n' ;;
         esac ;;
     'image inspect') printf 'sha256:0123456789abcdef\n' ;;

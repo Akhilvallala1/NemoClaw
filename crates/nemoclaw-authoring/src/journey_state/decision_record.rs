@@ -14,29 +14,12 @@ pub(super) struct DecisionRecord {
     pub(super) omitted: BTreeSet<String>,
     pub(super) selected_presets: BTreeMap<usize, ProviderPreset>,
     pub(super) accepted_presets: BTreeSet<usize>,
-    pub(super) accepted_model_settings: BTreeSet<(usize, String)>,
-    pub(super) omitted_model_settings: BTreeSet<(usize, String)>,
 }
 
 impl DecisionRecord {
     pub(super) fn status(&self, id: &str, selected_route: Option<usize>) -> DecisionStatus {
-        // Native model settings and the compound provider preset are decisions
-        // about one route, even though their question IDs contain no route index.
-        if matches!(
-            self.targets.get(id),
-            Some(QuestionTarget::ModelSetting { .. })
-        ) {
-            return selected_route.map_or(DecisionStatus::Unreviewed, |route| {
-                let key = (route, id.to_owned());
-                if self.omitted_model_settings.contains(&key) {
-                    DecisionStatus::Omitted
-                } else if self.accepted_model_settings.contains(&key) {
-                    DecisionStatus::Accepted
-                } else {
-                    DecisionStatus::Unreviewed
-                }
-            });
-        }
+        // The compound provider preset is a decision about one route, even
+        // though its question ID contains no route index.
         if matches!(
             self.targets.get(id),
             Some(QuestionTarget::InferencePreset { .. })
@@ -64,15 +47,7 @@ impl DecisionRecord {
         self.accepted.insert(id.into());
         self.targets.insert(id.into(), target.clone());
         self.reopened_by.remove(id);
-        if let QuestionTarget::ModelSetting { route, .. } = target {
-            let key = (*route, id.to_owned());
-            self.accepted_model_settings.insert(key.clone());
-            if omitted {
-                self.omitted_model_settings.insert(key);
-            } else {
-                self.omitted_model_settings.remove(&key);
-            }
-        } else if let QuestionTarget::InferencePreset { route } = target {
+        if let QuestionTarget::InferencePreset { route } = target {
             self.accepted_presets.insert(*route);
         } else if omitted {
             self.omitted.insert(id.into());
@@ -86,13 +61,6 @@ impl DecisionRecord {
             self.reopened_by.insert(id.into(), cause.into());
         }
     }
-
-    pub(super) fn forget_model_settings(&mut self, route: usize) {
-        self.accepted_model_settings
-            .retain(|(index, _)| *index != route);
-        self.omitted_model_settings
-            .retain(|(index, _)| *index != route);
-    }
 }
 
 #[cfg(test)]
@@ -100,34 +68,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_and_preset_decisions_follow_the_selected_route() {
+    fn preset_decisions_follow_the_selected_route() {
         let mut record = DecisionRecord::default();
-        let setting = "model:/model_metadata/contextWindow";
-        record.record_answer(
-            setting,
-            &QuestionTarget::ModelSetting {
-                route: 0,
-                pointer: "/model_metadata/contextWindow".into(),
-            },
-            false,
-        );
         record.record_answer(
             "inference:preset",
             &QuestionTarget::InferencePreset { route: 0 },
             false,
         );
-        assert_eq!(record.status(setting, Some(0)), DecisionStatus::Accepted);
         assert_eq!(
             record.status("inference:preset", Some(0)),
             DecisionStatus::Accepted
         );
-        assert_eq!(record.status(setting, Some(1)), DecisionStatus::Unreviewed);
         assert_eq!(
             record.status("inference:preset", Some(1)),
             DecisionStatus::Unreviewed
         );
-        record.omitted_model_settings.insert((1, setting.into()));
-        assert_eq!(record.status(setting, Some(1)), DecisionStatus::Omitted);
     }
 
     #[test]

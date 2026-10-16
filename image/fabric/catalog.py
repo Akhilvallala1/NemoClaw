@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Publish a version-bound snapshot of Fabric's public discovery result.
+"""Publish what this image provides for Fabric.
 
-Run with the Fabric interpreter/environment whose adapters are being packaged.
-The image build checks its label against discovery in the installed environment.
+The catalog records the adapters the image build installed, their runtime
+layout, and the Fabric revision the image packages. Each harness stage declares
+its adapters in /opt/nemoclaw/adapters.json; NemoClaw doesn't read Fabric's
+descriptors, so harness settings are validated by Fabric when an agent is
+configured.
 """
 
 import argparse
@@ -12,73 +15,52 @@ from pathlib import Path
 
 from backend import HEALTH_CHECKS
 from bridge_contract import capabilities
-from nemo_fabric import DiscoveryConfig, Fabric
 from runtime_metadata import read_runtime
 
-# Harness image stages write the directories their layout places each adapter's
-# runtime in, so deployment planning can check explicit filesystem grants.
-RUNTIME_FILES = Path("/opt/nemoclaw/runtime-files.json")
+ADAPTERS = Path("/opt/nemoclaw/adapters.json")
 RUNTIME_MANIFEST = Path("/opt/nemoclaw/runtime.json")
 
 
-def read_runtime_files(path, adapters):
-    """Return image-owned read paths, keyed by an adapter in this catalog."""
+def read_adapters(path):
+    """Return the adapters a harness stage declared: their files and executables."""
     if not path.exists():
-        return {}
+        raise ValueError(f"{path} must declare the image's adapters")
     declared = json.loads(path.read_text())
-    cataloged = {record["descriptor"]["adapter_id"] for record in adapters}
-    for adapter_id, files in declared.items():
-        if adapter_id not in cataloged:
-            raise ValueError(f"{path} names {adapter_id}, which this catalog does not list")
-        if (
-            not isinstance(files, list)
-            or not files
-            or not all(
-                isinstance(file, str) and file.startswith("/") and ".." not in file.split("/")
-                for file in files
-            )
+    if not isinstance(declared, dict) or not declared:
+        raise ValueError(f"{path} must declare at least one adapter")
+    for adapter_id, entry in declared.items():
+        if not adapter_id or not isinstance(entry, dict) or set(entry) != {"files", "binaries"}:
+            raise ValueError(f"{path} must give {adapter_id!r} its files and binaries")
+        files, binaries = entry["files"], entry["binaries"]
+        if not isinstance(files, list) or not all(
+            isinstance(file, str) and file.startswith("/") and ".." not in file.split("/")
+            for file in files
         ):
             raise ValueError(f"{path} must list absolute paths for {adapter_id}")
+        if not isinstance(binaries, list) or not all(
+            isinstance(binary, str) and binary and "/" not in binary for binary in binaries
+        ):
+            raise ValueError(f"{path} must list executable names for {adapter_id}")
     return declared
 
 
-def snapshot(
-    revision,
-    source_sha256,
-    *,
-    discovery=None,
-    installed_only=False,
-    runtime_files=RUNTIME_FILES,
-    runtime_manifest=RUNTIME_MANIFEST,
-):
-    fabric = Fabric()
-    records = {
-        "adapters": fabric.discover(discovery=discovery),
-        "targets": fabric.discover_targets(discovery=discovery),
-    }
+def snapshot(revision, source_sha256, *, adapters=ADAPTERS, runtime_manifest=RUNTIME_MANIFEST):
+    declared = read_adapters(adapters)
     catalog = {
-        "schema_version": 2,
+        "schema_version": 3,
         "fabric_revision": revision,
         "source_sha256": source_sha256,
-        **{
-            kind: [
-                record.to_mapping()
-                for record in items
-                if not installed_only
-                or any(source["source"] == "installed_package" for source in record.provenance)
-            ]
-            for kind, items in records.items()
-        },
+        "bridge": capabilities(HEALTH_CHECKS),
+        "adapters": [{"adapter_id": adapter_id} for adapter_id in sorted(declared)],
+        "runtime": read_runtime(
+            runtime_manifest,
+            {adapter_id: entry["binaries"] for adapter_id, entry in declared.items()},
+            required=True,
+        ),
     }
-    if installed_only:
-        catalog["bridge"] = capabilities(HEALTH_CHECKS)
-    # Kept beside the descriptors so Fabric's records stay unedited.
-    files = read_runtime_files(runtime_files, catalog["adapters"])
+    files = {adapter_id: entry["files"] for adapter_id, entry in declared.items() if entry["files"]}
     if files:
         catalog["runtime_files"] = files
-    runtime = read_runtime(runtime_manifest, catalog["adapters"], required=installed_only)
-    if runtime is not None:
-        catalog["runtime"] = runtime
     return catalog
 
 
@@ -87,9 +69,8 @@ def main():
     parser.add_argument("--revision")
     parser.add_argument("--source-sha256")
     parser.add_argument("--provenance", type=Path)
-    parser.add_argument("--installed", action="store_true")
+    parser.add_argument("--adapters", type=Path, default=ADAPTERS)
     parser.add_argument("--runtime-manifest", type=Path, default=RUNTIME_MANIFEST)
-    parser.add_argument("--descriptor", action="append", type=Path, default=[])
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.provenance:
@@ -100,14 +81,12 @@ def main():
         )
     if not args.revision or not args.source_sha256:
         parser.error("provide --provenance or both --revision and --source-sha256")
-    discovery = DiscoveryConfig(local_paths=args.descriptor) if args.descriptor else None
     encoded = (
         json.dumps(
             snapshot(
                 args.revision,
                 args.source_sha256,
-                discovery=discovery,
-                installed_only=args.installed,
+                adapters=args.adapters,
                 runtime_manifest=args.runtime_manifest,
             ),
             indent=2,

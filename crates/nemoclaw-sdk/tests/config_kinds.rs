@@ -159,7 +159,7 @@ fn opaque_fabric_identifiers_preserve_owner_valid_long_and_control_values() {
         "org.fabric.\nfixture\u{1b}".into(),
     ] {
         let mut catalog = FabricCatalog::bundled();
-        catalog.adapters[0].descriptor["adapter_id"] = json!(id);
+        catalog.adapters[0].adapter_id = id.clone();
         let catalog = FabricCatalog::from_json(&serde_json::to_string(&catalog).unwrap()).unwrap();
         assert_eq!(catalog.adapters[0].adapter_id(), id);
         let mut input: serde_json::Value =

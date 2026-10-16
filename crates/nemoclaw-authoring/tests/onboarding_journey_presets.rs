@@ -8,7 +8,6 @@ use nemoclaw_sdk::config::{Document, InferenceApi, InferenceProviderKind};
 use serde_json::{Value, json};
 
 fn guided() -> nemoclaw_authoring::JourneyState {
-    let capabilities = Capabilities::available();
     let base =
         PartialDocument::from_yaml(include_bytes!("../../../examples/onboarding/openclaw.yaml"))
             .unwrap();
@@ -16,7 +15,7 @@ fn guided() -> nemoclaw_authoring::JourneyState {
         .ask(["/spec/sandboxes/0/harness/kind", "inference:preset"])
         .ask([JourneyScope::InferenceApi])
         .ask([JourneyScope::RouteModels])
-        .start(&capabilities)
+        .start()
         .unwrap()
 }
 
@@ -175,7 +174,7 @@ fn switching_runtime_preserves_the_selected_model() {
             .unwrap();
     let mut state = JourneyDefinition::new("runtime", base)
         .ask(["/spec/gateway/runtime/provider"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let model = "/spec/sandboxes/0/agent/inference/routes/0/overrides/model";
     let before: Value = state.values().pointer(model).unwrap().clone();

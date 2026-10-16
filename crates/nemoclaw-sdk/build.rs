@@ -72,7 +72,7 @@ fn validate_fabric_catalog() {
         assert_eq!(
             catalog[field].as_str(),
             Some(pinned),
-            "stale Fabric catalog: regenerate with image/fabric/catalog.py"
+            "stale Fabric catalog: update image/fabric/catalog.json to the Dockerfile Fabric pin"
         );
     }
 }

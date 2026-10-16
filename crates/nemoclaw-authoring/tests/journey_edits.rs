@@ -4,7 +4,6 @@
 use nemoclaw_authoring::{
     Capabilities, DecisionStatus, JourneyDefinition, JourneyScope, PartialDocument,
 };
-use nemoclaw_sdk::fabric_catalog::FabricCatalog;
 use serde_json::{Value, json};
 
 fn base_values() -> Value {
@@ -33,7 +32,7 @@ fn preset_keeps_shared_provider_identity_and_reopens_every_dependent_route() {
     let mut state = JourneyDefinition::new("shared-provider", partial(&values))
         .ask([JourneyScope::RouteModels])
         .ask(["inference:preset"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     state
         .answer(&capabilities, "route:selection", Some(first_name))
@@ -104,75 +103,6 @@ fn preset_keeps_shared_provider_identity_and_reopens_every_dependent_route() {
 }
 
 #[test]
-fn accepted_and_omitted_native_settings_can_be_revisited() {
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = json!("fixture.native-edit");
-    adapter.descriptor["settings_schema"] = json!({"type":"object", "properties":{}});
-    adapter.descriptor["config"]["schema"] = json!({"type":"object","required":["workflow"]});
-    adapter.descriptor["model_schema"] = json!({"type":"object","properties":{"settings":{"type":"object","properties":{"variant":{"type":"string","enum":["quick","thorough"]}}}}});
-    catalog.adapters = vec![adapter];
-    catalog.targets = vec![json!({"descriptor":{
-        "type":"workflow", "id":"fixture.target", "adapter_id":"fixture.native-edit",
-        "spec":{"settings_schema":{"type":"object","properties":{"region":{"type":"string","enum":["west","east"]}},"required":["region"]}}
-    },"provenance":[]})];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut values = base_values();
-    values["spec"]["sandboxes"][0]["harness"]["kind"] = json!("fixture.native-edit");
-    let mut state = JourneyDefinition::new("native-edits", partial(&values))
-        .ask([JourneyScope::NativeSettings])
-        .start(&capabilities)
-        .unwrap();
-    state
-        .answer(
-            &capabilities,
-            "workflow:/target_id",
-            Some(json!("fixture.target")),
-        )
-        .unwrap();
-    state
-        .answer(
-            &capabilities,
-            "workflow:/settings/region",
-            Some(json!("west")),
-        )
-        .unwrap();
-    state
-        .answer(
-            &capabilities,
-            "workflow:/settings/region",
-            Some(json!("east")),
-        )
-        .unwrap();
-    state
-        .answer(&capabilities, "model:/variant", Some(json!("quick")))
-        .unwrap();
-    state.answer(&capabilities, "model:/variant", None).unwrap();
-    state
-        .answer(&capabilities, "model:/variant", Some(json!("thorough")))
-        .unwrap();
-    assert_eq!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/harness/config/workflow/settings/region"),
-        Some(&json!("east"))
-    );
-    assert_eq!(
-        state
-            .values()
-            .pointer("/spec/sandboxes/0/agent/inference/routes/0/overrides/settings/variant"),
-        Some(&json!("thorough"))
-    );
-    let before = state.values().clone();
-    assert!(
-        state
-            .answer(&capabilities, "model:/variant", Some(json!("invalid")))
-            .is_err()
-    );
-    assert_eq!(state.values(), &before);
-}
-
-#[test]
 fn exact_and_scope_api_guidance_use_the_same_selected_provider_policy() {
     let capabilities = Capabilities::available();
     let values: Value = serde_saphyr::from_slice(include_bytes!(
@@ -187,7 +117,7 @@ fn exact_and_scope_api_guidance_use_the_same_selected_provider_policy() {
         let mut state = JourneyDefinition::new("provider-api-policy", partial(&values))
             .ask([api, "inference:preset"])
             .ask(scopes)
-            .start(&capabilities)
+            .start()
             .unwrap();
         state
             .answer(&capabilities, "route:selection", Some(json!("hosted")))

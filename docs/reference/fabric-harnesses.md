@@ -5,7 +5,7 @@
 
 Choose a harness before selecting an image, inference API, and management mode.
 The table lists maintained examples, not a closed set of supported identifiers or live qualification of every model and host.
-Available adapters and native settings constraints come from canonical Fabric descriptors packaged in the selected image.
+The selected image's catalog lists the adapters it provides; Fabric validates native settings when the agent is configured.
 Onboarding offers choices from the bundled catalog; without target metadata, compatibility remains unknown.
 Use [inference API selection](../inference.md#choose-the-request-api) for the protocol restrictions and [agent access](../agents.md#choose-native-access) for interaction and session behavior.
 
@@ -24,10 +24,9 @@ Use [inference API selection](../inference.md#choose-the-request-api) for the pr
 
 Managed inference means an accepted Ollama or vLLM service configuration, with that mode's prerequisites.
 It does not promise arbitrary model compatibility.
-The selected adapter’s settings schema supplies native constraints.
-The current Fabric descriptor contract does not establish API-subtype compatibility for every adapter; missing claims remain unknown.
+The selected adapter validates its native settings when the agent is configured.
 Apply verifies configuration and readiness without generating a model response.
-The external Ollama proxy uses OpenAI Completions; Fabric metadata determines adapter compatibility.
+The external Ollama proxy uses OpenAI Completions; whether an adapter can use it is Fabric's to decide.
 The inference provider stays `management: external`, while NemoClaw manages only the proxy and its credential storage.
 External services remain operated by their owners; NemoClaw still owns its deployment's provider registration, endpoint profile, and sandbox.
 

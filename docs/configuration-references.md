@@ -9,7 +9,7 @@ A shared inference, provider, harness, or integration definition becomes active 
 Managed services have a separate rule: every entry in `spec.services` is installed and checked, even without a consumer.
 
 The authoring library and its [example TUI](../crates/nemoclaw-onboarding/README.md) can generate a validated starter document without resolving credentials, planning, or applying.
-The questionnaire edits a single-sandbox deployment and derives native settings questions from Fabric schemas.
+The questionnaire edits a single-sandbox deployment and offers the harnesses the image catalog lists; write harness settings in the configuration, where Fabric validates them when the agent is configured ([#13328](https://github.com/NVIDIA/NemoClaw/issues/13328)).
 Other deployment shapes remain available through hand-authored YAML according to the [field reference](reference/configuration.md).
 Generated and hand-authored files use the same lifecycle CLI `plan` and `apply` implementations.
 

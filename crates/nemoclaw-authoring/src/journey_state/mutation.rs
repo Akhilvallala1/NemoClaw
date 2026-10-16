@@ -12,7 +12,6 @@ impl JourneyState {
             );
             self.decisions.reopen(&model, cause);
             self.position.completed_routes.remove(&index);
-            self.decisions.forget_model_settings(index);
         }
     }
 

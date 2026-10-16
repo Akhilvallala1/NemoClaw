@@ -339,7 +339,7 @@ pub fn labels(name: &str, bridge: Value, catalog: Value) -> Result<Vec<(String, 
         .as_array()
         .into_iter()
         .flatten()
-        .map(|adapter| adapter["descriptor"]["adapter_id"].as_str().unwrap_or(""))
+        .map(|adapter| adapter["adapter_id"].as_str().unwrap_or(""))
         .collect();
     if name == "dummy" {
         if adapters != [REFERENCE_ADAPTER] {
@@ -390,7 +390,6 @@ pub fn build(root: &Path, platform: &str, selection: &[String]) -> Result<()> {
                 } else {
                     &[
                         "/opt/nemoclaw/catalog.py",
-                        "--installed",
                         "--provenance",
                         "/opt/nemoclaw/provenance.json",
                     ]

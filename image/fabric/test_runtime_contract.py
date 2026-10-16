@@ -270,16 +270,8 @@ class InstalledAdapterExecution(unittest.IsolatedAsyncioTestCase):
             "runtime": {"artifacts": directory},
         }
 
-    async def test_installed_discovery_settings_reach_actual_fabric_execution(self):
-        from catalog import snapshot
-
+    async def test_installed_adapter_settings_reach_actual_fabric_execution(self):
         descriptor = json.loads(Path(os.environ["NEMOCLAW_TEST_FABRIC_DESCRIPTOR"]).read_text())
-        records = snapshot("a" * 40, "b" * 64)["adapters"]
-        record = next(
-            item for item in records if item["descriptor"]["adapter_id"] == descriptor["adapter_id"]
-        )
-        self.assertEqual(record["descriptor"]["settings_schema"], descriptor["settings_schema"])
-        self.assertTrue(any(item["source"] == "installed_package" for item in record["provenance"]))
         with tempfile.TemporaryDirectory() as directory:
             config = self.configuration(descriptor, directory)
             host = RuntimeHost("main", Path(directory))

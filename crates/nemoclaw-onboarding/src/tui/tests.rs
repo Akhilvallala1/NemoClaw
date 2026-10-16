@@ -20,12 +20,11 @@ use nemoclaw_sdk::{
     inference_discovery::EndpointObservation,
 };
 use ratatui::{Terminal, backend::TestBackend};
-use serde_json::Value;
 
 #[test]
 fn onboarding_screen_keeps_the_existing_wordmark() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     wizard.started = true;
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
@@ -43,7 +42,7 @@ fn onboarding_screen_keeps_the_existing_wordmark() {
 #[test]
 fn compatible_terminal_keeps_the_brand_image_beside_the_wordmark() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let wizard = JourneyWizard::new(capabilities, state);
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal
@@ -61,7 +60,7 @@ fn compatible_terminal_keeps_the_brand_image_beside_the_wordmark() {
 #[test]
 fn narrow_terminal_asks_for_resize_instead_of_clipping_questions() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     wizard.started = true;
     let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
@@ -74,7 +73,7 @@ fn narrow_terminal_asks_for_resize_instead_of_clipping_questions() {
 #[test]
 fn review_scroll_reveals_later_yaml_without_changing_the_document() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     for _ in 0..40 {
         wizard.advance();
@@ -104,91 +103,6 @@ fn external_terminal_text_escapes_controls_without_changing_the_value() {
 }
 
 #[test]
-fn root_adapter_alternatives_accept_json_object_input() {
-    use nemoclaw_sdk::fabric_catalog::FabricCatalog;
-
-    let mut catalog = FabricCatalog::bundled();
-    let mut adapter = catalog.adapters[0].clone();
-    adapter.descriptor["adapter_id"] = serde_json::json!("fixture-root-agent");
-    adapter.descriptor["settings_schema"] = serde_json::json!({
-        "oneOf": [
-            {"type":"object", "properties":{"token":{"type":"string"}}, "required":["token"], "additionalProperties":false},
-            {"type":"object", "properties":{"port":{"type":"integer"}}, "required":["port"], "additionalProperties":false}
-        ]
-    });
-    catalog.adapters = vec![adapter];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut values: Value = serde_saphyr::from_slice(include_bytes!(
-        "../../../../examples/onboarding/openclaw.yaml"
-    ))
-    .unwrap();
-    values["spec"]["sandboxes"][0]["harness"]["kind"] = serde_json::json!("fixture-root-agent");
-    values["spec"]["sandboxes"][0]["harness"]
-        .as_object_mut()
-        .unwrap()
-        .remove("settings");
-    let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
-    let state = JourneyDefinition::new("root-alternatives", base)
-        .start(&capabilities)
-        .unwrap();
-    let mut wizard = JourneyWizard::new(capabilities, state);
-    let question = wizard.question().unwrap().unwrap();
-    assert_eq!(question.id(), "adapter:fixture-root-agent:");
-    assert_eq!(label(&question), "Adapter settings");
-    wizard.input = r#"{"port":443}"#.into();
-    assert_eq!(
-        wizard.answer_from_input(&question).unwrap(),
-        Some(serde_json::json!({"port":443}))
-    );
-}
-
-#[test]
-fn resolver_failure_is_not_reported_as_a_finished_questionnaire() {
-    use nemoclaw_sdk::fabric_catalog::FabricCatalog;
-
-    let mut catalog = FabricCatalog::bundled();
-    let mut first = catalog.adapters[0].clone();
-    first.descriptor["adapter_id"] = serde_json::json!("fixture-schema-agent");
-    first.descriptor["settings_schema"] =
-        serde_json::json!({"type":"object","properties":{"a":{"type":"string"}}});
-    let mut second = first.clone();
-    second.descriptor["settings_schema"] =
-        serde_json::json!({"type":"object","properties":{"b":{"type":"boolean"}}});
-    catalog.adapters = vec![first, second];
-    let capabilities = Capabilities::from_catalog(&catalog);
-    let mut values: Value = serde_saphyr::from_slice(include_bytes!(
-        "../../../../examples/onboarding/openclaw.yaml"
-    ))
-    .unwrap();
-    values["spec"]["sandboxes"][0]["harness"]["kind"] = serde_json::json!("fixture-schema-agent");
-    let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
-    let state = JourneyDefinition::new("conflicting-descriptors", base)
-        .start(&capabilities)
-        .unwrap();
-    let mut wizard = JourneyWizard::new(capabilities, state);
-    assert!(wizard.question().is_err());
-    wizard.started = true;
-    wizard.advance();
-    assert!(!wizard.accepted);
-    assert!(
-        wizard
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("ambiguous setting schemas")
-    );
-    wizard.next();
-    wizard.previous();
-    let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
-    terminal.draw(|frame| wizard.render(frame)).unwrap();
-    let screen = terminal.backend().to_string();
-    assert!(
-        screen.contains("Press ← to go back"),
-        "missing recovery hint: {screen}"
-    );
-}
-
-#[test]
 fn configured_target_prerequisite_blocks_save_until_observed() {
     let capabilities = Capabilities::available();
     let base = PartialDocument::from_yaml(include_bytes!(
@@ -196,15 +110,8 @@ fn configured_target_prerequisite_blocks_save_until_observed() {
     ))
     .unwrap();
     let state = JourneyDefinition::new("target-gated", base)
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
         .require_target([TargetPrerequisite::EngineAndImageCompatible])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     wizard.started = true;
@@ -232,9 +139,7 @@ fn wizard_uses_the_shared_resolver_for_an_sdk_form_choice() {
         .unwrap()
         .remove("inference");
     let base = PartialDocument::from_yaml(values.to_string().as_bytes()).unwrap();
-    let state = JourneyDefinition::new("agent-form", base)
-        .start(&capabilities)
-        .unwrap();
+    let state = JourneyDefinition::new("agent-form", base).start().unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     let question = wizard.question().unwrap().unwrap();
     assert_eq!(question.id(), "form:/spec/sandboxes/0/agent");
@@ -251,7 +156,7 @@ fn wizard_uses_the_shared_resolver_for_an_sdk_form_choice() {
 #[test]
 fn enter_uses_the_supplied_choice_suggestion() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     wizard.advance();
     wizard.advance();
@@ -272,7 +177,7 @@ fn enter_uses_the_supplied_choice_suggestion() {
 #[test]
 fn back_restores_the_previous_answer_without_rewriting_the_template() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let original_name = state.values().pointer("/metadata/name").cloned();
     let mut wizard = JourneyWizard::new(capabilities, state);
     wizard
@@ -293,7 +198,7 @@ fn back_restores_the_previous_answer_without_rewriting_the_template() {
 #[test]
 fn optional_question_can_be_omitted_through_the_new_wizard() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     for _ in 0..30 {
         if wizard
@@ -322,7 +227,7 @@ fn optional_question_can_be_omitted_through_the_new_wizard() {
 #[test]
 fn default_path_reaches_a_valid_document_through_the_new_wizard() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     for _ in 0..40 {
         wizard.advance();
@@ -355,7 +260,7 @@ fn mixed_local_and_hosted_template_reaches_review_without_losing_routes() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/spark/local-and-hosted.yaml");
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Template(&path), &capabilities).unwrap();
+    let state = load_journey(Source::Template(&path)).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     for _ in 0..80 {
         wizard.advance();
@@ -405,8 +310,8 @@ fn example_reaches_review(relative: &str) {
         return;
     }
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Template(&path), &capabilities)
-        .unwrap_or_else(|error| panic!("{relative}: {error}"));
+    let state =
+        load_journey(Source::Template(&path)).unwrap_or_else(|error| panic!("{relative}: {error}"));
     let mut wizard = JourneyWizard::new(capabilities, state);
     let mut missing_text = std::collections::BTreeSet::new();
     for _ in 0..100 {
@@ -438,7 +343,7 @@ fn example_reaches_review(relative: &str) {
 #[test]
 fn an_unchanged_journey_resolves_once_until_an_answer_or_observation_changes_it() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     wizard.advance();
     let first = wizard.question().unwrap().unwrap();
@@ -492,39 +397,13 @@ mod example_journeys {
 }
 
 #[test]
-fn existing_model_metadata_is_offered_as_an_editable_suggestion() {
-    let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
-    let mut wizard = JourneyWizard::new(capabilities, state);
-    let mut seen = Vec::new();
-    for _ in 0..40 {
-        if wizard
-            .question()
-            .unwrap()
-            .is_some_and(|question| question.id() == "model:/model_metadata")
-        {
-            return;
-        }
-        seen.push(
-            wizard
-                .question()
-                .unwrap()
-                .map(|question| question.id().to_owned()),
-        );
-        wizard.advance();
-        assert!(wizard.error.is_none(), "{:?}", wizard.error);
-    }
-    panic!("The supplied model metadata was skipped; seen={seen:?}");
-}
-
-#[test]
 fn discovered_model_menu_keeps_a_custom_text_answer() {
     use nemoclaw_sdk::{
         discovery::ObservationStatus,
         inference_discovery::{AuthenticationStatus, EndpointObservation},
     };
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     for _ in 0..12 {
         if wizard
@@ -582,7 +461,7 @@ fn discovered_model_menu_keeps_a_custom_text_answer() {
 #[test]
 fn tui_preserves_podman_as_an_authored_target_choice() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     for _ in 0..5 {
         if wizard
@@ -620,7 +499,7 @@ struct RecordedHost {
 #[tokio::test]
 async fn enter_accepts_the_runtime_this_machine_can_run_and_targets_its_engine() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     // Only Podman answered when this machine was read, but the template says Docker.
     let host: RecordedHost = serde_json::from_str(include_str!(
         "../../../../crates/nemoclaw-authoring/tests/fixtures/observations/podman-only.json"
@@ -682,14 +561,7 @@ fn review_uses_authoring_readiness_for_an_observed_target_conflict() {
     ))
     .unwrap();
     let state = JourneyDefinition::new("conflicted-target", base)
-        .omit([
-            "adapter:nvidia.fabric.openclaw:/agent_name",
-            "adapter:nvidia.fabric.openclaw:/cli",
-            "adapter:nvidia.fabric.openclaw:/home",
-            "adapter:nvidia.fabric.openclaw:/native_config",
-            "adapter:nvidia.fabric.openclaw:/timeout_seconds",
-        ])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let document = state
         .resolve(&capabilities)
@@ -767,7 +639,7 @@ async fn ask(wizard: &mut JourneyWizard, queries: Vec<DiscoveryQuery>) -> bool {
 #[tokio::test]
 async fn a_new_questionnaire_asks_which_engines_this_machine_has_exactly_once() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let candidates = [
         "unix:///home/me/.colima/docker.sock",
         "unix:///run/user/501/podman/podman.sock",
@@ -797,7 +669,7 @@ async fn a_new_questionnaire_asks_which_engines_this_machine_has_exactly_once() 
 #[tokio::test]
 async fn the_model_catalog_is_asked_when_the_model_question_comes_and_only_once() {
     let capabilities = Capabilities::available();
-    let state = load_journey(Source::Defaults, &capabilities).unwrap();
+    let state = load_journey(Source::Defaults).unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     assert_eq!(model_catalog_probe(&wizard), None, "no model question yet");
 
@@ -844,7 +716,7 @@ fn credential_information_keeps_controls_and_real_errors_visible() {
     .unwrap();
     let state = JourneyDefinition::new("credential-note", base)
         .ask(["/metadata/name"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     let mut wizard = JourneyWizard::new(capabilities, state);
     wizard.started = true;
@@ -876,7 +748,7 @@ fn missing_catalog_key_does_not_occupy_the_error_slot_or_hide_engine_failures() 
     .unwrap();
     let mut state = JourneyDefinition::new("catalog-note", base)
         .ask(["/spec/sandboxes/0/harness/kind", "/metadata/name"])
-        .start(&capabilities)
+        .start()
         .unwrap();
     state
         .answer(

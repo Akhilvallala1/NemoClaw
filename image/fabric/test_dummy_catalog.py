@@ -25,9 +25,7 @@ class DummyCatalogTest(unittest.TestCase):
         self.assertEqual(catalog["fabric_revision"], contract["fabric_revision"])
         self.assertEqual(catalog["source_sha256"], contract["source_sha256"])
         self.assertEqual(len(catalog["fabric_revision"]), 40)
-        self.assertEqual(
-            [record["descriptor"]["adapter_id"] for record in catalog["adapters"]], [ADAPTER_ID]
-        )
+        self.assertEqual([record["adapter_id"] for record in catalog["adapters"]], [ADAPTER_ID])
         self.assertEqual(catalog["bridge"], capabilities(HEALTH_CHECKS))
         self.assertEqual(
             catalog["bridge"], json.loads(Path("/opt/nemoclaw/bridge.json").read_text())

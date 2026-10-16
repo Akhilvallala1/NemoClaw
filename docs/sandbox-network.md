@@ -40,7 +40,7 @@ Kernel enforcement still requires qualification on the deployment host.
 When an explicit policy declares `filesystem_policy`, NemoClaw checks that it permits reads of the selected harness's runtime directories.
 The same checks apply to inline harnesses and `harnessRef`, separately for every sandbox.
 
-Selected-image assessment checks the Fabric descriptor's required files, the adapter's image-owned `runtime_files`, and the runtime manifest's `required_paths`.
+Selected-image assessment checks the adapter's image-owned `runtime_files` and the runtime manifest's `required_paths`.
 The packaged image declares `/opt/fabric` and `/opt/nemoclaw`; a relocated image declares its own paths.
 A missing grant makes compatibility `unsupported` and fails plan; `observation_json.compatibility` names the path.
 Images without runtime metadata, such as direct Bake builds, fail planning; follow [image rebuilding and selection](build.md#build-agent-images).

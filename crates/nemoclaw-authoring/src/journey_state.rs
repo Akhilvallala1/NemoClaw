@@ -19,15 +19,11 @@ use crate::{
     PartialDocument, PartialIssueKind, ProviderPreset,
     diagnostics::diagnostic,
     identity::new_deployment_uid,
-    journey_definition::{
-        HARNESS, INFERENCE_PRESET, JourneyDefinition, JourneyScope, NAME, adapter_field,
-        adapter_schema, native_field,
-    },
+    journey_definition::{HARNESS, INFERENCE_PRESET, JourneyDefinition, JourneyScope, NAME},
     sdk_schema::{
         finite_choices, sdk_discriminator, sdk_exclusive_required_fields, sdk_field_possible,
         sdk_field_schema, sdk_field_schema_for, sdk_selected_branch,
     },
-    settings::SettingQuestion,
 };
 
 const ROUTE_SELECTION: &str = "route:selection";
@@ -61,9 +57,6 @@ enum QuestionTarget {
     StructuralForm { path: String },
     RouteSelection { routes: Vec<(String, usize)> },
     InferencePreset { route: usize },
-    AdapterSetting { adapter: String, pointer: String },
-    WorkflowSetting { pointer: String },
-    ModelSetting { route: usize, pointer: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,12 +67,6 @@ enum SdkFieldRole {
     RuntimeProvider,
     GatewayManagement,
     GatewayEngine,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NativeSettingOwner {
-    Workflow,
-    Model(usize),
 }
 
 impl QuestionTarget {
@@ -346,6 +333,5 @@ use authored_values::AuthoredValues;
 use decision_record::DecisionRecord;
 use journey_position::JourneyPosition;
 use paths::{
-    escape_pointer, harness_kind, harness_path, native_value, routes_path, scalar_question,
-    settings_path,
+    escape_pointer, harness_kind, harness_path, routes_path, scalar_question, settings_path,
 };

@@ -3,24 +3,6 @@
 
 use super::*;
 
-pub(super) fn native_value<'a>(
-    values: &'a Value,
-    selected_route: Option<usize>,
-    id: &str,
-) -> Option<&'a Value> {
-    if let Some(path) = id.strip_prefix("workflow:") {
-        values.pointer(&format!("{}/config/workflow{path}", harness_path(values)?))
-    } else if let Some(path) = id.strip_prefix("model:") {
-        values.pointer(&format!(
-            "{}/{}/overrides/settings{path}",
-            routes_path(values)?,
-            selected_route?
-        ))
-    } else {
-        None
-    }
-}
-
 pub(super) fn routes_path(values: &Value) -> Option<String> {
     let agent = values.pointer("/spec/sandboxes/0/agent")?;
     if agent.get("inference").is_some() {

@@ -98,8 +98,8 @@ It removes its temporary image tag after completion; it does not start an adapte
 Direct `docker buildx bake` builds omit these labels, so plan cannot select them.
 The commands build and load local images; they do not publish images or launch a deployment.
 
-Installed discovery also requires the image-owned runtime manifest and resolves descriptor-required executables inside the image.
-If catalog generation reports a missing runtime manifest, required path, or executable, correct the image recipe before retrying.
+Catalog generation reads the adapters each harness stage declares in `/opt/nemoclaw/adapters.json`, with the files they read and the executables they run, and the image-owned runtime manifest; it resolves those executables inside the image.
+If catalog generation reports a missing declaration, runtime manifest, required path, or executable, correct the image recipe before retrying.
 See the [image metadata contract](design/fabric-management.md#image-metadata) before changing the image layout.
 
 Plan requires the selected image's runtime metadata to supply its bridge command, environment, default policy, and executable grants.
@@ -140,24 +140,18 @@ Pinned archives and wheels do not make the whole image bit-reproducible: Debian 
 
 Run [image checks](contributing/testing.md#image-source-checks) before changing or using an image recipe, and follow the [native fixture procedures](contributing/integration-tests.md#inference-api-fixtures) for behavior qualification.
 
-### Regenerate the Bundled Catalog
+### Update the Bundled Catalog
 
-The SDK build fails with `stale Fabric catalog` when `image/fabric/catalog.json` no longer matches the Fabric pin in the Dockerfile.
-Run `image/fabric/catalog.py` with a Python environment that has the pinned Fabric wheels installed, and pass that revision and checksum:
-
-```sh
-python image/fabric/catalog.py --revision REVISION --source-sha256 CHECKSUM --output image/fabric/catalog.json
-```
-
-Use the values of `FABRIC_REVISION` and `FABRIC_SHA256` from the [shared agent Dockerfile](../image/fabric/Dockerfile).
-The snapshot holds canonical descriptors and provenance only; it does not change any image.
+[`image/fabric/catalog.json`](../image/fabric/catalog.json) lists the adapter of every harness in [`docker-bake.hcl`](../docker-bake.hcl), with the `FABRIC_REVISION` and `FABRIC_SHA256` values from the [shared agent Dockerfile](../image/fabric/Dockerfile).
+Edit it when the harness table or the Fabric pin changes: the SDK build fails with `stale Fabric catalog` when its revision no longer matches the Dockerfile, and a Rust test checks that it lists exactly the harnesses' adapters.
+It records no Fabric descriptors and changes no image.
 
 ### Reference Contract Image
 
 Build the dummy `fabric-agent` image to exercise the provisioning interface without Fabric, a native agent, credentials, or a model.
 It uses the same command host as all ten interim adapter images and supplies a deterministic reference backend.
 It is a test fixture, excluded from the production `agents` target and the bundled catalog.
-Its image catalog lists one [explicit descriptor](../image/fabric/dummy.fabric-adapter.json), so a deployment can run it by setting `harness.kind: org.nemoclaw.dummy` and the image's immutable reference; the [Docker live suite](contributing/live-tests.md#dummy-agent-lifecycle) deploys it that way.
+Its image catalog lists its one reference adapter, described by an [explicit descriptor](../image/fabric/dummy.fabric-adapter.json), so a deployment can run it by setting `harness.kind: org.nemoclaw.dummy` and the image's immutable reference; the [Docker live suite](contributing/live-tests.md#dummy-agent-lifecycle) deploys it that way.
 On Linux ARM64, run from the repository root:
 
 ```sh
