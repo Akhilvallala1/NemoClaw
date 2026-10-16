@@ -13,7 +13,7 @@ import sys
 import tempfile
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location(
     "personal_probe", Path(__file__).with_name("probe-personal-python.py")
@@ -23,6 +23,73 @@ spec.loader.exec_module(owner)
 
 
 class BrowserDiagnostics(unittest.TestCase):
+    def test_native_browser_check_uses_cdp_and_preserves_operation_and_cleanup_gates(self):
+        nonce = "a" * 24
+        url = "http://127.0.0.1:12345/" + nonce
+        page = {"visible": True, "actual": {"url": url, "sentinel": nonce}}
+        for failure in (None, "browser", "shutdown"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                resolver = Mock(side_effect=FileNotFoundError("native Edge has no agent-browser"))
+                cleanup = Mock()
+                spawn = Mock(side_effect=AssertionError("native probe must not spawn agent-browser"))
+                output = "NEMOCLAW_BROWSER_PAGE_STATE=" + json.dumps(page) + "\nBROWSER_PERSONAL_OK"
+                execute = Mock(return_value={
+                    "success": failure != "browser", "exit_code": 1 if failure == "browser" else 0,
+                    "output": output, "error": None,
+                })
+                shutdown = {"complete": failure != "shutdown", "processExitObserved": True}
+                modules = {name: ModuleType(name) for name in (
+                    "tools", "tools.browser_use_cli", "tools.browser_tool_install",
+                    "tools.browser_tool_lifecycle", "tools.browser_tool_session",
+                )}
+                modules["tools"].browser_tool_session = modules["tools.browser_tool_session"]
+                modules["tools.browser_use_cli"].browser_exec = execute
+                modules["tools.browser_use_cli"]._backend_cache_key = lambda task, session: "bu-named-" + session
+                modules["tools.browser_tool_install"]._find_agent_browser = resolver
+                modules["tools.browser_tool_lifecycle"].cleanup_browser = cleanup
+                modules["tools.browser_tool_session"]._popen_agent_browser = spawn
+                environment = {
+                    "NEMOCLAW_PERSONAL_BROWSER_SESSION": nonce,
+                    "NEMOCLAW_AGENT_SESSION_ID": nonce[:10],
+                    "NEMOCLAW_PERSONAL_BROWSER_PAGE": url,
+                    "NEMOCLAW_AGENT_HOME": str(root / "state"),
+                    "AGENT_BROWSER_ARGS": "--enable-logging=stderr",
+                    "BROWSER_CDP_URL": "ws://127.0.0.1:8124/devtools/browser/fixture",
+                    "BU_CDP_WS": "ws://127.0.0.1:8124/devtools/browser/fixture",
+                }
+                with (
+                    patch.dict(sys.modules, modules),
+                    patch.dict(os.environ, environment, clear=True),
+                    patch("http.server.ThreadingHTTPServer", side_effect=AssertionError("host owns page")),
+                    patch.object(owner.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stderr="",
+                        stdout="NEMOCLAW_BROWSER_HARNESS_SHUTDOWN=" + json.dumps(shutdown) + "\nHARNESS_STOPPED",
+                    )) as stopped,
+                ):
+                    if failure:
+                        with self.assertRaises(AssertionError) as caught:
+                            owner.browser_check(root, nonce)
+                        self.assertIn("Browser cleanup failed" if failure == "shutdown" else
+                                      "complete success contract", str(caught.exception))
+                    else:
+                        result = owner.browser_check(root, nonce)
+                        self.assertIsNone(result["selectedAgentBrowser"])
+                        self.assertIsNone(result["chromiumPath"])
+                        self.assertTrue(result["nativeEdgeTransport"])
+                        self.assertEqual(result["pageServerOwner"], "host-job")
+                        self.assertEqual(result["pageObservation"], page)
+                        self.assertTrue(result["browserHarnessProcessExitIndependentlyVerified"])
+                    resolver.assert_not_called()
+                    spawn.assert_not_called()
+                    execute.assert_called_once_with(owner.browser_page_code(url, nonce),
+                                                    session="nc-" + nonce[:12],
+                                                    task_id="personal-" + nonce[:12], timeout_s=45)
+                    stopped.assert_called_once()
+                    self.assertEqual(stopped.call_args.kwargs["timeout"], 15)
+                    cleanup.assert_called_once_with("bu-named-nc-" + nonce[:12])
+                    self.assertIs(modules["tools.browser_tool_session"]._popen_agent_browser, spawn)
+
     def test_renderer_wer_selection_is_bound_to_one_session_and_same_drive(self):
         runtime = r"C:\NemoClawHermesProbe-274d797050ea"
         state = r"C:\NemoClawMsysProof-012345abcdef-state-start"

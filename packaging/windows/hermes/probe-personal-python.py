@@ -1838,10 +1838,14 @@ def browser_check(root, nonce):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import threading
 
-    expected = root / "agent-browser/bin/agent-browser-win32-x64.exe"
-    assert owned_file(_find_agent_browser(validate=True), root) == owned_file(
-        expected, root
-    )
+    expected = None
+    # Native Edge is owned by the host job and reached through the declared CDP
+    # transport. Only the legacy profile resolves a bundled agent-browser.
+    if not native_browser:
+        expected = root / "agent-browser/bin/agent-browser-win32-x64.exe"
+        assert owned_file(_find_agent_browser(validate=True), root) == owned_file(
+            expected, root
+        )
     state, chrome_log = configure_browser_logging()
     diagnostics = {
         "chromeLogging": {"arguments": "--enable-logging", "file": str(chrome_log)},
@@ -2046,7 +2050,7 @@ def browser_check(root, nonce):
         raise failure
     return {
         "browserUseResult": result,
-        "selectedAgentBrowser": str(expected),
+        "selectedAgentBrowser": str(expected) if expected is not None else None,
         "chromiumPath": os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH"),
         "chromeLogging": diagnostics["chromeLogging"],
         "pageObservation": diagnostics["pageObservation"],
