@@ -10,6 +10,44 @@ const builder = fileURLToPath(new URL("./build-finished-runtime-image.ps1", impo
 const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 for (const scenario of [
+  { name: "small prerequisite", bytes: 100_000_000, files: 10, directories: 4, maximumMiB: 4096 },
+  {
+    name: "recorded Hermes payload",
+    bytes: 1_285_376_202,
+    files: 48_460,
+    directories: 6161,
+    maximumMiB: 4855,
+  },
+  { name: "many small files", bytes: 100_000, files: 100_000, directories: 1, maximumMiB: 6827 },
+  { name: "large payload", bytes: 8 * 1024 ** 3, files: 1, directories: 1, maximumMiB: 8769 },
+]) {
+  test(`runtime image capacity: ${scenario.name}`, () => {
+    const command = String.raw`
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(${quote(builder)}, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+$function = @($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-RuntimeImageCapacity'}, $true))
+if ($function.Count -ne 1) { throw 'missing capacity function' }
+. ([scriptblock]::Create($function[0].Extent.Text))
+Get-RuntimeImageCapacity -LogicalBytes ${scenario.bytes} -FileCount ${scenario.files} -DirectoryCount ${scenario.directories} | ConvertTo-Json -Compress
+`;
+    const result = spawnSync(
+      process.env.NEMOCLAW_TEST_PWSH || "pwsh",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+      { encoding: "utf8", timeout: 20_000 },
+    );
+    assert.equal(result.status, 0, result.stderr || String(result.error));
+    const observed = JSON.parse(result.stdout);
+    const allowance = scenario.files * 65_536 + scenario.directories * 4096 + 64 * 1024 ** 2;
+    assert.equal(observed.allocationAllowanceBytes, allowance);
+    assert.equal(observed.requiredPayloadBytes, scenario.bytes + allowance);
+    assert.equal(observed.maximumMiB, scenario.maximumMiB);
+    assert.ok(observed.maximumMiB * 1024 ** 2 >= observed.requiredPayloadBytes + 512 * 1024 ** 2);
+  });
+}
+
+for (const scenario of [
   "sufficient",
   "backing-full",
   "inner-full",

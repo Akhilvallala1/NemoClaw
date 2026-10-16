@@ -12,6 +12,23 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+function Get-RuntimeImageCapacity {
+    param([long]$LogicalBytes, [long]$FileCount, [long]$DirectoryCount)
+    if ($LogicalBytes -lt 0 -or $FileCount -lt 0 -or $DirectoryCount -lt 0) {
+        throw 'Runtime image inventory sizes cannot be negative.'
+    }
+    # Budget a full 64KiB compression unit per file beyond its logical bytes,
+    # plus directory/metadata space. Logical size alone underestimates the
+    # free space needed while populating a compressed, many-file NTFS image.
+    $allocationAllowance = ($FileCount * 64KB) + ($DirectoryCount * 4KB) + 64MB
+    $requiredPayloadBytes = $LogicalBytes + $allocationAllowance
+    return @{
+        requiredPayloadBytes = $requiredPayloadBytes
+        allocationAllowanceBytes = $allocationAllowance
+        maximumMiB = [long][Math]::Max(4096, [Math]::Ceiling(($requiredPayloadBytes + 512MB) / 1MB))
+    }
+}
+
 function Get-RuntimeImageStorage {
     param([string]$ImagePath, [string]$VolumeRoot)
     $backing = @(Get-Volume -FilePath $ImagePath -ErrorAction Stop)
@@ -57,6 +74,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $RuntimeRoot 'runtime.manifest') -Pa
 }
 $files = @(Get-ChildItem -LiteralPath $RuntimeRoot -Recurse -File -Force)
 $logicalBytes = [long](($files | Measure-Object -Property Length -Sum).Sum)
+$directoryCount = @(Get-ChildItem -LiteralPath $RuntimeRoot -Recurse -Directory -Force).Count + 1
+$capacity = Get-RuntimeImageCapacity -LogicalBytes $logicalBytes -FileCount $files.Count -DirectoryCount $directoryCount
 $runtimePrefix = $RuntimeRoot.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
 $topLevelNames = @($files | ForEach-Object {
     $fullName = [IO.Path]::GetFullPath($_.FullName)
@@ -67,7 +86,7 @@ $topLevelNames = @($files | ForEach-Object {
 } | Sort-Object -Unique)
 $topLevelDirectories = @(Get-ChildItem -LiteralPath $RuntimeRoot -Directory -Force | ForEach-Object Name)
 $sourceManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $RuntimeRoot 'runtime.manifest') -Algorithm SHA256).Hash.ToLowerInvariant()
-$maximumMiB = [Math]::Max(4096, [Math]::Ceiling(($logicalBytes + 536870912) / 1MB))
+$maximumMiB = $capacity.maximumMiB
 # The dynamic image normally stays close to its compressed payload size, but
 # reserve its full virtual capacity plus working headroom. Runner free space can
 # change while the canonical runtime is sealed; a near-full host volume must
@@ -97,8 +116,9 @@ $receipt = [ordered]@{
     format = 'vhdx'
     filesystem = 'ntfs'
     payloadObjects = 1
-    source = @{ files = $files.Count; logicalBytes = $logicalBytes }
+    source = @{ files = $files.Count; directories = $directoryCount; logicalBytes = $logicalBytes }
     storage = @{ maximumMiB = $maximumMiB; stagingRoot = $stagingDrive.Root;
+        requiredPayloadBytes = $capacity.requiredPayloadBytes; allocationAllowanceBytes = $capacity.allocationAllowanceBytes;
         stagingFreeBytes = [long]$stagingDrive.Free; requiredStagingBytes = $requiredStagingBytes }
     customerExtractionRequired = $false
     runtimeLaunchCopiesRequired = $false
@@ -159,11 +179,8 @@ try {
     }
     $volumeRoot = $volumeRoots[0]
     $receipt.storage['beforePopulation'] = Get-RuntimeImageStorage -ImagePath $workingImage -VolumeRoot $volumeRoot
-    # Allow for file allocation rounding, directory entries and NTFS metadata;
-    # never count compression as necessary capacity for the sealed payload.
-    $requiredPayloadBytes = $logicalBytes + ([long]$files.Count * 4096) + 64MB
     Assert-RuntimeImageStorage -Storage $receipt.storage.beforePopulation `
-        -MaximumBytes ([long]$maximumMiB * 1MB) -RequiredPayloadBytes $requiredPayloadBytes
+        -MaximumBytes ([long]$maximumMiB * 1MB) -RequiredPayloadBytes $capacity.requiredPayloadBytes
     Set-Acl -LiteralPath $volumeRoot -AclObject $security
     foreach ($name in $topLevelDirectories) {
         $directory = Join-Path $mount $name
