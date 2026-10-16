@@ -267,7 +267,7 @@ impl Definition {
             self.computed
                 .iter()
                 .map(|(name, _)| *name)
-                .filter(|name| *name != "id" && !self.fields.contains(name)),
+                .filter(|name| !self.fields.contains(name)),
         )
     }
 }

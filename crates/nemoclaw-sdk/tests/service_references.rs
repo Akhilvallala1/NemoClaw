@@ -153,10 +153,124 @@ fn container_service_runs_on_the_gateway_network_with_disposable_data_and_fresh_
 }
 
 #[test]
-fn container_service_rejects_inference_use_root_and_public_exposure() {
+fn explicit_containers_can_run_the_same_managed_model_configuration() {
+    for yaml in [
+        include_str!("fixtures/config/managed-ollama.yaml"),
+        include_str!("../../../examples/spark/vllm.yaml"),
+    ] {
+        let typed = Document::parse(yaml.as_bytes()).unwrap();
+        let mut generations = container_generations();
+        generations.insert("inference_service".into(), "a".repeat(32));
+        let targets = runtime_targets(&typed, &generations).unwrap();
+        let target = targets
+            .iter()
+            .find(|target| matches!(target.kind.as_str(), "inference_service" | "ollama_service"))
+            .unwrap();
+        let spec: nemoclaw_sdk::managed::Spec =
+            serde_json::from_str(&target.values["spec"]).unwrap();
+        let process = spec.process.as_ref().unwrap();
+        let name = typed.spec.services.keys().next().unwrap();
+        let mut value = serde_json::to_value(&typed).unwrap();
+        value["spec"]["services"][name] = json!({
+            "kind": "container", "image": process.image, "user":"0:0",
+            "environment": {"NEMOCLAW_RUNTIME_SPEC": process.configuration},
+            "container": {"gpu":true, "memoryLimitGiB":104, "sharedMemoryGiB":8,
+                "ulimits":{"memlock":-1,"stack":67108864}},
+            "port": process.port,
+            "publication":{"bindAddress":process.bind_address,"port":process.port},
+            "data":{"mountPath":"/data"},
+            "readiness":{"runtimeStatus":"/data/status.json","timeoutSeconds":1800}
+        });
+        let expected = Document::parse(value.to_string().as_bytes())
+            .expect("the base must accept a managed image's explicit container configuration");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "tests/fixtures/config/explicit-{}.yaml",
+            if target.kind == "ollama_service" {
+                "ollama"
+            } else {
+                "vllm"
+            }
+        ));
+        if std::env::var_os("NEMOCLAW_REGENERATE_FIXTURES").is_some() {
+            std::fs::write(&fixture, format!(
+                "# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n# SPDX-License-Identifier: Apache-2.0\n# Explicit counterpart of a managed-model parser fixture. Not a live qualification or authorization.\n{}", expected.yaml().unwrap()
+            )).unwrap();
+        }
+        let direct = Document::parse(std::fs::read(&fixture).unwrap().as_slice()).unwrap();
+        assert_eq!(
+            direct, expected,
+            "regenerate explicit container fixtures after an intentional contract change"
+        );
+        let graph = compile(&direct, &generations, "0.1.0").unwrap();
+        let logical = format!("container_service_{name}");
+        let container = &graph["resource"]["docker_container"][&logical];
+        assert_eq!(container["gpus"], "all");
+        assert_eq!(container["memory"], process.memory_bytes / (1 << 20));
+        assert_eq!(
+            container["shm_size"],
+            process.shared_memory_bytes / (1 << 20)
+        );
+        assert_eq!(container["mounts"][0]["target"], process.mount_target);
+        assert!(
+            container["env"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(format!(
+                    "NEMOCLAW_RUNTIME_SPEC={}",
+                    process
+                        .configuration
+                        .replace("${", "$${")
+                        .replace("%{", "%%{")
+                )))
+        );
+        let health = &graph["data"]["host_container_health"][&logical];
+        assert_eq!(health["runtime_status"], "/data/status.json");
+        assert_eq!(
+            direct.inference_endpoint().unwrap(),
+            typed.inference_endpoint().unwrap()
+        );
+        assert_eq!(
+            Document::parse(direct.yaml().unwrap().as_bytes()).unwrap(),
+            direct
+        );
+    }
+}
+
+#[test]
+fn container_passes_native_arguments_files_and_http_readiness_without_interpreting_them() {
+    let mut value = managed_ollama_service();
+    let mut service = container_service();
+    service["command"] = json!(["--config", "/etc/service/settings.yaml"]);
+    service["files"] = json!({"/etc/service/settings.yaml": "setting: ${application_value}\n"});
+    service["container"] = json!({"cpuLimitMillis":2000,"memoryLimitGiB":2});
+    service["readiness"] = json!({"path":"/health","timeoutSeconds":60});
+    value["spec"]["services"]["voice"] = service;
+    let document = Document::parse(value.to_string().as_bytes()).unwrap();
+    let graph = compile(&document, &container_generations(), "0.1.0").unwrap();
+    let container = &graph["resource"]["docker_container"]["container_service_voice"];
+    assert_eq!(
+        container["command"],
+        json!(["--config", "/etc/service/settings.yaml"])
+    );
+    assert_eq!(
+        container["upload"][0]["content"],
+        "setting: $${application_value}\n"
+    );
+    assert_eq!(container["upload"][0]["permissions"], "0444");
+    assert_eq!(container["memory"], 2048);
+    assert_eq!(container["shm_size"], 64);
+    assert!(container.get("gpus").is_none());
+    assert_eq!(
+        graph["data"]["host_container_health"]["container_service_voice"]["http_url"],
+        "http://127.0.0.1:18790/health"
+    );
+}
+
+#[test]
+fn container_service_rejects_invalid_launch_and_unreachable_inference_publication() {
     for (field, bad) in [
         ("image", json!("voiceclaw:latest")),
-        ("user", json!("0:0")),
+        ("user", json!("root")),
         ("data", json!({"mountPath":"/etc"})),
         ("publication", json!({"bindAddress":"0.0.0.0","port":18790})),
     ] {

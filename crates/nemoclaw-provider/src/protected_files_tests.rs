@@ -19,10 +19,10 @@ impl nemoclaw_sdk::Secrets for Secrets {
     }
 }
 
-/// The compiled inputs of the connection fixture, with its agent resolved.
+/// The compiled inputs of the credential-file fixture.
 fn row(engine: &str) -> Row {
     let document = nemoclaw_sdk::config::Document::parse(
-        include_bytes!("../../nemoclaw-sdk/tests/fixtures/config/container-agent-connection.yaml")
+        include_bytes!("../../nemoclaw-sdk/tests/fixtures/config/container-credentials.yaml")
             .as_slice(),
     )
     .unwrap();
@@ -42,10 +42,6 @@ fn row(engine: &str) -> Row {
         .unwrap()
         .values;
     row.insert("engine".into(), engine.into());
-    row.insert(
-        "agent_sandbox_id".into(),
-        "11111111-2222-3333-4444-555555555555".into(),
-    );
     row
 }
 
@@ -56,6 +52,8 @@ struct Engine {
     files: Vec<(String, Vec<u8>)>,
     uploads: Vec<Vec<u8>>,
     requests: Vec<(String, String)>,
+    creates: usize,
+    fail_upload: bool,
 }
 
 /// A stateful engine that holds one helper container and one volume.
@@ -88,12 +86,15 @@ async fn engine(state: Arc<Mutex<Engine>>) -> Fixture {
                 let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
                 assert!(!body.to_string().contains(SENTINEL));
                 assert_eq!(body["HostConfig"]["NetworkMode"], "none");
-                let name = request.path.split("name=").nth(1).unwrap();
-                state.helper = Some(json!({"Id":"helper-id","Name":format!("/{name}"),
-                    "Config":{"Labels":body["Labels"]},"State":{"Status":"created"},
+                let name = url::form_urlencoded::parse(request.path.split_once('?').unwrap().1.as_bytes())
+                    .find(|(key, _)| key == "name").unwrap().1.into_owned();
+                state.creates += 1;
+                let id = format!("helper-{}", state.creates);
+                state.helper = Some(json!({"Id":id,"Name":format!("/{name}"),
+                    "Config":{"Image":body["Image"],"Labels":body["Labels"]},"State":{"Status":"created"},
                     "Mounts":[{"Type":"volume","Name":body["HostConfig"]["Mounts"][0]["Source"],
-                        "Destination":ROOT}]}));
-                (201, br#"{"Id":"helper-id","Warnings":[]}"#.to_vec())
+                        "Destination":ROOT,"RW":true}]}));
+                (201, serde_json::to_vec(&json!({"Id":id,"Warnings":[]})).unwrap())
             }
             ("GET", route) if route.ends_with("/json") => found(&state.helper),
             ("DELETE", route) if route.starts_with("/containers/") => {
@@ -102,6 +103,7 @@ async fn engine(state: Arc<Mutex<Engine>>) -> Fixture {
                 (204, vec![])
             }
             ("PUT", route) if route.ends_with("/archive") => {
+                if state.fail_upload { return Some((503, b"{}".to_vec())); }
                 let mut archive = tar::Archive::new(request.body.as_slice());
                 for entry in archive.entries().unwrap() {
                     let mut entry = entry.unwrap();
@@ -134,6 +136,54 @@ async fn engine(state: Arc<Mutex<Engine>>) -> Fixture {
         })
     })
     .await
+}
+
+#[tokio::test]
+async fn failed_upload_retains_the_helper_binding_for_explicit_recovery() {
+    let state = Arc::new(Mutex::new(Engine {
+        fail_upload: true,
+        ..Default::default()
+    }));
+    let fixture = engine(state.clone()).await;
+    let desired = row("unix:///var/run/docker.sock");
+    let backend = FilesBackend::new(fixture.engine_for("unix:///var/run/docker.sock"))
+        .with_secrets(Arc::new(Secrets(true)));
+    let failed = backend.ensure(files::FILES_KIND, &desired).await;
+    assert!(failed.error().is_some());
+    let partial = failed
+        .state()
+        .expect("an interrupted upload must keep its owned binding")
+        .clone();
+    assert_eq!(partial["complete"], "false");
+    assert!(!partial["helper_id"].is_empty());
+    assert!(!format!("{partial:?}").contains(SENTINEL));
+    let read = backend
+        .read(files::FILES_KIND, &partial, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read["complete"], "false");
+    // Losing only the helper is not loss of the still-owned volume binding.
+    state.lock().unwrap().helper = None;
+    let volume_only = backend
+        .read(files::FILES_KIND, &partial, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(volume_only["id"], partial["id"]);
+    assert_eq!(volume_only["complete"], "false");
+    state.lock().unwrap().fail_upload = false;
+    let mut retry = volume_only;
+    retry.insert("helper_id".into(), String::new());
+    let recovered = backend.ensure(files::FILES_KIND, &retry).await;
+    assert!(recovered.error().is_none(), "{:?}", recovered.error());
+    let recovered = recovered.state().unwrap();
+    assert_eq!(recovered["complete"], "true");
+    assert_ne!(recovered["helper_id"], partial["helper_id"]);
+    backend
+        .remove(files::FILES_KIND, recovered, true)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -182,13 +232,12 @@ async fn publication_checks_credentials_first_writes_private_files_once_and_clea
                 (65532, 65532)
             );
         }
-        let descriptor = &state.files.iter().find(|(f, _)| f == DESCRIPTOR).unwrap().1;
-        let descriptor: serde_json::Value = serde_json::from_slice(descriptor).unwrap();
-        assert_eq!(
-            descriptor["authentication"]["credentialFile"],
-            "/run/nemoclaw/secrets/openshell"
+        assert!(
+            state
+                .files
+                .iter()
+                .any(|(path, value)| path == "secrets/speech" && value == SENTINEL.as_bytes())
         );
-        assert!(!descriptor.to_string().contains(SENTINEL));
     }
 
     // An unchanged apply reads the marker and writes nothing.
@@ -219,14 +268,13 @@ async fn publication_checks_credentials_first_writes_private_files_once_and_clea
         .unwrap();
     assert_eq!(read.unwrap()["complete"], "false");
     let mut retry = published.clone();
-    retry.insert("id".into(), String::new());
-    assert!(
-        backend(true)
-            .ensure(files::FILES_KIND, &retry)
-            .await
-            .error()
-            .is_none()
-    );
+    retry.insert("helper_id".into(), String::new());
+    let repaired = backend(true).ensure(files::FILES_KIND, &retry).await;
+    assert!(repaired.error().is_none(), "{:?}", repaired.error());
+    let repaired = repaired.state().unwrap().clone();
+    assert_eq!(repaired["id"], published["id"]);
+    assert_ne!(repaired["helper_id"], published["helper_id"]);
+    let published = repaired;
     assert!(
         state
             .lock()
@@ -236,36 +284,43 @@ async fn publication_checks_credentials_first_writes_private_files_once_and_clea
             .any(|(m, p)| m == "DELETE" && p.starts_with("/volumes/"))
     );
 
-    // Foreign resources are refused and never deleted.
-    let owner = OWNER_LABEL.to_owned();
-    state.lock().unwrap().helper.as_mut().unwrap()["Config"]["Labels"][owner.as_str()] =
-        json!("foreign");
-    let deletes = |state: &Engine| state.requests.iter().filter(|(m, _)| m == "DELETE").count();
-    let before = deletes(&state.lock().unwrap());
-    assert!(
-        backend(true)
-            .read(files::FILES_KIND, &published, false)
-            .await
-            .is_err()
-    );
-    assert!(
-        backend(true)
-            .ensure(files::FILES_KIND, &published)
-            .await
-            .error()
-            .is_some()
-    );
-    assert!(
-        backend(true)
-            .remove(files::FILES_KIND, &published, true)
-            .await
-            .is_err()
-    );
-    assert_eq!(deletes(&state.lock().unwrap()), before);
+    // A foreign helper OR volume must prevent cleanup of either object.
+    for foreign_volume in [false, true] {
+        let set_owner = |owner: &str| {
+            let mut state = state.lock().unwrap();
+            if foreign_volume {
+                state.volume.as_mut().unwrap()["Labels"][OWNER_LABEL] = json!(owner);
+            } else {
+                state.helper.as_mut().unwrap()["Config"]["Labels"][OWNER_LABEL] = json!(owner);
+            }
+        };
+        set_owner("foreign");
+        let deletes = |state: &Engine| state.requests.iter().filter(|(m, _)| m == "DELETE").count();
+        let before = deletes(&state.lock().unwrap());
+        assert!(
+            backend(true)
+                .read(files::FILES_KIND, &published, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            backend(true)
+                .ensure(files::FILES_KIND, &published)
+                .await
+                .error()
+                .is_some()
+        );
+        assert!(
+            backend(true)
+                .remove(files::FILES_KIND, &published, true)
+                .await
+                .is_err()
+        );
+        assert_eq!(deletes(&state.lock().unwrap()), before);
+        set_owner(&published["owner"]);
+    }
 
     // Removal deletes the owned helper and volume.
-    state.lock().unwrap().helper.as_mut().unwrap()["Config"]["Labels"][owner.as_str()] =
-        json!(published["owner"]);
     backend(true)
         .remove(files::FILES_KIND, &published, true)
         .await

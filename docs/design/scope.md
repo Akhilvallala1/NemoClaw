@@ -73,12 +73,14 @@ Compilation alone does not qualify migration or platforms.
 
 Decision: Accept, authorized by San Dang on October 15, 2026, after the provider reorganization in #13131.
 Accountable maintainer: San Dang.
-Reason: an application container needs credential files and an agent connection descriptor before it starts, without credential values in its environment, configuration, plans, or state.
+Reason: an application container needs credential files before it starts, without credential values in its environment, configuration, plans, or state.
+The later accepted [container contract](container-contract.md) replaces generated agent descriptors with manually configured application environment values.
 Placement: one `protected_files` resource in a `protected` provider, built from `nemoclaw-provider`; no general container provider.
 It owns only its setup container and volume. Docker keeps the application container, and Fabric keeps the agent.
 
 The provider reads credential values from its environment and writes them with Docker's archive API into a fresh volume, through a setup container that never starts; a marker written last records completion.
 The volume is fresh for every publication and mounted read-only by the application, so the application cannot plant links in it.
 The provider does not check host default ACLs on Docker's volume directory.
-The `none` authentication mode is plaintext without client authentication, restricted by the SDK to this deployment's managed Docker gateway; use it only on a trusted local machine.
+The protected-file provider does not interpret application authentication modes.
+VoiceClaw's manual `none` mode is plaintext without client authentication and is only for explicitly trusted local deployment; the application owns its validation.
 Validation: deterministic provider, compiler, and pinned OpenTofu contract tests; Linux Docker and the joint VoiceClaw turn remain under #12570.

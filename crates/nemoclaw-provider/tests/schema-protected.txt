@@ -9,23 +9,14 @@
 provider protected (version 0)
   destroy: bool, optional
 
-resource protected_files (version 0)
-  agent: object({ name = string, owner = string, sandbox = string, sandbox_id = string, type = string, workspace = string }), optional
+resource protected_files (version 1)
   complete: string, computed
-  credentials: map(string), optional
+  credentials: map(string), required
   engine: string, required
   generation: string, required
+  helper_id: string, computed
   id: string, computed
   image: string, required
   name: string, required
   owner: string, required
   user: string, required
-  block agent_connection: optional
-    authentication: string, required
-      > `oidcBearer` or `none`.
-    credential: string, optional
-      > The `credentials` entry holding the bearer token; required for oidcBearer.
-    endpoint: string, required
-      > Gateway origin the application reaches.
-    service: string, required
-      > Application service name written to the descriptor.

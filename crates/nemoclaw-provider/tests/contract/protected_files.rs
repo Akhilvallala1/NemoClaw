@@ -6,11 +6,11 @@ use nemoclaw_sdk::services::installers::container::inputs::{self as files, Files
 use serde_json::{Value, json};
 use std::fs;
 
-/// The compiled fixture's inputs as authored HCL, with a literal agent ref.
+/// The compiled fixture's credential references as authored HCL.
 fn authored(files: &Files) -> Value {
     let mut resource = json!({});
     for (field, value) in files.row() {
-        if files::SCALAR_FIELDS.contains(&field.as_str()) {
+        if field != "credentials_json" {
             resource[field] = json!(value);
         }
     }
@@ -19,12 +19,6 @@ fn authored(files: &Files) -> Value {
             resource[input.attribute] = input.configuration(encoded).unwrap();
         }
     }
-    let agent = files.agent.as_ref().unwrap();
-    resource["agent"] = json!({
-        "type": files::references()[0].kind, "workspace": agent.workspace,
-        "sandbox": agent.sandbox, "sandbox_id": "11111111-2222-3333-4444-555555555555",
-        "owner": agent.owner, "name": agent.name,
-    });
     resource
 }
 
@@ -33,10 +27,8 @@ fn authored(files: &Files) -> Value {
 fn authored_protected_files_are_validated_offline_without_echoing_inputs() {
     use nemoclaw_sdk::{compile, config::Document};
     let document = Document::parse(
-        include_bytes!(
-            "../../../nemoclaw-sdk/tests/fixtures/config/container-agent-connection.yaml"
-        )
-        .as_slice(),
+        include_bytes!("../../../nemoclaw-sdk/tests/fixtures/config/container-credentials.yaml")
+            .as_slice(),
     )
     .unwrap();
     let generations = [

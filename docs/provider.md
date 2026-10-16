@@ -357,24 +357,26 @@ Generated graphs read it for each Ollama proxy and start the proxy container aft
 
 ### Protected Files
 
-The `protected` provider takes only `destroy`. Its `protected_files` resource publishes an application's credential files and agent connection descriptor into a volume it owns, `<name>-inputs`, which the application mounts read-only at `/run/nemoclaw`.
+The `protected` provider takes only `destroy`. Its `protected_files` resource publishes credential files into an owned volume, `<name>-inputs`, mounted read-only at `/run/nemoclaw`.
+Connection settings belong to the application, not this resource.
 
 | Input | Meaning |
 |---|---|
 | `engine`, `owner`, `generation` | Local Docker engine, and the labels the setup container and volume carry |
 | `name` | The application container's name |
 | `image` | The application image, used for a setup container that never starts |
-| `user` | Numeric non-root UID:GID that owns the files |
+| `user` | Numeric UID:GID that owns the files |
 | `credentials` | File names under `secrets/`, mapped to the provider environment variables holding their values |
-| `agent_connection` | Optional descriptor block: `service`, `endpoint`, `authentication` (`oidcBearer` or `none`), and `credential` |
-| `agent` | The selected `fabric_agent`'s `ref`; required exactly when `agent_connection` is set, and its owner must equal `owner` |
 
 The provider reads every credential before any change, so a missing one changes nothing.
 It creates a fresh volume and a setup container that mounts it, writes the files with Docker's archive API, and writes a completion marker last; the container never starts.
 Files are mode `0600` and directories `0700`, owned by `user`.
-State records only `id` and `complete`; credential values never enter inputs, plans, state, or diagnostics.
-An unchanged apply reads the marker and writes nothing. An incomplete publication starts again in a fresh volume.
-A setup container or volume with another owner or generation stops every operation. Removal deletes the owned setup container and volume, and never revokes a credential.
+State retains nonsecret inputs, a stable resource `id`, the observed physical `helper_id`, and `complete`; credential values never enter inputs, plans, state, or diagnostics.
+An interrupted volume creation or upload retains a partial binding; a volume without its helper is incomplete, not absent.
+An unchanged apply reads the marker and writes nothing. An incomplete publication starts again in fresh owned storage.
+Ownership checks cover both helper and volume before cleanup, and successful removal requires confirmed absence.
+Schema version 1 rejects the earlier descriptor-bearing state rather than silently migrating it.
+Removal never revokes a credential.
 
 ### Host Data Sources
 
@@ -384,7 +386,7 @@ The `host` provider observes container engines and changes nothing; it has no se
 |---|---|
 | `host_engine` | [Engine version, platform, CPUs, memory](#engine-and-fabric-discovery), and [advertised hardware](#target-hardware) |
 | `host_image` | [An image's platform and labels](#runtime-image-compatibility) |
-| `host_container_health` | [An owned container's Docker HEALTHCHECK](#application-container-health) |
+| `host_container_health` | [Owned container readiness](#application-container-health): Docker HEALTHCHECK, HTTP, or managed-runtime status |
 
 ### Docker and Helm Types
 
@@ -725,10 +727,16 @@ Teardown removes both image observations and their dependency gates.
 
 `host_container_health` requires an `engine`, a container `name`, and a `container_id`.
 Optional `labels` maps each label the container must carry to its value; generated graphs require the deployment owner, generation, and compiled launch digest.
-The source inspects the container and never runs a command in it.
-It succeeds only when the container is running and its Docker HEALTHCHECK reports `healthy`, and then sets `healthy`.
-While the health check reports `starting`, it inspects again until `wait_timeout_seconds` (0–3600, default 0) elapses.
-A missing, stopped, unhealthy, or differently labeled container fails the read; authentication, transport, and incomplete inspection failures also stop the operation.
+The source verifies that the selected container is running and matches its identity and labels; it never runs a command in it.
+By default it requires Docker HEALTHCHECK to report `healthy`.
+Optional `http_url` selects an HTTP GET that must return 200, without credentials in the URL or redirects.
+Optional `runtime_status` instead selects a managed-runtime status file: `phase`, `updated`, `detail`, and `pid`, with a ready report no older than the container's start time.
+These modes are mutually exclusive; neither interprets application configuration or invokes a model.
+A successful read sets `healthy`.
+It waits for startup within `wait_timeout_seconds` (capped at 3600, default 0); zero performs one bounded observation.
+Missing or stopped containers, mismatched labels, malformed or stopped runtime reports, rejected HTTP reads, and unhealthy Docker reports fail the read.
+A stale runtime report or loading phase is not readiness; it can be polled within the deadline.
+Failed engine observations are not absence.
 Generated graphs set `read_trigger` so every apply, including an unchanged apply, observes current health before dependent services start.
 
 ## Runtime Capacity and Readiness

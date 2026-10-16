@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! Shared Docker resource assembly; callers own service settings and lifecycle policy.
+//! Container base shared by image-owned applications and managed inference.
+//! Callers supply launch settings, preparation resources, and retention policy;
+//! the Docker compiler owns provider-specific resource emission.
 use crate::{
     Error,
     backend::Row,
@@ -10,7 +12,29 @@ use crate::{
     services::contract::InstallPlan,
 };
 
-pub(super) fn specification(
+/// Managed kinds supply their runtime contract and image/placement, then use
+/// the same process and resource assembly as explicit containers.
+pub(crate) fn managed_process(
+    runtime: nemoclaw_runtime::RuntimeSpec,
+    limits: Option<&super::ServiceContainer>,
+    process: Process,
+) -> Result<Process, Error> {
+    let resources = super::ServiceContainer::resources(limits);
+    Ok(Process {
+        configuration: serde_json::to_string(&runtime)
+            .map_err(|_| Error::State("cannot encode managed runtime configuration"))?,
+        entrypoint: vec![crate::managed::RUNTIME_ENTRYPOINT.into()],
+        mount_target: crate::managed::RUNTIME_DATA_PATH.into(),
+        shared_memory_bytes: resources.shared_memory_bytes,
+        host_ipc: resources.host_ipc,
+        cpu_limit_millis: resources.cpu_limit_millis,
+        memory_bytes: resources.memory_bytes,
+        gpu: true,
+        ..process
+    })
+}
+
+pub(crate) fn specification(
     document: &Document,
     generations: &Generations,
     kind: &str,
@@ -36,7 +60,7 @@ pub(super) fn specification(
     Ok(spec)
 }
 
-pub(super) fn storage(spec: &Spec, name: String) -> Storage {
+pub(crate) fn storage(spec: &Spec, name: String) -> Storage {
     Storage {
         name,
         owner: spec.owner.clone(),
@@ -45,7 +69,7 @@ pub(super) fn storage(spec: &Spec, name: String) -> Storage {
     }
 }
 
-pub(super) fn storage_target(
+pub(crate) fn storage_target(
     spec: &Spec,
     kind: &str,
     address: String,
@@ -58,7 +82,7 @@ pub(super) fn storage_target(
     })
 }
 
-pub(super) fn install(
+pub(crate) fn install(
     spec: Spec,
     name: &str,
     storage_kind: &str,

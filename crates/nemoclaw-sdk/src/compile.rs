@@ -518,8 +518,6 @@ fn compile_with_plans(
         // order those objects first.
         let references = if agent {
             nemoclaw_fabric::agent::references()
-        } else if files {
-            crate::services::installers::container::inputs::references()
         } else {
             nemoclaw_openshell::references(&target.kind)
         };
@@ -543,17 +541,6 @@ fn compile_with_plans(
                     server[*attribute] = json!(value.replace("${", "$${").replace("%{", "%%{"));
                 }
                 attributes[reference.attribute] = server;
-                continue;
-            }
-            // Protected files bind the agent of their connection's sandbox.
-            if reference.kind == nemoclaw_fabric::agent::RESOURCE_TYPE {
-                if let Some(sandbox) = target.values.get("agent_sandbox").filter(|s| !s.is_empty())
-                {
-                    attributes[reference.attribute] = json!(format!(
-                        "${{{}.{sandbox}.ref}}",
-                        nemoclaw_fabric::agent::RESOURCE_TYPE
-                    ));
-                }
                 continue;
             }
             // An agent's harness is the one its sandbox's image read selects.

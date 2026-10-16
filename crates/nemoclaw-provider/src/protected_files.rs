@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! `protected_files`: publishes an application's credential files and agent
-//! connection descriptor into a fresh owned volume. Docker's archive API
-//! writes them through a setup container that is created but never started.
+//! Credential-file publication through a never-started container and a fresh
+//! owned volume. Application connection settings do not belong to this resource.
 use crate::{Backend, Error, Mutation, ObservationError, Row};
 use async_trait::async_trait;
 use bollard::{
@@ -12,7 +11,7 @@ use bollard::{
 use nemoclaw_sdk::{
     managed::{GENERATION_LABEL, OWNER_LABEL},
     services::installers::container::inputs::{
-        self as files, DESCRIPTOR, Files, MARKER, ROOT, credential_file,
+        self as files, Files, MARKER, ROOT, credential_file,
     },
 };
 use serde_json::json;
@@ -22,43 +21,30 @@ const INPUT_LABEL: &str = "nemoclaw.nvidia.com/protected-files";
 const MAX_CREDENTIAL_BYTES: usize = 4096;
 
 pub(crate) fn definition() -> crate::Definition {
-    let fields = files::fields();
-    let mut definition = crate::Definition::new(files::FILES_KIND, &fields, &[])
-        .optional(&files::optional_fields())
+    let mut definition = crate::Definition::new(files::FILES_KIND, files::FIELDS, &[])
+        // Earlier state included a generated agent descriptor. Reject it rather
+        // than silently changing the contents of an established volume.
+        .schema_version(1)
         .computed("complete", crate::rerun_when_stopped)
-        .computed("id", identity_plan)
-        .validate_inputs(validate);
+        .computed("helper_id", |name, prior| {
+            use tf_provider::value::Value;
+            if prior.get("complete") == Some(&Value::Value("false".into())) {
+                Some(Value::Unknown)
+            } else {
+                crate::carry_prior(name, prior)
+            }
+        })
+        .validate_inputs(|known, unknown| {
+            if !unknown.is_empty() {
+                return Ok(());
+            }
+            Files::from_row(known)
+                .map_err(|e| e.to_string())?
+                .validate()
+                .map_err(|e| e.to_string().into())
+        });
     definition.structured = files::structured_inputs();
-    definition.references = files::references();
     definition
-}
-
-/// Check known inputs offline; the agent's sandbox identity may still be unknown.
-fn validate(known: &Row, unknown: &[&str]) -> Result<(), std::borrow::Cow<'static, str>> {
-    if !unknown.is_empty() {
-        return Ok(());
-    }
-    Files::from_row(known)
-        .map_err(|error| error.to_string())?
-        .validate(false)
-        .map_err(|error| error.to_string().into())
-}
-
-/// An incomplete publication is published again, under a new identity.
-fn identity_plan(name: &str, prior: &crate::State) -> Option<tf_provider::value::Value<String>> {
-    use tf_provider::value::Value;
-    if prior.get("complete") == Some(&Value::Value("false".into())) {
-        Some(Value::Unknown)
-    } else {
-        crate::carry_prior(name, prior)
-    }
-}
-
-/// A credential a file can hold: printable ASCII without spaces.
-fn credential(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_CREDENTIAL_BYTES
-        && value.bytes().all(|b| (0x21..=0x7e).contains(&b))
 }
 
 pub struct FilesBackend {
@@ -79,26 +65,42 @@ impl FilesBackend {
     }
     fn spec(&self, row: &Row) -> Result<Files, Error> {
         let spec = Files::from_row(row)?;
-        spec.validate(true)?;
+        spec.validate()?;
         if self.engine.endpoint() != spec.engine {
             return Err(ObservationError::BindingMismatch.into());
         }
         Ok(spec)
     }
-    /// The credential values, read before anything changes.
     fn values(&self, spec: &Files) -> Result<Vec<(String, String)>, Error> {
         spec.credentials
             .iter()
             .map(|(name, env)| {
                 let value = self.secrets.resolve(env)?;
-                if !credential(&value) {
+                if value.is_empty()
+                    || value.len() > MAX_CREDENTIAL_BYTES
+                    || !value.bytes().all(|b| (0x21..=0x7e).contains(&b))
+                {
                     return Err(ObservationError::Authentication.into());
                 }
                 Ok((name.clone(), value))
             })
             .collect()
     }
-    /// The owned helper, or `None` when absent; a foreign one is refused.
+    async fn volume(&self, spec: &Files) -> Result<bool, Error> {
+        let Some(volume) = self.engine.volume(&spec.helper_name()).await? else {
+            return Ok(false);
+        };
+        if volume.name != spec.helper_name()
+            || volume.driver != "local"
+            || !volume.options.is_empty()
+            || labels(spec)
+                .iter()
+                .any(|(key, value)| volume.labels.get(key) != Some(value))
+        {
+            return Err(ObservationError::BindingMismatch.into());
+        }
+        Ok(true)
+    }
     async fn helper(
         &self,
         spec: &Files,
@@ -110,28 +112,36 @@ impl FilesBackend {
         let observed = helper.config.as_ref().and_then(|c| c.labels.as_ref());
         let mounts = helper.mounts.as_deref().unwrap_or_default();
         let id = helper.id.as_deref().unwrap_or_default();
-        let owned = labels(spec)
-            .iter()
-            .all(|(key, value)| observed.and_then(|l| l.get(key)) == Some(value))
-            && helper
+        if id.is_empty()
+            || helper
+                .name
+                .as_deref()
+                .map(|name| name.trim_start_matches('/'))
+                != Some(spec.helper_name().as_str())
+            || labels(spec)
+                .iter()
+                .any(|(key, value)| observed.and_then(|l| l.get(key)) != Some(value))
+            || helper.config.as_ref().and_then(|c| c.image.as_deref()) != Some(spec.image.as_str())
+            || helper
                 .state
                 .as_ref()
                 .and_then(|s| s.status)
                 .map(|s| s.to_string())
-                == Some("created".into())
-            && mounts.len() == 1
-            && mounts[0].name.as_deref() == Some(spec.helper_name().as_str())
-            && mounts[0].destination.as_deref() == Some(ROOT)
-            && row
-                .get("id")
-                .is_none_or(|bound| bound.is_empty() || bound == id);
-        if !owned || id.is_empty() {
+                .as_deref()
+                != Some("created")
+            || mounts.len() != 1
+            || mounts[0].typ.as_deref() != Some("volume")
+            || mounts[0].name.as_deref() != Some(spec.helper_name().as_str())
+            || mounts[0].destination.as_deref() != Some(ROOT)
+            || mounts[0].rw != Some(true)
+            || row
+                .get("helper_id")
+                .is_some_and(|bound| !bound.is_empty() && bound != id)
+        {
             return Err(ObservationError::BindingMismatch.into());
         }
         Ok(Some(helper))
     }
-    /// Whether the publication finished: the marker is written last, after one
-    /// archive write that created every file with its owner and mode.
     async fn complete(&self, id: &str, spec: &Files) -> Result<bool, Error> {
         let marker = self
             .engine
@@ -139,52 +149,65 @@ impl FilesBackend {
             .await?;
         Ok(marker.as_deref() == Some(spec.revision().as_bytes()))
     }
-    /// Delete the owned helper and its volume.
     async fn discard(&self, spec: &Files, row: &Row) -> Result<(), Error> {
-        if let Some(helper) = self.helper(spec, row).await? {
-            let id = helper.id.unwrap_or_default();
+        // Check both objects before changing either, including during recovery.
+        let helper = self.helper(spec, row).await?;
+        let volume = self.volume(spec).await?;
+        if let Some(helper) = helper {
             self.engine
                 .api
-                .remove_container(&id, None::<RemoveContainerOptions>)
+                .remove_container(
+                    &helper.id.unwrap_or_default(),
+                    Some(RemoveContainerOptions {
+                        force: false,
+                        v: true,
+                        ..Default::default()
+                    }),
+                )
                 .await
-                .map_err(|e| crate::docker::remote(&e))?;
-        }
-        if let Some(volume) = self.engine.volume(&spec.helper_name()).await? {
-            if volume.labels.get(OWNER_LABEL) != Some(&spec.owner)
-                || volume.labels.get(GENERATION_LABEL) != Some(&spec.generation)
-            {
-                return Err(ObservationError::BindingMismatch.into());
+                .map_err(|error| crate::docker::remote(&error))?;
+            if self.engine.container(&spec.helper_name()).await?.is_some() {
+                return Err(ObservationError::Incomplete.into());
             }
+        }
+        if volume {
             self.engine
                 .api
-                .remove_volume(&volume.name, None::<RemoveVolumeOptions>)
+                .remove_volume(
+                    &spec.helper_name(),
+                    Some(RemoveVolumeOptions { force: false }),
+                )
                 .await
-                .map_err(|e| crate::docker::remote(&e))?;
+                .map_err(|error| crate::docker::remote(&error))?;
+            if self.engine.volume(&spec.helper_name()).await?.is_some() {
+                return Err(ObservationError::Incomplete.into());
+            }
         }
         Ok(())
     }
-    /// Create a fresh volume and helper, then write the files and the marker.
-    async fn publish(&self, spec: &Files, values: &[(String, String)]) -> Result<String, Error> {
+    async fn create(&self, spec: &Files) -> Result<String, Error> {
         let name = spec.helper_name();
-        let labels = labels(spec);
         self.engine
             .api
             .create_volume(bollard::models::VolumeCreateRequest {
                 name: Some(name.clone()),
                 driver: Some("local".into()),
-                labels: Some(labels.clone()),
+                labels: Some(labels(spec)),
                 ..Default::default()
             })
             .await
-            .map_err(|e| crate::docker::remote(&e))?;
+            .map_err(|error| crate::docker::remote(&error))?;
+        if !self.volume(spec).await? {
+            return Err(ObservationError::Incomplete.into());
+        }
         let config = serde_json::from_value(json!({
-            "Image": spec.image, "Labels": labels,
-            "HostConfig": {"NetworkMode": "none", "Mounts": [
-                {"Type": "volume", "Source": name, "Target": ROOT, "VolumeOptions": {"NoCopy": true}}
+            "Image":spec.image,"Labels":labels(spec),
+            "HostConfig":{"NetworkMode":"none","Mounts":[
+                {"Type":"volume","Source":name,"Target":ROOT,"VolumeOptions":{"NoCopy":true}}
             ]}
         }))
         .map_err(|_| Error::State("invalid setup container configuration"))?;
-        let id = self
+        let created = self
             .engine
             .api
             .create_container(
@@ -195,15 +218,11 @@ impl FilesBackend {
                 config,
             )
             .await
-            .map_err(|e| crate::docker::remote(&e))?
-            .id;
-        self.engine
-            .write_archive(&id, ROOT, archive(spec, values)?)
-            .await?;
-        self.engine
-            .write_files(&id, ROOT, &[(MARKER, spec.revision().as_bytes(), 0o644)])
-            .await?;
-        Ok(id)
+            .map_err(|error| crate::docker::remote(&error))?;
+        if created.id.is_empty() {
+            return Err(ObservationError::Incomplete.into());
+        }
+        Ok(created.id)
     }
 }
 
@@ -215,12 +234,17 @@ fn labels(spec: &Files) -> HashMap<String, String> {
     ]
     .into()
 }
-
-/// Credential files and the descriptor, owned by the application user:
-/// directories 0700 and files 0600.
 fn archive(spec: &Files, values: &[(String, String)]) -> Result<Vec<u8>, Error> {
-    let (uid, gid) = spec.user.split_once(':').unwrap_or_default();
-    let (uid, gid) = (uid.parse().unwrap_or(0), gid.parse().unwrap_or(0));
+    let (uid, gid) = spec
+        .user
+        .split_once(':')
+        .ok_or(Error::State("invalid credential file owner"))?;
+    let (uid, gid) = (
+        uid.parse()
+            .map_err(|_| Error::State("invalid credential file owner"))?,
+        gid.parse()
+            .map_err(|_| Error::State("invalid credential file owner"))?,
+    );
     let mut builder = tar::Builder::new(Vec::new());
     let mut append = |path: &str, bytes: &[u8], directory: bool| {
         let mut header = tar::Header::new_gnu();
@@ -239,22 +263,19 @@ fn archive(spec: &Files, values: &[(String, String)]) -> Result<Vec<u8>, Error> 
             .append_data(&mut header, path, bytes)
             .map_err(|_| Error::State("cannot prepare protected files"))
     };
-    if !values.is_empty() {
-        append("secrets", &[], true)?;
-    }
+    append("secrets", &[], true)?;
     for (name, value) in values {
         append(&credential_file(name), value.as_bytes(), false)?;
-    }
-    if let Some(descriptor) = spec.descriptor()? {
-        append(DESCRIPTOR, descriptor.to_string().as_bytes(), false)?;
     }
     builder
         .into_inner()
         .map_err(|_| Error::State("cannot prepare protected files"))
 }
-
-fn observed(mut row: Row, id: String, complete: bool) -> Row {
-    row.insert("id".into(), id);
+fn observed(mut row: Row, helper_id: String, complete: bool) -> Row {
+    // Stable resource identity also records a volume when helper creation or
+    // upload is interrupted. The helper's physical ID is a separate observation.
+    row.insert("id".into(), format!("{}-inputs", row["name"]));
+    row.insert("helper_id".into(), helper_id);
     row.insert("complete".into(), complete.to_string());
     row
 }
@@ -272,7 +293,9 @@ impl Backend for FilesBackend {
         let spec = self.spec(desired)?;
         self.values(&spec)?;
         if let Some(prior) = prior {
-            self.helper(&self.spec(prior)?, prior).await?;
+            let spec = self.spec(prior)?;
+            self.helper(&spec, prior).await?;
+            self.volume(&spec).await?;
         }
         Ok(())
     }
@@ -284,12 +307,18 @@ impl Backend for FilesBackend {
     ) -> Result<Option<Row>, ObservationError> {
         let work = async {
             let spec = self.spec(prior)?;
-            let Some(helper) = self.helper(&spec, prior).await? else {
-                return Ok(None);
-            };
-            let id = helper.id.unwrap_or_default();
-            let complete = !removing && self.complete(&id, &spec).await?;
-            Ok(Some(observed(prior.clone(), id, complete)))
+            let helper = self.helper(&spec, prior).await?;
+            let volume = self.volume(&spec).await?;
+            match (helper, volume) {
+                (None, false) => Ok(None),
+                (None, true) => Ok(Some(observed(prior.clone(), String::new(), false))),
+                (Some(_), false) => Err(ObservationError::Incomplete.into()),
+                (Some(helper), true) => {
+                    let id = helper.id.unwrap_or_default();
+                    let complete = !removing && self.complete(&id, &spec).await?;
+                    Ok(Some(observed(prior.clone(), id, complete)))
+                }
+            }
         };
         tokio::time::timeout(Duration::from_secs(60), work)
             .await
@@ -301,16 +330,32 @@ impl Backend for FilesBackend {
         let work = async {
             let spec = self.spec(desired)?;
             let values = self.values(&spec)?;
+            let volume = self.volume(&spec).await?;
             if let Some(helper) = self.helper(&spec, desired).await? {
+                if !volume {
+                    return Err(ObservationError::Incomplete.into());
+                }
                 let id = helper.id.unwrap_or_default();
+                bound = Some(observed(desired.clone(), id.clone(), false));
                 if self.complete(&id, &spec).await? {
                     return Ok(observed(desired.clone(), id, true));
                 }
             }
-            // An incomplete publication starts again in a fresh volume.
             self.discard(&spec, desired).await?;
-            let id = self.publish(&spec, &values).await?;
-            bound = Some(observed(desired.clone(), id.clone(), false));
+            // Record attempted creation before crossing the mutation boundary.
+            bound = Some(observed(desired.clone(), String::new(), false));
+            let id = self.create(&spec).await?;
+            let fresh = observed(desired.clone(), id.clone(), false);
+            bound = Some(fresh.clone());
+            if self.helper(&spec, &fresh).await?.is_none() {
+                return Err(ObservationError::Incomplete.into());
+            }
+            self.engine
+                .write_archive(&id, ROOT, archive(&spec, &values)?)
+                .await?;
+            self.engine
+                .write_files(&id, ROOT, &[(MARKER, spec.revision().as_bytes(), 0o644)])
+                .await?;
             if !self.complete(&id, &spec).await? {
                 return Err(Error::State(
                     "protected files could not be verified; resources retained",
@@ -336,7 +381,6 @@ impl Backend for FilesBackend {
             .map_err(diagnostic)
     }
 }
-
 #[cfg(all(test, unix))]
 #[path = "protected_files_tests.rs"]
 mod tests;

@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Image-owned applications use the same compute compiler as typed inference services.
-use super::docker;
+pub(super) mod base;
+mod execution;
+pub mod inputs;
+mod limits;
 use crate::{
     Error,
     compile::{Generations, Target},
@@ -9,27 +12,42 @@ use crate::{
     managed::{ImageLaunch, Process},
     services::contract::{InstallPlan, Installer, RemovePlan},
 };
+pub use execution::{ContainerExecution, ContainerReadiness};
+pub(crate) use limits::DEFAULT_MEMORY_LIMIT_GIB;
+pub use limits::{ServiceContainer, ServiceIpc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
-pub mod connection;
-pub mod inputs;
 
 pub const SERVICE_KIND: &str = "container_service";
 pub const STORAGE_KIND: &str = "container_storage";
-/// Data source that waits for an application's Docker HEALTHCHECK.
+/// Data source that observes the selected container readiness contract.
 pub const HEALTH_DATA_SOURCE: &str = "host_container_health";
-/// How long apply waits for the HEALTHCHECK to report healthy.
-pub const STARTUP_TIMEOUT_SECONDS: u64 = 300;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// An ordinary Docker application on the managed Docker gateway's engine and
-/// network, not an OpenShell sandbox or inference provider.
+/// An image-owned service on the managed Docker gateway's engine and network.
+/// A private publication can also supply an inference serviceRef.
 pub struct Service {
-    /// Immutable application image. The image owns its entrypoint, CMD, and HEALTHCHECK.
+    /// Immutable application image. The image owns its entrypoint and default command.
     pub image: String,
-    /// Numeric non-root UID:GID. Omission selects 65532:65532.
+    /// Optional argument list for the image entrypoint, without implicit shell expansion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    /// Literal nonsecret configuration files uploaded before startup with mode 0444. Contents are retained in plans and state; these are not secret files or immutable mounts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, String>,
+    /// Execution limits. These do not replace the image's model-memory policy.
+    #[serde(default)]
+    pub container: ContainerExecution,
+    /// Listener inside the container. It must match the application's own configuration; omission uses publication.port when published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u16", range(min = 1, max = 65535))]
+    pub port: Option<u16>,
+    /// HTTP, managed-runtime status, or image HEALTHCHECK readiness on every apply.
+    #[serde(default)]
+    pub readiness: ContainerReadiness,
+    /// Numeric UID:GID. Omission selects 65532:65532; root requires an explicit 0:0 for images that need it.
     #[serde(default = "default_user")]
     pub user: String,
     /// Literal non-secret application settings. Credentials must not be supplied here.
@@ -39,18 +57,12 @@ pub struct Service {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ContainerPublication")]
     pub publication: Option<ContainerPublication>,
-    /// Disposable application data. Destroy removes this volume.
+    /// Disposable application data. Omission provides /data; destroy removes this volume. Typed model services retain their own storage policy.
+    #[serde(default)]
     pub data: ContainerData,
-    /// Credential references. NemoClaw writes each value to a private file,
-    /// `/run/nemoclaw/secrets/NAME`, before the application starts; values
-    /// never enter its environment, configuration, or state.
+    /// Credential references delivered as private files under /run/nemoclaw/secrets/NAME. Values never enter container settings, plans, state, or export.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, Credential>,
-    /// The sandbox agent the application invokes. NemoClaw writes its
-    /// descriptor to /run/nemoclaw/agent-connection.json, and starts the
-    /// application after the agent is ready.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_connection: Option<connection::AgentConnection>,
 }
 fn default_user() -> String {
     "65532:65532".into()
@@ -67,10 +79,17 @@ pub struct ContainerPublication {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// An owned disposable data volume. The image must supply the writable non-root mount directory.
+/// An owned disposable data volume. The image must supply a mount directory writable by its configured user.
 pub struct ContainerData {
-    /// One application directory below /var/lib, owned by the image's non-root user.
+    /// /data or one application directory below /var/lib.
     pub mount_path: String,
+}
+impl Default for ContainerData {
+    fn default() -> Self {
+        Self {
+            mount_path: "/data".into(),
+        }
+    }
 }
 
 pub(crate) fn constrain_schema(defs: &mut serde_json::Map<String, serde_json::Value>) {
@@ -121,21 +140,51 @@ impl Service {
                 "container publication requires a loopback or private IPv4 address",
             )?;
         }
-        if let Some(connection) = &self.agent_connection {
-            connection.validate()?;
+        self.container.resources()?;
+        require(
+            self.command.iter().flatten().all(|arg| !arg.contains('\0'))
+                && self.environment.values().all(|value| !value.contains('\0')),
+            "container arguments and environment must not contain NUL",
+        )?;
+        require(
+            self.files.iter().all(|(path, _)| {
+                execution::absolute_path(path)
+                    && path != "/run/nemoclaw"
+                    && !path.starts_with("/run/nemoclaw/")
+                    && path != &self.data.mount_path
+                    && !path.starts_with(&format!("{}/", self.data.mount_path))
+            }),
+            "configuration files require canonical paths outside data and protected-input mounts",
+        )?;
+        require(
+            !(self.readiness.path.is_some() && self.readiness.runtime_status.is_some()),
+            "choose HTTP or runtime-status readiness, not both",
+        )?;
+        if let Some(path) = &self.readiness.path {
             require(
-                connection
-                    .authentication
-                    .secret_ref
-                    .as_ref()
-                    .is_none_or(|name| self.secrets.contains_key(name)),
-                "agentConnection secretRef names no declared secret",
+                path.starts_with('/')
+                    && !path.starts_with("//")
+                    && !path.contains(['\0', '\r', '\n'])
+                    && self.listener_port() > 0,
+                "HTTP readiness requires a path and listener port",
             )?;
         }
+        if let Some(path) = &self.readiness.runtime_status {
+            require(
+                execution::absolute_path(path),
+                "runtime status requires a canonical absolute path",
+            )?;
+        }
+        require(
+            self.port
+                .is_none_or(|port| self.publication.as_ref().is_none_or(|p| p.port == port)),
+            "publication port must match the container listener",
+        )?;
         Ok(())
     }
-    fn protected(&self) -> bool {
-        !self.secrets.is_empty() || self.agent_connection.is_some()
+    pub(crate) fn listener_port(&self) -> u16 {
+        self.port
+            .unwrap_or_else(|| self.publication.as_ref().map_or(0, |p| p.port))
     }
     /// The managed local Docker gateway whose engine and network the application shares.
     pub(crate) fn gateway(
@@ -163,6 +212,7 @@ impl Installer for Service {
     ) -> Result<InstallPlan, Error> {
         self.validate()?;
         let gateway = Self::gateway(document)?;
+        let resources = self.container.resources()?;
         let process = Process {
             engine: gateway.engine.clone(),
             image: self.image.clone(),
@@ -170,19 +220,25 @@ impl Installer for Service {
             image_owned: Some(ImageLaunch {
                 user: self.user.clone(),
                 environment: self.environment.clone(),
-                protected_inputs: self.protected(),
+                command: self.command.clone(),
+                files: self.files.clone(),
+                ulimits: self.container.ulimits.clone(),
+                protected_inputs: !self.secrets.is_empty(),
             }),
             mount_target: self.data.mount_path.clone(),
             bind_address: self
                 .publication
                 .as_ref()
                 .map_or(String::new(), |p| p.bind_address.clone()),
-            port: self.publication.as_ref().map_or(0, |p| p.port),
-            shared_memory_bytes: 64 << 20,
-            memory_bytes: 1 << 30,
+            port: self.listener_port(),
+            shared_memory_bytes: resources.shared_memory_bytes,
+            host_ipc: resources.host_ipc,
+            memory_bytes: resources.memory_bytes,
+            cpu_limit_millis: resources.cpu_limit_millis,
+            gpu: self.container.gpu,
             ..Process::default()
         };
-        let spec = docker::specification(
+        let spec = base::specification(
             document,
             generations,
             SERVICE_KIND,
@@ -191,31 +247,9 @@ impl Installer for Service {
             process,
         )?;
         let mut plan = InstallPlan::default();
-        if self.protected() {
-            let files = format!("{}.{name}", inputs::FILES_KIND);
-            let connection = self
-                .agent_connection
-                .as_ref()
-                .map(|connection| -> Result<_, ConfigError> {
-                    let file = inputs::ConnectionFile {
-                        service: name.into(),
-                        endpoint: connection.endpoint(document)?,
-                        authentication: connection.authentication.mode,
-                        credential: connection.authentication.secret_ref.clone(),
-                    };
-                    // The graph replaces these with the agent's ref; the
-                    // sandbox name selects it.
-                    let agent = inputs::AgentTarget {
-                        workspace: document.workspace(),
-                        sandbox: connection.sandbox_ref.clone(),
-                        owner: document.metadata.uid.clone(),
-                        name: connection.agent(document)?.into(),
-                        ..Default::default()
-                    };
-                    Ok((file, agent))
-                })
-                .transpose()?;
-            let inputs = inputs::Files {
+        if !self.secrets.is_empty() {
+            let address = format!("{}.{name}", inputs::FILES_KIND);
+            let files = inputs::Files {
                 engine: spec.engine().into(),
                 name: spec.name.clone(),
                 owner: spec.owner.clone(),
@@ -225,28 +259,31 @@ impl Installer for Service {
                 credentials: self
                     .secrets
                     .iter()
-                    .map(|(key, credential)| (key.clone(), credential.env.clone()))
+                    .map(|(name, credential)| (name.clone(), credential.env.clone()))
                     .collect(),
-                agent: connection.as_ref().map(|(_, agent)| agent.clone()),
-                connection: connection.map(|(file, _)| file),
             };
-            inputs.validate(false)?;
+            files.validate()?;
             plan.targets.push(Target {
                 kind: inputs::FILES_KIND.into(),
-                address: files.clone(),
-                values: inputs.row(),
+                address: address.clone(),
+                values: files.row(),
             });
-            let mut dependencies = vec![files];
-            if let Some(connection) = &self.agent_connection {
-                dependencies.push(format!(
-                    "data.fabric_agent_readiness.{}",
-                    connection.sandbox_ref
-                ));
-            }
             plan.dependencies
-                .insert(address(SERVICE_KIND, name), dependencies);
+                .insert(self::address(SERVICE_KIND, name), vec![address]);
         }
-        docker::install(spec, name, STORAGE_KIND, None, Default::default(), plan)
+        base::install(
+            spec,
+            name,
+            STORAGE_KIND,
+            None,
+            [(
+                "readiness".into(),
+                serde_json::to_string(&self.readiness)
+                    .map_err(|_| Error::State("cannot encode container readiness"))?,
+            )]
+            .into(),
+            plan,
+        )
     }
     fn remove(&self, _: &Document, _: &str, _: &Generations) -> Result<RemovePlan, Error> {
         Ok(RemovePlan::default())

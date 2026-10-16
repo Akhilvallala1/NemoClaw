@@ -1,16 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! vLLM installer launch behavior; model and hardware qualification belongs to recipes.
-use super::docker;
+use super::container::base;
 mod config;
-mod container;
 mod hardware_profile;
 mod service_hardware;
+pub use super::container::{ServiceContainer, ServiceIpc};
 use crate::Error;
 pub use crate::services::placement::{ServicePlacement, ServicePublication};
 pub use config::{Memory, Model, Service, ServiceAuthentication, Serving};
-pub(crate) use container::DEFAULT_MEMORY_LIMIT_GIB;
-pub use container::{ServiceContainer, ServiceIpc};
 pub use hardware_profile::HardwareProfile;
 #[cfg(test)]
 use nemoclaw_runtime::vllm::arguments;
@@ -91,33 +89,23 @@ fn specification(
         service.serving.port,
     )?;
     let architecture = service.architecture()?.to_owned();
-    let resources = ServiceContainer::resources(service.container.as_ref());
-    let process = Process {
-        engine: placed.engine.clone(),
-        image: service.image.clone(),
-        network_cidr: placed.network_cidr.clone(),
-        create_network: placed.explicit,
-        architecture,
-        image_labels,
-        pull_image: false,
-        image_pull_policy: None,
-        configuration: serde_json::to_string(&nemoclaw_runtime::RuntimeSpec::Vllm(Box::new(
-            runtime_service,
-        )))
-        .map_err(|_| Error::State("cannot serialize service runtime configuration"))?,
-        entrypoint: vec![crate::managed::RUNTIME_ENTRYPOINT.into()],
-        command: Vec::new(),
-        mount_target: crate::managed::RUNTIME_DATA_PATH.into(),
-        bind_address: placed.bind_address,
-        port: service.serving.port as u16,
-        shared_memory_bytes: resources.shared_memory_bytes,
-        host_ipc: resources.host_ipc,
-        cpu_limit_millis: resources.cpu_limit_millis,
-        memory_bytes: resources.memory_bytes,
-        gpu: true,
-        ..Process::default()
-    };
-    docker::specification(
+    let process = base::managed_process(
+        nemoclaw_runtime::RuntimeSpec::Vllm(Box::new(runtime_service)),
+        service.container.as_ref(),
+        Process {
+            engine: placed.engine.clone(),
+            image: service.image.clone(),
+            network_cidr: placed.network_cidr.clone(),
+            create_network: placed.explicit,
+            architecture,
+            image_labels,
+
+            bind_address: placed.bind_address,
+            port: service.serving.port as u16,
+            ..Process::default()
+        },
+    )?;
+    base::specification(
         document,
         generations,
         SERVICE_KIND,
@@ -142,7 +130,7 @@ impl Installer for Service {
         let mut preparation = InstallPlan::default();
         if self.authentication.is_some() {
             let credentials = address(STORAGE_KIND, &format!("{name}_auth"));
-            preparation.targets.push(docker::storage_target(
+            preparation.targets.push(base::storage_target(
                 &spec,
                 STORAGE_KIND,
                 credentials.clone(),
@@ -159,7 +147,7 @@ impl Installer for Service {
                 .or_default()
                 .push("openshell_podman_gateway.runtime".into());
         }
-        docker::install(
+        base::install(
             spec,
             &format!("inference_{name}"),
             STORAGE_KIND,
@@ -202,7 +190,7 @@ impl Service {
         let spec = specification(document, name, self, generations)?;
         Ok(Some(crate::services::authentication::source_json(
             &crate::services::authentication::Source::ManagedService {
-                storage: docker::storage(&spec, format!("{}-auth", spec.name)),
+                storage: base::storage(&spec, format!("{}-auth", spec.name)),
                 container: spec.name.clone(),
                 endpoint: {
                     let process = spec

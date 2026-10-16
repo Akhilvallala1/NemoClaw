@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Ollama installer implementation.
-use super::docker;
+use super::container::base;
 mod config;
 pub use config::{
     ExternalOllama, ExternalOllamaModel, ManagedOllama, OllamaMemory, OllamaModel, OllamaProxy,
@@ -168,31 +168,23 @@ fn specification(
         &document.spec.gateway,
         service.serving.port,
     )?;
-    let resources = super::vllm::ServiceContainer::resources(service.container.as_ref());
-    let process = Process {
-        engine: placed.engine.clone(),
-        image: service.image.clone(),
-        network_cidr: placed.network_cidr.clone(),
-        create_network: placed.explicit,
-        architecture: service.architecture()?.into(),
-        image_labels: BTreeMap::from([("org.nemoclaw.backend".into(), "ollama".into())]),
-        pull_image: false,
-        image_pull_policy: None,
-        configuration: serde_json::to_string(&runtime)
-            .map_err(|_| Error::State("cannot serialize Ollama runtime configuration"))?,
-        entrypoint: vec![crate::managed::RUNTIME_ENTRYPOINT.into()],
-        command: Vec::new(),
-        mount_target: crate::managed::RUNTIME_DATA_PATH.into(),
-        bind_address: placed.bind_address,
-        port: service.serving.port as u16,
-        shared_memory_bytes: resources.shared_memory_bytes,
-        host_ipc: resources.host_ipc,
-        cpu_limit_millis: resources.cpu_limit_millis,
-        memory_bytes: resources.memory_bytes,
-        gpu: true,
-        ..Process::default()
-    };
-    docker::specification(
+    let process = base::managed_process(
+        runtime,
+        service.container.as_ref(),
+        Process {
+            engine: placed.engine.clone(),
+            image: service.image.clone(),
+            network_cidr: placed.network_cidr.clone(),
+            create_network: placed.explicit,
+            architecture: service.architecture()?.into(),
+            image_labels: BTreeMap::from([("org.nemoclaw.backend".into(), "ollama".into())]),
+
+            bind_address: placed.bind_address,
+            port: service.serving.port as u16,
+            ..Process::default()
+        },
+    )?;
+    base::specification(
         document,
         generations,
         SERVICE_KIND,
@@ -217,7 +209,7 @@ impl Installer for ManagedOllama {
         if document.spec.gateway.as_managed().is_some() && self.placement.is_none() {
             prerequisites.push("openshell_podman_gateway.runtime".into());
         }
-        docker::install(
+        base::install(
             specification(document, name, self, generations)?,
             name,
             STORAGE_KIND,
