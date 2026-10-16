@@ -23,6 +23,7 @@ import type { RebuildBail, RebuildLog } from "./rebuild-credential-preflight";
 import { redactBoundedRebuildTerminalDiagnostic } from "./rebuild-preflight-confirmation";
 import {
   completeHermesCronRestoreAfterGatewayReplacement,
+  restoreExternalHermesInference,
   type HermesCronRestoreIdentity,
   type HermesPostRestoreGatewayRestartState,
   isHermesCronRestoreDrainMarkerRollbackFailure,
@@ -369,6 +370,25 @@ export async function runRebuildPostRestorePhase(
             hermesPostRestoreGatewayDeps,
           )
         : "not-applicable";
+    if (
+      restoreSucceeded &&
+      backupManifest &&
+      targetAgentName === "hermes" &&
+      recreatedEntry.workload?.kind === "external-image"
+    ) {
+      // Native startup validates restored state and refreshes its integrity
+      // anchor. Only then can the guarded writer replace stripped references.
+      if (hermesGatewayRestartState !== "restarted") {
+        throw new Error(
+          "Restored Hermes inference requires a verified gateway restart. The rebuild backup is preserved.",
+        );
+      }
+      await restoreExternalHermesInference(
+        recreatedEntry,
+        mcpRuntimeSelection,
+        registry.getSandbox,
+      );
+    }
     if (targetAgentName === "openclaw") {
       if (!openClawDoctorWindow) {
         bail("OpenClaw gateway-down maintenance authority was lost during rebuild.");

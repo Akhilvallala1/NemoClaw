@@ -184,6 +184,50 @@ describe("rebuild post-restore phase", () => {
     };
   }
 
+  it("reapplies external Hermes inference after verified restart and before MCP restore (#12603)", async () => {
+    agentName = "hermes";
+    vi.mocked(registry.getSandbox).mockReturnValue({
+      agent: "hermes",
+      workload: { kind: "external-image" },
+    } as never);
+    const restore = vi
+      .spyOn(rebuildHermesPostRestore, "restoreExternalHermesInference")
+      .mockImplementation(async () => {
+        expect(
+          rebuildHermesPostRestore.restartHermesGatewayAfterStateRestore,
+        ).toHaveBeenCalledOnce();
+        expect(rebuildMcp.restoreMcpAfterRebuild).not.toHaveBeenCalled();
+      });
+    await runRebuildPostRestorePhase({
+      ...input(),
+      backupManifest: { backupPath: "/backup" } as never,
+    });
+    expect(restore).toHaveBeenCalledOnce();
+  });
+  it.each(["restart-failed", "restart-health-timeout"] as const)(
+    "does not restore inference or MCP after Hermes %s (#12603)",
+    async (failure) => {
+      agentName = "hermes";
+      vi.mocked(registry.getSandbox).mockReturnValue({
+        agent: "hermes",
+        workload: { kind: "external-image" },
+      } as never);
+      vi.mocked(rebuildHermesPostRestore.restartHermesGatewayAfterStateRestore).mockResolvedValue(
+        failure,
+      );
+      const restore = vi
+        .spyOn(rebuildHermesPostRestore, "restoreExternalHermesInference")
+        .mockResolvedValue();
+      await expect(
+        runRebuildPostRestorePhase({
+          ...input(),
+          backupManifest: { backupPath: "/backup" } as never,
+        }),
+      ).rejects.toThrow("requires a verified gateway restart");
+      expect(restore).not.toHaveBeenCalled();
+      expect(rebuildMcp.restoreMcpAfterRebuild).not.toHaveBeenCalled();
+    },
+  );
   async function hermesTeamsPlan(disabled = false) {
     vi.stubEnv("MSTEAMS_APP_ID", "test-teams-app");
     vi.stubEnv("MSTEAMS_TENANT_ID", "test-teams-tenant");

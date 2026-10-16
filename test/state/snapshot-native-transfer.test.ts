@@ -151,8 +151,8 @@ process.exit(42);
     const calls = vi.spyOn(childProcess, "spawnSync").mockReturnValue({
       pid: 0,
       output: [],
-      stdout: null,
-      stderr: null,
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0),
       status: null,
       signal: null,
       error: new Error("ENOENT"),
