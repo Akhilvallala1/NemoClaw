@@ -8,6 +8,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+import tempfile
 
 
 spec = importlib.util.spec_from_file_location(
@@ -185,6 +186,53 @@ def personal_fixture(source_revision=CURRENT):
 
 
 class NativeAdmission(unittest.TestCase):
+    def test_browser_startup_is_only_current_additive_hooks_and_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            here = Path(__file__).parent
+            native = (here / "nemoclaw_native_windows.py").read_bytes()
+            hook = (here / "nemoclaw_browser_use.py").read_bytes()
+            identity = lambda data: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            startup = {"classification": "ci-installed-browser-use-startup", "module": "nemoclaw_browser_use.py",
+                       **identity(hook), "pth": "001_nemoclaw_browser_use.pth", "afterPth": "000_nemoclaw_native_windows.pth",
+                       "nativeStartupAdapterSha256": identity(native)["sha256"], "executionQualified": False}
+            marker = {"startupAdapterSha256": identity(native)["sha256"], "browserUseStartup": startup}
+            report = {"schemaVersion": 1, "classification": "native-hermes-generated-metadata-adaptation",
+                      "hermesRevision": "2237be355906fbe6065ce1815711eee52b2d646e",
+                      "environments": ["hermes-agent/venv", "tools/browser-use"], "requiresMovedRootProbe": True,
+                      "runtimeExecutionQualified": False, "retirements": [], "browserUseStartup": startup, "files": []}
+            expected = {"nemoclaw-windows-runtime.json": identity(b"prior marker"), "unrelated": identity(b"unchanged")}
+            for site in ("hermes-agent/venv/Lib/site-packages/", "tools/browser-use/Lib/site-packages/",
+                         "hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-aarch64-none/Lib/site-packages/"):
+                (root / site).mkdir(parents=True)
+                for name, data in (("nemoclaw_native_windows.py", native), ("nemoclaw_browser_use.py", hook),
+                                   ("001_nemoclaw_browser_use.pth", b"import nemoclaw_browser_use; nemoclaw_browser_use.install()\n")):
+                    relative = site + name
+                    (root / relative).write_bytes(data)
+                    before = identity(data)["sha256"] if name == "nemoclaw_native_windows.py" else None
+                    if before:
+                        expected[relative] = identity(data)
+                    report["files"].append({"path": relative, "beforeSha256": before, **identity(data)})
+            encoded = json.dumps(marker).encode()
+            (root / "nemoclaw-windows-runtime.json").write_bytes(encoded)
+            report["files"].append({"path": "nemoclaw-windows-runtime.json",
+                                    "beforeSha256": expected["nemoclaw-windows-runtime.json"]["sha256"], **identity(encoded)})
+            result = owner.validate_browser_startup(root, report, expected)
+            self.assertEqual(len(result), len(expected) + 6)
+            self.assertEqual(result["unrelated"], expected["unrelated"])
+            self.assertEqual(result["nemoclaw-windows-runtime.json"], identity(encoded))
+            for mutation in ("source", "qualified", "missing", "preimage", "unrelated"):
+                changed = copy.deepcopy(report)
+                if mutation == "source": changed["browserUseStartup"]["sha256"] = "0" * 64
+                elif mutation == "qualified": changed["browserUseStartup"]["executionQualified"] = True
+                elif mutation == "missing": changed["files"].pop(1)
+                elif mutation == "preimage": changed["files"][-1]["beforeSha256"] = "0" * 64
+                else:
+                    (root / "unrelated").write_bytes(b"altered")
+                    changed["files"].append({"path": "unrelated", "beforeSha256": expected["unrelated"]["sha256"], **identity(b"altered")})
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    owner.validate_browser_startup(root, changed, expected)
+
     def test_current_native_build_can_supply_a_new_proof_hash(self):
         proof, compat, mxc = fixture()
         self.assertIsNone(owner.validate_compatibility_proof(proof, SHA, compat, mxc, CURRENT))

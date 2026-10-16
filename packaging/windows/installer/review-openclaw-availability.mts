@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { readOpenedRegularFile } from "../runtime/native-security.mts";
+import { readAvailabilityDocuments } from "./runtime-availability-evidence.mts";
 import {
   validateOpenClawArtifactSourceSnapshot,
   validateOpenClawColdReceipt,
@@ -37,53 +37,7 @@ export function reviewOpenClawAvailability(input: {
   assert.match(input.sourceRevision, /^[a-f0-9]{40}$/u);
   assert.match(input.controllerSourceRevision, /^[a-f0-9]{40}$/u);
   assert.match(input.controllerRun, /^[1-9]\d*:[1-9]\d*$/u);
-  const root = path.resolve(input.evidenceRoot);
-  function read(relative: string) {
-    const file = path.join(root, relative);
-    for (let parent = path.dirname(file); ; parent = path.dirname(parent)) {
-      const stat = fs.lstatSync(parent);
-      assert(
-        stat.isDirectory() && !stat.isSymbolicLink(),
-        "Evidence traverses a linked directory.",
-      );
-      if (parent === root) break;
-      assert(parent.startsWith(root + path.sep), "Evidence escaped its root.");
-    }
-    const bytes = readOpenedRegularFile(file, {
-      maxBytes: 2 * 1024 * 1024,
-      rejectLinks: true,
-      rejectHardLinks: true,
-    });
-    assert(bytes && bytes.length > 0, "Required qualification evidence is missing.");
-    return bytes;
-  }
-  const manifestBytes = read("evidence-manifest.json");
-  assert.equal(digest(manifestBytes), input.evidenceManifestSha256);
-  const manifest = object(JSON.parse(manifestBytes.toString("utf8")));
-  assert.equal(manifest.schemaVersion, 1);
-  assert.equal(manifest.classification, "accidental-runnable-free-windows-evidence");
-  assert(
-    Array.isArray(manifest.files) && manifest.files.length > 0 && manifest.files.length <= 4096,
-  );
-  const entries = new Map<string, { bytes: number; sha256: string }>();
-  for (const value of manifest.files) {
-    const row = object(value);
-    const name = text(row.path);
-    assert(!name.includes("\\") && !name.includes("\0") && !path.isAbsolute(name));
-    assert(name.split("/").every((part) => part && part !== "." && part !== ".."));
-    assert(!entries.has(name.toLowerCase()), "Duplicate evidence path.");
-    assert(typeof row.bytes === "number" && Number.isSafeInteger(row.bytes) && row.bytes >= 0);
-    assert.match(text(row.sha256), /^[a-f0-9]{64}$/u);
-    entries.set(name.toLowerCase(), { bytes: row.bytes, sha256: text(row.sha256) });
-  }
-  function document(relative: string) {
-    const entry = entries.get(relative.toLowerCase());
-    assert(entry, "Required qualification receipt is absent from the manifest.");
-    const bytes = read(relative);
-    assert.equal(bytes.length, entry.bytes);
-    assert.equal(digest(bytes), entry.sha256, "Qualification receipt changed after staging.");
-    return { bytes, sha256: entry.sha256, value: object(JSON.parse(bytes.toString("utf8"))) };
-  }
+  const document = readAvailabilityDocuments(input);
   const build = document("package/immutable-package-build.json");
   assert.equal(build.value.schemaVersion, 1);
   assert.equal(build.value.classification, "finished-native-runtime-package-build");

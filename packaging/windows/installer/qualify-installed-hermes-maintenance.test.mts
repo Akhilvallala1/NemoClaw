@@ -549,12 +549,17 @@ function bindings(input: ReturnType<typeof fixture>["input"]) {
     async verifyInstallation(present) {
       calls.push("installed:" + present);
     },
-    async warm() {
+    async warm(previous) {
       calls.push("warm");
-      const value: any = structuredClone(input.acceptance);
+      const value: any = structuredClone(previous);
       value.results.configurationReused = true;
-      value.results.restoredConversation = value.results.retainedConversation;
+      value.results.restoredConversation = structuredClone(value.results.retainedConversation);
       value.results.nvidia.value.content = "NEMOCLAW_NVIDIA_" + String(++reply).repeat(20);
+      value.results.retainedConversation.messageCount += 2;
+      value.results.retainedConversation.lastMessageId += 2;
+      value.results.retainedConversation.transcriptSha256 = createHash("sha256")
+        .update(value.results.nvidia.value.content)
+        .digest("hex");
       return value;
     },
   };
@@ -613,6 +618,93 @@ test("maintenance rejects foreign, failed, unpreserved, changed-runtime and synt
     const { input } = fixture();
     mutate(input);
     assert.throws(() => validateHermesMaintenanceBaseline(input));
+  }
+});
+
+test("maintenance carries the completed repair conversation into reinstall qualification", async () => {
+  const { input } = fixture();
+  const { api } = bindings(input);
+  const original = api.warm;
+  let expected: Record<string, any> = input.acceptance;
+  let calls = 0;
+  api.warm = async (previous) => {
+    assert.deepEqual(
+      previous,
+      expected,
+      "Each warm launch must receive the latest completed receipt",
+    );
+    expected = await original(previous);
+    calls++;
+    return expected;
+  };
+  const receipt = await runHermesMaintenanceSequence(input, api);
+  assert.equal(receipt.failure, null);
+  assert.equal(calls, 2);
+  assert.equal(
+    expected.results.retainedConversation.messageCount,
+    input.acceptance.results.retainedConversation.messageCount + 4,
+  );
+});
+
+test("maintenance rejects stale or changed continuation evidence at either checkpoint", async () => {
+  for (const afterRepair of [false, true]) {
+    for (const kind of [
+      "restored",
+      "session",
+      "profile",
+      "count",
+      "last",
+      "hash",
+      "state",
+      "configuration",
+      "model",
+    ]) {
+      const { input } = fixture();
+      const { api, calls } = bindings(input);
+      const original = api.warm;
+      let count = 0;
+      api.warm = async (previous) => {
+        const result = await original(previous);
+        if (++count !== (afterRepair ? 2 : 1)) return result;
+        const retained = result.results.retainedConversation;
+        switch (kind) {
+          case "restored":
+            result.results.restoredConversation.transcriptSha256 = "0".repeat(64);
+            break;
+          case "session":
+            retained.storedSessionId = "other-session";
+            break;
+          case "profile":
+            retained.profileName = "other-profile";
+            break;
+          case "count":
+            retained.messageCount = previous.results.retainedConversation.messageCount;
+            break;
+          case "last":
+            retained.lastMessageId = previous.results.retainedConversation.lastMessageId;
+            break;
+          case "hash":
+            retained.transcriptSha256 = previous.results.retainedConversation.transcriptSha256;
+            break;
+          case "state":
+            result.results.stateRoot = "C:\\foreign";
+            break;
+          case "configuration":
+            result.results.configurationSha256 = "0".repeat(64);
+            break;
+          case "model":
+            result.results.dashboardModel = "other/model";
+            break;
+        }
+        return result;
+      };
+      const receipt = await runHermesMaintenanceSequence(input, api);
+      assert(receipt.failure, `${afterRepair}/${kind}`);
+      assert.equal(receipt.failedStage, "warm-qualification");
+      assert.equal(receipt.uninstallReinstall, "unqualified");
+      assert.equal(receipt.repair, afterRepair ? "sequence-verified" : "unqualified");
+      assert.equal(calls.at(-1), "warm");
+    }
   }
 });
 

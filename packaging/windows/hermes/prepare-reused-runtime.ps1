@@ -52,7 +52,7 @@ try{
     }finally{$archive.Dispose()}
     if((Get-FileHash -LiteralPath $baseInventory -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'c6255066a9d6ab620c6d6627bb97b2f96f74430c034f8b2016ecc02aa530af70' -or
        (Get-FileHash -LiteralPath $oldBuild -Algorithm SHA256).Hash.ToLowerInvariant() -cne '828181ba43a2ee417794b383f3a835c44d60aa4f607c0e4fa26df91c63e2470d'){throw 'The original inventory/build receipt bytes changed.'}
-    $adaptation=Join-Path $build 'native-adaptation.json'
+    $adaptation=Join-Path $build 'metadata-relocation-adaptation.json'
     Invoke-ReuseTool $python @('-I','-B',(Join-Path $PSScriptRoot 'prepare-native-runtime.py'),'--runtime-root',$RuntimeRoot,
         '--source-root',[string]$reuseSpec.originalBuildRoot,'--target-root',$RuntimeRoot,'--environment','hermes-agent/venv',
         '--environment','tools/browser-use','--receipt',$adaptation) 'relocate-current-adapter-canonical-metadata'
@@ -100,13 +100,20 @@ try{
     if($files.Count -ne 4 -or @($files.file|Select-Object -Unique).Count -ne 4 -or @($files|Where-Object {$_.file -notin @('NemoClawMsysLauncher.exe','NemoClawMsysCompat-arm64.dll','NemoClawMsysCompat-x64.dll','DETOURS-LICENSE.txt')}).Count -ne 0){throw 'Unexpected compatibility members.'}
     foreach($file in $files){$sourceFile=Join-Path $compatSource $file.file;Assert-ReuseBytes $sourceFile $file.bytes $file.sha256;Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $compatTarget $file.file)}
     Copy-Item -LiteralPath (Join-Path $compatSource 'build-receipt.json') -Destination (Join-Path $compatTarget 'build-receipt.json')
+    # Add the same Browser Use startup adapter that assembly ships, before its
+    # first Personal execution. Export verifies this separate additive plan.
+    $browserStartup=Join-Path $build 'native-adaptation.json'
+    Invoke-ReuseTool $python @('-I','-B',(Join-Path $PSScriptRoot 'prepare-native-runtime.py'),'--runtime-root',$RuntimeRoot,
+        '--source-root',$RuntimeRoot,'--target-root',$RuntimeRoot,'--environment','hermes-agent/venv',
+        '--environment','tools/browser-use','--ci-browser-use-startup','--receipt',$browserStartup) 'prepare-browser-startup-before-personal'
     $derivation=Join-Path $build 'derivation-inputs.json'
     $documents=[ordered]@{pywinptyEvidence=$wheelEvidence;gitReceipt=(Join-Path $gitEvidence 'canonical-git-derivation.json');
         compatibilityProof=(Join-Path $proofRoot 'result.json');compatibilityReceipt=(Join-Path $compatTarget 'build-receipt.json');
-        mxcBuildReceipt=(Join-Path $proofRoot 'mxc-token-inspection-build/mxc-token-inspection-build.json');originalBuildRoot=[string]$reuseSpec.originalBuildRoot}
+        mxcBuildReceipt=(Join-Path $proofRoot 'mxc-token-inspection-build/mxc-token-inspection-build.json');originalBuildRoot=[string]$reuseSpec.originalBuildRoot;
+        browserStartupReceipt=$browserStartup}
     [IO.File]::WriteAllText($derivation,($documents|ConvertTo-Json -Depth 5)+"`n",[Text.UTF8Encoding]::new($false))
     Invoke-ReuseTool $python @('-I','-B',(Join-Path $PSScriptRoot 'export-official-runtime.py'),'--runtime-root',$RuntimeRoot,
-        '--source-archive',[string]$reuseSpec.sourceArchive,'--build-receipt',$oldBuild,'--adaptation-receipt',$adaptation,
+        '--source-archive',[string]$reuseSpec.sourceArchive,'--build-receipt',$oldBuild,'--adaptation-receipt',$browserStartup,
         '--output-directory',$candidate,'--controller-source',$ControllerSource,'--derivation-inputs',$derivation) 'export-complete-derived-candidate'
     $result=Get-Content -LiteralPath (Join-Path $candidate 'runtime-candidate.json') -Raw|ConvertFrom-Json
     if($result.status -cne 'candidate-bytes-exported' -or $result.completeByteInventory -cne $true -or

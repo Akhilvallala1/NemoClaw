@@ -95,6 +95,13 @@ export function hermesBrowserPipePythonSource(): string[] {
         if owners:
             await asyncio.wait_for(asyncio.gather(*(asyncio.shield(connection.connection_lost_waiter)
                                                    for connection in list(owners))), 5)
+        # An already-completed waiter can return before its scheduled registry
+        # callback runs. Only the successful protocol close notification releases
+        # custody; a cancelled or failed waiter is not closure evidence.
+        for connection in list(owners):
+            waiter = connection.connection_lost_waiter
+            if waiter.done() and not waiter.cancelled() and waiter.exception() is None:
+                owners.discard(connection)
         if owners:
             raise RuntimeError('Browser CDP pipe closure remains unconfirmed')
 

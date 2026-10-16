@@ -22,6 +22,7 @@ on:
       - "scripts/checks/*windows-native*"
       - "scripts/install-windows-native.ps1"
       - "test/automation/pull-requests/windows-native-installer-workflow.test.ts"
+      - "test/automation/pull-requests/windows-native-installer-bootstrap.test.ts"
       - "test/automation/pull-requests/windows-native-installer-review.test.ts"
       - "test/automation/pull-requests/windows-native-installer-process.test.ts"
       - "test/automation/pull-requests/windows-native-installer-process.support.ts"
@@ -1069,9 +1070,9 @@ jobs:
           retention-days: 14
 
   windows-finished-runtime-qualification:
-    name: Qualify and independently review exact OpenClaw runtime before UI packaging
+    name: Qualify and independently review the selected runtime before UI packaging
     needs: [windows-finished-request, windows-finished-installer, windows-compiled-application]
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-request.outputs.trusted_main == 'true' && needs.windows-finished-request.outputs.exact_workflow == 'true' && needs.windows-finished-request.outputs.exact_pr == 'true' && needs.windows-finished-request.outputs.credential_authorized == 'true' && needs.windows-finished-request.outputs.validation_scope == 'full-acceptance' && needs.windows-finished-installer.result == 'success' && needs.windows-compiled-application.result == 'success' }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && contains(fromJSON('["openclaw","hermes"]'), needs.windows-finished-request.outputs.agent) && needs.windows-finished-request.outputs.trusted_main == 'true' && needs.windows-finished-request.outputs.exact_workflow == 'true' && needs.windows-finished-request.outputs.exact_pr == 'true' && needs.windows-finished-request.outputs.credential_authorized == 'true' && needs.windows-finished-request.outputs.validation_scope == 'full-acceptance' && needs.windows-finished-installer.result == 'success' && needs.windows-compiled-application.result == 'success' }}
     permissions:
       actions: read
       contents: read
@@ -1084,16 +1085,17 @@ jobs:
       candidate_sha: ${{ needs.windows-finished-request.outputs.candidate_sha }}
       base_sha: ${{ needs.windows-finished-request.outputs.base_sha }}
       workflow_sha: ${{ needs.windows-finished-request.outputs.workflow_sha }}
-      agent: openclaw
+      agent: ${{ needs.windows-finished-request.outputs.agent }}
       product_version: ${{ needs.windows-finished-request.outputs.product_version }}
       installer_cache_key: ${{ needs.windows-finished-installer.outputs.installer_cache_key }}
       installer_manifest_sha256: ${{ needs.windows-finished-installer.outputs.installer_manifest_sha256 }}
       application_manifest_sha256: ${{ needs.windows-compiled-application.outputs.application_manifest_sha256 }}
 
   windows-finished-reviewed-installer:
-    name: Rebuild OpenClaw setup UI around the independently reviewed runtime
-    needs: [windows-finished-request, windows-finished-installer, windows-finished-runtime-qualification]
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-installer.result == 'success' && needs.windows-finished-runtime-qualification.result == 'success' }}
+    name: Rebuild setup UI around the independently reviewed selected runtime
+    needs:
+      [windows-finished-request, windows-finished-installer, windows-finished-runtime-qualification]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && contains(fromJSON('["openclaw","hermes"]'), needs.windows-finished-request.outputs.agent) && needs.windows-finished-installer.result == 'success' && needs.windows-finished-runtime-qualification.result == 'success' }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 35
     permissions:
@@ -1106,6 +1108,7 @@ jobs:
       CANDIDATE_SHA: ${{ needs.windows-finished-request.outputs.candidate_sha }}
       CONTROLLER_SHA: ${{ needs.windows-finished-request.outputs.workflow_sha }}
       PRODUCT_VERSION: ${{ needs.windows-finished-request.outputs.product_version }}
+      SELECTED_AGENT: ${{ needs.windows-finished-request.outputs.agent }}
     steps:
       - name: Check out exact candidate packaging source without credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1143,7 +1146,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $head -cne $env:CONTROLLER_SHA) { throw 'The reviewed packaging controller differs.' }
           $product = "$env:RUNNER_TEMP\finished-windows-product-transfer"
           $verified = @(& "$env:GITHUB_WORKSPACE\controller\scripts\checks\windows-native-transfer.ps1" -Mode Verify -Root $product `
-            -Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent openclaw `
+            -Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent $env:SELECTED_AGENT `
             -RunId $env:GITHUB_RUN_ID -RunAttempt $env:GITHUB_RUN_ATTEMPT -ExpectedManifestSha256 $env:INSTALLER_MANIFEST)
           if ($verified.Count -ne 1 -or [string]$verified[0] -cne $env:INSTALLER_MANIFEST) { throw 'The original package transfer changed.' }
           $decision = Get-Item -LiteralPath "$env:RUNNER_TEMP\reviewed-runtime-availability\reviewed-availability.json" -Force
@@ -1209,7 +1212,7 @@ jobs:
           Copy-Item -LiteralPath "$work\assembled" -Destination "$transfer\assembled" -Recurse
           Copy-Item -LiteralPath "$env:RUNNER_TEMP\finished-windows-product-transfer\compiled-application" -Destination "$transfer\compiled-application" -Recurse
           $manifest = @(& "$env:GITHUB_WORKSPACE\controller\scripts\checks\windows-native-transfer.ps1" -Mode Create -Root $transfer `
-            -Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent openclaw `
+            -Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent $env:SELECTED_AGENT `
             -RunId $env:GITHUB_RUN_ID -RunAttempt $env:GITHUB_RUN_ATTEMPT)
           if ($manifest.Count -ne 1 -or [string]$manifest[0] -cnotmatch '^[a-f0-9]{64}$') { throw 'The reviewed installer transfer manifest failed.' }
           # Cache versions include the saved path. Preserve the original locally,
@@ -1226,7 +1229,7 @@ jobs:
           Move-Item -LiteralPath $product -Destination $original
           Move-Item -LiteralPath $transfer -Destination $product
           "manifest_sha256=$([string]$manifest[0])" >> $env:GITHUB_OUTPUT
-          "cache_key=windows-finished-reviewed-installer-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_SHA-openclaw" >> $env:GITHUB_OUTPUT
+          "cache_key=windows-finished-reviewed-installer-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_SHA-$env:SELECTED_AGENT" >> $env:GITHUB_OUTPUT
       - name: Retain rebuilt executables only in the same-run private cache
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -1255,8 +1258,9 @@ jobs:
 
   windows-finished-candidate-migration:
     name: Credential-free candidate migration controllers (ARM64)
-    needs: [windows-finished-request, windows-finished-installer, windows-finished-reviewed-installer]
-    if: ${{ always() && !cancelled() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && (needs.windows-finished-request.outputs.agent != 'openclaw' || needs.windows-finished-reviewed-installer.result == 'success') }}
+    needs:
+      [windows-finished-request, windows-finished-installer, windows-finished-reviewed-installer]
+    if: ${{ always() && !cancelled() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && needs.windows-finished-reviewed-installer.result == 'success' }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 35
     permissions:
@@ -1269,7 +1273,7 @@ jobs:
       CANDIDATE_SHA: ${{ needs.windows-finished-request.outputs.candidate_sha }}
       SELECTED_AGENT: ${{ needs.windows-finished-request.outputs.agent }}
       PRODUCT_VERSION: ${{ needs.windows-finished-request.outputs.product_version }}
-      INSTALLER_MANIFEST: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-reviewed-installer.outputs.installer_manifest_sha256 || needs.windows-finished-installer.outputs.installer_manifest_sha256 }}
+      INSTALLER_MANIFEST: ${{ needs.windows-finished-reviewed-installer.outputs.installer_manifest_sha256 }}
     steps:
       - name: Check out the exact candidate migration controllers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1282,7 +1286,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/finished-windows-product-transfer
-          key: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-reviewed-installer.outputs.installer_cache_key || needs.windows-finished-installer.outputs.installer_cache_key }}
+          key: ${{ needs.windows-finished-reviewed-installer.outputs.installer_cache_key }}
           fail-on-cache-miss: true
       - name: Verify and materialize candidate migration inputs
         shell: pwsh
@@ -1376,7 +1380,14 @@ jobs:
   # environments; this feature-branch workflow is not itself a trust boundary.
   windows-finished-trusted-qualification:
     name: Trusted full acceptance, migration and qualified publication
-    needs: [windows-finished-request, windows-finished-installer, windows-compiled-application, windows-finished-candidate-migration, windows-finished-reviewed-installer]
+    needs:
+      [
+        windows-finished-request,
+        windows-finished-installer,
+        windows-compiled-application,
+        windows-finished-candidate-migration,
+        windows-finished-reviewed-installer,
+      ]
     if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.trusted_main == 'true' && needs.windows-finished-request.outputs.exact_workflow == 'true' && needs.windows-finished-request.outputs.exact_pr == 'true' && needs.windows-finished-request.outputs.credential_authorized == 'true' && needs.windows-finished-request.outputs.validation_scope == 'full-acceptance' && needs.windows-finished-installer.result == 'success' && needs.windows-compiled-application.result == 'success' && needs.windows-finished-candidate-migration.result == 'success' }}
     permissions:
       actions: read
@@ -1392,8 +1403,8 @@ jobs:
       workflow_sha: ${{ needs.windows-finished-request.outputs.workflow_sha }}
       agent: ${{ needs.windows-finished-request.outputs.agent }}
       product_version: ${{ needs.windows-finished-request.outputs.product_version }}
-      installer_cache_key: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-reviewed-installer.outputs.installer_cache_key || needs.windows-finished-installer.outputs.installer_cache_key }}
-      installer_manifest_sha256: ${{ needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-reviewed-installer.outputs.installer_manifest_sha256 || needs.windows-finished-installer.outputs.installer_manifest_sha256 }}
+      installer_cache_key: ${{ needs.windows-finished-reviewed-installer.outputs.installer_cache_key }}
+      installer_manifest_sha256: ${{ needs.windows-finished-reviewed-installer.outputs.installer_manifest_sha256 }}
       application_manifest_sha256: ${{ needs.windows-compiled-application.outputs.application_manifest_sha256 }}
       candidate_migration_evidence_id: ${{ needs.windows-finished-candidate-migration.outputs.evidence_id }}
       candidate_migration_proof_sha256: ${{ needs.windows-finished-candidate-migration.outputs.proof_sha256 }}
@@ -1496,6 +1507,7 @@ jobs:
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/build-immutable-package-cleanup.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/control-installed-openclaw-input.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/qualify-installed-openclaw.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/review-hermes-availability.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/mxc-probe-identity.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-ui-lifecycle.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-web-session.test.mts'),

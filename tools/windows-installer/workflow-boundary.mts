@@ -315,6 +315,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
           "scripts/checks/*windows-native*",
           "scripts/install-windows-native.ps1",
           "test/automation/pull-requests/windows-native-installer-workflow.test.ts",
+          "test/automation/pull-requests/windows-native-installer-bootstrap.test.ts",
           "test/automation/pull-requests/windows-native-installer-review.test.ts",
           "test/automation/pull-requests/windows-native-installer-process.test.ts",
           "test/automation/pull-requests/windows-native-installer-process.support.ts",
@@ -408,6 +409,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       "control-installed-openclaw-input.test.mts",
       "build-immutable-package-cleanup.test.mts",
       "qualify-installed-openclaw.test.mts",
+      "review-hermes-availability.test.mts",
       "native-turn-cleanup.test.mts",
       "runtime-published-resources.test.mts",
     ])
@@ -856,14 +858,17 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       "windows-compiled-application",
     ]);
     assert.strictEqual(bootstrap.with?.qualification_phase, "runtime-bootstrap");
-    assert.strictEqual(bootstrap.with?.agent, "openclaw");
+    assert.strictEqual(
+      bootstrap.with?.agent,
+      "${{ needs.windows-finished-request.outputs.agent }}",
+    );
     assert.strictEqual(bootstrap.with?.candidate_migration_evidence_id, undefined);
     assert.strictEqual(bootstrap.with?.candidate_migration_proof_sha256, undefined);
     assert.strictEqual(call.with?.qualification_phase, "final");
     for (const gate of [
       "github.event_name == 'workflow_dispatch'",
       "github.ref == 'refs/heads/main'",
-      "needs.windows-finished-request.outputs.agent == 'openclaw'",
+      'contains(fromJSON(\'["openclaw","hermes"]\'), needs.windows-finished-request.outputs.agent)',
       "trusted_main == 'true'",
       "exact_workflow == 'true'",
       "exact_pr == 'true'",
@@ -881,9 +886,13 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     ]);
     assert.strictEqual(
       rebuilt.if,
-      "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-installer.result == 'success' && needs.windows-finished-runtime-qualification.result == 'success' }}",
+      "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.windows-finished-request.result == 'success' && contains(fromJSON('[\"openclaw\",\"hermes\"]'), needs.windows-finished-request.outputs.agent) && needs.windows-finished-installer.result == 'success' && needs.windows-finished-runtime-qualification.result == 'success' }}",
     );
     assert.strictEqual(rebuilt.environment, undefined);
+    assert.strictEqual(
+      rebuilt.env?.SELECTED_AGENT,
+      "${{ needs.windows-finished-request.outputs.agent }}",
+    );
     assert.ok(!JSON.stringify(rebuilt).includes("secrets."));
     assert.deepStrictEqual(rebuilt.permissions, { actions: "read", contents: "read" });
     assert.deepStrictEqual(
@@ -907,6 +916,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     });
     for (const token of [
       "-ExpectedManifestSha256 $env:INSTALLER_MANIFEST",
+      "-Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent $env:SELECTED_AGENT",
       "$verified.Count -ne 1",
       "$decision.Attributes -band [IO.FileAttributes]::ReparsePoint",
       "$decision.Length -gt 65536",
@@ -935,7 +945,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     );
     assert.ok(
       seal.run?.includes(
-        "windows-finished-reviewed-installer-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_SHA-openclaw",
+        "windows-finished-reviewed-installer-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_SHA-$env:SELECTED_AGENT",
       ),
     );
     assert.ok(seal.run?.includes("$manifest.Count -ne 1"));
@@ -964,14 +974,14 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       assert.ok(seal.run?.includes(token));
     assert.ok(
       seal.run?.includes(
-        "-Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent openclaw",
+        "-Kind finished-installer -SourceRevision $env:CANDIDATE_SHA -Agent $env:SELECTED_AGENT",
       ),
     );
     assert.ok(
       (rebuilt.steps ?? []).indexOf(rebuildInputs) < (rebuilt.steps ?? []).indexOf(rebuild),
     );
     for (const name of ["installer_cache_key", "installer_manifest_sha256"]) {
-      const selected = `\${{ needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-reviewed-installer.outputs.${name} || needs.windows-finished-installer.outputs.${name} }}`;
+      const selected = `\${{ needs.windows-finished-reviewed-installer.outputs.${name} }}`;
       assert.strictEqual(call.with?.[name], selected);
       if (name === "installer_manifest_sha256")
         assert.strictEqual(
@@ -985,7 +995,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     assert.strictEqual(review.environment, "windows-native-installer-availability");
     assert.strictEqual(
       review.if,
-      "${{ inputs.qualification_phase == 'runtime-bootstrap' && inputs.agent == 'openclaw' && needs.authorize.outputs.credential_authorized == 'true' && needs.full-installed-acceptance.result == 'success' }}",
+      "${{ inputs.qualification_phase == 'runtime-bootstrap' && contains(fromJSON('[\"openclaw\",\"hermes\"]'), inputs.agent) && needs.authorize.outputs.credential_authorized == 'true' && needs.full-installed-acceptance.result == 'success' }}",
     );
     assert.deepStrictEqual(
       [...JSON.stringify(review).matchAll(/secrets\.([A-Z_]+)/gu)].map((match) => match[1]),
@@ -1034,11 +1044,18 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       EVIDENCE_SHA256: "${{ needs.full-installed-acceptance.outputs.evidence_manifest_sha256 }}",
       CANDIDATE_SHA: "${{ inputs.candidate_sha }}",
       CONTROLLER_SHA: "${{ inputs.workflow_sha }}",
+      SELECTED_AGENT: "${{ inputs.agent }}",
     });
     for (const token of [
       '[[ "$(git rev-parse HEAD)" == "$CONTROLLER_SHA" ]]',
-      "--test packaging/windows/installer/qualify-installed-openclaw.test.mts",
-      "packaging/windows/installer/review-openclaw-availability.mts",
+      'case "$SELECTED_AGENT" in',
+      "controls=packaging/windows/installer/qualify-installed-openclaw.test.mts",
+      "reviewer=packaging/windows/installer/review-openclaw-availability.mts",
+      "controls=packaging/windows/installer/review-hermes-availability.test.mts",
+      "reviewer=packaging/windows/installer/review-hermes-availability.mts",
+      "*) echo 'Unsupported runtime availability agent.' >&2; exit 1 ;;",
+      'node --experimental-strip-types --no-warnings --test "$controls"',
+      'node --experimental-strip-types --no-warnings "$reviewer"',
       '--evidence-manifest-sha256 "$EVIDENCE_SHA256"',
       '--source-revision "$CANDIDATE_SHA"',
       '--controller-source-revision "$CONTROLLER_SHA"',
@@ -1048,6 +1065,10 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     assert.strictEqual(
       requiredStep(review, "Preserve reviewed availability decision only").with?.path,
       "${{ runner.temp }}/reviewed-availability.json",
+    );
+    assert.strictEqual(
+      requiredStep(review, "Preserve reviewed availability decision only").with?.name,
+      "reviewed-${{ inputs.agent }}-availability-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
     );
     for (const reviewStep of review.steps ?? []) {
       assert.strictEqual(reviewStep.if, undefined);
@@ -1059,7 +1080,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     );
     assert.strictEqual(
       full.if,
-      "${{ always() && !cancelled() && needs.authorize.result == 'success' && needs.authorize.outputs.trusted_main == 'true' && needs.authorize.outputs.exact_workflow == 'true' && needs.authorize.outputs.exact_pr == 'true' && needs.authorize.outputs.credential_authorized == 'true' && ((inputs.qualification_phase == 'runtime-bootstrap' && inputs.agent == 'openclaw') || (inputs.qualification_phase == 'final' && needs.candidate-migration-proof.result == 'success')) }}",
+      "${{ always() && !cancelled() && needs.authorize.result == 'success' && needs.authorize.outputs.trusted_main == 'true' && needs.authorize.outputs.exact_workflow == 'true' && needs.authorize.outputs.exact_pr == 'true' && needs.authorize.outputs.credential_authorized == 'true' && ((inputs.qualification_phase == 'runtime-bootstrap' && contains(fromJSON('[\"openclaw\",\"hermes\"]'), inputs.agent)) || (inputs.qualification_phase == 'final' && needs.candidate-migration-proof.result == 'success')) }}",
     );
     for (const job of [requiredJob(trusted, "migration"), publication]) {
       assert.ok(job.if?.startsWith("${{ inputs.qualification_phase == 'final' && "));
@@ -1082,11 +1103,14 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
         "& $env:TRUSTED_CONTROLLER_NODE --experimental-strip-types --no-warnings --test",
       ),
     );
-    assert.ok(
-      restartControls.run?.includes(
-        "$controls = Join-Path \"$env:GITHUB_WORKSPACE/controller\" 'packaging/windows/installer/qualify-installed-openclaw.test.mts'",
-      ),
-    );
+    for (const token of [
+      "$relative = switch -CaseSensitive ($env:SELECTED_AGENT)",
+      "'openclaw' { 'packaging/windows/installer/qualify-installed-openclaw.test.mts' }",
+      "'hermes' { 'packaging/windows/installer/qualify-installed-hermes.test.mts' }",
+      "default { throw 'Unsupported retained-state qualifier agent.' }",
+      '$controls = Join-Path "$env:GITHUB_WORKSPACE/controller" $relative',
+    ])
+      assert.ok(restartControls.run?.includes(token));
     assert.match(restartControls.run ?? "", /--test\s*`\r?\n\s+\$controls\r?\n/u);
     assert.ok(restartControls.run?.includes("if ($LASTEXITCODE -ne 0) { throw"));
     const qualificationGate = requiredStep(
@@ -1123,6 +1147,12 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
       inference.run?.includes('-ArtifactSourceRoot "$env:GITHUB_WORKSPACE\\artifact-source"'),
     );
     assert.ok(inference.run?.includes('-SourceRoot "$env:GITHUB_WORKSPACE\\controller"'));
+    assert.strictEqual(full.env?.QUALIFICATION_PHASE, "${{ inputs.qualification_phase }}");
+    assert.ok(
+      inference.run?.includes(
+        "-RuntimeBootstrap:($env:SELECTED_AGENT -ceq 'hermes' -and $env:QUALIFICATION_PHASE -ceq 'runtime-bootstrap')",
+      ),
+    );
     const verifyIndex = full.steps!.indexOf(verifyInputs);
     const rebuildIndex = full.steps!.indexOf(rebuildProof);
     const gateIndex = full.steps!.indexOf(qualificationGate);
@@ -1295,7 +1325,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     ]);
     assert.strictEqual(
       candidate.if,
-      "${{ always() && !cancelled() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && (needs.windows-finished-request.outputs.agent != 'openclaw' || needs.windows-finished-reviewed-installer.result == 'success') }}",
+      "${{ always() && !cancelled() && needs.windows-finished-request.result == 'success' && needs.windows-finished-request.outputs.request_kind != 'candidate-build' && needs.windows-finished-installer.result == 'success' && needs.windows-finished-reviewed-installer.result == 'success' }}",
     );
     assert.deepStrictEqual(candidate.permissions, { actions: "read", contents: "read" });
     assert.strictEqual(candidate["runs-on"], "windows-11-vs2026-arm");
@@ -1315,7 +1345,7 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     const restore = requiredStep(candidate, "Restore exact same-run installer cache");
     assert.strictEqual(
       restore.with?.key,
-      "${{ needs.windows-finished-request.outputs.agent == 'openclaw' && needs.windows-finished-reviewed-installer.outputs.installer_cache_key || needs.windows-finished-installer.outputs.installer_cache_key }}",
+      "${{ needs.windows-finished-reviewed-installer.outputs.installer_cache_key }}",
     );
     assert.strictEqual(restore.with?.["fail-on-cache-miss"], true);
     assert.ok(!Object.hasOwn(restore.with ?? {}, "restore-keys"));
@@ -1398,7 +1428,8 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     );
     for (const token of [
       "if [[ \"$QUALIFICATION_PHASE\" == 'runtime-bootstrap' ]]; then",
-      '[[ "$SELECTED_AGENT" == \'openclaw\' && -z "$CANDIDATE_MIGRATION_EVIDENCE_ID" && -z "$CANDIDATE_MIGRATION_PROOF_SHA256" ]]',
+      '[[ "$SELECTED_AGENT" =~ ^(openclaw|hermes)$ && -z "$CANDIDATE_MIGRATION_EVIDENCE_ID" && -z "$CANDIDATE_MIGRATION_PROOF_SHA256" ]]',
+      '( "$QUALIFICATION_PHASE" == \'final\' && "$INSTALLER_CACHE_KEY" == "windows-finished-reviewed-installer-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CANDIDATE_SHA-$SELECTED_AGENT" )',
       "[[ \"$QUALIFICATION_PHASE\" == 'final' ]]",
       '[[ "$CANDIDATE_MIGRATION_EVIDENCE_ID" =~ ^[1-9][0-9]*$ && "$CANDIDATE_MIGRATION_PROOF_SHA256" =~ ^[a-f0-9]{64}$ ]]',
     ])

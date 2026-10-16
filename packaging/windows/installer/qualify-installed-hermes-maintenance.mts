@@ -646,6 +646,7 @@ export async function runHermesMaintenanceSequence(
   };
   let transactionUnconfirmed = false;
   let stage = "prerequisites";
+  let previousAcceptance = input.acceptance;
   const replies = new Set([input.acceptance.results.nvidia.value.content]);
   try {
     await bindings.verifyPrerequisites();
@@ -689,7 +690,8 @@ export async function runHermesMaintenanceSequence(
     };
     const warm = async () => {
       stage = "warm-qualification";
-      const result = await bindings.warm(input.acceptance);
+      const previousConversation = previousAcceptance.results.retainedConversation;
+      const result = await bindings.warm(previousAcceptance);
       assert.equal(result.verdict, "pass");
       assert.equal(result.classification, "installed-canonical-hermes-acceptance");
       assert.equal(result.controllerRun, input.controllerRun);
@@ -697,7 +699,28 @@ export async function runHermesMaintenanceSequence(
       assert.deepEqual(result.cleanupErrors, []);
       assert.equal(result.results?.configurationReused, true);
       assert.equal(result.results?.configurationPreserved, true);
-      assert.deepEqual(result.results?.restoredConversation, baseline.conversation);
+      assert.deepEqual(result.results?.restoredConversation, previousConversation);
+      assert.equal(result.results?.stateRoot, baseline.stateRoot);
+      assert.equal(
+        result.results?.configurationSha256,
+        input.acceptance.results.configurationSha256,
+      );
+      assert.equal(result.results?.dashboardModel, baseline.selectedModel);
+      const continued = result.results?.retainedConversation;
+      assert.equal(continued?.storedSessionId, previousConversation.storedSessionId);
+      assert.equal(continued?.profileName, previousConversation.profileName);
+      assert(
+        Number.isSafeInteger(continued?.messageCount) &&
+          continued.messageCount > previousConversation.messageCount &&
+          continued.messageCount < 500,
+      );
+      assert(
+        Number.isSafeInteger(continued?.lastMessageId) &&
+          continued.lastMessageId > previousConversation.lastMessageId &&
+          continued.lastMessageId >= continued.messageCount,
+      );
+      assert.match(continued?.transcriptSha256 ?? "", /^[a-f0-9]{64}$/u);
+      assert.notEqual(continued.transcriptSha256, previousConversation.transcriptSha256);
       assert.equal(result.results?.cleanup?.cleanupSucceeded, true);
       assert.equal(result.results?.cleanup?.stateRetained, true);
       assert.equal(result.results?.nvidia?.value?.role, "assistant");
@@ -711,6 +734,7 @@ export async function runHermesMaintenanceSequence(
         "Maintenance must obtain a fresh provider response",
       );
       replies.add(result.results.nvidia.value.content);
+      previousAcceptance = result;
     };
     const beforeRepair = await snapshot();
     assert.equal(beforeRepair.configurationSha256, input.acceptance.results.configurationSha256);

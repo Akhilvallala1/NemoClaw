@@ -194,6 +194,6 @@ test("native composition requires current controller, exact owned executor and c
     timeout: 10_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /Ran 8 tests/u);
+  assert.match(result.stderr, /Ran 9 tests/u);
   assert.match(result.stderr, /\nOK\s*$/u);
 });

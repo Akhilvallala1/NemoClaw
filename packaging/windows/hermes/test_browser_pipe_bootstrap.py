@@ -5,6 +5,7 @@
 
 import builtins
 import importlib.util
+import hashlib
 import os
 from pathlib import Path
 import py_compile
@@ -70,6 +71,37 @@ class BrowserPipeBootstrap(unittest.TestCase):
         self.assertEqual(
             [p.name for p in self.workers.iterdir()], ["hermes-browser-bootstrap.pyc"]
         )
+
+    def test_personal_stage_is_exact_and_cannot_replace_an_installed_worker(self):
+        nonce = "0123456789abcdef01234567"
+        root = r"C:\NemoClawHermesProbe-abcdef012345"
+        workers = r"C:\NemoClawPersonalNode-0123456789ab\workers"
+        env = {"GITHUB_ACTIONS": "true", "NEMOCLAW_PERSONAL_BROWSER_SESSION": nonce,
+               "NEMOCLAW_PERSONAL_BROWSER_BOOTSTRAP_SHA256": "a" * 64,
+               "NEMOCLAW_WORKER_ROOT": workers}
+        self.assertEqual(str(BROWSER._personal_workers(root, env)), workers)
+        for key, value in (("GITHUB_ACTIONS", "false"), ("NEMOCLAW_AGENT_RUNTIME", root),
+                           ("NEMOCLAW_PERSONAL_BROWSER_SESSION", "other"),
+                           ("NEMOCLAW_PERSONAL_BROWSER_BOOTSTRAP_SHA256", "a"),
+                           ("NEMOCLAW_WORKER_ROOT", r"C:\workers")):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                BROWSER._personal_workers(root, {**env, key: value})
+        with self.assertRaises(ValueError):
+            BROWSER._personal_workers(r"C:\installed\runtimes\hash\hermes", env)
+
+    def test_personal_bootstrap_requires_its_exact_staged_bytecode(self):
+        self.compile("import builtins; builtins._hermes_browser_test_loaded = True\n")
+        bytecode = self.workers / "hermes-browser-bootstrap.pyc"
+        env = {**self.env, "NEMOCLAW_PERSONAL_BROWSER_SESSION": "a" * 24,
+               "NEMOCLAW_PERSONAL_BROWSER_BOOTSTRAP_SHA256": hashlib.sha256(bytecode.read_bytes()).hexdigest()}
+        # The Windows-only stage shape is exercised above; this executes ordinary
+        # file admission and the sourceless loader using a disposable local stage.
+        with patch.object(BROWSER, "_personal_workers", return_value=self.workers):
+            with patch.object(builtins, "_hermes_browser_test_loaded", False, create=True):
+                self.invoke(env=env)
+                self.assertTrue(builtins._hermes_browser_test_loaded)
+            with self.assertRaises(NATIVE.NativeStartupRefusal):
+                self.invoke(env={**env, "NEMOCLAW_PERSONAL_BROWSER_BOOTSTRAP_SHA256": "0" * 64})
 
     def test_missing_worker_and_foreign_worker_root_fail_closed(self):
         with self.assertRaises((NATIVE.NativeStartupRefusal, OSError)):

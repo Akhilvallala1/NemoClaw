@@ -835,7 +835,9 @@ async function main() {
   const state = path.join(process.env.LOCALAPPDATA!, "NVIDIA/NemoClaw/agents/hermes");
   const reuse = process.argv.includes("--reuse-configuration");
   const preserve = process.argv.includes("--preserve-configuration");
+  const runtimeBootstrap = process.argv.includes("--runtime-bootstrap");
   const results: any = {
+    runtimeBootstrap,
     installedAcceptance: false,
     fullAgentQualified: false,
     tavilyLiveLookup: "not-tested-user-waiver",
@@ -909,6 +911,12 @@ async function main() {
         results.launcherAdmission,
         "Hermes restart cannot reuse evidence from a different package or controller.",
       );
+    if (reuse)
+      assert.equal(
+        previousAcceptance?.results?.runtimeBootstrap,
+        runtimeBootstrap,
+        "Hermes restart cannot change qualification phase.",
+      );
     const retainedState = reuse
       ? retainedAcceptance(
           "hermes",
@@ -938,7 +946,18 @@ async function main() {
     configurationOwned = true;
     results.stateRoot = ownedState.stateRoot;
     binding = nativeCredentialBinding(configuration);
-    if (!reuse) {
+    if (!reuse && runtimeBootstrap) {
+      // Qualify the sealed runtime before the rebuilt UI can offer Hermes.
+      // The final installed journey still uses ordinary native onboarding.
+      configurationMutationUnconfirmed = true;
+      await command(
+        "save-config-transaction",
+        ["--configure-native", "--agent", "hermes", "--transaction"],
+        JSON.stringify({ configuration, credentials: { inference: secret, services: {} } }),
+      );
+      configurationMutationUnconfirmed = false;
+    }
+    if (!reuse && !runtimeBootstrap) {
       const onboardPath = path.join(output, "native-onboarding.json");
       configurationMutationUnconfirmed = true;
       const onboard = await captureOwned(
@@ -999,7 +1018,7 @@ async function main() {
     results.configuration = {
       reused: reuse,
       configuredThisCase: !reuse,
-      nativeOnboardingUsed: !reuse,
+      nativeOnboardingUsed: !reuse && !runtimeBootstrap,
       searchRequested: false,
       messagingRequested: false,
     };

@@ -622,6 +622,7 @@ test("Hermes restart rejects a different launcher, package or controller before 
     "reuse",
     "previousAcceptance",
     "results",
+    "runtimeBootstrap",
     source.slice(start, end),
   );
   const admission = {
@@ -630,9 +631,14 @@ test("Hermes restart rejects a different launcher, package or controller before 
     artifactSourceSnapshotSha256: "c".repeat(64),
     controllerSourceRevision: "d".repeat(40),
   };
-  const results = { launcherAdmission: admission };
-  check(assert, true, { results: structuredClone(results) }, results);
-  check(assert, false, undefined, results);
+  const results = { launcherAdmission: admission, runtimeBootstrap: false };
+  check(assert, true, { results: structuredClone(results) }, results, false);
+  check(assert, false, undefined, results, false);
+  assert.throws(
+    () => check(assert, true, { results }, results, true),
+    /cannot change qualification phase/u,
+  );
+  check(assert, true, { results: { ...results, runtimeBootstrap: true } }, results, true);
   assert.throws(() => check(assert, true, undefined, results));
   for (const name of Object.keys(admission)) {
     const previous = { results: structuredClone(results) };
@@ -722,12 +728,66 @@ for (const name of ["NVIDIA_API_KEY", "NVIDIA_INFERENCE_API_KEY"])
     assert.match(messages[0], /Controller failed/u);
   });
 
+test("Hermes runtime bootstrap saves only a fresh transaction and retains failed mutation custody", async () => {
+  const source = fs.readFileSync(
+    new URL("./qualify-installed-hermes.mts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("    if (!reuse && runtimeBootstrap) {");
+  const end = source.indexOf("    if (!reuse && !runtimeBootstrap) {", start);
+  assert(start > 0 && end > start);
+  const block = stripTypeScriptTypes(source.slice(start, end));
+  for (const scenario of ["success", "failure", "reuse", "final"]) {
+    const calls: unknown[][] = [];
+    const configuration = { agent: "hermes" };
+    const bindings = {
+      reuse: scenario === "reuse",
+      runtimeBootstrap: scenario !== "final",
+      configuration,
+      secret: "synthetic-secret",
+      command: async (...args: unknown[]) => {
+        calls.push(args);
+        if (scenario === "failure") throw new Error("transaction failed");
+      },
+    };
+    const observed = await new Function(
+      ...Object.keys(bindings),
+      `return (async () => {
+      let configurationMutationUnconfirmed = false;
+      try { ${block} return { pending: configurationMutationUnconfirmed, failed: false }; }
+      catch { return { pending: configurationMutationUnconfirmed, failed: true }; }
+    })();`,
+    )(...Object.values(bindings));
+    assert.deepEqual(
+      observed,
+      { pending: scenario === "failure", failed: scenario === "failure" },
+      scenario,
+    );
+    assert.deepEqual(
+      calls,
+      ["reuse", "final"].includes(scenario)
+        ? []
+        : [
+            [
+              "save-config-transaction",
+              ["--configure-native", "--agent", "hermes", "--transaction"],
+              JSON.stringify({
+                configuration,
+                credentials: { inference: "synthetic-secret", services: {} },
+              }),
+            ],
+          ],
+      scenario,
+    );
+  }
+});
+
 test("Hermes onboarding retains mutation custody until its complete success receipt is validated", async () => {
   const source = fs.readFileSync(
     new URL("./qualify-installed-hermes.mts", import.meta.url),
     "utf8",
   );
-  const start = source.indexOf("    if (!reuse) {\n      const onboardPath =");
+  const start = source.indexOf("    if (!reuse && !runtimeBootstrap) {\n      const onboardPath =");
   const end = source.indexOf("    const configurationText =", start);
   assert(start > 0 && end > start);
   const block = stripTypeScriptTypes(
@@ -742,6 +802,7 @@ test("Hermes onboarding retains mutation custody until its complete success rece
     "drafts-missing",
     "confirmed",
     "reuse",
+    "runtime-bootstrap",
   ]) {
     let calls = 0;
     const results: Record<string, any> = {};
@@ -758,6 +819,7 @@ test("Hermes onboarding retains mutation custody until its complete success rece
       secret: "nvapi-synthetic-fixture",
       results,
       reuse: scenario === "reuse",
+      runtimeBootstrap: scenario === "runtime-bootstrap",
       captureOwned: async (
         _launcher: string,
         _args: string[],
@@ -807,9 +869,9 @@ test("Hermes onboarding retains mutation custody until its complete success rece
       catch { return { pending: configurationMutationUnconfirmed, failed: true }; }
     })();`,
     )(...Object.values(bindings));
-    const failed = !["confirmed", "reuse"].includes(scenario);
+    const failed = !["confirmed", "reuse", "runtime-bootstrap"].includes(scenario);
     assert.deepEqual(observed, { pending: failed, failed }, scenario);
-    assert.equal(calls, scenario === "reuse" ? 0 : 1, scenario);
+    assert.equal(calls, ["reuse", "runtime-bootstrap"].includes(scenario) ? 0 : 1, scenario);
   }
 });
 

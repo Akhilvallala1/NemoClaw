@@ -784,6 +784,7 @@ def main():
     parser.add_argument("--diagnostics-directory", type=Path)
     parser.add_argument("--browser-use-outer-inventory", type=Path)
     parser.add_argument("--ci-upgrade-startup-adapter", action="store_true")
+    parser.add_argument("--ci-browser-use-startup", action="store_true")
     args = parser.parse_args()
     outer_inventory = (
         json.loads(
@@ -802,6 +803,11 @@ def main():
         args.environment or ["hermes-agent/venv"],
         outer_inventory,
         ci_upgrade_startup_adapter=args.ci_upgrade_startup_adapter,
+        ci_browser_use_adapter=(
+            {"bytes": (Path(__file__).parent / BROWSER_USE_HOOK).stat().st_size,
+             "sha256": hashlib.sha256((Path(__file__).parent / BROWSER_USE_HOOK).read_bytes()).hexdigest()}
+            if args.ci_browser_use_startup else None
+        ),
     )
     apply_plan(
         changes,

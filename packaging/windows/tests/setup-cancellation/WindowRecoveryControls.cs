@@ -138,6 +138,10 @@ internal static class WindowRecoveryControls
 
     private static void AssertProviderChoices(MainWindow window)
     {
+        // The availability matrix can leave either agent selected.
+        Invoke(window, "AgentSelected", new RadioButton { Tag = "openclaw" }, new RoutedEventArgs());
+        if (window.SelectedAgent != "openclaw")
+            throw new InvalidOperationException("Provider draft controls did not start with OpenClaw selected.");
         var providers = (ComboBox)window.FindName("ProviderChoice");
         var endpoint = (TextBox)window.FindName("EndpointBox");
         var model = (TextBox)window.FindName("ModelBox");
@@ -166,11 +170,14 @@ internal static class WindowRecoveryControls
             throw new InvalidOperationException("Switching back to local inference lost the chosen endpoint or model.");
 
         Invoke(window, "AgentSelected", new RadioButton { Tag = "hermes" }, new RoutedEventArgs());
+        if (window.SelectedAgent != "hermes")
+            throw new InvalidOperationException("Provider draft controls did not switch to Hermes.");
         endpoint.Text = "http://127.0.0.1:23456/v1";
         model.Text = "other-agent-local-model";
         credential.Password = "other-agent-ui-fixture-only";
         Invoke(window, "AgentSelected", new RadioButton { Tag = "openclaw" }, new RoutedEventArgs());
-        if (endpoint.Text != "http://127.0.0.1:12345/v1" || model.Text != "chosen-local-model"
+        if (window.SelectedAgent != "openclaw"
+            || endpoint.Text != "http://127.0.0.1:12345/v1" || model.Text != "chosen-local-model"
             || credential.SecurePassword.Length != 0)
             throw new InvalidOperationException("Another agent changed OpenClaw's draft choices or retained its API key.");
 

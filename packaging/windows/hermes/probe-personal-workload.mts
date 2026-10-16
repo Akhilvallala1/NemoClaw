@@ -350,6 +350,72 @@ export function allPersonalComponentsPassed(components: { passed: boolean }[]) {
   return components.length === 4 && components.every((entry) => entry.passed);
 }
 
+export async function withPersonalBrowserTunnel<T>(
+  selection: Record<string, string> | undefined,
+  nonce: string,
+  run: () => Promise<T>,
+  evidence: Record<string, unknown>,
+  open = async (options: { relayRoot: string; relayToken: string; sandboxPipePort: number }) => {
+    const module = await import(
+      new URL("./workers/native-broker-tunnel.mts", import.meta.url).href
+    );
+    return (await module.startNativeBrokerTunnel(options)) as {
+      port: number;
+      failure: Promise<never>;
+      close(): Promise<void>;
+      diagnostics(): unknown;
+    };
+  },
+) {
+  if (!selection) return await run();
+  if (
+    selection.NEMOCLAW_PERSONAL_BROWSER_SESSION !== nonce ||
+    selection.NEMOCLAW_AGENT_SESSION_ID !== nonce.slice(0, 10) ||
+    selection.NEMOCLAW_HERMES_BROWSER_PIPE_PORT !== "8124" ||
+    Object.entries(selection).some(([key, value]) => process.env[key] !== value)
+  )
+    throw new Error("Personal browser declaration differs from the contained command.");
+  evidence.attempted = true;
+  evidence.closed = false;
+  const tunnel = await open({
+    relayRoot: selection.NEMOCLAW_BROWSER_RELAY_ROOT!,
+    relayToken: selection.NEMOCLAW_BROWSER_RELAY_TOKEN!,
+    sandboxPipePort: 8124,
+  });
+  let failure: unknown;
+  let primary: unknown;
+  void tunnel.failure.catch((error) => {
+    failure ??= error;
+  });
+  try {
+    if (tunnel.port !== 8124)
+      throw new Error("Personal browser did not bind its declared LOCAL pipe.");
+    evidence.started = true;
+    const result = await run();
+    if (failure) throw failure;
+    return result;
+  } catch (error) {
+    primary = error;
+    throw error;
+  } finally {
+    try {
+      try {
+        evidence.diagnostics = tunnel.diagnostics();
+      } finally {
+        await tunnel.close();
+        evidence.closed = true;
+      }
+    } catch (error) {
+      if (primary)
+        throw new AggregateError(
+          [primary, error],
+          "Personal component and browser tunnel cleanup failed.",
+        );
+      throw error;
+    }
+  }
+}
+
 async function main() {
   const [runtime, destination, nonce, configuration] = process.argv.slice(2);
   if (
@@ -404,28 +470,32 @@ async function main() {
     }
   };
   // Attach direct startup diagnostics to a failed canonical Bash result.
-  const { components, bashDiagnostic, scheduling } = await schedulePersonalComponents(
-    input.browserFirst,
-    run,
-    async (canonical) =>
-      !canonical.passed && canonical.execution.childClosed
-        ? await bashDiagnostics(
-            runtime,
-            process.cwd(),
-            nonce!,
-            process.env,
-            "contained",
-            input.gitPins,
-          )
-        : {
-            classification: "exact-byte-Bash-startup-diagnostic",
-            scope: "contained",
-            diagnosticOnly: true,
-            canonicalQualification: false,
-            skipped: canonical.passed
-              ? "canonical Bash passed; failure diagnostics not needed"
-              : "canonical Bash child did not close",
-          },
+  const browserTransport: Record<string, unknown> = { attempted: false };
+  const { components, bashDiagnostic, scheduling } = await withPersonalBrowserTunnel(
+    input.nativeBrowser,
+    nonce!,
+    () =>
+      schedulePersonalComponents(input.browserFirst, run, async (canonical) =>
+        !canonical.passed && canonical.execution.childClosed
+          ? await bashDiagnostics(
+              runtime,
+              process.cwd(),
+              nonce!,
+              process.env,
+              "contained",
+              input.gitPins,
+            )
+          : {
+              classification: "exact-byte-Bash-startup-diagnostic",
+              scope: "contained",
+              diagnosticOnly: true,
+              canonicalQualification: false,
+              skipped: canonical.passed
+                ? "canonical Bash passed; failure diagnostics not needed"
+                : "canonical Bash child did not close",
+            },
+      ),
+    browserTransport,
   );
   const identities = personalCriticalFiles.map((relative) => {
     try {
@@ -446,6 +516,7 @@ async function main() {
     components,
     scheduling,
     bashDiagnostic,
+    browserTransport,
     identities,
     controllerPid: process.pid,
     compatibilityProofSource: input.compatibilityProofSource,

@@ -753,11 +753,15 @@ class BrowserPageReadiness(unittest.TestCase):
 
 
 class BrowserHarnessShutdown(unittest.TestCase):
-    def run_case(self, mode="success"):
+    def run_case(self, mode="success", native_pipe=False):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
             port, pid_file = state / "owned.port", state / "owned.pid"
             endpoint = {"port": 12345, "token": "a" * 64}
+            if native_pipe:
+                endpoint = {"schemaVersion": 1, "transport": "native-hermes-browser-pipe",
+                            "pipe": "\\\\.\\pipe\\LOCAL\\Hermes-Browser-0123456789-" + hashlib.sha256(os.path.normcase(os.path.abspath(str(port))).encode()).hexdigest()[:24],
+                            "token": "a" * 64}
             expected_pid = (
                 2**31 + 4
                 if mode == "high-pid"
@@ -768,9 +772,12 @@ class BrowserHarnessShutdown(unittest.TestCase):
             port.write_text(json.dumps(endpoint))
             pid_file.write_text(str(expected_pid))
             events = []
+            clients = set()
 
             class Channel:
                 def getpeername(self):
+                    if native_pipe:
+                        raise AssertionError("LOCAL pipe must not be treated as TCP")
                     return ("127.0.0.1", 12345)
 
                 def settimeout(self, value):
@@ -778,6 +785,7 @@ class BrowserHarnessShutdown(unittest.TestCase):
 
                 def close(self):
                     events.append("socket-close")
+                    clients.discard(self)
 
             class Process:
                 def __init__(self, pid):
@@ -830,15 +838,24 @@ class BrowserHarnessShutdown(unittest.TestCase):
                     error = PermissionError("controlled endpoint deletion failure")
                     error.winerror = 5
                     raise error
-                port.unlink(missing_ok=True)
+                if not native_pipe:
+                    port.unlink(missing_ok=True)
+
+            def connect(name, timeout):
+                channel = Channel()
+                if mode != "unowned-pipe-client":
+                    clients.add(channel)
+                return channel, "a" * 64
 
             ipc = SimpleNamespace(
                 port_path=lambda name: port,
                 pid_path=lambda name: pid_file,
-                connect=lambda name, timeout: (Channel(), "a" * 64),
+                connect=connect,
                 request=request,
                 cleanup_endpoint=cleanup,
             )
+            if native_pipe:
+                ipc._native_pipe_ipc = ("0123456789", None, clients, {})
             native = ModuleType("nemoclaw_native_windows")
 
             class Refusal(SystemExit):
@@ -846,6 +863,7 @@ class BrowserHarnessShutdown(unittest.TestCase):
 
             native.NativeStartupRefusal = Refusal
             with (
+                patch.dict(os.environ, {"NEMOCLAW_AGENT_SESSION_ID": "0123456789"}),
                 patch.dict(sys.modules, {"nemoclaw_native_windows": native}),
                 patch.object(
                     owner, "owned_file", side_effect=lambda file, root: Path(file)
@@ -855,6 +873,20 @@ class BrowserHarnessShutdown(unittest.TestCase):
                     "nc-0123456789ab", state, ipc, Process
                 )
             return result, events, calls, port.exists(), pid_file.exists()
+
+    def test_pipe_shutdown_retains_record_only_after_authenticated_process_exit(self):
+        result, events, calls, port, pid = self.run_case(native_pipe=True)
+        self.assertTrue(result["complete"] and result["endpointRetainedForStateOwner"] and port)
+        self.assertTrue(result["processExitObserved"] and result["handleClosed"])
+        self.assertFalse(pid or result["endpointRemoved"])
+        self.assertEqual(calls, ["ping", "ping", "shutdown"])
+        self.assertLess(events.index("wait-exit"), events.index("endpoint-cleanup"))
+        for mode in ("wait-timeout", "successor", "changed-pid", "unowned-pipe-client"):
+            with self.subTest(mode=mode):
+                result, events, _, port, pid = self.run_case(mode, native_pipe=True)
+                self.assertFalse(result["complete"])
+                self.assertTrue(port and pid)
+                self.assertNotIn("endpoint-cleanup", events)
 
     def test_authenticated_shutdown_waits_on_retained_process_before_deleting_records(
         self,

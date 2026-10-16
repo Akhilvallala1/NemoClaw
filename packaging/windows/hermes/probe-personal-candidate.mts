@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomBytes, createHash } from "node:crypto";
+import {
+  startPersonalNativeBrowser,
+  type PersonalBrowserOwner,
+} from "./personal-native-browser.mts";
 import { startPersonalWpr, requestPersonalWprStop, finishPersonalWpr } from "./personal-wpr.mts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -461,6 +465,9 @@ function loadDerivedPersonalInputs(
     "bash-compatibility-proof.json",
   );
   const mxc = referenced(derivation.value.mxc, "mxc-build.json");
+  const browserStartup = derivation.value.browserStartup
+    ? referenced(derivation.value.browserStartup, "browser-startup-adaptation.json")
+    : null;
   if (replay)
     validatePersonalReplayInput(replay, candidate.value, candidate, runtime, sourceRevision);
   else {
@@ -493,10 +500,48 @@ function loadDerivedPersonalInputs(
   const marker = receiptDocument(path.join(runtime, "nemoclaw-windows-runtime.json"));
   assert.deepEqual(marker.value.startupAdapterUpgrade, derivation.value.adapterUpgrade);
   assert.equal(marker.value.startupAdapterSha256, adapterSha256);
+  const browserHooks: string[] = [];
+  if (browserStartup) {
+    const helper = fileIdentity(
+      fileURLToPath(new URL("./nemoclaw_browser_use.py", import.meta.url)),
+    );
+    const expectedStartup = {
+      classification: "ci-installed-browser-use-startup",
+      module: "nemoclaw_browser_use.py",
+      bytes: helper.bytes,
+      sha256: helper.sha256,
+      pth: "001_nemoclaw_browser_use.pth",
+      afterPth: "000_nemoclaw_native_windows.pth",
+      nativeStartupAdapterSha256: adapterSha256,
+      executionQualified: false,
+    };
+    assert.deepEqual(browserStartup.value.browserUseStartup, expectedStartup);
+    assert.deepEqual(marker.value.browserUseStartup, expectedStartup);
+    assert.equal(browserStartup.value.runtimeExecutionQualified, false);
+    assert.equal(browserStartup.value.requiresMovedRootProbe, true);
+    for (const nativeHook of startupHookPaths) {
+      const site = nativeHook.slice(0, -"nemoclaw_native_windows.py".length);
+      for (const [name, sha256] of [
+        ["nemoclaw_browser_use.py", helper.sha256],
+        [
+          "001_nemoclaw_browser_use.pth",
+          createHash("sha256")
+            .update("import nemoclaw_browser_use; nemoclaw_browser_use.install()\n")
+            .digest("hex"),
+        ],
+      ]) {
+        const relative = site + name;
+        assert.equal(indexed.get(relative)?.sha256, sha256);
+        assert.equal(marker.value.generatedFiles[relative], sha256);
+        browserHooks.push(relative);
+      }
+    }
+  }
   const hooks = startupHookPaths;
   const inspect = new Set<string>([
     ...personalCriticalFiles,
     ...hooks,
+    ...browserHooks,
     ...wheel.value.replacement.installedFiles.map((row: any) => row.path),
     ...compatibility.value.files.map((row: any) => "mxc-compat/" + row.file),
     "mxc-compat/DETOURS-LICENSE.txt",
@@ -516,7 +561,16 @@ function loadDerivedPersonalInputs(
   return {
     candidate,
     derivation,
-    documents: [wheel, git, compatibility, compatibilityProof, mxc, inventory].map((document) => ({
+    browserStartup,
+    documents: [
+      wheel,
+      git,
+      compatibility,
+      compatibilityProof,
+      mxc,
+      inventory,
+      ...(browserStartup ? [browserStartup] : []),
+    ].map((document) => ({
       path: document.path,
       bytes: document.bytes,
       sha256: document.sha256,
@@ -626,8 +680,8 @@ export function personalRequest(
       capabilities: [],
     },
     ui: { disable: false, clipboard: "none", injection: false },
-    // The page server, Browser Use and CDP are inside this sandbox. External
-    // network grants cannot substitute for working intra-sandbox loopback.
+    // Native browser sessions use the owned file relay and a contained LOCAL
+    // pipe. Neither that transport nor legacy diagnostics grant host networking.
     network: {
       egress: { default: "deny" },
       ingress: { default: "deny", hostLoopback: "deny" },
@@ -2227,6 +2281,10 @@ async function main() {
     "APPDATA",
     "USERPROFILE",
     "RUNNER_TRACKING_ID",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "NEMOCLAW_RUNTIME_JOB_OWNED",
+    "NEMOCLAW_PERSONAL_HOST_OWNER",
   ])
     if (process.env[key]) environment[key] = process.env[key];
   environment.PATH = path.join(windowsRoot, "System32");
@@ -2241,6 +2299,7 @@ async function main() {
     ownedRootsRemoved: false,
     browserDiagnosticComplete: true,
     nativeStateComplete: true,
+    nativeBrowserComplete: true,
   };
   const receipt: Record<string, unknown> = {
     schemaVersion: 2,
@@ -2289,6 +2348,8 @@ async function main() {
   let compatibility: ReturnType<typeof validatePersonalCompatibility> | undefined;
   let browserDiagnosticChildrenClosed = true;
   let primaryWpr: Awaited<ReturnType<typeof startPersonalWpr>> | null = null;
+  let nativeBrowser: Awaited<ReturnType<typeof startPersonalNativeBrowser>> | undefined;
+  let nativeBrowserOwner: PersonalBrowserOwner | undefined;
   const rendererCaptureOwner = path.join(
     output,
     rendererPostmortem ? "renderer-postmortem-owner.json" : "renderer-wer-owner.json",
@@ -2545,11 +2606,6 @@ async function main() {
       runtime,
       nonce,
     );
-    fs.writeFileSync(
-      path.join(launcher, "personal-workload-input.json"),
-      JSON.stringify(workloadInput, null, 2) + "\n",
-      { flag: "wx" },
-    );
     request = personalRequest(
       path.join(launcher, "node.exe"),
       path.join(launcher, "probe-personal-workload.mts"),
@@ -2560,6 +2616,10 @@ async function main() {
       currentNativeRoot,
     );
     if (stateOwnerBuild) {
+      assert(
+        derived.browserStartup,
+        "Current native Personal requires the pre-execution Browser Use startup plan.",
+      );
       cleanup.nativeStateComplete = false;
       nativeState = await acquirePersonalNativeState(
         stateOwnerBuild.launcher,
@@ -2584,7 +2644,37 @@ async function main() {
         currentNativeRoot,
         nativeState.stateRoot,
       );
+      const browserReceipt: Record<string, unknown> = {};
+      receipt.nativeBrowser = browserReceipt;
+      nativeBrowser = await startPersonalNativeBrowser({
+        runtime,
+        controller: launcher,
+        state: nativeState.stateRoot,
+        scratch: hostScratch,
+        nonce,
+        python: hostControllerPython,
+        environment,
+        receipt: browserReceipt,
+        identityLauncher: {
+          path: stateOwnerBuild.launcher,
+          bytes: stateOwnerBuild.executable.bytes,
+          sha256: stateOwnerBuild.executable.sha256,
+        },
+        onOwner: (owner) => {
+          nativeBrowserOwner = owner;
+          cleanup.nativeBrowserComplete = false;
+        },
+      });
+      workloadInput.nativeBrowser = nativeBrowser.environment;
+      request.process.env.push(
+        ...Object.entries(nativeBrowser.environment).map(([key, value]) => `${key}=${value}`),
+      );
     }
+    fs.writeFileSync(
+      path.join(launcher, "personal-workload-input.json"),
+      JSON.stringify(workloadInput, null, 2) + "\n",
+      { flag: "wx" },
+    );
     if (rendererWerBuildFile) {
       assert(replayDocument, "Renderer WER capture requires the immutable canonical replay");
       rendererCapture.helper = fileIdentity(rendererCaptureHelper);
@@ -2767,10 +2857,19 @@ async function main() {
       runtime,
     );
     if (nativeExecutionFailure) throw nativeExecutionFailure;
+    nativeBrowser?.assertHealthy();
     receipt.selectedTier = "base-container";
   } catch (error) {
     failure = error;
   } finally {
+    if (nativeBrowserOwner && (!attempted || cleanup.executorClosed)) {
+      try {
+        await nativeBrowserOwner.close();
+        cleanup.nativeBrowserComplete = true;
+      } catch (error) {
+        errors.push({ nativeBrowserCleanup: errorDetail(error) });
+      }
+    }
     if (primaryWpr) {
       const recording = await finishPersonalWpr(primaryWpr);
       receipt.primaryWpr = recording;
@@ -2976,7 +3075,8 @@ async function main() {
       (cleanup.executorClosed || (rendererCapturePrepareAttempted && !attempted)) &&
       (!attempted || (cleanup.nativeTeardownVerified && cleanup.hostDesktopsReleased)) &&
       cleanup.hostDiagnosticChildrenClosed &&
-      browserDiagnosticChildrenClosed;
+      browserDiagnosticChildrenClosed &&
+      cleanup.nativeBrowserComplete;
     if (rendererCapturePrepareAttempted)
       await finishRendererCaptureOwner({
         owner: rendererCaptureOwner,

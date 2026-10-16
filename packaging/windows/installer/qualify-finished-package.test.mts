@@ -44,6 +44,7 @@ for (const agent of ["hermes"] as const) {
     runtime: identity,
     cleanupErrors: [],
     results: {
+      runtimeBootstrap: false,
       launcherAdmission,
       configurationReused: false,
       configurationPreserved: true,

@@ -376,6 +376,54 @@ class FinishedHermesIntake(unittest.TestCase):
                 (build_root / name).write_text("{}")
             runtime = r"C:\NemoClawHermesProbe-001122334455"
             _, personal, request = self.state_owner_fixture(root)
+            node = {"path": r"C:\bootstrap\node.exe", "bytes": 100,
+                    "sha256": "97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878"}
+            personal.update(feasibilityPassed=True, hostInputs={"node": node})
+            nonce = personal["workload"]["nonce"]
+            page = "http://127.0.0.1:34567/" + nonce
+            relay = personal["nativeState"]["stateRoot"] + "\\browser-relay-" + nonce
+            launcher = personal["nativeStateBuild"]["executable"]
+            personal["nativeBrowser"] = {
+                "schemaVersion": 1, "classification": "personal-native-edge-browser", "nonce": nonce,
+                "runtime": runtime, "transport": "guarded-file-native-pipe", "generalHostProxy": False,
+                "inheritedKillOnCloseJob": True, "cleanupErrors": [],
+                **dict.fromkeys(("closed", "relayClosed", "edgeClosed", "relayOwnerClosed", "pageServerClosed"), True),
+                "identityLauncher": {key: launcher[key] for key in ("path", "bytes", "sha256")},
+                "identity": {"classification": "native-arm64-microsoft-edge", "architecture": "arm64",
+                             "machine": 0xAA64, "productName": "Microsoft Edge", "signatureStatus": "Valid",
+                             "provenance": "standard-windows-microsoft-edge-installation", "bytes": 123, "sha256": "e" * 64},
+                "endpoint": {"port": 45678, "path": "/devtools/browser/owned"},
+                "relayRoot": relay, "pageRequests": 1, "pageUrl": page,
+            }
+            personal["cleanup"]["nativeBrowserComplete"] = True
+            personal["workload"].update(browserTransport={"attempted": True, "started": True, "closed": True},
+                components=[{"component": "browser", "passed": True, "result": {"details": {
+                    "nativeEdgeTransport": True, "pageServerOwner": "host-job", "canonicalBrowserCleanupCalled": True,
+                    "browserHarnessShutdown": {"complete": True, "processExitObserved": True, "identityReconfirmed": True,
+                                               "handleClosed": True, "transport": "native-hermes-browser-pipe"},
+                    "pageObservation": {"visible": True, "actual": {"sentinel": nonce, "url": page}},
+                }}}])
+            request["process"]["env"].extend(key + "=" + value for key, value in {
+                "NEMOCLAW_PERSONAL_BROWSER_SESSION": nonce, "NEMOCLAW_AGENT_SESSION_ID": nonce[:10],
+                "NEMOCLAW_WORKER_ROOT": runtime[:3] + "NemoClawPersonalNode-" + nonce[:12] + "\\workers",
+                "NEMOCLAW_BROWSER_RELAY_ROOT": relay, "NEMOCLAW_HERMES_BROWSER_PIPE_PORT": "8124",
+                "NEMOCLAW_BROWSER_CDP_PATH": "/devtools/browser/owned", "NEMOCLAW_PERSONAL_BROWSER_PAGE": page,
+                "BROWSER_CDP_URL": "ws://127.0.0.1:8124/devtools/browser/owned",
+                "BU_CDP_WS": "ws://127.0.0.1:8124/devtools/browser/owned",
+            }.items())
+            owner.validate_same_run_browser(personal, request)
+            for keys, value in [(("nativeBrowser", "closed"), False), (("nativeBrowser", "pageRequests"), 0),
+                                (("nativeBrowser", "pageRequests"), True), (("nativeBrowser", "generalHostProxy"), True),
+                                (("nativeBrowser", "identity", "machine"), 0x8664),
+                                (("nativeBrowser", "identityLauncher", "sha256"), "f" * 64),
+                                (("workload", "browserTransport", "closed"), False),
+                                (("cleanup", "nativeBrowserComplete"), False)]:
+                changed = copy.deepcopy(personal)
+                target = changed
+                for key in keys[:-1]: target = target[key]
+                target[keys[-1]] = value
+                with self.subTest(browser_field=keys), self.assertRaises(ValueError):
+                    owner.validate_same_run_browser(changed, request)
             personal_raw = json.dumps(personal).encode()
             (personal_root / "personal-feasibility.json").write_bytes(personal_raw)
             (personal_root / "personal-request.json").write_text(json.dumps(request))
@@ -394,6 +442,33 @@ class FinishedHermesIntake(unittest.TestCase):
                      "status": "candidate-bytes-exported-unqualified", "runtimeExecutionQualified": False,
                      "activationAllowed": False, "candidateReceiptSha256": candidate_sha,
                      "stateOwnerBuildAttempted": True, "stateOwnerBuildClosed": True}
+            host = {"schemaVersion": 1, "classification": "personal-native-host-process-owner",
+                    "sourceRevision": self.pin["sourceRevision"], "runtimeRoot": runtime,
+                    "workflowRunId": "123", "workflowRunAttempt": "2", "nonce": "f" * 24,
+                    "stateRoot": "C:\\NemoClawPersonalHost-" + "f" * 12,
+                    "operationSucceeded": True, "diagnosticOnly": False, "canonicalQualification": False,
+                    "installedAcceptance": False, "processCreated": True, "primaryError": None,
+                    "childrenClosed": True, "cleanupComplete": True,
+                    "execution": {"resumed": True, "childClosed": True, "exitCode": 0, "timedOut": False,
+                                  "outputExceeded": False, "error": None},
+                    "job": {"created": True, "assignedBeforeResume": True, "rootMembershipVerified": True,
+                            "limitFlags": 8192, "activeAfterCleanup": 0, "forcedTermination": False},
+                    "cleanup": {**dict.fromkeys(("captureClosed", "processHandleClosed", "threadHandleClosed",
+                                               "jobHandleClosed", "stateRemoved"), True), "errors": []},
+                    "result": {"passed": True, "file": str(personal_root / "personal-feasibility.json"),
+                               "bytes": len(personal_raw), "sha256": hashlib.sha256(personal_raw).hexdigest()},
+                    "inputs": {node["path"]: {"bytes": node["bytes"], "sha256": node["sha256"]}}}
+            for name in ("probe-personal-candidate.mts", "personal-native-host.py", "probe-host-browser.py"):
+                file = HERE.parent / "hermes" / name
+                content = file.read_bytes()
+                host["inputs"][str(file)] = {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+            def save_host(value=host):
+                raw = json.dumps(value).encode()
+                (root / "personal-host-owner.json").write_bytes(raw)
+                phase.update(hostProcessOwnerAttempted=True, hostProcessOwnerClosed=True,
+                             hostProcessOwner={"file": "personal-host-owner.json", "bytes": len(raw),
+                                               "sha256": hashlib.sha256(raw).hexdigest(), "childrenClosed": True})
+            save_host()
             def save(p=phase, b=build):
                 (root / "personal-phase.json").write_text(json.dumps(p))
                 (root / "official-hermes-runtime-phase.json").write_text(json.dumps(b))
@@ -416,6 +491,9 @@ class FinishedHermesIntake(unittest.TestCase):
                 state_raw = archive.read("personal/state-owner-build.json")
                 self.assertEqual(state_raw, (root / "state-owner-build.json").read_bytes())
                 self.assertEqual(context["nativeStateBuildSha256"], hashlib.sha256(state_raw).hexdigest())
+                host_raw = archive.read("personal/host-process-owner.json")
+                self.assertEqual(host_raw, (root / "personal-host-owner.json").read_bytes())
+                self.assertEqual(context["nativeHostOwnerSha256"], hashlib.sha256(host_raw).hexdigest())
             # Staging is not admission: incomplete native evidence and downloaded schema5 pins fail.
             with self.assertRaises(ValueError):
                 owner.validate_personal(json.loads(personal_raw), context)
@@ -436,12 +514,39 @@ class FinishedHermesIntake(unittest.TestCase):
                 ("build", "runtimeExecutionQualified", True), ("build", "activationAllowed", True),
                 *[("build", key, value) for key in ("stateOwnerBuildAttempted", "stateOwnerBuildClosed")
                   for value in (False, 1, None)],
+                *[("phase", key, value) for key in ("hostProcessOwnerAttempted", "hostProcessOwnerClosed")
+                  for value in (False, 1, None)],
+                ("phase", "hostProcessOwner", {}),
             ]):
                 p, b = copy.deepcopy(phase), copy.deepcopy(build)
                 (p if section == "phase" else b)[field] = value
                 save(p, b)
                 with self.subTest(section=section, field=field), self.assertRaises(ValueError):
                     stage("invalid-" + str(index))
+            for index, (keys, value) in enumerate([
+                (("sourceRevision",), "f" * 40), (("workflowRunId",), "124"),
+                (("operationSucceeded",), False), (("primaryError",), "failed"),
+                (("diagnosticOnly",), True), (("canonicalQualification",), True),
+                (("processCreated",), False), (("nonce",), "not-a-nonce"), (("stateRoot",), r"C:\foreign"),
+                (("execution", "exitCode"), False), (("execution", "timedOut"), True),
+                (("execution", "outputExceeded"), True), (("execution", "error"), "unclosed"),
+                (("job", "assignedBeforeResume"), False), (("job", "rootMembershipVerified"), 1),
+                (("job", "limitFlags"), 0), (("job", "forcedTermination"), True),
+                (("job", "activeAfterCleanup"), 1), (("cleanup", "captureClosed"), False),
+                (("cleanup", "stateRemoved"), False), (("result", "passed"), 1),
+                (("result", "sha256"), "f" * 64), (("inputs",), {}),
+                (("inputs", node["path"], "sha256"), "f" * 64),
+            ]):
+                changed = copy.deepcopy(host)
+                target = changed
+                for key in keys[:-1]:
+                    target = target[key]
+                target[keys[-1]] = value
+                save_host(changed)
+                save()
+                with self.subTest(host=keys), self.assertRaises(ValueError):
+                    stage("invalid-host-" + str(index))
+            save_host()
             save()
             (candidate_root / "unrelated.exe").write_bytes(b"not admitted")
             with self.assertRaises(ValueError):

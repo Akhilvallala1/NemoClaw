@@ -1541,6 +1541,63 @@ Write-Output $count
   },
 );
 
+test("runtime bootstrap cannot claim final installation or enter another agent or scope", () => {
+  const source = fileURLToPath(new URL("./run-installed-acceptance.ps1", import.meta.url));
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:NEMOCLAW_ACCEPTANCE_SOURCE,[ref]$tokens,[ref]$errors)
+if ($errors.Count) { throw 'Acceptance source does not parse.' }
+$guard=@($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text.StartsWith('if ($RuntimeBootstrap -and') })
+$claims=@($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -in @('$timings.runtimeQualified','$timings.fullInstalledQualification') })
+if ($guard.Count -ne 1 -or $claims.Count -ne 2) { throw 'Expected one phase guard and two qualification assignments.' }
+$check=[scriptblock]::Create($guard[0].Extent.Text)
+$claim=[scriptblock]::Create(($claims.Extent.Text -join [Environment]::NewLine))
+$count=0
+foreach ($RuntimeBootstrap in @($false,$true)) {
+  foreach ($Agent in @('openclaw','hermes')) {
+    foreach ($Mode in @('current-build','built-0.1.3-replay')) {
+      foreach ($ValidationScope in @('full-acceptance','startup-only')) {
+        $failed=$false; try { . $check } catch { $failed=$true }
+        $expected=$RuntimeBootstrap -and ($Agent -cne 'hermes' -or $Mode -cne 'current-build' -or $ValidationScope -cne 'full-acceptance')
+        if ($failed -ne $expected) { throw 'Incorrect bootstrap admission.' }
+        $count++
+      }
+    }
+  }
+  foreach ($ValidationScope in @('full-acceptance','startup-only')) {
+    foreach ($primary in @($null,'retained failure')) {
+      $timings=@{}; . $claim
+      $runtimeExpected=$ValidationScope -ceq 'full-acceptance' -and $null -eq $primary
+      if ($timings.runtimeQualified -ne $runtimeExpected -or
+          $timings.fullInstalledQualification -ne ($runtimeExpected -and -not $RuntimeBootstrap)) { throw 'Incorrect qualification claim.' }
+      $count++
+    }
+  }
+}
+Write-Output $count
+`;
+  const result = spawnSync(
+    process.platform === "win32" ? "pwsh.exe" : "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "& ([scriptblock]::Create([Console]::In.ReadToEnd()))",
+    ],
+    {
+      input: script,
+      env: powershellEnvironment({ NEMOCLAW_ACCEPTANCE_SOURCE: source }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30000,
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.trim(), "24");
+});
+
 for (const agent of ["hermes"])
   test(`${agent} installed acceptance retains recovery custody until current warm cleanup is proven`, () => {
     const source = fileURLToPath(new URL("./run-installed-acceptance.ps1", import.meta.url));
@@ -1566,6 +1623,7 @@ $expectedHermesLauncher='2' * 64;$expectedHermesPackageBuild='3' * 64
 $artifactSourceSnapshot='snapshot-fixture';$artifactSourceSnapshotSha256='4' * 64;$controllerSource='5' * 40
 function Invoke-TestAgent {
   if ($args -notcontains (Join-Path $SourceRoot "packaging\windows\installer\qualify-installed-$Agent.mts")) { throw 'Wrong agent controller.' }
+  if (($args -contains '--runtime-bootstrap') -ne $RuntimeBootstrap) { throw 'Incorrect qualification phase routing.' }
   $first = $calls.Count -eq 0
   if (($args -contains '--preserve-configuration') -ne $first -or ($args -contains '--reuse-configuration') -eq $first) { throw ('Incorrect cold/warm configuration routing: ' + ($args -join ',') + '; first=' + $first) }
   $previous = [array]::IndexOf($args, '--previous-acceptance')
@@ -1594,6 +1652,7 @@ function Get-Content {
   $warm=$calls.Count -eq 2
   $receipt = @{ schemaVersion=1; classification='installed-canonical-hermes-acceptance'; controllerRun='123:1';runtime=$expectedHermesRuntime.Clone();verdict='pass'; cleanupErrors=@();fullInstalledQualification=$false;results=@{
     configurationReused=$warm;configurationPreserved=(-not $warm)
+    runtimeBootstrap=[bool]$RuntimeBootstrap;configuration=@{nativeOnboardingUsed=(-not $warm -and -not $RuntimeBootstrap)}
     launcherAdmission=@{launcherSha256=$expectedHermesLauncher;packageBuildSha256=$expectedHermesPackageBuild;artifactSourceSnapshotSha256=$artifactSourceSnapshotSha256;controllerSourceRevision=$controllerSource}
     stateRoot='C:\NemoClawState-S-1-5-21-1-hermes';configurationSha256=('e' * 64)
     retainedConversation=@{storedSessionId='saved-session';profileName='personal';messageCount=10;lastMessageId=20;transcriptSha256=('f' * 64)}
@@ -1609,6 +1668,11 @@ function Get-Content {
     $receipt.results.retainedConversation.transcriptSha256='1' * 64
   }
   switch ($scenario) {
+    'wrong-phase' { $receipt.results.runtimeBootstrap=(-not $RuntimeBootstrap) }
+    'string-phase' { $receipt.results.runtimeBootstrap=[string]$RuntimeBootstrap }
+    'missing-phase' { $receipt.results.Remove('runtimeBootstrap') }
+    'wrong-onboarding' { $receipt.results.configuration.nativeOnboardingUsed=$warm -or $RuntimeBootstrap }
+    'warm-wrong-phase' { if ($warm) { $receipt.results.runtimeBootstrap=(-not $RuntimeBootstrap) } }
     'missing-admission' { $receipt.results.Remove('launcherAdmission') }
     'foreign-launcher' { $receipt.results.launcherAdmission.launcherSha256='9' * 64 }
     'foreign-build' { $receipt.results.launcherAdmission.packageBuildSha256='9' * 64 }
@@ -1688,6 +1752,8 @@ $scenarios=@('pass','process-failure','warm-process-failure','failed-receipt','c
 $scenarios+=@('configuration-unconfirmed','string-configuration-custody','missing-configuration-custody','warm-configuration-unconfirmed')
 $scenarios+=@('missing-admission','foreign-launcher','foreign-build','foreign-snapshot','foreign-controller','warm-foreign-launcher')
 $scenarios+=@('missing-retained','retained-array','empty-session','array-session','long-session','empty-profile','long-profile','string-count','single-count','limit-count','fraction-count','string-last','last-before-count','unsafe-last','invalid-hash','array-hash','warm-missing-restored','warm-array-restored','warm-restored-string-count','warm-restored-session','warm-restored-profile','warm-restored-count','warm-restored-last','warm-restored-hash','warm-continued-session','warm-continued-profile','warm-continued-count','warm-continued-last','warm-continued-hash')
+$scenarios+=@('wrong-phase','string-phase','missing-phase','wrong-onboarding','warm-wrong-phase')
+foreach ($RuntimeBootstrap in @($false,$true)) {
 foreach ($scenario in $scenarios) {
   $calls=[Collections.Generic.List[object]]::new(); $timings=@{}; $failed=$false; $restartCustodyUnresolved=$false
   try { . $execute } catch { if ($scenario -ceq 'pass') { throw }; $failed=$true }
@@ -1710,6 +1776,7 @@ foreach ($scenario in $scenarios) {
   if ($scenario -ceq 'stale-receipt' -and $calls.Count -ne 0) { throw 'Stale receipt allowed a new launch.' }
   $count++
 }
+}
 Write-Output $count
 `;
     const result = spawnSync(
@@ -1730,7 +1797,7 @@ Write-Output $count
     );
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(result.stdout.trim(), "77");
+    assert.equal(result.stdout.trim(), "164");
   });
 
 for (const shell of ["powershell.exe", "pwsh.exe"])

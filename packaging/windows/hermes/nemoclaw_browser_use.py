@@ -5,7 +5,8 @@
 import hashlib
 import importlib.util
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import re
 import sys
 
 MODULE = "tools.browser_use_cli"
@@ -20,19 +21,40 @@ PYTHON = "tools/browser-use/Scripts/python.exe"
 _installed_root = None
 
 
+def _personal_workers(root, environment):
+    """A build probe uses its read-only controller stage, never an installed mount."""
+    nonce = environment.get("NEMOCLAW_PERSONAL_BROWSER_SESSION", "")
+    if (
+        environment.get("GITHUB_ACTIONS") != "true"
+        or environment.get("NEMOCLAW_AGENT_RUNTIME")
+        or not re.fullmatch(r"[a-f0-9]{24}", nonce)
+        or not re.fullmatch(r"[A-Z]:\\NemoClawHermesProbe-[a-f0-9]{12}", str(root))
+        or not re.fullmatch(r"[a-f0-9]{64}", environment.get("NEMOCLAW_PERSONAL_BROWSER_BOOTSTRAP_SHA256", ""))
+    ):
+        raise ValueError("Personal browser bootstrap has no current build identity")
+    workers = PureWindowsPath(root).parent / ("NemoClawPersonalNode-" + nonce[:12]) / "workers"
+    if str(workers) != environment.get("NEMOCLAW_WORKER_ROOT"):
+        raise ValueError("Personal browser bootstrap differs from its fixed controller stage")
+    return Path(str(workers))
+
+
 def _install_pipe_bootstrap(root, native):
     if "NEMOCLAW_HERMES_BROWSER_PIPE_PORT" not in os.environ:
         return
     python = native._regular_file(root / PYTHON, root)
     if not native._same_path(Path(sys.executable), python):
         return
-    workers = root.parent / "workers"
+    personal = "NEMOCLAW_PERSONAL_BROWSER_SESSION" in os.environ
+    workers = _personal_workers(root, os.environ) if personal else root.parent / "workers"
     declared = os.environ.get("NEMOCLAW_WORKER_ROOT")
     if not declared or not native._same_path(Path(declared), workers):
         native._refuse("the contained Browser Use worker root differs from its runtime.")
     bootstrap = native._regular_file(
         workers / "hermes-browser-bootstrap.pyc", workers, native._runtime_volume_mount(root)
     )
+    if personal:
+        if bootstrap.stat().st_size > 1024 * 1024 or hashlib.sha256(bootstrap.read_bytes()).hexdigest() != os.environ["NEMOCLAW_PERSONAL_BROWSER_BOOTSTRAP_SHA256"]:
+            native._refuse("the Personal Browser Use bootstrap differs from its declared bytes.")
     spec = importlib.util.spec_from_file_location("_nemoclaw_browser_bootstrap", bootstrap)
     if spec is None or spec.loader is None:
         native._refuse("the contained Browser Use bootstrap is unavailable.")

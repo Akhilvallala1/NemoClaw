@@ -135,11 +135,50 @@ function hash(file: string) {
   };
 }
 
-async function nativeIdentity(environment: NodeJS.ProcessEnv, file: string) {
+export type NativeEdgeIdentityLauncher = { path: string; bytes: number; sha256: string };
+
+export function verifyNativeEdgeIdentityLauncher(identity: NativeEdgeIdentityLauncher) {
+  if (
+    !path.isAbsolute(identity.path) ||
+    path.basename(identity.path) !== "NemoClaw.exe" ||
+    !Number.isSafeInteger(identity.bytes) ||
+    identity.bytes <= 0 ||
+    !/^[a-f0-9]{64}$/u.test(identity.sha256)
+  )
+    throw new Error("Microsoft Edge identity launcher declaration is invalid.");
+  for (let current = identity.path; ; current = path.dirname(current)) {
+    const entry = fs.lstatSync(current);
+    if (
+      entry.isSymbolicLink() ||
+      (current === identity.path && (!entry.isFile() || entry.nlink !== 1))
+    )
+      throw new Error("Microsoft Edge identity launcher cannot traverse a link.");
+    if (current === path.dirname(current)) break;
+  }
+  const actual = hash(identity.path);
+  if (
+    actual.machine !== 0xaa64 ||
+    actual.bytes !== identity.bytes ||
+    actual.sha256 !== identity.sha256
+  )
+    throw new Error("Microsoft Edge identity launcher differs from its admitted build.");
+  return identity.path;
+}
+
+function identityLauncher(environment: NodeJS.ProcessEnv, identity?: NativeEdgeIdentityLauncher) {
+  if (identity) return verifyNativeEdgeIdentityLauncher(identity);
   const installRoot = environment.NEMOCLAW_NATIVE_INSTALL_ROOT;
   if (!installRoot || !path.win32.isAbsolute(installRoot))
     throw new Error("Microsoft Edge identity requires the installed NemoClaw root.");
-  const launcher = path.win32.join(installRoot, "bin", "NemoClaw.exe");
+  return path.win32.join(installRoot, "bin", "NemoClaw.exe");
+}
+
+async function nativeIdentity(
+  environment: NodeJS.ProcessEnv,
+  file: string,
+  identity?: NativeEdgeIdentityLauncher,
+) {
+  const launcher = identityLauncher(environment, identity);
   const result = await execFileAsync(launcher, ["--edge-offline-trust", file], {
     env: environment,
     windowsHide: true,
@@ -147,17 +186,19 @@ async function nativeIdentity(environment: NodeJS.ProcessEnv, file: string) {
     maxBuffer: 4096,
     encoding: "utf8",
   });
+  if (identity) verifyNativeEdgeIdentityLauncher(identity);
   const value = JSON.parse(result.stdout.trim());
   if (value?.schemaVersion !== 1)
     throw new Error("Microsoft Edge native identity verification failed.");
   return value;
 }
 
-async function nativeProcessIdentity(environment: NodeJS.ProcessEnv, pid: number) {
-  const installRoot = environment.NEMOCLAW_NATIVE_INSTALL_ROOT;
-  if (!installRoot || !path.win32.isAbsolute(installRoot))
-    throw new Error("Microsoft Edge process identity requires the installed NemoClaw root.");
-  const launcher = path.win32.join(installRoot, "bin", "NemoClaw.exe");
+async function nativeProcessIdentity(
+  environment: NodeJS.ProcessEnv,
+  pid: number,
+  identity?: NativeEdgeIdentityLauncher,
+) {
+  const launcher = identityLauncher(environment, identity);
   const result = await execFileAsync(launcher, ["--edge-process-identity", String(pid)], {
     env: environment,
     windowsHide: true,
@@ -165,13 +206,17 @@ async function nativeProcessIdentity(environment: NodeJS.ProcessEnv, pid: number
     maxBuffer: 4096,
     encoding: "utf8",
   });
+  if (identity) verifyNativeEdgeIdentityLauncher(identity);
   const value = JSON.parse(result.stdout.trim());
   if (value?.schemaVersion !== 1)
     throw new Error("Microsoft Edge native process identity verification failed.");
   return value;
 }
 
-export async function detectNativeEdge(environment: NodeJS.ProcessEnv = process.env) {
+export async function detectNativeEdge(
+  environment: NodeJS.ProcessEnv = process.env,
+  identity?: NativeEdgeIdentityLauncher,
+) {
   const systemRoot = environment.SystemRoot;
   if (
     process.platform !== "win32" ||
@@ -189,7 +234,7 @@ export async function detectNativeEdge(environment: NodeJS.ProcessEnv = process.
   const before = hash(file);
   if (before.machine !== 0xaa64)
     throw new Error("Microsoft Edge is not a native ARM64 executable.");
-  const signed = validateEdgeMetadata(await nativeIdentity(environment, file), file);
+  const signed = validateEdgeMetadata(await nativeIdentity(environment, file, identity), file);
   const after = hash(file);
   if (before.bytes !== after.bytes || before.sha256 !== after.sha256 || after.machine !== 0xaa64)
     throw new Error("Microsoft Edge changed during identity verification.");
@@ -245,13 +290,14 @@ export type NativeEdgeBrowserOwner = { close(): Promise<void> };
 export async function startNativeEdgeBrowser(options: {
   profileRoot: string;
   environment?: NodeJS.ProcessEnv;
+  identityLauncher?: NativeEdgeIdentityLauncher;
   signal?: AbortSignal;
   onOwner(owner: NativeEdgeBrowserOwner): void;
 }) {
   const environment = options.environment ?? process.env;
   if (environment.NEMOCLAW_RUNTIME_JOB_OWNED !== "1")
     throw new Error("Microsoft Edge requires the guardian-owned runtime job.");
-  const identity = await detectNativeEdge(environment);
+  const identity = await detectNativeEdge(environment, options.identityLauncher);
   if (fs.existsSync(options.profileRoot))
     throw new Error("The Microsoft Edge profile must be fresh.");
   fs.mkdirSync(options.profileRoot);
@@ -363,7 +409,11 @@ export async function startNativeEdgeBrowser(options: {
     if (!endpoint)
       throw new Error("Microsoft Edge did not become ready within its host startup bound.");
     if (output.exceeded) throw new Error("Microsoft Edge startup output exceeded its bound.");
-    const generation = await nativeProcessIdentity(environment, child.pid!);
+    const generation = await nativeProcessIdentity(
+      environment,
+      child.pid!,
+      options.identityLauncher,
+    );
     if (
       generation.pid !== child.pid ||
       generation.path?.toLowerCase() !== identity.path.toLowerCase() ||

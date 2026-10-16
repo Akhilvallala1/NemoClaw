@@ -703,6 +703,131 @@ def validate_same_run_state_owner(root, personal, request, source, run_id, run_a
     return raw
 
 
+def validate_same_run_browser(personal, request):
+    browser = personal.get("nativeBrowser", {})
+    workload = personal.get("workload", {})
+    nonce = workload.get("nonce", "")
+    require(isinstance(browser, dict) and isinstance(nonce, str) and re.fullmatch(r"[a-f0-9]{24}", nonce),
+            "Native browser identity is missing")
+    require(type(browser.get("schemaVersion")) is int and browser["schemaVersion"] == 1
+            and browser.get("classification") == "personal-native-edge-browser"
+            and browser.get("nonce") == nonce and browser.get("runtime") == personal.get("runtime")
+            and browser.get("transport") == "guarded-file-native-pipe" and browser.get("generalHostProxy") is False
+            and browser.get("inheritedKillOnCloseJob") is True and browser.get("cleanupErrors") == []
+            and all(browser.get(key) is True for key in
+                    ("closed", "relayClosed", "edgeClosed", "relayOwnerClosed", "pageServerClosed"))
+            and personal.get("cleanup", {}).get("nativeBrowserComplete") is True,
+            "Native browser transport or cleanup did not complete")
+    launcher = personal["nativeStateBuild"]["executable"]
+    require(browser.get("identityLauncher") == {key: launcher[key] for key in ("path", "bytes", "sha256")},
+            "Native browser used another identity helper")
+    identity = browser.get("identity", {})
+    require(isinstance(identity, dict) and identity.get("classification") == "native-arm64-microsoft-edge"
+            and identity.get("architecture") == "arm64" and type(identity.get("machine")) is int
+            and identity["machine"] == 0xAA64 and identity.get("productName") == "Microsoft Edge"
+            and identity.get("signatureStatus") == "Valid"
+            and identity.get("provenance") == "standard-windows-microsoft-edge-installation"
+            and isinstance(identity.get("sha256"), str) and re.fullmatch(r"[a-f0-9]{64}", identity["sha256"])
+            and type(identity.get("bytes")) is int and identity["bytes"] > 0,
+            "Native browser lacks its exact signed ARM64 identity")
+    endpoint = browser.get("endpoint", {})
+    require(isinstance(endpoint, dict) and type(endpoint.get("port")) is int and 0 < endpoint["port"] <= 65535
+            and isinstance(endpoint.get("path"), str)
+            and re.fullmatch(r"/devtools/browser/[A-Za-z0-9-]{1,128}", endpoint["path"]),
+            "Native browser endpoint identity is invalid")
+    environment = dict(entry.split("=", 1) for entry in request["process"]["env"])
+    state = personal["nativeState"]["stateRoot"]
+    controller = personal["runtime"][:3] + "NemoClawPersonalNode-" + nonce[:12]
+    expected = {
+        "NEMOCLAW_PERSONAL_BROWSER_SESSION": nonce, "NEMOCLAW_AGENT_SESSION_ID": nonce[:10],
+        "NEMOCLAW_WORKER_ROOT": controller + "\\workers",
+        "NEMOCLAW_BROWSER_RELAY_ROOT": state + "\\browser-relay-" + nonce,
+        "NEMOCLAW_HERMES_BROWSER_PIPE_PORT": "8124", "NEMOCLAW_BROWSER_CDP_PATH": endpoint["path"],
+        "BROWSER_CDP_URL": "ws://127.0.0.1:8124" + endpoint["path"],
+        "BU_CDP_WS": "ws://127.0.0.1:8124" + endpoint["path"],
+    }
+    require(all(environment.get(key) == value for key, value in expected.items())
+            and not environment.get("NEMOCLAW_AGENT_RUNTIME") and not environment.get("BU_CDP_URL")
+            and browser.get("relayRoot") == expected["NEMOCLAW_BROWSER_RELAY_ROOT"],
+            "Native browser did not use its declared contained transport")
+    transport = workload.get("browserTransport", {})
+    require(isinstance(transport, dict) and all(transport.get(key) is True for key in ("attempted", "started", "closed"))
+            and type(browser.get("pageRequests")) is int and browser["pageRequests"] > 0,
+            "Native browser pipe or owned page was not exercised")
+    components = [row for row in workload.get("components", []) if row.get("component") == "browser"]
+    require(len(components) == 1 and components[0].get("passed") is True, "Native browser component did not pass")
+    details = components[0].get("result", {}).get("details", {})
+    shutdown = details.get("browserHarnessShutdown", {})
+    observation = details.get("pageObservation", {})
+    require(details.get("nativeEdgeTransport") is True and details.get("pageServerOwner") == "host-job"
+            and details.get("canonicalBrowserCleanupCalled") is True
+            and shutdown.get("complete") is True and shutdown.get("processExitObserved") is True
+            and shutdown.get("identityReconfirmed") is True and shutdown.get("handleClosed") is True
+            and shutdown.get("transport") == "native-hermes-browser-pipe"
+            and observation.get("visible") is True and observation.get("actual", {}).get("sentinel") == nonce
+            and observation.get("actual", {}).get("url") == browser.get("pageUrl")
+            and browser.get("pageUrl") == environment.get("NEMOCLAW_PERSONAL_BROWSER_PAGE")
+            and isinstance(browser.get("pageUrl"), str)
+            and re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}/" + nonce, browser["pageUrl"]),
+            "Native browser page or authenticated daemon shutdown is incomplete")
+
+
+def validate_same_run_host_owner(root, phase, personal, personal_raw, source, run_id, run_attempt):
+    source_root = Path(__file__).parents[1] / "hermes"
+    spec = importlib.util.spec_from_file_location("personal_native_host_admission", source_root / "personal-native-host.py")
+    host = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(host)
+    raw = read_same_run_file(root / "personal-host-owner.json", 1024 * 1024)
+    record = json.loads(raw)
+    require(phase.get("hostProcessOwnerAttempted") is True and phase.get("hostProcessOwnerClosed") is True
+            and phase.get("hostProcessOwner") == {"file": "personal-host-owner.json", "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(), "childrenClosed": True}
+            and type(phase["hostProcessOwner"].get("bytes")) is int
+            and phase["hostProcessOwner"].get("childrenClosed") is True
+            and host.host_closed(record, source, phase["runtimeRoot"], run_id, run_attempt),
+            "Same-run Personal host owner identity or closure differs")
+    require(record.get("operationSucceeded") is True and record.get("diagnosticOnly") is False
+            and record.get("canonicalQualification") is False and record.get("installedAcceptance") is False
+            and record.get("processCreated") is True and record.get("primaryError") is None,
+            "Same-run Personal host process did not complete normally")
+    execution, job = record.get("execution", {}), record.get("job", {})
+    require(isinstance(execution, dict) and isinstance(job, dict)
+            and execution.get("resumed") is True and type(execution.get("exitCode")) is int
+            and execution["exitCode"] == 0 and execution.get("timedOut") is False
+            and execution.get("outputExceeded") is False and execution.get("error") is None
+            and all(job.get(key) is True for key in ("created", "assignedBeforeResume", "rootMembershipVerified"))
+            and type(job.get("limitFlags")) is int and job["limitFlags"] == 8192
+            and job.get("forcedTermination") is False,
+            "Same-run Personal host execution or job custody is incomplete")
+    nonce = record.get("nonce")
+    require(isinstance(nonce, str) and re.fullmatch(r"[a-f0-9]{24}", nonce)
+            and record.get("stateRoot") == phase["runtimeRoot"][:3] + "NemoClawPersonalHost-" + nonce[:12],
+            "Same-run Personal host scratch identity differs")
+    inputs = record.get("inputs", {})
+    require(isinstance(inputs, dict) and len(inputs) == 4, "Personal host command identities are incomplete")
+    for name in ("probe-personal-candidate.mts", "personal-native-host.py", "probe-host-browser.py"):
+        file = source_root / name
+        data = read_same_run_file(file, 2 * 1024 * 1024)
+        require(inputs.get(str(file)) == {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                and type(inputs[str(file)].get("bytes")) is int,
+                "Personal host controller or ownership source differs")
+    require(isinstance(personal.get("hostInputs"), dict), "Personal host input record is missing")
+    node = personal["hostInputs"].get("node", {})
+    require(isinstance(node, dict) and isinstance(node.get("path"), str)
+            and type(node.get("bytes")) is int and node["bytes"] > 0
+            and node.get("sha256") == host.NODE_SHA256
+            and inputs.get(node["path"]) == {"bytes": node["bytes"], "sha256": node["sha256"]}
+            and type(inputs[node["path"]].get("bytes")) is int,
+            "Personal host and contained producer identify different Node inputs")
+    require(personal.get("feasibilityPassed") is True
+            and record.get("result") == {"passed": True, "file": str(root / "personal-mxc/personal-feasibility.json"),
+                "bytes": len(personal_raw), "sha256": hashlib.sha256(personal_raw).hexdigest()}
+            and record["result"].get("passed") is True
+            and type(record["result"].get("bytes")) is int,
+            "Personal host completion does not identify this passing workload")
+    return raw
+
+
 def prepare_same_run_archives(root, output, source, run_id, run_attempt):
     """Snapshot this job's completed producer; never label it a published artifact."""
     require(re.fullmatch(r"[a-f0-9]{40}", source)
@@ -752,10 +877,12 @@ def prepare_same_run_archives(root, output, source, run_id, run_attempt):
     personal = json.loads(personal_raw)
     require(personal.get("runtime") == phase["runtimeRoot"],
             "Same-run Personal tested another runtime")
+    host_owner_raw = validate_same_run_host_owner(root, phase, personal, personal_raw, source, run_id, run_attempt)
     require(build.get("stateOwnerBuildAttempted") is True and build.get("stateOwnerBuildClosed") is True,
             "Same-run native state helper build did not close")
     request_raw = read_same_run_file(root / "personal-mxc/personal-request.json", 1024 * 1024)
     state_build_raw = validate_same_run_state_owner(root, personal, json.loads(request_raw), source, run_id, run_attempt)
+    validate_same_run_browser(personal, json.loads(request_raw))
     candidate_files = list(candidate_root.iterdir())
     require(0 < len(candidate_files) <= 32, "Same-run candidate metadata count exceeds its bound")
     archive_name = json.loads(candidate_raw)["archive"]["file"]
@@ -784,6 +911,7 @@ def prepare_same_run_archives(root, output, source, run_id, run_attempt):
     personal_zip = output / "personalEvidenceArtifact.zip"
     with zipfile.ZipFile(personal_zip, "x", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("personal/state-owner-build.json", state_build_raw)
+        archive.writestr("personal/host-process-owner.json", host_owner_raw)
         for name, maximum in (("personal-feasibility.json", 16 * 1024 * 1024),
                               ("personal-request.json", 1024 * 1024), ("mxc-native.log", 4 * 1024 * 1024)):
             archive.writestr("personal/" + name, read_same_run_file(root / "personal-mxc" / name, maximum))
@@ -795,6 +923,7 @@ def prepare_same_run_archives(root, output, source, run_id, run_attempt):
                "candidateReceiptSha256": candidate_sha,
                "personalReceiptSha256": hashlib.sha256(personal_raw).hexdigest(),
                "nativeStateBuildSha256": hashlib.sha256(state_build_raw).hexdigest(),
+               "nativeHostOwnerSha256": hashlib.sha256(host_owner_raw).hexdigest(),
                "localArchives": {key: {"bytes": file.stat().st_size, "sha256": digest(file)}
                                  for key, file in paths.items()},
                "producerReceipts": {"personal-phase.json": hashlib.sha256(phase_raw).hexdigest(),

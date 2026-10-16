@@ -337,6 +337,28 @@ def parse_browser(stdout, nonce):
 
 def own_browser(request, native, *, clock=time.monotonic, sleep=time.sleep):
     command = validate_request(request)
+
+    def verify_inputs():
+        require(
+            identity(command[0]) == request["pythonIdentity"]
+            and identity(command[3]) == request["probeIdentity"],
+            "The canonical Python or browser probe bytes changed",
+        )
+
+    return own_fixed_process(
+        request, native, command, verify_inputs,
+        lambda stdout: parse_browser(stdout, request["nonce"]),
+        classification="canonical-host-browser-diagnostic", diagnostic_only=True,
+        work_seconds=WORK_SECONDS, cleanup_seconds=CLEANUP_SECONDS,
+        clock=clock, sleep=sleep,
+    )
+
+
+def own_fixed_process(
+    request, native, command, verify_inputs, parse_result, *, classification,
+    diagnostic_only, work_seconds, cleanup_seconds, clock=time.monotonic, sleep=time.sleep,
+):
+    """Retain one validated fixed command and its descendants through final capture."""
     state = Path(request["stateRoot"])
     started = clock()
     capture = [
@@ -346,8 +368,8 @@ def own_browser(request, native, *, clock=time.monotonic, sleep=time.sleep):
     readers = []
     record = {
         "schemaVersion": 1,
-        "classification": "canonical-host-browser-diagnostic",
-        "diagnosticOnly": True,
+        "classification": classification,
+        "diagnosticOnly": diagnostic_only,
         "canonicalQualification": False,
         "installedAcceptance": False,
         "nonce": request["nonce"],
@@ -409,13 +431,9 @@ def own_browser(request, native, *, clock=time.monotonic, sleep=time.sleep):
     try:
         require(
             not state.exists() and not state.is_symlink(),
-            "Host browser state must be fresh",
+            "Host process state must be fresh",
         )
-        require(
-            identity(command[0]) == request["pythonIdentity"]
-            and identity(command[3]) == request["probeIdentity"],
-            "The canonical Python or browser probe bytes changed",
-        )
+        verify_inputs()
         state.mkdir()
         owned = True
         for name in ["home", "temp"]:
@@ -442,8 +460,8 @@ def own_browser(request, native, *, clock=time.monotonic, sleep=time.sleep):
         record["execution"]["resumed"] = True
         stage = "wait-browser"
         while not native.wait(20):
-            if stop.is_set() or clock() - started >= WORK_SECONDS:
-                record["execution"]["timedOut"] = clock() - started >= WORK_SECONDS
+            if stop.is_set() or clock() - started >= work_seconds:
+                record["execution"]["timedOut"] = clock() - started >= work_seconds
                 break
         else:
             record["execution"]["childClosed"] = True
@@ -455,7 +473,7 @@ def own_browser(request, native, *, clock=time.monotonic, sleep=time.sleep):
         }
     finally:
         cleanup_started = clock()
-        deadline = cleanup_started + CLEANUP_SECONDS
+        deadline = cleanup_started + cleanup_seconds
         record["processCreated"] = native.process is not None
         record["job"]["created"] = native.job is not None
         try:
@@ -554,12 +572,8 @@ def own_browser(request, native, *, clock=time.monotonic, sleep=time.sleep):
     execution["elapsedMs"] = (clock() - started) * 1000
     execution["error"] = next((c["error"] for c in capture if c["error"]), None)
     try:
-        record["result"] = parse_browser(execution["stdout"], request["nonce"])
-        require(
-            identity(command[0]) == request["pythonIdentity"]
-            and identity(command[3]) == request["probeIdentity"],
-            "Host input bytes changed during execution",
-        )
+        record["result"] = parse_result(execution["stdout"])
+        verify_inputs()
         record["operationSucceeded"] = (
             record["result"].get("passed") is True
             and execution["exitCode"] == 0

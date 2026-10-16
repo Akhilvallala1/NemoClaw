@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import {
   parseDevToolsActivePort,
   peMachine,
@@ -12,7 +13,38 @@ import {
   validateEdgeMetadata,
   readNativeEdgeEndpoint,
   transientEdgeEndpointRead,
+  verifyNativeEdgeIdentityLauncher,
 } from "./native-edge-browser.mts";
+
+test("same-run Edge identity helper requires exact ordinary ARM64 bytes", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "edge-launcher-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "NemoClaw.exe");
+  const bytes = Buffer.alloc(128);
+  bytes.write("MZ");
+  bytes.writeUInt32LE(64, 60);
+  bytes.write("PE\0\0", 64);
+  bytes.writeUInt16LE(0xaa64, 68);
+  fs.writeFileSync(file, bytes);
+  const identity = {
+    path: file,
+    bytes: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  assert.equal(verifyNativeEdgeIdentityLauncher(identity), file);
+  for (const change of [{ bytes: 127 }, { sha256: "0".repeat(64) }, { path: "NemoClaw.exe" }])
+    assert.throws(() => verifyNativeEdgeIdentityLauncher({ ...identity, ...change }));
+  bytes.writeUInt16LE(0x8664, 68);
+  fs.writeFileSync(file, bytes);
+  assert.throws(
+    () =>
+      verifyNativeEdgeIdentityLauncher({
+        ...identity,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      }),
+    /admitted build/u,
+  );
+});
 
 test("Edge reads only a bounded ordinary endpoint file", (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-edge-endpoint-"));

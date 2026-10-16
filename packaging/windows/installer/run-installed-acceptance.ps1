@@ -10,10 +10,14 @@ param([Parameter(Mandatory)][string]$SourceRoot,
     [ValidateSet('current-build','built-0.1.3-replay')][string]$Mode = 'current-build',
     [ValidateSet('openclaw','hermes')][string]$Agent = 'openclaw',
     [ValidateSet('full-acceptance','startup-only')][string]$ValidationScope = 'full-acceptance',
+    [switch]$RuntimeBootstrap,
     [string]$ControllerNodePath = '',
     [string]$ArtifactSourceRoot = '')
 $ErrorActionPreference = 'Stop'
 $controllerSource = $env:GITHUB_SHA
+if ($RuntimeBootstrap -and ($Agent -cne 'hermes' -or $Mode -cne 'current-build' -or $ValidationScope -cne 'full-acceptance')) {
+    throw 'Runtime bootstrap supports only the protected current Hermes full-runtime journey.'
+}
 if ($Agent -cne 'openclaw' -and $Mode -cne 'current-build') { throw 'Only OpenClaw can reuse the historical replay lane.' }
 if ($ValidationScope -ceq 'startup-only' -and ($Agent -ceq 'hermes' -or $Mode -cne 'current-build')) { throw 'Startup-only smoke supports current OpenClaw builds only.' }
 if ($ValidationScope -ceq 'startup-only' -and ($env:NVIDIA_API_KEY -or $env:NVIDIA_INFERENCE_API_KEY)) { throw 'Startup-only smoke must not receive inference credentials.' }
@@ -137,7 +141,7 @@ if ($sourceBoundAcceptance) {
   }
 }
 $timings = [ordered]@{ schemaVersion = 1; sourceRevision = $ArtifactSourceRevision; artifactSourceRevision = $ArtifactSourceRevision; controllerSourceRevision = $controllerSource; currentHeadQualification = ($ArtifactSourceRevision -ceq $controllerSource); mode = $Mode; measurement = 'fresh-runner-installed-preview'; agent = $Agent;
-  validationScope = $ValidationScope; fullInstalledQualification = $false; migrationQualified = $false;
+  validationScope = $ValidationScope; runtimeBootstrap = [bool]$RuntimeBootstrap; runtimeQualified = $false; fullInstalledQualification = $false; migrationQualified = $false;
   hostPreparationRunBeforeInstall = $false; upgradeMeasured = $false; installTargetMilliseconds = 30000; installTargetSatisfied = $false; primaryException = $null; nativeRuntimeFailure = $null; compiledMsi = $build.compiledMsi; stages = [ordered]@{} }
 $script:SetupTransactionUnconfirmed = $false
 function Invoke-OwnedSetup([string]$Action, [string]$Log) {
@@ -177,6 +181,11 @@ function Invoke-OwnedSetup([string]$Action, [string]$Log) {
 }
 function Assert-HermesCaseReceipt($Receipt, [string]$CaseName, $ColdReceipt) {
   $warm = $CaseName -ceq 'warmInstalledLaunch'
+  if ($Receipt.results.runtimeBootstrap -isnot [bool] -or $Receipt.results.runtimeBootstrap -ne [bool]$RuntimeBootstrap -or
+      $Receipt.results.configuration.nativeOnboardingUsed -isnot [bool] -or
+      $Receipt.results.configuration.nativeOnboardingUsed -ne (-not $warm -and -not $RuntimeBootstrap)) {
+    throw 'Hermes acceptance changed its runtime-bootstrap or native-onboarding scope.'
+  }
   $admission = $Receipt.results.launcherAdmission
   foreach ($pair in @(
       @('launcherSha256', $expectedHermesLauncher),
@@ -409,6 +418,7 @@ try {
         throw 'Hermes acceptance refuses a preexisting case receipt.'
       }
       $caseArguments = if ($case.name -ceq 'firstInstalledLaunch') { @('--preserve-configuration') } else { @('--reuse-configuration') }
+      if ($RuntimeBootstrap) { $caseArguments += '--runtime-bootstrap' }
       $caseArguments += @('--package-root', "$work\package", '--artifact-source-snapshot', $artifactSourceSnapshot,
         '--artifact-source-snapshot-sha256', $artifactSourceSnapshotSha256)
     }
@@ -549,7 +559,8 @@ if (-not $timings.installTargetSatisfied -and $null -eq $primary) {
   try { throw 'The installed preview missed its measured30-second installation target.' } catch { $primary = $_ }
 }
 $timings.primaryException = if ($null -eq $primary) { $null } else { $primary.Exception.Message }
-$timings.fullInstalledQualification = $ValidationScope -ceq 'full-acceptance' -and $null -eq $primary
+$timings.runtimeQualified = $ValidationScope -ceq 'full-acceptance' -and $null -eq $primary
+$timings.fullInstalledQualification = $timings.runtimeQualified -and -not $RuntimeBootstrap
 try { [IO.File]::WriteAllText("$work\installed-stage-timings.json", ($timings | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false)) }
 catch { if ($null -eq $primary) { $primary = $_ } else { Write-Warning 'The original failure is preserved; timing evidence also could not be saved.' } }
 if ($null -ne $primary) { throw $primary }

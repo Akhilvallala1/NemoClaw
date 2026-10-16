@@ -190,6 +190,50 @@ def validate_compatibility_proof(proof, proof_sha, compat, mxc, controller_sourc
     module.validate_native_proof(proof, compat, mxc, controller_source)
 
 
+def validate_browser_startup(runtime, report, expected):
+    """Replay only the current additive hook plan against the composed base."""
+    here = Path(__file__).parent
+    hook = (here / "nemoclaw_browser_use.py").read_bytes()
+    pth = b"import nemoclaw_browser_use; nemoclaw_browser_use.install()\n"
+    native_sha = "d8e8b5524ca783dccc0024a1eed61a4c0955cf73b7d45157093787070dc8ed16"
+    startup = {
+        "classification": "ci-installed-browser-use-startup", "module": "nemoclaw_browser_use.py",
+        "bytes": len(hook), "sha256": hashlib.sha256(hook).hexdigest(),
+        "pth": "001_nemoclaw_browser_use.pth", "afterPth": "000_nemoclaw_native_windows.pth",
+        "nativeStartupAdapterSha256": native_sha, "executionQualified": False,
+    }
+    if report.get("browserUseStartup") != startup or report.get("retirements") != []:
+        raise ValueError("Browser startup derivation differs from the current source")
+    validate_adaptation(runtime, report, native_sha)
+    additions = {}
+    for site in (
+        "hermes-agent/venv/Lib/site-packages/",
+        "tools/browser-use/Lib/site-packages/",
+        "hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-aarch64-none/Lib/site-packages/",
+    ):
+        for name, data in (("nemoclaw_browser_use.py", hook), ("001_nemoclaw_browser_use.pth", pth)):
+            additions[site + name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    indexed = {row["path"]: row for row in report["files"]}
+    if not set(additions).issubset(indexed) or "nemoclaw-windows-runtime.json" not in indexed:
+        raise ValueError("Browser startup derivation omits its complete startup set")
+    result = dict(expected)
+    for name, row in indexed.items():
+        before = expected.get(name)
+        after = {"bytes": row["bytes"], "sha256": row["sha256"]}
+        if row.get("beforeSha256") != (before["sha256"] if before else None):
+            raise ValueError("Browser startup preimage differs from the composed runtime")
+        if name in additions:
+            if before is not None or after != additions[name]:
+                raise ValueError("Browser startup is not the exact additive hook")
+        elif name != "nemoclaw-windows-runtime.json" and after != before:
+            raise ValueError("Browser startup changed unrelated runtime bytes")
+        result[name] = after
+    marker = json.loads((runtime / "nemoclaw-windows-runtime.json").read_bytes())
+    if marker.get("browserUseStartup") != startup or "startupAdapterUpgrade" in marker:
+        raise ValueError("Browser startup marker has different lineage")
+    return result
+
+
 def validate_reuse(
     runtime, inputs, output, inventory_owner, *, payload=None, controller_source=None
 ):
@@ -316,6 +360,9 @@ def validate_reuse(
         if name in expected:
             raise ValueError("Compatibility collides with the canonical runtime")
         expected[name] = {"bytes": row["bytes"], "sha256": row["sha256"]}
+    browser_path = Path(inputs["browserStartupReceipt"]) if "browserStartupReceipt" in inputs else None
+    if browser_path is not None:
+        expected = validate_browser_startup(runtime, json.loads(browser_path.read_bytes()), expected)
     actual = inventory_owner.inventory(runtime) if payload is None else payload
     if wheel_owner.identities(actual) != expected:
         raise ValueError(
@@ -339,6 +386,7 @@ def validate_reuse(
         ("compatibility", compat_path, "msys-build.json"),
         ("compatibilityProof", proof_path, "bash-compatibility-proof.json"),
         ("mxc", mxc_path, "mxc-build.json"),
+        *(([("browserStartup", browser_path, "browser-startup-adaptation.json")]) if browser_path is not None else []),
     ):
         destination = output / filename
         if destination.exists():

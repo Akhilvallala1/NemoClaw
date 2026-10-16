@@ -37,6 +37,7 @@ $null=New-Item -ItemType Directory -Path $downloads
 $root=[IO.Path]::GetPathRoot([Environment]::SystemDirectory)
 $runtime=Join-Path $root $(if ($nativeProduction) { 'NemoClawHermesProbe-'+[guid]::NewGuid().ToString('N').Substring(0,12) } else { 'NemoClawHermesProbe-274d797050ea' })
 $primary=$null;$mxcAttempted=$false;$runtimeOwned=$false;$faultWindowStart=$null;$buildAttempted=$false;$buildProcessesClosed=$true
+$hostOwnerAttempted=$false;$hostOwnerClosed=$true
 $classification=if($BrowserFirst){'canonical-personal-mxc-browser-first-diagnostic'}elseif($RendererPostmortem){'canonical-personal-mxc-postmortem-diagnostic'}elseif($RendererWer){'canonical-personal-mxc-renderer-wer-diagnostic'}elseif($ColdJobProbe){'canonical-personal-mxc-cold-job-diagnostic'}else{'canonical-personal-mxc-candidate-feasibility'}
 $receipt=[ordered]@{schemaVersion=1;classification=$classification;sourceRevision=$env:GITHUB_SHA;diagnosticOnly=[bool]($BrowserFirst -or $ColdJobProbe -or $RendererWer -or $RendererPostmortem);browserFirst=[bool]$BrowserFirst;coldJobProbe=[bool]$ColdJobProbe;rendererWer=[bool]$RendererWer;rendererPostmortem=[bool]$RendererPostmortem;recordStartupRequested=[bool]$RecordStartup;
     candidateSource='8d78fe458e9268a7afdc8ed06b85c23306452036';artifactId=10293082661;status='failed';runtimeRebuilt=$false;runtimeExported=$false;
@@ -420,7 +421,25 @@ try {
     if ($ColdJobProbe) { $personalArguments += '--cold-job-probe' }
     if ($RendererPostmortem) { $personalArguments += '--renderer-postmortem' }
     $mxcAttempted=$true
-    Invoke-PersonalChecked $node $personalArguments 'Canonical Personal component execution'
+    if ($nativeProduction) {
+        $hostOwnerAttempted=$true;$hostOwnerClosed=$false
+        $hostOwnerScript=Join-Path $PSScriptRoot 'personal-native-host.py'
+        $hostOwnerReceipt=Join-Path $output 'personal-host-owner.json'
+        try {
+            Invoke-PersonalChecked $python (@('-I','-B',$hostOwnerScript,'--node',$node,'--receipt',$hostOwnerReceipt,'--')+$personalArguments) 'Canonical Personal component execution'
+        } finally {
+            if (Test-Path -LiteralPath $hostOwnerReceipt) {
+                & $python -I -B $hostOwnerScript --check-closure --receipt $hostOwnerReceipt --runtime-root $runtime
+                $hostOwnerClosed=$LASTEXITCODE -eq 0
+                $receipt['hostProcessOwner']=@{file='personal-host-owner.json';
+                    bytes=(Get-Item -LiteralPath $hostOwnerReceipt).Length;
+                    sha256=(Get-FileHash -LiteralPath $hostOwnerReceipt -Algorithm SHA256).Hash.ToLowerInvariant();
+                    childrenClosed=$hostOwnerClosed}
+            }
+        }
+    } else {
+        Invoke-PersonalChecked $node $personalArguments 'Canonical Personal component execution'
+    }
     if(Test-Path -LiteralPath $original){throw 'The original build root became available during execution.'}
     $receipt.status='pass'
 }catch{$primary=$_;$receipt['error']=$_.Exception.Message}
@@ -454,11 +473,13 @@ finally{
     if($mxcAttempted){
         try{
             $completed=Get-Content -LiteralPath (Join-Path $output 'personal-mxc\personal-feasibility.json') -Raw|ConvertFrom-Json
-            $removeRuntime=$runtimeOwned -and $buildProcessesClosed -and (Test-PersonalRuntimeRemoval $completed $runtime $env:GITHUB_SHA)
+            $removeRuntime=$runtimeOwned -and $buildProcessesClosed -and $hostOwnerClosed -and (Test-PersonalRuntimeRemoval $completed $runtime $env:GITHUB_SHA)
             if (-not $removeRuntime) { $receipt.cleanupErrors+=@('Runtime retained: current-source native executor, desktop and diagnostic closure was not confirmed.') }
         }catch{$receipt.cleanupErrors+=@('Runtime retained: executor completion receipt unavailable. '+$_.Exception.Message)}
     }
     $receipt['buildProcessesClosed']=$buildProcessesClosed
+    $receipt['hostProcessOwnerAttempted']=$hostOwnerAttempted
+    $receipt['hostProcessOwnerClosed']=$hostOwnerClosed
     $receipt['runtimeRetainedForUnclosedBuild']=$runtimeOwned -and $buildAttempted -and -not $buildProcessesClosed
     if ($receipt.runtimeRetainedForUnclosedBuild) { $receipt.cleanupErrors+=@('Runtime retained: targeted build process closure was not confirmed.') }
     $receipt['runtimeRetainedForUnclosedExecutor']=$runtimeOwned -and -not $removeRuntime

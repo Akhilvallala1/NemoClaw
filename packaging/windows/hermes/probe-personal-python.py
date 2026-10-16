@@ -1578,9 +1578,25 @@ def shutdown_browser_harness(
             record["complete"] = True
             return record
         endpoint = json.loads(endpoint_bytes)
+        native_ipc = getattr(ipc, "_native_pipe_ipc", None)
+        native_pipe = native_ipc is not None
+        if native_pipe:
+            session_id = os.environ.get("NEMOCLAW_AGENT_SESSION_ID", "")
+            expected_pipe = (
+                "\\\\.\\pipe\\LOCAL\\Hermes-Browser-" + session_id + "-"
+                + hashlib.sha256(os.path.normcase(os.path.abspath(str(port_file))).encode()).hexdigest()[:24]
+            )
+            if (not re.fullmatch(r"[a-f0-9]{10}", session_id)
+                    or native_ipc[0] != session_id
+                    or set(endpoint) != {"schemaVersion", "transport", "pipe", "token"}
+                    or type(endpoint.get("schemaVersion")) is not int or endpoint["schemaVersion"] != 1
+                    or endpoint.get("transport") != "native-hermes-browser-pipe"
+                    or endpoint.get("pipe") != expected_pipe):
+                raise ValueError("Invalid owned Browser Harness LOCAL pipe record")
+            record["transport"] = "native-hermes-browser-pipe"
         if (
-            type(endpoint.get("port")) is not int
-            or not 0 < endpoint["port"] <= 65535
+            (not native_pipe and (type(endpoint.get("port")) is not int
+                                 or not 0 < endpoint["port"] <= 65535))
             or not isinstance(endpoint.get("token"), str)
             or not re.fullmatch(r"[a-f0-9]{64}", endpoint["token"])
         ):
@@ -1597,7 +1613,8 @@ def shutdown_browser_harness(
             try:
                 if (
                     token != endpoint["token"]
-                    or channel.getpeername()[:2] != ("127.0.0.1", endpoint["port"])
+                    or (native_pipe and channel not in native_ipc[2])
+                    or (not native_pipe and channel.getpeername()[:2] != ("127.0.0.1", endpoint["port"]))
                     or read_owned(port_file, 4096) != endpoint_bytes
                 ):
                     raise ValueError("Authenticated Browser Harness endpoint differs")
@@ -1668,6 +1685,10 @@ def shutdown_browser_harness(
             raise ValueError("A successor changed the Browser Harness PID record")
         ipc.cleanup_endpoint(session)
         record["endpointRemoved"] = not Path(port_file).exists()
+        # The installed pipe adapter deliberately retains its generation record.
+        # State removal follows native container teardown; an old client must
+        # not unlink a record that a successor could replace.
+        record["endpointRetainedForStateOwner"] = native_pipe and read_owned(port_file, 4096) == endpoint_bytes
         if remaining_pid is not None:
             Path(pid_file).unlink(missing_ok=True)
         record["pidRecordRemoved"] = not Path(pid_file).exists()
@@ -1692,7 +1713,7 @@ def shutdown_browser_harness(
         and record["shutdownAcknowledged"]
         and record["processExitObserved"]
         and record["exitCode"] == 0
-        and record["endpointRemoved"]
+        and (record["endpointRemoved"] or record.get("endpointRetainedForStateOwner") is True)
         and record["pidRecordRemoved"]
         and record["handleClosed"]
     )
@@ -1792,6 +1813,13 @@ def browser_check(root, nonce):
     import nemoclaw_native_windows as native_paths
 
     component_started = time.monotonic()
+    native_browser = "NEMOCLAW_PERSONAL_BROWSER_SESSION" in os.environ
+    if native_browser:
+        import re
+        assert os.environ["NEMOCLAW_PERSONAL_BROWSER_SESSION"] == nonce
+        assert os.environ.get("NEMOCLAW_AGENT_SESSION_ID") == nonce[:10]
+        assert re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})/" + nonce,
+                            os.environ.get("NEMOCLAW_PERSONAL_BROWSER_PAGE", ""))
     if os.environ.get("NEMOCLAW_HERMES_WER_CHROME"):
         selected = selected_chrome_file(root, "")
         # The separate diagnostic tree changes only the WER callback DLL.
@@ -1835,9 +1863,11 @@ def browser_check(root, nonce):
         def log_message(self, *_args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server = thread = None
+    if not native_browser:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
     session = "nc-" + nonce[:12]
     task = "personal-" + nonce[:12]
     errors = []
@@ -1877,7 +1907,8 @@ def browser_check(root, nonce):
     browser_tool_session._popen_agent_browser = observed_spawn
     try:
         code = browser_page_code(
-            "http://127.0.0.1:" + str(server.server_port) + "/", nonce
+            os.environ["NEMOCLAW_PERSONAL_BROWSER_PAGE"] if native_browser
+            else "http://127.0.0.1:" + str(server.server_port) + "/", nonce
         )
         raw = browser_exec(code, session=session, task_id=task, timeout_s=45)
         result = json.loads(raw) if isinstance(raw, str) else raw
@@ -1897,7 +1928,7 @@ def browser_check(root, nonce):
         browser_tool_session._popen_agent_browser = original_spawn
         diagnostics["pageObservation"] = browser_page_observation(result)
         cdp_selection, cdp_budget = None, 0
-        if primary:
+        if primary and not native_browser:
             diagnostics["agentBrowserState"] = browser_agent_state(
                 state, expected, launches
             )
@@ -1999,11 +2030,12 @@ def browser_check(root, nonce):
             cleanup_browser(_backend_cache_key(task, session))
         except (Exception, native_paths.NativeStartupRefusal) as error:
             errors.append(repr(error))
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-        if thread.is_alive():
-            errors.append("Owned localhost server did not stop")
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            if thread.is_alive():
+                errors.append("Owned localhost server did not stop")
     if primary:
         primary.add_note("Browser cleanup: " + repr(errors))
         primary.nemoclaw_browser_diagnostics = bounded_browser_diagnostics(diagnostics)
@@ -2025,7 +2057,9 @@ def browser_check(root, nonce):
         ].get("processExitObserved")
         is True,
         "canonicalBrowserCleanupCalled": True,
-        "ownedPageServerStopped": True,
+        "ownedPageServerStopped": not native_browser,
+        "pageServerOwner": "host-job" if native_browser else "contained-probe",
+        "nativeEdgeTransport": native_browser,
         "tavilyLiveLookup": "not-tested-user-waiver",
     }
 

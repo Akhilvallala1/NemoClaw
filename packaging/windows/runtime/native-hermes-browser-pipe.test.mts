@@ -36,16 +36,21 @@ endpoint = 'ws://127.0.0.1:8124/devtools/browser/session-1'
 calls = []
 requests = []
 messages = []
+response = lambda message: {'fixture': True}
 transports = []
 before_delay = after_delay = lost_delay = 0
+hold_lost = False
+pending_lost = []
+lost_pending = None
 status = 101
 bound = None
 
 @contextlib.asynccontextmanager
 async def peer():
-    global bound
+    global bound, lost_pending
     loop = asyncio.get_running_loop()
     bound = asyncio.Event()
+    lost_pending = asyncio.Event()
     original_tcp = loop.create_connection
     original_pipe = getattr(loop, 'create_pipe_connection', None)
     async def deny_tcp(*args, **kwargs): raise AssertionError('TCP fallback')
@@ -58,7 +63,12 @@ async def peer():
             if before_delay: await asyncio.sleep(before_delay)
             connection = factory()
             lost = connection.connection_lost
-            if lost_delay:
+            if hold_lost:
+                def defer_lost(error):
+                    pending_lost.append((lost, error))
+                    lost_pending.set()
+                connection.connection_lost = defer_lost
+            elif lost_delay:
                 connection.connection_lost = lambda error: loop.call_later(lost_delay, lost, error)
             result = await loop.create_unix_connection(lambda: connection, address)
             transports.append(result[0])
@@ -77,7 +87,7 @@ async def peer():
                 async for raw in connection:
                     message = json.loads(raw)
                     messages.append(message)
-                    await connection.send(json.dumps({'id': message['id'], 'result': {'fixture': True}}))
+                    await connection.send(json.dumps({'id': message['id'], 'result': response(message)}))
             except websockets.exceptions.ConnectionClosed:
                 pass
         try:
@@ -239,6 +249,71 @@ asyncio.run(main())
   },
 );
 
+test(
+  "pinned Browser Harness attaches its declared browser through the pipe and shuts down",
+  options,
+  () => {
+    check(String.raw`
+import hashlib
+with tempfile.TemporaryDirectory(prefix='hermes-harness-') as state:
+    os.environ.update(BH_RUNTIME_DIR=state, BH_TMP_DIR=state, BH_AGENT_WORKSPACE=state,
+                     BU_CDP_WS=endpoint, BH_TAB_MARKER='0', ANONYMIZED_TELEMETRY='false')
+    for name in ('BU_CDP_URL', 'BU_BROWSER_ID', 'BU_NAME'):
+        os.environ.pop(name, None)
+    import browser_harness
+    daemon_file = pathlib.Path(browser_harness.__file__).with_name('daemon.py')
+    assert hashlib.sha256(daemon_file.read_bytes()).hexdigest() == '7f05f904e62af8c07153c34a1fd3d334acf5c5aded8d0ddab974596bb50a8c97'
+    from browser_harness import daemon
+    assert daemon.BROWSER_KIND == 'cdp'
+    target = {'targetId': 'fixture-page', 'type': 'page', 'url': 'about:blank', 'title': ''}
+    def response(message):
+        method = message['method']
+        if method == 'Target.getTargets': return {'targetInfos': [target]}
+        if method == 'Target.createTarget':
+            assert message['params'] == {'url': 'about:blank', 'background': True}
+            return {'targetId': target['targetId']}
+        if method == 'Target.attachToTarget':
+            assert message['params'] == {'targetId': target['targetId'], 'flatten': True}
+            return {'sessionId': 'fixture-session'}
+        if method == 'Target.getTargetInfo': return {'targetInfo': target}
+        if method in ('Page.enable', 'DOM.enable', 'Runtime.enable', 'Network.enable'):
+            assert message['sessionId'] == 'fixture-session'
+            return {}
+        raise AssertionError('Unexpected CDP method: ' + method)
+
+    async def main():
+        for name in ('default', 'nc-personal-fixture'):
+            daemon.NAME = name
+            messages.clear()
+            async with peer():
+                owner = daemon.Daemon()
+                try:
+                    await asyncio.wait_for(owner.start(), 2)
+                    assert type(owner.cdp) is cdp_client.CDPClient
+                    assert owner.target_id == target['targetId'] and owner.session == 'fixture-session'
+                    methods = [message['method'] for message in messages]
+                    assert methods.count('Target.createTarget') == int(name != 'default')
+                    assert set(methods) >= {'Target.getTargets', 'Target.attachToTarget', 'Page.enable', 'DOM.enable', 'Runtime.enable', 'Network.enable'}
+                    daemon.ipc._server_token = 'fixture-token'
+                    count = len(messages)
+                    assert await owner.handle({'meta': 'current_tab', 'token': 'wrong'}) == {'error': 'unauthorized'}
+                    assert len(messages) == count
+                    tab = await owner.handle({'meta': 'current_tab', 'token': 'fixture-token'})
+                    assert tab == {'targetId': target['targetId'], 'url': 'about:blank', 'title': ''}
+                    assert await owner.handle({'meta': 'shutdown', 'token': 'fixture-token'}) == {'ok': True}
+                    assert owner.stop.is_set() and owner._shutting_down
+                    assert not owner._recovery_tasks and owner._recoveries_idle.is_set()
+                finally:
+                    daemon.ipc._server_token = None
+                    if owner.cdp is not None:
+                        await owner.cdp.stop()
+                assert not owners and all(transport.is_closing() for transport in transports)
+        assert len(calls) == 2
+    asyncio.run(main())
+`);
+  },
+);
+
 for (const status of [403, 302]) {
   test(
     `browser handshake ${status} closes its pipe without redirect or TCP fallback`,
@@ -299,20 +374,22 @@ asyncio.run(main())
 test("repeated cancellation retains browser connection until connection_lost", options, () => {
   check(String.raw`
 after_delay = 1
-lost_delay = 0.1
+hold_lost = True
 async def main():
     async with peer():
         async def start(): return await Connect(endpoint)
         task = asyncio.create_task(start())
         await bound.wait()
         task.cancel()
-        await asyncio.sleep(0.005)
+        await asyncio.wait_for(lost_pending.wait(), 2)
         task.cancel()
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
         task.cancel()
         try: await task
         except asyncio.CancelledError: pass
         assert owners, 'an interrupted wait dropped handle custody'
+        assert pending_lost
+        for callback, error in pending_lost: callback(error)
         await close_owned()
         assert not owners
 asyncio.run(main())

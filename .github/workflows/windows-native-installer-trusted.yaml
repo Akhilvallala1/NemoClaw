@@ -109,14 +109,14 @@ jobs:
           [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ && "$BASE_SHA" =~ ^[a-f0-9]{40}$ && "$WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$INSTALLER_MANIFEST" =~ ^[a-f0-9]{64}$ && "$APPLICATION_MANIFEST" =~ ^[a-f0-9]{64}$ ]]
           if [[ "$QUALIFICATION_PHASE" == 'runtime-bootstrap' ]]; then
-            [[ "$SELECTED_AGENT" == 'openclaw' && -z "$CANDIDATE_MIGRATION_EVIDENCE_ID" && -z "$CANDIDATE_MIGRATION_PROOF_SHA256" ]]
+            [[ "$SELECTED_AGENT" =~ ^(openclaw|hermes)$ && -z "$CANDIDATE_MIGRATION_EVIDENCE_ID" && -z "$CANDIDATE_MIGRATION_PROOF_SHA256" ]]
           else
             [[ "$QUALIFICATION_PHASE" == 'final' ]]
             [[ "$CANDIDATE_MIGRATION_EVIDENCE_ID" =~ ^[1-9][0-9]*$ && "$CANDIDATE_MIGRATION_PROOF_SHA256" =~ ^[a-f0-9]{64}$ ]]
           fi
           [[ "$SELECTED_AGENT" =~ ^(openclaw|hermes)$ && "$PRODUCT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$INSTALLER_CACHE_KEY" == "windows-finished-installer-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CANDIDATE_SHA-$SELECTED_AGENT" ||
-             ( "$QUALIFICATION_PHASE" == 'final' && "$SELECTED_AGENT" == 'openclaw' && "$INSTALLER_CACHE_KEY" == "windows-finished-reviewed-installer-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CANDIDATE_SHA-openclaw" ) ]]
+             ( "$QUALIFICATION_PHASE" == 'final' && "$INSTALLER_CACHE_KEY" == "windows-finished-reviewed-installer-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CANDIDATE_SHA-$SELECTED_AGENT" ) ]]
           [[ "$BASE_SHA" == "$WORKFLOW_SHA" ]]
           main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
           [[ "$main_sha" == "$WORKFLOW_SHA" ]]
@@ -212,7 +212,7 @@ jobs:
   full-installed-acceptance:
     name: Protected full installed acceptance (ARM64)
     needs: [authorize, candidate-migration-proof]
-    if: ${{ always() && !cancelled() && needs.authorize.result == 'success' && needs.authorize.outputs.trusted_main == 'true' && needs.authorize.outputs.exact_workflow == 'true' && needs.authorize.outputs.exact_pr == 'true' && needs.authorize.outputs.credential_authorized == 'true' && ((inputs.qualification_phase == 'runtime-bootstrap' && inputs.agent == 'openclaw') || (inputs.qualification_phase == 'final' && needs.candidate-migration-proof.result == 'success')) }}
+    if: ${{ always() && !cancelled() && needs.authorize.result == 'success' && needs.authorize.outputs.trusted_main == 'true' && needs.authorize.outputs.exact_workflow == 'true' && needs.authorize.outputs.exact_pr == 'true' && needs.authorize.outputs.credential_authorized == 'true' && ((inputs.qualification_phase == 'runtime-bootstrap' && contains(fromJSON('["openclaw","hermes"]'), inputs.agent)) || (inputs.qualification_phase == 'final' && needs.candidate-migration-proof.result == 'success')) }}
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 60
     outputs:
@@ -233,6 +233,7 @@ jobs:
       SELECTED_AGENT: ${{ inputs.agent }}
       PRODUCT_VERSION: ${{ inputs.product_version }}
       TRUSTED_CONTROLLER_NODE: ${{ github.workspace }}\trusted-controller-node\node.exe
+      QUALIFICATION_PHASE: ${{ inputs.qualification_phase }}
     steps:
       - name: Require configured protected qualification environment
         shell: pwsh
@@ -337,10 +338,15 @@ jobs:
       - name: Verify retained-state qualifier controls from trusted main
         shell: pwsh
         run: |
-          $controls = Join-Path "$env:GITHUB_WORKSPACE/controller" 'packaging/windows/installer/qualify-installed-openclaw.test.mts'
+          $relative = switch -CaseSensitive ($env:SELECTED_AGENT) {
+            'openclaw' { 'packaging/windows/installer/qualify-installed-openclaw.test.mts' }
+            'hermes' { 'packaging/windows/installer/qualify-installed-hermes.test.mts' }
+            default { throw 'Unsupported retained-state qualifier agent.' }
+          }
+          $controls = Join-Path "$env:GITHUB_WORKSPACE/controller" $relative
           & $env:TRUSTED_CONTROLLER_NODE --experimental-strip-types --no-warnings --test `
             $controls
-          if ($LASTEXITCODE -ne 0) { throw 'The trusted OpenClaw retained-state qualifier controls failed.' }
+          if ($LASTEXITCODE -ne 0) { throw 'The trusted selected-agent retained-state qualifier controls failed.' }
       - name: Exercise installed preview, real inference and owned cleanup
         # The main-resident controller strips inherited keys from product children.
         # Full acceptance then deliberately supplies a test key through installed
@@ -357,7 +363,8 @@ jobs:
           & "$env:GITHUB_WORKSPACE\controller\packaging\windows\installer\run-installed-acceptance.ps1" `
             -SourceRoot "$env:GITHUB_WORKSPACE\controller" -WorkDirectory "$env:RUNNER_TEMP\finished-windows" `
             -ProductVersion $env:PRODUCT_VERSION -ArtifactSourceRevision $env:CANDIDATE_SHA -Mode current-build `
-            -Agent $env:SELECTED_AGENT -ControllerNodePath $env:TRUSTED_CONTROLLER_NODE -ArtifactSourceRoot "$env:GITHUB_WORKSPACE\artifact-source"
+            -Agent $env:SELECTED_AGENT -ControllerNodePath $env:TRUSTED_CONTROLLER_NODE -ArtifactSourceRoot "$env:GITHUB_WORKSPACE\artifact-source" `
+            -RuntimeBootstrap:($env:SELECTED_AGENT -ceq 'hermes' -and $env:QUALIFICATION_PHASE -ceq 'runtime-bootstrap')
       - name: Stage only non-runnable full acceptance evidence
         id: full_evidence
         if: ${{ always() }}
@@ -388,9 +395,9 @@ jobs:
           retention-days: 14
 
   review-runtime-availability:
-    name: Independently review completed OpenClaw runtime acceptance
+    name: Independently review completed selected-agent runtime acceptance
     needs: [authorize, full-installed-acceptance]
-    if: ${{ inputs.qualification_phase == 'runtime-bootstrap' && inputs.agent == 'openclaw' && needs.authorize.outputs.credential_authorized == 'true' && needs.full-installed-acceptance.result == 'success' }}
+    if: ${{ inputs.qualification_phase == 'runtime-bootstrap' && contains(fromJSON('["openclaw","hermes"]'), inputs.agent) && needs.authorize.outputs.credential_authorized == 'true' && needs.full-installed-acceptance.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Separate main-only environment with required reviewers, prevent-self-review
@@ -431,11 +438,23 @@ jobs:
           EVIDENCE_SHA256: ${{ needs.full-installed-acceptance.outputs.evidence_manifest_sha256 }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           CONTROLLER_SHA: ${{ inputs.workflow_sha }}
+          SELECTED_AGENT: ${{ inputs.agent }}
         run: |
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "$CONTROLLER_SHA" ]]
-          node --experimental-strip-types --no-warnings --test packaging/windows/installer/qualify-installed-openclaw.test.mts
-          decision_sha="$(node --experimental-strip-types --no-warnings packaging/windows/installer/review-openclaw-availability.mts \
+          case "$SELECTED_AGENT" in
+            openclaw)
+              controls=packaging/windows/installer/qualify-installed-openclaw.test.mts
+              reviewer=packaging/windows/installer/review-openclaw-availability.mts
+              ;;
+            hermes)
+              controls=packaging/windows/installer/review-hermes-availability.test.mts
+              reviewer=packaging/windows/installer/review-hermes-availability.mts
+              ;;
+            *) echo 'Unsupported runtime availability agent.' >&2; exit 1 ;;
+          esac
+          node --experimental-strip-types --no-warnings --test "$controls"
+          decision_sha="$(node --experimental-strip-types --no-warnings "$reviewer" \
             --evidence-root "$RUNNER_TEMP/runtime-availability-evidence" --evidence-manifest-sha256 "$EVIDENCE_SHA256" \
             --source-revision "$CANDIDATE_SHA" --controller-source-revision "$CONTROLLER_SHA" \
             --controller-run "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" --output "$RUNNER_TEMP/reviewed-availability.json")"
@@ -445,7 +464,7 @@ jobs:
         id: availability_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: reviewed-openclaw-availability-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: reviewed-${{ inputs.agent }}-availability-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/reviewed-availability.json
           if-no-files-found: error
           retention-days: 14

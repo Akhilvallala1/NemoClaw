@@ -37,7 +37,12 @@ import {
   validatePersonalBase,
   validatePersonalCompatibility,
 } from "./probe-personal-candidate.mts";
-import { parseComponent, personalCommand } from "./probe-personal-workload.mts";
+import {
+  parseComponent,
+  personalCommand,
+  withPersonalBrowserTunnel,
+} from "./probe-personal-workload.mts";
+import { personalBrowserEnvironment } from "./personal-native-browser.mts";
 import { binaryPins, originalBinaryPins } from "../mxc-bash/bash-compat.mts";
 import { originals } from "../mxc-bash/prepare-msys-aslr.mts";
 
@@ -45,6 +50,127 @@ const browserRuntime = "C:\\NemoClawHermesProbe-274d797050ea";
 const browserOriginalNonce = "00112233445566778899aabb";
 const browserNewNonce = "ffeeddccbbaa998877665544";
 const browserController = "C:\\NemoClawPersonalNode-001122334455";
+
+function nativeBrowserSelection() {
+  return personalBrowserEnvironment({
+    runtime: browserRuntime,
+    controller: browserController,
+    state: "C:\\NemoClawState-S-1-5-21-1000-hermes",
+    nonce: browserOriginalNonce,
+    relayToken: "a".repeat(43),
+    cdpPath: "/devtools/browser/owned",
+    pagePort: 34567,
+    bootstrapSha256: "b".repeat(64),
+  });
+}
+
+test("Personal browser selects only its owned stage, nonce page and contained pipe", () => {
+  const selected = nativeBrowserSelection();
+  assert.equal(selected.BU_CDP_WS, "ws://127.0.0.1:8124/devtools/browser/owned");
+  assert.equal(selected.BROWSER_CDP_URL, selected.BU_CDP_WS);
+  assert.equal(selected.NEMOCLAW_AGENT_SESSION_ID, browserOriginalNonce.slice(0, 10));
+  assert.equal(selected.NEMOCLAW_WORKER_ROOT, browserController + "\\workers");
+  assert.equal(
+    selected.NEMOCLAW_PERSONAL_BROWSER_PAGE,
+    "http://127.0.0.1:34567/" + browserOriginalNonce,
+  );
+  const options = {
+    runtime: browserRuntime,
+    controller: browserController,
+    state: "C:\\NemoClawState-S-1-5-21-1000-hermes",
+    nonce: browserOriginalNonce,
+    relayToken: "a".repeat(43),
+    cdpPath: "/devtools/browser/owned",
+    pagePort: 34567,
+    bootstrapSha256: "b".repeat(64),
+  };
+  for (const change of [
+    { controller: "C:\\workers" },
+    { state: "D:\\NemoClawState-S-1-5-21-1000-hermes" },
+    { nonce: "other" },
+    { relayToken: "short" },
+    { cdpPath: "/devtools/page/other" },
+    { pagePort: 0 },
+    { bootstrapSha256: "short" },
+  ])
+    assert.throws(() => personalBrowserEnvironment({ ...options, ...change }));
+});
+
+test("Personal closes the browser tunnel after success or component failure", async () => {
+  const selected = nativeBrowserSelection();
+  const previous = Object.fromEntries(Object.keys(selected).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, selected);
+  try {
+    for (const failed of [false, true]) {
+      const evidence: Record<string, unknown> = {};
+      let opened = false,
+        closed = false;
+      const run = withPersonalBrowserTunnel(
+        selected,
+        browserOriginalNonce,
+        async () => {
+          assert(opened);
+          assert(!closed);
+          if (failed) throw new Error("component failure");
+          return "component results";
+        },
+        evidence,
+        async (options) => {
+          assert.deepEqual(options, {
+            relayRoot: selected.NEMOCLAW_BROWSER_RELAY_ROOT,
+            relayToken: selected.NEMOCLAW_BROWSER_RELAY_TOKEN,
+            sandboxPipePort: 8124,
+          });
+          opened = true;
+          return {
+            port: 8124,
+            failure: new Promise<never>(() => {}),
+            async close() {
+              closed = true;
+            },
+            diagnostics: () => ({ activeConnections: 0 }),
+          };
+        },
+      );
+      if (failed) await assert.rejects(run, /component failure/u);
+      else assert.equal(await run, "component results");
+      assert(closed);
+      assert.equal(evidence.closed, true);
+      assert.equal(evidence.started, true);
+    }
+    process.env.BU_CDP_WS = "ws://foreign.invalid";
+    await assert.rejects(
+      withPersonalBrowserTunnel(
+        selected,
+        browserOriginalNonce,
+        async () => {
+          throw new Error("must not execute");
+        },
+        {},
+        async () => {
+          throw new Error("must not connect");
+        },
+      ),
+      /declaration differs/u,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("native Personal host retains fixed-command ownership and closure through failures", () => {
+  const result = spawnSync(
+    process.env.NEMOCLAW_TEST_PYTHON ?? "python3",
+    ["-I", "-B", fileURLToPath(new URL("./test_personal_native_host.py", import.meta.url))],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+  assert.match(result.stderr, /Ran 9 tests/u);
+  assert.match(result.stderr, /^OK(?: \(skipped=1\))?$/mu);
+});
 
 test("Personal consumes the strict same-run root proof and refuses stale or changed state", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prepared-root-"));
