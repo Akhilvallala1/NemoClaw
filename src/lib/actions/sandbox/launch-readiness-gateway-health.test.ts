@@ -257,6 +257,16 @@ it.each([
   {
     name: "recovers",
     agent: "openclaw",
+    selectedAgent: "openclaw",
+    statuses: [503, 200],
+    attempts: 2,
+    delays: 1,
+    succeeds: true,
+  },
+  {
+    name: "recovers with an implicit OpenClaw session",
+    agent: "openclaw",
+    selectedAgent: undefined,
     statuses: [503, 200],
     attempts: 2,
     delays: 1,
@@ -265,6 +275,7 @@ it.each([
   {
     name: "stays unavailable",
     agent: "openclaw",
+    selectedAgent: "openclaw",
     statuses: [503, 503, 503],
     attempts: 3,
     delays: 2,
@@ -273,12 +284,30 @@ it.each([
   {
     name: "rejects credentials",
     agent: "openclaw",
+    selectedAgent: "openclaw",
     statuses: [401],
     attempts: 1,
     delays: 0,
     succeeds: false,
   },
-  { name: "checks Pi once", agent: "pi", statuses: [503], attempts: 1, delays: 0, succeeds: false },
+  {
+    name: "does not retry a conflicting Pi selection",
+    agent: "openclaw",
+    selectedAgent: "pi",
+    statuses: [503],
+    attempts: 1,
+    delays: 0,
+    succeeds: false,
+  },
+  {
+    name: "checks Pi once",
+    agent: "pi",
+    selectedAgent: "pi",
+    statuses: [503],
+    attempts: 1,
+    delays: 0,
+    succeeds: false,
+  },
 ] as const)("bounds native local health when it $name (#12975)", async (testCase) => {
   const binding = {
     provider: "llama-cpp-local" as const,
@@ -302,7 +331,7 @@ it.each([
   const check = requireNativeInferenceHealth({
     sandboxName: SANDBOX,
     gatewayName: GATEWAY,
-    agentName: testCase.agent,
+    agentName: testCase.selectedAgent,
     entry: {
       name: SANDBOX,
       agent: testCase.agent,

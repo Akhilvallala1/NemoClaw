@@ -14,6 +14,7 @@ import {
   DCODE_TYPED_TARGET_TIMEOUT_MINUTES,
   LIVE_TARGET_BASE_TEST_TIMEOUT_MS,
   INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
+  OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS,
   OPENCLAW_NATIVE_LOCAL_TEST_TIMEOUT_MS,
   OPENCLAW_NATIVE_LOCAL_TARGET_TIMEOUT_MINUTES,
   liveTargetTimeoutContract,
@@ -132,6 +133,13 @@ describe("onboard final-handoff timeout contract", () => {
       75 * MINUTE_MS +
         DCODE_NATIVE_LOCAL_TEST_TIMEOUT_MS +
         ONBOARD_SINGLE_FINAL_HANDOFF_TEST_TIMEOUT_MS,
+    );
+  });
+
+  it("contains both native OpenClaw inference settlement windows in the start child", () => {
+    const boundedProbeWindowMs = 3 * 95_000 + 2 * 2_000;
+    expect(OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      2 * boundedProbeWindowMs + 7 * MINUTE_MS,
     );
   });
 

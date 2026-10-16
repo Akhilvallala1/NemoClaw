@@ -58,6 +58,10 @@ export const INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES =
 // as TC-INF-15, then switches its recorded model before the real agent turn.
 // Keep its serial job below the hosted runner's maximum while preserving the
 // existing inference-routing target's reviewed timeout.
+// Start can observe two independent native-local inference checks. Each can
+// consume three 95-second requests and two 2-second delays, after lifecycle
+// readiness. Keep the live child deadline outside that complete window.
+export const OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS = 20 * MINUTE_MS;
 export const OPENCLAW_NATIVE_LOCAL_TEST_TIMEOUT_MS =
   DCODE_NATIVE_LOCAL_TEST_TIMEOUT_MS + 5 * MINUTE_MS;
 export const OPENCLAW_NATIVE_LOCAL_TARGET_TIMEOUT_MINUTES = Math.ceil(

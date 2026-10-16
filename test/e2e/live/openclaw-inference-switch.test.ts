@@ -71,6 +71,7 @@ import {
 import {
   ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS,
   ONBOARD_SINGLE_FINAL_HANDOFF_TEST_TIMEOUT_MS,
+  OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS,
   OPENCLAW_NATIVE_LOCAL_TEST_TIMEOUT_MS,
 } from "../../../tools/e2e/onboard-timeout-contract.mts";
 import {
@@ -1256,7 +1257,7 @@ test(
     const start = await host.nemoclaw([owner, "start"], {
       artifactName: `${owner}-start`,
       env: sandboxAccessEnv(),
-      timeoutMs: 120_000,
+      timeoutMs: OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS,
     });
     await captureNativeRestart503Diagnostic(start, {
       owner,

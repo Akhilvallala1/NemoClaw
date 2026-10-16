@@ -828,6 +828,25 @@ describe("startSandbox persisted native inference selection", () => {
     expect(h.updateSandbox).toHaveBeenCalledWith("my-sandbox", { stopped: false });
   });
 
+  it("settles a transient native local OpenClaw HTTP 503 after connect (#12975)", async () => {
+    const probeInferenceInvocation = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false as const,
+        detail: "sandbox inference invocation probe returned HTTP 503",
+        httpStatus: 503,
+      })
+      .mockResolvedValueOnce({ ok: true as const });
+    const delayInferenceInvocationProbe = vi.fn(async () => {});
+    const h = harness({ probeInferenceInvocation, delayInferenceInvocationProbe });
+    h.getSandbox.mockReturnValue({ ...stoppedNativeOpenClaw(), agent: null });
+
+    await expect(startSandbox("my-sandbox", h.deps)).resolves.toEqual({ exitCode: 0 });
+    expect(probeInferenceInvocation).toHaveBeenCalledTimes(2);
+    expect(delayInferenceInvocationProbe).toHaveBeenCalledExactlyOnceWith(2_000);
+    expect(h.updateSandbox).toHaveBeenCalledWith("my-sandbox", { stopped: false });
+  });
+
   it.each([503, 401] as const)(
     "fails closed after native local OpenClaw HTTP %s post-connect check (#12975)",
     async (httpStatus) => {
@@ -841,8 +860,10 @@ describe("startSandbox persisted native inference selection", () => {
       h.getSandbox.mockReturnValue(stoppedNativeOpenClaw());
 
       await expect(startSandbox("my-sandbox", h.deps)).resolves.toEqual({ exitCode: 1 });
-      expect(probeInferenceInvocation).toHaveBeenCalledOnce();
-      expect(delayInferenceInvocationProbe).not.toHaveBeenCalled();
+      expect(probeInferenceInvocation).toHaveBeenCalledTimes(httpStatus === 503 ? 3 : 1);
+      expect(delayInferenceInvocationProbe.mock.calls).toEqual(
+        httpStatus === 503 ? [[2_000], [2_000]] : [],
+      );
       expect(h.verifyGateway).toHaveBeenCalledOnce();
       expect(h.updateSandbox).not.toHaveBeenCalled();
     },

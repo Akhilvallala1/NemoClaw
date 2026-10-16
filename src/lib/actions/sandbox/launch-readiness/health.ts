@@ -258,7 +258,8 @@ export async function requireNativeInferenceHealth(input: {
     // A health request cannot mutate the route. A new native-local OpenClaw
     // process can briefly return 503 even after its previous request succeeded.
     const result =
-      input.agentName === "openclaw" && expected.agent === "openclaw"
+      expected.agent === "openclaw" &&
+      (input.agentName === undefined || input.agentName === "openclaw")
         ? await retryUntilAsync(probe, {
             accept: (value) => value.ok || value.httpStatus !== 503,
             retryDelaysMs: [2_000, 2_000],

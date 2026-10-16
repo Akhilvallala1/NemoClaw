@@ -158,6 +158,9 @@ async function checkStartedSandboxInference(
   if (!model || !provider) return null;
   let nativeProvider: boolean;
   let nativeEndpointUrl: string | undefined;
+  const nativeLocalOpenClaw =
+    (sandbox.agent === null || sandbox.agent === undefined || sandbox.agent === "openclaw") &&
+    sandbox.nativeLocalProviderAttachment?.agent === "openclaw";
   try {
     const receipt = recordedNativeProviderAttachment(sandbox);
     nativeProvider = Boolean(receipt);
@@ -192,10 +195,11 @@ async function checkStartedSandboxInference(
       {},
       READINESS_INFERENCE_INVOCATION_TIMEOUT_MS,
     );
-  if (sandbox.agent !== "hermes" && sandbox.agent !== "pi") return await probe();
+  if (sandbox.agent !== "hermes" && sandbox.agent !== "pi" && !nativeLocalOpenClaw)
+    return await probe();
   return await retryUntilAsync(probe, {
     accept: (result) =>
-      sandbox.agent === "pi"
+      sandbox.agent === "pi" || nativeLocalOpenClaw
         ? result.ok || result.httpStatus !== 503
         : !isTransientInferenceInvocationFailure(result),
     retryDelaysMs: START_INFERENCE_SETTLEMENT_DELAYS_MS,
