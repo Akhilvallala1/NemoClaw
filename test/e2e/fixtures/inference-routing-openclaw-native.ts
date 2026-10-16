@@ -6,6 +6,7 @@ import { ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS } from "../../../tools/e2e/onb
 import { sandboxAccessEnv } from "./clients/sandbox.ts";
 import type { E2ETargetFixtures } from "./e2e-test.ts";
 import { startFakeOpenAiCompatibleServer } from "./fake-openai-compatible.ts";
+import type { ShellProbeResult } from "./shell-probe.ts";
 import {
   cleanupSandbox,
   inferenceSandboxName,
@@ -17,6 +18,79 @@ type NativeOpenClawContext = Pick<
   E2ETargetFixtures,
   "artifacts" | "cleanup" | "host" | "progress" | "runtimeProvider" | "sandbox"
 >;
+
+type RestartDiagnosticContext = Pick<NativeOpenClawContext, "artifacts" | "host" | "sandbox"> & {
+  owner: string;
+  apiKey: string;
+  fake: Awaited<ReturnType<typeof startFakeOpenAiCompatibleServer>>;
+  attachment: { endpointUrl: string } | null | undefined;
+};
+
+/** Preserve the original restart failure while collecting bounded route evidence for HTTP 503. */
+export async function captureNativeRestart503Diagnostic(
+  start: ShellProbeResult,
+  { owner, apiKey, fake, attachment, artifacts, host, sandbox }: RestartDiagnosticContext,
+): Promise<void> {
+  if (
+    start.exitCode === 0 ||
+    !start.stderr.includes(
+      "native local inference check failed: sandbox inference invocation probe returned HTTP 503",
+    ) ||
+    !attachment
+  )
+    return;
+  try {
+    const inspectDirectRoute = async (phase: string) => {
+      const before = fake.requests().length;
+      const probe = await sandbox.exec(
+        owner,
+        [
+          "curl",
+          "-q",
+          "--silent",
+          "--output",
+          "/dev/null",
+          "--write-out",
+          "%{http_code}",
+          "--connect-timeout",
+          "3",
+          "--max-time",
+          "10",
+          "--header",
+          `Authorization: Bearer ${apiKey}`,
+          `${attachment.endpointUrl}/models`,
+        ],
+        {
+          artifactName: `${owner}-restart-direct-${phase}`,
+          env: sandboxAccessEnv(),
+          timeoutMs: 20_000,
+          redactionValues: [apiKey],
+        },
+      );
+      return {
+        exitCode: probe.exitCode,
+        httpStatus: /^[1-5]\d\d$/u.test(probe.stdout.trim()) ? probe.stdout.trim() : "unknown",
+        reachedEndpoint: fake.requests().length > before,
+      };
+    };
+    const immediate = await inspectDirectRoute("immediate");
+    await new Promise((resolve) => setTimeout(resolve, 8_000));
+    const delayed = await inspectDirectRoute("delayed");
+    const doctor = await host.nemoclaw([owner, "doctor"], {
+      artifactName: `${owner}-restart-doctor`,
+      env: sandboxAccessEnv(),
+      timeoutMs: 120_000,
+      redactionValues: [apiKey],
+    });
+    await artifacts.writeJson(`${owner}-restart-503-diagnostic.json`, {
+      immediate,
+      delayed,
+      doctorExitCode: doctor.exitCode,
+    });
+  } catch {
+    // Diagnosis must not mask the original start failure.
+  }
+}
 
 // The real OpenClaw process must consume its scoped native-local attachment.
 // llama.cpp exercises authenticated attachment; vLLM exercises sentinel auth.

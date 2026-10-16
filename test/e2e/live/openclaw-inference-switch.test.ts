@@ -74,6 +74,7 @@ import {
   OPENCLAW_NATIVE_LOCAL_TEST_TIMEOUT_MS,
 } from "../../../tools/e2e/onboard-timeout-contract.mts";
 import {
+  captureNativeRestart503Diagnostic,
   onboardNativeOpenClaw,
   requestNativeOpenClaw,
 } from "../fixtures/inference-routing-openclaw-native.ts";
@@ -1256,6 +1257,15 @@ test(
       artifactName: `${owner}-start`,
       env: sandboxAccessEnv(),
       timeoutMs: 120_000,
+    });
+    await captureNativeRestart503Diagnostic(start, {
+      owner,
+      apiKey,
+      fake,
+      attachment,
+      artifacts,
+      host,
+      sandbox,
     });
     expect(start.exitCode, resultText(start)).toBe(0);
     progress.phase("onboard shared-route sibling");
