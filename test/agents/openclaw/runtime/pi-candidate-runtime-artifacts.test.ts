@@ -266,6 +266,32 @@ describe("Pi managed model catalog generation", () => {
     }
   });
 
+  it("restores the Pi model catalog when managed settings cannot be updated (#12975)", () => {
+    const selected = {
+      NEMOCLAW_MODEL: "original-local-model",
+      NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+      NEMOCLAW_INFERENCE_BASE_URL: "http://host.openshell.internal:11434/v1",
+    };
+    const { home, status, stderr } = generate(selected);
+    try {
+      expect(status, stderr).toBe(0);
+      const configPath = path.join(home, ".pi/agent/models.json");
+      const settingsPath = path.join(home, ".pi/agent/settings.json");
+      const originalConfig = fs.readFileSync(configPath, "utf8");
+      fs.writeFileSync(settingsPath, "{invalid json", "utf8");
+      const rerun = spawnSync(process.execPath, [path.join(root, "agents/pi/generate-config.ts")], {
+        cwd: root,
+        encoding: "utf8",
+        env: { PATH: process.env.PATH ?? "", HOME: home, ...selected, NEMOCLAW_MODEL: "new-model" },
+      });
+      expect(rerun.status).not.toBe(0);
+      expect(fs.readFileSync(configPath, "utf8")).toBe(originalConfig);
+      expect(fs.readFileSync(settingsPath, "utf8")).toBe("{invalid json");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ["ollama-local", "http://host.openshell.internal:11434/v1", true],
     ["vllm-local", "http://host.docker.internal:8000/v1", true],

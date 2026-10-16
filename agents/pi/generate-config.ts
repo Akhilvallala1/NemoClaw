@@ -17,7 +17,7 @@ import {
   NVIDIA_HOSTED_NATIVE_ENDPOINT,
 } from "../../src/lib/inference/native-nvidia/contract.ts";
 
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -210,9 +210,30 @@ function main(): void {
 
   const configPath = join(configDir, "models.json");
   const config = buildConfig(settings);
-  writeFileSync(configPath, config.text, { mode: 0o600 });
-  chmodSync(configPath, 0o600);
-  syncManagedDefaults(configDir, config.model, config.nativeLocal);
+  let previousConfig: string | null;
+  try {
+    previousConfig = readFileSync(configPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    previousConfig = null;
+  }
+  try {
+    writeFileSync(configPath, config.text, { mode: 0o600 });
+    chmodSync(configPath, 0o600);
+    syncManagedDefaults(configDir, config.model, config.nativeLocal);
+  } catch (error) {
+    try {
+      if (previousConfig === null) {
+        rmSync(configPath, { force: true });
+      } else {
+        writeFileSync(configPath, previousConfig, { mode: 0o600 });
+        chmodSync(configPath, 0o600);
+      }
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], "Failed to restore Pi models.json.");
+    }
+    throw error;
+  }
 
   console.log(`[config] Wrote ${configPath} (model=${config.model}, base_url=${config.baseUrl})`);
 }

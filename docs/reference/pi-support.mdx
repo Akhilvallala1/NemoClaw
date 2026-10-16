@@ -33,7 +33,7 @@ Pi is a NemoClaw agent runtime. Docker is the initial compute runtime. Pi-specif
 | Host platform       | Linux AMD64 or Linux ARM64               |
 | Compute runtime     | Docker                                   |
 | Managed API         | OpenAI Chat Completions                  |
-| Sandbox route       | Native endpoint for NVIDIA and supported fixed hosted providers; shared route for custom and local providers |
+| Sandbox route       | Native endpoint for supported hosted providers and qualified local providers; shared route for other custom providers and Local NVIDIA NIM |
 | Qualification model | `nvidia/nemotron-3-super-120b-a12b`      |
 | Interactive command | `pi`                                     |
 | Headless command    | `pi --no-approve --print`                |
@@ -60,7 +60,7 @@ Each receipt must match the protected inputs and an image digest in the candidat
 
 Pi reads a generated `/sandbox/.pi/agent/models.json` file. The file contains the model, managed route, API family, and a non-secret route placeholder. It does not contain the upstream provider credential.
 
-The upstream credential remains in OpenShell provider state. It survives rebuild and sandbox destruction until an operator runs `nemoclaw credentials reset <provider> --yes` after all dependent sandboxes are gone. NVIDIA Endpoints and supported fixed hosted providers use native endpoints through sandbox-attached OpenShell providers. Custom and local providers retain the shared `inference.local` route. Direct unmanaged provider access is denied. NemoClaw rejects an unsupported API family, empty model, credential-bearing base URL, or malformed model tuning before Pi starts.
+The upstream credential remains in OpenShell provider state. It survives rebuild and sandbox destruction until an operator runs `nemoclaw credentials reset <provider> --yes` after all dependent sandboxes are gone. NVIDIA Endpoints and supported fixed hosted providers use native endpoints through sandbox-attached OpenShell providers. New Pi selections for Ollama, standalone vLLM, llama.cpp, and qualified host-local compatible endpoints use a sandbox-attached provider. Owned Local NVIDIA NIM and other custom endpoints retain the shared `inference.local` route. Existing Pi sandboxes without a native attachment retain their recorded shared route while the selection is unchanged. Direct unmanaged provider access is denied. NemoClaw rejects an unsupported API family, empty model, credential-bearing base URL, or malformed model tuning before Pi starts.
 
 For OpenRouter, Pi uses `https://openrouter.ai/api/v1` through its recorded native provider. Readiness requires a successful bounded inference request for the selected model.
 
@@ -114,6 +114,7 @@ The target records:
 - recovery after an OpenShell gateway restart;
 - denial of undeclared network and container-runtime access;
 - absence of the upstream credential from sandbox environment, files, registry, logs, and uploaded evidence;
+- a fresh Pi session and rebuild against an authenticated local endpoint, with the selected model and credential isolation checked before and after rebuild;
 - cleanup after destroy.
 
 Linux ARM64 remains release-gated by its native managed-image build, startup, publication, and receipt evidence. The checked-in [AMD64](https://github.com/NVIDIA/NemoClaw/blob/main/ci/pi-agent-qualification-v1-linux-amd64.json) and [ARM64](https://github.com/NVIDIA/NemoClaw/blob/main/ci/pi-agent-qualification-v1-linux-arm64.json) image receipts must identify one source revision, release, and publication cohort. These receipts prove exact image publication; they are not live agent-runtime results.
