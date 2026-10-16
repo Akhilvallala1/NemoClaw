@@ -9,6 +9,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
+import { managedStartupE2eProfile } from "../../scripts/checks/generate-managed-startup-profile-fixture.mts";
+import { serializeManagedStartupProfile } from "../../src/lib/onboard/managed-startup/profile";
 import { expectManagedToolDiscoveryRuntimeImageContract } from "../support/managed-bootstrap-image-contract";
 
 const repoRoot = path.join(import.meta.dirname, "../..");
@@ -214,7 +216,7 @@ describe("MCP tool discovery image contract", () => {
   // source-shape-contract: security -- Exact reviewed runtime digests reject substituted executable and license artifacts before managed image construction.
   it.each([
     {
-      expectedHash: "55724dc4ce80d31b910cd8ee813cdde9d7abbc60808619f0b0a8759df3bfba8e",
+      expectedHash: "299ce7168d4fee26dd2ee07e4ec7f4ee36036728b99e6f51fb8e1b5aa7ca78fa",
       relativePath: "managed-startup-direct-image-runtime.bundle",
     },
     {
@@ -258,6 +260,90 @@ describe("MCP tool discovery image contract", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("usage: managed-startup-image-runtime");
+  });
+
+  it("validates native custom profiles in the shipped direct runtime before applying them", () => {
+    const bundle = path.join(
+      repoRoot,
+      "tools/mcp-tool-discovery-runtime/reviewed-runtime-bundle/managed-startup-direct-image-runtime.bundle",
+    );
+    const profiles = (["openclaw", "hermes"] as const).flatMap((agent) =>
+      (["COMPATIBLE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY"] as const).map((key) => {
+        const profile = managedStartupE2eProfile(agent);
+        return JSON.parse(
+          serializeManagedStartupProfile({
+            ...profile,
+            inference: {
+              ...profile.inference!,
+              nativeCustomCredentialEnv: key,
+              upstreamProvider:
+                key === "COMPATIBLE_API_KEY"
+                  ? "compatible-endpoint"
+                  : "compatible-anthropic-endpoint",
+              routedBaseUrl: "https://api.example.com/v1",
+            },
+          }),
+        );
+      }),
+    );
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-native-profile-bundle-"));
+    try {
+      const executable = path.join(fixture, "runtime.cjs");
+      fs.copyFileSync(bundle, executable);
+      const result = spawnSync(
+        process.execPath,
+        [
+          "-e",
+          `
+        const runtime = require(process.argv[1]);
+        const profiles = JSON.parse(process.argv[2]);
+        // Only the subprocess identity is stubbed. Deliberately mismatched agent
+        // identity stops valid profiles before any filesystem mutation.
+        process.geteuid = () => 0;
+        const inspect = async (profile) => {
+          try {
+            await runtime.applyManagedStartupImageProfile("pi", {
+              NEMOCLAW_MANAGED_IMAGE_CAPABILITY_UNION: "1",
+              [runtime.MANAGED_STARTUP_PROFILE_ENV]: Buffer.from(JSON.stringify(profile)).toString("base64url"),
+            });
+            return "unexpected application";
+          } catch (error) { return error.message; }
+        };
+        (async () => {
+          const results = [];
+          for (const profile of profiles) {
+            results.push(await inspect(profile));
+            results.push(await inspect({ ...profile, inference: { ...profile.inference, foreignField: "forbidden" } }));
+            results.push(await inspect({ ...profile, inference: { ...profile.inference, foreignKey: "synthetic-credential" } }));
+            results.push(await inspect({ ...profile, inference: { ...profile.inference, nativeCustomCredentialEnv: "FOREIGN_KEY" } }));
+            results.push(await inspect({ ...profile, inference: { ...profile.inference, upstreamProvider: "nvidia" } }));
+          }
+          process.stdout.write(JSON.stringify({ results,
+            nvidia: runtime.NVIDIA_HOSTED_CREDENTIAL_ENV,
+            openrouter: runtime.hostedNativeProvider("openrouter-api").credentialEnv,
+          }));
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+      `,
+          executable,
+          JSON.stringify(profiles),
+        ],
+        { encoding: "utf8" },
+      );
+      expect(result).toMatchObject({ status: 0, stderr: "" });
+      expect(JSON.parse(result.stdout)).toEqual({
+        results: profiles.flatMap((profile) => [
+          `Managed startup image application failed: managed startup profile targets ${profile.agent}, expected pi`,
+          "Managed startup image application failed: Invalid managed startup profile: inference contains unsupported fields",
+          "Managed startup image application failed: Invalid managed startup profile: payload field inference.foreignKey has a credential-shaped field name",
+          "Managed startup image application failed: Invalid managed startup profile: inference.nativeCustomCredentialEnv is not supported",
+          "Managed startup image application failed: Invalid managed startup profile: inference.nativeCustomCredentialEnv requires its matching native custom route",
+        ]),
+        nvidia: "NVIDIA_INFERENCE_API_KEY",
+        openrouter: "OPENROUTER_API_KEY",
+      });
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it("executes the reviewed MCP discovery runtime artifact", () => {
