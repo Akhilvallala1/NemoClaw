@@ -12,6 +12,7 @@ content:
 
 NemoClaw can pull, start, and manage a local NVIDIA NIM container on hosts with a NIM-capable NVIDIA GPU.
 This provider is experimental and requires an explicit opt-in.
+Local NVIDIA NIM uses the shared `inference.local` route, which requires OpenShell `0.0.x`. Its OpenShell `0.1.3` migration is incomplete.
 Local NVIDIA NIM is unavailable on N1x.
 NemoClaw omits this provider from onboarding and rejects `NEMOCLAW_PROVIDER=nim-local` on N1x.
 Use the [Deferred managed-vLLM preview](set-up-vllm#use-n1x-express) instead.
@@ -64,7 +65,7 @@ When `NGC_API_KEY` or `NVIDIA_INFERENCE_API_KEY` is already exported, NemoClaw p
 
 If the NIM container exits before its health endpoint becomes ready, onboarding stops and prints the last container log lines.
 If recent NIM logs report that estimated memory exceeds usable GPU memory, onboarding ends the health wait before the 1,200-second timeout and removes the NIM container.
-After confirmed removal, onboarding selects NVIDIA Endpoints.
+After confirmed removal, onboarding stops without changing providers.
 If removal cannot be confirmed, onboarding stops without changing providers.
 After NIM becomes healthy, NemoClaw reads `/v1/models` and uses the served model ID for validation when it differs from the catalog name.
 NemoClaw rejects unsafe served IDs instead of writing them into sandbox configuration.

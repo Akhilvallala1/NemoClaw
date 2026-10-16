@@ -27,6 +27,7 @@ import {
 import { serializedLlamaCppHostLocalInferenceReceipt } from "../../../../test/helpers/host-local-inference-receipt";
 import { createSandboxHostLocalInferenceProvenance } from "../../state/registry/host-local-inference";
 import * as dockerLlamaCppOperation from "../../onboard/runtime-provider/docker-llama-cpp-operation";
+import { createDockerLlamaCppPrivateBridgeController } from "../../onboard/runtime-provider/docker-llama-cpp-private-bridge";
 import { prepareManagedLlamaCppRuntimeCleanupForSandbox } from "../../inference/local-model-profile/cleanup";
 import { enforceRemovedImmutabilityMigrationBoundary } from "../../state/migrations/removed-immutability";
 import {
@@ -215,6 +216,14 @@ describe("destroySandbox flow", () => {
         const prepared = prepareManagedLlamaCppRuntimeCleanupForSandbox("alpha", {
           gatewayPort: 19080,
           homeDir,
+          privateBridge: createDockerLlamaCppPrivateBridgeController({
+            listProcessIds: () => [],
+            remoteRequests: {
+              engine: qualified.engine,
+              apiKeyPath: path.join(homeDir, "already-removed-api-key"),
+              targetPort: 8081,
+            },
+          }),
         });
         const harness = createDestroyHarness({
           provider: "llama-cpp-local",
