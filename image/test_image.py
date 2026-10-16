@@ -96,10 +96,13 @@ class AgentImage(unittest.TestCase):
         self.assertEqual(shutil.which("node") is not None, expected)
         self.assertEqual(Path("/usr/local/lib/node_modules").exists(), expected)
 
-    def test_catalog_carries_installed_runtime_directories(self):
+    def test_catalog_carries_the_declared_adapters_and_runtime_directories(self):
         catalog = json.loads(os.environ["NEMOCLAW_TEST_CATALOG"])
-        declaration = Path("/opt/nemoclaw/runtime-files.json")
-        expected = json.loads(declaration.read_text()) if declaration.exists() else {}
+        declared = json.loads(Path("/opt/nemoclaw/adapters.json").read_text())
+        self.assertEqual([record["adapter_id"] for record in catalog["adapters"]], sorted(declared))
+        expected = {
+            adapter: entry["files"] for adapter, entry in declared.items() if entry["files"]
+        }
         self.assertEqual(catalog.get("runtime_files", {}), expected)
         for adapter, paths in expected.items():
             for path in paths:
@@ -107,14 +110,12 @@ class AgentImage(unittest.TestCase):
                     self.assertTrue(Path(path).is_dir(), path)
                     self.assertTrue(os.access(path, os.R_OK | os.X_OK), path)
 
-    def test_label_matches_discovery_from_installed_fabric(self):
+    def test_label_matches_the_image_declarations(self):
         from catalog import snapshot
 
         provenance = json.loads(Path("/opt/nemoclaw/provenance.json").read_text())
-        actual = snapshot(
-            provenance["fabric_revision"], provenance["source_sha256"], installed_only=True
-        )
-        self.assertTrue(actual["adapters"], "image installs no discoverable Fabric adapter")
+        actual = snapshot(provenance["fabric_revision"], provenance["source_sha256"])
+        self.assertTrue(actual["adapters"], "image declares no Fabric adapter")
         self.assertEqual(json.loads(os.environ["NEMOCLAW_TEST_CATALOG"]), actual)
 
     @unittest.skipIf(
