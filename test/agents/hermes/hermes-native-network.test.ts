@@ -8,6 +8,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { extractShellFunction } from "../../support/hermes-shell-harness";
 import { shellQuote } from "../../../src/lib/core/shell-quote";
+import { dockerfileInstructions } from "../../../src/lib/onboard/dockerfile-tool-disclosure-contract";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const PROXY_NAMES = [
@@ -28,6 +29,37 @@ const PROXY_NAMES = [
 ];
 
 describe("Hermes native network environment", () => {
+  it("resolves certifi to the OpenShell 0.1.3 workload CA bundle", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-certifi-"));
+    try {
+      const dockerfile = fs.readFileSync(path.join(ROOT, "agents/hermes/Dockerfile"), "utf8");
+      const instructions = dockerfileInstructions(dockerfile).map(({ text }) => text);
+      const target = instructions
+        .find((line) => line.startsWith("ARG SSL_CERT_FILE="))!
+        .slice("ARG SSL_CERT_FILE=".length);
+      // OpenShell v0.1.3 installs CA material here before it starts the workload.
+      const bundle = path.join(directory, "run/openshell-supervisor-ca/material/ca-bundle.crt");
+      fs.mkdirSync(path.dirname(bundle), { recursive: true });
+      fs.writeFileSync(bundle, "supervisor CA bundle\n");
+      const certifi = path.join(directory, "cacert.pem");
+      fs.writeFileSync(certifi, "packaged certifi bundle\n");
+      const python = path.join(directory, "python");
+      fs.writeFileSync(python, `#!/bin/sh\nprintf '%s\\n' ${shellQuote(certifi)}\n`, {
+        mode: 0o755,
+      });
+      const link = instructions
+        .find((line) => line.startsWith("RUN _hermes_certifi="))!
+        .slice("RUN ".length)
+        .replace("/opt/hermes/.venv/bin/python", shellQuote(python));
+      execFileSync("sh", ["-eu", "-c", link], {
+        env: { ...process.env, SSL_CERT_FILE: path.join(directory, target) },
+      });
+      expect(fs.readFileSync(certifi, "utf8")).toBe("supervisor CA bundle\n");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("clears startup proxy inputs and retains TLS trust", () => {
     const source = fs.readFileSync(path.join(ROOT, "agents/hermes/start.sh"), "utf8");
     const start = source.indexOf("unset HTTP_PROXY HTTPS_PROXY NO_PROXY");

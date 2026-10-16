@@ -2195,19 +2195,27 @@ It preserves runtime resources and shared providers; cleanup on the original run
 A conflicting active session for the same name, sandbox-scoped providers, or additional resource ownership still blocks this operation.
 The command prints the private archive path and keeps the archive after recovery.
 
-Before changing a Docker-backed sandbox, NemoClaw inspects every container with the requested `openshell.ai/sandbox-name` label. The command continues when Docker returns no matching containers. For one matching container, the command continues only when all these labels have the required values:
+Before changing a Docker-backed sandbox, NemoClaw inspects every container with the requested `openshell.ai/sandbox-name` label.
+The command continues when Docker returns no matching containers.
+A matching workload container must have these labels:
 
 - `openshell.ai/managed-by=openshell`
 - A nonempty `openshell.ai/sandbox-workspace`
 - A nonempty `openshell.ai/sandbox-id`
 
-In an ordinary destroy flow, if the initial inspection cannot complete, more than one container matches, a matching container has conflicting or incomplete labels, or Docker returns malformed identity data, `destroy` exits before changing sandbox resources.
-Retained-sandbox recovery accepts multiple managed containers only when every immutable sandbox ID matches the retained recovery fingerprint.
+For OpenShell `0.1.3`, the workload also requires `openshell.ai/isolation-role=sandbox` and a nonempty `openshell.ai/sandbox-namespace`.
+NemoClaw accepts that workload alone or a pair containing that workload and one OpenShell-managed container with `openshell.ai/isolation-role=supervisor`.
+The pair must have distinct container IDs, the same sandbox ID and namespace, and no supervisor workspace label.
+Any retained recovery fingerprint must match the sandbox ID.
+
+For older containers without isolation-role labels, an ordinary destroy requires one complete managed container identity.
+Retained-sandbox recovery can accept multiple such containers only when they share one workspace and every sandbox ID matches the retained recovery fingerprint.
+If the initial inspection fails, returns malformed identity data, or finds conflicting, incomplete, or unexpected containers, `destroy` exits before changing sandbox resources.
 The identity checks still apply with `--force`, `--yes`, or `NEMOCLAW_NON_INTERACTIVE=1`; those controls authorize confirmation but do not authorize an unproven container identity.
-NemoClaw rechecks the identity after read-only preflight, before provider cleanup, and synchronously at the sandbox-deletion boundary.
+NemoClaw rechecks container IDs, ownership labels, sandbox IDs, workspaces, namespaces, and isolation roles after read-only preflight, before provider cleanup, and at the sandbox-deletion boundary.
 If a later recheck detects drift or fails, `destroy` refuses sandbox deletion, preserves local ownership state, and reports any earlier cleanup already performed.
-If OpenShell reports the sandbox absent after preflight captured one matching Docker container, `destroy` rechecks and removes only that container ID.
-If Docker reports another OpenShell-managed container, removal fails, or NemoClaw cannot confirm removal, `destroy` exits nonzero and preserves the registry entry.
+If OpenShell reports the sandbox absent, `destroy` rechecks and removes only residual container IDs captured by preflight.
+If Docker reports an unexpected container, removal fails, or NemoClaw cannot confirm removal, `destroy` exits nonzero and preserves the registry entry.
 Correct the reported Docker state, then rerun `destroy`.
 If Docker cannot complete the inspection, correct the reported Docker error before you rerun `destroy`.
 For common recovery steps, refer to [Docker is not running](troubleshooting#docker-is-not-running) and [Docker permission denied on Linux](troubleshooting#docker-permission-denied-on-linux).
@@ -2220,7 +2228,7 @@ If `destroy` reports conflicting, incomplete, or malformed identity data, inspec
 ```bash
 docker ps -a --no-trunc \
   --filter "label=openshell.ai/sandbox-name=my-assistant" \
-  --format 'table {{.ID}}\t{{.Label "openshell.ai/managed-by"}}\t{{.Label "openshell.ai/sandbox-workspace"}}\t{{.Label "openshell.ai/sandbox-id"}}'
+  --format 'table {{.ID}}\t{{.Label "openshell.ai/managed-by"}}\t{{.Label "openshell.ai/sandbox-workspace"}}\t{{.Label "openshell.ai/sandbox-id"}}\t{{.Label "openshell.ai/sandbox-namespace"}}\t{{.Label "openshell.ai/isolation-role"}}'
 ```
 
 The labels show what each container claims. They do not prove container ownership.

@@ -350,6 +350,70 @@ function piStartupFixture(directory: string): { script: string; runtimeEnv: stri
 }
 
 describe("Pi native network mediation", () => {
+  it.each([
+    { label: "native mediation", append: "", accepted: true },
+    {
+      label: "an HTTP proxy",
+      append: "export HTTP_PROXY=http://retired-proxy.invalid:3128\n",
+      accepted: false,
+    },
+    {
+      label: "a SOCKS proxy",
+      append: "export ALL_PROXY=socks5://retired-proxy.invalid:1080\n",
+      accepted: false,
+    },
+    { label: "missing TLS trust", append: "unset SSL_CERT_FILE\n", accepted: false },
+  ])("checks the workflow shell with $label", ({ append, accepted }) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-pi-workflow-"));
+    try {
+      const { script, runtimeEnv } = piStartupFixture(directory);
+      const ambient = Object.fromEntries(
+        PI_PROXY_VARIABLES.map((name) => [name, "http://retired-proxy.invalid:3128"]),
+      );
+      const started = spawnSync("/bin/bash", [script, "/usr/bin/true"], {
+        env: {
+          HOME: directory,
+          PATH: process.env.PATH ?? "",
+          ...ambient,
+          ...Object.fromEntries(
+            [
+              "SSL_CERT_FILE",
+              "CURL_CA_BUNDLE",
+              "REQUESTS_CA_BUNDLE",
+              "GIT_SSL_CAINFO",
+              "NODE_EXTRA_CA_CERTS",
+            ].map((name) => [name, "/tmp/nemoclaw-ca-bundle.pem"]),
+          ),
+        },
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      expect(started.status, started.stderr).toBe(0);
+      fs.chmodSync(runtimeEnv, 0o600);
+      fs.appendFileSync(runtimeEnv, append);
+      const job = required(
+        readWorkflow("managed-images.yaml").jobs?.["pi-candidate"],
+        "Pi job missing",
+      );
+      const command =
+        step(job, "Exercise the Pi candidate through its declared entrypoint").run ?? "";
+      const shell = required(
+        /docker exec --user 999:999 "\$entrypoint_container" \/bin\/bash -ceu '([\s\S]*?)'\s*$/u.exec(
+          command,
+        )?.[1],
+        "Pi independent-shell probe missing",
+      ).replace("/tmp/nemoclaw-proxy-env.sh", runtimeEnv);
+      const checked = spawnSync("/bin/bash", ["-ceu", shell], {
+        env: { HOME: directory, PATH: process.env.PATH ?? "", ...ambient },
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      expect(checked.status === 0, checked.stderr).toBe(accepted);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["startup", "sourced shell"])(
     "clears ambient proxy settings in %s and preserves TLS trust",
     (mode) => {

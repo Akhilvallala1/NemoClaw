@@ -802,6 +802,7 @@
         "test/e2e/support/e2e-cleanup-resources.test.ts",
         "test/e2e/support/e2e-clients.test.ts",
         "test/e2e/support/messaging-compatible-endpoint-helpers.test.ts",
+        "test/e2e/support/messaging-compatible-native.test.ts",
         "test/e2e/support/openclaw-agent-output.test.ts"
       ]
     },

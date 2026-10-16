@@ -15,6 +15,7 @@ export const OPENSHELL_SANDBOX_NAME_LABEL = "openshell.ai/sandbox-name";
 export const OPENSHELL_SANDBOX_ID_LABEL = "openshell.ai/sandbox-id";
 export const OPENSHELL_SANDBOX_NAMESPACE_LABEL = "openshell.ai/sandbox-namespace";
 export const OPENSHELL_SANDBOX_WORKSPACE_LABEL = "openshell.ai/sandbox-workspace";
+export const OPENSHELL_ISOLATION_ROLE_LABEL = "openshell.ai/isolation-role";
 
 export type OpenShellSandboxOwnershipLabel = {
   readonly label: string;
@@ -295,6 +296,8 @@ export function inspectDockerSandboxNameLabeledContainers(
       managedBy: OPENSHELL_MANAGED_BY_LABEL,
       workspace: OPENSHELL_SANDBOX_WORKSPACE_LABEL,
       sandboxId: OPENSHELL_SANDBOX_ID_LABEL,
+      namespace: OPENSHELL_SANDBOX_NAMESPACE_LABEL,
+      isolationRole: OPENSHELL_ISOLATION_ROLE_LABEL,
     },
     inspect,
   );

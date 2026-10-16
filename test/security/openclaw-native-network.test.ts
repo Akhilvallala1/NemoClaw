@@ -146,6 +146,25 @@ it("rejects an unreviewed module before modifying either target", () => {
 });
 
 describe("OpenClaw image network selection", () => {
+  it("refuses a symbolic link module without changing its target", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-network-symlink-"));
+    try {
+      const dist = path.join(directory, "dist");
+      fs.mkdirSync(dist);
+      fs.writeFileSync(
+        path.join(directory, "package.json"),
+        JSON.stringify({ name: "openclaw", version: "2026.9.2" }),
+      );
+      const victim = path.join(directory, "outside-module.js");
+      fs.writeFileSync(victim, "keep this file unchanged\n");
+      fs.symlinkSync(victim, path.join(dist, "ssrf-0QyXWOVG.js"));
+      expect(() => patchOpenClawNativeNetwork(dist)).toThrow();
+      expect(fs.readFileSync(victim, "utf8")).toBe("keep this file unchanged\n");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])(
     "rejects modified current modules even with legacy fixture=%s",
     (legacyFixture) => {

@@ -336,13 +336,10 @@ FROM hermes-system
 
 # Hermes' WeChat adapter (gateway/platforms/weixin.py:_make_ssl_connector)
 # builds aiohttp with ssl.create_default_context(cafile=certifi.where()),
-# bypassing SSL_CERT_FILE. Symlink certifi's bundle at SSL_CERT_FILE so
-# weixin TLS trusts the OpenShell L7 proxy CA. Done at image build (as
-# root, which has write perms on the venv) because at runtime root doesn't
-# see SSL_CERT_FILE and the gateway user can't write the venv.
-# The target doesn't need to exist at build time — OpenShell mounts it at
-# sandbox start; the forward-referencing symlink resolves then.
-ARG SSL_CERT_FILE=/etc/openshell-tls/ca-bundle.pem
+# bypassing SSL_CERT_FILE. Link certifi to the workload CA bundle installed by
+# OpenShell 0.1.3 before launch. The image build owns the venv; the sandbox user
+# cannot change the link. The target is absent until OpenShell starts the sandbox.
+ARG SSL_CERT_FILE=/run/openshell-supervisor-ca/material/ca-bundle.crt
 # hadolint ignore=DL3059
 RUN _hermes_certifi=$(/opt/hermes/.venv/bin/python -c 'import certifi; print(certifi.where())') \
     && ln -sf "$SSL_CERT_FILE" "$_hermes_certifi"

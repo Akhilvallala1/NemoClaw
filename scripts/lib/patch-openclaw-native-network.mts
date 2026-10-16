@@ -74,21 +74,38 @@ export function patchOpenClawNativeNetwork(distDirectory: string): void {
   if (metadata.name !== "openclaw" || metadata.version !== VERSION) {
     throw new Error(`Native network patch requires reviewed openclaw@${VERSION}`);
   }
-  // Validate both files before writing either one, including repeat invocations.
-  const changes = TARGETS.map((target) => {
-    const file = path.join(distDirectory, target.file);
-    if (!fs.lstatSync(file).isFile())
-      throw new Error(`Expected a regular OpenClaw module: ${file}`);
-    const source = fs.readFileSync(file, "utf8");
-    const digest = sha256(source);
-    if (digest === target.after) return { file, text: source };
-    if (digest !== target.before) throw new Error(`Unreviewed OpenClaw network module: ${file}`);
-    const text = patchNativeNetworkText(source, target.kind);
-    if (sha256(text) !== target.after)
-      throw new Error(`Unexpected native network patch output: ${file}`);
-    return { file, text };
-  });
-  for (const { file, text } of changes) fs.writeFileSync(file, text);
+  const descriptors: number[] = [];
+  try {
+    // Keep validation and writes on the same files if a path is replaced.
+    // Validate both modules before modifying either one.
+    const changes = TARGETS.map((target) => {
+      const file = path.join(distDirectory, target.file);
+      const fd = fs.openSync(file, fs.constants.O_RDWR | fs.constants.O_NOFOLLOW);
+      descriptors.push(fd);
+      if (!fs.fstatSync(fd).isFile())
+        throw new Error(`Expected a regular OpenClaw module: ${file}`);
+      const source = fs.readFileSync(fd, "utf8");
+      const digest = sha256(source);
+      if (digest === target.after) return { fd, text: source };
+      if (digest !== target.before) throw new Error(`Unreviewed OpenClaw network module: ${file}`);
+      const text = patchNativeNetworkText(source, target.kind);
+      if (sha256(text) !== target.after)
+        throw new Error(`Unexpected native network patch output: ${file}`);
+      return { fd, text };
+    });
+    for (const { fd, text } of changes) {
+      const bytes = Buffer.from(text);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = fs.writeSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (written === 0) throw new Error("OpenClaw module write made no progress");
+        offset += written;
+      }
+      fs.ftruncateSync(fd, bytes.length);
+    }
+  } finally {
+    for (const fd of descriptors) fs.closeSync(fd);
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
