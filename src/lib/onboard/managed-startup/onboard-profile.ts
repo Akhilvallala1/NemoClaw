@@ -3,7 +3,11 @@
 
 import type { SandboxMessagingPlan } from "../../messaging/manifest";
 import type { ToolDisclosure } from "../../tool-disclosure";
-import { usesNativeLocalInference } from "../../inference/native-local/contract";
+import {
+  isLocalInferenceProvider,
+  usesNativeLocalInference,
+} from "../../inference/native-local/contract";
+export { isLocalInferenceProvider };
 import type { ResolvedCorporateCa } from "../corporate-ca-types";
 import type { DcodeAutoApprovalMode } from "../dcode-auto-approval";
 import type { HermesDashboardOnboardState } from "../hermes-dashboard";
@@ -96,14 +100,20 @@ export function resolveManagedStartupInferenceEndpoint(input: {
   localNimSelected?: boolean;
   nativeLocalProviderAttachment?: { endpointUrl: string };
 }): string | null {
-  if (input.agentName !== "langchain-deepagents-code") return input.endpointUrl;
-  if (input.provider === "vllm-local" && input.localNimSelected) return input.endpointUrl;
-  if (usesNativeLocalInference(input.provider, input.endpointUrl)) {
-    if (!input.nativeLocalProviderAttachment) {
+  if (input.agentName === "langchain-deepagents-code") {
+    if (input.provider === "vllm-local" && input.localNimSelected) return input.endpointUrl;
+    if (
+      usesNativeLocalInference(input.provider, input.endpointUrl) &&
+      !input.nativeLocalProviderAttachment
+    ) {
       throw new Error("Deep Agents Code local inference requires its native provider attachment.");
     }
+    return input.nativeLocalProviderAttachment?.endpointUrl ?? input.endpointUrl;
   }
-  return input.nativeLocalProviderAttachment?.endpointUrl ?? input.endpointUrl;
+  if (input.agentName === "openclaw" && input.nativeLocalProviderAttachment) {
+    return input.nativeLocalProviderAttachment.endpointUrl;
+  }
+  return input.endpointUrl;
 }
 
 export class ManagedStartupOnboardProfileError extends Error {

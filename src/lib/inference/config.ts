@@ -455,9 +455,9 @@ export function getSandboxInferenceConfig(
 
   if (
     useNativeProvider &&
-    agentName === "langchain-deepagents-code" &&
+    (agentName === "langchain-deepagents-code" || agentName === "openclaw") &&
     nativeEndpointUrl &&
-    usesNativeLocalInference(provider, nativeEndpointUrl) &&
+    usesNativeLocalInferenceForAgent(agentName, provider, nativeEndpointUrl) &&
     nativeLocalCredentialReference(provider, nativeEndpointUrl)
   ) {
     inferenceBaseUrl = nativeEndpointUrl;

@@ -539,6 +539,9 @@ export function nativeLocalReservationStatus(input: {
     input.entry.nativeLocalProviderAttachment,
   );
   return attachment &&
+    (input.agentName === "openclaw"
+      ? attachment.agent === "openclaw"
+      : attachment.agent === undefined) &&
     attachment.sandboxName === input.sandboxName &&
     attachment.gatewayName === input.gatewayName &&
     attachment.provider === input.provider &&
