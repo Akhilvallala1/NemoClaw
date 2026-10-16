@@ -1106,7 +1106,7 @@ def _display_endpoint(value):
 
 
 def _get_sandbox_info():
-    """Describe the Hermes chat route and the NemoClaw managed inference route."""
+    """Describe the Hermes chat route and the NemoClaw-managed inference route."""
     hermes_cfg = _load_hermes_config()
     hermes_cfg = hermes_cfg if isinstance(hermes_cfg, dict) else {}
     model_cfg = hermes_cfg.get("model")
@@ -1130,6 +1130,16 @@ def _get_sandbox_info():
                 )
             ),
         }
+        managed_aliases = {
+            "custom",
+            _provider_alias(upstream.get("provider_key")),
+            _provider_alias(upstream.get("provider")),
+        }
+        chat_uses_managed_route = chat_uses_managed_route or (
+            base_url != "unknown"
+            and base_url == managed_route["base_url"]
+            and _provider_alias(provider) in managed_aliases
+        )
         if chat_uses_managed_route:
             provider = managed_route["provider"]
 
@@ -1162,7 +1172,7 @@ def _get_sandbox_info():
 
 
 def _unused_managed_route(info):
-    """Return the NemoClaw managed route when the Hermes chat route does not use it."""
+    """Return the NemoClaw-managed route when the Hermes chat route does not use it."""
     return None if info.get("chat_uses_managed_route") else info.get("managed_route")
 
 
