@@ -145,7 +145,9 @@ describe("onboard final-handoff timeout contract", () => {
 
   it("contains both serial OpenClaw native-local scenarios and their finalization", () => {
     expect(OPENCLAW_NATIVE_LOCAL_TEST_TIMEOUT_MS).toBeGreaterThanOrEqual(
-      DCODE_NATIVE_LOCAL_TEST_TIMEOUT_MS + 5 * MINUTE_MS,
+      DCODE_NATIVE_LOCAL_TEST_TIMEOUT_MS +
+        OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS +
+        5 * MINUTE_MS,
     );
     expect(
       catalogueTarget("inference-routing-openclaw-native").timeoutMinutes * MINUTE_MS,
@@ -185,8 +187,8 @@ describe("onboard final-handoff timeout contract", () => {
       singleFinalHandoffTargetMinutes: 75,
       dcodeNativeLocalTestMinutes: 117.5,
       inferenceRoutingTargetMinutes: 243,
-      openClawNativeLocalTestMinutes: 122.5,
-      openClawNativeLocalTargetMinutes: 193,
+      openClawNativeLocalTestMinutes: 142.5,
+      openClawNativeLocalTargetMinutes: 213,
       noRecreateCommandMinutes: 15,
       configExportCommandMinutes: 2,
       configExportPinnedV1ConsumerMinutes: 10,

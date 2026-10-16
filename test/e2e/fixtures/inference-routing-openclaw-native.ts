@@ -21,6 +21,7 @@ type NativeOpenClawContext = Pick<
 
 type RestartDiagnosticContext = Pick<NativeOpenClawContext, "artifacts" | "host" | "sandbox"> & {
   owner: string;
+  model: string;
   apiKey: string;
   fake: Awaited<ReturnType<typeof startFakeOpenAiCompatibleServer>>;
   attachment: { endpointUrl: string } | null | undefined;
@@ -29,7 +30,7 @@ type RestartDiagnosticContext = Pick<NativeOpenClawContext, "artifacts" | "host"
 /** Preserve the original restart failure while collecting bounded route evidence for HTTP 503. */
 export async function captureNativeRestart503Diagnostic(
   start: ShellProbeResult,
-  { owner, apiKey, fake, attachment, artifacts, host, sandbox }: RestartDiagnosticContext,
+  { owner, model, apiKey, fake, attachment, artifacts, host, sandbox }: RestartDiagnosticContext,
 ): Promise<void> {
   if (
     start.exitCode === 0 ||
@@ -40,7 +41,7 @@ export async function captureNativeRestart503Diagnostic(
   )
     return;
   try {
-    const inspectDirectRoute = async (phase: string) => {
+    const inspectDirectRoute = async (phase: string, request: "models" | "chat") => {
       const before = fake.requests().length;
       const probe = await sandbox.exec(
         owner,
@@ -58,10 +59,23 @@ export async function captureNativeRestart503Diagnostic(
           "10",
           "--header",
           `Authorization: Bearer ${apiKey}`,
-          `${attachment.endpointUrl}/models`,
+          ...(request === "chat"
+            ? [
+                "--header",
+                "Content-Type: application/json",
+                "--data-binary",
+                JSON.stringify({
+                  model,
+                  messages: [{ role: "user", content: "Reply with OK" }],
+                  max_tokens: 1,
+                  stream: false,
+                }),
+              ]
+            : []),
+          `${attachment.endpointUrl}/${request === "chat" ? "chat/completions" : "models"}`,
         ],
         {
-          artifactName: `${owner}-restart-direct-${phase}`,
+          artifactName: `${owner}-restart-direct-${phase}-${request}`,
           env: sandboxAccessEnv(),
           timeoutMs: 20_000,
           redactionValues: [apiKey],
@@ -73,9 +87,11 @@ export async function captureNativeRestart503Diagnostic(
         reachedEndpoint: fake.requests().length > before,
       };
     };
-    const immediate = await inspectDirectRoute("immediate");
+    const immediate = await inspectDirectRoute("immediate", "models");
+    const immediateChat = await inspectDirectRoute("immediate", "chat");
     await new Promise((resolve) => setTimeout(resolve, 8_000));
-    const delayed = await inspectDirectRoute("delayed");
+    const delayed = await inspectDirectRoute("delayed", "models");
+    const delayedChat = await inspectDirectRoute("delayed", "chat");
     const doctor = await host.nemoclaw([owner, "doctor"], {
       artifactName: `${owner}-restart-doctor`,
       env: sandboxAccessEnv(),
@@ -84,7 +100,9 @@ export async function captureNativeRestart503Diagnostic(
     });
     await artifacts.writeJson(`${owner}-restart-503-diagnostic.json`, {
       immediate,
+      immediateChat,
       delayed,
+      delayedChat,
       doctorExitCode: doctor.exitCode,
     });
   } catch {

@@ -1261,6 +1261,7 @@ test(
     });
     await captureNativeRestart503Diagnostic(start, {
       owner,
+      model,
       apiKey,
       fake,
       attachment,

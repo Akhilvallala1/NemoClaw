@@ -535,18 +535,25 @@ describe("OpenClaw native restart diagnostics", () => {
     };
     const exec = vi
       .fn()
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "200" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "503" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "200" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "200" });
     const requests = vi
       .fn()
       .mockReturnValueOnce([])
-      .mockReturnValueOnce([])
-      .mockReturnValueOnce([])
-      .mockReturnValueOnce([{}]);
+      .mockReturnValueOnce([{}])
+      .mockReturnValueOnce([{}])
+      .mockReturnValueOnce([{}])
+      .mockReturnValueOnce([{}])
+      .mockReturnValueOnce([{}, {}])
+      .mockReturnValueOnce([{}, {}])
+      .mockReturnValueOnce([{}, {}, {}]);
     const nemoclaw = vi.fn(async () => ({ exitCode: 0 }));
     const writeJson = vi.fn(async () => "artifact");
     const diagnostic = captureNativeRestart503Diagnostic(start as never, {
       owner: "owner",
+      model: "nemoclaw-openclaw-native-local",
       apiKey,
       attachment: { endpointUrl: "http://host.openshell.internal:8081/v1" },
       fake: { requests } as never,
@@ -557,13 +564,23 @@ describe("OpenClaw native restart diagnostics", () => {
 
     await vi.advanceTimersByTimeAsync(8_000);
     await diagnostic;
-    expect(exec).toHaveBeenCalledTimes(2);
+    expect(exec).toHaveBeenCalledTimes(4);
     expect(exec.mock.calls[0]?.[2]).toMatchObject({ redactionValues: [apiKey] });
     expect(exec.mock.calls[1]?.[2]).toMatchObject({ redactionValues: [apiKey] });
+    expect(exec.mock.calls[2]?.[2]).toMatchObject({ redactionValues: [apiKey] });
+    expect(exec.mock.calls[3]?.[2]).toMatchObject({ redactionValues: [apiKey] });
+    expect(exec.mock.calls[1]?.[1]).toContain("--output");
+    expect(exec.mock.calls[1]?.[1]).toContain("/dev/null");
+    expect(exec.mock.calls[1]?.[1]).toContain("--data-binary");
+    expect(exec.mock.calls[1]?.[1]).toContain(
+      "http://host.openshell.internal:8081/v1/chat/completions",
+    );
     expect(nemoclaw).toHaveBeenCalledWith(["owner", "doctor"], expect.any(Object));
     expect(writeJson).toHaveBeenCalledWith("owner-restart-503-diagnostic.json", {
-      immediate: { exitCode: 0, httpStatus: "503", reachedEndpoint: false },
+      immediate: { exitCode: 0, httpStatus: "200", reachedEndpoint: true },
+      immediateChat: { exitCode: 0, httpStatus: "503", reachedEndpoint: false },
       delayed: { exitCode: 0, httpStatus: "200", reachedEndpoint: true },
+      delayedChat: { exitCode: 0, httpStatus: "200", reachedEndpoint: true },
       doctorExitCode: 0,
     });
     expect(start.exitCode).toBe(1);
@@ -573,6 +590,7 @@ describe("OpenClaw native restart diagnostics", () => {
     const exec = vi.fn();
     await captureNativeRestart503Diagnostic({ exitCode: 1, stderr: "HTTP 401" } as never, {
       owner: "owner",
+      model: "nemoclaw-openclaw-native-local",
       apiKey: "sk-native-test-not-real",
       attachment: { endpointUrl: "http://host.openshell.internal:8081/v1" },
       fake: { requests: vi.fn() } as never,
