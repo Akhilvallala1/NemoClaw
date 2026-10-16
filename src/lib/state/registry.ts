@@ -27,6 +27,8 @@ import {
 import { withLock } from "./registry/lock";
 import { load, save } from "./registry/persistence";
 import {
+  normalizeNativeLocalProviderAttachment,
+  retainedNativeLocalProviderAttachment,
   nativeHostedReservationAttachment,
   isCurrentSandboxInferenceRouteReservation,
   isCurrentPendingSandboxCreateReservation,
@@ -492,6 +494,18 @@ export function registerSandbox(
         );
       }
     }
+    const nativeLocalProviderAttachment = normalizeNativeLocalProviderAttachment(
+      entry.nativeLocalProviderAttachment,
+    );
+    if (
+      entry.nativeLocalProviderAttachment !== undefined &&
+      (!nativeLocalProviderAttachment ||
+        nativeLocalProviderAttachment.sandboxName !== entry.name ||
+        nativeLocalProviderAttachment.gatewayName !== entry.gatewayName ||
+        nativeLocalProviderAttachment.provider !== entry.provider)
+    ) {
+      throw new Error("Cannot publish an invalid native local provider attachment.");
+    }
     const nativeNvidiaProviderAttachment = normalizeNativeNvidiaProviderAttachment(
       entry.nativeNvidiaProviderAttachment,
     );
@@ -561,6 +575,7 @@ export function registerSandbox(
           : undefined,
       ...(hostLocalInferenceReceipt !== undefined ? { hostLocalInferenceReceipt } : {}),
       ...(hostLocalInferenceProvenance ? { hostLocalInferenceProvenance } : {}),
+      ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
       ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
       ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
       lifecycleGeneration: entry.lifecycleGeneration,
@@ -614,6 +629,7 @@ type SandboxInferenceRouteReservation = Pick<
   reservationSessionId?: string;
   hostLocalInferenceReceipt?: string | null;
   hostLocalInferenceProvenance?: SandboxEntry["hostLocalInferenceProvenance"];
+  nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
   nativeNvidiaProviderAttachment?: SandboxEntry["nativeNvidiaProviderAttachment"];
   nativeHostedProviderAttachment?: SandboxEntry["nativeHostedProviderAttachment"];
 };
@@ -657,6 +673,18 @@ export function reserveSandboxInferenceRoute(
     )
       return false;
     const normalized = normalizeInferenceSelection(route);
+    const nativeLocalProviderAttachment = normalizeNativeLocalProviderAttachment(
+      route.nativeLocalProviderAttachment,
+    );
+    if (
+      route.nativeLocalProviderAttachment !== undefined &&
+      (!nativeLocalProviderAttachment ||
+        nativeLocalProviderAttachment.sandboxName !== name ||
+        nativeLocalProviderAttachment.gatewayName !== route.gatewayName ||
+        nativeLocalProviderAttachment.provider !== route.provider)
+    ) {
+      throw new Error("Cannot publish an invalid native local provider attachment.");
+    }
     const nativeHostedProviderAttachment = nativeHostedReservationAttachment(
       route.nativeHostedProviderAttachment,
       normalized.provider,
@@ -725,6 +753,10 @@ export function reserveSandboxInferenceRoute(
             route.hostLocalInferenceProvenance ?? existing.hostLocalInferenceProvenance,
           ) &&
           isDeepStrictEqual(
+            existing.nativeLocalProviderAttachment,
+            nativeLocalProviderAttachment ?? existing.nativeLocalProviderAttachment,
+          ) &&
+          isDeepStrictEqual(
             existing.nativeHostedProviderAttachment,
             nativeHostedProviderAttachment ?? existing.nativeHostedProviderAttachment,
           ) &&
@@ -768,6 +800,13 @@ export function reserveSandboxInferenceRoute(
       endpointSource: normalized.endpointSource,
       credentialEnv: normalized.credentialEnv,
       preferredInferenceApi: normalized.preferredInferenceApi,
+      nativeLocalProviderAttachment:
+        nativeLocalProviderAttachment ??
+        retainedNativeLocalProviderAttachment(existing, {
+          provider: normalized.provider,
+          endpointUrl: normalized.endpointUrl,
+          gatewayName: route.gatewayName,
+        }),
       nativeHostedProviderAttachment: nativeHostedReservationAttachment(
         nativeHostedProviderAttachment,
         normalized.provider,
