@@ -250,6 +250,9 @@ The OpenShell CLI has no command that starts a gateway, and `openshell status` o
   native home, use `rebuild` instead of destroying and recreating.
 </AgentOnly>
 
+Rebuild requires the OpenSSH `sftp` client on the host.
+If it is unavailable, install the OpenSSH client tools before running rebuild.
+
 ```bash
 $$nemoclaw <sandbox-name> rebuild
 ```
