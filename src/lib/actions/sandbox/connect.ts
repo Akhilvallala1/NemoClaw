@@ -1717,8 +1717,8 @@ async function ensureSandboxInferenceRouteUnlocked(
     assertNoOpenShellGatewayEndpointOverride();
     const { provider, model } = inference;
     const gatewayName = getPersistedSandboxTargetGatewayName(sb);
-    const nativeNvidiaAttachment = hasNativeInferenceProviderAttachment(sb);
-    if (nativeNvidiaAttachment) {
+    const nativeAttachment = hasNativeInferenceProviderAttachment(sb);
+    if (nativeAttachment || sb.nativeLocalProviderAttachment !== undefined) {
       await requireNativeInferenceHealth({
         sandboxName,
         gatewayName,
@@ -1879,7 +1879,10 @@ async function ensureSandboxInferenceRoute(
   if (!snapshot) return { sandbox: null, routeHealthy: null };
   if (registry.getSandboxEntryInference(snapshot).kind !== "configured")
     return { sandbox: snapshot, routeHealthy: null };
-  if (hasNativeInferenceProviderAttachment(snapshot)) {
+  if (
+    hasNativeInferenceProviderAttachment(snapshot) ||
+    snapshot.nativeLocalProviderAttachment !== undefined
+  ) {
     return ensureSandboxInferenceRouteUnlocked(sandboxName, agent, { quiet });
   }
   const gatewayName = getPersistedSandboxTargetGatewayName(snapshot);

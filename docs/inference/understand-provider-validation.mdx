@@ -54,7 +54,7 @@ If the last retry fails or times out, validation stops without another Chat Comp
 
 The managed Deep Agents runtime keeps `use_responses_api = false` and uses Chat Completions.
 Selections with a native provider attachment use their recorded endpoint URLs and supervisor-issued credentials.
-Host-local and existing shared-route sandboxes continue to use `https://inference.local/v1`.
+New Deep Agents Code selections of Ollama, standalone vLLM, llama.cpp, and qualifying host-local compatible endpoints use sandbox-attached providers. Owned Local NVIDIA NIM and retained shared-route selections use `inference.local`.
 `NEMOCLAW_PREFERRED_API` does not change that runtime selection.
 
 </AgentOnly>

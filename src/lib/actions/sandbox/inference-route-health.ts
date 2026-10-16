@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  normalizeNativeLocalProviderAttachment,
+  type NativeLocalProviderAttachment,
+} from "../../inference/native-local/contract";
+import { verifyNativeLocalProviderAttachment } from "../../inference/native-local/profile";
 import type { SandboxEntry } from "../../state/registry/types";
 import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import { hostedNativeProvider } from "../../inference/native-provider/hosted";
@@ -74,6 +79,23 @@ export async function verifyNativeNvidiaStatusAttachment(input: {
   });
 }
 
+export type VerifyNativeLocalStatusAttachment = (input: {
+  gatewayName: string;
+  sandboxName: string;
+  expected: NativeLocalProviderAttachment;
+}) => Promise<void>;
+
+export const verifyNativeLocalStatusAttachment: VerifyNativeLocalStatusAttachment = async (
+  input,
+) => {
+  if (input.expected.gatewayName !== input.gatewayName)
+    throw new Error("Native local provider gateway authority changed.");
+  await verifyNativeLocalProviderAttachment({
+    adapter: createCliOpenShellProviderAdapter(),
+    sandboxName: input.sandboxName,
+    expected: input.expected,
+  });
+};
 export type VerifyNativeHostedStatusAttachment = (input: {
   gatewayName: string;
   sandboxName: string;
@@ -390,6 +412,7 @@ function buildInvokedRouteHealth(
 export type SandboxInferenceRouteHealthContext = {
   provider: string | null;
   nativeNvidia?: boolean;
+  nativeLocalEndpoint?: string;
   nativeProvider?: boolean;
   nativeEndpointUrl?: string;
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
@@ -427,6 +450,25 @@ export function buildSandboxInferenceRouteHealth(
   invocation: SandboxInferenceInvocationResult | null,
   context: SandboxInferenceRouteHealthContext,
 ): ProviderHealthStatus {
+  if (context.nativeLocalEndpoint) {
+    return {
+      ok: invocation?.ok === true,
+      probed: invocation !== null,
+      providerLabel: "Native local inference",
+      endpoint: `${context.nativeLocalEndpoint}/chat/completions`,
+      detail: invocation?.ok
+        ? "The attached provider served a native local inference request."
+        : invocation
+          ? `Native local inference failed: ${invocation.detail}`
+          : "Native local inference could not be verified inside the sandbox.",
+      ...(invocation?.ok
+        ? {}
+        : {
+            failureLabel: classifyInferenceInvocationFailureLabel(invocation?.httpStatus ?? null),
+          }),
+      subprobes: providerHealthDiagnostics(providerHealth, invocation?.ok === true),
+    };
+  }
   const definition = context.nativeCustomProviderAttachment
     ? { logicalProvider: context.provider ?? "", label: "custom" }
     : fixedNativeProvider(context.provider);
@@ -548,15 +590,25 @@ export function readNativeStatusSelection(entry: SandboxEntry | null | undefined
   let attachment: NativeProviderAttachment | undefined;
   let failure: string | null = null;
   try {
-    attachment = entry ? recordedNativeProviderAttachment(entry) : undefined;
+    if (entry?.nativeLocalProviderAttachment !== undefined) {
+      attachment = normalizeNativeLocalProviderAttachment(entry.nativeLocalProviderAttachment);
+      if (!attachment)
+        failure =
+          "Recorded native local provider ownership is invalid; no inference request was sent.";
+    } else {
+      attachment = entry ? recordedNativeProviderAttachment(entry) : undefined;
+    }
   } catch {
     failure = "Recorded native provider ownership is invalid; no inference request was sent.";
   }
-  const definition = hostedNativeProvider(entry?.provider, attachment?.endpointUrl);
+  const local = entry?.nativeLocalProviderAttachment !== undefined;
+  const definition = local ? null : hostedNativeProvider(entry?.provider, attachment?.endpointUrl);
   return {
     attachment,
     failure,
-    label: definition?.label ?? "NVIDIA",
-    endpoint: definition?.endpoint ?? NVIDIA_HOSTED_NATIVE_ENDPOINT,
+    label: local ? "local" : (definition?.label ?? "NVIDIA"),
+    endpoint: local
+      ? (attachment?.endpointUrl ?? "")
+      : (definition?.endpoint ?? NVIDIA_HOSTED_NATIVE_ENDPOINT),
   };
 }

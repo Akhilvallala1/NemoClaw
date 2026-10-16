@@ -42,7 +42,11 @@ import {
 import { fingerprintOpenShellSandboxId } from "../sandbox/openshell-identity";
 import { HERMES_PROVIDER_NAME } from "../../onboard/inference-providers/hermes-provider-identity";
 import { OLLAMA_LOCAL_CREDENTIAL_ENV } from "../../inference/ollama/contract";
-import { ExportSourceValuesSchema, exportWebSearchBinding } from "./export-evidence";
+import {
+  ExportSourceValuesSchema,
+  exportWebSearchBinding,
+  exportNativeInferenceReceipt,
+} from "./export-evidence";
 import { inspectAgentInterfaces } from "./verify-agent-interfaces";
 import { V1ALPHA1_RUNTIME_DEFAULTS } from "./v1alpha1-runtime-defaults";
 import type {
@@ -584,6 +588,13 @@ function exportNativeCustomCredentialEnv(entry: ObservedExportRegistry): string 
     ?.credentialEnv;
 }
 
+function exportRouteEndpoint(entry: ObservedExportRegistry): string | undefined {
+  return (
+    entry.nativeLocalProviderAttachment?.endpointUrl ??
+    receiptEndpointUrl(nativeExportReceipt(entry))
+  );
+}
+
 function expectedManagedStartupProfile(entry: ObservedExportRegistry): ManagedStartupProfile {
   if (!isSupportedExportAgent(entry.agent)) {
     throw new Error("The agent is unsupported.");
@@ -603,8 +614,8 @@ function expectedManagedStartupProfile(entry: ObservedExportRegistry): ManagedSt
     selected.provider,
     selected.model,
     selected.preferredInferenceApi,
-    exportNativeInferenceSelection(entry),
-    nativeExportReceipt(entry)?.endpointUrl,
+    exportNativeInferenceSelection(entry) || entry.nativeLocalProviderAttachment !== undefined,
+    exportRouteEndpoint(entry),
   );
   const projection = EXPORT_AGENT_PROFILE_PROJECTIONS[agent](inference);
   const search = exportWebSearchBinding(entry);
@@ -908,12 +919,57 @@ function nativeCustomEndpointEvidenceMatchesRoute(
   return null;
 }
 
+function nativeLocalEndpointEvidenceMatches(snapshot: QualifiedExportSnapshot): boolean {
+  const { inference } = snapshot;
+  const evidence = inference.endpointEvidence;
+  if (!evidence || evidence.source.kind !== "managed-profile") return false;
+  const receipt = exportNativeInferenceReceipt(snapshot.registry);
+  return (
+    receipt != null &&
+    "endpointUrl" in receipt &&
+    ["ollama-local", "vllm-local", "compatible-endpoint"].includes(receipt.provider) &&
+    isDeepStrictEqual(
+      [
+        evidence.source.profileId,
+        evidence.provider.managedProfile?.id,
+        evidence.provider.name,
+        evidence.provider.id,
+        inference.provider,
+        inference.api,
+        inference.endpoint,
+        evidence.endpoint,
+        snapshot.registry.name,
+        snapshot.gateway.name,
+      ],
+      [
+        receipt.profileId,
+        receipt.profileId,
+        receipt.providerName,
+        receipt.providerId,
+        receipt.provider,
+        "openai-completions",
+        receipt.endpointUrl,
+        receipt.endpointUrl,
+        receipt.sandboxName,
+        receipt.gatewayName,
+      ],
+    )
+  );
+}
+
 function nativeExportReceipt(entry: QualifiedExportSnapshot["registry"]) {
+  if (entry.nativeLocalProviderAttachment !== undefined) return exportNativeInferenceReceipt(entry);
   try {
     return recordedNativeProviderAttachment(entry);
   } catch {
     return undefined;
   }
+}
+
+function receiptEndpointUrl(receipt: ReturnType<typeof nativeExportReceipt>): string | undefined {
+  return receipt && "endpointUrl" in receipt && typeof receipt.endpointUrl === "string"
+    ? receipt.endpointUrl
+    : undefined;
 }
 
 function managedEndpointEvidenceMatchesRoute(
@@ -926,7 +982,7 @@ function managedEndpointEvidenceMatchesRoute(
   const receipt = nativeExportReceipt(snapshot.registry);
   if (!receipt) return false;
   const definition = fixedNativeProviderForAttachment(receipt);
-  const hosted = hostedNativeProvider(snapshot.registry.provider, receipt.endpointUrl);
+  const hosted = hostedNativeProvider(snapshot.registry.provider, receiptEndpointUrl(receipt));
   const endpoint = hosted?.endpoint ?? NVIDIA_HOSTED_NATIVE_ENDPOINT;
   const api =
     hosted?.logicalProvider === "openai-api" && inference.api === "openai-responses"
@@ -956,10 +1012,27 @@ function managedEndpointEvidenceMatchesRoute(
   );
 }
 
+function providerConfigEndpointEvidenceMatches(snapshot: QualifiedExportSnapshot): boolean {
+  const { inference } = snapshot;
+  const evidence = inference.endpointEvidence;
+  if (!evidence) return false;
+  let expectedConfigKey: string | null = null;
+  if (inference.api === "anthropic-messages") expectedConfigKey = "ANTHROPIC_BASE_URL";
+  else if (["openai-completions", "openai-responses"].includes(inference.api))
+    expectedConfigKey = "OPENAI_BASE_URL";
+  return (
+    evidence.source.kind === "provider-config" &&
+    expectedConfigKey !== null &&
+    evidence.source.key === expectedConfigKey
+  );
+}
+
 function endpointEvidenceMatchesRoute(snapshot: QualifiedExportSnapshot): boolean {
   const { inference } = snapshot;
   const evidence = inference.endpointEvidence;
   if (!evidence) return false;
+  if (snapshot.registry.nativeLocalProviderAttachment !== undefined)
+    return nativeLocalEndpointEvidenceMatches(snapshot);
   if (evidence.source.kind === "managed-profile") {
     const custom = nativeCustomEndpointEvidenceMatchesRoute(snapshot);
     if (custom !== null) return custom;
@@ -974,15 +1047,7 @@ function endpointEvidenceMatchesRoute(snapshot: QualifiedExportSnapshot): boolea
       )
     );
   }
-  let expectedConfigKey: string | null = null;
-  if (inference.api === "anthropic-messages") expectedConfigKey = "ANTHROPIC_BASE_URL";
-  else if (["openai-completions", "openai-responses"].includes(inference.api))
-    expectedConfigKey = "OPENAI_BASE_URL";
-  return (
-    evidence.source.kind === "provider-config" &&
-    expectedConfigKey !== null &&
-    evidence.source.key === expectedConfigKey
-  );
+  return providerConfigEndpointEvidenceMatches(snapshot);
 }
 
 function validateSandboxIdentity(
@@ -1041,6 +1106,7 @@ function sandboxProviderAttachmentsMatch(snapshot: QualifiedExportSnapshot): boo
   const nativeReceipt =
     normalizeNativeCustomProviderAttachment(entry.nativeCustomProviderAttachment, entry.name) ??
     nativeExportReceipt(entry);
+  if (nativeReceipt === null) return false;
   const inferenceAttachment = nativeReceipt?.providerName ?? inference.provider;
   const additionalProviders = sandbox.providerNames.filter((name) => name !== inferenceAttachment);
   const webSearch = exportWebSearchBinding(entry);

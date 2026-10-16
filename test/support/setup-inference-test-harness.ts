@@ -13,6 +13,11 @@ import {
   type SetupInference,
   type SetupInferenceDeps,
 } from "../../src/lib/onboard/setup-inference.js";
+import { usesNativeLocalInference } from "../../src/lib/inference/native-local/contract";
+import {
+  createNativeLocalSetupHarness,
+  withNativePolicyFixture,
+} from "./native-local-setup-harness";
 import { redact } from "../../src/lib/security/redact.js";
 
 import type {
@@ -457,7 +462,7 @@ export function createDirectSetupInferenceHarnessFactory(
   createSetupInference: CreateSetupInference,
 ) {
   return function createDirectSetupInferenceHarness(options: DirectSetupHarnessOptions = {}) {
-    const native = createNativeCustomSetupDependencies();
+    const nativeCustom = createNativeCustomSetupDependencies();
     const commands: DirectCommandEntry[] = [];
     const errors: string[] = [];
     const logs: string[] = [];
@@ -501,7 +506,7 @@ export function createDirectSetupInferenceHarnessFactory(
       }
       return directRunResult();
     };
-    const setupInferenceWithoutPolicyAuthority = createSetupInference({
+    const harnessDeps: Partial<SetupInferenceDeps> = {
       checkGatewayRouteCompatibility: () => ({ ok: true }),
       withGatewayRouteMutationLock: async <T>(
         _gatewayName: string,
@@ -599,7 +604,7 @@ export function createDirectSetupInferenceHarnessFactory(
           : "http://host.openshell.internal:8000/v1",
       applyLocalInferenceRoute: async () => false,
       // Fresh hosted custom fixtures use the native owner and isolated adapter state.
-      ...native,
+      ...nativeCustom,
       run: () => directRunResult(),
       shouldFrontOllamaWithProxy: () => false,
       ensureOllamaAuthProxy: () => {},
@@ -623,6 +628,16 @@ export function createDirectSetupInferenceHarnessFactory(
       unloadOllamaModels,
       withOllamaModelOwnershipLock: (operation) => operation(),
       ...options.overrides,
+    };
+    const setupInferenceWithoutPolicyAuthority = createSetupInference(harnessDeps);
+    const native = createNativeLocalSetupHarness();
+    const setupNativeInference = createSetupInference({
+      ...harnessDeps,
+      providerAdapter: native.adapter,
+      getNativeLocalProviderAuthority: native.getNativeLocalProviderAuthority,
+      setNativeLocalProviderAuthority: native.setNativeLocalProviderAuthority,
+      clearNativeLocalProviderAuthority: native.clearNativeLocalProviderAuthority,
+      ...options.overrides,
     });
     const revalidateSandboxIdentity = vi.fn();
     const setupInference: SetupInference = (
@@ -634,23 +649,27 @@ export function createDirectSetupInferenceHarnessFactory(
       hermesAuthMethod,
       hermesToolGateways,
       inferenceOptions = {},
-    ) =>
-      setupInferenceWithoutPolicyAuthority(
-        sandboxName,
-        model,
-        provider,
-        endpointUrl,
-        credentialEnv,
-        hermesAuthMethod,
-        hermesToolGateways,
-        {
-          ...inferenceOptions,
-          revalidateSandboxIdentity:
-            inferenceOptions.revalidateSandboxIdentity ?? revalidateSandboxIdentity,
-        },
-      );
+    ) => {
+      const nativeLocal = usesNativeLocalInference(provider, endpointUrl);
+      const operation = () =>
+        (nativeLocal ? setupNativeInference : setupInferenceWithoutPolicyAuthority)(
+          sandboxName,
+          model,
+          provider,
+          endpointUrl,
+          credentialEnv,
+          hermesAuthMethod,
+          hermesToolGateways,
+          {
+            ...inferenceOptions,
+            revalidateSandboxIdentity:
+              inferenceOptions.revalidateSandboxIdentity ?? revalidateSandboxIdentity,
+          },
+        );
+      return nativeLocal ? withNativePolicyFixture(operation) : operation();
+    };
     return {
-      native,
+      native: { ...native, ...nativeCustom },
       commands,
       errors,
       logs,

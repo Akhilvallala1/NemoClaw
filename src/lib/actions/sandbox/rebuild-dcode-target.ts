@@ -5,6 +5,10 @@ import {
   normalizeNativeCustomProviderAttachment,
   type NativeCustomProviderAttachment,
 } from "../../inference/native-custom";
+import {
+  normalizeNativeLocalProviderAttachment,
+  type NativeLocalProviderAttachment,
+} from "../../inference/native-local/contract";
 import { GATEWAY_PORT } from "../../core/ports";
 import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import {
@@ -19,7 +23,9 @@ export type DcodeRebuildRegistryEntry = SandboxGatewayBinding & {
   agent?: string | null;
   dashboardPort?: number | null;
   name?: string;
+  nimContainer?: string | null;
   nativeNvidiaProviderAttachment?: unknown;
+  nativeLocalProviderAttachment?: unknown;
   nativeHostedProviderAttachment?: unknown;
   nativeCustomProviderAttachment?: unknown;
 };
@@ -33,6 +39,7 @@ export type DcodeRebuildResumeConfig = {
 
 export type ResolvedDcodeRebuildTarget = {
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeProvider?: boolean;
   nativeEndpointUrl?: string;
   agent: typeof DCODE_AGENT_NAME;
@@ -73,12 +80,32 @@ export function resolveDcodeRebuildTarget(
         `Re-run with NEMOCLAW_GATEWAY_PORT=${gatewayPort}.`,
     );
   }
-  const fixed = recordedNativeProviderAttachment({ ...entry, provider: resumeConfig.provider });
+  const ownedLocalNim =
+    resumeConfig.provider === "vllm-local" && Boolean(entry.nimContainer?.trim());
+  const nativeLocalProviderAttachment = ownedLocalNim
+    ? null
+    : normalizeNativeLocalProviderAttachment(entry.nativeLocalProviderAttachment);
+  if (
+    !ownedLocalNim &&
+    entry.nativeLocalProviderAttachment !== undefined &&
+    !nativeLocalProviderAttachment
+  ) {
+    throw new Error("Malformed native local provider attachment; sandbox is untouched");
+  }
+  const nativeAttachment = ownedLocalNim
+    ? null
+    : recordedNativeProviderAttachment({
+        ...entry,
+        provider: resumeConfig.provider,
+      });
   const custom = normalizeNativeCustomProviderAttachment(
     entry.nativeCustomProviderAttachment,
     entry.name,
   );
-  if (entry.nativeCustomProviderAttachment !== undefined && (!custom || fixed))
+  if (
+    entry.nativeCustomProviderAttachment !== undefined &&
+    (!custom || nativeAttachment || nativeLocalProviderAttachment)
+  )
     throw new Error("DCode rebuild native custom authority is malformed.");
   return {
     ...(custom ? { nativeCustomProviderAttachment: custom } : {}),
@@ -88,7 +115,17 @@ export function resolveDcodeRebuildTarget(
     provider: requiredString(resumeConfig.provider, "inference provider"),
     model: requiredString(resumeConfig.model, "inference model"),
     preferredInferenceApi: resumeConfig.preferredInferenceApi,
-    ...(fixed ? { nativeProvider: true } : {}),
-    ...(fixed?.endpointUrl ? { nativeEndpointUrl: fixed.endpointUrl } : {}),
+    ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
+    ...(nativeAttachment
+      ? {
+          nativeProvider: true,
+          ...(nativeAttachment.endpointUrl
+            ? { nativeEndpointUrl: nativeAttachment.endpointUrl }
+            : {}),
+        }
+      : {}),
+    ...(nativeLocalProviderAttachment
+      ? { nativeProvider: true, nativeEndpointUrl: nativeLocalProviderAttachment.endpointUrl }
+      : {}),
   };
 }

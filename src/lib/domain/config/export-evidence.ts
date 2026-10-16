@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { NATIVE_LOCAL_CREDENTIAL_ENV } from "../../inference/native-local/agent-config";
+import { OLLAMA_LOCAL_CREDENTIAL_ENV } from "../../inference/ollama/contract";
+import { normalizeNativeLocalProviderAttachment } from "../../inference/native-local/profile";
 import type * as TypeBoxModule from "typebox" with { "resolution-mode": "import" };
 import {
   BoundedTextSchema,
@@ -73,6 +76,7 @@ export const EXPORT_REGISTRY_EVIDENCE_KEYS = [
   "messaging",
   "model",
   "name",
+  "nativeLocalProviderAttachment",
   "nativeHostedProviderAttachment",
   "nativeCustomProviderAttachment",
   "nativeNvidiaProviderAttachment",
@@ -94,6 +98,39 @@ export const EXPORT_REGISTRY_EVIDENCE_KEYS = [
 type ObservedExportRegistryKey = (typeof EXPORT_REGISTRY_EVIDENCE_KEYS)[number];
 
 export type ObservedExportRegistry = DeepReadonly<Pick<SandboxEntry, ObservedExportRegistryKey>>;
+
+function hasNativeLocalExportCredential(
+  entry: ObservedExportRegistry,
+  receiptCredential: string,
+): boolean {
+  return (
+    receiptCredential === NATIVE_LOCAL_CREDENTIAL_ENV &&
+    (entry.credentialEnv == null ||
+      (entry.provider === "compatible-endpoint" &&
+        (entry.credentialEnv === "COMPATIBLE_API_KEY" ||
+          entry.credentialEnv === OLLAMA_LOCAL_CREDENTIAL_ENV)) ||
+      (entry.provider === "ollama-local" && entry.credentialEnv === OLLAMA_LOCAL_CREDENTIAL_ENV))
+  );
+}
+
+export function exportNativeInferenceReceipt(entry: ObservedExportRegistry) {
+  if (entry.nativeLocalProviderAttachment !== undefined) {
+    const receipt = normalizeNativeLocalProviderAttachment(entry.nativeLocalProviderAttachment);
+    if (
+      !receipt ||
+      !["ollama-local", "vllm-local", "compatible-endpoint"].includes(receipt.provider) ||
+      receipt.provider !== entry.provider ||
+      receipt.sandboxName !== entry.name ||
+      receipt.gatewayName !== entry.gatewayName ||
+      !hasNativeLocalExportCredential(entry, receipt.credentialEnv)
+    )
+      return null;
+    return receipt;
+  }
+  return entry.provider?.trim() === "nvidia-prod"
+    ? entry.nativeNvidiaProviderAttachment
+    : undefined;
+}
 
 export function exportWebSearchBinding(
   entry: Pick<ObservedExportRegistry, "name" | "agent" | "webSearchEnabled" | "webSearchProvider">,

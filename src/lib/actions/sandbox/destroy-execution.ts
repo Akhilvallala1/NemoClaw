@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { finishTelemetryOperation, recordTelemetryTarget } from "../telemetry/operation";
-
+import { listNativeLocalProviderAuthorities } from "../../state/registry/native-local-provider-authority";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
@@ -43,6 +43,7 @@ import {
 } from "../../onboard/runtime-provider/host-local-inference-lifecycle";
 import {
   type DetachSandboxProvidersResult,
+  retireDestroyedSandboxNativeLocalProvider as retireNativeLocalProviderAfterDelete,
   runSandboxProviderPreDeleteCleanup,
 } from "../../onboard/sandbox-provider-cleanup";
 import { redact, redactFull } from "../../security/redact";
@@ -975,6 +976,9 @@ export async function executeSandboxDestroy({
         mcpRecoveryFailure,
       };
     }
+    const hasNativeLocalAuthority =
+      Boolean(sandbox?.nativeLocalProviderAttachment) ||
+      listNativeLocalProviderAuthorities(sandboxName, effectiveDeleteGatewayName).length > 0;
     // A successful preflight absence is already the required OpenShell
     // lifecycle proof. Do not issue a later mutable-name delete that could
     // target a same-name replacement created after that observation.
@@ -1041,6 +1045,7 @@ export async function executeSandboxDestroy({
       !hasMcpOwnership &&
       !hasHostLocalInferenceOwnership &&
       !hasNativeCustomOwnership &&
+      !hasNativeLocalAuthority &&
       portableContainerAuthority === undefined;
 
     if (deleteFailed && !forcedLocalCleanup) {
@@ -1054,7 +1059,7 @@ export async function executeSandboxDestroy({
         gatewayUnreachable,
         ...(timedOut ? { timedOut: true as const } : {}),
         hostLocalInferenceOwnershipRequiresGateway:
-          gatewayUnreachable && hasHostLocalInferenceOwnership,
+          gatewayUnreachable && (hasHostLocalInferenceOwnership || hasNativeLocalAuthority),
         mcpOwnershipRequiresGateway: gatewayUnreachable && hasMcpOwnership,
         mcpRecoveryFailure,
         portableLifecycleOwnershipRequiresGateway:
@@ -1202,4 +1207,22 @@ export async function recordDestroyCompletion(
     state,
   });
   if (exitCode !== undefined) await finishTelemetryOperation(exitCode);
+}
+
+/** Bind post-delete provider retirement to the confirmed runtime selection. */
+export async function retireDestroyedSandboxNativeLocalProvider(
+  sandbox: SandboxEntry,
+  gatewayName: string,
+  runOpenshell: DestroyRunOpenshell,
+  runtimeSelection?: OpenShellRuntimeSelection,
+): Promise<void> {
+  const selectedRunOpenshell: DestroyRunOpenshell | undefined = runtimeSelection
+    ? (args, options = {}) =>
+        runOpenshell(args, {
+          ...options,
+          env: buildSelectedOpenShellSubprocessEnv(runtimeSelection),
+          replaceEnv: true,
+        })
+    : undefined;
+  await retireNativeLocalProviderAfterDelete(sandbox, gatewayName, selectedRunOpenshell);
 }

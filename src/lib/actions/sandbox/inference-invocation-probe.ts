@@ -5,6 +5,7 @@ import {
   type NativeCustomProviderAttachment,
   normalizeNativeCustomProviderAttachment,
 } from "../../inference/native-custom";
+import { NATIVE_LOCAL_AUTH_HEADER_SCRIPT } from "../../inference/native-local/agent-config";
 import { hostedNativeProvider } from "../../inference/native-provider/hosted";
 import { nativeHostedAgentConfig } from "../../inference/native-provider/agent-config";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../inference/native-nvidia/contract";
@@ -19,7 +20,11 @@ import {
   selectedOpenShellGateway,
 } from "../../adapters/openshell/sandbox-observer";
 import type { OpenShellRuntimeSelection } from "../../adapters/openshell/runtime-selection";
-import { getSandboxInferenceConfig } from "../../inference/config";
+import {
+  getSandboxInferenceConfig,
+  normalizeNativeLocalProviderAttachment,
+  type NativeLocalProviderAttachment,
+} from "../../inference/config";
 import {
   isNativeNvidiaProvider,
   NVIDIA_HOSTED_NATIVE_ENDPOINT,
@@ -56,6 +61,7 @@ export type SandboxInferenceInvocationInput = {
   model: string;
   preferredInferenceApi: string | null;
   nativeProvider?: boolean;
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeEndpointUrl?: string;
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
 };
@@ -99,17 +105,27 @@ function buildProbeRequest(input: SandboxInferenceInvocationInput): {
     )
   )
     throw new Error("Native custom inference authority does not match the selected sandbox.");
+  const local = normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment);
+  if (
+    input.nativeLocalProviderAttachment &&
+    (!local ||
+      local.sandboxName !== input.sandboxName ||
+      local.provider !== input.provider ||
+      (input.gatewayName && local.gatewayName !== input.gatewayName))
+  )
+    throw new Error("Native local inference probe authority changed.");
   const config = getSandboxInferenceConfig(
     input.model,
     input.provider,
     input.preferredInferenceApi,
-    input.nativeCustomProviderAttachment ?? input.nativeProvider,
-    input.nativeEndpointUrl,
+    input.nativeCustomProviderAttachment ?? input.nativeProvider ?? Boolean(local),
+    local?.endpointUrl ?? input.nativeEndpointUrl,
+    input.agentName,
   );
   const useNativeNvidia = input.nativeProvider === true && isNativeNvidiaProvider(input.provider);
   const hosted = hostedNativeProvider(input.provider, input.nativeEndpointUrl);
   const nativeHosted = input.nativeProvider === true ? hosted : undefined;
-  if (input.nativeProvider === true && !useNativeNvidia && !nativeHosted) {
+  if (input.nativeProvider === true && !useNativeNvidia && !nativeHosted && !local) {
     throw new Error("Unsupported native inference probe selection");
   }
   const baseUrl = (
@@ -124,7 +140,7 @@ function buildProbeRequest(input: SandboxInferenceInvocationInput): {
   ).replace(/\/+$/u, "");
   // Gemini's existing OpenAI-compatible API ends in /v1beta/openai, not /v1.
   const apiBaseUrl =
-    nativeHosted && config.inferenceApi !== "anthropic-messages"
+    (local || nativeHosted) && config.inferenceApi !== "anthropic-messages"
       ? baseUrl
       : baseUrl.endsWith("/v1")
         ? baseUrl
@@ -207,6 +223,9 @@ export function buildSandboxInferenceInvocationCommand(
 ): string {
   const request = buildProbeRequest(input);
   const useNativeNvidia = input.nativeProvider === true && isNativeNvidiaProvider(input.provider);
+  const useNativeLocal = Boolean(
+    normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment),
+  );
   const nativeHosted =
     input.nativeProvider === true
       ? hostedNativeProvider(input.provider, input.nativeEndpointUrl)
@@ -215,9 +234,11 @@ export function buildSandboxInferenceInvocationCommand(
     ? nativeCustomAuthHeaderScript(input.nativeCustomProviderAttachment)
     : useNativeNvidia
       ? NATIVE_NVIDIA_AUTH_HEADER_SCRIPT
-      : nativeHosted
-        ? nativeHostedAuthHeaderScript(nativeHosted.logicalProvider)
-        : null;
+      : useNativeLocal
+        ? NATIVE_LOCAL_AUTH_HEADER_SCRIPT
+        : nativeHosted
+          ? nativeHostedAuthHeaderScript(nativeHosted.logicalProvider)
+          : null;
   const headerArgs =
     ["Content-Type: application/json", ...request.headers]
       .map((header) => `-H ${shellQuote(header)}`)
@@ -340,8 +361,12 @@ export async function probeSandboxInferenceInvocation(
       input.model,
       input.provider,
       input.preferredInferenceApi,
-      input.nativeCustomProviderAttachment ?? input.nativeProvider,
-      input.nativeEndpointUrl,
+      input.nativeCustomProviderAttachment ??
+        input.nativeProvider ??
+        Boolean(input.nativeLocalProviderAttachment),
+      normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment)?.endpointUrl ??
+        input.nativeEndpointUrl,
+      input.agentName,
     ).inferenceApi;
     if (httpStatus !== null && validateInferenceResponseBody(inferenceApi, body).ok) {
       return { ok: true };

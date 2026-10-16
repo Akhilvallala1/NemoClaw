@@ -14,8 +14,9 @@ This design keeps provider credentials outside the sandbox.
 
 ## Request Path
 
-Host-local and retained legacy shared-route selections use `inference.local` inside the sandbox.
-OpenShell intercepts each request on the host and forwards it to the provider and model selected during onboarding.
+Host-local selections for other agents and retained legacy shared-route selections use `inference.local` inside the sandbox.
+OpenShell intercepts each request on the host and forwards it to the selected provider.
+New Deep Agents Code selections of Ollama, standalone vLLM, llama.cpp, and qualifying host-local compatible endpoints use sandbox-attached providers. Owned Local NVIDIA NIM and retained shared-route selections use `inference.local`.
 
 ```text
 Sandbox agent -> inference.local -> shared OpenShell route -> selected provider and model
@@ -47,7 +48,8 @@ The sandbox does not receive the raw upstream API key.
 
 Local Ollama and local vLLM routes do not require the host `OPENAI_API_KEY`.
 NemoClaw uses provider-specific local tokens for those routes.
-Rebuilds of legacy local-inference sandboxes migrate away from stale OpenAI credential requirements.
+For retained shared local routes, rebuilds migrate away from stale OpenAI credential requirements.
+Legacy Deep Agents local sandboxes without an attachment require a backup and fresh recreation.
 When a rebuild reuses an automatically bridged compatible-endpoint route without a host API key, NemoClaw reapplies the config-only bridge rewrite without reading or passing the credential stored in OpenShell.
 
 <AgentOnly variant="deepagents">
@@ -55,6 +57,7 @@ When a rebuild reuses an automatically bridged compatible-endpoint route without
 ## Deep Agents Configuration
 
 For Deep Agents, NemoClaw writes `/sandbox/.deepagents/config.toml` with a managed OpenAI-compatible provider, a scoped placeholder API key, and `use_responses_api = false`. Selections with a native provider attachment use their recorded provider URL and issued credential. Shared-route providers use `https://inference.local/v1`.
+New Deep Agents Code selections of Ollama, standalone vLLM, llama.cpp, and qualifying host-local compatible endpoints use sandbox-attached providers. Owned Local NVIDIA NIM and retained shared-route selections use `inference.local`.
 The managed `dcode` runtime uses Chat Completions through OpenShell even when a compatible endpoint also supports the Responses API.
 
 </AgentOnly>

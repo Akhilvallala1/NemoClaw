@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { NativeLocalProviderAttachment } from "../inference/native-local/contract";
 import type { NativeProviderAttachment } from "../inference/native-provider/contract";
 
 import type { WebSearchConfig } from "../inference/web-search";
@@ -30,6 +31,7 @@ import {
 export type CompleteSandboxCreateIntentInput<Agent, ResourceProfile> = {
   sandboxName: string;
   inferenceProvider?: string | null;
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeNvidiaProviderAttachment?: NativeNvidiaProviderAttachment;
   nativeHostedProviderAttachment?: NativeProviderAttachment;
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
@@ -151,6 +153,7 @@ export function createSandboxCreateIntentResolver<
       basePolicyPath: deps.getAgentPolicyPath(input.agent) || deps.defaultPolicyPath,
       sandboxName: input.sandboxName,
       inferenceProvider: input.inferenceProvider,
+      nativeLocalProviderAttachment: input.nativeLocalProviderAttachment,
       nativeNvidiaProviderAttachment: input.nativeNvidiaProviderAttachment,
       nativeHostedProviderAttachment: input.nativeHostedProviderAttachment,
       nativeCustomProviderAttachment: input.nativeCustomProviderAttachment,

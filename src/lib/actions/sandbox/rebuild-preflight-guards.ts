@@ -12,7 +12,9 @@ import {
   formatGatewayRouteConflict,
   type GatewayInferenceRoute,
   isAdvisoryGatewayRouteConflict,
+  preflightGatewayRouteDiscovery,
 } from "../../inference/gateway-route-compatibility";
+import { normalizeNativeLocalProviderAttachment } from "../../inference/native-local/contract";
 import { normalizeInferenceSelection } from "../../inference/selection";
 import { resolveSandboxGatewayName } from "../../onboard/gateway-binding";
 import { requireRuntimeProviderBundleForSandbox } from "../../onboard/runtime-provider/access";
@@ -23,7 +25,6 @@ import {
   managedWorkloadRebuildHandoffMatchesEntry,
 } from "../../onboard/workload/rebuild";
 import * as onboardSession from "../../state/onboard-session";
-import * as registry from "../../state/registry";
 import { withLock } from "../../state/registry/lock";
 import { load, save } from "../../state/registry/persistence";
 import type { SandboxEntry, SandboxRegistry } from "../../state/registry/types";
@@ -94,6 +95,26 @@ function hardRouteConflict(
   if (!route.provider || !route.model) {
     return "Prepared rebuild inference route is missing its provider or model.";
   }
+  const target = sandboxes.find((entry) => entry.name === sandboxName);
+  if (target?.nativeLocalProviderAttachment !== undefined) {
+    const local = normalizeNativeLocalProviderAttachment(target.nativeLocalProviderAttachment);
+    if (
+      !local ||
+      target.agent !== "langchain-deepagents-code" ||
+      local.sandboxName !== sandboxName ||
+      local.gatewayName !== gatewayName ||
+      local.provider !== route.provider
+    )
+      return "Native local provider authority does not match the rebuild target.";
+    const discovery = preflightGatewayRouteDiscovery({
+      gatewayName,
+      sandboxName,
+      route: { ...route, model: route.model },
+      sandboxes,
+      nativeLocalSelection: true,
+    });
+    return discovery.ok ? null : formatGatewayRouteConflict(discovery.result);
+  }
   const compatibility = checkGatewayRouteCompatibility({
     gatewayName,
     sandboxName,
@@ -148,6 +169,8 @@ export function commitRebuildRoutePreflight(
     const migratedSandboxNames: string[] = [];
     for (const peer of Object.values(sandboxRegistry.sandboxes)) {
       if (
+        target.nativeLocalProviderAttachment !== undefined ||
+        peer.nativeLocalProviderAttachment !== undefined ||
         peer.name === input.sandboxName ||
         peer.provider !== targetRoute.provider ||
         !missingCredentialIdentity(peer.credentialEnv)
@@ -252,7 +275,7 @@ export function revalidateManagedWorkloadRebuildBeforeDelete(
   handoff: ManagedWorkloadRebuildHandoff | undefined,
 ): Extract<RebuildRoutePreflightResult, { ok: false }> | null {
   if (!handoff) return null;
-  const current = registry.getSandbox(sandboxName);
+  const current = load().sandboxes[sandboxName] || null;
   try {
     const provider = current
       ? requireRuntimeProviderBundleForSandbox(current, CURRENT_RUNTIME_PROVIDER_BUNDLES)
@@ -314,7 +337,7 @@ export function getRebuildSandboxEntryOrBail(
   sandboxName: string,
   bail: RebuildBail,
 ): RebuildSandboxEntry | null {
-  const sb = registry.getSandbox(sandboxName) as RebuildSandboxEntry | null;
+  const sb = (load().sandboxes[sandboxName] || null) as RebuildSandboxEntry | null;
   if (!sb) {
     printRebuildPreflightFailure(
       `sandbox '${sandboxName}' not found in registry.`,
@@ -349,7 +372,7 @@ export function blockRebuildOnRetainedSandboxRecovery(
   return true;
 }
 export function isSingleAgentRebuildSupported(
-  sb: registry.SandboxEntry & { agents?: unknown[] },
+  sb: SandboxEntry & { agents?: unknown[] },
   bail: RebuildBail,
 ): boolean {
   if (sb.agents && sb.agents.length > 1) {
@@ -424,7 +447,7 @@ export function assertRebuildEntryUnchanged(
   confirmedEntrySnapshot: string,
   bail: RebuildBail,
 ): void {
-  const lockedEntry = registry.getSandbox(sandboxName);
+  const lockedEntry = load().sandboxes[sandboxName] || null;
   if (lockedEntry && JSON.stringify(lockedEntry) === confirmedEntrySnapshot) return;
   printRebuildPreflightFailure(
     "the sandbox configuration changed while rebuild confirmation was pending.",

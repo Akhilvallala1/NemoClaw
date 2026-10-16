@@ -834,7 +834,9 @@ async function captureLaunchIdentity(
   }
   const inferenceSelection = normalizeInferenceSelection(entry);
   const inference = registry.getSandboxEntryInference(entry);
-  const nativeInference = hasNativeInferenceProviderAttachment(entry);
+  const nativeInference =
+    hasNativeInferenceProviderAttachment(entry) ||
+    entry.nativeLocalProviderAttachment !== undefined;
   let liveInference: { provider: string; model: string } | null = null;
   if (!nativeInference) {
     const inferenceGetStartedAt = performance.now();

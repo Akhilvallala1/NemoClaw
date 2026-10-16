@@ -43,6 +43,7 @@ on:
       - "nemoclaw-blueprint/**"
       - "scripts/**"
       - "test/agents/openclaw/runtime/pi-native-consumer.mts"
+      - "test/helpers/openclaw-real-agent-reload-proof.ts"
       - "test/e2e/fixtures/gateway-runtime-start.ts"
       - "test/e2e/fixtures/docker-build-guard.ts"
       - "test/e2e/fixtures/phases/lifecycle.ts"

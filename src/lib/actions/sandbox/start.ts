@@ -217,7 +217,10 @@ async function checkStartedSandboxInference(
     model,
     preferredInferenceApi: sandbox.preferredInferenceApi ?? null,
     ...(nativeCustom ? { nativeCustomProviderAttachment: nativeCustom } : {}),
-    ...(fixedReceipt ? { nativeProvider: true } : {}),
+    ...(sandbox.nativeLocalProviderAttachment
+      ? { nativeLocalProviderAttachment: sandbox.nativeLocalProviderAttachment }
+      : {}),
+    ...(fixedReceipt || sandbox.nativeLocalProviderAttachment ? { nativeProvider: true } : {}),
     ...(fixedReceipt?.endpointUrl ? { nativeEndpointUrl: fixedReceipt.endpointUrl } : {}),
   };
   const probe = () =>

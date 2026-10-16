@@ -23,5 +23,6 @@ export function resolveManagedStartupInferenceRoute(
     api,
     nativeProviderOrAttachment,
     nativeEndpointUrl,
+    agentName,
   );
 }

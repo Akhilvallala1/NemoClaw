@@ -116,6 +116,10 @@ function textWithoutSafeCredentialFixtures(value: string): string {
         "unused",
       )
       .replace(/(?<![A-Za-z0-9_-])sk-OPENSHELL-PROXY-REWRITE(?![A-Za-z0-9_-])/gu, "unused")
+      .replace(
+        /(?<![A-Za-z0-9_-])(?:Bearer\s+)?sk-OPENSHELL-RESOLVE-ENV-NEMOCLAW_LOCAL_INFERENCE_TOKEN(?![A-Za-z0-9_-])/gu,
+        "unused",
+      )
       // The shared provider signature intentionally has no leading boundary.
       // Exclude embedded English fragments such as `task-concurrency-diagnosis`
       // while continuing to reject standalone sk-* credential values.

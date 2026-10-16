@@ -7,6 +7,13 @@ import {
   type ModelSelectionProvenance,
 } from "../domain/telemetry/provenance";
 
+export { normalizeNativeLocalProviderAttachment } from "./native-local/contract";
+
+export {
+  hasLegacySharedLocalInferenceRoute,
+  usesNativeLocalInferenceForAgent,
+} from "./native-local/eligibility";
+
 export {
   type ReasoningEffortRequest,
   resolveReasoningEffortRequest,

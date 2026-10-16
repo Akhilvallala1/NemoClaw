@@ -217,7 +217,9 @@ Hermes Provider's authenticated hosted endpoint also uses a sandbox-attached nat
 </AgentOnly>
 Fresh custom hosted endpoints also use sandbox-attached providers with issued credential references.
 DNS-backed HTTPS and Bedrock Runtime endpoints retain their host adapters.
-Host-local and existing shared-route sandboxes use `inference.local`.
+New Deep Agents Code selections of Ollama, standalone vLLM, llama.cpp, and qualifying host-local compatible endpoints use sandbox-attached providers. Owned Local NVIDIA NIM and retained shared-route selections use `inference.local`.
+Legacy Deep Agents Code standalone local sandboxes require backup and fresh recreation before native-provider onboarding; NemoClaw blocks their resume and rebuild. Owned Local NIM sandboxes retain the shared route and can resume or rebuild without a native attachment.
+Refer to [About Inference Routing](../inference/about-inference-routing) for endpoints and route inspection.
 During onboarding, NemoClaw validates the selected provider and model, configures the applicable OpenShell route or provider attachment, and writes the matching model reference into the managed agent configuration.
 In both paths, OpenShell keeps the provider credential outside the sandbox and sends only approved requests to the upstream endpoint.
 When you select the Model Router provider, `inference.local` routes to a host-side router that chooses from a configured model pool available through NVIDIA Endpoints for each request.

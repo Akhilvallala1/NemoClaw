@@ -7,6 +7,9 @@ import {
   type NativeCustomProviderAttachment,
 } from "../../../inference/native-custom";
 import { getSandboxInferenceConfig } from "../../../inference/config";
+import { normalizeNativeLocalProviderAttachment } from "../../../inference/native-local/contract";
+import { verifyNativeLocalStatusAttachment } from "../inference-route-health";
+
 import { captureOpenshell } from "../../../adapters/openshell/runtime";
 import { createCliOpenShellProviderAdapter } from "../../../adapters/openshell/provider-adapter-cli";
 import type { OpenShellSandboxBufferedCommandExecutor } from "../../../adapters/openshell/sandbox-command";
@@ -87,6 +90,7 @@ export interface LaunchReadinessHealthDeps {
     gatewayName: string,
   ) => Promise<ReturnType<typeof parseSandboxInferenceRouteProbeResult>>;
   inferenceInvocationProbe?: typeof runSandboxInferenceInvocationProbe;
+  verifyNativeLocalAttachment?: typeof verifyNativeLocalStatusAttachment;
   verifyNativeNvidiaAttachment?: (input: {
     sandboxName: string;
     gatewayName: string;
@@ -323,6 +327,30 @@ async function requireFixedNativeInferenceHealth(input: {
   entry: SandboxEntry;
   deps: LaunchReadinessHealthDeps;
 }): Promise<boolean> {
+  if (input.entry.nativeLocalProviderAttachment !== undefined) {
+    const expected = normalizeNativeLocalProviderAttachment(
+      input.entry.nativeLocalProviderAttachment,
+    );
+    if (!expected || !input.entry.model) throw new LaunchReadinessEvidenceError();
+    await (input.deps.verifyNativeLocalAttachment ?? verifyNativeLocalStatusAttachment)({
+      sandboxName: input.sandboxName,
+      gatewayName: input.gatewayName,
+      expected,
+    });
+    const result = await (
+      input.deps.inferenceInvocationProbe ?? runSandboxInferenceInvocationProbe
+    )({
+      sandboxName: input.sandboxName,
+      gatewayName: input.gatewayName,
+      agentName: input.agentName,
+      provider: expected.provider,
+      model: input.entry.model,
+      preferredInferenceApi: "openai-completions",
+      nativeLocalProviderAttachment: expected,
+    });
+    if (!result.ok) throw new LaunchReadinessObservationError("health", "inference request");
+    return true;
+  }
   const expected = getNativeProviderAttachment(input.entry);
   if (!expected) return false;
   const provider = normalizedString(input.entry.provider);
@@ -478,7 +506,10 @@ export async function requireLaunchSemanticHealth(
   }
   if (inferenceConfigured) {
     const inferenceStartedAt = performance.now();
-    if (hasNativeInferenceProviderAttachment(entry)) {
+    if (
+      hasNativeInferenceProviderAttachment(entry) ||
+      entry.nativeLocalProviderAttachment !== undefined
+    ) {
       try {
         await requireNativeInferenceHealth({
           sandboxName,

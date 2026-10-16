@@ -3,8 +3,7 @@
 
 import { isNativeCustomProvider } from "../../inference/native-custom/profile";
 import { restoreNativeCustomInference } from "../../inference/native-custom/transport";
-import { load } from "../../state/registry/persistence";
-import type { SandboxEntry } from "../../state/registry/types";
+import { getSandbox } from "../../state/registry";
 import {
   getMatchingNativeCustomProviderAuthority,
   getNativeCustomProviderAuthority,
@@ -24,7 +23,7 @@ export type RetainedNativeCustomSelection = {
 export function hasRetainedNativeCustomSelection(
   input: RetainedNativeCustomSelection,
   deps = {
-    getSandbox: (name: string): SandboxEntry | null => load().sandboxes[name] || null,
+    getSandbox,
     getNativeCustomProviderAuthority,
   },
 ): boolean {

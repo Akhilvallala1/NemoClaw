@@ -14,6 +14,10 @@ import {
   type NativeCustomProviderAttachment,
 } from "../../inference/native-custom";
 import { getSandboxInferenceConfig } from "../../inference/config";
+import {
+  normalizeNativeLocalProviderAttachment,
+  type NativeLocalProviderAttachment,
+} from "../../inference/native-local/contract";
 import { CLI_NAME } from "../../cli/branding";
 import { RD as _RD, D, R } from "../../cli/terminal-style";
 import {
@@ -74,6 +78,7 @@ export interface RebuildResumeConfig {
    */
   readonly pinEndpoint: boolean;
   readonly endpointUrl: string | null;
+  readonly nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   /** Durable pre-delete route used only for credential-safe provider recovery. */
   readonly registryInferenceRoute: RegistryInferenceRoute | null;
   readonly ambient: AmbientRecreateEnvAssessment;
@@ -278,6 +283,13 @@ export function prepareRebuildResumeConfig(
     }
     endpointUrl = expectedEndpoint;
   }
+  const nativeLocalProviderAttachment = normalizeNativeLocalProviderAttachment(
+    sb.nativeLocalProviderAttachment,
+  );
+  if (sb.nativeLocalProviderAttachment !== undefined && !nativeLocalProviderAttachment) {
+    bail("Malformed native local provider attachment; sandbox is untouched");
+    return null;
+  }
   const credentialEnv =
     hostedDefinition?.credentialEnv ??
     getRebuildCredentialEnvFromRegistry(
@@ -341,6 +353,7 @@ export function prepareRebuildResumeConfig(
     pinEndpoint: rebuildEndpoint.known || explicitTargetEndpoint !== null,
     endpointUrl,
     registryInferenceRoute,
+    ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
     ambient,
   };
 }

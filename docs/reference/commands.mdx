@@ -415,7 +415,7 @@ Use the stable `id` value with `$$nemoclaw onboard --profile <name>`. Display na
 Run the interactive setup wizard (recommended for new installs). The wizard creates an OpenShell gateway, registers inference providers, selects the exact managed image (or builds an explicit custom Dockerfile), and creates the sandbox. Use this command for new installs and for recreating a sandbox after changes to policy or configuration.
 
 ```bash
-$$nemoclaw onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository>@sha256:<digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [--yes-i-accept-third-party-software]
+$$nemoclaw onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository>@sha256:<digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--dcode-auto-approval <disabled|thread-opt-in>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [--yes-i-accept-third-party-software]
 ```
 
 <AgentOnly variant="hermes">
@@ -690,6 +690,16 @@ $$nemoclaw onboard --name my-assistant --recreate-sandbox --tool-disclosure dire
 Recreation without an explicit flag or environment value preserves the recorded setting and only falls back to `progressive` for legacy state. Resuming an interrupted session with a different explicit setting fails with a conflict instead of changing behavior mid-session.
 
 <AgentOnly variant="deepagents">
+
+#### `--dcode-auto-approval <disabled|thread-opt-in>`
+
+Choose the managed Deep Agents Code auto-approval capability during onboarding. A new sandbox defaults to `disabled`.
+Omitting the flag preserves the sandbox registry’s recorded capability, including a previously disabled capability, during resume or recreation.
+`thread-opt-in` permits explicit activation inside Deep Agents Code; onboarding does not activate an approval mode or run `dcode -y`.
+`thread-opt-in` is rejected for other agents and custom images. Pass `--dcode-auto-approval disabled` to clear a recorded capability when switching agents.
+Before sandbox registration, resume preserves the explicit choice saved in the onboarding session.
+An explicit capability change for an existing sandbox requires recreation through the existing onboarding lifecycle.
+See [Configure Thread Auto-Approval](../manage-sandboxes/operate-sandboxes/run-deep-agents-code#configure-thread-auto-approval) for activation, status, and revocation.
 
 #### `--observability` and `--no-observability`
 
@@ -1223,6 +1233,7 @@ During that lease, another `launch` still verifies these conditions:
   Fixed hosted OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider selections verify their recorded sandbox attachment and send an authenticated request to the selected provider endpoint.
   Native custom hosted selections verify their recorded attachment and send an authenticated request through the selected endpoint and API.
   The shared-route models probe must return HTTP 2xx, except that `openrouter-api` can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
+  Qualified Deep Agents Code local selections also verify their recorded attachment and send the request to the native endpoint.
   A failed model request rejects readiness before the agent starts.
 
 </AgentOnly>
@@ -1759,6 +1770,10 @@ For a sandbox that owns managed llama.cpp, text output also reports the recipe I
 
 The managed llama.cpp check forces a nonzero exit for `absent`, `conflict`, or `unknown`. Other sandbox and inference checks can also make the command fail. Rerun the same `NEMOCLAW_PROVIDER=install-llama-cpp` and `NEMOCLAW_LLAMACPP_RECIPE` onboarding selection to recover a stopped or interrupted runtime. Inspect and correct an identity conflict before retrying.
 
+An existing Windows WSL Qwen runtime with the former pinned image cannot start or resume.
+After a qualified native image is pinned, save any sandbox files you need, run `$$nemoclaw <sandbox-name> destroy` to remove the owning sandbox and its managed runtime, and onboard again.
+The shared model cache is preserved. See [Upgrade or Roll Back](../inference/local-inference/set-up-llama-cpp#upgrade-or-roll-back).
+
 <AgentOnly variant="deepagents">
 
 For a Deep Agents sandbox, text output includes `DCode auto-approval capability: disabled` or `DCode auto-approval capability: thread-opt-in`. JSON output reports the same configured value in `dcodeAutoApprovalMode`. This value does not attest that auto-approval is active in any live TUI thread.
@@ -1786,7 +1801,7 @@ The command probes the selected provider path from inside the sandbox, and when 
 An authentication response on a shared gateway route probe confirms that the route is reachable, not that provider credentials are valid.
 For those shared routes, `$$nemoclaw <name> doctor` sends no inference request, so it reports an HTTP `401` or `403` route response as reachable and exits `0` where `status` reports `unauthorized`.
 The native NVIDIA doctor probe is different: it verifies the sandbox-attached provider directly and requires a 2xx response.
-Native custom and fixed hosted doctor probes verify their recorded attachment and send an authenticated inference request through the selected endpoint and API.
+Native custom, fixed hosted, and qualified Deep Agents Code local doctor probes verify their recorded attachment and send an authenticated inference request through the selected endpoint and API.
 Missing authority or an unsuccessful request fails the check.
 The command can also print direct host-side provider checks such as `Inference (upstream)` and provider-specific subprobes.
 For supported remote providers, this diagnostic sends an authenticated request to the configured model and accepts only a recognized Chat Completions, streaming Chat Completions, or Anthropic Messages response.
@@ -1935,7 +1950,7 @@ The `Registered gateway binding` result depends on the sandbox registry:
 - For a registered sandbox with an invalid binding, the check fails, and `doctor` does not select, probe, or recover a gateway from that binding.
 - For an unregistered sandbox name, `doctor` uses the gateway selected by `NEMOCLAW_GATEWAY_PORT` for its other gateway checks and omits the `Registered gateway binding` check.
 
-For inference health, `doctor` treats the selected provider path inside the sandbox as authoritative. Providers without a native attachment probe the shared gateway route at `https://inference.local/v1/models`; responses from `200` through `499`, including `401` and `403`, pass that reachability check. Fixed hosted native providers and native custom hosted providers verify their recorded authority and make an authenticated inference request through the selected endpoint and API; missing authority or an unsuccessful request fails the check. NVIDIA Endpoints instead probes its sandbox-attached provider at `https://integrate.api.nvidia.com/v1/models` and requires a 2xx response. For the shared route, HTTP `500` through `599`, interim `100` through `199`, transport failures with status `000`, invalid status values, and an unavailable authoritative probe fail the check. For native NVIDIA, any non-2xx response or unavailable probe fails it. Host-side upstream probes use the same authenticated model-invocation checks as status and remain diagnostic only, so their failure does not fail `doctor` when the authoritative in-sandbox path is reachable. For gateway runtimes, `doctor` also reports an informational `Serving process: not checked` result because its fresh sandbox probes do not attest the long-running gateway process. This result does not fail the readiness check. Terminal runtimes omit it because they have no long-running gateway process. The `Inference` `Route` check warns when either the provider or model is unknown. After the gateway is healthy, run `$$nemoclaw <name> status` to refresh the route information.
+For inference health, `doctor` treats the selected provider path inside the sandbox as authoritative. Providers without a native attachment probe the shared gateway route at `https://inference.local/v1/models`; responses from `200` through `499`, including `401` and `403`, pass that reachability check. Fixed hosted native providers, native custom hosted providers, and qualified Deep Agents Code local selections verify their recorded authority and make an authenticated inference request through the selected endpoint and API; missing authority or an unsuccessful request fails the check. NVIDIA Endpoints instead probes its sandbox-attached provider at `https://integrate.api.nvidia.com/v1/models` and requires a 2xx response. For the shared route, HTTP `500` through `599`, interim `100` through `199`, transport failures with status `000`, invalid status values, and an unavailable authoritative probe fail the check. For native NVIDIA, any non-2xx response or unavailable probe fails it. Host-side upstream probes use the same authenticated model-invocation checks as status and remain diagnostic only, so their failure does not fail `doctor` when the authoritative in-sandbox path is reachable. For gateway runtimes, `doctor` also reports an informational `Serving process: not checked` result because its fresh sandbox probes do not attest the long-running gateway process. This result does not fail the readiness check. Terminal runtimes omit it because they have no long-running gateway process. The `Inference` `Route` check warns when either the provider or model is unknown. After the gateway is healthy, run `$$nemoclaw <name> status` to refresh the route information.
 
 Warnings do not make the command fail. Failed checks, including a failed or unavailable authoritative inference route, exit non-zero so scripts can use `doctor` as a readiness gate. Use `--json` for machine-readable output. For a `compatible-endpoint` route that uses `openai-completions`, the JSON report includes an informational `Inference` check labeled `Reasoning effort`. The check reports `low`, `medium`, `high`, or `endpoint-default` and never includes credentials. Because the check has `info` status, it does not change the command's exit status.
 
@@ -3334,6 +3349,8 @@ After the rebuild succeeds, retrieve the replacement token with `nemohermes my-a
 <AgentOnly variant="deepagents">
 
 After restore, the command starts Deep Agents with the complete source native home, including `config.toml`, hooks, skills, memories, histories, packages, and unrelated native entries. Before changing the sandbox, rebuild verifies that the recorded provider path is still reachable and that the target provider, model, reasoning settings, web search selection, base image, current agent MCP source, and current live OpenShell policy can be captured. Providers without a native attachment use `inference.local`. Selections with a native provider attachment verify and reuse their recorded sandbox attachment. If those checks fail after backup, NemoClaw keeps the existing sandbox intact. Use rebuild after a failed Deep Agents version check, after enabling Tavily Search, or as the apply step for legacy MCP migration.
+Legacy Deep Agents local sandboxes without an attachment stop before rebuild.
+Back up their data before running `nemo-deepagents onboard --fresh --name <sandbox-name> --recreate-sandbox`.
 
 </AgentOnly>
 
@@ -3600,7 +3617,7 @@ When at least one sandbox is registered and the named NemoClaw gateway is unreac
 
 Show the provider and model for the selected inference path.
 When the selected sandbox has a native custom hosted attachment, the command verifies that attachment and reports its recorded provider and model without reading the shared route. It includes the recorded endpoint only when it passes the credential-free display rules. Missing or mismatched native authority fails the lookup instead of falling back to the shared route.
-For NVIDIA and fixed hosted native attachments, the command validates the stored receipt.
+For NVIDIA, fixed hosted, and qualified Deep Agents Code local native attachments, the command validates the stored receipt.
 It reports the recorded provider, model, and selected endpoint without reading the shared gateway route.
 For providers without a native attachment, the command reports the active live route from the NemoClaw-managed OpenShell gateway that `NEMOCLAW_GATEWAY_PORT` selects.
 For a compatible custom provider, also show the persisted endpoint URL when the selected gateway's matching registry metadata is safe, unambiguous, and reusable.
@@ -3612,14 +3629,14 @@ $$nemoclaw inference get
 $$nemoclaw inference get --json
 ```
 
-A valid NVIDIA or fixed hosted native attachment adds the selected endpoint to the recorded provider-and-model output.
+A valid NVIDIA, fixed hosted, or Deep Agents Code local native attachment adds the selected endpoint to the recorded provider-and-model output.
 A verified native custom attachment also adds its recorded endpoint when it passes the credential-free display rules.
 Other managed providers keep the provider-and-model output.
-Compatible providers add the endpoint only when published same-gateway metadata matches the live route and is safe to display; otherwise the command keeps the live provider and model and returns credential-free recovery information.
+Compatible providers on the shared route add the endpoint only when published same-gateway metadata matches the live route and is safe to display; otherwise the command keeps the live provider and model and returns credential-free recovery information.
 Refer to [View the Selected Inference Path](../inference/manage-inference/view-active-inference-route) for the exact text and JSON fields, omission states, safety rules, and recovery procedures.
 
 For the sandbox-first grammar, `NEMOCLAW_GATEWAY_PORT` first selects the sandbox registry and fallback gateway.
-For NVIDIA and fixed hosted native attachments, the sandbox-first form validates the stored receipt.
+For NVIDIA, fixed hosted, and qualified Deep Agents Code local native attachments, the sandbox-first form validates the stored receipt.
 It reports the recorded provider, model, and selected endpoint without reading the shared gateway route.
 For a native custom attachment, the verified recorded selection described above also takes precedence. Otherwise, when that registry contains `<name>`, the command resolves the sandbox's recorded gateway and reads that gateway's live route.
 It does not search registries for other gateway ports.
@@ -3667,6 +3684,7 @@ The command is also available in sandbox-first form as `$$nemoclaw <name> infere
 By default, the command syncs the default registered sandbox.
 
 Each OpenShell gateway exposes one shared inference route for host-local and retained shared-route selections. Native provider selections instead use sandbox-attached providers and do not change that route. The shared-route compatibility rules below apply only when the selected path uses that shared route.
+New Deep Agents Code local native selections receive their attachment during onboarding. `inference set` does not create local native attachments.
 Before changing the route, NemoClaw compares it with every same-gateway registry entry, including stopped sandboxes.
 When only the provider or model differs, the command names the affected sandboxes and warns immediately before it re-points the shared route.
 Those sandboxes use the new live route until `connect`, onboarding, or another `inference set` command re-points it.
@@ -3690,6 +3708,7 @@ $$nemoclaw my-assistant inference set --provider nvidia-prod --model nvidia/nemo
 ```
 
 Pass both `--provider` and `--model` to select the provider and model for the target sandbox. For host-local and retained shared-route selections, NemoClaw updates the shared OpenShell inference route and syncs the selected sandbox's agent config. For native provider selections, NemoClaw attaches or updates the selected sandbox's native provider and syncs its agent config without changing the shared route. NemoClaw resolves the OpenShell gateway from the target sandbox's recorded gateway binding, including non-default `NEMOCLAW_GATEWAY_PORT` deployments. Do not run `openshell inference set` directly on a shared NemoClaw gateway because that bypasses registry compatibility checks and can break other sandboxes. When either flag is missing, `$$nemoclaw inference set` reports both required flags without suggesting a raw OpenShell command. The command updates the host registry after the selected inference path changes.
+Use onboarding to create a new Deep Agents Code native local selection.
 
 </AgentOnly>
 
@@ -3776,7 +3795,7 @@ For Deep Agents sandboxes, run `$$nemoclaw onboard --fresh --name <sandbox-name>
 
 <Warning>The `$$nemoclaw setup` command is deprecated. Use `$$nemoclaw onboard` instead.</Warning>
 
-This command remains as a compatibility alias to `$$nemoclaw onboard` and accepts the same flags: `--profile <name>`, `--non-interactive`, `--resume`, `--fresh`, `--recreate-sandbox`, `--apf-interceptor`, `--gpu` / `--no-gpu`, `--from`, `--from-image`, `--name`, `--host-mount`, `--sandbox-gpu` / `--no-sandbox-gpu`, `--sandbox-gpu-device`, `--vllm-gpu-device`, `--agent`, `--agents <agents.yaml>`, `--tool-disclosure <progressive|direct>`, `--observability` / `--no-observability`, `--control-ui-port`, `--yes` / `-y`, `--no-ollama-autostart`, `--yes-i-accept-third-party-software`.
+This command remains as a compatibility alias to `$$nemoclaw onboard` and accepts the same flags: `--profile <name>`, `--non-interactive`, `--resume`, `--fresh`, `--recreate-sandbox`, `--apf-interceptor`, `--gpu` / `--no-gpu`, `--from`, `--from-image`, `--name`, `--host-mount`, `--sandbox-gpu` / `--no-sandbox-gpu`, `--sandbox-gpu-device`, `--vllm-gpu-device`, `--agent`, `--agents <agents.yaml>`, `--tool-disclosure <progressive|direct>`, `--dcode-auto-approval <disabled|thread-opt-in>`, `--observability` / `--no-observability`, `--control-ui-port`, `--yes` / `-y`, `--no-ollama-autostart`, `--yes-i-accept-third-party-software`.
 
 ```bash
 $$nemoclaw setup
@@ -3789,7 +3808,7 @@ $$nemoclaw setup
   onboard` instead, because current OpenShell releases handle the older DGX Spark cgroup behavior.
 </Warning>
 
-This command remains as a compatibility alias to `$$nemoclaw onboard` and accepts the same flags: `--profile <name>`, `--non-interactive`, `--resume`, `--fresh`, `--recreate-sandbox`, `--apf-interceptor`, `--gpu` / `--no-gpu`, `--from`, `--from-image`, `--name`, `--host-mount`, `--sandbox-gpu` / `--no-sandbox-gpu`, `--sandbox-gpu-device`, `--vllm-gpu-device`, `--agent`, `--agents <agents.yaml>`, `--tool-disclosure <progressive|direct>`, `--observability` / `--no-observability`, `--control-ui-port`, `--yes` / `-y`, `--no-ollama-autostart`, `--yes-i-accept-third-party-software`.
+This command remains as a compatibility alias to `$$nemoclaw onboard` and accepts the same flags: `--profile <name>`, `--non-interactive`, `--resume`, `--fresh`, `--recreate-sandbox`, `--apf-interceptor`, `--gpu` / `--no-gpu`, `--from`, `--from-image`, `--name`, `--host-mount`, `--sandbox-gpu` / `--no-sandbox-gpu`, `--sandbox-gpu-device`, `--vllm-gpu-device`, `--agent`, `--agents <agents.yaml>`, `--tool-disclosure <progressive|direct>`, `--dcode-auto-approval <disabled|thread-opt-in>`, `--observability` / `--no-observability`, `--control-ui-port`, `--yes` / `-y`, `--no-ollama-autostart`, `--yes-i-accept-third-party-software`.
 
 ```bash
 $$nemoclaw setup-spark
@@ -4352,7 +4371,7 @@ The following variables let you tune onboarding without editing the Dockerfile o
 
 <AgentOnly variant="openclaw">
   | `NEMOCLAW_INFERENCE_INPUTS` | comma-separated list of `text` and/or `image` | OpenClaw only.
-  Declares model input modalities. Unsupported or duplicate values are rejected. | |
+  Declares model input modalities. Unsupported or duplicate values are rejected. An explicit valid value takes precedence; unattended onboarding defaults to `text,image` for registered multimodal managed-vLLM models such as Super VL. | |
   `NEMOCLAW_OPENCLAW_OTEL` | `1` to enable | Enables OpenClaw conversation diagnostics export
   through the `diagnostics-otel` plugin. Disabled by default. | | `NEMOCLAW_OPENCLAW_OTEL_ENDPOINT`
   | OTLP/HTTP URL | Sets the OpenTelemetry collector endpoint for OpenClaw diagnostics. Defaults to
@@ -4383,12 +4402,12 @@ requires `NEMOCLAW_NON_INTERACTIVE=1`. The hosted installer sets this value from
 registered served model name | Selects the model the managed-vLLM install path serves and remains
 authoritative during DGX Station installer setup. Slugs, full model IDs, and registered served model
 names are case-insensitive. Recognized slugs: `qwen3.6-27b`, `qwen3.6-35b-a3b-nvfp4`,
-`muse-glimmer-30b`, `nemotron-3.5-lightning-30b`, `nemotron-3-nano-4b`, `deepseek-v4-flash`,
+`muse-glimmer-30b`, `nemotron-3.5-lightning-30b`, `nemotron-3.5-super-vl-120b`, `nemotron-3-nano-4b`, `deepseek-v4-flash`,
 `nemotron-3-ultra-550b-a55b`, `deepseek-r1-distill-70b`. The `muse-glimmer-30b` and
 `nemotron-3.5-lightning-30b` profiles are Experimental on DGX Spark and Linux x86_64 with a
 qualifying NVIDIA GPU. NemoClaw does not enable vision or DFlash speculative decoding for Muse
-Glimmer. Station Express selects `nemotron-3-ultra-550b-a55b`; a qualified reciprocal pair uses the
-distributed topology, while no qualifying pair retains the single-Station Ultra topology. Outside
+Glimmer. New single-Station Express installs select `nemotron-3.5-super-vl-120b`; a qualified reciprocal pair uses distributed Ultra.
+An existing legacy single-Station Ultra workload keeps Ultra when automatic pair discovery finds no qualified pair. Outside
 Station Express, unset uses the per-platform profile default. Gated models (for example,
 `deepseek-r1-distill-70b`) require `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`. | |
 `NEMOCLAW_DGX_STATION_PEER` | SSH host or `user@host` | Selects one exact, already-trusted DGX

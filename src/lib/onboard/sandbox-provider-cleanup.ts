@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { SandboxEntry } from "../state/registry/types";
+import { retireUnselectedNativeLocalProviders } from "../inference/native-local/selection";
+
 import { listMessagingProviderSuffixes } from "../messaging/channels";
 import { listMessagingBridgeProfiles } from "./messaging-bridge-provider";
 import { createManagedProviderAdapter } from "../adapters/openshell/managed-provider-adapter";
@@ -217,4 +220,18 @@ export function emitProviderDetachResidualHint(
   emit(
     `  Run 'openshell sandbox provider detach ${sandboxName} <name>' then 'openshell provider delete <name>' for each before the next onboard.`,
   );
+}
+
+/** Retire native credentials only after the caller confirms sandbox deletion. */
+export async function retireDestroyedSandboxNativeLocalProvider(
+  sandbox: SandboxEntry,
+  gatewayName: string,
+  selectedRunOpenshell?: SandboxProviderRunOpenshell,
+): Promise<void> {
+  await retireUnselectedNativeLocalProviders({
+    adapter: createManagedProviderAdapter(selectedRunOpenshell),
+    destroyedAttachment: sandbox.nativeLocalProviderAttachment,
+    sandboxName: sandbox.name,
+    gatewayName,
+  });
 }

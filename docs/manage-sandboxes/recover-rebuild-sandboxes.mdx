@@ -206,7 +206,7 @@ Fixed hosted OpenAI, Anthropic, Gemini, OpenRouter, and Hermes Provider selectio
 Native custom hosted endpoints verify the recorded sandbox attachment and provider identity.
 They run the bounded request through the recorded endpoint or its HTTPS or Bedrock adapter, without a shared-route models probe.
 Missing or mismatched native authority rejects readiness without falling back to `inference.local`.
-A failed request rejects launch readiness and identifies the inference request as the failed check.
+For new Deep Agents Code standalone local selections, NemoClaw verifies the recorded sandbox-attached provider and requests the model through its qualified host-local endpoint. Older Deep Agents Code standalone local shared routes without an attachment stop before resume or rebuild; back up and recreate the sandbox with `nemo-deepagents onboard --fresh --name <sandbox-name> --recreate-sandbox`. Owned Local NVIDIA NIM retains its shared route and does not require a native attachment to resume or rebuild.A failed request rejects launch readiness and identifies the inference request as the failed check.
 </AgentOnly>
 <AgentOnly variant="openclaw">
 

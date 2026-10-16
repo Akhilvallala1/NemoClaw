@@ -389,11 +389,13 @@ async function resolveInferenceRoute(
   gatewayName: string | null,
 ): Promise<DoctorInferenceRoute> {
   const recordedNativeNvidia = isNativeNvidiaProvider(sb?.provider);
+  const recordedNativeLocal = sb?.nativeLocalProviderAttachment !== undefined;
   let live: { provider: string; model: string } | null = null;
   const recordedNativeCustom = sb?.nativeCustomProviderAttachment !== undefined;
   if (
     !recordedNativeNvidia &&
     !recordedNativeCustom &&
+    !recordedNativeLocal &&
     sb?.nativeHostedProviderAttachment === undefined &&
     openshellBin &&
     openshellConnected &&
@@ -413,6 +415,9 @@ async function resolveInferenceRoute(
     effectiveReasoningEffort: resolveDoctorReasoningEffort(sb),
     recordedEndpointUrl: sb?.endpointUrl,
     agentName: sb?.agent,
+    ...(recordedNativeLocal
+      ? { nativeLocalProviderAttachment: sb?.nativeLocalProviderAttachment }
+      : {}),
     preferredInferenceApi: sb?.preferredInferenceApi,
     ...(sb?.nativeHostedProviderAttachment !== undefined
       ? { nativeHostedProviderAttachment: sb.nativeHostedProviderAttachment }

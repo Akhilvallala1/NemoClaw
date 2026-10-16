@@ -12,10 +12,10 @@ content:
 ---
 
 Use the NemoClaw CLI to read the selected inference provider and model.
-For NVIDIA and fixed hosted native attachments, the command validates the stored receipt and reports the recorded provider and model.
+For NVIDIA, fixed hosted, and qualified Deep Agents Code local native attachments, the command validates the stored receipt and reports the recorded provider and model.
 For native custom attachments, it also verifies the live provider identity and sandbox attachment.
 These native paths do not read the shared gateway route.
-For NVIDIA and fixed hosted native attachments, it adds the selected provider endpoint.
+For NVIDIA, fixed hosted, and qualified Deep Agents Code local native attachments, it adds the selected provider endpoint.
 For native custom attachments, it displays the recorded endpoint only when its path is safe to display.
 For shared-route providers, the command reads the live OpenShell inference route.
 For a shared-route compatible custom provider, the command also reports its persisted endpoint URL when the registry provider and model match the live route.
@@ -56,6 +56,8 @@ Expected output:
 }
 ```
 
+### Shared Custom Endpoint Metadata
+
 For shared-route `compatible-endpoint` and `compatible-anthropic-endpoint` selections, the text output adds `Endpoint` only when every matching published registry row records the live provider and model.
 Those rows must also agree on one API family, credential identity, and canonical, credential-free, reusable HTTP(S) URL.
 The URL must use the documented root or `/v1` API-base path; NemoClaw omits other paths because an opaque segment can carry a credential.
@@ -76,7 +78,7 @@ Endpoint: https://inference.example.com/v1
 }
 ```
 
-A valid NVIDIA or fixed hosted native attachment adds the selected provider endpoint to the provider-and-model output.
+A valid NVIDIA, qualified Deep Agents Code local, or fixed hosted native attachment adds the selected provider endpoint to the provider-and-model output.
 A valid native custom attachment adds its recorded endpoint only when the path is safe to display.
 Otherwise, text output reports that the endpoint is withheld, and JSON output returns `endpointStatus: "withheld"` with `endpointRecovery`.
 The shared-route registry conditions below do not apply to native attachments.
@@ -112,7 +114,7 @@ $$nemoclaw <name> inference get
 ```
 
 `NEMOCLAW_GATEWAY_PORT` first selects the sandbox registry and fallback gateway.
-For NVIDIA and fixed hosted native attachments, the command validates the stored receipt.
+For NVIDIA, qualified Deep Agents Code local, and fixed hosted native attachments, the command validates the stored receipt.
 It reports the recorded provider, model, and selected endpoint without reading the shared gateway route.
 For native custom attachments, it also verifies the live provider identity and sandbox attachment.
 It withholds a native custom endpoint when its path is unsafe to display.

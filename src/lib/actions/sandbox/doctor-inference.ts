@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  normalizeNativeLocalProviderAttachment,
+  type NativeLocalProviderAttachment,
+} from "../../inference/native-local/contract";
+import {
+  verifyNativeLocalStatusAttachment,
+  runSandboxInferenceInvocationProbe,
+} from "./inference-route-health";
+
 import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import { hostedNativeProviderForAttachment } from "../../inference/native-provider/hosted-attachment";
 import {
@@ -43,6 +52,7 @@ export type DoctorInferenceRoute = {
   /** Sandbox route endpoint recorded at onboard; selects the bearerless local vLLM host port. */
   recordedEndpointUrl?: string | null;
   agentName?: string | null;
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeNvidiaProviderAttachment?: NativeNvidiaProviderAttachment;
   nativeHostedProviderAttachment?: unknown;
   nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
@@ -100,6 +110,8 @@ type DoctorInferenceDeps = {
   probeProviderHealthImpl?: typeof probeProviderHealth;
   probeSandboxInferenceGatewayHealthImpl?: typeof probeSandboxInferenceGatewayHealth;
   probeSandboxNativeNvidiaModelsHealthImpl?: typeof probeSandboxNativeNvidiaModelsHealth;
+  verifyNativeLocalStatusAttachmentImpl?: typeof verifyNativeLocalStatusAttachment;
+  nativeLocalInvocationProbe?: typeof runSandboxInferenceInvocationProbe;
   verifyNativeNvidiaStatusAttachmentImpl?: typeof verifyNativeNvidiaStatusAttachment;
   /** False for terminal agents that do not have a long-running gateway serving process. */
   includeServingProcessCheck?: boolean;
@@ -161,6 +173,62 @@ async function collectNativeCustomRouteProbe(
       probed: false,
       failureLabel: "unreachable",
       detail: "the selected native custom attachment or inference request could not be verified",
+    };
+  }
+}
+
+async function collectNativeLocalRouteProbe(
+  sandboxName: string,
+  route: DoctorInferenceRoute,
+  sandboxReachable: boolean,
+  deps: DoctorInferenceDeps,
+): Promise<ProviderHealthStatus> {
+  const expected = normalizeNativeLocalProviderAttachment(route.nativeLocalProviderAttachment);
+  const endpoint = expected ? `${expected.endpointUrl}/chat/completions` : "";
+  if (!sandboxReachable) {
+    return {
+      ok: false,
+      probed: false,
+      providerLabel: "Native local inference",
+      endpoint,
+      detail: "skipped because the sandbox is not reachable through its named gateway",
+    };
+  }
+  try {
+    if (!deps.gatewayName || !expected)
+      throw new Error("Native local provider ownership or gateway binding is unavailable.");
+    await (deps.verifyNativeLocalStatusAttachmentImpl ?? verifyNativeLocalStatusAttachment)({
+      sandboxName,
+      gatewayName: deps.gatewayName,
+      expected,
+    });
+    const result = await (deps.nativeLocalInvocationProbe ?? runSandboxInferenceInvocationProbe)({
+      sandboxName,
+      gatewayName: deps.gatewayName,
+      provider: route.provider!,
+      model: route.model!,
+      preferredInferenceApi: "openai-completions",
+      nativeLocalProviderAttachment: expected,
+      agentName: route.agentName,
+    });
+    return {
+      ok: result.ok,
+      probed: true,
+      providerLabel: "Native local inference",
+      endpoint,
+      detail: result.ok
+        ? "The selected model answered through the attached native provider."
+        : result.detail,
+      ...(result.ok ? {} : { failureLabel: "unreachable" as const }),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      probed: false,
+      providerLabel: "Native local inference",
+      endpoint,
+      detail: formatUntrustedProbeDetail(error instanceof Error ? error.message : String(error)),
+      failureLabel: "unreachable",
     };
   }
 }
@@ -458,26 +526,31 @@ export async function collectInferenceChecks(
   const nativeNvidia = isNativeNvidiaProvider(route.provider);
   const nativeCustom = route.nativeCustomProviderAttachment !== undefined;
   const nativeHosted = route.nativeHostedProviderAttachment !== undefined;
-  const routeProbe = nativeHosted
-    ? await collectNativeHostedRouteProbe(sandboxName, route, sandboxReachable, deps)
-    : nativeCustom
-      ? await collectNativeCustomRouteProbe(sandboxName, route, sandboxReachable, deps)
-      : nativeNvidia
-        ? await collectNativeNvidiaRouteProbe(sandboxName, route, sandboxReachable, deps)
-        : await collectInferenceRouteProbe(
-            sandboxName,
-            sandboxReachable,
-            deps.probeSandboxInferenceGatewayHealthImpl ?? probeSandboxInferenceGatewayHealth,
-            deps.gatewayName,
-          );
-  pushInferenceHealthCheck(checks, routeProbe, {
-    label: nativeHosted
-      ? "Inference route (native hosted)"
+  const nativeLocal = route.nativeLocalProviderAttachment !== undefined;
+  const routeProbe = nativeLocal
+    ? await collectNativeLocalRouteProbe(sandboxName, route, sandboxReachable, deps)
+    : nativeHosted
+      ? await collectNativeHostedRouteProbe(sandboxName, route, sandboxReachable, deps)
       : nativeCustom
-        ? "Inference route (native custom)"
+        ? await collectNativeCustomRouteProbe(sandboxName, route, sandboxReachable, deps)
         : nativeNvidia
-          ? "Inference route (native NVIDIA)"
-          : "Inference route (gateway)",
+          ? await collectNativeNvidiaRouteProbe(sandboxName, route, sandboxReachable, deps)
+          : await collectInferenceRouteProbe(
+              sandboxName,
+              sandboxReachable,
+              deps.probeSandboxInferenceGatewayHealthImpl ?? probeSandboxInferenceGatewayHealth,
+              deps.gatewayName,
+            );
+  pushInferenceHealthCheck(checks, routeProbe, {
+    label: nativeLocal
+      ? "Inference route (native local)"
+      : nativeHosted
+        ? "Inference route (native hosted)"
+        : nativeCustom
+          ? "Inference route (native custom)"
+          : nativeNvidia
+            ? "Inference route (native NVIDIA)"
+            : "Inference route (gateway)",
   });
   for (const diagnostic of collectProviderHealthDiagnostics(
     route,

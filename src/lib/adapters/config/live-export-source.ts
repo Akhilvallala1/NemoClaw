@@ -5,13 +5,14 @@ import os from "node:os";
 import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
 import {
   providerContract,
+  profileContractFor,
   matchesProviderMetadata,
   type NativeInferenceReceipt,
 } from "./live-export-inference-contract";
 import { isValidNemoClawPort } from "../../config/model";
 
 import { normalizeNativeCustomProviderAttachment } from "../../inference/native-custom";
-import { createProviders, type Providers, type Provider } from "../openshell/providers";
+import { createProviders, type Provider } from "../openshell/providers";
 import { createSynchronousCliOpenShellInferenceRouteObserver } from "../openshell/inference-route-cli";
 import { createSandboxes, type Sandbox } from "../openshell/sandboxes";
 import { createSandboxConfig } from "../openshell/sandbox-config";
@@ -160,19 +161,6 @@ function inferenceTopology(
 }
 
 type NativeReceipt = NativeInferenceReceipt;
-
-function profileContractFor(
-  routeProvider: string,
-  nativeReceipt: NativeReceipt | undefined,
-): Parameters<Providers["get"]>[0]["profileContract"] {
-  if (nativeReceipt) {
-    if ("sandboxName" in nativeReceipt) return { kind: "native-custom", attachment: nativeReceipt };
-    return nativeReceipt.profileId === "nemoclaw-nvidia-inference-v1"
-      ? "native-nvidia"
-      : "native-hosted";
-  }
-  return routeProvider === "ollama-local" ? "openai" : undefined;
-}
 
 function endpointSourceFor(
   nativeReceipt: NativeReceipt | undefined,

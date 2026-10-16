@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { resolveOnboardHermesApiPort } from "./hermes-api-port";
 import { isHermesApiPort } from "../core/ports";
 import {
   HERMES_DASHBOARD_ENABLE_ENV,
@@ -263,4 +264,17 @@ export function createHermesDashboardOnboardForwarding({
     })(sandboxName, rollback, revalidateSandboxIdentity);
 
   return { resolveStateForPort, ensureForState };
+}
+
+/** Resolve the API port applied by successful Hermes create or recreation. */
+export function getHermesRegistrationApiPort(
+  agentName: string | undefined,
+  sandboxName: string,
+  portableLifecycle: boolean | undefined,
+  configuredPort: number | null | undefined,
+): number | undefined {
+  if (agentName !== "hermes" || portableLifecycle === true) return undefined;
+  return (
+    configuredPort ?? resolveOnboardHermesApiPort(sandboxName, { allowRegisteredOverride: true })
+  );
 }

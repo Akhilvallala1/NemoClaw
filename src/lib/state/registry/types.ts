@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { InferenceSelection } from "../../inference/selection";
+import type { NativeLocalProviderAttachment } from "../../inference/native-local/contract";
 import type { NativeProviderAttachment } from "../../inference/native-provider/contract";
 import type { NativeHostedProviderAuthorities } from "./native-provider-authority-state";
 import type { NativeCustomProviderAttachment } from "../../inference/native-custom";
@@ -148,6 +149,8 @@ export interface SandboxEntry extends Partial<InferenceSelection> {
   managedStartupProtocol?: "identity-bound" | "legacy-unbound";
   /** Canonical provider-neutral receipt for an out-of-sandbox inference runtime. */
   hostLocalInferenceReceipt?: string | null;
+  /** Exact host-local provider identity attached to this sandbox. */
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   /** Exact OpenShell provider identity attached for native NVIDIA hosted inference. */
   nativeNvidiaProviderAttachment?: NativeNvidiaProviderAttachment;
   /** Validated endpoint-specific native provider attached to this sandbox. */
@@ -253,6 +256,8 @@ export interface SandboxRegistry {
   defaultSandbox: string | null;
   defaultSelectionRevision?: number;
   extraProviders?: string[];
+  /** NemoClaw-owned host-local provider identities keyed by provider name. */
+  nativeLocalProviderAuthorities?: Record<string, NativeLocalProviderAttachment>;
   /** Exact NemoClaw-owned native NVIDIA provider identity for each OpenShell gateway. */
   nativeNvidiaProviderAuthorities?: Record<string, NativeNvidiaProviderAttachment>;
   /** Endpoint-specific ownership, indexed by gateway then generated provider name. */

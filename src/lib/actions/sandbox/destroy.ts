@@ -64,6 +64,7 @@ import {
 } from "./destroy-confirmation";
 import {
   executeSandboxDestroy,
+  retireDestroyedSandboxNativeLocalProvider,
   recordDestroyCompletion,
   preparePortableDemoSandboxDestroyAuthority,
   redactDestroyError,
@@ -1184,6 +1185,17 @@ async function destroySandboxUnlocked(
           "Confirm HTTPS adapter route revocation when reported, then retry destroy.",
       );
     }
+  }
+  if (deleteSucceededOrAlreadyGone && sandbox) {
+    await retireDestroyedSandboxNativeLocalProvider(
+      sandbox,
+      cleanupGatewayName,
+      runOpenshell,
+      destroyRuntimeSelection,
+    ).catch((error) => {
+      preparedManagedLlamaCppCleanup?.abort();
+      throw error;
+    });
   }
   if (deleteSucceededOrAlreadyGone && sandbox) {
     abortPreparedCleanupOnError(() =>

@@ -7,9 +7,12 @@ import type { RebuildDurableConfig } from "./rebuild-durable-config";
 import type { RebuildRecreateOnboardOpts } from "./rebuild-gpu-opt-out";
 import { verifyNativeCustomStatusAttachment } from "./inference-route-health";
 import { writeRestoredOpenclawInferenceRoute } from "../../onboard/openclaw/initial-inference-route";
+import type { NativeLocalProviderAttachment } from "../../inference/native-local/contract";
 
 type RebuildAuthoritativePreflightOptions = RebuildRecreateOnboardOpts & {
   deferInferenceRouteUntilOnboard?: true;
+  agent?: string | null;
+  nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   model: string;
   provider: string;
   sandboxName: string;

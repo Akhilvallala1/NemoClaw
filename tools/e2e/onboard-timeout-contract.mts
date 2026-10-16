@@ -67,6 +67,21 @@ export const NATIVE_TERMINAL_LIFECYCLE_TARGET_TIMEOUT_MINUTES =
 export const INFERENCE_ROUTING_BASE_TARGET_TIMEOUT_MINUTES =
   (2 * 5 * MINUTE_MS + 3 * ONBOARD_SINGLE_FINAL_HANDOFF_TEST_TIMEOUT_MS + ONBOARD_JOB_HEADROOM_MS) /
   MINUTE_MS;
+// TC-INF-15 serially onboards two sandboxes, rebuilds the owner, stops and starts
+// it, runs DCode, scans credentials, and probes sibling denial. Test headroom
+// also contains prerequisite probes and both pre-onboard cleanup commands.
+export const DCODE_NATIVE_LOCAL_TEST_TIMEOUT_MS =
+  2 * ONBOARD_FINAL_HANDOFF_COMMAND_TIMEOUT_MS +
+  (20 + 2 + 2 + 2 + 1 + 0.5) * MINUTE_MS +
+  ONBOARD_TEST_HEADROOM_MS;
+
+// Preserve the retained routing file allowance and add the two incoming serial
+// DCode native-local scenarios. The custom-hosted and terminal shards stay separate.
+export const INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES =
+  INFERENCE_ROUTING_BASE_TARGET_TIMEOUT_MINUTES +
+  Math.ceil(
+    (DCODE_NATIVE_LOCAL_TEST_TIMEOUT_MS + ONBOARD_SINGLE_FINAL_HANDOFF_TEST_TIMEOUT_MS) / MINUTE_MS,
+  );
 
 // The typed DCode target runs onboarding, its invalid-credential lifecycle,
 // state validation, and the ordered cloud checks. Those checks can consume 96

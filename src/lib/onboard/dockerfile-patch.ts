@@ -313,6 +313,7 @@ export function patchStagedDockerfile(
     preferredInferenceApi,
     options.nativeCustomProviderAttachment ?? options.nativeProvider,
     options.upstreamEndpointUrl,
+    options.agentName,
   );
   const { providerKey, primaryModelRef, inferenceApi, inferenceCompat } = providerless
     ? { providerKey: "", primaryModelRef: "", inferenceApi: "", inferenceCompat: null }

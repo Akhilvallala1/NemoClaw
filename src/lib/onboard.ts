@@ -22,7 +22,7 @@ const {
   createInferenceSelectionValidationHelpers,
 }: typeof import("./onboard/inference-selection-validation") = require("./onboard/inference-selection-validation");
 const {
-  applyCloudFallbackSelection,
+  abortFailedNimStartup,
   clearNimContainerBeforeRetry,
   createNvidiaFeaturedModelSession,
   createRemoteModelValidator,
@@ -62,7 +62,7 @@ const {
   ensureOllamaLoopbackSystemdOverride,
 }: typeof import("./onboard/ollama-systemd") = require("./onboard/ollama-systemd");
 const {
-  createCompatibleEndpointSmoke,
+  createCompatibleEndpointSmoke: createSmoke,
   buildCompatibleEndpointSandboxSmokeCommand,
   buildCompatibleEndpointSandboxSmokeScript,
   verifyCompatibleEndpointSandboxSmoke,
@@ -673,7 +673,7 @@ const {
 });
 const sandboxExec = sandboxCommandCli.createCliOpenShellSandboxCommandExecutor({ hostCwd: ROOT });
 
-const compatibleSmoke = createCompatibleEndpointSmoke(runOpenshell, sandboxExec, redact, {
+const compatibleSmoke = createSmoke(runOpenshell, sandboxExec, redact, {
   getSandbox: registry.getSandbox,
   resolveGatewayName: gatewayBinding.resolveSandboxGatewayName,
 });
@@ -1674,10 +1674,7 @@ async function handleNimLocalSelection(
   const localGpu = requireValue(gpu, "GPU details are required for local NIM model selection");
   const { models, usableMemoryMB } = nim.getNimModelOptions(localGpu);
   if (models.length === 0) {
-    console.log(`  No NIM model fits ${usableMemoryMB} MB. Falling back to cloud API.`);
-    applyCloudFallbackSelection(state, REMOTE_PROVIDER_CONFIG.build);
-    state.assertRouteCompatible?.();
-    return "selected";
+    throw new Error(`No Local NVIDIA NIM model fits ${usableMemoryMB} MB of usable GPU memory.`);
   }
 
   let sel;
@@ -1772,17 +1769,14 @@ async function handleNimLocalSelection(
   console.log("  Starting NIM container...");
   const nimContainerNameLocal = nim.containerName(GATEWAY_NAME);
   assertSelectionMutationAuthority(state, "start the local NIM runtime");
-  state.nimContainer = nim.startNimContainerByName(nimContainerNameLocal, catalogModel, undefined, {
+  const startedNim = nim.startNimContainerByName(nimContainerNameLocal, catalogModel, undefined, {
     ngcApiKey: ngcApiKey ?? undefined,
   });
+  state.nimContainer = startedNim.name;
 
   console.log("  Waiting for NIM to become healthy...");
   if (!nim.waitForNimHealth(undefined, undefined, { container: nimContainerNameLocal })) {
-    nim.stopNimContainerByNameOrThrow(nimContainerNameLocal);
-    console.error("  NIM failed to start. Falling back to cloud API.");
-    applyCloudFallbackSelection(state, REMOTE_PROVIDER_CONFIG.build);
-    state.assertRouteCompatible?.();
-    return "selected";
+    abortFailedNimStartup(state, startedNim, nim.stopNimContainerByIdOrThrow);
   }
 
   state.model = nim.adoptServedModelId(catalogModel);
@@ -1795,11 +1789,11 @@ async function handleNimLocalSelection(
     null,
   );
   if (validation.retry === "selection" || validation.retry === "model") {
-    clearNimContainerBeforeRetry(state);
+    clearNimContainerBeforeRetry(state, nim.stopNimContainerByNameOrThrow);
     return "retry-selection";
   }
   if (!validation.ok) {
-    clearNimContainerBeforeRetry(state);
+    clearNimContainerBeforeRetry(state, nim.stopNimContainerByNameOrThrow);
     return "retry-selection";
   }
   if (validation.api !== "openai-completions") {
@@ -3213,18 +3207,19 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
           buildVerifyChain: (chatUiUrl, name) => buildAgentVerifyChain(chatUiUrl, name, agent),
           verifyDeployment: async (name, chain) => {
             const verifyDeploymentModule: typeof import("./verify-deployment") = require("./verify-deployment");
+            const inference = verifyDeploymentModule.onboardInferenceVerificationContext(
+              name,
+              GATEWAY_NAME,
+              agent?.name ?? "openclaw",
+              liveFinalFlowContext,
+              registry.getSandbox(name),
+            );
             return verifyDeploymentModule.verifyOnboardDeployment(
               name,
               chain,
               {
                 ...liveFinalFlowContext,
-                sandboxName: name,
-                gatewayName: GATEWAY_NAME,
-                agentName: agent?.name,
-                nativeHostedProviderAttachment:
-                  registry.getSandbox(name)?.nativeHostedProviderAttachment,
-                nativeCustomProviderAttachment:
-                  registry.getSandbox(name)?.nativeCustomProviderAttachment,
+                ...inference.invocation,
               },
               {
                 executeSandboxCommand: (sandbox: string, script: string) =>
@@ -3381,6 +3376,7 @@ module.exports = {
   MESSAGING_CHANNELS,
   selectOnboardAgent,
   setupNim,
+  handleNimLocalSelection,
   providerNameToOptionKey: providerKey,
   readRecordedProvider,
   readRecordedModel,

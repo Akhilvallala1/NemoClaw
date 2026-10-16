@@ -3,11 +3,14 @@
 
 import { type NativeCustomProviderAttachment } from "../../inference/native-custom";
 import { recordedNativeProviderAttachment } from "../../inference/native-provider/recorded-selection";
+import { exportNativeInferenceReceipt } from "../../domain/config/export-evidence";
 import { fixedNativeProviderForAttachment } from "../../inference/native-provider/fixed";
 import { isDeepStrictEqual } from "node:util";
 import { VLLM_LOCAL_CREDENTIAL_ENV } from "../../inference/serving/vllm-credential-contract";
 import { OLLAMA_LOCAL_CREDENTIAL_ENV } from "../../inference/ollama/contract";
 import type { NativeProviderAttachment } from "../../inference/native-provider/contract";
+import { normalizeNativeLocalProviderAttachment } from "../../inference/native-local/contract";
+import type { Providers } from "../openshell/providers";
 import type { Provider } from "../openshell/providers";
 import type { SandboxEntry } from "../../state/registry/types";
 import { normalizeInferenceSelection } from "../../inference/selection";
@@ -30,7 +33,10 @@ function expectedCredentialKeys(credentialEnv: string | null, routeProvider: str
   return credentialEnv === null ? [] : [credentialEnv];
 }
 
-export type NativeInferenceReceipt = NativeProviderAttachment | NativeCustomProviderAttachment;
+export type NativeInferenceReceipt =
+  | NativeProviderAttachment
+  | NativeCustomProviderAttachment
+  | NonNullable<SandboxEntry["nativeLocalProviderAttachment"]>;
 
 function matchesNativeProviderMetadata(
   provider: Provider,
@@ -99,8 +105,29 @@ export function matchesProviderMetadata(
 }
 
 export function resolveExportInferenceSelection(entry: Readonly<SandboxEntry>) {
+  const local =
+    entry.nativeLocalProviderAttachment !== undefined
+      ? exportNativeInferenceReceipt(entry)
+      : undefined;
+  if (entry.nativeLocalProviderAttachment !== undefined && !local)
+    throw new Error("The native local export binding is invalid or unsupported.");
   return {
     normalized: normalizeInferenceSelection(entry),
-    nativeReceipt: recordedNativeProviderAttachment(entry),
+    nativeReceipt: local ?? recordedNativeProviderAttachment(entry),
   };
+}
+
+export function profileContractFor(
+  routeProvider: string,
+  nativeReceipt: NativeInferenceReceipt | undefined,
+): Parameters<Providers["get"]>[0]["profileContract"] {
+  const local = normalizeNativeLocalProviderAttachment(nativeReceipt);
+  if (local) return { kind: "native-local", binding: local };
+  if (nativeReceipt) {
+    if ("api" in nativeReceipt) return { kind: "native-custom", attachment: nativeReceipt };
+    return nativeReceipt.profileId === "nemoclaw-nvidia-inference-v1"
+      ? "native-nvidia"
+      : "native-hosted";
+  }
+  return routeProvider === "ollama-local" ? "openai" : undefined;
 }
