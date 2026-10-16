@@ -12,6 +12,34 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+function Get-RuntimeImageStorage {
+    param([string]$ImagePath, [string]$VolumeRoot)
+    $backing = @(Get-Volume -FilePath $ImagePath -ErrorAction Stop)
+    $inner = @(Get-Volume -Path $VolumeRoot -ErrorAction Stop)
+    if ($backing.Count -ne 1 -or $inner.Count -ne 1) {
+        throw 'The runtime image storage volumes are ambiguous.'
+    }
+    return @{
+        backing = @{ path = [string]$backing[0].Path; bytes = [long]$backing[0].Size;
+            freeBytes = [long]$backing[0].SizeRemaining }
+        inner = @{ path = [string]$inner[0].Path; bytes = [long]$inner[0].Size;
+            freeBytes = [long]$inner[0].SizeRemaining; filesystem = [string]$inner[0].FileSystem }
+        imageBytes = (Get-Item -LiteralPath $ImagePath).Length
+    }
+}
+
+function Assert-RuntimeImageStorage {
+    param($Storage, [long]$MaximumBytes, [long]$RequiredPayloadBytes)
+    if ($Storage.inner.filesystem -cne 'NTFS' -or
+        $Storage.inner.bytes -lt ($MaximumBytes - 16MB) -or $Storage.inner.bytes -gt $MaximumBytes -or
+        $Storage.inner.freeBytes -lt $RequiredPayloadBytes) {
+        throw 'The attached runtime image does not have its requested NTFS payload capacity.'
+    }
+    if ($Storage.backing.freeBytes -lt ($MaximumBytes - $Storage.imageBytes + 1GB)) {
+        throw 'The runtime image backing volume no longer has its required free space.'
+    }
+}
+
 if ($env:OS -cne 'Windows_NT' -or $env:GITHUB_ACTIONS -cne 'true' -or
     $RuntimeId -cnotmatch '^[a-f0-9]{64}$') {
     throw 'Finished runtime images require an explicit Windows CI runtime identity.'
@@ -70,11 +98,14 @@ $receipt = [ordered]@{
     filesystem = 'ntfs'
     payloadObjects = 1
     source = @{ files = $files.Count; logicalBytes = $logicalBytes }
+    storage = @{ maximumMiB = $maximumMiB; stagingRoot = $stagingDrive.Root;
+        stagingFreeBytes = [long]$stagingDrive.Free; requiredStagingBytes = $requiredStagingBytes }
     customerExtractionRequired = $false
     runtimeLaunchCopiesRequired = $false
     mountedReadOnly = $true
 }
 $primary = $null
+$diskpartLog = [IO.Path]::ChangeExtension($ReceiptPath, '.diskpart.log')
 try {
     [IO.Directory]::CreateDirectory($mount) | Out-Null
     @(
@@ -86,7 +117,7 @@ try {
         "assign mount=`"$mount`""
         'exit'
     ) | Set-Content -LiteralPath $script -Encoding ascii
-    & $diskpart /s $script | Out-Null
+    & $diskpart /s $script | Out-File -LiteralPath $diskpartLog -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw "Runtime image creation failed with status $LASTEXITCODE." }
     & (Join-Path $env:SystemRoot 'System32\compact.exe') /C /I /Q $mount | Out-Null
     $compressionProbe = Join-Path $mount '.nemoclaw-compression-probe'
@@ -127,6 +158,12 @@ try {
         throw 'The runtime image volume-root identity could not be resolved.'
     }
     $volumeRoot = $volumeRoots[0]
+    $receipt.storage['beforePopulation'] = Get-RuntimeImageStorage -ImagePath $workingImage -VolumeRoot $volumeRoot
+    # Allow for file allocation rounding, directory entries and NTFS metadata;
+    # never count compression as necessary capacity for the sealed payload.
+    $requiredPayloadBytes = $logicalBytes + ([long]$files.Count * 4096) + 64MB
+    Assert-RuntimeImageStorage -Storage $receipt.storage.beforePopulation `
+        -MaximumBytes ([long]$maximumMiB * 1MB) -RequiredPayloadBytes $requiredPayloadBytes
     Set-Acl -LiteralPath $volumeRoot -AclObject $security
     foreach ($name in $topLevelDirectories) {
         $directory = Join-Path $mount $name
@@ -137,6 +174,8 @@ try {
     & (Join-Path $env:SystemRoot 'System32\robocopy.exe') $RuntimeRoot $mount /E /MOV /COPY:DT /DCOPY:DT /R:0 /W:0 /NP "/LOG:$copyLog" | Out-Null
     $copyStatus = $LASTEXITCODE
     $receipt['population'] = @{ status = $copyStatus; log = [IO.Path]::GetFileName($copyLog) }
+    try { $receipt.storage['afterPopulation'] = Get-RuntimeImageStorage -ImagePath $workingImage -VolumeRoot $volumeRoot }
+    catch { $receipt.storage['observationError'] = $_.Exception.Message }
     if ($copyStatus -ge 8) {
         $detail = ((Get-Content -LiteralPath $copyLog -Tail 40) -join ' | ')
         throw "Runtime image population failed with status ${copyStatus}: $detail"
@@ -184,7 +223,7 @@ try {
     }
     @("select vdisk file=`"$workingImage`"", 'detach vdisk', 'compact vdisk', 'exit') |
         Set-Content -LiteralPath $detach -Encoding ascii
-    & $diskpart /s $detach | Out-Null
+    & $diskpart /s $detach | Out-File -LiteralPath $diskpartLog -Encoding utf8 -Append
     if ($LASTEXITCODE -ne 0) { throw "Runtime image detach failed with status $LASTEXITCODE." }
     if (-not [string]::Equals($workingImage, $OutputImage, [StringComparison]::OrdinalIgnoreCase)) {
         Move-Item -LiteralPath $workingImage -Destination $OutputImage
@@ -207,7 +246,7 @@ try {
         try {
             @("select vdisk file=`"$workingImage`"", 'detach vdisk noerr', 'exit') |
                 Set-Content -LiteralPath $detach -Encoding ascii
-            & $diskpart /s $detach | Out-Null
+            & $diskpart /s $detach | Out-File -LiteralPath $diskpartLog -Encoding utf8 -Append
         } catch { if ($null -eq $primary) { $primary = $_ } }
     }
     if ($workingImage -ne $OutputImage -and (Test-Path -LiteralPath $workingImage)) {

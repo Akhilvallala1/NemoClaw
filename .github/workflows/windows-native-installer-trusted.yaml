@@ -519,9 +519,8 @@ jobs:
         shell: pwsh
         run: |
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
-          $tools = "$env:RUNNER_TEMP\setup-regression-tools"
-          dotnet tool install --tool-path $tools wix --version 5.0.2
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned WiX installation failed.' }
+          $tools = "$env:RUNNER_TEMP\finished-windows\setup-regression-tools"
+          & "$env:GITHUB_WORKSPACE\controller\packaging\windows\installer\install-pinned-wix.ps1" -ToolDirectory $tools
           & "$env:GITHUB_WORKSPACE\controller\packaging\windows\installer\build-burn-diagnostics-fixture.ps1" -SourceRoot "$env:GITHUB_WORKSPACE\controller" -PackageDirectory "$env:RUNNER_TEMP\finished-windows\package" -OutputDirectory "$env:RUNNER_TEMP\finished-windows\diagnostics-fixture" -ProductVersion $env:PRODUCT_VERSION -WixPath "$tools\wix.exe"
       - name: Exercise backend-specific native prerequisite selection
         shell: pwsh
@@ -551,7 +550,7 @@ jobs:
         shell: pwsh
         run: |
           $work = "$env:RUNNER_TEMP\finished-windows"
-          $inputs = @("$work\diagnostics-fixture\fixture.json", "$work\trusted-migration-controller.json")
+          $inputs = @("$work\diagnostics-fixture\fixture.json", "$work\trusted-migration-controller.json", "$work\setup-regression-tools\wix-input.json")
           $allowed = @('.csv', '.etl', '.jpeg', '.jpg', '.json', '.log', '.md', '.png', '.txt', '.xml')
           foreach ($directory in @("$work\burn-diagnostics", "$work\migration")) {
             $inputs += @(Get-ChildItem -LiteralPath $directory -Recurse -File -ErrorAction SilentlyContinue |

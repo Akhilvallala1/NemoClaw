@@ -1503,6 +1503,48 @@ export function assertWindowsInstallerWorkflow(input: WindowsInstallerWorkflowSo
     assert.ok(evidenceSource?.includes("The staged evidence inventory changed before upload."));
     assert.ok(evidenceSource?.includes("deliberately hostile same-user process"));
   })();
+  for (const [owner, job, stepName, sourceRoot] of [
+    [
+      workflow,
+      "windows-finished-installer",
+      "Build the finished WPF, guarded launcher, transactional MSI and Burn preview",
+      "\\candidate",
+    ],
+    [
+      workflow,
+      "windows-finished-reviewed-installer",
+      "Rebuild native UI MSI and Burn without rebuilding the qualified runtime",
+      "\\candidate",
+    ],
+    [
+      workflow,
+      "windows-finished-candidate-migration",
+      "Exercise candidate Burn fixture and diagnostics",
+      "\\candidate",
+    ],
+    [
+      workflow,
+      "windows-runtime-controls",
+      "Build and exercise actual isolated MSI transactions",
+      "",
+    ],
+    [
+      trusted,
+      "migration",
+      "Build actual Burn failure fixture from the same native UI",
+      "\\controller",
+    ],
+  ] as const) {
+    const install = requiredStep(requiredJob(owner, job), stepName);
+    const invocation = `& "$env:GITHUB_WORKSPACE${sourceRoot}\\packaging\\windows\\installer\\install-pinned-wix.ps1" -ToolDirectory $tools`;
+    assert.ok(install.run?.includes(invocation), "WiX must use its verified local package: " + job);
+    assert.ok(
+      !install.run?.includes("dotnet tool install"),
+      "WiX cannot bypass package verification: " + job,
+    );
+    assert.ok(install.run!.indexOf(invocation) < install.run!.indexOf("-WixPath"));
+    assert.notStrictEqual(install["continue-on-error"], true);
+  }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   assertWindowsInstallerWorkflow(

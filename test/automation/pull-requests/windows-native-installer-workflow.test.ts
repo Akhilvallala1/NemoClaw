@@ -26,6 +26,7 @@ const skipEvidenceProcesses =
 function sources(): WindowsInstallerWorkflowSources {
   return readWindowsInstallerWorkflowSources(repoRoot);
 }
+
 function step(job: WorkflowJob, name: string): WorkflowStep {
   const found = job.steps?.find((item) => item.name === name);
   expect(found, "Missing fixture step: " + name).toBeDefined();
@@ -33,6 +34,37 @@ function step(job: WorkflowJob, name: string): WorkflowStep {
 }
 type Mutation = { name: string; mutate: (value: WindowsInstallerWorkflowSources) => void };
 const mutations: Mutation[] = [
+  ...(
+    [
+      [
+        "workflow",
+        "windows-finished-installer",
+        "Build the finished WPF, guarded launcher, transactional MSI and Burn preview",
+      ],
+      [
+        "workflow",
+        "windows-finished-reviewed-installer",
+        "Rebuild native UI MSI and Burn without rebuilding the qualified runtime",
+      ],
+      [
+        "workflow",
+        "windows-finished-candidate-migration",
+        "Exercise candidate Burn fixture and diagnostics",
+      ],
+      [
+        "workflow",
+        "windows-runtime-controls",
+        "Build and exercise actual isolated MSI transactions",
+      ],
+      ["trusted", "migration", "Build actual Burn failure fixture from the same native UI"],
+    ] as const
+  ).map(([owner, job, name]) => ({
+    name: "WiX package verification missing from " + job,
+    mutate: (value: WindowsInstallerWorkflowSources) => {
+      const install = step(value[owner].jobs[job], name);
+      install.run = install.run!.replace("install-pinned-wix.ps1", "unverified-wix.ps1");
+    },
+  })),
   ...[["  $controls\n", "  $untrustedControls\n"]].map(([before, after]) => ({
     name: "retained-state controls lose trusted input: " + before.trim(),
     mutate: (value: WindowsInstallerWorkflowSources) => {

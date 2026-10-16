@@ -107,12 +107,15 @@ use the newly built package and record its actual Windows and runtime identities
 This directory owns the WiX-authored ARM64 MSI and Burn setup executable for
 the native Windows candidate. WiX Toolset 5.0.2 and its standard bootstrapper
 application extension are pinned in the project files.
+The workflow verifies the WiX CLI package against `installer/wix-tool-input.json`
+before installation. NuGet restores that tool from the verified local package,
+using fresh caches and no additional package source.
 
 The package uses only standard Windows Installer and Burn authoring. It has no
 custom actions and does not invoke PowerShell, WSL, Bash, Ubuntu, Docker, or a
 Linux virtual machine. The package installs the exact assembled ARM64 NemoClaw
 runtime payload under `%ProgramFiles%\NVIDIA\NemoClaw`. That payload contains
-the NemoClaw CLI, the selected agent and its required runtime, NVIDIA/OpenShell#2721 CLI
+the NemoClaw CLI, the selected agent and its required runtime, NVIDIA/OpenShell CLI
 and gateway binaries, and only the pinned Microsoft MXC ProcessContainer
 executor and host-preparation utility. WSLC, Windows Sandbox, test-proxy,
 diagnostic, and learning-mode sidecars from the upstream SDK archive are not
@@ -123,8 +126,8 @@ adds the installed `bin` directory to the machine PATH.
 The embedded runtime-availability record marks unselected agents `not-included`,
 and setup disables those choices. One package does not qualify all agent variants.
 
-The finished-installer workflow checks out the pinned NVIDIA/OpenShell#2721
-merge commit, applies the current compatibility patch, and builds and tests the
+The finished-installer workflow checks out the OpenShell `windows` revision in
+`openshell-native-transport.lock.json`, applies its locked compatibility patch, and builds and tests the
 ARM64 derivative. It records both executable hashes, the source and patch identities,
 and the workflow run. Host preparation rejects mismatched receipts or binaries;
 it does not reuse binaries from a previous MSI. The patch and its exact hash are installed with the

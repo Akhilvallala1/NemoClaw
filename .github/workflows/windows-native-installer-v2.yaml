@@ -548,6 +548,14 @@ jobs:
             files = @($files)
             currentPackageQualification = $false
           } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$output\openshell-build.json" -Encoding utf8NoBOM
+          # The verified binaries and logs above are the downstream inputs.
+          $target = [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+          $expected = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'finished-windows\openshell-target'))
+          if ($target -cne $expected -or (Get-Item -LiteralPath $target).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or
+              @(Get-ChildItem -LiteralPath $target -Recurse -Force -Attributes ReparsePoint).Count -ne 0) {
+            throw 'The completed OpenShell build target is not an ordinary runner-owned tree.'
+          }
+          Remove-Item -LiteralPath $target -Recurse -Force
       - name: Check out the MXC source used by the Windows-tip qualification
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -607,6 +615,13 @@ jobs:
             files = @($files)
             currentPackageQualification = $false
           } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$output\mxc-build.json" -Encoding utf8NoBOM
+          $target = [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+          $expected = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'finished-windows\mxc-target'))
+          if ($target -cne $expected -or (Get-Item -LiteralPath $target).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or
+              @(Get-ChildItem -LiteralPath $target -Recurse -Force -Attributes ReparsePoint).Count -ne 0) {
+            throw 'The completed MXC build target is not an ordinary runner-owned tree.'
+          }
+          Remove-Item -LiteralPath $target -Recurse -Force
       - name: Prepare native host files without any legacy agent tree
         shell: pwsh
         run: |
@@ -769,13 +784,9 @@ jobs:
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
           $work = "$env:RUNNER_TEMP\finished-windows"
           $tools = "$work\tools"
-          New-Item -ItemType Directory -Path $tools | Out-Null
           [IO.File]::WriteAllText("$work\global.json", '{"sdk":{"version":"8.0.419","rollForward":"disable","allowPrerelease":false}}', [Text.UTF8Encoding]::new($false))
           Push-Location $work
-          $config = "$tools\NuGet.Config"
-          [IO.File]::WriteAllText($config, '<configuration><packageSources><clear/><add key="nuget.org" value="https://api.nuget.org/v3/index.json" /></packageSources></configuration>', [Text.UTF8Encoding]::new($false))
-          & dotnet tool install wix --version 5.0.2 --tool-path $tools --configfile $config
-          if ($LASTEXITCODE -ne 0) { throw 'The pinned WiX tool could not be prepared.' }
+          & "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\install-pinned-wix.ps1" -ToolDirectory $tools
           $identity = Get-Content -LiteralPath "$work\assembled\runtime-identity.json" -Raw | ConvertFrom-Json
           $imageArguments = @{
             RuntimeImage = "$work\runtime-image\$($identity.runtimeId).vhdx"
@@ -953,7 +964,10 @@ jobs:
           $work = "$env:RUNNER_TEMP\finished-windows"
           $inputs = @(
             "$work\host\runtime-payload-receipt.json",
+            "$work\tools\wix-input.json",
             "$work\runtime-image\runtime-image.json",
+            "$work\runtime-image\runtime-image.robocopy.log",
+            "$work\runtime-image\runtime-image.diskpart.log",
             "$work\hermes-input\intake.json",
             "$work\hermes-input\personal-feasibility.json",
             "$work\hermes-input\personal-request.json",
@@ -1178,14 +1192,10 @@ jobs:
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
           $work = "$env:RUNNER_TEMP\finished-windows"
           $tools = "$work\tools"
-          [void][IO.Directory]::CreateDirectory($tools)
           [IO.File]::WriteAllText("$work\global.json", '{"sdk":{"version":"8.0.419","rollForward":"disable","allowPrerelease":false}}', [Text.UTF8Encoding]::new($false))
-          $config = "$tools\NuGet.Config"
-          [IO.File]::WriteAllText($config, '<configuration><packageSources><clear/><add key="nuget.org" value="https://api.nuget.org/v3/index.json" /></packageSources></configuration>', [Text.UTF8Encoding]::new($false))
           Push-Location $work
           try {
-            & dotnet tool install wix --version 5.0.2 --tool-path $tools --configfile $config
-            if ($LASTEXITCODE -ne 0) { throw 'The pinned WiX tool could not be prepared.' }
+            & "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\install-pinned-wix.ps1" -ToolDirectory $tools
             & "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\build-immutable-package.ps1" `
               -SourceRoot "$env:GITHUB_WORKSPACE\candidate" -SourceRevision $env:CANDIDATE_SHA -ProductVersion $env:PRODUCT_VERSION `
               -HostPayloadRoot "$work\host" -RuntimeAssemblyRoot "$work\assembled" -OutputDirectory "$work\package" `
@@ -1242,7 +1252,7 @@ jobs:
         run: |
           $work = "$env:RUNNER_TEMP\finished-windows"
           $inputs = @()
-          foreach ($pattern in @("$work\package\*.json", "$work\package\build\*.log")) {
+          foreach ($pattern in @("$work\package\*.json", "$work\package\build\*.log", "$work\tools\wix-input.json")) {
             $inputs += @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | ForEach-Object FullName)
           }
           & "$env:GITHUB_WORKSPACE\controller\scripts\checks\stage-windows-native-evidence.ps1" `
@@ -1313,9 +1323,8 @@ jobs:
         shell: pwsh
         run: |
           $env:GITHUB_SHA = $env:CANDIDATE_SHA
-          $tools = "$env:RUNNER_TEMP\setup-regression-tools"
-          dotnet tool install --tool-path $tools wix --version 5.0.2
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned WiX installation failed.' }
+          $tools = "$env:RUNNER_TEMP\finished-windows\setup-regression-tools"
+          & "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer\install-pinned-wix.ps1" -ToolDirectory $tools
           $owner = "$env:GITHUB_WORKSPACE\candidate\packaging\windows\installer"
           $work = "$env:RUNNER_TEMP\finished-windows"
           & "$owner\build-burn-diagnostics-fixture.ps1" -SourceRoot "$env:GITHUB_WORKSPACE\candidate" -PackageDirectory "$work\package" -OutputDirectory "$work\diagnostics-fixture" -ProductVersion $env:PRODUCT_VERSION -WixPath "$tools\wix.exe"
@@ -1357,7 +1366,7 @@ jobs:
         shell: pwsh
         run: |
           $work = "$env:RUNNER_TEMP\finished-windows"
-          $inputs = @("$work\candidate-migration-controller.json", "$work\diagnostics-fixture\fixture.json")
+          $inputs = @("$work\candidate-migration-controller.json", "$work\diagnostics-fixture\fixture.json", "$work\setup-regression-tools\wix-input.json")
           $allowed = @('.csv', '.etl', '.jpeg', '.jpg', '.json', '.log', '.md', '.png', '.txt', '.xml')
           foreach ($directory in @("$work\burn-diagnostics", "$work\migration")) {
             $inputs += @(Get-ChildItem -LiteralPath $directory -Recurse -File -ErrorAction SilentlyContinue |
@@ -1509,6 +1518,8 @@ jobs:
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/qualify-installed-openclaw.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/review-hermes-availability.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/mxc-probe-identity.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/install-pinned-wix.test.mts'),
+            (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/installer/runtime-image-storage.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-ui-lifecycle.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-web-session.test.mts'),
             (Join-Path $env:GITHUB_WORKSPACE 'packaging/windows/runtime/native-gateway-configuration.test.mts'),
@@ -3164,11 +3175,7 @@ jobs:
             -SourceRoot $env:GITHUB_WORKSPACE `
             -ArtifactDirectory (Join-Path $env:RUNNER_TEMP 'windows-msi-lease-process') -NodePath $node
           $tools = Join-Path $env:RUNNER_TEMP 'windows-msi-tools'
-          [IO.Directory]::CreateDirectory($tools) | Out-Null
-          $config = Join-Path $tools 'NuGet.Config'
-          [IO.File]::WriteAllText($config, '<configuration><packageSources><clear/><add key="nuget.org" value="https://api.nuget.org/v3/index.json" /></packageSources></configuration>', [Text.UTF8Encoding]::new($false))
-          & dotnet tool install wix --version 5.0.2 --tool-path $tools --configfile $config
-          if ($LASTEXITCODE -ne 0) { throw 'The pinned WiX fixture tool could not be installed.' }
+          & "$env:GITHUB_WORKSPACE\packaging\windows\installer\install-pinned-wix.ps1" -ToolDirectory $tools
           $python = (Get-Command python.exe -CommandType Application | Select-Object -First 1).Source
           $license = Join-Path (Split-Path -Parent $node) 'LICENSE'
           & "$env:GITHUB_WORKSPACE\packaging\windows\installer\test-runtime-msi.ps1" `
@@ -3185,6 +3192,7 @@ jobs:
           path: |
             ${{ runner.temp }}/windows-runtime-controls/
             ${{ runner.temp }}/windows-msi-lease-process/*.json
+            ${{ runner.temp }}/windows-msi-tools/wix-input.json
             ${{ runner.temp }}/windows-msi-boundary-fixtures/*.json
             ${{ runner.temp }}/windows-msi-boundary-fixtures/*.log
             ${{ runner.temp }}/windows-msi-boundary-fixtures/fixtures/fixtures.json
