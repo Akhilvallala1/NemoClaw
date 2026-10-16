@@ -241,8 +241,7 @@ it("preserves a safe native local probe failure for restart diagnostics (#12975)
         verifyNativeLocalAttachment: vi.fn(async () => {}),
         inferenceInvocationProbe: vi.fn(async () => ({
           ok: false as const,
-          detail:
-            "OpenShell did not provide a valid native local credential reference inside the sandbox",
+          detail: "sandbox inference invocation probe returned HTTP 503",
           httpStatus: null,
         })),
       } as LaunchReadinessHealthDeps,
@@ -250,8 +249,7 @@ it("preserves a safe native local probe failure for restart diagnostics (#12975)
   ).rejects.toMatchObject({
     category: "health",
     failedCheck: "inference request",
-    detail:
-      "OpenShell did not provide a valid native local credential reference inside the sandbox",
+    detail: "sandbox inference invocation probe returned HTTP 503",
   });
 });
 

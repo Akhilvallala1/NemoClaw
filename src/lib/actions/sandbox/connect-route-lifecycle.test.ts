@@ -43,8 +43,7 @@ describe("connectSandbox route lifecycle", () => {
       gatewayName: "nemoclaw",
       sandboxName: "alpha",
     };
-    const detail =
-      "OpenShell did not provide a valid native local credential reference inside the sandbox";
+    const detail = "sandbox inference invocation probe returned HTTP 503";
     const launchReadiness = requireDist(
       "../../src/lib/actions/sandbox/launch-readiness.js",
     ) as typeof import("./launch-readiness");
