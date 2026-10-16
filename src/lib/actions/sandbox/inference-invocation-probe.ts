@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { nativeHostedAuthHeaderScript } from "../../inference/native-provider/contract";
-import { NATIVE_LOCAL_AUTH_HEADER_SCRIPT } from "../../inference/native-local/agent-config";
+import {
+  NATIVE_LOCAL_AUTH_HEADER_SCRIPT,
+  NATIVE_LOCAL_CREDENTIAL_REFERENCE_FAILURE_MARKER,
+} from "../../inference/native-local/agent-config";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../inference/native-nvidia/contract";
 import {
   hostedNativeProvider,
@@ -360,14 +363,19 @@ export async function probeSandboxInferenceInvocation(
   const detail = httpStatus
     ? `sandbox inference invocation probe returned HTTP ${httpStatus}`
     : `sandbox inference invocation probe exited with status ${result.status}`;
+  const nativeLocalCredentialUnavailable =
+    Boolean(input.nativeLocalProviderAttachment) &&
+    result.status === 2 &&
+    result.stdout.trim() === NATIVE_LOCAL_CREDENTIAL_REFERENCE_FAILURE_MARKER;
   const legacyDnsFailure =
     input.nativeProvider !== true &&
     result.stdout.split("\n").some((line) => line.trim() === "curl-error:6") &&
     new URL(resolveSandboxInferenceInvocationEndpoint(input)).hostname === "inference.local";
   return {
     ok: false,
-    detail:
-      httpStatus === "404" && nvcfFunctionNotFound
+    detail: nativeLocalCredentialUnavailable
+      ? "OpenShell did not provide a valid native local credential reference inside the sandbox"
+      : httpStatus === "404" && nvcfFunctionNotFound
         ? `${detail}: ${nvcfFunctionNotFoundMessage(input.model).replace(/\.$/, "")}`
         : legacyDnsFailure
           ? `${detail}. The legacy inference route could not be resolved. If that route is no longer available, recreate this sandbox to use native inference.`

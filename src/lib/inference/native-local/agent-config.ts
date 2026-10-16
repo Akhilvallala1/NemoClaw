@@ -59,8 +59,12 @@ export function nativeLocalCredentialReference(
 export const NATIVE_LOCAL_RUNTIME_REFERENCE_PATTERN =
   "^openshell:resolve:env:(v[0-9]{1,20}|s[a-f0-9]{64})_NEMOCLAW_LOCAL_INFERENCE_TOKEN$";
 
+/** Safe, fixed diagnostic for a missing or invalid supervisor credential reference. */
+export const NATIVE_LOCAL_CREDENTIAL_REFERENCE_FAILURE_MARKER =
+  "native-local-credential-reference-unavailable";
+
 export const NATIVE_LOCAL_AUTH_HEADER_SCRIPT = [
-  'case "${NEMOCLAW_LOCAL_INFERENCE_TOKEN:-}" in *[!a-zA-Z0-9:_]*) exit 2 ;; esac',
-  `printf '%s' "\${NEMOCLAW_LOCAL_INFERENCE_TOKEN:-}" | LC_ALL=C grep -Eq '${NATIVE_LOCAL_RUNTIME_REFERENCE_PATTERN}' || exit 2`,
+  `case "\${NEMOCLAW_LOCAL_INFERENCE_TOKEN:-}" in *[!a-zA-Z0-9:_]*) printf '%s\\n' '${NATIVE_LOCAL_CREDENTIAL_REFERENCE_FAILURE_MARKER}'; exit 2 ;; esac`,
+  `printf '%s' "\${NEMOCLAW_LOCAL_INFERENCE_TOKEN:-}" | LC_ALL=C grep -Eq '${NATIVE_LOCAL_RUNTIME_REFERENCE_PATTERN}' || { printf '%s\\n' '${NATIVE_LOCAL_CREDENTIAL_REFERENCE_FAILURE_MARKER}'; exit 2; }`,
   'AUTH_HEADER="Authorization: Bearer ${NEMOCLAW_LOCAL_INFERENCE_TOKEN}"',
 ].join("; ");

@@ -141,6 +141,7 @@ export class LaunchReadinessObservationError extends Error {
   constructor(
     readonly category: LaunchReadinessObservationCategory,
     readonly failedCheck?: LaunchReadinessFailedCheck,
+    readonly detail?: string,
   ) {
     super(category);
   }
@@ -250,7 +251,8 @@ export async function requireNativeInferenceHealth(input: {
       preferredInferenceApi: "openai-completions",
       nativeLocalProviderAttachment: expected,
     });
-    if (!result.ok) throw new LaunchReadinessObservationError("health", "inference request");
+    if (!result.ok)
+      throw new LaunchReadinessObservationError("health", "inference request", result.detail);
     return true;
   }
   const expected = getNativeProviderAttachment(input.entry);

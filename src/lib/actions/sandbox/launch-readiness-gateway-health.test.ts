@@ -7,10 +7,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { OpenShellSandboxBufferedCommandExecutor } from "../../adapters/openshell/sandbox-command";
 import { loadAgent } from "../../agent/defs";
+import { nativeLocalIdentity } from "../../inference/native-local/contract";
 import type { SandboxEntry } from "../../state/registry";
 import {
   LaunchReadinessEvidenceError,
   LaunchReadinessObservationError,
+  requireNativeInferenceHealth,
   requireLaunchSemanticHealth,
   type LaunchReadinessHealthDeps,
 } from "./launch-readiness/health";
@@ -207,6 +209,51 @@ const GATEWAY = "nemoclaw";
 const MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
 const dcodeAgent = loadAgent("langchain-deepagents-code");
 const OPENROUTER_GATEWAY_AGENTS = ["openclaw", "hermes"] as const;
+
+it("preserves a safe native local probe failure for restart diagnostics (#12975)", async () => {
+  const binding = {
+    provider: "llama-cpp-local" as const,
+    agent: "openclaw" as const,
+    endpointUrl: "http://host.openshell.internal:8081/v1",
+    credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+    authMode: "authenticated" as const,
+    gatewayName: GATEWAY,
+    sandboxName: SANDBOX,
+  };
+  const receipt = {
+    ...binding,
+    ...nativeLocalIdentity(binding),
+    schemaVersion: 1 as const,
+    providerId: "owned-local-provider",
+  };
+  await expect(
+    requireNativeInferenceHealth({
+      sandboxName: SANDBOX,
+      gatewayName: GATEWAY,
+      agentName: "openclaw",
+      entry: {
+        name: SANDBOX,
+        provider: binding.provider,
+        model: "local-model",
+        nativeLocalProviderAttachment: receipt,
+      } as SandboxEntry,
+      deps: {
+        verifyNativeLocalAttachment: vi.fn(async () => {}),
+        inferenceInvocationProbe: vi.fn(async () => ({
+          ok: false as const,
+          detail:
+            "OpenShell did not provide a valid native local credential reference inside the sandbox",
+          httpStatus: null,
+        })),
+      } as LaunchReadinessHealthDeps,
+    }),
+  ).rejects.toMatchObject({
+    category: "health",
+    failedCheck: "inference request",
+    detail:
+      "OpenShell did not provide a valid native local credential reference inside the sandbox",
+  });
+});
 
 function dcodeEntry(provider = "openrouter-api"): SandboxEntry {
   return {

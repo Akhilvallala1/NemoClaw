@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { getChatCompletionsProbePayload } from "../../inference/openai-probe-models";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../inference/native-nvidia/contract";
 import { nativeLocalIdentity } from "../../inference/native-local/contract";
+import { NATIVE_LOCAL_CREDENTIAL_REFERENCE_FAILURE_MARKER } from "../../inference/native-local/agent-config";
 import {
   existsSync,
   mkdtempSync,
@@ -977,3 +978,44 @@ it.each([true, undefined])(
     ).toEqual({ ok: true });
   },
 );
+
+it("reports a missing native local supervisor reference without sending an inference request (#12975)", async () => {
+  const binding = {
+    provider: "llama-cpp-local" as const,
+    agent: "openclaw" as const,
+    endpointUrl: "http://host.openshell.internal:8081/v1",
+    credentialEnv: "NEMOCLAW_LOCAL_INFERENCE_TOKEN",
+    authMode: "authenticated" as const,
+    gatewayName: "nemoclaw",
+    sandboxName: input.sandboxName,
+  };
+  const selected = {
+    ...input,
+    agentName: "openclaw",
+    provider: binding.provider,
+    gatewayName: binding.gatewayName,
+    nativeLocalProviderAttachment: {
+      ...binding,
+      ...nativeLocalIdentity(binding),
+      schemaVersion: 1 as const,
+      providerId: "fixture-local-provider",
+    },
+  };
+  const run = spawnSync("/bin/sh", ["-c", buildSandboxInferenceInvocationCommand(selected)], {
+    env: { PATH: process.env.PATH, NEMOCLAW_LOCAL_INFERENCE_TOKEN: "" },
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  expect(run.status).toBe(2);
+  expect(run.stdout).toBe(`${NATIVE_LOCAL_CREDENTIAL_REFERENCE_FAILURE_MARKER}\n`);
+  expect(run.stderr).toBe("");
+  const result = await probeSandboxInferenceInvocation(selected, {
+    execute: async () => ({ status: run.status!, stdout: run.stdout, stderr: run.stderr }),
+  });
+  expect(result).toMatchObject({
+    ok: false,
+    detail:
+      "OpenShell did not provide a valid native local credential reference inside the sandbox",
+    httpStatus: null,
+  });
+});
