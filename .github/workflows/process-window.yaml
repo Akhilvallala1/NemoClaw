@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-name: Process Window
+name: Automation / Process Window
 on:
   pull_request:
     branches: [main, v1]
@@ -45,7 +45,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '24.18.1'
+      - uses: NVIDIA/NemoClaw/.github/actions/setup-reviewed-npm@98669f24d35f18e49b6b2769cd68709509ea24f2
       - name: Check the independent tool
         working-directory: tools/process-window
         run: |
@@ -138,7 +139,8 @@ jobs:
           github-token: ${{ github.token }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '24.18.1'
+      - uses: NVIDIA/NemoClaw/.github/actions/setup-reviewed-npm@98669f24d35f18e49b6b2769cd68709509ea24f2
       - name: Install the standalone tool
         working-directory: controller/tools/process-window
         run: npm ci --ignore-scripts
@@ -201,7 +203,8 @@ jobs:
           path: result
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '24.18.1'
+      - uses: NVIDIA/NemoClaw/.github/actions/setup-reviewed-npm@98669f24d35f18e49b6b2769cd68709509ea24f2
       - name: Install the publication helper
         working-directory: controller/tools/process-window
         run: npm ci --ignore-scripts

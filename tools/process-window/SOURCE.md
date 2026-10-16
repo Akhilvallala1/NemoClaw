@@ -5,6 +5,6 @@
 
 Process Window source revision: `204edf0393017b43d992df2fefe0646da70020f2`.
 
-Copied runtime, synthetic tests, and GitHub Actions integration. Local adaptations add SPDX notices and repository formatting. The configuration selects NemoClaw, its two branches, and its existing inference secret. CI never retrieves the private source repository.
+Copied runtime, synthetic tests, and GitHub Actions integration. Local adaptations add SPDX notices and repository formatting. The main-branch workflow uses its required category and reviewed Node 24.18.1/npm bootstrap; the reusable runtime is unchanged. The configuration selects NemoClaw, its two branches, and its existing inference secret. CI never retrieves the private source repository.
 
 Develop reusable fixes upstream and refresh this copy manually.

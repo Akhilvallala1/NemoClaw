@@ -9,7 +9,7 @@ The workflow builds one guidance browser with selectable `main` and `v1` maps. T
 
 Install the self-contained directory at `tools/process-window/` and the workflow at `.github/workflows/process-window.yaml` on both tracked branches. Keep `src/`, `test/`, `package.json`, `package-lock.json`, `tsconfig.json`, and `config.yaml` together. Tests use synthetic inputs. Do not copy development acceptance references, local credentials, node_modules, or the phase 1 mapping into a new discovery run.
 
-Run **Process Window** manually with `branch: v1`, `mode: analyze`, and `publish: false`. Download `process-window-v1` and inspect `mapping.yaml`, `revision.json`, and `site/index.html`. Repeat for `main`. The optional `revision` input supports an artifact-only run at a known commit, including a phase 1 comparison revision; supplying it disables publication.
+Run **Automation / Process Window** manually with `branch: v1`, `mode: analyze`, and `publish: false`. Download `process-window-v1` and inspect `mapping.yaml`, `revision.json`, and `site/index.html`. Repeat for `main`. The optional `revision` input supports an artifact-only run at a known commit, including a phase 1 comparison revision; supplying it disables publication.
 
 GitHub must first recognize the workflow on the default branch before manual dispatch is available. Pull requests run the tool's checks and browser tests without inference credentials. Before merge, the same analysis can run locally with the copied entry script and an authorized provider credential.
 
