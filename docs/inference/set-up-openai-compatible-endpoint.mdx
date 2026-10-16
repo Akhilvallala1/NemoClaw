@@ -18,9 +18,9 @@ The agent connects to `inference.local` inside the sandbox.
 OpenShell forwards that traffic to the endpoint configured during onboarding.
 </AgentOnly>
 <AgentOnly variant="deepagents">
-New Deep Agents Code sandboxes use sandbox-attached OpenShell providers for qualified host-local endpoints.
+New Deep Agents Code sandboxes use sandbox-attached OpenShell providers for hosted compatible endpoints and qualified host-local endpoints.
 The agent uses the recorded endpoint and a credential reference; OpenShell supplies the credential at egress.
-Other compatible endpoints retain the shared `inference.local` route.
+Retained shared routes and owned Local NVIDIA NIM use `inference.local`.
 Refer to [How Inference Routing Works](../about-inference-routing) for the qualification boundary.
 </AgentOnly>
 
@@ -75,8 +75,9 @@ Sandbox inference requests continue to use the base `inference.local` policy, so
 </AgentOnly>
 <AgentOnly variant="deepagents">
 For qualified host-local endpoints, the attached provider profile authorizes the recorded endpoint and the managed DCode runtime binaries.
-Other compatible endpoints use the base `inference.local` policy.
-Neither path requires adding the `local-inference` preset.
+Hosted compatible endpoints use their recorded endpoint through an attached provider.
+Retained shared routes and owned Local NVIDIA NIM use the base `inference.local` policy.
+These routes do not require the `local-inference` preset.
 </AgentOnly>
 For authenticated endpoints, NemoClaw leaves URLs without an explicit port, URLs on `:80` or another privileged port, and URLs on unsupported ports unchanged.
 Those authenticated URLs require a separately compatible runtime topology and network policy.
