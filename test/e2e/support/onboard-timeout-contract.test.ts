@@ -15,6 +15,10 @@ import {
   LIVE_TARGET_BASE_TEST_TIMEOUT_MS,
   INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES,
   OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS,
+  OPENCLAW_NATIVE_LOCAL_DIAGNOSTIC_DELAY_MS,
+  OPENCLAW_NATIVE_LOCAL_DIAGNOSTIC_DOCTOR_TIMEOUT_MS,
+  OPENCLAW_NATIVE_LOCAL_DIAGNOSTIC_PROBE_TIMEOUT_MS,
+  OPENCLAW_NATIVE_LOCAL_RESTART_DIAGNOSTIC_TIMEOUT_MS,
   OPENCLAW_NATIVE_LOCAL_TEST_TIMEOUT_MS,
   OPENCLAW_NATIVE_LOCAL_TARGET_TIMEOUT_MINUTES,
   liveTargetTimeoutContract,
@@ -144,9 +148,15 @@ describe("onboard final-handoff timeout contract", () => {
   });
 
   it("contains both serial OpenClaw native-local scenarios and their finalization", () => {
+    expect(OPENCLAW_NATIVE_LOCAL_RESTART_DIAGNOSTIC_TIMEOUT_MS).toBe(
+      6 * OPENCLAW_NATIVE_LOCAL_DIAGNOSTIC_PROBE_TIMEOUT_MS +
+        OPENCLAW_NATIVE_LOCAL_DIAGNOSTIC_DELAY_MS +
+        OPENCLAW_NATIVE_LOCAL_DIAGNOSTIC_DOCTOR_TIMEOUT_MS,
+    );
     expect(OPENCLAW_NATIVE_LOCAL_TEST_TIMEOUT_MS).toBeGreaterThanOrEqual(
       DCODE_NATIVE_LOCAL_TEST_TIMEOUT_MS +
         OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS +
+        OPENCLAW_NATIVE_LOCAL_RESTART_DIAGNOSTIC_TIMEOUT_MS +
         5 * MINUTE_MS,
     );
     expect(
@@ -187,8 +197,8 @@ describe("onboard final-handoff timeout contract", () => {
       singleFinalHandoffTargetMinutes: 75,
       dcodeNativeLocalTestMinutes: 117.5,
       inferenceRoutingTargetMinutes: 243,
-      openClawNativeLocalTestMinutes: 142.5,
-      openClawNativeLocalTargetMinutes: 213,
+      openClawNativeLocalTestMinutes: 146 + 38 / 60,
+      openClawNativeLocalTargetMinutes: 217,
       noRecreateCommandMinutes: 15,
       configExportCommandMinutes: 2,
       configExportPinnedV1ConsumerMinutes: 10,
