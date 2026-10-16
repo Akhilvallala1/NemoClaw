@@ -351,10 +351,10 @@ describe("Fix: validateTarEntries rejects malicious tar entries", () => {
     });
   });
 
-  it("rejects an archive whose PAX linkpath contains a line break", async () => {
+  it("rejects an archive whose PAX linkpath or sparse name contains a line break", async () => {
     const { validateTarEntries } = await loadSandboxState();
     const targetDir = "/tmp/nemoclaw-test-target";
-    const tar = buildTar([
+    const linkpathTar = buildTar([
       {
         path: "PaxHeaders/link",
         type: "x",
@@ -363,7 +363,22 @@ describe("Fix: validateTarEntries rejects malicious tar entries", () => {
       { path: "workspace/link", type: "1", linkTarget: "workspace/placeholder" },
     ]);
 
-    expect(validateTarEntries(tar, targetDir)).toEqual({
+    expect(validateTarEntries(linkpathTar, targetDir)).toEqual({
+      safe: false,
+      entries: [],
+      violations: ["tar listing failed: archive entry contains a line break"],
+    });
+
+    const sparseNameTar = buildTar([
+      {
+        path: "PaxHeaders/sparse",
+        type: "x",
+        content: paxRecord("GNU.sparse.name", "workspace/sparse\r\nname"),
+      },
+      { path: "workspace/sparse", content: "x" },
+    ]);
+
+    expect(validateTarEntries(sparseNameTar, targetDir)).toEqual({
       safe: false,
       entries: [],
       violations: ["tar listing failed: archive entry contains a line break"],
@@ -401,6 +416,28 @@ describe("Fix: validateTarEntries rejects malicious tar entries", () => {
       safe: false,
       entries: [],
       violations: ["tar listing failed: archive header cannot be inspected for line breaks"],
+    });
+  });
+
+  it("rejects an archive whose combined extended-header metadata exceeds the inspection limit", async () => {
+    const { validateTarEntries } = await loadSandboxState();
+    const targetDir = "/tmp/nemoclaw-test-target";
+    const metadataChunk = paxRecord("comment", "a".repeat(900 * 1024));
+    const entries = Array.from({ length: 5 }, (_, index) => [
+      {
+        path: `PaxHeaders/member-${index}`,
+        type: "x",
+        content: metadataChunk,
+      },
+      { path: `workspace/member-${index}.json`, content: "{}" },
+    ]).flat();
+
+    expect(validateTarEntries(buildTar(entries), targetDir)).toEqual({
+      safe: false,
+      entries: [],
+      violations: [
+        "tar listing failed: archive header inspection exceeded the header-count or metadata-byte limit",
+      ],
     });
   });
 });
@@ -560,5 +597,67 @@ describe("Fix: stopped-state extraction cannot write through archive symlinks", 
     expect(rejectHardLinkExtractionTraversal(hardLinkTar, hardLinkValidation.entries)).toEqual([
       "hard-link target 'workspace/sym\\link/.config/secret' in 'workspace/stolen' resolves through symlink 'workspace/sym\\link'",
     ]);
+  });
+
+  it("preserves backslashes and rejects link traversal when a tar that lists names literally rejects --quoting-style=literal", async () => {
+    const {
+      rejectHardLinkExtractionTraversal,
+      rejectSymlinkExtractionTraversal,
+      validateTarEntries,
+    } = await loadSandboxState();
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-tar-fallback-"));
+    const oldPath = process.env.PATH;
+    try {
+      const systemTar = spawnSync("sh", ["-c", "command -v tar"], {
+        encoding: "utf8",
+      }).stdout.trim();
+      expect(systemTar).not.toBe("");
+      const fakeTar = path.join(fixture, "tar");
+      fs.writeFileSync(
+        fakeTar,
+        [
+          "#!/usr/bin/env node",
+          'const { spawnSync } = require("node:child_process");',
+          "const args = process.argv.slice(2);",
+          'if (args.includes("--quoting-style=literal")) { process.stderr.write("tar: Option --quoting-style=literal is not supported\\n"); process.exit(1); }',
+          `process.exit(spawnSync(${JSON.stringify(systemTar)}, ["--quoting-style=literal", ...args], { stdio: "inherit" }).status ?? 90);`,
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${fixture}:${oldPath ?? ""}`;
+
+      const safeEntry = "workspace/05-\u{1F6E0}\u{FE0F}\\ Systems\\ \\&\\ Templates/.env";
+      const safeTar = buildTar([{ path: safeEntry, content: "CUSTOM_MODE=enabled\n" }]);
+      expect(validateTarEntries(safeTar, "/tmp/private-stopped-state")).toEqual({
+        safe: true,
+        entries: [safeEntry],
+        violations: [],
+      });
+
+      const symlinkTar = buildTar([
+        { path: "workspace/sym\\link", type: "2", linkTarget: "../../outside" },
+        { path: "workspace/sym\\link/payload.txt", content: "must stay contained" },
+      ]);
+      const symlinkValidation = validateTarEntries(symlinkTar, "/tmp/private-stopped-state");
+      expect(symlinkValidation.safe).toBe(true);
+      expect(rejectSymlinkExtractionTraversal(symlinkTar, symlinkValidation.entries)).toEqual([
+        "archive member 'workspace/sym\\link/payload.txt' would extract through symlink 'workspace/sym\\link'",
+      ]);
+
+      const hardLinkTar = buildTar([
+        { path: "workspace/sym\\link", type: "2", linkTarget: "/home/operator" },
+        { path: "workspace/stolen", type: "1", linkTarget: "workspace/sym\\link/.config/secret" },
+      ]);
+      const hardLinkValidation = validateTarEntries(hardLinkTar, "/tmp/private-stopped-state");
+      expect(hardLinkValidation.safe).toBe(true);
+      expect(rejectHardLinkExtractionTraversal(hardLinkTar, hardLinkValidation.entries)).toEqual([
+        "hard-link target 'workspace/sym\\link/.config/secret' in 'workspace/stolen' resolves through symlink 'workspace/sym\\link'",
+      ]);
+    } finally {
+      oldPath === undefined
+        ? Reflect.deleteProperty(process.env, "PATH")
+        : Reflect.set(process.env, "PATH", oldPath);
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });

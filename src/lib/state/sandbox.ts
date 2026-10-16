@@ -587,17 +587,26 @@ function rejectSymlinksOnPath(targetPath: string): void {
 }
 
 /**
- * List tar entries and validate every path is within targetDir.
- * Rejects absolute paths, path traversal (..), and null bytes.
+ * List tar entries and confirm that every path stays within targetDir.
+ * Reject absolute paths, .. traversal, NUL bytes, and member paths or link
+ * targets that contain a line break. Stop when deadlineMs passes.
  */
 export function validateTarEntries(
   tarArchive: TarListingSource,
   targetDir: string,
+  deadlineMs?: number,
 ): TarValidationResult {
   const entries: string[] = [];
-  const listingFailure = runTarListing(tarArchive, ["-tf", "-"], "tar listing", (line) => {
-    entries.push(line);
-  });
+  const listingFailure = runTarListing(
+    tarArchive,
+    ["-tf", "-"],
+    "tar listing",
+    (line) => {
+      entries.push(line);
+    },
+    undefined,
+    deadlineMs,
+  );
   if (listingFailure) {
     return {
       safe: false,
@@ -641,15 +650,23 @@ export function validateTarEntries(
 export function rejectSymlinkExtractionTraversal(
   tarArchive: TarListingSource,
   entries: readonly string[],
+  deadlineMs?: number,
 ): string[] {
   const symlinks: Array<{ entry: string; index: number }> = [];
   let index = 0;
-  const listingFailure = runTarListing(tarArchive, ["-tvf", "-"], "tar symlink listing", (line) => {
-    const entry = entries[index];
-    if (entry === undefined) return;
-    if (line.startsWith("l")) symlinks.push({ entry, index });
-    index += 1;
-  });
+  const listingFailure = runTarListing(
+    tarArchive,
+    ["-tvf", "-"],
+    "tar symlink listing",
+    (line) => {
+      const entry = entries[index];
+      if (entry === undefined) return;
+      if (line.startsWith("l")) symlinks.push({ entry, index });
+      index += 1;
+    },
+    undefined,
+    deadlineMs,
+  );
   if (listingFailure) return [listingFailure];
   if (index !== entries.length) return ["tar symlink listing did not match archive inventory"];
 
@@ -684,31 +701,39 @@ export function rejectSymlinkExtractionTraversal(
 export function rejectHardLinkExtractionTraversal(
   tarArchive: TarListingSource,
   entries: readonly string[],
+  deadlineMs?: number,
 ): string[] {
   const symlinks: Array<{ path: string; index: number; entry: string }> = [];
   const hardLinks: Array<{ target: string; index: number; entry: string }> = [];
   const violations: string[] = [];
   let index = 0;
-  const listingFailure = runTarListing(tarArchive, ["-tvf", "-"], "tar link listing", (line) => {
-    const entry = entries[index];
-    if (entry === undefined) return;
-    const normalizedEntry = path.posix.normalize(entry.replace(/^\.\//u, "")).replace(/\/$/u, "");
-    if (line.startsWith("l")) {
-      symlinks.push({ path: normalizedEntry, index, entry });
-    } else if (line.startsWith("h") || / link to /u.test(line)) {
-      const marker = line.lastIndexOf(" link to ");
-      if (marker < 0) {
-        violations.push(`uninspectable hard link: ${entry}`);
-      } else {
-        hardLinks.push({
-          target: line.slice(marker + " link to ".length).trim(),
-          index,
-          entry,
-        });
+  const listingFailure = runTarListing(
+    tarArchive,
+    ["-tvf", "-"],
+    "tar link listing",
+    (line) => {
+      const entry = entries[index];
+      if (entry === undefined) return;
+      const normalizedEntry = path.posix.normalize(entry.replace(/^\.\//u, "")).replace(/\/$/u, "");
+      if (line.startsWith("l")) {
+        symlinks.push({ path: normalizedEntry, index, entry });
+      } else if (line.startsWith("h") || / link to /u.test(line)) {
+        const marker = line.lastIndexOf(" link to ");
+        if (marker < 0) {
+          violations.push(`uninspectable hard link: ${entry}`);
+        } else {
+          hardLinks.push({
+            target: line.slice(marker + " link to ".length).trim(),
+            index,
+            entry,
+          });
+        }
       }
-    }
-    index += 1;
-  });
+      index += 1;
+    },
+    undefined,
+    deadlineMs,
+  );
   if (listingFailure) return [listingFailure];
   if (index !== entries.length) return ["tar link listing did not match archive inventory"];
 
@@ -743,15 +768,22 @@ export function rejectHardLinkExtractionTraversal(
  * legitimate reason to contain them, and they can be used to reference
  * files outside the extraction root.
  */
-export function rejectHardLinks(tarArchive: TarArchiveSource): string[] {
+export function rejectHardLinks(tarArchive: TarArchiveSource, deadlineMs?: number): string[] {
   const violations: string[] = [];
-  const listingFailure = runTarListing(tarArchive, ["-tvf", "-"], "tar verbose listing", (line) => {
-    // Both GNU tar and bsdtar prefix hard-link entries with 'h' in verbose mode
-    // and include " link to " in the line.
-    if (line.startsWith("h") || / link to /.test(line)) {
-      violations.push(`hard link: ${line.trim()}`);
-    }
-  });
+  const listingFailure = runTarListing(
+    tarArchive,
+    ["-tvf", "-"],
+    "tar verbose listing",
+    (line) => {
+      // Both GNU tar and bsdtar prefix hard-link entries with 'h' in verbose mode
+      // and include " link to " in the line.
+      if (line.startsWith("h") || / link to /.test(line)) {
+        violations.push(`hard link: ${line.trim()}`);
+      }
+    },
+    undefined,
+    deadlineMs,
+  );
   if (listingFailure) return [listingFailure];
 
   return violations;
@@ -2472,7 +2504,11 @@ function backupNativeSandboxState(
       rmSync(backupPath, { recursive: true, force: true });
       return nativeStateFailure(`Native state archive validation failed: ${rawArchiveViolation}`);
     }
-    const validation = validateTarEntries({ filePath: archivePath }, rootResult.root);
+    const validation = validateTarEntries(
+      { filePath: archivePath },
+      rootResult.root,
+      options.deadlineMs,
+    );
     if (!validation.safe) {
       rmSync(backupPath, { recursive: true, force: true });
       return nativeStateFailure(
@@ -2482,6 +2518,7 @@ function backupNativeSandboxState(
     const symlinkTraversalViolations = rejectSymlinkExtractionTraversal(
       { filePath: archivePath },
       validation.entries,
+      options.deadlineMs,
     );
     if (symlinkTraversalViolations.length > 0) {
       rmSync(backupPath, { recursive: true, force: true });
@@ -2489,7 +2526,7 @@ function backupNativeSandboxState(
         `Native state archive validation failed: ${symlinkTraversalViolations.join("; ")}`,
       );
     }
-    const hardLinkViolations = rejectHardLinks({ filePath: archivePath });
+    const hardLinkViolations = rejectHardLinks({ filePath: archivePath }, options.deadlineMs);
     if (hardLinkViolations.length > 0) {
       rmSync(backupPath, { recursive: true, force: true });
       return nativeStateFailure(

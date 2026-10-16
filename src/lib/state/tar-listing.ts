@@ -26,16 +26,37 @@ const TAR_LISTING_READ_CHUNK_BYTES = 64 * 1024;
 const TAR_LISTING_MAX_LINE_CHARS = 1024 * 1024;
 const TAR_BLOCK_BYTES = 512;
 const TAR_METADATA_MAX_BYTES = 1024 * 1024;
+const TAR_TOTAL_METADATA_MAX_BYTES = 4 * 1024 * 1024;
+const TAR_MAX_INSPECTED_HEADERS = 65_536;
 let unsupportedLiteralQuotingPath: string | null = null;
 
+/** Return true when an archive-listing deadline is invalid or has already passed. */
+function listingDeadlineExpired(deadlineMs: number): boolean {
+  return !Number.isFinite(deadlineMs) || Date.now() >= deadlineMs;
+}
+
+/** Compute the remaining positive timeout budget before deadlineMs, bounded by maximumMs. */
+function remainingListingTimeoutMs(deadlineMs: number, maximumMs: number): number | null {
+  if (!Number.isFinite(deadlineMs) || !Number.isFinite(maximumMs) || maximumMs <= 0) return null;
+  const remainingMs = Math.floor(deadlineMs - Date.now());
+  return remainingMs > 0 ? Math.min(maximumMs, remainingMs) : null;
+}
+
 /** Stream UTF-8 lines from the bounded listing file without buffering the whole output in memory. */
-function readTextLinesFromFile(filePath: string, onLine: (line: string) => void): void {
+function readTextLinesFromFile(
+  filePath: string,
+  onLine: (line: string) => void,
+  deadlineMs: number,
+): void {
   const fd = openSync(filePath, "r");
   const decoder = new StringDecoder("utf8");
   const chunk = Buffer.alloc(TAR_LISTING_READ_CHUNK_BYTES);
   let pending = "";
   try {
     while (true) {
+      if (listingDeadlineExpired(deadlineMs)) {
+        throw new Error("archive listing timed out");
+      }
       const bytesRead = readSync(fd, chunk, 0, chunk.length, null);
       if (bytesRead === 0) break;
       pending += decoder.write(chunk.subarray(0, bytesRead));
@@ -98,9 +119,14 @@ function tarHeaderSize(header: Buffer): number | null {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-type TarHeaderLineBreakInspection = "clean" | "line-break" | "uninspectable";
+type TarHeaderLineBreakInspection =
+  | "clean"
+  | "line-break"
+  | "uninspectable"
+  | "limit-exceeded"
+  | "timeout";
 
-/** Detect a PAX path or linkpath record that contains a line break; report malformed records as uninspectable. */
+/** Detect a PAX path, linkpath, or GNU.sparse.name record that contains a line break; report malformed records as uninspectable. */
 function inspectPaxHeaderForLineBreaks(payload: Buffer): TarHeaderLineBreakInspection {
   let cursor = 0;
   while (cursor < payload.byteLength) {
@@ -115,7 +141,10 @@ function inspectPaxHeaderForLineBreaks(payload: Buffer): TarHeaderLineBreakInspe
     const equals = record.indexOf("=");
     if (equals <= 0) return "uninspectable";
     const key = record.slice(0, equals);
-    if ((key === "path" || key === "linkpath") && hasHeaderLineBreak(record.slice(equals + 1))) {
+    if (
+      (key === "path" || key === "linkpath" || key === "GNU.sparse.name") &&
+      hasHeaderLineBreak(record.slice(equals + 1))
+    ) {
       return "line-break";
     }
     cursor += length;
@@ -124,20 +153,29 @@ function inspectPaxHeaderForLineBreaks(payload: Buffer): TarHeaderLineBreakInspe
 }
 
 /**
- * Inspect every tar header before a literal listing. Return a failure when a
- * member path or link target contains a line break, or when a header or its
- * metadata cannot be inspected within TAR_METADATA_MAX_BYTES.
+ * Inspect every tar header before tar lists the archive, within the header,
+ * metadata, and deadline budget. Return a failure when a member path or link
+ * target contains a line break, when a header or its metadata is malformed or
+ * exceeds TAR_METADATA_MAX_BYTES, or when cumulative inspection exceeds the
+ * header-count, metadata-byte, or deadline budget.
  */
 function inspectArchiveHeadersForLineBreaks(
-  readRange: (position: number, length: number) => Buffer | null,
+  readRange: (position: number, length: number) => Buffer | "timeout" | null,
   archiveSize: number,
+  deadlineMs: number,
 ): TarHeaderLineBreakInspection {
   let offset = 0;
+  let inspectedHeaders = 0;
+  let inspectedMetadataBytes = 0;
   while (offset < archiveSize) {
+    if (listingDeadlineExpired(deadlineMs)) return "timeout";
     if (offset + TAR_BLOCK_BYTES > archiveSize) return "uninspectable";
     const header = readRange(offset, TAR_BLOCK_BYTES);
+    if (header === "timeout") return "timeout";
     if (!header) return "uninspectable";
     if (header.every((byte) => byte === 0)) return "clean";
+    inspectedHeaders += 1;
+    if (inspectedHeaders > TAR_MAX_INSPECTED_HEADERS) return "limit-exceeded";
     if (
       hasHeaderLineBreak(tarHeaderString(header, 0, 100)) ||
       hasHeaderLineBreak(tarHeaderString(header, 157, 100)) ||
@@ -153,7 +191,10 @@ function inspectArchiveHeadersForLineBreaks(
     const type = String.fromCharCode(header[156] ?? 0);
     if (type === "x" || type === "g" || type === "L" || type === "K") {
       if (size > TAR_METADATA_MAX_BYTES) return "uninspectable";
+      inspectedMetadataBytes += size;
+      if (inspectedMetadataBytes > TAR_TOTAL_METADATA_MAX_BYTES) return "limit-exceeded";
       const metadata = readRange(dataOffset, size);
+      if (metadata === "timeout") return "timeout";
       if (!metadata) return "uninspectable";
       if (type === "x" || type === "g") {
         const paxResult = inspectPaxHeaderForLineBreaks(metadata);
@@ -169,11 +210,17 @@ function inspectArchiveHeadersForLineBreaks(
   return "clean";
 }
 
-/** Read the full byte range from an open archive descriptor, or return null at EOF; the file offset is unchanged. */
-function readDescriptorRange(descriptor: number, position: number, length: number): Buffer | null {
+/** Read a byte range at a fixed position without moving the file offset. Return null at EOF and "timeout" after deadlineMs. */
+function readDescriptorRange(
+  descriptor: number,
+  position: number,
+  length: number,
+  deadlineMs: number,
+): Buffer | "timeout" | null {
   const result = Buffer.alloc(length);
   let read = 0;
   while (read < length) {
+    if (listingDeadlineExpired(deadlineMs)) return "timeout";
     const count = readSync(descriptor, result, read, length - read, position + read);
     if (count === 0) return null;
     read += count;
@@ -185,7 +232,11 @@ export type TarArchiveSource = Buffer | { filePath: string };
 export type TarListingSource = TarArchiveSource | { fileDescriptor: number };
 
 /** Stage a caller-supplied file descriptor into a private temporary archive at offset 0. */
-function copyDescriptorToPrivateArchive(fileDescriptor: number, tempDir: string): string {
+function copyDescriptorToPrivateArchive(
+  fileDescriptor: number,
+  tempDir: string,
+  deadlineMs: number,
+): string {
   const source = fstatSync(fileDescriptor);
   if (!source.isFile() || !Number.isSafeInteger(source.size) || source.size < 0) {
     throw new Error("tar archive descriptor must reference a regular file");
@@ -196,11 +247,17 @@ function copyDescriptorToPrivateArchive(fileDescriptor: number, tempDir: string)
   let position = 0;
   try {
     while (position < source.size) {
+      if (listingDeadlineExpired(deadlineMs)) {
+        throw new Error("archive listing timed out");
+      }
       const requested = Math.min(chunk.byteLength, source.size - position);
       const bytesRead = readSync(fileDescriptor, chunk, 0, requested, position);
       if (bytesRead === 0) throw new Error("tar archive descriptor became truncated");
       let written = 0;
       while (written < bytesRead) {
+        if (listingDeadlineExpired(deadlineMs)) {
+          throw new Error("archive listing timed out");
+        }
         const count = writeSync(archiveFd, chunk, written, bytesRead - written, position + written);
         if (count === 0) throw new Error("could not stage tar archive descriptor");
         written += count;
@@ -218,6 +275,7 @@ function openIndependentTarDescriptor(
   tarArchive: Exclude<TarListingSource, Buffer>,
   tempDir: string,
   stagedArchivePath: { current: string | null },
+  deadlineMs: number,
 ) {
   if ("filePath" in tarArchive) return openSync(tarArchive.filePath, "r");
   // Linux reopens the underlying inode with an independent file offset, even
@@ -231,7 +289,11 @@ function openIndependentTarDescriptor(
     }
   }
   if (stagedArchivePath.current === null) {
-    stagedArchivePath.current = copyDescriptorToPrivateArchive(tarArchive.fileDescriptor, tempDir);
+    stagedArchivePath.current = copyDescriptorToPrivateArchive(
+      tarArchive.fileDescriptor,
+      tempDir,
+      deadlineMs,
+    );
   }
   return openSync(stagedArchivePath.current, "r");
 }
@@ -244,6 +306,7 @@ function spawnTarListingPass(
   stagedArchivePath: { current: string | null },
   args: string[],
   timeoutMs: number,
+  deadlineMs: number,
 ): SpawnSyncReturns<string> {
   let listingFd: number | null = null;
   let archiveFd: number | null = null;
@@ -258,7 +321,7 @@ function spawnTarListingPass(
         maxBuffer: TAR_LISTING_STDERR_MAX_BUFFER_BYTES,
       });
     }
-    archiveFd = openIndependentTarDescriptor(tarArchive, tempDir, stagedArchivePath);
+    archiveFd = openIndependentTarDescriptor(tarArchive, tempDir, stagedArchivePath, deadlineMs);
     return spawnSync("tar", args, {
       encoding: "utf-8",
       stdio: [archiveFd, listingFd, "pipe"],
@@ -273,9 +336,10 @@ function spawnTarListingPass(
 
 /**
  * List tar entries through a temporary file so large archives do not overflow
- * spawnSync buffers. GNU tar runs with --quoting-style=literal so backslashes
- * stay literal; tar implementations without that option, such as bsdtar, keep
- * their default escaping.
+ * spawnSync buffers. Reject archives whose member paths or link targets contain
+ * a line break before tar runs. GNU tar lists names literally. Tar implementations
+ * that reject --quoting-style=literal, such as bsdtar, keep their default escaping;
+ * later member extraction by name then fails closed.
  */
 export function runTarListing(
   tarArchive: TarListingSource,
@@ -283,7 +347,14 @@ export function runTarListing(
   failureLabel: string,
   onLine: (line: string) => void,
   timeoutMs = 60_000,
+  deadlineMs?: number,
 ): string | null {
+  const nowMs = Date.now();
+  const listingDeadlineMs =
+    deadlineMs === undefined ? nowMs + timeoutMs : Math.min(nowMs + timeoutMs, deadlineMs);
+  if (listingDeadlineExpired(listingDeadlineMs)) {
+    return `${failureLabel} failed: archive listing timed out`;
+  }
   const tempDir = mkdtempSync(path.join(os.tmpdir(), "nemoclaw-tar-listing-"));
   const listingPath = path.join(tempDir, "listing.txt");
   const stagedArchivePath = { current: null as string | null };
@@ -292,17 +363,27 @@ export function runTarListing(
     const headerInspection = Buffer.isBuffer(tarArchive)
       ? inspectArchiveHeadersForLineBreaks(
           (position, length) =>
-            position + length <= tarArchive.byteLength
-              ? tarArchive.subarray(position, position + length)
-              : null,
+            listingDeadlineExpired(listingDeadlineMs)
+              ? "timeout"
+              : position + length <= tarArchive.byteLength
+                ? tarArchive.subarray(position, position + length)
+                : null,
           tarArchive.byteLength,
+          listingDeadlineMs,
         )
       : (() => {
-          headerFd = openIndependentTarDescriptor(tarArchive, tempDir, stagedArchivePath);
+          headerFd = openIndependentTarDescriptor(
+            tarArchive,
+            tempDir,
+            stagedArchivePath,
+            listingDeadlineMs,
+          );
           const size = fstatSync(headerFd).size;
           return inspectArchiveHeadersForLineBreaks(
-            (position, length) => readDescriptorRange(headerFd!, position, length),
+            (position, length) =>
+              readDescriptorRange(headerFd!, position, length, listingDeadlineMs),
             size,
+            listingDeadlineMs,
           );
         })();
     if (headerFd !== null) {
@@ -312,29 +393,45 @@ export function runTarListing(
     if (headerInspection === "line-break") {
       return `${failureLabel} failed: archive entry contains a line break`;
     }
+    if (headerInspection === "limit-exceeded") {
+      return `${failureLabel} failed: archive header inspection exceeded the header-count or metadata-byte limit`;
+    }
+    if (headerInspection === "timeout") {
+      return `${failureLabel} failed: archive header inspection timed out`;
+    }
     if (headerInspection === "uninspectable") {
       return `${failureLabel} failed: archive header cannot be inspected for line breaks`;
     }
 
     const currentPath = process.env.PATH ?? "";
     const tryLiteralQuoting = unsupportedLiteralQuotingPath !== currentPath;
+    const initialTimeoutMs = remainingListingTimeoutMs(listingDeadlineMs, timeoutMs);
+    if (initialTimeoutMs === null) {
+      return `${failureLabel} failed: archive listing timed out`;
+    }
     let result = spawnTarListingPass(
       tarArchive,
       tempDir,
       listingPath,
       stagedArchivePath,
       tryLiteralQuoting ? ["--quoting-style=literal", ...args] : args,
-      timeoutMs,
+      initialTimeoutMs,
+      listingDeadlineMs,
     );
     if (tryLiteralQuoting && isUnsupportedQuotingStyle(result)) {
       unsupportedLiteralQuotingPath = currentPath;
+      const fallbackTimeoutMs = remainingListingTimeoutMs(listingDeadlineMs, timeoutMs);
+      if (fallbackTimeoutMs === null) {
+        return `${failureLabel} failed: archive listing timed out`;
+      }
       result = spawnTarListingPass(
         tarArchive,
         tempDir,
         listingPath,
         stagedArchivePath,
         args,
-        timeoutMs,
+        fallbackTimeoutMs,
+        listingDeadlineMs,
       );
     }
 
@@ -347,7 +444,7 @@ export function runTarListing(
       return `${failureLabel} exceeded ${TAR_LISTING_MAX_OUTPUT_BYTES} bytes`;
     }
 
-    readTextLinesFromFile(listingPath, onLine);
+    readTextLinesFromFile(listingPath, onLine, listingDeadlineMs);
     return null;
   } catch (error) {
     return `${failureLabel} failed: ${error instanceof Error ? error.message : String(error)}`;
