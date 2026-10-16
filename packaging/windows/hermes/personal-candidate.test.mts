@@ -264,6 +264,7 @@ test("Personal wrapper removes only its current runtime after confirmed native c
       hostDesktopsReleased: true,
       hostDiagnosticChildrenClosed: true,
       ownedRootsRemoved: true,
+      nativeStateComplete: true,
     },
   };
   const cases: { name: string; receipt: any; expected: boolean }[] = [

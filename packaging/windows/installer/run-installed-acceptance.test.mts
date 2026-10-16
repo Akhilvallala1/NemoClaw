@@ -1585,7 +1585,7 @@ function Get-Content {
     configurationReused=$warm;configurationPreserved=(-not $warm)
     stateRoot='C:\NemoClawState-S-1-5-21-1-hermes';configurationSha256=('e' * 64)
     retainedConversation=@{storedSessionId='saved-session';profileName='personal';messageCount=10;lastMessageId=20;transcriptSha256=('f' * 64)}
-    custody=@{nativeLaunchAttempted=$true;nativeCleanupConfirmed=$true;processesStopped=$true;uninstallSafe=$true;configurationRetainedForRecovery=$false}
+    custody=@{configurationMutationUnconfirmed=$false;nativeLaunchAttempted=$true;nativeCleanupConfirmed=$true;processesStopped=$true;uninstallSafe=$true;configurationRetainedForRecovery=$false}
     cleanup=@{schemaVersion=1;classification='native-hermes-dashboard-qualification';agent='hermes';sandboxDeleted=$true;gatewayStopped=$true;ephemeralRootsRemoved=$true;stateRetained=$true;leaseReleased=$true;cleanupSucceeded=$true;
       guardianClosed=$true;observerClosed=$true;runtimeLeaseOwnerClosedWithGuardian=$true;
       runtimeIdentity=@{runtimeId=$expectedHermesRuntime.runtimeId;manifestSha256=$expectedHermesRuntime.manifestSha256;sourceRevision=$expectedHermesRuntime.sourceRevision}}
@@ -1614,6 +1614,10 @@ function Get-Content {
     'string-native' { $receipt.results.custody.nativeCleanupConfirmed='true' }
     'process-unknown' { $receipt.results.custody.processesStopped=$false }
     'unsafe' { $receipt.results.custody.uninstallSafe=$false }
+    'configuration-unconfirmed' { $receipt.results.custody.configurationMutationUnconfirmed=$true }
+    'string-configuration-custody' { $receipt.results.custody.configurationMutationUnconfirmed='false' }
+    'missing-configuration-custody' { $receipt.results.custody.Remove('configurationMutationUnconfirmed') }
+    'warm-configuration-unconfirmed' { if ($warm) { $receipt.results.custody.configurationMutationUnconfirmed=$true } }
     'retained-recovery' { $receipt.results.custody.configurationRetainedForRecovery=$true }
     'string-retained' { $receipt.results.custody.configurationRetainedForRecovery='false' }
     'missing-backend' { $receipt.results.Remove('cleanup') }
@@ -1663,6 +1667,7 @@ function Get-Content {
 }
 $count=0
 $scenarios=@('pass','process-failure','warm-process-failure','failed-receipt','cleanup-failure','missing-cleanup-errors','string-schema','wrong-classification','array-classification','array-verdict','array-run','wrong-run','wrong-runtime','wrong-source','missing-custody','no-launch','native-unknown','string-native','process-unknown','unsafe','retained-recovery','string-retained','missing-backend','backend-incomplete','string-backend','wrong-backend-runtime','wrong-backend-agent','wrong-backend-schema','wrong-case','string-case','wrong-preservation','unbound-state','changed-warm-state','changed-warm-config','full-claim','stale-receipt','missing-receipt','malformed-receipt')
+$scenarios+=@('configuration-unconfirmed','string-configuration-custody','missing-configuration-custody','warm-configuration-unconfirmed')
 $scenarios+=@('missing-retained','retained-array','empty-session','array-session','long-session','empty-profile','long-profile','string-count','single-count','limit-count','fraction-count','string-last','last-before-count','unsafe-last','invalid-hash','array-hash','warm-missing-restored','warm-array-restored','warm-restored-string-count','warm-restored-session','warm-restored-profile','warm-restored-count','warm-restored-last','warm-restored-hash','warm-continued-session','warm-continued-profile','warm-continued-count','warm-continued-last','warm-continued-hash')
 foreach ($scenario in $scenarios) {
   $calls=[Collections.Generic.List[object]]::new(); $timings=@{}; $failed=$false; $restartCustodyUnresolved=$false
@@ -1706,7 +1711,7 @@ Write-Output $count
     );
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(result.stdout.trim(), "67");
+    assert.equal(result.stdout.trim(), "71");
   });
 
 for (const shell of ["powershell.exe", "pwsh.exe"])

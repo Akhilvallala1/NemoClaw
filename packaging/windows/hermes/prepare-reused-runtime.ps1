@@ -61,6 +61,32 @@ try{
     Invoke-ReuseTool $python @('-I','-B',(Join-Path $PSScriptRoot 'rebuild-pywinpty-conpty.py'),'--runtime-root',$RuntimeRoot,
         '--base-zip',[string]$reuseSpec.baseZip,'--adaptation-receipt',$adaptation,'--artifact-directory',$wheelEvidence,
         '--rust-bin-directory',[string]$reuseSpec.rustBinDirectory) 'rebuild-only-canonical-console-wheel'
+    # Build the actual native state owner in this same initialized compiler process.
+    # This helper is host-side test infrastructure, never added to the agent payload.
+    $launcherSource=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../launcher'))
+    $stateTarget=Join-Path $build 'state-owner-target'
+    $stateSources=@(Get-ChildItem -LiteralPath (Join-Path $launcherSource 'src') -Recurse -File -Filter '*.rs')+
+        @(Get-Item -LiteralPath (Join-Path $launcherSource 'Cargo.toml'),(Join-Path $launcherSource 'Cargo.lock'))
+    $stateInputs=@($stateSources|Sort-Object FullName|ForEach-Object {
+        @{file=[IO.Path]::GetRelativePath($launcherSource,$_.FullName).Replace('\','/');
+          bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+    })
+    $receipt['stateOwnerBuildAttempted']=$true;$receipt['stateOwnerBuildClosed']=$false
+    $previousRustc=$env:RUSTC
+    try {
+        $env:RUSTC=Join-Path ([string]$reuseSpec.rustBinDirectory) 'rustc.exe'
+        Invoke-ReuseTool (Join-Path ([string]$reuseSpec.rustBinDirectory) 'cargo.exe') @('rustc','--locked','--offline','--release','--no-default-features',
+            '--manifest-path',(Join-Path $launcherSource 'Cargo.toml'),'--target','aarch64-pc-windows-msvc',
+            '--target-dir',$stateTarget,'--','-C','target-feature=+crt-static') 'build-personal-native-state-owner'
+        $receipt.stateOwnerBuildClosed=$true
+    } finally {$env:RUSTC=$previousRustc}
+    foreach($source in $stateInputs){Assert-ReuseBytes (Join-Path $launcherSource $source.file) $source.bytes $source.sha256}
+    $stateLauncher=Join-Path $stateTarget 'aarch64-pc-windows-msvc/release/NemoClaw.exe'
+    $stateBuild=[ordered]@{schemaVersion=1;classification='personal-native-state-owner-build';sourceRevision=$ControllerSource;
+        workflowRunId=$env:GITHUB_RUN_ID;workflowRunAttempt=$env:GITHUB_RUN_ATTEMPT;target='aarch64-pc-windows-msvc';immutableRuntime=$false;
+        file=$stateLauncher;bytes=(Get-Item -LiteralPath $stateLauncher).Length;
+        sha256=(Get-FileHash -LiteralPath $stateLauncher -Algorithm SHA256).Hash.ToLowerInvariant();sources=$stateInputs;buildProcessesClosed=$true}
+    [IO.File]::WriteAllText((Join-Path $parent 'state-owner-build.json'),($stateBuild|ConvertTo-Json -Depth 5)+"`n",[Text.UTF8Encoding]::new($false))
     $gitEvidence=Join-Path $build 'git'
     Invoke-ReuseTool $node @('--experimental-strip-types','--no-warnings',(Join-Path $PSScriptRoot 'prepare-canonical-git.mts'),
         '--runtime-root',$RuntimeRoot,'--base-inventory',$baseInventory,'--evidence',$gitEvidence) 'prepare-finished-canonical-git'
@@ -103,6 +129,9 @@ finally{
             $receipt.status='failed'
             if($null -eq $primary){$primary=[InvalidOperationException]::new('Targeted build process closure was not confirmed; retain its runtime.')}
         }
+    }
+    if($receipt.Contains('stateOwnerBuildAttempted') -and $receipt.stateOwnerBuildAttempted -and -not $receipt.stateOwnerBuildClosed){
+        $receipt.buildProcessesClosed=$false;$receipt.status='failed'
     }
     $file=Join-Path $parent 'official-hermes-runtime-phase.json'
     try{[IO.File]::WriteAllText($file,($receipt|ConvertTo-Json -Depth 8)+"`n",[Text.UTF8Encoding]::new($false))}

@@ -804,6 +804,7 @@ async function main() {
   let phase = "configuration",
     primary: unknown,
     configurationOwned = false,
+    configurationMutationUnconfirmed = false,
     binding: string | undefined;
   let guardian: ChildProcess | undefined, observer: ChildProcess | undefined;
   let guardianClosed: Promise<number> | undefined, observerClosed: Promise<number> | undefined;
@@ -881,6 +882,7 @@ async function main() {
     binding = nativeCredentialBinding(configuration);
     if (!reuse) {
       const onboardPath = path.join(output, "native-onboarding.json");
+      configurationMutationUnconfirmed = true;
       const onboard = await captureOwned(
         path.join(process.env.ProgramFiles!, "PowerShell/7/pwsh.exe"),
         [
@@ -917,6 +919,7 @@ async function main() {
         })),
         "Native onboarding did not retain each provider's endpoint and model drafts",
       );
+      configurationMutationUnconfirmed = false;
     }
     const configurationText = readOpenedRegularFile(configurationPath, {
       encoding: "utf8",
@@ -1621,8 +1624,12 @@ async function main() {
         );
     }
     const processesStopped = acceptanceProcessesStopped(guardian, observer);
-    const uninstallSafe = processesStopped && (!nativeLaunchAttempted || nativeCleanupConfirmed);
+    const uninstallSafe =
+      processesStopped &&
+      !configurationMutationUnconfirmed &&
+      (!nativeLaunchAttempted || nativeCleanupConfirmed);
     results.custody = {
+      configurationMutationUnconfirmed,
       nativeLaunchAttempted,
       nativeCleanupConfirmed,
       processesStopped,
@@ -1632,6 +1639,10 @@ async function main() {
     if (!processesStopped) {
       cleanupErrors.push(
         "Processes remain live or unconfirmed; saved data and credentials retained",
+      );
+    } else if (configurationMutationUnconfirmed) {
+      cleanupErrors.push(
+        "Configuration completion remains unconfirmed; retain the installation, saved data and credentials for recovery",
       );
     } else if (!uninstallSafe) {
       cleanupErrors.push(

@@ -273,7 +273,7 @@ public partial class MainWindow : Window
         button.IsEnabled = false;
         try
         {
-            if (this.SelectedAgent == "openclaw" && !this.savedSettingsReady)
+            if (this.SelectedAgent is "openclaw" or "hermes" && !this.savedSettingsReady)
             {
                 await this.LoadSavedSettingsAsync();
                 return;
@@ -496,11 +496,11 @@ public partial class MainWindow : Window
     {
         if (sender is RadioButton { Tag: string agent } choice && AgentNames.ContainsKey(agent))
         {
-            if (agent != this.SelectedAgent) this.savedChoicesLoaded.Remove("openclaw");
+            if (agent != this.SelectedAgent) this.savedChoicesLoaded.Remove(this.SelectedAgent);
             this.SelectedAgent = agent;
             this.savedSettingsGeneration++;
             this.readingSavedSettings = false;
-            this.savedSettingsReady = !this.packageInstalled || agent != "openclaw" || this.savedChoicesLoaded.Contains(agent);
+            this.savedSettingsReady = !this.packageInstalled || this.savedChoicesLoaded.Contains(agent);
             if (this.ConfigurationPanel is not null) this.ConfigurationPanel.IsEnabled = true;
             this.RefreshProviderChoice();
             if (this.ContinueAgentButton is not null)
@@ -525,14 +525,14 @@ public partial class MainWindow : Window
         this.UpdateModelSetupAction();
         if (this.UseSavedSetup) this.KeepSavedSetup.Focus();
         else this.ProviderChoice.Focus();
-        if (this.packageInstalled && this.SelectedAgent == "openclaw" && !this.savedChoicesLoaded.Contains(this.SelectedAgent))
+        if (this.packageInstalled && !this.savedChoicesLoaded.Contains(this.SelectedAgent))
             _ = this.LoadSavedSettingsAsync();
         else this.LicenseChanged(this, new RoutedEventArgs());
     }
 
     private async Task LoadSavedSettingsAsync()
     {
-        if (this.readingSavedSettings || this.SelectedAgent != "openclaw" || !this.runtimeAvailability.CanSelect(this.SelectedAgent)) return;
+        if (this.readingSavedSettings || this.SelectedAgent is not ("openclaw" or "hermes") || !this.runtimeAvailability.CanSelect(this.SelectedAgent)) return;
         var agent = this.SelectedAgent;
         var generation = ++this.savedSettingsGeneration;
         this.savedChoicesLoaded.Remove(agent);
@@ -552,7 +552,7 @@ public partial class MainWindow : Window
         catch (Exception)
         {
             if (generation != this.savedSettingsGeneration || agent != this.SelectedAgent || !this.IsVisible) return;
-            this.ShowConfigurationError("Saved choices could not be confirmed. Your settings have not changed. Close any active OpenClaw session, then use Check save status to retry.");
+            this.ShowConfigurationError($"Saved choices could not be confirmed. Your settings have not changed. Close any active {AgentNames[agent]} session, then use Check save status to retry.");
         }
         finally
         {
@@ -571,7 +571,7 @@ public partial class MainWindow : Window
         this.ClearCredential();
         if (saved.Configuration is not NativeSetupConfiguration configuration)
         {
-            this.ConfigurationDetail.Text = "Choose a provider and model for OpenClaw.";
+            this.ConfigurationDetail.Text = $"Choose a provider and model for {AgentNames[this.SelectedAgent]}.";
             if (saved.State == "needs-resave")
                 this.ShowConfigurationError("A previous settings save is unfinished. Review your choices and re-enter the required keys before saving to recover it.");
             return;

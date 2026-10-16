@@ -1001,19 +1001,16 @@ async function withSavedSettingsFixture(
     events: string[];
     read: (args?: string[], present?: boolean, loseOwner?: boolean) => Promise<string>;
   }) => Promise<void>,
+  agent = "openclaw",
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-saved-settings-"));
   const previous = process.env.LOCALAPPDATA;
   process.env.LOCALAPPDATA = root;
-  const directory = path.join(root, "NVIDIA", "NemoClaw", "agents", "openclaw");
+  const directory = path.join(root, "NVIDIA", "NemoClaw", "agents", agent);
   fs.mkdirSync(directory, { recursive: true });
   const configurationPath = path.join(directory, "native-windows.json");
   const events: string[] = [];
-  const read = async (
-    args = ["--read-settings", "openclaw"],
-    present = true,
-    loseOwner = false,
-  ) => {
+  const read = async (args = ["--read-settings", agent], present = true, loseOwner = false) => {
     let result = "";
     let assertions = 0;
     await configureNativeFromStdin(
@@ -1035,10 +1032,11 @@ async function withSavedSettingsFixture(
         },
       },
       {
-        inspectState: async () => {
+        inspectState: async (_launcher, selected) => {
+          assert.equal(selected, agent);
           events.push("inspect");
           return {
-            stateRoot: "C:\\NemoClawState-S-1-5-21-1001-openclaw",
+            stateRoot: `C:\\NemoClawState-S-1-5-21-1001-${agent}`,
             created: false,
             removed: false,
             present,
@@ -1074,6 +1072,105 @@ async function withSavedSettingsFixture(
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+
+for (const [inference, endpoint, credentialStored] of [
+  ["nvidia", "https://integrate.api.nvidia.com/v1", true],
+  ["openrouter", "https://openrouter.ai/api/v1", true],
+  ["compatible", "https://example.invalid/custom/v1", false],
+  ["local", "http://127.0.0.1:12345/v1", false],
+] as const)
+  test(`Hermes restores saved ${inference} choices without reading keys or mutating state`, async () => {
+    await withSavedSettingsFixture(async ({ configurationPath, events, read }) => {
+      const saved = {
+        ...configuration,
+        inference,
+        endpoint,
+        credentialStored,
+        model: "saved-hermes-model",
+      };
+      const bytes = JSON.stringify(saved);
+      fs.writeFileSync(configurationPath, bytes);
+      assert.deepEqual(JSON.parse(await read()), {
+        schemaVersion: 1,
+        kind: "native-saved-settings",
+        agent: "hermes",
+        state: "saved",
+        settings: {
+          inference,
+          endpoint,
+          credentialStored,
+          model: saved.model,
+          options: saved.options,
+        },
+      });
+      assert.equal(fs.readFileSync(configurationPath, "utf8"), bytes);
+      assert.deepEqual(events, ["inspect", "held", "held", "release"]);
+    }, "hermes");
+  });
+
+for (const included of ["openclaw", "hermes"] as const)
+  test(`${included}-only settings inspection rejects the absent agent before acquiring state`, async (t) => {
+    const absent = included === "openclaw" ? "hermes" : "openclaw";
+    const installed = nativePackageFixture(t.after.bind(t), {
+      openclaw: included === "openclaw" ? "qualified" : "not-included",
+      hermes: included === "hermes" ? "qualified" : "not-included",
+    });
+    await assert.rejects(
+      configureNativeFromStdin(
+        installed.launcher,
+        ["--read-settings", absent],
+        Readable.from([]),
+        { write: () => assert.fail("Absent-agent inspection emitted settings.") },
+        { inspectState: async () => assert.fail("Absent-agent inspection acquired state.") },
+      ),
+      /not included in this installer/u,
+    );
+    assert.deepEqual(fs.readdirSync(installed.root), ["runtime-package-availability.json"]);
+  });
+
+test("Hermes settings inspection distinguishes absent data and unfinished saves without mutation", async () => {
+  await withSavedSettingsFixture(async ({ directory, configurationPath, read }) => {
+    fs.writeFileSync(configurationPath, "must not be parsed");
+    assert.deepEqual(JSON.parse(await read(undefined, false)), {
+      schemaVersion: 1,
+      kind: "native-saved-settings",
+      agent: "hermes",
+      state: "unconfigured",
+      settings: null,
+    });
+    beginNativeConfigurationRecovery(directory, "hermes", [], () => {});
+    const pending = path.join(directory, "native-configuration-pending.json");
+    const bytes = fs.readFileSync(pending);
+    assert.deepEqual(JSON.parse(await read()), {
+      schemaVersion: 1,
+      kind: "native-saved-settings",
+      agent: "hermes",
+      state: "needs-resave",
+      settings: null,
+    });
+    assert.deepEqual(fs.readFileSync(pending), bytes);
+    assert.equal(fs.readFileSync(configurationPath, "utf8"), "must not be parsed");
+  }, "hermes");
+});
+
+test("Hermes settings reject foreign records, keys and lost ownership without publishing them", async () => {
+  await withSavedSettingsFixture(async ({ configurationPath, events, read }) => {
+    for (const saved of [
+      { ...configuration, agent: "openclaw" },
+      { ...configuration, credential: "nvapi-private-fixture" },
+      { ...configuration, options: { secret: "private-fixture" } },
+    ]) {
+      const bytes = JSON.stringify(saved);
+      fs.writeFileSync(configurationPath, bytes);
+      await assert.rejects(read(), (error: Error) => !error.message.includes("private-fixture"));
+      assert.equal(fs.readFileSync(configurationPath, "utf8"), bytes);
+      assert.equal(events.at(-1), "release");
+    }
+    fs.writeFileSync(configurationPath, JSON.stringify(configuration));
+    await assert.rejects(read(undefined, true, true), /owner lost/u);
+    assert.equal(events.at(-1), "release");
+  }, "hermes");
+});
 
 test("saved settings return only validated OpenClaw metadata under a non-creating lease", async () => {
   await withSavedSettingsFixture(async ({ configurationPath, events, read }) => {
@@ -1195,7 +1292,7 @@ test("malformed saved-settings commands do not acquire state", async () => {
   await withSavedSettingsFixture(async ({ events, read }) => {
     for (const args of [
       ["--read-settings"],
-      ["--read-settings", "hermes"],
+      ["--read-settings", "Hermes"],
       ["--read-settings", "pi"],
       ["--read-settings", "openclaw", "extra"],
       ["--transaction", "--read-settings", "openclaw"],

@@ -9,6 +9,12 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { errorDetail, fileIdentity } from "./probe-component-workload.mts";
 import {
+  acquirePersonalNativeState,
+  personalNativeStateReceipt,
+  readRequestedPersonalStateOwnerBuild,
+  finishPersonalStateOwnership,
+} from "./personal-native-state.mts";
+import {
   bashDiagnostics,
   parseComponent,
   personalCommand,
@@ -528,6 +534,7 @@ export function personalRequest(
   nonce: string,
   windows: string,
   nativeRoot = path.win32.join(runtime, "mxc-compat"),
+  stateRoot = share,
 ) {
   if (
     !/^[a-f0-9]{24}$/u.test(nonce) ||
@@ -549,8 +556,14 @@ export function personalRequest(
   );
   if (nativeRoot !== path.win32.join(runtime, "mxc-compat") && nativeRoot !== externalNativeRoot)
     throw new Error("The current native component is outside its owned replay stage.");
-  const home = path.win32.join(share, "home");
-  const temp = path.win32.join(share, "temp");
+  if (
+    stateRoot !== share &&
+    (!/^[A-Z]:\\NemoClawState-S-1-(?:\d+-)*\d+-hermes$/u.test(stateRoot) ||
+      path.win32.parse(stateRoot).root !== path.win32.parse(runtime).root)
+  )
+    throw new Error("The Personal native state differs from its owner or system drive.");
+  const home = path.win32.join(stateRoot, "home");
+  const temp = path.win32.join(stateRoot, "temp");
   const environment = {
     GITHUB_ACTIONS: "true",
     NEMOCLAW_MSYS_TOKEN_INSPECTION_HOLD: "repair-query",
@@ -561,7 +574,7 @@ export function personalRequest(
     PYTHONDONTWRITEBYTECODE: "1",
     COMSPEC: path.win32.join(windows, "System32/cmd.exe"),
     HERMES_HOME: home,
-    NEMOCLAW_AGENT_HOME: share,
+    NEMOCLAW_AGENT_HOME: stateRoot,
     HOME: home,
     USERPROFILE: home,
     APPDATA: home,
@@ -625,7 +638,7 @@ export function personalRequest(
         path.win32.dirname(worker),
         ...(nativeRoot === externalNativeRoot ? [nativeRoot] : []),
       ],
-      readwritePaths: [share],
+      readwritePaths: stateRoot === share ? [share] : [share, stateRoot],
     },
     lifecycle: { destroyOnExit: false, preservePolicy: false },
     telemetry: { enabled: false },
@@ -2100,6 +2113,31 @@ export async function completeBrowserFirstHostControl(
   }
 }
 
+function personalDiagnosticDisposition(modes: {
+  nativeState: boolean;
+  browserFirst: boolean;
+  postmortem: boolean;
+  wer: boolean;
+  coldJob: boolean;
+  failed: boolean;
+  rendererContext: boolean;
+}) {
+  if (modes.nativeState)
+    return "Current native-state qualification; legacy nonce-state browser replays are not equivalent and are not executed";
+  if (modes.browserFirst)
+    return "browser-first scheduling diagnostic; failed contained workload gets one existing functional host control; other replays skipped";
+  if (modes.postmortem)
+    return "first-workload postmortem diagnostic only; supplemental replays skipped";
+  if (modes.wer)
+    return "first-workload out-of-process WER diagnostic only; supplemental replays skipped";
+  if (modes.coldJob)
+    return "first-workload owned-job experiment only; supplemental replays skipped";
+  if (!modes.failed) return "primary passed; supplemental comparisons skipped";
+  return modes.rendererContext
+    ? "primary failed; optional validated renderer debugger, then ordinary warm replay and owned-job replay"
+    : "primary failed; ordinary warm replay then owned-job replay without debugger";
+}
+
 async function main() {
   if (
     process.platform !== "win32" ||
@@ -2141,6 +2179,19 @@ async function main() {
     ? receiptDocument(argument("--replay-receipt"))
     : null;
   const output = argument("--output");
+  const stateOwnerBuild = readRequestedPersonalStateOwnerBuild(
+    process.argv.includes("--state-owner-build") ? argument("--state-owner-build") : null,
+    process.env,
+    [
+      Boolean(replayDocument),
+      browserFirst,
+      coldJobProbe,
+      rendererCaptureRequested,
+      Boolean(rendererContextBuildFile),
+    ],
+  );
+  const nativeStateReceipt = personalNativeStateReceipt();
+  let nativeState: Awaited<ReturnType<typeof acquirePersonalNativeState>> | undefined;
   const windows = path.dirname(process.env.ComSpec ?? process.env.COMSPEC ?? "");
   const windowsRoot = path.dirname(windows);
   if (
@@ -2189,6 +2240,7 @@ async function main() {
     nativeTeardownVerified: false,
     ownedRootsRemoved: false,
     browserDiagnosticComplete: true,
+    nativeStateComplete: true,
   };
   const receipt: Record<string, unknown> = {
     schemaVersion: 2,
@@ -2226,6 +2278,9 @@ async function main() {
         }
       : {}),
     cleanup,
+    ...(stateOwnerBuild
+      ? { nativeStateBuild: stateOwnerBuild, nativeState: nativeStateReceipt }
+      : {}),
   };
   const errors: unknown[] = [];
   let attempted = false;
@@ -2504,6 +2559,29 @@ async function main() {
       windowsRoot,
       currentNativeRoot,
     );
+    if (stateOwnerBuild) {
+      cleanup.nativeStateComplete = false;
+      nativeState = await acquirePersonalNativeState(
+        stateOwnerBuild.launcher,
+        root,
+        nativeStateReceipt,
+      );
+      nativeState.assertHeld();
+      assert.equal(
+        fileIdentity(stateOwnerBuild.launcher).sha256,
+        stateOwnerBuild.executable.sha256,
+      );
+      request = personalRequest(
+        path.join(launcher, "node.exe"),
+        path.join(launcher, "probe-personal-workload.mts"),
+        runtime,
+        share,
+        nonce,
+        windowsRoot,
+        currentNativeRoot,
+        nativeState.stateRoot,
+      );
+    }
     if (rendererWerBuildFile) {
       assert(replayDocument, "Renderer WER capture requires the immutable canonical replay");
       rendererCapture.helper = fileIdentity(rendererCaptureHelper);
@@ -2712,20 +2790,17 @@ async function main() {
       output,
       errors,
     });
-    receipt.supplementalDiagnosticDisposition = browserFirst
-      ? "browser-first scheduling diagnostic; failed contained workload gets one existing functional host control; other replays skipped"
-      : rendererPostmortem
-        ? "first-workload postmortem diagnostic only; supplemental replays skipped"
-        : rendererWerBuildFile
-          ? "first-workload out-of-process WER diagnostic only; supplemental replays skipped"
-          : coldJobProbe
-            ? "first-workload owned-job experiment only; supplemental replays skipped"
-            : failure
-              ? rendererContextBuildFile
-                ? "primary failed; optional validated renderer debugger, then ordinary warm replay and owned-job replay"
-                : "primary failed; ordinary warm replay then owned-job replay without debugger"
-              : "primary passed; supplemental comparisons skipped";
+    receipt.supplementalDiagnosticDisposition = personalDiagnosticDisposition({
+      nativeState: stateOwnerBuild !== null,
+      browserFirst,
+      postmortem: rendererPostmortem,
+      wer: Boolean(rendererWerBuildFile),
+      coldJob: coldJobProbe,
+      failed: Boolean(failure),
+      rendererContext: Boolean(rendererContextBuildFile),
+    });
     if (
+      !stateOwnerBuild &&
       !coldJobProbe &&
       !browserFirst &&
       !rendererCaptureRequested &&
@@ -2912,7 +2987,17 @@ async function main() {
         run: runRendererCapture,
       });
     allClosed &&= cleanup.hostDiagnosticChildrenClosed;
-    const resourceOwnerAttempted = attempted || rendererCapturePrepareAttempted;
+    const stateCompletion = await finishPersonalStateOwnership({
+      enabled: stateOwnerBuild !== null,
+      state: nativeState,
+      receipt: nativeStateReceipt,
+      resourceOwnerAttempted: attempted || rendererCapturePrepareAttempted,
+      allClosed,
+    });
+    cleanup.nativeStateComplete = stateCompletion.complete;
+    errors.push(...stateCompletion.errors);
+    allClosed = stateCompletion.allClosed;
+    const resourceOwnerAttempted = stateCompletion.resourceOwnerAttempted;
     if (runtimeInventory && (!resourceOwnerAttempted || allClosed)) {
       try {
         const after = verifyPersonalRuntimeInventory(

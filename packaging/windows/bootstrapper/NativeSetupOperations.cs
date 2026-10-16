@@ -93,7 +93,7 @@ internal static class NativeSetupOperations
 
     internal static Task<string> ReadSavedSettingsAsync(string agent)
     {
-        if (agent != "openclaw") throw new InvalidOperationException("Saved settings inspection is unavailable for this agent.");
+        if (agent is not ("openclaw" or "hermes")) throw new InvalidOperationException("Saved settings inspection is unavailable for this agent.");
         var launcher = InstalledLauncher();
         // Read-only helper cleanup must not depend on a window's dispatcher surviving.
         return Task.Run(() => RunSetupHelperAsync(launcher, new[] { "--configure-native", "--read-settings", agent },
@@ -103,7 +103,7 @@ internal static class NativeSetupOperations
     internal static NativeSavedSettings ReadSavedSettings(string value, string agent)
     {
         const string invalid = "The saved settings response is invalid.";
-        if (agent != "openclaw" || value.Length is < 1 or > 16384) throw new InvalidOperationException(invalid);
+        if (agent is not ("openclaw" or "hermes") || value.Length is < 1 or > 16384) throw new InvalidOperationException(invalid);
         try
         {
             using var document = JsonDocument.Parse(value, new JsonDocumentOptions { MaxDepth = 8 });

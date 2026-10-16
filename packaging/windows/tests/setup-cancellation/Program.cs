@@ -519,6 +519,35 @@ internal static class Program
         catch (InvalidOperationException) { }
     }
 
+    private static void AssertSavedSettingsAgentBoundary()
+    {
+        foreach (var agent in new[] { "openclaw", "hermes" })
+        foreach (var (provider, endpoint) in new[] {
+            ("nvidia", "https://integrate.api.nvidia.com/v1"), ("openrouter", "https://openrouter.ai/api/v1"),
+            ("compatible", "https://example.invalid/custom/v1"), ("local", "http://127.0.0.1:12345/v1"),
+        })
+        {
+            var value = JsonSerializer.Serialize(new { schemaVersion = 1, kind = "native-saved-settings", agent, state = "saved",
+                settings = new { inference = provider, endpoint, model = "saved-model", credentialStored = provider is "nvidia" or "openrouter", options = new { } } });
+            var saved = NativeSetupOperations.ReadSavedSettings(value, agent);
+            if (saved.State != "saved" || saved.Configuration is not NativeSetupConfiguration configuration
+                || configuration.Agent != agent || configuration.Inference != provider || configuration.Endpoint != endpoint
+                || configuration.Model != "saved-model")
+                throw new InvalidOperationException("Saved settings did not preserve the selected agent, provider, endpoint and model.");
+            foreach (var rejected in new[] {
+                value.Replace($"\"agent\":\"{agent}\"", "\"agent\":\"pi\""),
+                value.Replace($"\"agent\":\"{agent}\"", $"\"agent\":\"{(agent == "hermes" ? "openclaw" : "hermes")}\""),
+                value.Replace("\"options\":{}", "\"options\":{},\"key\":\"fixture-only-secret\""),
+            })
+            {
+                var failed = false;
+                try { NativeSetupOperations.ReadSavedSettings(rejected, agent); }
+                catch (InvalidOperationException) { failed = true; }
+                if (!failed) throw new InvalidOperationException("Saved settings accepted another agent or an unexpected credential field.");
+            }
+        }
+    }
+
     private static async Task DeleteFixtureDirectoryAsync(string root)
     {
         // The helper has exited; Windows can briefly retain a sharing lock during file teardown.
@@ -546,15 +575,35 @@ internal static class Program
             captureOutput: true, observationDeadline: TimeSpan.FromSeconds(1));
         try
         {
+            var ready = Path.Combine(root, "ready");
+            using var readyLimit = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!File.Exists(ready) && !operation.IsCompleted) await Task.Delay(20, readyLimit.Token);
+            if (!File.Exists(ready))
+                throw new InvalidOperationException("The preparation helper never acquired its fixture lease before the deadline.");
+            using var helper = System.Diagnostics.Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(ready)));
+            // Hold the actual process handle before cancellation, not a later lookup of a reusable PID.
+            _ = helper.SafeHandle;
+            if (helper.HasExited)
+                throw new InvalidOperationException("The preparation fixture exited before its timeout could be observed.");
             try
             {
                 await operation.WaitAsync(TimeSpan.FromSeconds(10));
                 throw new InvalidOperationException("The read-only preparation deadline was ignored.");
             }
             catch (OperationCanceledException) { }
+            helper.Refresh();
+            if (!helper.HasExited)
+                throw new InvalidOperationException($"Timed-out preparation helper {helper.Id} is still running.");
             if (File.Exists(Path.Combine(root, "result")))
                 throw new InvalidOperationException("The timed-out preparation helper completed unexpectedly.");
-            using var releasedLease = new FileStream(Path.Combine(root, "lease"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            try
+            {
+                using var releasedLease = new FileStream(Path.Combine(root, "lease"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException error)
+            {
+                throw new IOException($"Preparation helper {helper.Id} exited with code {helper.ExitCode}, but its lease could not be reopened; HRESULT=0x{error.HResult:X8}.", error);
+            }
         }
         finally
         {
@@ -594,7 +643,8 @@ internal static class Program
         await AssertPreparationTimeoutStopsHelperAsync();
         await AssertBoundedObservationRetainsOwnerAsync();
         AssertRecoveryStatusRejectsUntrustedResults();
-        Console.WriteLine("26 native setup controls passed; bounded recovery checks preserve transaction ownership and reject invalid status.");
+        AssertSavedSettingsAgentBoundary();
+        Console.WriteLine("27 native setup controls passed; bounded recovery checks preserve transaction ownership and reject invalid status.");
 #if NATIVE_WPF_CONTROLS
         WindowRecoveryControls.Run();
 #endif

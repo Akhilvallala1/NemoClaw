@@ -201,6 +201,157 @@ class FinishedHermesIntake(unittest.TestCase):
             with self.assertRaises(ValueError):
                 owner.validate_personal_composition(changed, proof, compatibility, mxc, native.CURRENT)
 
+    def state_owner_fixture(self, root):
+        launcher = root / "official-hermes-runtime-build/state-owner-target/aarch64-pc-windows-msvc/release/NemoClaw.exe"
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        # Parser fixture only: not an executable or native qualification evidence.
+        executable = bytearray(128)
+        executable[:2] = b"MZ"
+        executable[60:64] = (64).to_bytes(4, "little")
+        executable[64:70] = b"PE\0\0\x64\xaa"
+        launcher.write_bytes(executable)
+        source_root = HERE.parent / "launcher"
+        sources = [{"file": file.relative_to(source_root).as_posix(),
+                    "bytes": file.stat().st_size, "sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
+                   for file in [source_root / "Cargo.toml", source_root / "Cargo.lock",
+                                *sorted((source_root / "src").rglob("*.rs"))]]
+        build = {"schemaVersion": 1, "classification": "personal-native-state-owner-build",
+                 "sourceRevision": self.pin["sourceRevision"], "workflowRunId": "123", "workflowRunAttempt": "2",
+                 "target": "aarch64-pc-windows-msvc", "immutableRuntime": False, "buildProcessesClosed": True,
+                 "file": str(launcher), "bytes": len(executable),
+                 "sha256": hashlib.sha256(executable).hexdigest(), "sources": sources}
+        raw = json.dumps(build).encode()
+        (root / "state-owner-build.json").write_bytes(raw)
+        sid = "S-1-5-21-111-222-333-1001"
+        state_root = "C:\\NemoClawState-" + sid + "-hermes"
+        share = r"C:\NemoClawMsysProof-001122334455-state-start"
+        personal = {
+            "runtime": r"C:\NemoClawHermesProbe-001122334455",
+            "workload": {"nonce": "00112233445566778899aabb"},
+            "nativeStateBuild": {
+                "launcher": str(launcher), "sources": copy.deepcopy(sources),
+                "executable": {"path": str(launcher), "bytes": len(executable), "sha256": build["sha256"],
+                               "peMachine": 0xAA64, "architecture": "arm64"},
+                "receipt": {"path": str(root / "state-owner-build.json"), "bytes": len(raw),
+                            "sha256": hashlib.sha256(raw).hexdigest(), "peMachine": None,
+                            "architecture": "non-PE-or-unknown"}},
+            "nativeState": {"schemaVersion": 1, "classification": "personal-native-state-owner",
+                            "stateRoot": state_root, "inspectionClosed": True, "sessionAttempted": True,
+                            "created": True, "sessionReleased": True, "removalAttempted": True,
+                            "removed": True, "removalReleased": True, "ownerUnreferenced": False,
+                            "retained": False, "complete": True},
+            "cleanup": {"nativeStateComplete": True},
+            "hostDesktopCleanup": {"postExecutorObservation": {
+                "request": {"hostUserSid": sid}, "receipt": {"value": {"context": {"hostUserSid": sid}}}}},
+        }
+        environment = {key: state_root + "\\home" for key in
+                       ("HERMES_HOME", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")}
+        environment.update(NEMOCLAW_AGENT_HOME=state_root, TEMP=state_root + "\\temp", TMP=state_root + "\\temp")
+        request = {"process": {"cwd": share, "env": [key + "=" + value for key, value in environment.items()]},
+                   "filesystem": {"readwritePaths": [share, state_root]}}
+        return build, personal, request
+
+    def test_native_state_admission_requires_typed_closed_custody_and_exact_host_authority(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, personal, request = self.state_owner_fixture(root)
+            def check(p=personal, r=request):
+                return owner.validate_same_run_state_owner(root, p, r, self.pin["sourceRevision"], "123", "2")
+            self.assertEqual(check(), (root / "state-owner-build.json").read_bytes())
+            for field, original in personal["nativeState"].items():
+                invalid = [None, "invalid", not original] if type(original) is bool else [None, True, "invalid"]
+                if type(original) is bool:
+                    invalid.append(int(original))
+                for value in invalid:
+                    changed = copy.deepcopy(personal)
+                    changed["nativeState"][field] = value
+                    with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                        check(changed)
+                changed = copy.deepcopy(personal)
+                del changed["nativeState"][field]
+                with self.subTest(missing=field), self.assertRaises(ValueError):
+                    check(changed)
+            for mutate in (
+                lambda p: p.update(nativeState=None),
+                lambda p: p["nativeState"].update(extra=True),
+                lambda p: p["cleanup"].update(nativeStateComplete=1),
+                lambda p: p.update(runtime=r"D:\NemoClawHermesProbe-001122334455"),
+                lambda p: p["workload"].update(nonce="f" * 24),
+                lambda p: p["hostDesktopCleanup"]["postExecutorObservation"]["request"].update(hostUserSid="S-1-5-18"),
+                lambda p: p["hostDesktopCleanup"]["postExecutorObservation"]["receipt"]["value"]["context"].update(hostUserSid="S-1-5-18"),
+                lambda p: p["nativeStateBuild"]["executable"].update(bytes=128.0),
+                lambda p: p["nativeStateBuild"]["executable"].update(peMachine=float(0xAA64)),
+                lambda p: p["nativeStateBuild"]["receipt"].update(sha256="f" * 64),
+                lambda p: p["nativeStateBuild"]["sources"][0].update(bytes=float(p["nativeStateBuild"]["sources"][0]["bytes"])),
+            ):
+                changed = copy.deepcopy(personal)
+                mutate(changed)
+                with self.assertRaises(ValueError):
+                    check(changed)
+            for section in ("nativeStateBuild", "cleanup", "workload", "hostDesktopCleanup"):
+                for value in (None, [], "invalid"):
+                    with self.subTest(section=section, value=value), self.assertRaises(ValueError):
+                        check({**personal, section: value})
+            for mutate in (
+                lambda r: r["process"].update(cwd=r"C:\other"),
+                lambda r: r["filesystem"].update(readwritePaths=["C:\\"]),
+                lambda r: r["process"]["env"].append("home=C:\\foreign"),
+                lambda r: r["process"].update(env=["INVALID"]),
+                lambda r: r.update(process=None),
+                lambda r: r.update(filesystem=[]),
+            ):
+                changed = copy.deepcopy(request)
+                mutate(changed)
+                with self.assertRaises(ValueError):
+                    check(r=changed)
+            for index in range(len(request["process"]["env"])):
+                changed = copy.deepcopy(request)
+                changed["process"]["env"][index] = changed["process"]["env"][index].split("=", 1)[0] + "=C:\\foreign"
+                with self.subTest(environment=index), self.assertRaises(ValueError):
+                    check(r=changed)
+
+    def test_native_state_admission_binds_same_run_helper_bytes_and_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build, personal, request = self.state_owner_fixture(root)
+            def check():
+                return owner.validate_same_run_state_owner(root, personal, request, self.pin["sourceRevision"], "123", "2")
+            for field, value in (
+                ("schemaVersion", True), ("classification", "other"), ("sourceRevision", "f" * 40),
+                ("workflowRunId", "124"), ("workflowRunAttempt", "3"), ("target", "x86_64-pc-windows-msvc"),
+                ("immutableRuntime", 0), ("buildProcessesClosed", 1), ("file", "other.exe"),
+                ("bytes", 128.0), ("sha256", "f" * 64), ("sources", []),
+                ("sources", [{"file": 1}]),
+            ):
+                (root / "state-owner-build.json").write_text(json.dumps({**build, field: value}))
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    check()
+            for mutate in (
+                lambda b: b["sources"][0].update(bytes=float(b["sources"][0]["bytes"])),
+                lambda b: b["sources"][0].update(sha256="f" * 64),
+                lambda b: b["sources"].append(b["sources"][0]),
+            ):
+                changed = copy.deepcopy(build)
+                mutate(changed)
+                (root / "state-owner-build.json").write_text(json.dumps(changed))
+                with self.assertRaises(ValueError):
+                    check()
+            for value in (None, [], "invalid"):
+                (root / "state-owner-build.json").write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    check()
+            (root / "state-owner-build.json").write_text(json.dumps(build))
+            launcher = Path(build["file"])
+            original = launcher.read_bytes()
+            for content in (b"MZ", original[:64] + b"PE\0\0\x64\x86" + original[70:], original + b"changed"):
+                launcher.write_bytes(content)
+                with self.assertRaises(ValueError):
+                    check()
+            launcher.write_bytes(original)
+            os.link(launcher, root / "aliased-helper.exe")
+            with self.assertRaises(ValueError):
+                check()
+
     def test_same_run_archive_staging_requires_current_closed_production(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "producer"
@@ -218,9 +369,10 @@ class FinishedHermesIntake(unittest.TestCase):
             for name in ("official-runtime-build.json", "native-adaptation.json"):
                 (build_root / name).write_text("{}")
             runtime = r"C:\NemoClawHermesProbe-001122334455"
-            personal_raw = json.dumps({"runtime": runtime}).encode()
+            _, personal, request = self.state_owner_fixture(root)
+            personal_raw = json.dumps(personal).encode()
             (personal_root / "personal-feasibility.json").write_bytes(personal_raw)
-            (personal_root / "personal-request.json").write_text("{}")
+            (personal_root / "personal-request.json").write_text(json.dumps(request))
             (personal_root / "mxc-native.log").write_text("fixture, not native proof")
             common = {"schemaVersion": 1, "workflowRunId": "123", "workflowRunAttempt": "2",
                       "runtimeRoot": runtime, "buildProcessesClosed": True, "installedAcceptance": False}
@@ -234,7 +386,8 @@ class FinishedHermesIntake(unittest.TestCase):
             build = {**common, "controllerSource": self.pin["sourceRevision"],
                      "classification": "official-hermes-runtime-build-phase",
                      "status": "candidate-bytes-exported-unqualified", "runtimeExecutionQualified": False,
-                     "activationAllowed": False, "candidateReceiptSha256": candidate_sha}
+                     "activationAllowed": False, "candidateReceiptSha256": candidate_sha,
+                     "stateOwnerBuildAttempted": True, "stateOwnerBuildClosed": True}
             def save(p=phase, b=build):
                 (root / "personal-phase.json").write_text(json.dumps(p))
                 (root / "official-hermes-runtime-phase.json").write_text(json.dumps(b))
@@ -254,6 +407,9 @@ class FinishedHermesIntake(unittest.TestCase):
                 self.assertEqual(archive.read("build/native-adaptation.json"), b"{}")
             with zipfile.ZipFile(paths["personalEvidenceArtifact"]) as archive:
                 self.assertEqual(archive.read("personal/personal-feasibility.json"), personal_raw)
+                state_raw = archive.read("personal/state-owner-build.json")
+                self.assertEqual(state_raw, (root / "state-owner-build.json").read_bytes())
+                self.assertEqual(context["nativeStateBuildSha256"], hashlib.sha256(state_raw).hexdigest())
             # Staging is not admission: incomplete native evidence and downloaded schema5 pins fail.
             with self.assertRaises(ValueError):
                 owner.validate_personal(json.loads(personal_raw), context)
@@ -272,6 +428,8 @@ class FinishedHermesIntake(unittest.TestCase):
                     ("derivedCandidateReceiptSha256", "f" * 64), ("runtimeRoot", r"C:\unrelated"))],
                 ("build", "candidateReceiptSha256", "f" * 64), ("build", "runtimeRoot", r"C:\unrelated"),
                 ("build", "runtimeExecutionQualified", True), ("build", "activationAllowed", True),
+                *[("build", key, value) for key in ("stateOwnerBuildAttempted", "stateOwnerBuildClosed")
+                  for value in (False, 1, None)],
             ]):
                 p, b = copy.deepcopy(phase), copy.deepcopy(build)
                 (p if section == "phase" else b)[field] = value

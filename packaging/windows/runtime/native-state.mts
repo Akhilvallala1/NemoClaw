@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
+import type { Socket } from "node:net";
 import { createNativeDiagnosticCapture } from "./native-session-diagnostics.mts";
 
 export async function acquireNativeStateSession(launcher: string, purpose: string) {
@@ -208,6 +209,15 @@ async function acquireStateOwner(
     assertHeld() {
       if (failure || ended || releasing)
         throw failure ?? new Error("The private Windows state lease is closed.");
+    },
+    unrefWithoutRelease() {
+      // Failure-only custody handoff to process/job teardown. Keep stdin open:
+      // this is not EOF, confirmed owner closure, or permission to remove state.
+      const pipes = [child.stdin, child.stdout, child.stderr] as Socket[];
+      if (pipes.some((pipe) => typeof pipe.unref !== "function"))
+        throw new Error("The retained state owner's process pipes cannot be unreferenced.");
+      for (const pipe of pipes) pipe.unref();
+      child.unref();
     },
     release() {
       if (releaseResult) return releaseResult;

@@ -598,6 +598,108 @@ def read_same_run_file(file, maximum):
     return file.read_bytes()
 
 
+def validate_same_run_state_owner(root, personal, request, source, run_id, run_attempt):
+    """Bind disposable native state custody to the actual helper and host account."""
+    raw = read_same_run_file(root / "state-owner-build.json", 1024 * 1024)
+    build = json.loads(raw)
+    require(isinstance(build, dict), "Same-run native state helper build is not an object")
+    for document, paths in (
+        (personal, ((), ("nativeStateBuild",), ("nativeStateBuild", "executable"),
+                    ("nativeStateBuild", "receipt"), ("cleanup",), ("workload",),
+                    ("hostDesktopCleanup", "postExecutorObservation", "request"),
+                    ("hostDesktopCleanup", "postExecutorObservation", "receipt", "value", "context"))),
+        (request, ((), ("process",), ("filesystem",))),
+    ):
+        for keys in paths:
+            value = document
+            for key in keys:
+                require(isinstance(value, dict), "Native state evidence is not an object")
+                value = value.get(key)
+            require(isinstance(value, dict), "Native state evidence is not an object")
+    expected = {
+        "schemaVersion": 1, "classification": "personal-native-state-owner-build",
+        "sourceRevision": source, "workflowRunId": run_id, "workflowRunAttempt": run_attempt,
+        "target": "aarch64-pc-windows-msvc", "immutableRuntime": False, "buildProcessesClosed": True,
+    }
+    require(all(type(build.get(key)) is type(value) and build[key] == value
+                for key, value in expected.items()), "Same-run native state helper build differs")
+    launcher = root / "official-hermes-runtime-build/state-owner-target/aarch64-pc-windows-msvc/release/NemoClaw.exe"
+    executable = read_same_run_file(launcher, 32 * 1024 * 1024)
+    offset = int.from_bytes(executable[60:64], "little")
+    require(len(executable) >= 70 and executable[:2] == b"MZ" and 64 <= offset <= len(executable) - 6
+            and executable[offset:offset + 4] == b"PE\0\0"
+            and int.from_bytes(executable[offset + 4:offset + 6], "little") == 0xAA64,
+            "Same-run native state helper is not ARM64")
+    identity = {"path": str(launcher), "bytes": len(executable),
+                "sha256": hashlib.sha256(executable).hexdigest(), "peMachine": 0xAA64, "architecture": "arm64"}
+    require(build.get("file") == str(launcher) and type(build.get("bytes")) is int
+            and build["bytes"] == identity["bytes"] and build.get("sha256") == identity["sha256"],
+            "Same-run native state helper bytes differ")
+    launcher_source = Path(__file__).parents[1] / "launcher"
+    source_paths = [launcher_source / "Cargo.toml", launcher_source / "Cargo.lock",
+                    *sorted((launcher_source / "src").rglob("*.rs"))]
+    sources = []
+    for file in source_paths:
+        content = read_same_run_file(file, 2 * 1024 * 1024)
+        sources.append({"file": file.relative_to(launcher_source).as_posix(), "bytes": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest()})
+    actual_sources = build.get("sources")
+    require(isinstance(actual_sources, list)
+            and all(isinstance(row, dict) and isinstance(row.get("file"), str)
+                    and type(row.get("bytes")) is int for row in actual_sources)
+            and sorted(actual_sources, key=lambda row: row["file"]) == sorted(sources, key=lambda row: row["file"]),
+            "Same-run native state helper source set differs")
+    observed = personal.get("nativeStateBuild", {})
+    receipt = {"path": str(root / "state-owner-build.json"), "bytes": len(raw),
+               "sha256": hashlib.sha256(raw).hexdigest(), "peMachine": None, "architecture": "non-PE-or-unknown"}
+    require(observed == {"launcher": str(launcher), "executable": identity, "receipt": receipt, "sources": actual_sources}
+            and type(observed.get("executable", {}).get("bytes")) is int
+            and type(observed.get("executable", {}).get("peMachine")) is int
+            and type(observed.get("receipt", {}).get("bytes")) is int
+            and all(type(row.get("bytes")) is int for row in observed["sources"]),
+            "Personal execution did not bind this native state helper")
+    state = personal.get("nativeState", {})
+    expected_state = {
+        "schemaVersion": 1, "classification": "personal-native-state-owner",
+        "inspectionClosed": True, "sessionAttempted": True, "created": True,
+        "sessionReleased": True, "removalAttempted": True, "removed": True,
+        "removalReleased": True, "ownerUnreferenced": False, "retained": False, "complete": True,
+    }
+    require(isinstance(state, dict) and set(state) == {*expected_state, "stateRoot"}
+            and all(type(state.get(key)) is type(value) and state[key] == value
+                    for key, value in expected_state.items())
+            and personal.get("cleanup", {}).get("nativeStateComplete") is True,
+            "Personal native state creation, custody or cleanup is incomplete")
+    desktop = personal.get("hostDesktopCleanup", {}).get("postExecutorObservation", {})
+    sid = desktop.get("request", {}).get("hostUserSid")
+    context = desktop.get("receipt", {}).get("value", {}).get("context", {})
+    require(isinstance(sid, str) and len(sid) <= 184 and re.fullmatch(r"S-1-(?:[0-9]+-)*[0-9]+", sid)
+            and context.get("hostUserSid") == sid,
+            "Personal native state lacks its observed host account identity")
+    runtime = personal.get("runtime", "")
+    require(isinstance(runtime, str) and re.fullmatch(r"[A-Z]:\\NemoClawHermesProbe-[a-f0-9]{12}", runtime),
+            "Personal native state runtime identity differs")
+    state_root = runtime[:3] + "NemoClawState-" + sid + "-hermes"
+    nonce = personal.get("workload", {}).get("nonce", "")
+    require(isinstance(nonce, str) and re.fullmatch(r"[a-f0-9]{24}", nonce), "Personal state nonce is invalid")
+    share = runtime[:3] + "NemoClawMsysProof-" + nonce[:12] + "-state-start"
+    process = request.get("process", {})
+    environment = process.get("env", [])
+    require(isinstance(environment, list) and all(isinstance(entry, str) and "=" in entry for entry in environment),
+            "Personal native state environment is invalid")
+    pairs = [entry.split("=", 1) for entry in environment]
+    require(len({key.casefold() for key, _ in pairs}) == len(pairs), "Personal environment has duplicate authorities")
+    environment = dict(pairs)
+    expected_environment = {key: state_root + "\\home" for key in
+                            ("HERMES_HOME", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")}
+    expected_environment.update(NEMOCLAW_AGENT_HOME=state_root, TEMP=state_root + "\\temp", TMP=state_root + "\\temp")
+    require(state["stateRoot"] == state_root and process.get("cwd") == share
+            and request.get("filesystem", {}).get("readwritePaths") == [share, state_root]
+            and all(environment.get(key) == value for key, value in expected_environment.items()),
+            "Personal state authority or writable grants differ from its native owner")
+    return raw
+
+
 def prepare_same_run_archives(root, output, source, run_id, run_attempt):
     """Snapshot this job's completed producer; never label it a published artifact."""
     require(re.fullmatch(r"[a-f0-9]{40}", source)
@@ -644,8 +746,13 @@ def prepare_same_run_archives(root, output, source, run_id, run_attempt):
             and candidate_sha == build.get("candidateReceiptSha256"),
             "Same-run producer receipts identify another candidate")
     personal_raw = read_same_run_file(root / "personal-mxc/personal-feasibility.json", 16 * 1024 * 1024)
-    require(json.loads(personal_raw).get("runtime") == phase["runtimeRoot"],
+    personal = json.loads(personal_raw)
+    require(personal.get("runtime") == phase["runtimeRoot"],
             "Same-run Personal tested another runtime")
+    require(build.get("stateOwnerBuildAttempted") is True and build.get("stateOwnerBuildClosed") is True,
+            "Same-run native state helper build did not close")
+    request_raw = read_same_run_file(root / "personal-mxc/personal-request.json", 1024 * 1024)
+    state_build_raw = validate_same_run_state_owner(root, personal, json.loads(request_raw), source, run_id, run_attempt)
     candidate_files = list(candidate_root.iterdir())
     require(0 < len(candidate_files) <= 32, "Same-run candidate metadata count exceeds its bound")
     archive_name = json.loads(candidate_raw)["archive"]["file"]
@@ -673,6 +780,7 @@ def prepare_same_run_archives(root, output, source, run_id, run_attempt):
             archive.write(file, name)
     personal_zip = output / "personalEvidenceArtifact.zip"
     with zipfile.ZipFile(personal_zip, "x", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("personal/state-owner-build.json", state_build_raw)
         for name, maximum in (("personal-feasibility.json", 16 * 1024 * 1024),
                               ("personal-request.json", 1024 * 1024), ("mxc-native.log", 4 * 1024 * 1024)):
             archive.writestr("personal/" + name, read_same_run_file(root / "personal-mxc" / name, maximum))
@@ -683,6 +791,7 @@ def prepare_same_run_archives(root, output, source, run_id, run_attempt):
                "sourceRevision": source, "runId": int(run_id), "runAttempt": int(run_attempt),
                "candidateReceiptSha256": candidate_sha,
                "personalReceiptSha256": hashlib.sha256(personal_raw).hexdigest(),
+               "nativeStateBuildSha256": hashlib.sha256(state_build_raw).hexdigest(),
                "localArchives": {key: {"bytes": file.stat().st_size, "sha256": digest(file)}
                                  for key, file in paths.items()},
                "producerReceipts": {"personal-phase.json": hashlib.sha256(phase_raw).hexdigest(),
@@ -829,6 +938,12 @@ def main():
             native_documents = native_personal_documents(archive, personal_member)
         validate_personal(personal, pin, native_documents.get("personal-request.json"),
                           native_documents.get("mxc-native.log"))
+        if pin["schemaVersion"] == 5:
+            state_raw = exact_archive_bytes(archive, "personal/state-owner-build.json", 1024 * 1024)
+            require(hashlib.sha256(state_raw).hexdigest() == pin["nativeStateBuildSha256"]
+                    == personal["nativeStateBuild"]["receipt"]["sha256"],
+                    "The admitted native state build receipt changed")
+            (args.output / "state-owner-build.json").write_bytes(state_raw)
         if pin["schemaVersion"] == 3:
             personal = {
                 **personal,

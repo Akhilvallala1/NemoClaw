@@ -293,7 +293,7 @@ export async function configureNativeFromStdin(
   if (settingsPosition !== -1) {
     const agent = args[settingsPosition + 1];
     if (
-      agent !== "openclaw" ||
+      !["openclaw", "hermes"].includes(agent) ||
       settingsPosition !== args.length - 2 ||
       args.filter((value) => value === "--read-settings").length !== 1 ||
       args.some(

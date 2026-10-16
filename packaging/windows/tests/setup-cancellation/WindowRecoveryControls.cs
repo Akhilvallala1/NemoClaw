@@ -81,6 +81,7 @@ internal static class WindowRecoveryControls
         var parse = availability.FieldType.GetMethod("Parse", BindingFlags.Static | BindingFlags.NonPublic)!;
         try
         {
+            foreach (var agent in new[] { "openclaw", "hermes" })
             foreach (var status in new[] { "unqualified", "not-included", "qualified" })
             {
                 var record = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
@@ -90,24 +91,28 @@ internal static class WindowRecoveryControls
                     runtimeId = new string('a', 64),
                     manifestSha256 = new string('b', 64),
                     sourceRevision = new string('c', 40),
-                    agents = new[] { new { agent = "openclaw", status }, new { agent = "hermes", status = "not-included" } },
+                    agents = new[] { "openclaw", "hermes" }.Select(selected => new { agent = selected, status = selected == agent ? status : "not-included" }),
                 });
                 availability.SetValue(window, parse.Invoke(null, new object[] { record }));
                 Invoke(window, "ApplyRuntimeAvailability");
-                Invoke(window, "ShowNativeOnboarding", "openclaw");
-                var enabled = status != "not-included";
-                var expected = status == "unqualified" ? "Preview: full runtime checks are pending." : status == "qualified" ? string.Empty : "Unavailable in this preview";
+                Invoke(window, "ShowNativeOnboarding", agent);
+                var enabled = status == "qualified" || agent == "openclaw" && status == "unqualified";
+                var expected = status == "unqualified"
+                    ? agent == "openclaw" ? "Preview: full runtime checks are pending." : "Unavailable: runtime qualification is pending."
+                    : status == "qualified" ? string.Empty : "Unavailable in this preview";
+                var selectedChoice = (RadioButton)window.FindName(agent == "openclaw" ? "OpenClawChoice" : "HermesChoice");
                 if (((TextBlock)window.FindName("AgentAvailabilityDetail")).Text != expected
+                    || window.SelectedAgent != agent
                     || ((Button)window.FindName("ContinueAgentButton")).IsEnabled != enabled
-                    || ((RadioButton)window.FindName("OpenClawChoice")).IsEnabled != enabled)
-                    throw new InvalidOperationException("Onboarding lost the OpenClaw preview warning or admitted an absent runtime.");
+                    || selectedChoice.IsEnabled != enabled)
+                    throw new InvalidOperationException($"Onboarding lost the {agent} qualification boundary or selected another agent.");
                 // Exercise the fresh-install handlers without attaching a native install/save owner.
                 typeof(MainWindow).GetField("packageInstalled", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
                 typeof(MainWindow).GetField("savedSettingsReady", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
                 Invoke(window, "ConfigureClicked", window, new RoutedEventArgs());
                 if ((((FrameworkElement)window.FindName("ConfigurationPanel")).Visibility == Visibility.Visible) != enabled)
-                    throw new InvalidOperationException("The OpenClaw preview could not enter configuration, or an absent runtime did.");
-                if (status == "unqualified" && !((TextBlock)window.FindName("ConfigurationDetail")).Text.StartsWith(expected, StringComparison.Ordinal))
+                    throw new InvalidOperationException($"The {agent} configuration did not respect runtime availability.");
+                if (enabled && status == "unqualified" && !((TextBlock)window.FindName("ConfigurationDetail")).Text.StartsWith(expected, StringComparison.Ordinal))
                     throw new InvalidOperationException("The OpenClaw preview warning disappeared during configuration.");
                 var providers = (ComboBox)window.FindName("ProviderChoice");
                 providers.SelectedItem = providers.Items.OfType<ComboBoxItem>().Single(value => value.Tag as string == "local");
@@ -122,7 +127,8 @@ internal static class WindowRecoveryControls
                 Invoke(window, "InstallClicked", window, new RoutedEventArgs());
                 var submitted = configuration.GetValue(window);
                 if ((submitted is not null) != enabled
-                    || submitted is not null && (submitted.GetType().GetProperty("Model")!.GetValue(submitted) as string != "preview-selected-model"
+                    || submitted is not null && (submitted.GetType().GetProperty("Agent")!.GetValue(submitted) as string != agent
+                        || submitted.GetType().GetProperty("Model")!.GetValue(submitted) as string != "preview-selected-model"
                         || submitted.GetType().GetProperty("Endpoint")!.GetValue(submitted) as string != "http://127.0.0.1:12345/v1"))
                     throw new InvalidOperationException("Preview configuration lost the chosen model/endpoint or admitted an absent runtime.");
             }
@@ -227,14 +233,15 @@ internal static class WindowRecoveryControls
         }
     }
 
-    private static void AssertSavedChoices(MainWindow window)
+    private static void AssertSavedChoices(MainWindow window, string agent)
     {
+        Invoke(window, "AgentSelected", new RadioButton { Tag = agent }, new RoutedEventArgs());
         var operations = typeof(MainWindow).Assembly.GetType("Nvidia.NemoClaw.Bootstrapper.NativeSetupOperations")!;
         var parse = operations.GetMethod("ReadSavedSettings", BindingFlags.Static | BindingFlags.NonPublic)!;
-        object Read(string value) => parse.Invoke(null, new object[] { value, "openclaw" })!;
+        object Read(string value) => parse.Invoke(null, new object[] { value, agent })!;
         string Saved(string provider, string endpoint, string model) => System.Text.Json.JsonSerializer.Serialize(new
         {
-            schemaVersion = 1, kind = "native-saved-settings", agent = "openclaw", state = "saved",
+            schemaVersion = 1, kind = "native-saved-settings", agent, state = "saved",
             settings = new { inference = provider, endpoint, model, credentialStored = provider is "nvidia" or "openrouter", options = new
             {
                 search = new { provider = "tavily", credentialStored = true },
@@ -277,7 +284,7 @@ internal static class WindowRecoveryControls
         var valid = Saved("local", "http://127.0.0.1:12345/v1", "selected-model");
         foreach (var invalid in new[] { "null", "{", new string('x', 16385),
             valid.Replace("\"schemaVersion\":1", "\"schemaVersion\":1,\"schemaVersion\":1"),
-            valid.Replace("\"agent\":\"openclaw\"", "\"agent\":\"hermes\""),
+            valid.Replace($"\"agent\":\"{agent}\"", $"\"agent\":\"{(agent == "openclaw" ? "hermes" : "openclaw")}\""),
             valid.Replace("selected-model", new string('x', 257)),
             valid.Replace("http://127.0.0.1:12345/v1", "https://user:private@example.invalid/v1"),
             valid.Replace("\"state\":\"saved\"", "\"state\":\"unconfigured\""),
@@ -290,7 +297,7 @@ internal static class WindowRecoveryControls
         var modelType = typeof(MainWindow).Assembly.GetType("Nvidia.NemoClaw.Bootstrapper.NativeExpressSetup")!;
         var localModel = modelType.GetProperty("Id", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null);
         var localName = modelType.GetProperty("Model", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null);
-        var managed = System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, kind = "native-saved-settings", agent = "openclaw", state = "saved",
+        var managed = System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, kind = "native-saved-settings", agent, state = "saved",
             settings = new { inference = "local", model = localName, localModel, credentialStored = false, options = new { } } });
         Invoke(window, "ApplySavedSettings", Read(managed));
         var choice = (ComboBoxItem)((ComboBox)window.FindName("ProviderChoice")).SelectedItem;
@@ -301,15 +308,22 @@ internal static class WindowRecoveryControls
             throw new InvalidOperationException("Available model refresh did not restore the saved selection exactly once.");
         ((ComboBox)window.FindName("ProviderChoice")).SelectedIndex = 0;
         ((ComboBox)window.FindName("ProviderChoice")).Items.Remove(choice);
-        Invoke(window, "ApplySavedSettings", Read("{\"schemaVersion\":1,\"kind\":\"native-saved-settings\",\"agent\":\"openclaw\",\"state\":\"needs-resave\",\"settings\":null}"));
+        Invoke(window, "ApplySavedSettings", Read(System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, kind = "native-saved-settings", agent, state = "needs-resave", settings = (object?)null })));
         if (((Border)window.FindName("ConfigurationErrorPanel")).Visibility != Visibility.Visible)
             throw new InvalidOperationException("Unfinished saves were silently treated as saved settings.");
     }
 
-    private static void AssertSavedLoading(MainWindow window)
+    private static void AssertSavedLoading(MainWindow window, string agent)
     {
-        const string empty = "{\"schemaVersion\":1,\"kind\":\"native-saved-settings\",\"agent\":\"openclaw\",\"state\":\"unconfigured\",\"settings\":null}";
-        const string saved = "{\"schemaVersion\":1,\"kind\":\"native-saved-settings\",\"agent\":\"openclaw\",\"state\":\"saved\",\"settings\":{\"inference\":\"local\",\"endpoint\":\"http://127.0.0.1:12345/v1\",\"model\":\"loaded-model\",\"credentialStored\":false,\"options\":{\"messaging\":{\"telegram\":{\"credentialStored\":true,\"allowedUsers\":[\"123456\"]}}}}}";
+        var empty = System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, kind = "native-saved-settings", agent, state = "unconfigured", settings = (object?)null });
+        string SavedFor(string selected) => System.Text.Json.JsonSerializer.Serialize(new {
+            schemaVersion = 1, kind = "native-saved-settings", agent = selected, state = "saved",
+            settings = new { inference = "local", endpoint = "http://127.0.0.1:12345/v1", model = "loaded-model", credentialStored = false,
+                options = new { messaging = new { telegram = new { credentialStored = true, allowedUsers = new[] { "123456" } } } } },
+        });
+        var saved = SavedFor(agent);
+        var otherAgent = agent == "openclaw" ? "hermes" : "openclaw";
+        Invoke(window, "AgentSelected", new RadioButton { Tag = agent }, new RoutedEventArgs());
         var availability = typeof(MainWindow).GetField("runtimeAvailability", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var loader = typeof(MainWindow).GetField("readSavedSettings", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var original = availability.GetValue(window);
@@ -322,13 +336,18 @@ internal static class WindowRecoveryControls
             agents = new[] { new {agent = "openclaw", status = "qualified"}, new {agent = "hermes", status = "qualified"} } });
         availability.SetValue(window, availability.FieldType.GetMethod("Parse", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, new object[] {record}));
         Invoke(window, "ApplyRuntimeAvailability");
+        Invoke(window, "AgentSelected", new RadioButton { Tag = agent }, new RoutedEventArgs());
         var panel = (Grid)window.FindName("ConfigurationPanel");
         var install = (Button)window.FindName("InstallButton");
         ((CheckBox)window.FindName("LicenseCheck")).IsChecked = true;
         try
         {
             var response = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-            loader.SetValue(window, (Func<string, Task<string>>)(_ => response.Task));
+            loader.SetValue(window, (Func<string, Task<string>>)(selected =>
+            {
+                if (selected != agent) throw new InvalidOperationException("Saved settings lookup selected another agent.");
+                return response.Task;
+            }));
             var loading = (Task)Invoke(window, "LoadSavedSettingsAsync")!;
             if (panel.IsEnabled || install.IsEnabled) throw new InvalidOperationException("Saving remained enabled before saved choices were confirmed.");
             response.SetResult(saved);
@@ -336,15 +355,15 @@ internal static class WindowRecoveryControls
             if (!panel.IsEnabled || !install.IsEnabled || ((TextBox)window.FindName("ModelBox")).Text != "loaded-model")
                 throw new InvalidOperationException("Confirmed saved choices did not restore the editor.");
             var reloads = 0;
-            loader.SetValue(window, (Func<string, Task<string>>)(_ => { reloads++; return Task.FromResult(saved); }));
-            Invoke(window, "AgentSelected", new RadioButton {Tag = "hermes"}, new RoutedEventArgs());
+            loader.SetValue(window, (Func<string, Task<string>>)(selected => { reloads++; return Task.FromResult(SavedFor(selected)); }));
+            Invoke(window, "AgentSelected", new RadioButton {Tag = otherAgent}, new RoutedEventArgs());
             Invoke(window, "ConfigureClicked", window, new RoutedEventArgs());
-            Invoke(window, "AgentSelected", new RadioButton {Tag = "openclaw"}, new RoutedEventArgs());
+            Invoke(window, "AgentSelected", new RadioButton {Tag = agent}, new RoutedEventArgs());
             Invoke(window, "ConfigureClicked", window, new RoutedEventArgs());
             var services = (UserControl)window.FindName("ServiceOptions");
-            if (reloads != 1 || ((CheckBox)services.FindName("TelegramEnabled")).IsChecked != true
+            if (reloads != 2 || ((CheckBox)services.FindName("TelegramEnabled")).IsChecked != true
                 || ((TextBox)services.FindName("TelegramUsers")).Text != "123456")
-                throw new InvalidOperationException("Returning to OpenClaw reused a stale loaded flag after clearing integration choices.");
+                throw new InvalidOperationException("Returning to the selected agent reused a stale loaded flag after clearing integration choices.");
             loader.SetValue(window, (Func<string, Task<string>>)(_ => Task.FromException<string>(new IOException("fixture unavailable"))));
             Finish((Task)Invoke(window, "LoadSavedSettingsAsync")!);
             if (install.IsEnabled || ((TextBox)window.FindName("ModelBox")).Text != "loaded-model")
@@ -352,16 +371,16 @@ internal static class WindowRecoveryControls
             response = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             loader.SetValue(window, (Func<string, Task<string>>)(_ => response.Task));
             loading = (Task)Invoke(window, "LoadSavedSettingsAsync")!;
-            Invoke(window, "AgentSelected", new RadioButton {Tag = "hermes"}, new RoutedEventArgs());
+            Invoke(window, "AgentSelected", new RadioButton {Tag = otherAgent}, new RoutedEventArgs());
             ((TextBox)window.FindName("ModelBox")).Text = "other-agent-draft";
             response.SetResult(saved);
             Finish(loading);
-            if (window.SelectedAgent != "hermes" || ((TextBox)window.FindName("ModelBox")).Text != "other-agent-draft")
-                throw new InvalidOperationException("A late OpenClaw lookup overwrote another agent's choices.");
-            Invoke(window, "AgentSelected", new RadioButton {Tag = "openclaw"}, new RoutedEventArgs());
+            if (window.SelectedAgent != otherAgent || ((TextBox)window.FindName("ModelBox")).Text != "other-agent-draft")
+                throw new InvalidOperationException("A late settings lookup overwrote another agent's choices.");
+            Invoke(window, "AgentSelected", new RadioButton {Tag = agent}, new RoutedEventArgs());
             loader.SetValue(window, (Func<string, Task<string>>)(_ => Task.FromResult(empty)));
             Finish((Task)Invoke(window, "LoadSavedSettingsAsync")!);
-            AssertReplacementSetup(window, loader, installed, Finish);
+            if (agent == "openclaw") AssertReplacementSetup(window, loader, installed, Finish);
         }
         finally
         {
@@ -642,11 +661,13 @@ internal static class WindowRecoveryControls
                 AssertCompletionPresentation(window);
                 AssertProviderChoices(window);
                 AssertSavedOutputBounds();
-                AssertSavedChoices(window);
+                AssertSavedChoices(window, "openclaw");
+                AssertSavedChoices(window, "hermes");
                 window.Closed += (_, _) => closed = true;
                 window.ModelSetupCancelRequested += (_, _) => cancelRequests++;
                 window.Show();
-                AssertSavedLoading(window);
+                AssertSavedLoading(window, "openclaw");
+                AssertSavedLoading(window, "hermes");
                 AssertPresentationLayout(window);
                 if (Invoke(window, "TryBeginConfiguration") is not true)
                     throw new InvalidOperationException("Setup rejected the fixture save.");

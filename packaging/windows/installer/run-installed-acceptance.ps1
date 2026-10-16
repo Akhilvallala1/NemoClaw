@@ -194,6 +194,9 @@ function Assert-HermesCaseReceipt($Receipt, [string]$CaseName, $ColdReceipt) {
       throw 'Hermes process and native cleanup custody is unresolved.'
     }
   }
+  if ($Receipt.results.custody.configurationMutationUnconfirmed -isnot [bool] -or $Receipt.results.custody.configurationMutationUnconfirmed) {
+    throw 'Hermes configuration completion is unresolved.'
+  }
   if ($Receipt.results.custody.configurationRetainedForRecovery -isnot [bool] -or $Receipt.results.custody.configurationRetainedForRecovery) {
     throw 'Hermes recovery state remains retained.'
   }

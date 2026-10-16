@@ -3136,8 +3136,8 @@ jobs:
             $pythonResult = $LASTEXITCODE
           } finally { $ErrorActionPreference = 'Stop' }
           $pythonText = [string](Get-Content -LiteralPath $pythonLog -Raw)
-          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 192 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
-            throw 'The 192 MSI build and metadata controls did not all pass.'
+          if ($pythonResult -ne 0 -or $pythonText -notmatch '(?m)^Ran 194 tests in [0-9.]+s\r?$' -or $pythonText -notmatch '(?m)^OK\r?$') {
+            throw 'The 194 MSI build and metadata controls did not all pass.'
           }
 
       - name: Build and exercise actual isolated MSI transactions

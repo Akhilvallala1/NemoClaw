@@ -679,7 +679,98 @@ for (const name of ["NVIDIA_API_KEY", "NVIDIA_INFERENCE_API_KEY"])
     assert.match(messages[0], /Controller failed/u);
   });
 
-test("Hermes cleanup retains data until both native cleanup and process closure are confirmed", async () => {
+test("Hermes onboarding retains mutation custody until its complete success receipt is validated", async () => {
+  const source = fs.readFileSync(
+    new URL("./qualify-installed-hermes.mts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("    if (!reuse) {\n      const onboardPath =");
+  const end = source.indexOf("    const configurationText =", start);
+  assert(start > 0 && end > start);
+  const block = stripTypeScriptTypes(
+    source.slice(start, end).replaceAll("import.meta.url", '"file:///qualification.mts"'),
+  );
+  for (const scenario of [
+    "capture-failed",
+    "nonzero-exit",
+    "invalid-json",
+    "save-failed",
+    "cleanup-unconfirmed",
+    "drafts-missing",
+    "confirmed",
+    "reuse",
+  ]) {
+    let calls = 0;
+    const results: Record<string, any> = {};
+    const bindings = {
+      assert,
+      path: path.win32,
+      URL,
+      fileURLToPath: () => "C:\\Controller\\control-installed-hermes-onboarding.ps1",
+      process: { env: { ProgramFiles: "C:\\Program Files" } },
+      output: "C:\\Evidence",
+      install: "C:\\Installed",
+      model: "test-model",
+      observerEnvironment: { SystemRoot: "C:\\Windows", GITHUB_ACTIONS: "true" },
+      secret: "nvapi-synthetic-fixture",
+      results,
+      reuse: scenario === "reuse",
+      captureOwned: async (
+        _launcher: string,
+        _args: string[],
+        environment: NodeJS.ProcessEnv,
+        stdin: string,
+        timeout: number,
+      ) => {
+        calls++;
+        assert.deepEqual(environment, {
+          SystemRoot: "C:\\Windows",
+          GITHUB_ACTIONS: "true",
+          NVIDIA_API_KEY: "nvapi-synthetic-fixture",
+        });
+        assert.equal(stdin, "");
+        assert.equal(timeout, 180_000);
+        if (scenario === "capture-failed") throw new Error("fixture timeout");
+        return { failure: null, exitCode: scenario === "nonzero-exit" ? 1 : 0 };
+      },
+      fs: {
+        readFileSync: () =>
+          scenario === "invalid-json"
+            ? "{"
+            : JSON.stringify({
+                passed: scenario !== "save-failed",
+                successfulConfigurationSaves: 1,
+                rejectedEmptyIntegrationSave: true,
+                cleanupClosed: scenario !== "cleanup-unconfirmed",
+                providerDrafts:
+                  scenario === "drafts-missing"
+                    ? []
+                    : ["nvidia", "openrouter", "compatible", "local"].map((provider) => ({
+                        provider,
+                        endpointRetained: true,
+                        modelRetained: true,
+                        fixedEndpoint: ["nvidia", "openrouter"].includes(provider),
+                        saved: false,
+                        providerReplyQualified: false,
+                      })),
+              }),
+      },
+    };
+    const observed = await new Function(
+      ...Object.keys(bindings),
+      `return (async () => {
+      let configurationMutationUnconfirmed = false;
+      try { ${block} return { pending: configurationMutationUnconfirmed, failed: false }; }
+      catch { return { pending: configurationMutationUnconfirmed, failed: true }; }
+    })();`,
+    )(...Object.values(bindings));
+    const failed = !["confirmed", "reuse"].includes(scenario);
+    assert.deepEqual(observed, { pending: failed, failed }, scenario);
+    assert.equal(calls, scenario === "reuse" ? 0 : 1, scenario);
+  }
+});
+
+test("Hermes cleanup retains data until configuration, native cleanup and process closure are confirmed", async () => {
   const source = fs.readFileSync(
     new URL("./qualify-installed-hermes.mts", import.meta.url),
     "utf8",
@@ -690,6 +781,28 @@ test("Hermes cleanup retains data until both native cleanup and process closure 
   const block = stripTypeScriptTypes(source.slice(start, end));
   const finished = { exitCode: 0, signalCode: null };
   const cases = [
+    {
+      name: "onboarding completion unconfirmed before native launch",
+      launched: false,
+      cleaned: false,
+      closed: true,
+      owned: true,
+      preserve: false,
+      mutationUnconfirmed: true,
+      remove: false,
+      safe: false,
+    },
+    {
+      name: "unconfirmed save cannot be cleared by a backend cleanup receipt",
+      launched: true,
+      cleaned: true,
+      closed: true,
+      owned: true,
+      preserve: true,
+      mutationUnconfirmed: true,
+      remove: false,
+      safe: false,
+    },
     {
       name: "closed UI without backend evidence",
       launched: true,
@@ -772,6 +885,7 @@ test("Hermes cleanup retains data until both native cleanup and process closure 
       nativeLaunchAttempted: row.launched,
       nativeCleanupConfirmed: row.cleaned,
       configurationOwned: row.owned,
+      configurationMutationUnconfirmed: row.mutationUnconfirmed ?? false,
       preserve: row.preserve,
       primary: undefined,
       binding: "test-binding",
@@ -795,6 +909,11 @@ test("Hermes cleanup retains data until both native cleanup and process closure 
       row.name,
     );
     assert.equal(results.custody.uninstallSafe, row.safe, row.name);
+    assert.equal(
+      results.custody.configurationMutationUnconfirmed,
+      row.mutationUnconfirmed ?? false,
+      row.name,
+    );
     assert.equal(
       results.custody.configurationRetainedForRecovery,
       row.owned && !row.safe,

@@ -118,7 +118,7 @@ function Test-PersonalRuntimeRemoval([object]$Completed,[string]$Runtime,[string
             if ($Completed.$field -isnot [bool]) { return $false }
         }
         if ($Completed.rootsRetainedForUnclosedExecutor) { return $false }
-        foreach ($field in @('hostDiagnosticChildrenClosed','ownedRootsRemoved')) {
+        foreach ($field in @('hostDiagnosticChildrenClosed','ownedRootsRemoved','nativeStateComplete')) {
             if ($Completed.cleanup.$field -isnot [bool] -or $Completed.cleanup.$field -cne $true) { return $false }
         }
         if ($Completed.executorAttempted) {
@@ -247,6 +247,12 @@ try {
     $receipt['bootstrapPythonSha256']=$bootstrap.pythonSha256
     $receipt['bootstrapNodeSha256']='97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878'
     if ($nativeProduction) {
+        $previousTestPython=$env:NEMOCLAW_TEST_PYTHON
+        try {
+            $env:NEMOCLAW_TEST_PYTHON=$python
+            Invoke-PersonalChecked $node @('--experimental-strip-types','--no-warnings','--test',
+                (Join-Path $PSScriptRoot 'personal-native-state.test.mts')) 'Native state ownership controls'
+        } finally {$env:NEMOCLAW_TEST_PYTHON=$previousTestPython}
         $receipt.candidateSource='8f54e647a1cda1c3c879ad4e350700a13bb8fc2e'
         $receipt.artifactId=11995339173
         $compatEvidence=[IO.Path]::GetFullPath($NativeCompatibilityDirectory)
@@ -381,6 +387,7 @@ try {
         '--compatibility-root',$compatibilityRoot,'--compatibility-receipt',(Join-Path $compatibilityRoot 'build-receipt.json'),
         '--compatibility-proof',(Join-Path $compatEvidence 'result.json'),'--mxc-build-receipt',(Join-Path $patchedMxc 'mxc-token-inspection-build.json'),
         '--derived-runtime-receipt',(Join-Path $candidate 'runtime-candidate.json'))
+    if ($nativeProduction) { $personalArguments += @('--state-owner-build',(Join-Path $output 'state-owner-build.json')) }
     if (-not $nativeProduction) { $personalArguments += @('--replay-receipt',(Join-Path $candidate 'replay-input.json')) }
     if ($RendererWer) {
         $receipt['activeStage']='Build out-of-process renderer diagnostic'

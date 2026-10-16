@@ -139,3 +139,30 @@ test("unsupported inspection purposes are rejected before starting an owner", as
   });
   assert.deepEqual(calls, []);
 });
+
+for (const agent of ["openclaw", "hermes"]) {
+  test(`${agent} retained owner can unref its actual pipes without releasing its live lease`, async () => {
+    await withOwner(
+      {
+        schemaVersion: 1,
+        kind: "native-state-session",
+        agent,
+        stateRoot: `C:\\NemoClawState-S-1-5-21-1001-${agent}`,
+        created: true,
+        leaseHeld: true,
+      },
+      async () => {
+        const owner = await acquireNativeStateSession("fixture", agent);
+        try {
+          owner.unrefWithoutRelease();
+          owner.unrefWithoutRelease();
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+          owner.assertHeld();
+        } finally {
+          await owner.release();
+        }
+        assert.throws(() => owner.assertHeld(), /lease is closed/u);
+      },
+    );
+  });
+}
