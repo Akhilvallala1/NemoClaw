@@ -737,6 +737,8 @@ jobs:
         env:
           CANDIDATE_REPOSITORY: ${{ inputs.checkout_repository || github.repository }}
           CANDIDATE_SHA: ${{ inputs.checkout_sha || github.sha }}
+          UPGRADE_PR_NUMBER: ${{ inputs.pr_number }}
+          UPGRADE_BASE_SHA: ${{ inputs.base_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: node --no-warnings tools/e2e/candidate-openshell-version.mts
 
@@ -843,6 +845,7 @@ jobs:
             scripts/check-dist-sourcemaps.mts
             scripts/audit-reviewed-npm-graph.mts
             scripts/checks/prepare-ci-npm-install.mts
+            scripts/lib/reviewed-ci-npm-install.mts
             scripts/lib/openclaw-npm-remediation.mts
             scripts/lib/reviewed-npm-archive.mts
             scripts/lib/reviewed-npm-cache.mts
@@ -3192,7 +3195,7 @@ jobs:
           path: ${{ runner.temp }}/openshell-sdk
 
       - name: Install reviewed OpenShell SDK archive without package credentials
-        uses: NVIDIA/NemoClaw/.github/actions/install-reviewed-openshell-sdk@697af6ed24d88e7a8cbb0409acde3398e12f8eae
+        uses: NVIDIA/NemoClaw/.github/actions/install-reviewed-openshell-sdk@2584abf0a4f739fa5f2e3fd92821ff78175b4115
 
       - name: Record immutable Deep Agents Code base evidence
         if: ${{ matrix.id == 'ubuntu-repo-cloud-langchain-deepagents-code' && needs.generate-matrix.outputs.workload_source == 'managed-image' && needs.base-image-publication.outputs.managed_image_catalog == '' }}
@@ -3829,7 +3832,7 @@ jobs:
           path: ${{ runner.temp }}/openshell-sdk
 
       - name: Install reviewed OpenShell SDK archive without package credentials
-        uses: NVIDIA/NemoClaw/.github/actions/install-reviewed-openshell-sdk@697af6ed24d88e7a8cbb0409acde3398e12f8eae
+        uses: NVIDIA/NemoClaw/.github/actions/install-reviewed-openshell-sdk@2584abf0a4f739fa5f2e3fd92821ff78175b4115
 
       - name: Install OpenShell CLI
         run: env -u NODE_AUTH_TOKEN -u GITHUB_TOKEN bash scripts/install-openshell.sh
@@ -4110,7 +4113,7 @@ jobs:
           path: ${{ runner.temp }}/openshell-sdk
 
       - name: Install reviewed OpenShell SDK archive without package credentials
-        uses: NVIDIA/NemoClaw/.github/actions/install-reviewed-openshell-sdk@697af6ed24d88e7a8cbb0409acde3398e12f8eae
+        uses: NVIDIA/NemoClaw/.github/actions/install-reviewed-openshell-sdk@2584abf0a4f739fa5f2e3fd92821ff78175b4115
 
       - name: Restore exact-commit CLI artifact
         uses: NVIDIA/NemoClaw/.github/actions/restore-e2e-cli-artifact@b1494a0828a80a8d5dc862effc9e85ac987f8b4a
@@ -5624,7 +5627,7 @@ jobs:
           path: ${{ runner.temp }}/openshell-sdk
 
       - name: Install reviewed OpenShell SDK archive without package credentials
-        uses: NVIDIA/NemoClaw/.github/actions/install-reviewed-openshell-sdk@697af6ed24d88e7a8cbb0409acde3398e12f8eae
+        uses: NVIDIA/NemoClaw/.github/actions/install-reviewed-openshell-sdk@2584abf0a4f739fa5f2e3fd92821ff78175b4115
 
       - name: Restore exact-commit CLI artifact
         uses: NVIDIA/NemoClaw/.github/actions/restore-e2e-cli-artifact@b1494a0828a80a8d5dc862effc9e85ac987f8b4a
@@ -5732,6 +5735,55 @@ jobs:
           [[ "$(sudo stat -c '%u:%g:%a' "$CLEANUP_FIXTURE")" == "0:0:555" ]]
           sudo cmp -s "$extracted_fixture" "$CLEANUP_FIXTURE"
 
+      - name: Install pinned OpenShell
+        env:
+          XDG_BIN_HOME: ${{ runner.temp }}/nemoclaw-portable-hermes-openshell-bin.${{ github.run_id }}.${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          install_root="${XDG_BIN_HOME:?}"
+          [[ "$install_root" == "$RUNNER_TEMP"/nemoclaw-portable-hermes-openshell-bin.* ]]
+          rm -rf -- "$install_root"
+          install -d -m 0700 "$install_root"
+          installer_sentinel="nemoclaw-openshell-install-sentinel:${install_root}"
+          cat >"$install_root/openshell" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' 'openshell 0.0.0-dev'
+          EOF
+          printf '# %s\n' "$installer_sentinel" >>"$install_root/openshell"
+          chmod 0700 "$install_root/openshell"
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            PATH="$install_root:$PATH" \
+            NEMOCLAW_NON_INTERACTIVE=1 \
+            bash scripts/install-openshell.sh
+          openshell_install_root_is_complete() {
+            local root="$1" component
+            for component in openshell openshell-gateway openshell-sandbox; do
+              [[ -f "$root/$component" && ! -L "$root/$component" && -x "$root/$component" ]] \
+                || return 1
+            done
+          }
+          if ! openshell_install_root_is_complete "$install_root"; then
+            echo "::error::The pinned OpenShell installer did not populate the isolated install root." >&2
+            exit 1
+          fi
+          if grep -Fq "$installer_sentinel" "$install_root/openshell"; then
+            echo "::error::The pinned OpenShell installer did not replace its trusted reinstall sentinel." >&2
+            exit 1
+          fi
+          for component in openshell openshell-gateway openshell-sandbox; do
+            source="$install_root/$component"
+            [[ -f "$source" && ! -L "$source" && -x "$source" ]]
+            destination="/usr/bin/$component"
+            if [[ "$source" -ef "$destination" ]]; then
+              [[ -f "$destination" && ! -L "$destination" ]]
+              sudo chown root:root "$destination"
+              sudo chmod 0755 "$destination"
+            else
+              sudo install -o root -g root -m 0755 "$source" "$destination"
+            fi
+          done
+          echo /usr/bin >>"$GITHUB_PATH"
+
       - name: Check out the exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5757,16 +5809,6 @@ jobs:
           set -euo pipefail
           npm run catalog:compile
           npm run build:policy-boundary
-
-      - name: Install pinned OpenShell
-        run: |
-          set -euo pipefail
-          env -u GH_TOKEN -u GITHUB_TOKEN NEMOCLAW_NON_INTERACTIVE=1 bash scripts/install-openshell.sh
-          for component in openshell openshell-gateway openshell-sandbox; do
-            resolved="$(command -v "$component")"
-            sudo install -o root -g root -m 0755 "$resolved" "/usr/bin/$component"
-          done
-          echo /usr/bin >>"$GITHUB_PATH"
 
       - name: Recover stale Docker isolation before Portable Podman E2E
         uses: NVIDIA/NemoClaw/.github/actions/restore-native-podman-e2e@9650336899bf836db5844381a97cbc2b0fe4a2b8
@@ -6226,8 +6268,8 @@ jobs:
       E2E_DEFAULT_ENABLED: "0"
       E2E_GATEWAY_RUNTIMES: agnostic
       E2E_AGENT_RUNTIME: openclaw
-      E2E_OBSERVABLE_OUTCOME: Station Express installs managed Ultra vLLM and NemoClaw, serves sandbox inference, and removes job runtime
-      E2E_ENVIRONMENT_OR_INFERENCE_ENDPOINT: Dedicated DGX Station GB300 with cached Nemotron 3 Ultra 550B
+      E2E_OBSERVABLE_OUTCOME: Station Express installs managed Super VL vLLM and NemoClaw, serves sandbox inference, and removes job runtime
+      E2E_ENVIRONMENT_OR_INFERENCE_ENDPOINT: Dedicated DGX Station GB300 with cached Nemotron 3.5 Super VL 120B
     steps:
       - name: Check out trusted Station controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

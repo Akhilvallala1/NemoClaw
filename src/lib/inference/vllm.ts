@@ -962,6 +962,7 @@ export function resolveVllmModelRuntime(
       fixedServeCommand: runtime.fixedServeCommand,
       managedBearerAuth: runtime.managedBearerAuth,
       trustRemoteCode: runtime.trustRemoteCode,
+      reviewedCode: runtime.reviewedCode,
       runtime,
     },
   };
@@ -2069,6 +2070,28 @@ export async function installVllm(
   }
 }
 
+function resolveVllmInstallRuntime(
+  profile: VllmProfile,
+  model: VllmModelDef,
+  catalogSelection: MaterializedHostLocalVllmSelection | undefined,
+): { profile: VllmProfile; model: VllmModelDef } {
+  // Catalog selection already owns model arguments and authentication; apply only its container runtime.
+  if (catalogSelection) return { profile: resolveVllmRuntimeProfile(profile, model), model };
+  return resolveVllmModelRuntime(profile, model);
+}
+
+function isFixedVllmInstallProfile(profile: VllmProfile): boolean {
+  // A platform's menu default is not yet a selected fixed recipe. Resolve operator
+  // intent first; materialized recipes retain their fixed-command restrictions.
+  return (
+    profile.defaultModel.fixedServeCommand === true &&
+    (Boolean(profile.servingCatalog) ||
+      !profile.defaultModel.runtimeVariants?.some(
+        (variant) => variant.selection === "automatic" && variant.fixedServeCommand === true,
+      ))
+  );
+}
+
 async function runVllmInstall(
   profile: VllmProfile,
   opts: InstallVllmOptions,
@@ -2087,7 +2110,7 @@ async function runVllmInstall(
     configuredPeer,
     configuredManagedClusterPeers,
   } = selection;
-  const fixedServeCommand = profile.defaultModel.fixedServeCommand === true;
+  const fixedServeCommand = isFixedVllmInstallProfile(profile);
   if (fixedServeCommand) {
     if (
       (!hostLocalSelection && explicitModel) ||
@@ -2290,14 +2313,11 @@ async function runVllmInstall(
     return { ok: false };
   }
   let runtimeProfile: VllmProfile;
-  if (
-    hostLocalSelection ||
-    (profile.platform === "station" && configuredPeer.length > 0 && usesStationPair)
-  ) {
+  if (profile.platform === "station" && configuredPeer.length > 0 && usesStationPair) {
     runtimeProfile = profile;
   } else {
     try {
-      const runtime = resolveVllmModelRuntime(profile, model);
+      const runtime = resolveVllmInstallRuntime(profile, model, hostLocalSelection);
       runtimeProfile = runtime.profile;
       model = runtime.model;
     } catch (err) {
