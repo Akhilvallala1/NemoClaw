@@ -314,8 +314,6 @@ const STOCK_RUNTIME_INPUT_AGENTS = {
   NEMOCLAW_MINIMAL_BOOTSTRAP: ["openclaw"],
   NEMOCLAW_MCP_TOOLS_LIST_TIMEOUT_MS: ["openclaw"],
   NEMOCLAW_OBSERVABILITY: ["langchain-deepagents-code"],
-  NEMOCLAW_PROXY_HOST: ["hermes"],
-  NEMOCLAW_PROXY_PORT: ["hermes"],
   NEMOCLAW_SANDBOX_NAME: ["langchain-deepagents-code"],
   NO_PROXY: MANAGED_STARTUP_AGENTS,
   OPENCLAW_HOME: ["openclaw"],

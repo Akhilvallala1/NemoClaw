@@ -66,7 +66,7 @@ export const MANAGED_STARTUP_HOST_PROXY_URL_INPUTS = [
  */
 const EXPECTED_AFFORDANCE_INVENTORY_SHA256 = {
   openclaw: "d119329b26a6e73dcdb7e644f6bc618651c7a82b0698785bd9d09ca6d81d7b48",
-  hermes: "795c97be2dcb1921e06328a6d23b1f7389ebb2f6a085fa67b7aaa0f287ce88e0",
+  hermes: "464275003585db80d59838e4ca875afef5dcda3bc9f5ad9c4e6749043c2b6fbd",
   "langchain-deepagents-code": "1aa0b36b1ba387a8ab67149af5cb549ca9ab729057a9fed51eb32ceb1427fc32",
   pi: "822d29b6c5d8309a676a47a2e6f5dc74854dd0e59d71e6b2c8c6d148a7e6f37c",
 } as const satisfies Record<ManagedStartupAgent, string>;

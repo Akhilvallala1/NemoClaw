@@ -456,8 +456,6 @@ function mapHermesProfile(
   runtimeEnvironment.NEMOCLAW_HERMES_DASHBOARD_PORT =
     profile.dashboard.publicPort === null ? "" : String(profile.dashboard.publicPort);
   runtimeEnvironment.NEMOCLAW_HERMES_DASHBOARD_TUI = booleanFlag(profile.dashboard.tuiEnabled);
-  runtimeEnvironment.NEMOCLAW_PROXY_HOST = profile.proxy.managedHost;
-  runtimeEnvironment.NEMOCLAW_PROXY_PORT = String(profile.proxy.managedPort);
   appendHostProxyEnvironment(runtimeEnvironment, profile, { preserveAmbientWhenAbsent: true });
 
   return Object.freeze({

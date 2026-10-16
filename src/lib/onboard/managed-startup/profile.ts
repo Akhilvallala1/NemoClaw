@@ -565,8 +565,6 @@ export const MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY = {
     affordance("NEMOCLAW_HERMES_DASHBOARD_PORT", "dashboard.publicPort", "runtime-env"),
     affordance("NEMOCLAW_HERMES_DASHBOARD_INTERNAL_PORT", "dashboard.internalPort", "runtime-env"),
     affordance("NEMOCLAW_HERMES_DASHBOARD_TUI", "dashboard.tuiEnabled", "runtime-env"),
-    affordance("NEMOCLAW_PROXY_HOST", "proxy.managedHost", "runtime-env"),
-    affordance("NEMOCLAW_PROXY_PORT", "proxy.managedPort", "runtime-env"),
     affordance(
       "NEMOCLAW_CORPORATE_CA_B64",
       "corporateCa.bundleSha256",
