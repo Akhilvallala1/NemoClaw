@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,13 +13,14 @@ import {
   type HermesManagedRouting,
 } from "../../../src/lib/hermes-managed-route";
 
-const PLUGIN_PATH = path.join(
+const PLUGIN_DIR = path.join(import.meta.dirname, "../../..", "agents", "hermes", "plugin");
+const PLUGIN_PATH = path.join(PLUGIN_DIR, "__init__.py");
+const CHECK_NATIVE_CREDENTIALS_PATH = path.join(
   import.meta.dirname,
   "../../..",
   "agents",
   "hermes",
-  "plugin",
-  "__init__.py",
+  "check-native-credentials.ts",
 );
 
 function runPython(script: string): string {
@@ -35,44 +36,6 @@ const ONBOARDING_SELECTION = {
   provider: "vllm-local",
   providerLabel: "Local vLLM",
 };
-
-const HERMES_TURN_CONTEXT_FIXTURE = `
-def compose_user_api_content(content, ext_prefetch_cache, plugin_user_context):
-    if not isinstance(content, str):
-        return None
-    injections = [part for part in (ext_prefetch_cache, plugin_user_context) if part]
-    if not injections:
-        return None
-    return content + "\\n\\n" + "\\n\\n".join(injections)
-
-def _collect_pre_llm_call_context(
-    agent, *, effective_task_id, turn_id, original_user_message,
-    messages, conversation_history,
-):
-    if getattr(agent, "_persist_disabled", False):
-        return ""
-    from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-    _pre_results = _invoke_hook(
-        "pre_llm_call",
-        session_id=agent.session_id,
-        task_id=effective_task_id,
-        turn_id=turn_id,
-        user_message=original_user_message,
-        conversation_history=list(messages),
-        is_first_turn=(not bool(conversation_history)),
-        model=agent.model,
-        platform=getattr(agent, "platform", None) or "",
-        parent_session_id=getattr(agent, "_parent_session_id", None) or "",
-        sender_id=getattr(agent, "_user_id", None) or "",
-    )
-    _ctx_parts = []
-    for r in _pre_results:
-        if isinstance(r, dict) and r.get("context"):
-            _ctx_parts.append(str(r["context"]))
-        elif isinstance(r, str) and r.strip():
-            _ctx_parts.append(r)
-    return "\\n\\n".join(_ctx_parts)
-`;
 
 const ROUTE_REPORT_SCRIPT = `
 import importlib.util
@@ -107,63 +70,31 @@ class Context:
 
 module.register(Context())
 
-def invoke_hook(event, **kwargs):
-    callback = hooks.get(event)
-    return [callback(**kwargs)] if callback is not None else []
-
-lifecycle_mod = types.ModuleType("hermes_cli.lifecycle")
-lifecycle_mod.invoke_hook = invoke_hook
-hermes_cli_mod = sys.modules.setdefault("hermes_cli", types.ModuleType("hermes_cli"))
-hermes_cli_mod.lifecycle = lifecycle_mod
-sys.modules["hermes_cli.lifecycle"] = lifecycle_mod
-
-turn_context_mod = types.ModuleType("agent.turn_context")
-exec(${JSON.stringify(HERMES_TURN_CONTEXT_FIXTURE)}, turn_context_mod.__dict__)
-sys.modules["agent.turn_context"] = turn_context_mod
-
 model_mode = sys.argv[2]
-if model_mode == "__omit_model__":
-    raw_results = invoke_hook(
-        "pre_llm_call",
-        session_id="session-1",
-        task_id="task-1",
-        turn_id="turn-1",
-        user_message="status",
-        conversation_history=[],
-        is_first_turn=True,
-        platform="cli",
-        parent_session_id="",
-        sender_id="",
-    )
-    context = "\\n\\n".join(
-        str(item["context"])
-        for item in raw_results
-        if isinstance(item, dict) and item.get("context")
-    )
-else:
-    agent = types.SimpleNamespace(
-        session_id="session-1",
-        model=None if model_mode == "__none_model__" else sys.argv[3],
-        platform="cli",
-        _parent_session_id="",
-        _user_id="",
-        _persist_disabled=False,
-    )
-    context = turn_context_mod._collect_pre_llm_call_context(
-        agent,
-        effective_task_id="task-1",
-        turn_id="turn-1",
-        original_user_message="status",
-        messages=[{"role": "user", "content": "status"}],
-        conversation_history=[],
-    )
+hook_kwargs = {
+    "session_id": "session-1",
+    "task_id": "task-1",
+    "turn_id": "turn-1",
+    "user_message": "status",
+    "conversation_history": [],
+    "is_first_turn": True,
+    "platform": "cli",
+    "parent_session_id": "",
+    "sender_id": "",
+}
+if model_mode != "__omit_model__":
+    hook_kwargs["model"] = None if model_mode == "__none_model__" else sys.argv[3]
 
-api_content = turn_context_mod.compose_user_api_content("status", "", context)
+raw_result = hooks["pre_llm_call"](**hook_kwargs)
+context = (
+    str(raw_result["context"])
+    if isinstance(raw_result, dict) and raw_result.get("context")
+    else ""
+)
 
 print(json.dumps({
     "info": json.loads(tools["nemoclaw_info"]({}, None)),
     "context": context,
-    "api_content": api_content,
     "status": tools["nemoclaw_status"]({}, None),
 }))
 `;
@@ -171,7 +102,6 @@ print(json.dumps({
 type RouteReport = {
   info: Record<string, unknown>;
   context: string;
-  api_content: string | null;
   status: string;
 };
 
@@ -406,29 +336,44 @@ print(json.dumps(result))
       model: "nvidia/nemotron-3-super-120b-a12b",
       baseUrl: "https://inference.local/v1",
       inferenceApi: "openai-completions",
+      modelProvider: "custom",
     },
     {
       provider: "anthropic-prod",
       model: "claude-sonnet-4-6",
       baseUrl: "https://inference.local",
       inferenceApi: "anthropic-messages",
+      modelProvider: "custom",
     },
     {
       provider: "openai-api",
       model: "gpt-5.4",
       baseUrl: "https://api.openai.com/v1",
       inferenceApi: "openai-responses",
+      modelProvider: "custom",
+    },
+    {
+      provider: "openai-api",
+      model: "gpt-5.4",
+      baseUrl: "https://api.openai.com/v1",
+      inferenceApi: "openai-responses",
+      modelProvider: "custom:openai-api",
     },
     {
       provider: "nvidia-prod",
       model: "nvidia/nemotron-3-super-120b-a12b",
       baseUrl: "https://integrate.api.nvidia.com/v1",
       inferenceApi: "openai-completions",
+      modelProvider: "custom",
     },
   ])(
-    "reports the switched $provider route at $baseUrl when the onboarding selection is stale",
-    ({ provider, model, baseUrl, inferenceApi }) => {
-      const report = reportHermesRoute(managedHermesConfig(model, provider, baseUrl, inferenceApi));
+    "reports the switched $provider route at $baseUrl for model.provider $modelProvider when the onboarding selection is stale",
+    ({ provider, model, baseUrl, inferenceApi, modelProvider }) => {
+      const managedConfig = managedHermesConfig(model, provider, baseUrl, inferenceApi);
+      const report = reportHermesRoute({
+        ...managedConfig,
+        model: { ...managedConfig.model, provider: modelProvider },
+      });
 
       expect(report.info).toMatchObject({
         model,
@@ -627,8 +572,6 @@ print(json.dumps(result))
       expect(report.context).toContain(
         "Hermes does not supply the active provider or endpoint to this hook.",
       );
-      expect(report.api_content).toContain(`status\n\nNemoClaw runtime context:`);
-      expect(report.api_content).toContain(`- Hermes chat model: ${model}.`);
       expect(report.context).not.toMatch(
         /NemoClaw provider state|Hermes chat route|provider=|endpoint=|not used by the configured chat route/,
       );
@@ -660,6 +603,135 @@ print(json.dumps(result))
       "- NemoClaw-managed inference route (not used by the configured chat route): model=nvidia/nemotron-3-nano, provider=vllm-local, endpoint=https://inference.local/v1.",
     );
     expect(report.context).not.toContain("Hermes chat model:");
+  });
+
+  it.each([
+    {
+      label: "exits 0 when agent.turn_context forwards agent.model to pre_llm_call",
+      modelArg: "model=agent.model,",
+      expectedStatus: 0,
+    },
+    {
+      label: "exits 1 when agent.turn_context omits model from pre_llm_call",
+      modelArg: "",
+      expectedStatus: 1,
+    },
+  ])("runs the build-time turn-context hook probe and $label", ({ modelArg, expectedStatus }) => {
+    const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-hermes-runtime-probe-"));
+    try {
+      fs.mkdirSync(path.join(runtimeDir, "hermes_cli"));
+      fs.mkdirSync(path.join(runtimeDir, "agent"));
+      fs.writeFileSync(
+        path.join(runtimeDir, "hermes_cli", "config.py"),
+        `
+import os, re
+def _expand_env_vars(value):
+    if isinstance(value, str):
+        return re.sub(r"\\$\\{([^}]+)\\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+    if isinstance(value, dict):
+        return {k: _expand_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_vars(v) for v in value]
+    return value
+`,
+      );
+      fs.writeFileSync(
+        path.join(runtimeDir, "hermes_cli", "plugins.py"),
+        `
+import importlib.util, os, types
+from pathlib import Path
+
+_manager = None
+
+class _Context:
+    def __init__(self, hooks):
+        self._hooks = hooks
+    def register_tool(self, **_kwargs):
+        pass
+    def register_hook(self, name, callback, **_kwargs):
+        self._hooks.setdefault(name, []).append(callback)
+
+def _reset_plugin_managers_for_tests():
+    global _manager
+    _manager = types.SimpleNamespace(_plugins={}, _hooks={})
+
+def get_plugin_manager():
+    if _manager is None:
+        _reset_plugin_managers_for_tests()
+    return _manager
+
+def discover_plugins(force=False):
+    mgr = get_plugin_manager()
+    if force:
+        mgr._plugins.clear()
+        mgr._hooks.clear()
+    plugin_path = Path(os.environ["HERMES_BUNDLED_PLUGINS"]) / "nemoclaw" / "__init__.py"
+    spec = importlib.util.spec_from_file_location("nemoclaw_plugin", plugin_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.register(_Context(mgr._hooks))
+    mgr._plugins["nemoclaw"] = types.SimpleNamespace(module=module)
+
+def invoke_hook(hook_name, **kwargs):
+    return [cb(**kwargs) for cb in get_plugin_manager()._hooks.get(hook_name, [])]
+`,
+      );
+      fs.writeFileSync(
+        path.join(runtimeDir, "hermes_cli", "lifecycle.py"),
+        `
+from hermes_cli import plugins
+def invoke_hook(hook_name, **kwargs):
+    return plugins.invoke_hook(hook_name, **kwargs)
+`,
+      );
+      fs.writeFileSync(
+        path.join(runtimeDir, "agent", "turn_context.py"),
+        `
+from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+
+def compose_user_api_content(content, ext_prefetch_cache, plugin_user_context):
+    if not isinstance(content, str):
+        return None
+    injections = [part for part in (ext_prefetch_cache, plugin_user_context) if part]
+    if not injections:
+        return None
+    return content + "\\n\\n" + "\\n\\n".join(injections)
+
+def _collect_pre_llm_call_context(
+    agent, *, effective_task_id, turn_id, original_user_message,
+    messages, conversation_history,
+):
+    if getattr(agent, "_persist_disabled", False):
+        return ""
+    _pre_results = _invoke_hook(
+        "pre_llm_call",
+        session_id=agent.session_id,
+        task_id=effective_task_id,
+        turn_id=turn_id,
+        user_message=original_user_message,
+        conversation_history=list(messages),
+        is_first_turn=(not bool(conversation_history)),
+        ${modelArg}
+        platform=getattr(agent, "platform", None) or "",
+        parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+        sender_id=getattr(agent, "_user_id", None) or "",
+    )
+    return "\\n\\n".join(
+        str(r["context"]) for r in _pre_results if isinstance(r, dict) and r.get("context")
+    )
+`,
+      );
+
+      const probe = spawnSync(
+        process.execPath,
+        [CHECK_NATIVE_CREDENTIALS_PATH, runtimeDir, "python3", PLUGIN_DIR],
+        { encoding: "utf-8", timeout: 15_000 },
+      );
+
+      expect(probe.status, probe.stderr).toBe(expectedStatus);
+    } finally {
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+    }
   });
 
   it("patches Hermes managed-tool modules for NemoClaw broker mode", () => {
