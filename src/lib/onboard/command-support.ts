@@ -4,6 +4,7 @@
 import { Flags } from "@oclif/core";
 import { listPolicyTierNames } from "../policy/tiers";
 import { TOOL_DISCLOSURE_VALUES, type ToolDisclosure } from "../tool-disclosure";
+import { DCODE_AUTO_APPROVAL_MODES, type DcodeAutoApprovalMode } from "./dcode-auto-approval";
 import { describeAgentFlag } from "./agent-flag-help";
 import { PORTABLE_EXPERIMENTAL_PROFILE } from "./docker-driver-platform";
 import { NOTICE_ACCEPT_FLAG, NOTICE_ACCEPT_FLAG_NAME } from "./usage-notice";
@@ -62,7 +63,7 @@ function policyTierUsage(): string {
 }
 
 export const onboardUsage = [
-  `onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository@sha256:digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--policy-tier <${policyTierUsage()}>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [${NOTICE_ACCEPT_FLAG}]`,
+  `onboard [--profile <name>] [--non-interactive] [--resume | --fresh] [--recreate-sandbox] [--apf-interceptor] [--gpu | --no-gpu] [--from <Dockerfile> | --from-image <repository@sha256:digest>] [--name <sandbox>] [--host-mount <host:/sandbox/path>] [--sandbox-gpu | --no-sandbox-gpu] [--sandbox-gpu-device <device>] [--vllm-gpu-device <index-or-uuid>] [--agent <name>] [--agents <agents.yaml>] [--tool-disclosure <progressive|direct>] [--policy-tier <${policyTierUsage()}>] [--dcode-auto-approval <disabled|thread-opt-in>] [--observability | --no-observability] [--control-ui-port <N>] [--events=jsonl] [--yes | -y] [--no-ollama-autostart] [${NOTICE_ACCEPT_FLAG}]`,
 ];
 
 export const onboardExamples = [
@@ -102,6 +103,7 @@ export type OnboardFlags = {
   agents?: string;
   "tool-disclosure"?: ToolDisclosure;
   "policy-tier"?: string;
+  "dcode-auto-approval"?: DcodeAutoApprovalMode;
   observability?: boolean;
   "control-ui-port"?: number;
   events?: "jsonl";
@@ -183,6 +185,11 @@ export function buildOnboardFlags(options: { includeEvents?: boolean } = {}): Re
       description:
         "Select the network policy tier without the tier prompt (overrides NEMOCLAW_POLICY_TIER)",
       options: policyTierFlagOptions(),
+    }),
+    "dcode-auto-approval": Flags.string({
+      description:
+        "Choose the managed Deep Agents Code capability; thread-opt-in permits explicit per-thread activation without activating auto-approval",
+      options: [...DCODE_AUTO_APPROVAL_MODES],
     }),
     observability: Flags.boolean({
       allowNo: true,

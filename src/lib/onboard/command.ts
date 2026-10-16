@@ -51,6 +51,7 @@ import {
   resolveLocalModelProfilePlan,
 } from "./local-model-profile/plan";
 import { managedSandboxFeatureIssue } from "./managed-sandbox-feature";
+import type { DcodeAutoApprovalMode } from "./dcode-auto-approval";
 import { parseReadOnlyHostMounts, requireReadOnlyHostMountRuntimeSupport } from "./host-mount";
 import { DCODE_OBSERVABILITY_FEATURE } from "./observability-policy-presets";
 import { isOpenclawAgent } from "./openclaw-otel-policy-presets";
@@ -86,6 +87,7 @@ export interface OnboardCommandOptions {
   toolDisclosure: ToolDisclosure | null;
   /** Operator-selected `--policy-tier`; skips the tier prompt when set. */
   requestedPolicyTier: string | null;
+  dcodeAutoApprovalMode: DcodeAutoApprovalMode | null;
   observabilityEnabled: boolean | null;
   controlUiPort: number | null;
   gpu: boolean;
@@ -553,6 +555,7 @@ export function resolveOnboardOptions(
     agentsManifest: resolveAgentsManifest(flags.agents, agent, deps),
     toolDisclosure,
     requestedPolicyTier,
+    dcodeAutoApprovalMode: flags["dcode-auto-approval"] ?? null,
     observabilityEnabled: typeof flags.observability === "boolean" ? flags.observability : null,
     controlUiPort: flags["control-ui-port"] ?? null,
     gpu: flags.gpu === true,
