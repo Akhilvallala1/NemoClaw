@@ -37,9 +37,10 @@ For an endpoint returned by Hermes login, NemoClaw records its accepted public I
 A different destination cannot gain access through a later DNS change.
 
 Existing sandboxes without a native attachment retain their recorded shared route.
-New Deep Agents Code and OpenClaw selections for Ollama, standalone vLLM, and llama.cpp use a sandbox-attached provider for the qualified host-local endpoint.
-Deep Agents Code also uses an attached provider for hosted compatible endpoints and qualified host-local compatible endpoints.
-Pi, Hermes, OpenClaw compatible endpoints, Local NVIDIA NIM, Model Router, and legacy selections without an attachment retain the shared route.
+New Deep Agents Code, OpenClaw, and Pi selections for Ollama, standalone vLLM, and llama.cpp use a sandbox-attached provider for the qualified host-local endpoint.
+Deep Agents Code also uses an attached provider for hosted compatible endpoints.
+Deep Agents Code and Pi use attached providers for qualified host-local compatible endpoints.
+Hermes, OpenClaw compatible endpoints, other custom endpoints without an attachment, Local NVIDIA NIM, Model Router, and unchanged published Pi shared local selections retain the shared route.
 
 ```text
 Sandbox agent -> inference.local -> shared OpenShell route -> selected provider and model
