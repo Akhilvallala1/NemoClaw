@@ -33,6 +33,7 @@ permissions:
 concurrency:
   group: process-window-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'refresh' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   test:

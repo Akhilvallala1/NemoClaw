@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
@@ -240,4 +241,27 @@ test("release selection requires both a matching tag and membership in the confi
   } finally {
     await rm(path, { recursive: true, force: true });
   }
+});
+
+test("refreshes queue together without replacing a pending release or branch run", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { parse } = await import("yaml");
+  let workflow;
+  try {
+    workflow = await readFile(new URL("../ci/process-window.yaml", import.meta.url), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    workflow = await readFile(
+      new URL("../../../.github/workflows/process-window.yaml", import.meta.url),
+      "utf8",
+    );
+  }
+  // GitHub owns queue execution; this guards its declarative cross-branch contract.
+  const { concurrency } = parse(workflow);
+  assert.equal(
+    concurrency.group,
+    "process-window-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'refresh' }}",
+  );
+  assert.equal(concurrency["cancel-in-progress"], false);
+  assert.equal(concurrency.queue, "max");
 });
