@@ -1030,6 +1030,10 @@ describe("LangChain Deep Agents Code image contracts", () => {
     "https://integrate\\.api\\.nvidia\\.com/v1",
     "references_attached_provider_placeholder_key",
     'api_key_env[[:space:]]*=[[:space:]]*"NVIDIA_INFERENCE_API_KEY"',
+    "references_native_compatible_route",
+    "https://inference-api\\.nvidia\\.com/v1",
+    "references_compatible_provider_placeholder_key",
+    'api_key_env[[:space:]]*=[[:space:]]*"COMPATIBLE_API_KEY"',
     "configured_inference_route_contract",
     "classify_headless_output",
     '"schema_version", "command", "data"',
@@ -1167,6 +1171,13 @@ describe("LangChain Deep Agents Code image contracts", () => {
         'api_key_env = "NVIDIA_INFERENCE_API_KEY"',
       ].join("\n"),
     ],
+    [
+      "native-compatible",
+      [
+        'base_url = "https://inference-api.nvidia.com/v1"',
+        'api_key_env = "COMPATIBLE_API_KEY"',
+      ].join("\n"),
+    ],
   ])("selects the %s Deep Agents Code inference route contract", (expected, config) => {
     expect(runHeadlessCheckHelper("inference-route-contract", { CONFIG: config })).toBe(
       `${expected}\n`,
@@ -1187,6 +1198,13 @@ describe("LangChain Deep Agents Code image contracts", () => {
         'base_url = "https://inference.local/v1"',
         'base_url = "https://integrate.api.nvidia.com/v1"',
         'api_key_env = "NVIDIA_INFERENCE_API_KEY"',
+      ].join("\n"),
+    ],
+    [
+      "compatible endpoint with managed placeholder",
+      [
+        'base_url = "https://inference-api.nvidia.com/v1"',
+        'api_key_env = "DEEPAGENTS_CODE_OPENAI_API_KEY"',
       ].join("\n"),
     ],
   ])("rejects an inconsistent Deep Agents Code route contract: %s", (_case, config) => {

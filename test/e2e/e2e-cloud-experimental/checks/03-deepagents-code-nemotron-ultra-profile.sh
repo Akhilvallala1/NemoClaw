@@ -21,6 +21,7 @@ set -euo pipefail
 
 SANDBOX_NAME="${SANDBOX_NAME:-${NEMOCLAW_SANDBOX_NAME:-}}"
 PREFIX="03-deepagents-code-nemotron-ultra-profile"
+HOSTED_ENDPOINT="${NEMOCLAW_ENDPOINT_URL:-https://inference-api.nvidia.com/v1}"
 
 fail() {
   printf '%s: FAIL: %s\n' "$PREFIX" "$1" >&2
@@ -41,6 +42,7 @@ import asyncio
 import hashlib
 import importlib.metadata
 import socket
+import sys
 from pathlib import Path
 import tomllib
 
@@ -125,8 +127,8 @@ assert configured_model_id in MANAGED_MODEL_IDS, default_model
 
 provider = config["models"]["providers"]["openai"]
 assert provider["models"] == [configured_model_id]
-assert provider["api_key_env"] == "DEEPAGENTS_CODE_OPENAI_API_KEY"
-assert provider["base_url"] == "https://inference.local/v1"
+assert provider["api_key_env"] == "COMPATIBLE_API_KEY"
+assert provider["base_url"] == sys.argv[1]
 assert provider["enabled"] is True
 assert provider["params"] == {
     "use_responses_api": False,
@@ -448,7 +450,7 @@ sandbox_exec "test -x /opt/venv/bin/python3" >/dev/null || fail "/opt/venv/bin/p
 profile_source="$(profile_contract_source)"
 profile_output="$(
   openshell sandbox exec --name "$SANDBOX_NAME" -- \
-    /opt/venv/bin/python3 -I -c "$profile_source" 2>&1
+    /opt/venv/bin/python3 -I -c "$profile_source" "$HOSTED_ENDPOINT" 2>&1
 )" || fail "Nemotron Ultra harness profile contract failed: $profile_output"
 printf '%s\n' "$profile_output" | grep -Fq "NEMOCLAW_NEMOTRON_ULTRA_PROFILE_OK:" || fail "profile verification marker is missing"
 pass "configured ChatOpenAI resolves the complete Nemotron Ultra profile without inference"
