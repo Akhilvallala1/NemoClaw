@@ -50,6 +50,10 @@
     {
       "pullRequest": 13203,
       "changeSha256": "2648bafc4ce603c32746db6488c8d32ae5ad2d05c0414cb9ec5593f55e6a06b9"
+    },
+    {
+      "pullRequest": 13315,
+      "changeSha256": "3a3ef65cd91d41271eb598bd97d5bdceac139ff62b7889849fb7f2845bd0006b"
     }
   ]
 }

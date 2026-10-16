@@ -192,7 +192,6 @@ describe("Pi candidate managed rebuild", () => {
     ...HOSTED_NATIVE_PROVIDERS.filter((provider) => provider.api === "openai-completions"),
     hostedNativeProvider("hermes-provider", "https://authenticated.nous.example/v1")!,
     { logicalProvider: "compatible-endpoint", endpoint: "https://custom.example/v1" },
-    { logicalProvider: "ollama-local", endpoint: "http://localhost:11434/v1" },
   ])(
     "preserves Pi $logicalProvider routing through onboarding, rebuild and recovery",
     async (definition) => {
