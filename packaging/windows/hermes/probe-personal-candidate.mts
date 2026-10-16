@@ -519,6 +519,12 @@ function loadDerivedPersonalInputs(
     assert.deepEqual(marker.value.browserUseStartup, expectedStartup);
     assert.equal(browserStartup.value.runtimeExecutionQualified, false);
     assert.equal(browserStartup.value.requiresMovedRootProbe, true);
+    const nodeContract = receiptDocument(path.join(runtime, "nemoclaw-hermes-node.json"));
+    assert.equal(nodeContract.value.browserHost, "native-edge-cdp");
+    assert.equal(Object.hasOwn(nodeContract.value, "chromium"), false);
+    assert.equal(Object.hasOwn(nodeContract.value, "agentBrowser"), false);
+    assert.equal(marker.value.generatedFiles["nemoclaw-hermes-node.json"], nodeContract.sha256);
+    browserHooks.push("nemoclaw-hermes-node.json");
     for (const nativeHook of startupHookPaths) {
       const site = nativeHook.slice(0, -"nemoclaw_native_windows.py".length);
       for (const [name, sha256] of [

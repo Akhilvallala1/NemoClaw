@@ -556,21 +556,6 @@ def finalize_hermes(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     changes, receipt = hermes_final_path_plan(module, root, target, browser_use_adapter)
-    node_contract = root / "nemoclaw-hermes-node.json"
-    node = json.loads(node_contract.read_text())
-    chromium = node.pop("chromium", None)
-    if (
-        not isinstance(chromium, str)
-        or not re.fullmatch(
-            r"browsers/chromium-[0-9]+/chrome-win64/chrome\.exe", chromium
-        )
-        or node.get("agentBrowser")
-        != "agent-browser/bin/agent-browser-win32-x64.exe"
-    ):
-        raise ValueError("The canonical browser input contract differs")
-    node.pop("agentBrowser")
-    node["browserHost"] = "native-edge-cdp"
-    changes[node_contract] = (json.dumps(node, indent=2) + "\n").encode()
     receipt["browserDelivery"] = {
         "host": "native-arm64-microsoft-edge",
         "transport": "authenticated-session-cdp-relay",

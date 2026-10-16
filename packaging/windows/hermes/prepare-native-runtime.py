@@ -31,6 +31,7 @@ HOOK = "nemoclaw_native_windows.py"
 PTH = "000_nemoclaw_native_windows.pth"
 BROWSER_USE_HOOK = "nemoclaw_browser_use.py"
 BROWSER_USE_PTH = "001_nemoclaw_browser_use.pth"
+NODE_CONTRACT = "nemoclaw-hermes-node.json"
 MAX_METADATA = 1024 * 1024
 
 # One explicit CI transition from the complete canonical candidate (47d8907).
@@ -84,6 +85,36 @@ def edge_adapter_upgrade_record():
 
 class AdaptationError(Exception):
     pass
+
+
+def native_edge_node_contract(data: bytes) -> bytes:
+    if len(data) > 8192:
+        raise AdaptationError("The production Node contract exceeds its bound.")
+    node = json.loads(data)
+    if (
+        type(node) is not dict
+        or type(node.get("schemaVersion")) is not int
+        or node.get("schemaVersion") != 1
+        or node.get("upstreamCommit") != REVISION
+        or node.get("profile") != "official-prebuilt-cli-web-tui"
+        or node.get("tui") != "hermes-agent/ui-tui/dist/entry.js"
+        or node.get("web") != "hermes-agent/hermes_cli/web_dist/index.html"
+        or node.get("browserUse") != "0.13.10"
+    ):
+        raise AdaptationError("The production Node contract differs from the installed profile.")
+    if "browserHost" in node:
+        if node["browserHost"] != "native-edge-cdp" or "chromium" in node or "agentBrowser" in node:
+            raise AdaptationError("The native Edge profile cannot select another browser.")
+    else:
+        chromium = node.pop("chromium", None)
+        if (
+            not isinstance(chromium, str)
+            or not re.fullmatch(r"browsers/chromium-[0-9]+/chrome-win64/chrome\.exe", chromium)
+            or node.pop("agentBrowser", None) != "agent-browser/bin/agent-browser-win32-x64.exe"
+        ):
+            raise AdaptationError("The canonical browser input contract differs.")
+        node["browserHost"] = "native-edge-cdp"
+    return (json.dumps(node, indent=2) + "\n").encode("utf-8")
 
 
 def read_metadata(path: Path, root: Path) -> bytes:
@@ -584,6 +615,7 @@ def prepare_plan(
     changes[record_file] = output.getvalue().encode("utf-8")
     browser_use_bytes = None
     browser_use_startup = None
+    node_contract_before = None
     if ci_browser_use_adapter is not None:
         if (
             sys.platform != "win32"
@@ -613,6 +645,8 @@ def prepare_plan(
             "nativeStartupAdapterSha256": hashlib.sha256(hook_bytes).hexdigest(),
             "executionQualified": False,
         }
+        node_contract_before = read_metadata(root / NODE_CONTRACT, root)
+        changes[root / NODE_CONTRACT] = native_edge_node_contract(node_contract_before)
     elif prepared and prepared.get("browserUseStartup") is not None:
         raise AdaptationError(
             "An installed Browser Use hook requires its explicit CI provenance."
@@ -686,6 +720,8 @@ def prepare_plan(
         "requiresMovedRootProbe": True,
         "runtimeExecutionQualified": False,
         **({"browserUseStartup": browser_use_startup} if browser_use_startup else {}),
+        **({"browserNodeContractBefore": node_contract_before.decode("utf-8")}
+           if node_contract_before is not None else {}),
         "retirements": retirements,
         "files": [
             {

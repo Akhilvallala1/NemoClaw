@@ -191,8 +191,24 @@ def validate_compatibility_proof(proof, proof_sha, compat, mxc, controller_sourc
 
 
 def validate_browser_startup(runtime, report, expected):
-    """Replay only the current additive hook plan against the composed base."""
+    """Replay the exact browser selection and hook plan against the composed base."""
     here = Path(__file__).parent
+    spec = importlib.util.spec_from_file_location("browser_metadata", here / "prepare-native-runtime.py")
+    metadata = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(metadata)
+    before_node = report.get("browserNodeContractBefore")
+    if not isinstance(before_node, str):
+        raise ValueError("Browser startup omits its original Node contract")
+    before_node = before_node.encode("utf-8")
+    if expected.get(metadata.NODE_CONTRACT) != {
+        "bytes": len(before_node), "sha256": hashlib.sha256(before_node).hexdigest()
+    }:
+        raise ValueError("Browser Node contract preimage differs from the composed runtime")
+    try:
+        node = metadata.native_edge_node_contract(before_node)
+    except metadata.AdaptationError as exc:
+        raise ValueError("Browser Node contract cannot select native Edge") from exc
+    selected_node = {"bytes": len(node), "sha256": hashlib.sha256(node).hexdigest()}
     hook = (here / "nemoclaw_browser_use.py").read_bytes()
     pth = b"import nemoclaw_browser_use; nemoclaw_browser_use.install()\n"
     native_sha = "d8e8b5524ca783dccc0024a1eed61a4c0955cf73b7d45157093787070dc8ed16"
@@ -214,7 +230,7 @@ def validate_browser_startup(runtime, report, expected):
         for name, data in (("nemoclaw_browser_use.py", hook), ("001_nemoclaw_browser_use.pth", pth)):
             additions[site + name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
     indexed = {row["path"]: row for row in report["files"]}
-    if not set(additions).issubset(indexed) or "nemoclaw-windows-runtime.json" not in indexed:
+    if not (set(additions) | {metadata.NODE_CONTRACT, "nemoclaw-windows-runtime.json"}).issubset(indexed):
         raise ValueError("Browser startup derivation omits its complete startup set")
     result = dict(expected)
     for name, row in indexed.items():
@@ -225,12 +241,17 @@ def validate_browser_startup(runtime, report, expected):
         if name in additions:
             if before is not None or after != additions[name]:
                 raise ValueError("Browser startup is not the exact additive hook")
+        elif name == metadata.NODE_CONTRACT:
+            if after != selected_node:
+                raise ValueError("Browser startup changed the Node contract beyond native Edge selection")
         elif name != "nemoclaw-windows-runtime.json" and after != before:
             raise ValueError("Browser startup changed unrelated runtime bytes")
         result[name] = after
     marker = json.loads((runtime / "nemoclaw-windows-runtime.json").read_bytes())
     if marker.get("browserUseStartup") != startup or "startupAdapterUpgrade" in marker:
         raise ValueError("Browser startup marker has different lineage")
+    if marker.get("generatedFiles", {}).get(metadata.NODE_CONTRACT) != selected_node["sha256"]:
+        raise ValueError("Browser startup marker does not bind its native Edge selection")
     return result
 
 

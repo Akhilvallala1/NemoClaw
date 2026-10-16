@@ -203,6 +203,21 @@ class NativeAdmission(unittest.TestCase):
                       "environments": ["hermes-agent/venv", "tools/browser-use"], "requiresMovedRootProbe": True,
                       "runtimeExecutionQualified": False, "retirements": [], "browserUseStartup": startup, "files": []}
             expected = {"nemoclaw-windows-runtime.json": identity(b"prior marker"), "unrelated": identity(b"unchanged")}
+            node = {"schemaVersion": 1, "upstreamCommit": "2237be355906fbe6065ce1815711eee52b2d646e",
+                    "profile": "official-prebuilt-cli-web-tui", "tui": "hermes-agent/ui-tui/dist/entry.js",
+                    "web": "hermes-agent/hermes_cli/web_dist/index.html", "browserUse": "0.13.10",
+                    "chromium": "browsers/chromium-1228/chrome-win64/chrome.exe",
+                    "agentBrowser": "agent-browser/bin/agent-browser-win32-x64.exe"}
+            before_node = json.dumps(node)
+            report["browserNodeContractBefore"] = before_node
+            expected["nemoclaw-hermes-node.json"] = identity(before_node.encode())
+            del node["chromium"], node["agentBrowser"]
+            node["browserHost"] = "native-edge-cdp"
+            node_bytes = (json.dumps(node, indent=2) + "\n").encode()
+            (root / "nemoclaw-hermes-node.json").write_bytes(node_bytes)
+            report["files"].append({"path": "nemoclaw-hermes-node.json",
+                                    "beforeSha256": identity(before_node.encode())["sha256"], **identity(node_bytes)})
+            marker["generatedFiles"] = {"nemoclaw-hermes-node.json": identity(node_bytes)["sha256"]}
             for site in ("hermes-agent/venv/Lib/site-packages/", "tools/browser-use/Lib/site-packages/",
                          "hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-aarch64-none/Lib/site-packages/"):
                 (root / site).mkdir(parents=True)
@@ -222,15 +237,34 @@ class NativeAdmission(unittest.TestCase):
             self.assertEqual(len(result), len(expected) + 6)
             self.assertEqual(result["unrelated"], expected["unrelated"])
             self.assertEqual(result["nemoclaw-windows-runtime.json"], identity(encoded))
-            for mutation in ("source", "qualified", "missing", "preimage", "unrelated"):
+            for mutation in ("source", "qualified", "missing", "preimage", "node-preimage", "node-missing", "unrelated"):
                 changed = copy.deepcopy(report)
                 if mutation == "source": changed["browserUseStartup"]["sha256"] = "0" * 64
                 elif mutation == "qualified": changed["browserUseStartup"]["executionQualified"] = True
                 elif mutation == "missing": changed["files"].pop(1)
                 elif mutation == "preimage": changed["files"][-1]["beforeSha256"] = "0" * 64
+                elif mutation == "node-preimage": changed["browserNodeContractBefore"] += " "
+                elif mutation == "node-missing": changed["files"].pop(0)
                 else:
                     (root / "unrelated").write_bytes(b"altered")
                     changed["files"].append({"path": "unrelated", "beforeSha256": expected["unrelated"]["sha256"], **identity(b"altered")})
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    owner.validate_browser_startup(root, changed, expected)
+
+            for mutation in ("node-extra-change", "node-marker-unbound"):
+                changed = copy.deepcopy(report)
+                changed_marker = copy.deepcopy(marker)
+                changed_node = node_bytes
+                if mutation == "node-extra-change":
+                    changed_node = (json.dumps({**node, "runtimeQualified": True}, indent=2) + "\n").encode()
+                    changed_marker["generatedFiles"]["nemoclaw-hermes-node.json"] = identity(changed_node)["sha256"]
+                else:
+                    del changed_marker["generatedFiles"]["nemoclaw-hermes-node.json"]
+                (root / "nemoclaw-hermes-node.json").write_bytes(changed_node)
+                changed["files"][0].update(identity(changed_node))
+                changed_marker_bytes = json.dumps(changed_marker).encode()
+                (root / "nemoclaw-windows-runtime.json").write_bytes(changed_marker_bytes)
+                changed["files"][-1].update(identity(changed_marker_bytes))
                 with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                     owner.validate_browser_startup(root, changed, expected)
 

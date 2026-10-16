@@ -217,6 +217,18 @@ class CanonicalAdapterUpgrade(unittest.TestCase):
             ).encode(),
         )
         put("untouched-runtime.bin", b"complete base retained", False)
+        self.node_contract = {
+            "schemaVersion": 1, "upstreamCommit": metadata.REVISION,
+            "profile": "official-prebuilt-cli-web-tui",
+            "tui": "hermes-agent/ui-tui/dist/entry.js",
+            "web": "hermes-agent/hermes_cli/web_dist/index.html",
+            "chromium": "browsers/chromium-1228/chrome-win64/chrome.exe",
+            "agentBrowser": "agent-browser/bin/agent-browser-win32-x64.exe",
+            "browserUse": "0.13.10", "runtimeQualified": False,
+        }
+        put(metadata.NODE_CONTRACT, json.dumps(self.node_contract).encode(), False)
+        for key in ("tui", "web", "chromium", "agentBrowser"):
+            put(self.node_contract[key], b"nonexecutable prebuilt fixture", False)
         self.marker = {
             "schemaVersion": 1,
             "manager": "nemoclaw-windows",
@@ -395,7 +407,17 @@ class CanonicalAdapterUpgrade(unittest.TestCase):
         bad = dict(identity, sha256="0" * 64)
         with self.assertRaisesRegex(metadata.AdaptationError, "differs from Personal"):
             self.plan(ci_browser_use_adapter=bad)
+        native_spec = importlib.util.spec_from_file_location(
+            "actual_native_adapter", Path(__file__).with_name(metadata.HOOK)
+        )
+        actual_native = importlib.util.module_from_spec(native_spec)
+        native_spec.loader.exec_module(actual_native)
+        endpoint = "ws://127.0.0.1:8124/devtools/browser/owned"
+        with mock.patch.dict(os.environ, {"BROWSER_CDP_URL": endpoint}, clear=True):
+            with self.assertRaisesRegex(actual_native.NativeStartupRefusal, "did not select native"):
+                actual_native._install_prebuilt_node(self.root)
         changes, report = self.plan(ci_browser_use_adapter=identity)
+        self.assertEqual(report["browserNodeContractBefore"], (self.root / metadata.NODE_CONTRACT).read_text())
         added = [
             p
             for p in changes
@@ -407,6 +429,15 @@ class CanonicalAdapterUpgrade(unittest.TestCase):
         marker = json.loads((self.root / metadata.MARKER).read_text())
         self.assertEqual(marker["browserUseStartup"]["sha256"], identity["sha256"])
         self.assertEqual(report["browserUseStartup"], marker["browserUseStartup"])
+        with mock.patch.dict(os.environ, {"BROWSER_CDP_URL": endpoint}, clear=True):
+            actual_native._install_prebuilt_node(self.root)
+            self.assertEqual(os.environ["BROWSER_CDP_URL"], endpoint)
+            self.assertNotIn("AGENT_BROWSER_EXECUTABLE_PATH", os.environ)
+            self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", os.environ)
+        selected_node = (self.root / metadata.NODE_CONTRACT).read_bytes()
+        self.assertEqual(marker["generatedFiles"][metadata.NODE_CONTRACT], hashlib.sha256(selected_node).hexdigest())
+        later, _ = self.plan(target=self.directory / "installed", ci_browser_use_adapter=identity)
+        self.assertEqual(later[self.root / metadata.NODE_CONTRACT], selected_node)
         for name, before in native_before.items():
             self.assertEqual((self.root / name).read_bytes(), before)
         for file in added:
@@ -462,6 +493,22 @@ class CanonicalAdapterUpgrade(unittest.TestCase):
         )
         with self.assertRaisesRegex(metadata.AdaptationError, "explicit CI provenance"):
             self.plan()
+
+    def test_native_edge_selection_rejects_mixed_or_foreign_contracts(self):
+        original = json.dumps(self.node_contract).encode()
+        selected = metadata.native_edge_node_contract(original)
+        self.assertEqual(metadata.native_edge_node_contract(selected), selected)
+        for changes in (
+            {"schemaVersion": True}, {"upstreamCommit": "0" * 40},
+            {"tui": "other/entry.js"}, {"web": "other/index.html"},
+            {"profile": "other"}, {"browserUse": "latest"},
+            {"chromium": "../foreign.exe"}, {"agentBrowser": "other.exe"},
+            {"browserHost": "native-edge-cdp"}, {"browserHost": "foreign"},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(metadata.AdaptationError):
+                metadata.native_edge_node_contract(json.dumps({**self.node_contract, **changes}).encode())
+        with self.assertRaises(metadata.AdaptationError):
+            metadata.native_edge_node_contract(b" " * 8193)
 
     def test_installed_browser_startup_collision_does_not_change_the_tree(self):
         changes, _ = self.plan(ci_upgrade_startup_adapter=True)
