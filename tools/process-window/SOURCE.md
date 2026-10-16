@@ -3,7 +3,7 @@
 
 # Copied source
 
-Process Window source revision: `204edf0393017b43d992df2fefe0646da70020f2`.
+Process Window source revision: `a1a0893a1097a4461514cd4f1220e1570b31370e`.
 
 Copied runtime, synthetic tests, and GitHub Actions integration. Local adaptations add SPDX notices and repository formatting. The main-branch workflow uses its required category and reviewed Node 24.18.1/npm bootstrap; the reusable runtime is unchanged. The configuration selects NemoClaw, its two branches, and its existing inference secret. CI never retrieves the private source repository.
 

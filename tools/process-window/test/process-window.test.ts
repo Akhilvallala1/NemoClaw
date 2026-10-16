@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 import { expandProposal } from "../src/inference.js";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -695,5 +696,161 @@ test("explicit reassessment applies corrections but rejects identity loss and mi
     const bad = structuredClone(corrected);
     mutate(bad);
     assert.throws(() => reassessBranch(before, bad));
+  }
+});
+
+test("Responses analysis reads pinned Git content and saves its mapping and site", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "process-window-responses-"));
+  const repoPath = join(directory, "repository");
+  let server: ReturnType<typeof createServer> | undefined;
+  try {
+    await mkdir(repoPath);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repoPath, ...args], { encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.invalid");
+    const guidance = 'export const prompt = "Read architecture before coding";';
+    await writeFile(join(repoPath, "instructions.ts"), `${guidance}\n`);
+    git("add", ".");
+    git("-c", "commit.gpgsign=false", "commit", "-qm", "Fixture guidance");
+    const revision = git("rev-parse", "HEAD");
+    await writeFile(
+      join(repoPath, "instructions.ts"),
+      "Uncommitted text must not reach inference\n",
+    );
+    const proposal = {
+      id: "main",
+      revision,
+      inputs: [
+        {
+          id: "architecture",
+          name: "Architecture prompt",
+          category: "prompts",
+          stages: ["before"],
+          source: { path: "instructions.ts", start: 1 },
+          evidence: "Prompt requests architecture review.",
+        },
+      ],
+      mechanisms: [
+        {
+          id: "planning",
+          name: "Planning context",
+          usages: [
+            {
+              stage: "before",
+              trigger: "Fixture agent plans a change",
+              inputIds: ["architecture"],
+              basis: "prescribed",
+              agentUse: "Fixture agent consults the architecture prompt before coding.",
+              source: { path: "instructions.ts", start: 1 },
+              evidence: "Prompt directs architecture review.",
+              outcome: "Plan informed by architecture",
+            },
+          ],
+        },
+      ],
+    };
+    const reasoning = {
+      type: "reasoning",
+      id: "rs_fixture",
+      encrypted_content: "synthetic-state",
+      summary: [],
+    };
+    const call = {
+      type: "function_call",
+      id: "fc_fixture",
+      call_id: "read_fixture",
+      name: "read_files",
+      arguments: JSON.stringify({ paths: ["instructions.ts"] }),
+    };
+    let turns = 0;
+    let serverError: unknown;
+    server = createServer(async (req, res) => {
+      try {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        const body = JSON.parse(raw);
+        assert.equal(req.url, "/responses");
+        assert.equal(body.store, false);
+        assert.equal(body.stream, true);
+        turns++;
+        let output;
+        if (turns === 1) {
+          assert.equal(JSON.parse(body.input[1].content).revision, revision);
+          output = [reasoning, call];
+        } else {
+          assert.equal(turns, 2);
+          assert.deepEqual(body.input.slice(-3, -1), [reasoning, call]);
+          const result = body.input.at(-1);
+          assert.equal(result.type, "function_call_output");
+          assert.equal(result.call_id, call.call_id);
+          assert.deepEqual(JSON.parse(result.output), [
+            { path: "instructions.ts", totalLines: 1, content: `1: ${guidance}` },
+          ]);
+          output = [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: JSON.stringify(proposal) }],
+            },
+          ];
+        }
+        res.setHeader("content-type", "text/event-stream");
+        res.end(
+          `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output } })}\n\n`,
+        );
+      } catch (error) {
+        serverError = error;
+        res.statusCode = 500;
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as { port: number };
+    const configPath = join(directory, "config.yaml");
+    await writeFile(
+      configPath,
+      stringify({
+        repository: { path: repoPath, url: "https://github.com/example/repo", forge: "github" },
+        mapping: "mapping.yaml",
+        output: "site",
+        stages: [{ id: "before", name: "Before coding" }],
+        categories: [{ id: "prompts", name: "Prompts" }],
+        branches: [
+          {
+            id: "main",
+            name: "Main",
+            ref: revision,
+            color: "#3475ad",
+            refresh: { mode: "manual" },
+          },
+        ],
+        inference: {
+          provider: "openai-compatible",
+          api: "responses",
+          baseUrl: `http://127.0.0.1:${address.port}`,
+          model: "synthetic-fixture",
+          timeoutSeconds: 10,
+          maxTurns: 3,
+        },
+      }),
+    );
+    try {
+      await run("analyze", configPath);
+    } catch (error) {
+      throw serverError ?? error;
+    }
+    assert.equal(turns, 2);
+    const saved = parse(await readFile(join(directory, "mapping.yaml"), "utf8"));
+    assert.equal(saved.branches[0].revision, revision);
+    assert.deepEqual(saved.branches[0].inputs, proposal.inputs);
+    assert.equal(saved.branches[0].mechanisms[0].usages[0].basis, "prescribed");
+    const site = await readFile(join(directory, "site/index.html"), "utf8");
+    assert.ok(site.includes("Architecture prompt"));
+    assert.ok(site.includes(revision));
+  } finally {
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
   }
 });
