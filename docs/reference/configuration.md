@@ -1146,7 +1146,7 @@ Managed vLLM runtime and immutable model snapshot.
 
 ### Alternative 4
 
-Image-owned application with bounded Docker HEALTHCHECK observation.
+Image-owned container with explicit launch settings and bounded readiness.
 
 
 | Field | Input type | Required | Default | Description and constraints |

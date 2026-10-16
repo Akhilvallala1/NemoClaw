@@ -38,7 +38,7 @@ pub enum ServiceDefinition {
     OllamaProxy(OllamaProxy),
     /// Managed vLLM runtime and immutable model snapshot.
     Vllm(Box<installers::vllm::Service>),
-    /// Image-owned application with bounded Docker HEALTHCHECK observation.
+    /// Image-owned container with explicit launch settings and bounded readiness.
     Container(Box<installers::container::Service>),
 }
 

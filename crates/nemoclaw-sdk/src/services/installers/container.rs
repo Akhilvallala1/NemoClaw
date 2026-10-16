@@ -20,13 +20,13 @@ use std::collections::BTreeMap;
 
 pub const SERVICE_KIND: &str = "container_service";
 pub const STORAGE_KIND: &str = "container_storage";
-/// Data source that waits for an application's Docker HEALTHCHECK.
+/// Data source that observes the selected container readiness contract.
 pub const HEALTH_DATA_SOURCE: &str = "host_container_health";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// An ordinary Docker application on the managed Docker gateway's engine and
-/// network, not an OpenShell sandbox or inference provider.
+/// An image-owned service on the managed Docker gateway's engine and network.
+/// A private publication can also supply an inference serviceRef.
 pub struct Service {
     /// Immutable application image. The image owns its entrypoint and default command.
     pub image: String,

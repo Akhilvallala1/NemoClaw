@@ -2921,7 +2921,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Image-owned application with bounded Docker HEALTHCHECK observation.",
+          "description": "Image-owned container with explicit launch settings and bounded readiness.",
           "properties": {
             "command": {
               "description": "Optional argument list for the image entrypoint, without implicit shell expansion.",
