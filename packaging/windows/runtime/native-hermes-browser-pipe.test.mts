@@ -40,6 +40,8 @@ response = lambda message: {'fixture': True}
 transports = []
 before_delay = after_delay = lost_delay = 0
 hold_lost = False
+defer_made = False
+cancel_before_made = False
 pending_lost = []
 lost_pending = None
 status = 101
@@ -62,6 +64,9 @@ async def peer():
             calls.append(name)
             if before_delay: await asyncio.sleep(before_delay)
             connection = factory()
+            made = connection.connection_made
+            if defer_made:
+                connection.connection_made = lambda transport: None
             lost = connection.connection_lost
             if hold_lost:
                 def defer_lost(error):
@@ -71,6 +76,12 @@ async def peer():
             elif lost_delay:
                 connection.connection_lost = lambda error: loop.call_later(lost_delay, lost, error)
             result = await loop.create_unix_connection(lambda: connection, address)
+            if defer_made:
+                # Proactor create_pipe_connection returns before connection_made.
+                connection.connection_made = made
+                if cancel_before_made:
+                    loop.call_soon(asyncio.current_task().cancel)
+                loop.call_soon(made, result[0])
             transports.append(result[0])
             bound.set()
             if after_delay: await asyncio.sleep(after_delay)
@@ -255,6 +266,7 @@ test(
   () => {
     check(String.raw`
 import hashlib
+defer_made = True
 with tempfile.TemporaryDirectory(prefix='hermes-harness-') as state:
     os.environ.update(BH_RUNTIME_DIR=state, BH_TMP_DIR=state, BH_AGENT_WORKSPACE=state,
                      BU_CDP_WS=endpoint, BH_TAB_MARKER='0', ANONYMIZED_TELEMETRY='false')
@@ -314,6 +326,37 @@ with tempfile.TemporaryDirectory(prefix='hermes-harness-') as state:
   },
 );
 
+test("browser pipe waits for Windows protocol initialization before its handshake", options, () => {
+  check(String.raw`
+defer_made = True
+async def main():
+    async with peer():
+        client = cdp_client.CDPClient(endpoint)
+        await client.start()
+        assert await asyncio.wait_for(client.send_raw('Browser.getVersion'), 2) == {'fixture': True}
+        assert len(requests) == 1 and len(owners) == 1
+        await client.stop()
+        assert not owners and all(transport.is_closing() for transport in transports)
+asyncio.run(main())
+`);
+});
+
+test("cancellation at Windows pipe initialization closes the retained transport", options, () => {
+  check(String.raw`
+defer_made = cancel_before_made = True
+async def main():
+    async with peer():
+        async def start(): return await Connect(endpoint)
+        task = asyncio.create_task(start())
+        try: await task
+        except asyncio.CancelledError: pass
+        else: raise AssertionError('cancellation ignored')
+        assert transports and all(transport.is_closing() for transport in transports)
+        assert not owners and not requests
+asyncio.run(main())
+`);
+});
+
 for (const status of [403, 302]) {
   test(
     `browser handshake ${status} closes its pipe without redirect or TCP fallback`,
@@ -321,6 +364,7 @@ for (const status of [403, 302]) {
     () => {
       check(String.raw`
 status = ${status}
+defer_made = True
 async def main():
     async with peer():
         try: await Connect(endpoint)

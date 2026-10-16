@@ -8,7 +8,7 @@ export function hermesBrowserPipePythonSource(): string[] {
     import re
     from urllib.parse import urlsplit
     import websockets
-    from websockets.asyncio.client import connect as WebSocketConnect
+    from websockets.asyncio.client import ClientConnection, connect as WebSocketConnect
     from websockets.uri import parse_uri
     from cdp_use import client as cdp_client
 
@@ -27,6 +27,17 @@ export function hermesBrowserPipePythonSource(): string[] {
     pipe_name = '\\\\.\\pipe\\LOCAL\\OpenShell-Loopback-' + port_text
     owners = set()
 
+    class BrowserPipeConnection(ClientConnection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.native_ready = asyncio.get_running_loop().create_future()
+            self.native_transport = None
+
+        def connection_made(self, transport):
+            self.native_transport = transport
+            super().connection_made(transport)
+            self.native_ready.set_result(None)
+
     class BrowserPipeConnect(WebSocketConnect):
         def __init__(self, uri, **kwargs):
             if not isinstance(uri, str) or uri != endpoint:
@@ -39,7 +50,7 @@ export function hermesBrowserPipePythonSource(): string[] {
             if any(name in kwargs for name in ('proxy', 'create_connection', 'sock', 'host', 'port', 'unix',
                     'path', 'ssl', 'server_hostname', 'local_addr', 'family', 'flags')):
                 raise RuntimeError('Browser CDP pipe has conflicting transport settings')
-            super().__init__(uri, proxy=None, **kwargs)
+            super().__init__(uri, proxy=None, create_connection=BrowserPipeConnection, **kwargs)
             if self.connection_kwargs:
                 raise RuntimeError('Browser CDP pipe has unsupported connection settings')
             self._native_connection = None
@@ -48,7 +59,7 @@ export function hermesBrowserPipePythonSource(): string[] {
             connection = self._native_connection
             if connection is None:
                 return
-            transport = getattr(connection, 'transport', None)
+            transport = connection.native_transport
             if transport is None:
                 owners.discard(connection)
                 return
@@ -69,7 +80,11 @@ export function hermesBrowserPipePythonSource(): string[] {
             owners.add(connection)
             connection.connection_lost_waiter.add_done_callback(lambda _: owners.discard(connection))
             try:
-                await connect_pipe(lambda: connection, pipe_name)
+                transport, _ = await connect_pipe(lambda: connection, pipe_name)
+                connection.native_transport = transport
+                # Windows returns the pipe before its scheduled connection_made
+                # initializes the WebSocket protocol. Retain custody while waiting.
+                await asyncio.shield(connection.native_ready)
                 return connection
             except BaseException:
                 await self._close_failed_connection()
@@ -87,7 +102,7 @@ export function hermesBrowserPipePythonSource(): string[] {
 
     async def close_owned():
         for connection in list(owners):
-            transport = getattr(connection, 'transport', None)
+            transport = connection.native_transport
             if transport is not None:
                 transport.abort()
             else:
