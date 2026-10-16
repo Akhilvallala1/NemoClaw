@@ -29,6 +29,7 @@ import type { OnboardOptions } from "./types";
 import type { NativeLocalProviderAttachment } from "../inference/native-local/contract";
 import { verifyRecordedNativeLocalProviderAttachment } from "../inference/native-local/profile";
 import { createManagedProviderAdapter } from "../adapters/openshell/managed-provider-adapter";
+import { observeSandboxPresenceOnGateway } from "./sandbox-recreate-probe";
 
 export type AuthoritativeOnboardGatewayBinding = { name: string; port: number };
 
@@ -281,6 +282,7 @@ export type AuthoritativeRebuildTargetDeps = {
   ensureOpenshell(): unknown;
   assertGatewayReadiness(): unknown | Promise<unknown>;
   getSandbox(sandboxName: string): Parameters<typeof recordedNativeProviderAttachment>[0] | null;
+  observeSandboxPresence: typeof observeSandboxPresenceOnGateway;
   verifyNativeProviderAttachment(input: {
     gatewayName: string;
     sandboxName: string;
@@ -318,7 +320,7 @@ export function runtimePreflightDependencies(
   env: NodeJS.ProcessEnv = process.env,
 ): Pick<
   AuthoritativeRebuildTargetDeps,
-  "getSandbox" | "verifyNativeProviderAttachment" | "observeForwardPorts"
+  "getSandbox" | "observeSandboxPresence" | "verifyNativeProviderAttachment" | "observeForwardPorts"
 > {
   const authority = {
     gatewayEndpoint: inputAuthority.gatewayEndpoint,
@@ -329,6 +331,7 @@ export function runtimePreflightDependencies(
   const forwardContext = { sandbox: context.getSandbox(target.sandboxName), wsl: context.wsl };
   return {
     getSandbox: context.getSandbox,
+    observeSandboxPresence: observeSandboxPresenceOnGateway,
     verifyNativeProviderAttachment: (input) => {
       const inferenceRouteHealth: typeof import("../actions/sandbox/inference-route-health") = require("../actions/sandbox/inference-route-health");
       return inferenceRouteHealth.verifyNativeHostedStatusAttachment(input);
@@ -376,8 +379,8 @@ export async function preflightAuthoritativeRebuildTarget<
     await deps.runFatalRuntimePreflight();
     deps.ensureOpenshell();
     await deps.assertGatewayReadiness();
-    // Always verify recorded native-local authority. Prepared-backup recovery
-    // defers hosted/shared-route checks until authoritative onboarding.
+    // Native-local authority retains its own recovery checks. Hosted attachment
+    // inspection can be deferred only when prepared recovery proves source absence.
     if (target.nativeLocalProviderAttachment !== undefined) {
       await verifyRecordedNativeLocalProviderAttachment({
         adapter: createManagedProviderAdapter(),
@@ -387,19 +390,30 @@ export async function preflightAuthoritativeRebuildTarget<
         agent: target.agent,
         provider: target.provider,
       });
-    } else if (target.deferInferenceRouteUntilOnboard !== true) {
+    } else {
       const selection = deps.getSandbox(target.sandboxName);
       const attachment = recordedNativeProviderAttachment(selection ?? {});
       if (attachment) {
         if (selection?.provider?.trim() !== target.provider) {
           fail("Recorded native provider does not match the authoritative rebuild target.");
         }
-        await deps.verifyNativeProviderAttachment({
-          gatewayName: target.targetGatewayName,
-          sandboxName: target.sandboxName,
-          expected: attachment,
-        });
-      } else if (deps.inferenceRouteState(target.provider, target.model) === "mismatched") {
+        const sourcePresent =
+          target.deferInferenceRouteUntilOnboard !== true ||
+          deps.observeSandboxPresence({
+            gatewayName: target.targetGatewayName,
+            sandboxName: target.sandboxName,
+          }) === "present";
+        if (sourcePresent) {
+          await deps.verifyNativeProviderAttachment({
+            gatewayName: target.targetGatewayName,
+            sandboxName: target.sandboxName,
+            expected: attachment,
+          });
+        }
+      } else if (
+        target.deferInferenceRouteUntilOnboard !== true &&
+        deps.inferenceRouteState(target.provider, target.model) === "mismatched"
+      ) {
         fail(
           `OpenShell inference route does not match provider '${target.provider}' and model '${target.model}'.`,
         );

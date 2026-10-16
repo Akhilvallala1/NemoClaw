@@ -303,6 +303,7 @@ describe("authoritative rebuild readiness", () => {
             ensureOpenshell: vi.fn(),
             assertGatewayReadiness: vi.fn(),
             getSandbox: vi.fn(() => null),
+            observeSandboxPresence: vi.fn(() => "missing" as const),
             verifyNativeProviderAttachment: vi.fn(async () => {}),
             inferenceRouteState: route,
             observeForwardPorts: vi.fn(),

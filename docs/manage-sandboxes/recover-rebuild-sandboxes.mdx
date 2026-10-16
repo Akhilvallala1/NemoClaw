@@ -342,6 +342,9 @@ Use the recovery guidance that matches the reported check:
   The existing sandbox remains unchanged.
   Follow the printed sandbox recreation guidance.
   Changing the shared inference route does not repair native provider ownership.
+  Prepared recovery also verifies a native hosted attachment while the source sandbox exists.
+  Only explicit source absence permits recovery without that attachment check; provider identity, credentials, retained backup, policy, and journal checks still apply.
+  If OpenShell cannot determine source presence, rebuild stops before gateway recovery or sandbox replacement.
 - For a sandbox without a recorded native provider attachment, follow the shared-route recovery guidance when rebuild reports route drift.
   Set the shared OpenShell inference route to the sandbox's recorded provider and model, then retry `rebuild`.
 

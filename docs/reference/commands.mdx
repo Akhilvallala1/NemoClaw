@@ -3244,6 +3244,8 @@ The target update and peer metadata migration use one registry update.
 Conflicting credential environment-variable names, custom endpoints, or API families still stop the rebuild.
 Incomplete routes and invalid gateway bindings also stop the rebuild.
 During ordinary rebuild preflight, NemoClaw verifies any recorded native provider attachment on the sandbox's recorded gateway.
+Prepared recovery also verifies native hosted attachments while OpenShell reports the source sandbox present.
+If source presence cannot be determined, preflight stops; explicit source absence retains the existing backup recovery checks.
 If no native attachment is recorded, preflight checks the shared inference route.
 Immediately before deleting the original sandbox, NemoClaw rechecks the recorded gateway and inference selection for changes or conflicts.
 
