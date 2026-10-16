@@ -2507,7 +2507,19 @@ NemoClaw rejects an explicit custom endpoint when it resolves a public HTTPS hos
 
 Use an HTTPS IP-literal endpoint whose certificate is valid for that address. If your deployment permits non-TLS provider traffic, you can instead use a public HTTP endpoint that NemoClaw can rewrite to a DNS-pinned address. Do not bypass the check with a private or internal address or by editing the persisted sandbox config directly. For the full endpoint rules, refer to [Meet Custom Endpoint Security Requirements](../inference/custom-endpoints/custom-endpoint-security).
 
-### Agent cannot reach external hosts through a proxy
+<a id="agent-cannot-reach-external-hosts-through-a-proxy"></a>
+
+### Agent Cannot Reach External Hosts
+
+<AgentOnly variant="deepagents">
+
+For managed Deep Agents Code on OpenShell `0.1.3`, check the sandbox network policy and recent denial logs when an external request fails.
+The launchers clear inherited proxy variables, and OpenShell mediates the request.
+Do not set `NEMOCLAW_PROXY_HOST` or `NEMOCLAW_PROXY_PORT` to repair this route.
+Rebuild an older Deep Agents sandbox to install the updated launchers.
+
+</AgentOnly>
+<AgentOnly variant="openclaw,hermes">
 
 NemoClaw uses a default proxy address of `10.200.0.1:3128` (the OpenShell-injected gateway). If your environment uses a different proxy, set `NEMOCLAW_PROXY_HOST` and `NEMOCLAW_PROXY_PORT` before onboarding:
 
@@ -2521,11 +2533,19 @@ These are build-time settings baked into the sandbox image. Changing them after 
 
 When `HTTP_PROXY` or `HTTPS_PROXY` is set on the host, NemoClaw adds `localhost`, `127.0.0.1`, `::1`, `0.0.0.0`, the container-host aliases `host.docker.internal` and `host.containers.internal`, and the managed inference hostname `inference.local` to `NO_PROXY` for host-side subprocesses and for the env forwarded into `openshell sandbox create`. This keeps local Ollama health checks, model pulls, and managed inference traffic from being chained through a corporate or desktop proxy at the sandbox-create boundary, while preserving the proxy for external hosts. For the local provider validation probe, NemoClaw removes `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` from the probe process and sets `NO_PROXY=*` instead. A host proxy therefore cannot answer for the local endpoint, including the `host.docker.internal` alias used for Windows-host Ollama. Inside the running sandbox, processes continue to use the OpenShell L7 proxy for `inference.local` so OpenShell's internal routing, DNS, and audit boundaries stay intact.
 
+</AgentOnly>
+
 ### Agent cannot reach a host-side HTTP service
 
 When a sandbox needs to call an HTTP service running on the host, use the normal OpenShell network policy path. Expose the service on a host IP address that the OpenShell gateway can reach, create a custom NemoClaw policy preset for that IP and port, and apply it with `$$nemoclaw <sandbox> policy add --from-file`. The sandbox request then flows through the OpenShell proxy while NemoClaw preserves the existing live policy entries.
 
-Do not rely on `host.docker.internal` or `host.openshell.internal` as a general-purpose host-service path. Those names may appear in the sandbox's `/etc/hosts`, but in OpenShell's sandbox network they are not guaranteed to point at a reachable host gateway. Bypassing the proxy with `--noproxy '*'` also bypasses network policy enforcement and audit.
+Do not rely on `host.docker.internal` or `host.openshell.internal` as a general-purpose host-service path. Those names may appear in the sandbox's `/etc/hosts`, but in OpenShell's sandbox network they are not guaranteed to point at a reachable host gateway.
+
+<AgentOnly variant="openclaw,hermes">
+
+Bypassing the proxy with `--noproxy '*'` also bypasses network policy enforcement and audit.
+
+</AgentOnly>
 
 First, make sure the host-side service listens on a non-loopback address. For example, a health endpoint on port `50001` should be reachable from the host IP, not only from `127.0.0.1`:
 

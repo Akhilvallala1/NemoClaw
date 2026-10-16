@@ -40,8 +40,6 @@ export interface ManagedStartupRootOwnedFileMaterial {
   readonly path:
     | "/usr/local/share/nemoclaw/dcode-auto-approval"
     | "/usr/local/share/nemoclaw/dcode-inference-base-url"
-    | "/usr/local/share/nemoclaw/dcode-proxy-host"
-    | "/usr/local/share/nemoclaw/dcode-proxy-port"
     | "/usr/local/share/nemoclaw/dcode-reasoning-effort"
     | "/usr/local/share/nemoclaw/dcode-upstream-provider"
     | "/usr/local/share/nemoclaw/pi-proxy-host"
@@ -541,16 +539,6 @@ function mapDcodeProfile(
       "NEMOCLAW_UPSTREAM_PROVIDER",
       "/usr/local/share/nemoclaw/dcode-upstream-provider",
       profile.inference.upstreamProvider,
-    ),
-    rootOwnedFile(
-      "NEMOCLAW_PROXY_HOST",
-      "/usr/local/share/nemoclaw/dcode-proxy-host",
-      profile.proxy.managedHost,
-    ),
-    rootOwnedFile(
-      "NEMOCLAW_PROXY_PORT",
-      "/usr/local/share/nemoclaw/dcode-proxy-port",
-      String(profile.proxy.managedPort),
     ),
     rootOwnedFile(
       "NEMOCLAW_REASONING_EFFORT",

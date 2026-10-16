@@ -365,6 +365,7 @@ describe("buildManagedStartupOnboardProfile", () => {
       dcodeInput({
         dcodeAutoApprovalMode: "thread-opt-in",
         observabilityEnabled: true,
+        environment: { NEMOCLAW_PROXY_HOST: "retired-proxy.invalid", NEMOCLAW_PROXY_PORT: "9999" },
       }),
     );
 

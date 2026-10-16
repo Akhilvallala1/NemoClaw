@@ -587,8 +587,6 @@ export const MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY = {
     affordance("NEMOCLAW_REASONING_EFFORT", "tuning.reasoningEffort"),
     affordance("NEMOCLAW_TOOL_DISCLOSURE", "tools.disclosure"),
     affordance("NEMOCLAW_DCODE_AUTO_APPROVAL", "agentConfig.autoApprovalMode"),
-    affordance("NEMOCLAW_PROXY_HOST", "proxy.managedHost"),
-    affordance("NEMOCLAW_PROXY_PORT", "proxy.managedPort"),
     affordance("NEMOCLAW_OBSERVABILITY", "agentConfig.observabilityEnabled", "runtime-env"),
     affordance(
       "NEMOCLAW_CORPORATE_CA_B64",

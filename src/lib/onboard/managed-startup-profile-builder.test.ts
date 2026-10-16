@@ -603,8 +603,6 @@ describe("buildManagedStartupProfile", () => {
           NEMOCLAW_INFERENCE_API: "openai-completions",
           NEMOCLAW_TOOL_DISCLOSURE: "direct",
           NEMOCLAW_DCODE_AUTO_APPROVAL: "thread-opt-in",
-          NEMOCLAW_PROXY_HOST: "10.200.0.1",
-          NEMOCLAW_PROXY_PORT: "3128",
           NEMOCLAW_OBSERVABILITY: "1",
           NEMOCLAW_REASONING_EFFORT: "high",
         },
