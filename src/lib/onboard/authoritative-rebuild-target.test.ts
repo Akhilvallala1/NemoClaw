@@ -597,6 +597,34 @@ describe("authoritative rebuild target preflight", () => {
     expect(process.env.OPENSHELL_GATEWAY).toBe("before");
   });
 
+  it.each([
+    { label: "ordinary rebuild", options: {} },
+    {
+      label: "prepared recovery",
+      options: { deferInferenceRouteUntilOnboard: true as const },
+    },
+  ])("rejects malformed native-local authority during $label", async ({ options }) => {
+    const targetDeps = deps();
+
+    await expect(
+      preflightAuthoritativeRebuildTarget(
+        {
+          ...target,
+          ...options,
+          agent: "langchain-deepagents-code",
+          provider: "ollama-local",
+          nativeLocalProviderAttachment: {} as never,
+        },
+        targetDeps,
+      ),
+    ).rejects.toThrow("Native local provider authority does not match the rebuild target.");
+
+    expect(targetDeps.getSandbox).not.toHaveBeenCalled();
+    expect(targetDeps.verifyNativeProviderAttachment).not.toHaveBeenCalled();
+    expect(targetDeps.inferenceRouteState).not.toHaveBeenCalled();
+    expect(targetDeps.observeForwardPorts).not.toHaveBeenCalled();
+  });
+
   it("proceeds when the gateway cannot answer the route query (#9310)", async () => {
     const targetDeps = deps({
       inferenceRouteState: vi.fn((): InferenceRouteState => "unanswered"),
