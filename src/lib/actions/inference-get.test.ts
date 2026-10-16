@@ -8,7 +8,12 @@ import { describe, expect, it, vi } from "vitest";
 import { customNativeProvider } from "../inference/native-provider/custom";
 import { HOSTED_NATIVE_PROVIDERS } from "../inference/native-provider/hosted";
 import { nativeLocalIdentity, type NativeLocalBinding } from "../inference/native-local/contract";
-import { buildHttpsPinRouteBaseUrl } from "../inference/https-pin-runtime";
+import { buildHttpsPinRouteBaseUrl, computeHttpsPinRouteId } from "../inference/https-pin-runtime";
+import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../inference/native-custom";
+import { buildNativeCustomProfile } from "../inference/native-custom/profile";
 import {
   managedLlamaCppStatePaths,
   reserveManagedLlamaCppOwner,
@@ -1255,4 +1260,138 @@ describe("native hosted inference get", () => {
       expect(deps.observeInferenceRoute).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("selected native custom inference get (#12636)", () => {
+  async function fixture(endpointUrl = "https://api.example.com/v1") {
+    const prepared = await prepareNativeCustomProfile({
+      sandboxName: "custom",
+      provider: "compatible-endpoint",
+      endpointUrl,
+      api: "openai-completions",
+      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    });
+    return {
+      name: "custom",
+      provider: "compatible-endpoint",
+      model: "custom/model",
+      preferredInferenceApi: "openai-completions",
+      nativeCustomProviderAttachment: customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "owned-id",
+      }),
+    };
+  }
+  it.each([
+    "nativeLocalProviderAttachment",
+    "nativeHostedProviderAttachment",
+    "nativeNvidiaProviderAttachment",
+  ] as const)("rejects conflicting %s authority before observation", async (key) => {
+    const entry = { ...(await fixture()), [key]: {} };
+    const deps = createDeps(configuredRoute("other-provider", "other-model"));
+    deps.getSandbox = () => entry;
+    const verify = vi.fn(async () => undefined);
+    deps.verifyNativeCustomAttachment = verify;
+    await expect(runInferenceGet({ sandboxName: "custom" }, deps)).rejects.toThrow(
+      "invalid native inference attachment authority",
+    );
+    expect(verify).not.toHaveBeenCalled();
+    expect(deps.observeInferenceRoute).not.toHaveBeenCalled();
+  });
+  it("reports the verified sandbox selection without reading the shared gateway route", async () => {
+    const entry = await fixture();
+    const deps = createDeps(configuredRoute("other-provider", "other-model"));
+    deps.getSandbox = () => entry;
+    const verify = vi.fn(async () => undefined);
+    deps.verifyNativeCustomAttachment = verify;
+    expect(await runInferenceGet({ sandboxName: "custom", quiet: true }, deps)).toEqual({
+      provider: entry.provider,
+      model: entry.model,
+      endpointUrl: "https://api.example.com/v1",
+    });
+    expect(verify).toHaveBeenCalledWith({
+      gatewayName: "nemoclaw",
+      sandboxName: "custom",
+      expected: entry.nativeCustomProviderAttachment,
+    });
+    expect(deps.observeInferenceRoute).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["https://api.example.com/v1", { endpointUrl: "https://api.example.com/v1" }],
+    ["https://api.example.com/opaque-private-path", { endpointStatus: "withheld" }],
+  ])(
+    "reports only a safe upstream endpoint through the HTTPS adapter: %s",
+    async (sourceEndpointUrl, expected) => {
+      const prepared = {
+        ...buildNativeCustomProfile({
+          sandboxName: "custom",
+          provider: "compatible-endpoint",
+          endpointUrl: `${buildHttpsPinRouteBaseUrl(computeHttpsPinRouteId("nemoclaw", "compatible-endpoint", sourceEndpointUrl, "custom"))}/v1`,
+          api: "openai-completions",
+          addresses: [],
+          transport: {
+            kind: "https-pin",
+            gatewayName: "nemoclaw",
+            sourceEndpointUrl,
+            sourceAddresses: ["8.8.8.8"],
+            trustedPrivateEndpoint: false,
+          },
+        }),
+        trustedPrivateEndpoint: false,
+      };
+      const entry = await fixture();
+      entry.nativeCustomProviderAttachment = customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "owned-id",
+      });
+      const deps = createDeps(configuredRoute("other-provider", "other-model"));
+      deps.getSandbox = () => entry;
+      deps.verifyNativeCustomAttachment = async () => undefined;
+      const result = await runInferenceGet({ sandboxName: "custom", json: true }, deps);
+      expect(result).toMatchObject(expected);
+      expect(JSON.stringify(result)).not.toContain("/route/");
+      expect(deps.log.mock.calls.flat().join(" ")).not.toContain("opaque-private-path");
+      expect(deps.observeInferenceRoute).not.toHaveBeenCalled();
+    },
+  );
+  it("fails closed when observed attachment identity cannot be verified", async () => {
+    const entry = await fixture();
+    const deps = createDeps(configuredRoute("other-provider", "other-model"));
+    deps.getSandbox = () => entry;
+    deps.verifyNativeCustomAttachment = async () => {
+      throw new Error("private-provider-detail");
+    };
+    await expect(runInferenceGet({ sandboxName: "custom" }, deps)).rejects.toThrow(
+      "Run 'nemoclaw custom status'",
+    );
+    expect(deps.observeInferenceRoute).not.toHaveBeenCalled();
+    expect(deps.log).not.toHaveBeenCalled();
+  });
+  it("rejects mismatched native selection before gateway verification (#12636)", async () => {
+    const entry = await fixture();
+    entry.preferredInferenceApi = "anthropic-messages";
+    const deps = createDeps(configuredRoute("other-provider", "other-model"));
+    deps.getSandbox = () => entry;
+    const verify = vi.fn(async () => undefined);
+    deps.verifyNativeCustomAttachment = verify;
+    await expect(runInferenceGet({ sandboxName: "custom" }, deps)).rejects.toThrow(
+      "Recreate the sandbox",
+    );
+    expect(verify).not.toHaveBeenCalled();
+    expect(deps.observeInferenceRoute).not.toHaveBeenCalled();
+  });
+  it("withholds an opaque endpoint path from JSON and text", async () => {
+    const entry = await fixture("https://api.example.com/opaque-private-path");
+    const deps = createDeps(configuredRoute("other-provider", "other-model"));
+    deps.getSandbox = () => entry;
+    deps.verifyNativeCustomAttachment = async () => undefined;
+    const result = await runInferenceGet({ sandboxName: "custom", json: true }, deps);
+    expect(result.endpointStatus).toBe("withheld");
+    expect(JSON.stringify(result)).not.toContain("opaque-private-path");
+    expect(deps.log.mock.calls.flat().join(" ")).not.toContain("opaque-private-path");
+  });
 });

@@ -6,6 +6,10 @@ import {
   managedBraveProfile,
   managedTavilyProfile,
 } from "../../../../test/fixtures/openshell-provider-profile";
+import {
+  customAttachmentFromPrepared,
+  prepareNativeCustomProfile,
+} from "../../inference/native-custom";
 import { createProviders } from "./providers";
 import { createSandboxes } from "./sandboxes";
 import { createSandboxConfig } from "./sandbox-config";
@@ -848,4 +852,108 @@ describe("OpenShell sandbox export evidence", () => {
       createSandboxConfig(connect).get({ ...request(), sandboxId: "verified-id" }),
     ).rejects.toMatchObject({ kind: "schema" });
   });
+});
+
+it.each(
+  (["openai-completions", "openai-responses", "anthropic-messages"] as const).flatMap((api) =>
+    (["valid", "path", "pin", "credential", "binary"] as const).map((variant) => ({
+      api,
+      variant,
+    })),
+  ),
+)("checks retained custom $api profile with $variant authority", async ({ api, variant }) => {
+  const prepared = await prepareNativeCustomProfile({
+    sandboxName: "selected",
+    provider:
+      api === "anthropic-messages" ? "compatible-anthropic-endpoint" : "compatible-endpoint",
+    endpointUrl: "https://custom.example/team",
+    api,
+    lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+  });
+  const attachment = customAttachmentFromPrepared(prepared, {
+    schemaVersion: 1,
+    profileId: prepared.profile.id,
+    providerName: prepared.providerName,
+    providerId: "resource-id",
+  });
+  const base = managedBraveProfile();
+  const credential = prepared.profile.credentials[0];
+  const endpoint = prepared.profile.endpoints[0];
+  const profile = {
+    ...base,
+    id: prepared.profile.id,
+    inferenceCapable: true,
+    credentials: [
+      {
+        ...base.credentials[0],
+        envVars: credential.env_vars,
+        authStyle: credential.auth_style,
+        headerName: credential.header_name,
+      },
+    ],
+    endpoints: [
+      {
+        ...base.endpoints[0],
+        host: endpoint.host,
+        port: endpoint.port,
+        allowedIps: endpoint.allowed_ips,
+        path: endpoint.path,
+        access: "",
+        rules: endpoint.rules.map(({ allow }) => ({
+          allow: {
+            ...allow,
+            command: "",
+            query: {},
+            operationType: "",
+            operationName: "",
+            fields: [],
+            params: {},
+          },
+        })),
+      },
+    ],
+    binaries: prepared.profile.binaries.map((path) => ({ path })),
+  };
+  const { raw, connect } = fixture();
+  raw.getProvider.mockResolvedValue({
+    provider: {
+      ...provider().provider,
+      type: prepared.profile.id,
+      profileWorkspace: "default",
+      config: {},
+    },
+  });
+  raw.getProviderProfile.mockResolvedValue({ profile });
+  const input = {
+    ...request(),
+    configKeys: [],
+    profileContract: { kind: "native-custom", attachment },
+  } as const;
+  const profiles = {
+    valid: profile,
+    path: { ...profile, endpoints: [{ ...profile.endpoints[0], path: "/**" }] },
+    pin: { ...profile, endpoints: [{ ...profile.endpoints[0], allowedIps: ["1.1.1.1"] }] },
+    credential: {
+      ...profile,
+      credentials: [{ ...profile.credentials[0], envVars: ["UNRELATED_KEY"] }],
+    },
+    binary: { ...profile, binaries: [...profile.binaries, { path: "/unapproved" }] },
+  };
+  raw.getProviderProfile.mockResolvedValue({ profile: profiles[variant] });
+  const result = await createProviders(connect)
+    .get(input)
+    .then(
+      (value) => ({ value }),
+      () => ({ rejected: true }),
+    );
+  expect(result).toMatchObject(
+    variant === "valid"
+      ? {
+          value: {
+            managedInferenceEndpoint: attachment.endpointUrl,
+            managedProfile: { id: attachment.profileId },
+          },
+        }
+      : { rejected: true },
+  );
 });

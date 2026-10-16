@@ -3,6 +3,8 @@
 
 import { parseCliOpenShellProviderMetadata } from "../../../src/lib/adapters/openshell/provider-metadata-cli.ts";
 import { hostedNativeProviderForAttachment } from "../../../src/lib/inference/native-provider/hosted-attachment.ts";
+import { recordedNativeProviderAttachment } from "../../../src/lib/inference/native-provider/recorded-selection.ts";
+import { normalizeNativeCustomProviderAttachment } from "../../../src/lib/inference/native-custom/index.ts";
 import { getSandboxInferenceConfig } from "../../../src/lib/inference/config.ts";
 import type { SandboxEntry } from "../../../src/lib/state/registry/types.ts";
 import type { SandboxClient } from "../fixtures/clients/sandbox.ts";
@@ -331,9 +333,27 @@ export async function readFullE2eInferenceRoute(input: {
   env: NodeJS.ProcessEnv;
   redactionValues: string[];
 }): Promise<{ ok: boolean; detail: string }> {
-  const receipt = input.entry?.nativeHostedProviderAttachment;
-  if (receipt?.custom) {
-    const definition = hostedNativeProviderForAttachment(receipt);
+  const custom =
+    input.entry?.nativeCustomProviderAttachment === undefined
+      ? undefined
+      : normalizeNativeCustomProviderAttachment(
+          input.entry.nativeCustomProviderAttachment,
+          input.sandboxName,
+          { provider: input.logicalProvider },
+        );
+  if (
+    input.entry?.nativeCustomProviderAttachment !== undefined &&
+    (!custom ||
+      input.entry.nativeHostedProviderAttachment !== undefined ||
+      input.entry.nativeLocalProviderAttachment !== undefined ||
+      input.entry.nativeNvidiaProviderAttachment !== undefined)
+  ) {
+    return { ok: false, detail: "Invalid custom native ownership" };
+  }
+  const hosted = input.entry?.nativeHostedProviderAttachment;
+  const receipt = custom ?? hosted;
+  if (receipt && (custom || hosted?.custom)) {
+    const definition = custom ?? (hosted && hostedNativeProviderForAttachment(hosted));
     if (!definition) return { ok: false, detail: "Invalid custom native ownership" };
     const options = {
       env: input.env,
@@ -355,8 +375,8 @@ export async function readFullE2eInferenceRoute(input: {
     const route = getSandboxInferenceConfig(
       input.model,
       input.logicalProvider,
-      receipt.custom.api,
-      true,
+      custom?.api ?? hosted!.custom!.api,
+      custom ?? true,
       receipt.endpointUrl,
     );
     // Inspect the selected agent's real configuration inside the sandbox.
@@ -422,4 +442,27 @@ export async function readFullE2eInferenceRoute(input: {
     timeoutMs: 60_000,
   });
   return { ok: route.exitCode === 0 && route.stdout.includes(input.model), detail: route.stdout };
+}
+
+/** Resolve scoped or retained native authority before an E2E request. */
+export function fullE2eNativeAttachment(
+  entry: SandboxEntry | null | undefined,
+  sandboxName: string,
+) {
+  if (!entry) return undefined;
+  const custom = normalizeNativeCustomProviderAttachment(
+    entry.nativeCustomProviderAttachment,
+    sandboxName,
+    { provider: entry.provider },
+  );
+  if (
+    entry.nativeCustomProviderAttachment !== undefined &&
+    (!custom ||
+      entry.nativeHostedProviderAttachment !== undefined ||
+      entry.nativeLocalProviderAttachment !== undefined ||
+      entry.nativeNvidiaProviderAttachment !== undefined)
+  ) {
+    throw new Error("Invalid or ambiguous scoped E2E inference authority");
+  }
+  return custom ?? recordedNativeProviderAttachment(entry);
 }

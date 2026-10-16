@@ -201,6 +201,7 @@ export interface CreateManagedWorkloadOnboardRuntimeInput {
   readonly localNimSelected?: boolean;
   readonly nativeLocalProviderAttachment?: SandboxEntry["nativeLocalProviderAttachment"];
   readonly nativeProvider?: boolean;
+  readonly nativeCustomProviderAttachment?: SandboxEntry["nativeCustomProviderAttachment"];
   readonly startupProfile: ManagedProfileInput;
   readonly note: (message: string) => void;
   readonly fallbackBuildEstimate: () => string | null;
@@ -423,9 +424,10 @@ export function createManagedWorkloadOnboardRuntime(
       selectedModel,
       selectedProvider,
       inferenceApi,
-      input.nativeLocalProviderAttachment && !nativeLocalProviderAttachment
-        ? false
-        : (input.nativeProvider ?? true),
+      input.nativeCustomProviderAttachment ??
+        (input.nativeLocalProviderAttachment && !nativeLocalProviderAttachment
+          ? false
+          : (input.nativeProvider ?? true)),
       endpointUrl,
       input.agentName,
     );
@@ -437,6 +439,12 @@ export function createManagedWorkloadOnboardRuntime(
           : {
               routeProvider: inference.providerKey,
               upstreamProvider: selectedProvider ?? inference.providerKey,
+              ...((input.agentName === "hermes" ||
+                input.agentName === "openclaw" ||
+                input.agentName === "langchain-deepagents-code") &&
+              input.nativeCustomProviderAttachment
+                ? { nativeCustomCredentialEnv: input.nativeCustomProviderAttachment.credentialEnv }
+                : {}),
               model: selectedModel,
               routedBaseUrl: inference.inferenceBaseUrl,
               upstreamEndpointUrl:

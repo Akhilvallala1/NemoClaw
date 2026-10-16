@@ -21,6 +21,7 @@ export type NativeProfileBoundary<Id extends string = string> = Readonly<{
   headerName: string;
   host: string;
   port?: number;
+  path?: string;
   tls?: "terminate";
   allowedIps?: readonly string[];
   binaries?: readonly string[];
@@ -116,7 +117,7 @@ function nativeEndpoint(value: unknown, expected: NativeProfileBoundary): boolea
     endpoint.persistedQueries === "" &&
     emptyRecord(endpoint.graphqlPersistedQueries) &&
     endpoint.graphqlMaxBodyBytes === 0 &&
-    endpoint.path === "" &&
+    endpoint.path === (expected.path ?? "") &&
     endpoint.websocketCredentialRewrite === false &&
     endpoint.requestBodyCredentialRewrite === false &&
     endpoint.advisorProposed === false &&

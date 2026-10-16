@@ -237,6 +237,7 @@ ARG NEMOCLAW_DCODE_AUTO_APPROVAL=disabled
 # DCode has no extra optional packages today, but release images participate in
 # the same managed-image capability contract as OpenClaw and Hermes.
 ARG NEMOCLAW_MANAGED_IMAGE_CAPABILITY_UNION=0
+ARG NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV=
 ARG NEMOCLAW_BUILD_ID=default
 ARG NEMOCLAW_DARWIN_VM_COMPAT=0
 ARG NEMOCLAW_PROXY_HOST=10.200.0.1
@@ -268,10 +269,11 @@ RUN install -d -m 0755 /usr/local/share/nemoclaw \
     && printf '%s\n' "$NEMOCLAW_PROXY_PORT" > /usr/local/share/nemoclaw/dcode-proxy-port \
     && printf '%s\n' "$NEMOCLAW_INFERENCE_BASE_URL" > /usr/local/share/nemoclaw/dcode-inference-base-url \
     && printf '%s\n' "$NEMOCLAW_UPSTREAM_PROVIDER" > /usr/local/share/nemoclaw/dcode-upstream-provider \
+    && printf '%s\n' "${NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV:-none}" > /usr/local/share/nemoclaw/dcode-native-custom-credential-env \
     && printf '%s\n' "$NEMOCLAW_DCODE_AUTO_APPROVAL" > /usr/local/share/nemoclaw/dcode-auto-approval \
     && printf '%s\n' "$NEMOCLAW_REASONING_EFFORT" > /usr/local/share/nemoclaw/dcode-reasoning-effort \
-    && chown root:root /usr/local/share/nemoclaw/dcode-proxy-host /usr/local/share/nemoclaw/dcode-proxy-port /usr/local/share/nemoclaw/dcode-inference-base-url /usr/local/share/nemoclaw/dcode-upstream-provider /usr/local/share/nemoclaw/dcode-auto-approval /usr/local/share/nemoclaw/dcode-reasoning-effort \
-    && chmod 0444 /usr/local/share/nemoclaw/dcode-proxy-host /usr/local/share/nemoclaw/dcode-proxy-port /usr/local/share/nemoclaw/dcode-inference-base-url /usr/local/share/nemoclaw/dcode-upstream-provider /usr/local/share/nemoclaw/dcode-auto-approval /usr/local/share/nemoclaw/dcode-reasoning-effort \
+    && chown root:root /usr/local/share/nemoclaw/dcode-proxy-host /usr/local/share/nemoclaw/dcode-proxy-port /usr/local/share/nemoclaw/dcode-inference-base-url /usr/local/share/nemoclaw/dcode-upstream-provider /usr/local/share/nemoclaw/dcode-auto-approval /usr/local/share/nemoclaw/dcode-reasoning-effort /usr/local/share/nemoclaw/dcode-native-custom-credential-env \
+    && chmod 0444 /usr/local/share/nemoclaw/dcode-proxy-host /usr/local/share/nemoclaw/dcode-proxy-port /usr/local/share/nemoclaw/dcode-inference-base-url /usr/local/share/nemoclaw/dcode-upstream-provider /usr/local/share/nemoclaw/dcode-auto-approval /usr/local/share/nemoclaw/dcode-reasoning-effort /usr/local/share/nemoclaw/dcode-native-custom-credential-env \
     && /opt/venv/bin/python3 -I /opt/nemoclaw-deepagents-code/validate-read-only-mcp-call.py \
     && rm -f /opt/nemoclaw-deepagents-code/validate-read-only-mcp-call.py \
     && unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \

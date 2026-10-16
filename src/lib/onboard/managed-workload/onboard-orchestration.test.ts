@@ -340,6 +340,7 @@ describe("managed workload onboard orchestration", () => {
 
   it.each([
     ["hermes", "compatible-endpoint", "COMPATIBLE_API_KEY"],
+    ["langchain-deepagents-code", "compatible-endpoint", "COMPATIBLE_API_KEY"],
     ["openclaw", "compatible-endpoint", "COMPATIBLE_API_KEY"],
     ["hermes", "compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
     ["openclaw", "compatible-anthropic-endpoint", "COMPATIBLE_ANTHROPIC_API_KEY"],
@@ -378,7 +379,7 @@ describe("managed workload onboard orchestration", () => {
           startupProfile: {
             chatUiUrl: "http://127.0.0.1:19189",
             effectiveDashboardPort: 19_189,
-            manageDashboard: true,
+            manageDashboard: agent !== "langchain-deepagents-code",
             dashboardBindAddress: undefined,
             wslExposure: false,
             hermesDashboardState: { config: null, enabled: false },

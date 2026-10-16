@@ -7,6 +7,7 @@ import {
   expectNoDcodeMutation,
   makeDcodeSandboxEntry,
 } from "../../../../test/helpers/rebuild-dcode-flow-helpers";
+import { registry } from "../../../../test/helpers/rebuild-flow-harness";
 import { expectNoSandboxDelete } from "../../../../test/helpers/rebuild-delete-assertions";
 import {
   createRebuildFlowHarness,
@@ -177,14 +178,10 @@ describe("rebuildSandbox DCode flow: pre-delete drift", () => {
     const harness = createRebuildFlowHarness({
       agentName: "langchain-deepagents-code",
       sandboxEntry: originalEntry,
-      sandboxEntryReads: [
-        originalEntry, // Initial rebuild target.
-        originalEntry, // Exact post-confirmation lock guard.
-        originalEntry, // Messaging config hydration.
-        originalEntry, // Messaging-conflict gateway lookup (#5954).
-        originalEntry, // Final pre-backup target verification.
-        driftedEntry, // Registry reread at the destructive boundary.
-      ],
+      // Publish drift during the backup phase, independent of incidental registry reads.
+      beforeBackup: () => {
+        registry.updateSandbox("alpha", { model: driftedEntry.model });
+      },
       dcodeRouteResults: [{ ok: true }, { ok: true }, { ok: true }],
     });
     configureDcodeSession(harness);

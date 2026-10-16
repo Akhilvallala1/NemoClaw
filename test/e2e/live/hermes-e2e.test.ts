@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SandboxEntry } from "../../../src/lib/state/registry/types.ts";
-import { recordedNativeProviderAttachment } from "../../../src/lib/inference/native-provider/recorded-selection.ts";
+import { fullE2eNativeAttachment } from "./full-e2e-inference-probe.ts";
 import { buildSandboxInferenceChatCommand } from "../fixtures/inference-adapter.ts";
 import { HERMES_E2E_TEST_TIMEOUT_MS } from "../../../tools/e2e/hermes-timeout-contract.mts";
 import { execTimeout, testTimeout } from "../../helpers/timeouts.ts";
@@ -877,7 +877,7 @@ test(
     expectPong(`${inference.mode} direct chat`, directChat);
 
     const chatSelection = registryEntry(SANDBOX_NAME) as unknown as SandboxEntry;
-    const chatAttachment = recordedNativeProviderAttachment(chatSelection);
+    const chatAttachment = fullE2eNativeAttachment(chatSelection, SANDBOX_NAME);
     const sandboxChat = await sandbox.exec(
       SANDBOX_NAME,
       buildSandboxInferenceChatCommand(

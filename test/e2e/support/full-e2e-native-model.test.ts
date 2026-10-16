@@ -139,3 +139,9 @@ it("retains a custom native endpoint and opaque credential reference through a m
     models: [{ id: "team/model", name: "team/model" }],
   });
 });
+
+it("rejects an invalid receipt instead of falling back to shared inference", () => {
+  expect(() =>
+    buildNativeModelRestartFixture("vendor/model", "compatible-endpoint", {} as never),
+  ).toThrow("Invalid native custom inference attachment authority");
+});

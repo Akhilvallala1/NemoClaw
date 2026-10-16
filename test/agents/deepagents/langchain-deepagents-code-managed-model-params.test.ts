@@ -92,6 +92,69 @@ print("managed-ultra-template-argument-ok")
     expect(output).toContain("managed-ultra-template-argument-ok");
   });
 
+  it("binds HTTPS adapter credentials to root-owned custom authority (#12636)", () => {
+    const tempDir = createPackageFixture();
+    patchFixture(tempDir);
+    const validation = `
+import os
+from pathlib import Path
+from deepagents_code import config
+from deepagents_code import _nemoclaw_managed as managed
+
+def write_owned(file, value):
+    path = Path(file)
+    if path.exists(): path.chmod(0o644)
+    path.write_text(value + "\\n")
+    path.chmod(0o444)
+
+route = "http://host.openshell.internal:11438/route/" + "a" * 64 + "/v1"
+write_owned(managed._INFERENCE_BASE_URL_FILE, route)
+write_owned(managed._UPSTREAM_PROVIDER_FILE, "compatible-endpoint")
+# The production reader uses this fixed root-owned material; no ambient env or
+# user-writable config is permitted to choose the credential binding.
+authority = Path(${JSON.stringify(path.join(tempDir, "custom-authority"))})
+managed._NATIVE_CUSTOM_CREDENTIAL_FILE = authority
+write_owned(authority, "COMPATIBLE_API_KEY")
+name = "COMPATIBLE_API_KEY"
+for identity in ("v42", "s" + "a" * 64):
+    value = "openshell:resolve:env:" + identity + "_" + name
+    os.environ[name] = value
+    resolved = config._get_provider_kwargs("openai", model_name="custom-model")
+    assert resolved["api_key"] == value
+    assert resolved["base_url"] == route
+for value in ("", "raw-secret", "openshell:resolve:env:" + name,
+              "openshell:resolve:env:v42_NEMOCLAW_LOCAL_INFERENCE_TOKEN"):
+    os.environ[name] = value
+    try: config._get_provider_kwargs("openai")
+    except RuntimeError as error: assert not value or value not in str(error)
+    else: raise AssertionError("invalid custom credential accepted")
+os.environ[name] = "openshell:resolve:env:v42_" + name
+for wrong in ("COMPATIBLE_ANTHROPIC_API_KEY", "NVIDIA_INFERENCE_API_KEY", "raw-secret"):
+    write_owned(authority, wrong)
+    try: config._get_provider_kwargs("openai")
+    except RuntimeError: pass
+    else: raise AssertionError("invalid custom authority accepted")
+write_owned(authority, name)
+authority.chmod(0o644)
+try: config._get_provider_kwargs("openai")
+except RuntimeError: pass
+else: raise AssertionError("writable custom authority accepted")
+authority.unlink()
+os.environ["NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV"] = name
+os.environ.pop("NEMOCLAW_LOCAL_INFERENCE_TOKEN", None)
+try: config._get_provider_kwargs("openai")
+except RuntimeError: pass
+else: raise AssertionError("ambient authority replaced root-owned classification")
+print("custom-adapter-authority-ok")
+`;
+    expect(
+      execFileSync("python3", ["-c", validation], {
+        env: { PATH: process.env.PATH, PYTHONPATH: tempDir },
+        encoding: "utf8",
+      }),
+    ).toContain("custom-adapter-authority-ok");
+  });
+
   it("passes the issued native-local reference to the actual model constructor (#12558)", () => {
     const tempDir = createPackageFixture();
     patchFixture(tempDir);
@@ -136,7 +199,16 @@ for upstream in ("ollama-local", "vllm-local", "llama-cpp-local", "compatible-en
 os.environ[name] = "openshell:resolve:env:v42_" + name
 for endpoint in ("https://inference.local/v1", "https://host.openshell.internal:8000/v1", "http://172.32.2.3:8000/v1"):
     write_owned(${JSON.stringify(routeFile)}, endpoint)
-    assert config._get_provider_kwargs("openai")["api_key"] == "nemoclaw-managed-inference"
+    if endpoint == "https://inference.local/v1":
+        assert config._get_provider_kwargs("openai")["api_key"] == "nemoclaw-managed-inference"
+    else:
+        try: config._get_provider_kwargs("openai")
+        except RuntimeError: pass
+        else: raise AssertionError("ambient local token replaced custom credential")
+        custom = "openshell:resolve:env:v42_COMPATIBLE_API_KEY"
+        os.environ["COMPATIBLE_API_KEY"] = custom
+        assert config._get_provider_kwargs("openai")["api_key"] == custom
+        del os.environ["COMPATIBLE_API_KEY"]
 write_owned(${JSON.stringify(routeFile)}, "http://host.openshell.internal:8000/v1")
 write_owned(${JSON.stringify(providerFile)}, "nvidia-prod")
 assert config._get_provider_kwargs("openai")["api_key"] == "nemoclaw-managed-inference"

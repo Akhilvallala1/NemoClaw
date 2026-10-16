@@ -4,6 +4,9 @@
 import { describe, expect, it } from "vitest";
 import {
   hermesImageRef,
+  dcodeImageRef,
+  dcodeProfileInput,
+  dcodeSnapshot,
   imageRef,
   profileInput,
   hermesProfileInput,
@@ -25,7 +28,7 @@ function findings(result: ReturnType<typeof verifyExportSource>) {
 }
 
 describe("native custom config export source verification (#12636)", () => {
-  it.each(["hermes", "openclaw"] as const)(
+  it.each(["hermes", "openclaw", "langchain-deepagents-code"] as const)(
     "preserves recorded native custom %s authority when reconstructing the startup profile (#12636)",
     async (agent) => {
       const prepared = await prepareNativeCustomProfile({
@@ -47,8 +50,18 @@ describe("native custom config export source verification (#12636)", () => {
         "openai-completions",
         attachment,
       );
-      const input = agent === "hermes" ? hermesProfileInput() : profileInput();
-      const base = agent === "hermes" ? hermesSnapshot() : snapshot();
+      const input =
+        agent === "hermes"
+          ? hermesProfileInput()
+          : agent === "langchain-deepagents-code"
+            ? dcodeProfileInput()
+            : profileInput();
+      const base =
+        agent === "hermes"
+          ? hermesSnapshot()
+          : agent === "langchain-deepagents-code"
+            ? dcodeSnapshot()
+            : snapshot();
       const value = {
         ...base,
         sandbox: { ...base.sandbox, providerNames: [attachment.providerName] },
@@ -82,6 +95,8 @@ describe("native custom config export source verification (#12636)", () => {
                 ...input.inference!,
                 routeProvider: route.providerKey,
                 upstreamProvider: "compatible-endpoint",
+                upstreamEndpointUrl:
+                  agent === "langchain-deepagents-code" ? attachment.endpointUrl : null,
                 routedBaseUrl: route.inferenceBaseUrl,
                 nativeCustomCredentialEnv: attachment.credentialEnv,
                 api: "openai-completions",
@@ -89,7 +104,11 @@ describe("native custom config export source verification (#12636)", () => {
                 compatibility: agent === "openclaw" ? (route.inferenceCompat ?? {}) : null,
               },
             },
-            agent === "hermes" ? hermesImageRef : imageRef,
+            agent === "hermes"
+              ? hermesImageRef
+              : agent === "langchain-deepagents-code"
+                ? dcodeImageRef
+                : imageRef,
           ),
         },
       };

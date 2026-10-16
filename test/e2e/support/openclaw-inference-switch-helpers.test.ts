@@ -456,8 +456,10 @@ it.each([
       provider,
       { effort: null, explicit: false },
       false,
-      endpoint,
+      undefined,
+      undefined,
       true,
+      endpoint,
     );
     config.models.providers[providerKey].apiKey = valid ? handle : "synthetic-raw-credential";
     const result = probeOpenClawConfig(

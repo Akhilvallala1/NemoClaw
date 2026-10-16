@@ -8,11 +8,33 @@ import type {
 } from "../adapters/openshell/inference-route";
 import { CLI_NAME } from "../cli/branding";
 import { shellQuote } from "../core/shell-quote";
+import {
+  isNativeCustomProvider,
+  type NativeCustomProviderAttachment,
+} from "../inference/native-custom";
+import type { NativeCustomTransportDeps } from "../inference/native-custom/transport";
+import { isNativeCustomCredentialReference } from "../inference/native-custom/credential-reference";
+import { type EndpointDnsLookupFn } from "../inference/endpoint-ssrf-preflight";
+import {
+  runNativeCustomInferenceSwitch,
+  restoreNativeCustomDeparture,
+  selectsNativeCustomSwitch,
+  defaultNativeCustomSwitchAuthority,
+  recordedNativeCustomDeparture,
+  detachNativeCustomDeparture,
+  nativeCustomDepartureRegistryFields,
+  validateNativeCustomHermesFrontend,
+  verifyNativeCustomDeparture,
+  retireSynchronizedNativeCustomDeparture,
+} from "./inference-set/native-custom";
 import { applyHermesManagedRoute } from "../hermes-managed-route";
 import { isBedrockRuntimeEndpoint } from "../inference/bedrock-runtime";
 import {
   getProviderSelectionConfig,
   getSandboxInferenceConfig,
+  isNativeNvidiaProvider,
+  isNativeNvidiaCredentialReference,
+  resolveNativeNvidiaCredentialReference,
   resolveAgentInferenceApi,
   type SandboxInferenceConfig,
 } from "../inference/config";
@@ -117,6 +139,7 @@ import {
   type InferenceSetProviderBinding,
   isSandboxBridgeProviderBinding,
   prepareInferenceSetRoute,
+  resolveInferenceSetEndpoint,
   type RegistryInferenceMetadata,
   sandboxCustomCompatibleCredentialEnv,
   usesLoopbackNoAuthProxyRoute,
@@ -184,6 +207,13 @@ function providerCommitFailureAfterSelection(options: {
 }
 
 export interface InferenceSetDeps extends InferenceGatewayRestartDeps {
+  reconcileNativeCustomSandboxPolicy?: typeof import("../inference/native-custom/network-policy").reconcileNativeCustomSandboxPolicy;
+  getNativeCustomProviderAuthority?: typeof import("../state/registry/native-custom-provider-authority").getNativeCustomProviderAuthority;
+  setNativeCustomProviderAuthority?: typeof import("../state/registry/native-custom-provider-authority").setNativeCustomProviderAuthority;
+  nativeCustomTransportDeps?: Partial<Omit<NativeCustomTransportDeps, "admitProfile">>;
+  nativeCustomEndpointLookup?: EndpointDnsLookupFn;
+  resolveNativeCustomCredentialReference?: typeof import("../inference/native-custom/credential-reference").resolveNativeCustomCredentialReference;
+  resolveNativeNvidiaCredentialReference?: typeof resolveNativeNvidiaCredentialReference;
   getDefaultSandbox: () => string | null;
   getSandbox: (name: string) => SandboxEntry | null;
   listSandboxes: () => {
@@ -214,6 +244,7 @@ export interface InferenceSetDeps extends InferenceGatewayRestartDeps {
   inferenceRouteMutator: ReturnType<typeof createDefaultInferenceSetRouteMutator>;
   inferenceRouteObserver: OpenShellInferenceRouteObserver;
   providerAdapter: InferenceSetProviderAdapter;
+  retireNativeCustomProviders?: typeof import("../inference/native-custom/cleanup").retireNativeCustomProviders;
   isLocalInferenceProvider: (provider: string) => boolean;
   validateLocalProvider: (provider: string) => ValidationResult;
   ensureLocalProviderReachable: (provider: string) => boolean;
@@ -324,6 +355,7 @@ export const INFERENCE_SET_INSTALLER_PROVIDER_ALIASES = INSTALLER_PROVIDER_ALIAS
 
 function defaultDeps(): InferenceSetDeps {
   return {
+    ...defaultNativeCustomSwitchAuthority(),
     getDefaultSandbox: registry.getDefault,
     getSandbox: registry.getSandbox,
     listSandboxes: registry.listSandboxes,
@@ -391,7 +423,12 @@ async function assertSelectableProvider(
   gatewayName: string,
   deps: Pick<InferenceSetDeps, "providerAdapter" | "log">,
 ): Promise<void> {
-  if (getProviderSelectionConfig(provider, model) || provider === "nvidia-router") return;
+  if (
+    getProviderSelectionConfig(provider, model) ||
+    provider === "nvidia-router" ||
+    isNativeCustomProvider(provider)
+  )
+    return;
   const registeredProviders = await queryRegisteredGatewayProviders(gatewayName, deps);
   if (registeredProviders?.includes(provider)) return;
   const providerGuidance =
@@ -713,6 +750,11 @@ function buildProviderConfig(
       existing.apiKey,
       cloneConfigObject(existing.headers),
     ),
+    ...(isNativeNvidiaProvider(provider) &&
+    typeof existing.apiKey === "string" &&
+    isNativeNvidiaCredentialReference(existing.apiKey)
+      ? { apiKey: existing.apiKey }
+      : {}),
     api: route.inferenceApi,
     models:
       selectedIndex < 0
@@ -733,17 +775,40 @@ export function patchOpenClawInferenceConfig(
   upstreamProviderMarker?: string,
   reasoningEffort: ReasoningEffortRequest = { effort: null, explicit: false },
   inheritPrimaryReplyBudget = true,
+  nativeCustomProviderAttachment?: NativeCustomProviderAttachment,
+  credentialReference?: string,
+  nativeProvider?: boolean,
   nativeEndpointUrl?: string,
-  nativeProvider = usesNativeConfigByDefault(provider, nativeEndpointUrl),
 ): { changed: boolean; route: SandboxInferenceConfig } {
+  if (
+    isNativeNvidiaProvider(provider) &&
+    credentialReference !== undefined &&
+    !isNativeNvidiaCredentialReference(credentialReference)
+  )
+    throw new InferenceSetError(
+      "OpenClaw native NVIDIA inference requires an issued credential reference.",
+    );
   const before = JSON.stringify(config);
   const route = getSandboxInferenceConfig(
     model,
     provider,
     preferredInferenceApi,
-    nativeProvider,
+    nativeCustomProviderAttachment ??
+      nativeProvider ??
+      usesNativeConfigByDefault(provider, nativeEndpointUrl),
     nativeEndpointUrl,
   );
+  if (
+    nativeCustomProviderAttachment &&
+    credentialReference !== undefined &&
+    !isNativeCustomCredentialReference(
+      credentialReference,
+      nativeCustomProviderAttachment.credentialEnv,
+    )
+  )
+    throw new InferenceSetError(
+      "OpenClaw native custom inference requires a matching issued credential reference.",
+    );
   const inheritedMaxTokens = inheritPrimaryReplyBudget
     ? readOpenClawPrimaryReplyBudget(config)
     : undefined;
@@ -764,6 +829,21 @@ export function patchOpenClawInferenceConfig(
     upstreamProviderMarker,
     reasoningEffort,
   );
+  if (nativeCustomProviderAttachment) {
+    providers[route.providerKey] = {
+      ...cloneConfigObject(providers[route.providerKey]),
+      apiKey:
+        credentialReference ||
+        `openshell:resolve:env:${nativeCustomProviderAttachment.credentialEnv}`,
+    };
+  }
+
+  if (isNativeNvidiaProvider(provider) && credentialReference !== undefined) {
+    providers[route.providerKey] = {
+      ...cloneConfigObject(providers[route.providerKey]),
+      apiKey: credentialReference,
+    };
+  }
 
   return { changed: before !== JSON.stringify(config), route };
 }
@@ -843,8 +923,10 @@ export function patchHermesInferenceConfig(
   model: string,
   preferredInferenceApi: string | null = null,
   contextWindow?: number,
+  nativeCustomProviderAttachment?: NativeCustomProviderAttachment,
+  credentialReference?: string,
+  nativeProvider?: boolean,
   nativeEndpointUrl?: string,
-  nativeProvider = usesNativeConfigByDefault(provider, nativeEndpointUrl),
   nativeCredentialHandle?: string,
 ): { changed: boolean; route: SandboxInferenceConfig } {
   const before = JSON.stringify(config);
@@ -852,7 +934,9 @@ export function patchHermesInferenceConfig(
     model,
     provider,
     preferredInferenceApi,
-    nativeProvider,
+    nativeCustomProviderAttachment ??
+      nativeProvider ??
+      usesNativeConfigByDefault(provider, nativeEndpointUrl),
     nativeEndpointUrl,
   );
   applyHermesManagedRoute(config, {
@@ -861,13 +945,17 @@ export function patchHermesInferenceConfig(
     upstreamProvider: provider,
     inferenceApi: route.inferenceApi,
     contextWindow,
+    ...(nativeCustomProviderAttachment
+      ? { nativeCustomCredentialEnv: nativeCustomProviderAttachment.credentialEnv }
+      : {}),
+    ...(credentialReference ? { credentialReference } : {}),
     nativeCredentialHandle,
   });
 
   return { changed: before !== JSON.stringify(config), route };
 }
 
-function resolveHermesContextWindowForSwitch(
+export function resolveHermesContextWindowForSwitch(
   provider: string,
   model: string,
   deps: Pick<InferenceSetDeps, "resolveContextWindowForModel" | "log">,
@@ -884,7 +972,7 @@ function resolveHermesContextWindowForSwitch(
   return undefined;
 }
 
-function resolveOpenClawContextWindowForSwitch(
+export function resolveOpenClawContextWindowForSwitch(
   options: {
     provider: string;
     model: string;
@@ -912,7 +1000,7 @@ function resolveOpenClawContextWindowForSwitch(
   return undefined;
 }
 
-function updateMatchingOnboardSession(
+export function updateMatchingOnboardSession(
   sandboxName: string,
   provider: string,
   model: string,
@@ -959,7 +1047,7 @@ function assertReasoningEffortProvider(request: ReasoningEffortRequest, provider
   );
 }
 
-function assertReasoningEffortRoute(
+export function assertReasoningEffortRoute(
   request: ReasoningEffortRequest,
   provider: string,
   inferenceApi: string | null,
@@ -1031,15 +1119,13 @@ function providerBackedRouteLacksRollbackTarget(input: {
   httpsPinProviderBinding: boolean;
   probeDirectSandboxBridge: boolean;
   rollbackRoute: boolean;
-  previousNativeAttachment: boolean;
 }): boolean {
   return (
     !input.nativeProvider &&
     (input.directProviderBinding ||
       input.httpsPinProviderBinding ||
       input.probeDirectSandboxBridge) &&
-    !input.rollbackRoute &&
-    !input.previousNativeAttachment
+    !input.rollbackRoute
   );
 }
 
@@ -1159,7 +1245,7 @@ async function observeInferenceRouteBeforeMutation(
   return result.value;
 }
 
-function resolveMatchingAgentConfigTarget(
+export function resolveMatchingAgentConfigTarget(
   deps: Pick<InferenceSetDeps, "resolveAgentConfig">,
   sandboxName: string,
   agentName: string,
@@ -1173,6 +1259,26 @@ function resolveMatchingAgentConfigTarget(
     );
   }
   return target;
+}
+
+async function nativeNvidiaReferenceForConfigSync(
+  input: {
+    selectingNativeNvidia: boolean;
+    agentName: string;
+    configSyncPending: boolean;
+    sandboxName: string;
+    gatewayName: string;
+  },
+  deps: Pick<InferenceSetDeps, "resolveNativeNvidiaCredentialReference">,
+): Promise<string | undefined> {
+  if (!input.selectingNativeNvidia || input.agentName !== "openclaw" || !input.configSyncPending)
+    return undefined;
+  // Native restart inherits the original gateway env. An issued handle lets
+  // a newly attached provider resolve without requiring a new env variable.
+  return (deps.resolveNativeNvidiaCredentialReference ?? resolveNativeNvidiaCredentialReference)({
+    sandboxName: input.sandboxName,
+    gatewayName: input.gatewayName,
+  });
 }
 
 async function runInferenceSetWithoutHostLock(
@@ -1192,6 +1298,8 @@ async function runInferenceSetWithoutHostLock(
   assertInferenceModelId(model);
 
   const { sandboxName, entry, agentName } = resolveTargetSandbox(options.sandboxName, deps);
+  const departureSnapshot = structuredClone(entry);
+  const departingCustom = recordedNativeCustomDeparture(entry, sandboxName);
   const priorHttpsPinRouteId = parseHttpsPinRouteId(entry.endpointUrl);
   if (agentName !== "openclaw" && agentName !== "hermes") {
     // #6321: Deep Agents Code (langchain-deepagents-code) bakes its model into
@@ -1218,18 +1326,7 @@ async function runInferenceSetWithoutHostLock(
   const explicitOrRecordedInferenceApi =
     explicitInferenceApi ??
     (entry.provider === provider ? (entry.preferredInferenceApi ?? null) : null);
-  if (
-    agentName === "hermes" &&
-    provider === "compatible-anthropic-endpoint" &&
-    explicitInferenceApi !== null &&
-    explicitInferenceApi !== "openai-completions"
-  ) {
-    throw new InferenceSetError(
-      "Hermes custom Anthropic endpoints require the managed openai-completions frontend. " +
-        "Set --inference-api openai-completions or omit --inference-api so NemoClaw selects it.",
-      2,
-    );
-  }
+  validateNativeCustomHermesFrontend(agentName, provider, explicitInferenceApi);
   const hasExplicitCustomRoute = Boolean(
     options.endpointUrl || options.credentialEnv || options.inferenceApi,
   );
@@ -1260,6 +1357,56 @@ async function runInferenceSetWithoutHostLock(
         ),
       }
     : null;
+  if (
+    isNativeCustomProvider(provider) &&
+    // Keep an existing main-format custom receipt with its lifecycle owner.
+    // New selections and Slice 3 receipts use sandbox-scoped custom authority.
+    (!entry.nativeHostedProviderAttachment?.custom || Boolean(departingCustom)) &&
+    selectsNativeCustomSwitch(
+      entry,
+      resolveInferenceSetEndpoint({
+        entry,
+        provider,
+        model,
+        sandboxName,
+        session,
+        explicitEndpoint: customRoute?.endpointUrl,
+      }),
+      provider,
+      Boolean(options.endpointUrl),
+    )
+  ) {
+    return runNativeCustomInferenceSwitch(
+      {
+        options,
+        deps,
+        expectedGatewayName,
+        runtimeProvider,
+        sandboxName,
+        entry,
+        agentName,
+        provider,
+        model,
+        reasoningEffortRequest,
+        session,
+        customRoute,
+        routeEntry,
+        routeSession,
+      },
+      {
+        assertReasoningEffortRoute,
+        resolveMatchingAgentConfigTarget,
+        readInSandboxConfigOrFail,
+        patchHermesInferenceConfig,
+        patchOpenClawInferenceConfig,
+        resolveHermesContextWindowForSwitch,
+        resolveOpenClawContextWindowForSwitch,
+        writeOpenClawInferenceConfigNatively,
+        updateMatchingOnboardSession,
+      },
+    );
+  }
+  await verifyNativeCustomDeparture(entry, departingCustom, sandboxName, expectedGatewayName, deps);
   // Registered peers are compared exactly as recorded. In particular, a
   // stopped legacy Hermes row that still records the Anthropic frontend will
   // depend on that route when restarted and must not be normalized away.
@@ -1466,12 +1613,12 @@ async function runInferenceSetWithoutHostLock(
       httpsPinProviderBinding: Boolean(httpsPinProviderBinding),
       probeDirectSandboxBridge: probeSandboxRoute,
       rollbackRoute: Boolean(rollbackRoute),
-      previousNativeAttachment: Boolean(previousNativeAttachment),
     })
   ) {
     throw new InferenceSetError(
       `Cannot change the provider-backed route because gateway '${preparedRoute.gatewayName}' has no configured ` +
-        "inference selection to restore if provider commit or sandbox verification fails.",
+        "inference selection to restore if provider commit or sandbox verification fails. " +
+        "The existing sandbox is unchanged. Onboard a separate sandbox with the desired inference selection instead.",
       2,
     );
   }
@@ -1486,10 +1633,14 @@ async function runInferenceSetWithoutHostLock(
   let assertProviderCurrentBeforeSelection: (() => Promise<void>) | null = null;
   let nativeNvidiaCredentialHandle: string | undefined;
   let nativeProviderAttachment: NativeProviderAttachment | undefined;
+  let nativeNvidiaCredentialReference: string | undefined;
   let nativeAttachmentChanged = false;
   let nativeRegistryCommitted = false;
   let previousNativeDetached = false;
   let previousNativeDetachCommitted = false;
+  let customDetachAttempted = false;
+  let rollbackCustomPolicy: (() => Promise<void>) | undefined;
+  let customDepartureCommitted = false;
   const restorePreviousInferenceSelection = async (): Promise<string | null> => {
     if (selectingNative) {
       appliedInferenceSelection = false;
@@ -1545,6 +1696,16 @@ async function runInferenceSetWithoutHostLock(
     });
     nativeProviderAttachment = nativeSelection.attachment;
     nativeAttachmentChanged = nativeSelection.attachmentChanged;
+    nativeNvidiaCredentialReference = await nativeNvidiaReferenceForConfigSync(
+      {
+        selectingNativeNvidia: isNativeNvidiaProvider(provider),
+        agentName,
+        configSyncPending: openClawConfigSyncPending,
+        sandboxName,
+        gatewayName: preparedRoute.gatewayName,
+      },
+      deps,
+    );
     nativeNvidiaCredentialHandle = await readHermesNativeNvidiaCredentialHandleIfNeeded({
       agentName,
       provider,
@@ -1649,7 +1810,7 @@ async function runInferenceSetWithoutHostLock(
               provider,
               model,
               preferredInferenceApi: preMutationInferenceApi,
-              ...(selectingNative ? { nativeProvider: true } : {}),
+              nativeProvider: selectingNative,
               nativeEndpointUrl: nativeSelection.endpointUrl,
             },
             previousProvider,
@@ -1719,6 +1880,16 @@ async function runInferenceSetWithoutHostLock(
       deps,
     });
 
+    rollbackCustomPolicy = await detachNativeCustomDeparture(
+      departingCustom,
+      sandboxName,
+      expectedGatewayName,
+      deps,
+      () => {
+        customDetachAttempted = true;
+      },
+    );
+
     // Write minimal registry state before any sandbox-facing config read so the
     // gateway and registry cannot split if the in-sandbox layer is unavailable.
     const registryFields = (preferredInferenceApi: string | null) => ({
@@ -1748,7 +1919,9 @@ async function runInferenceSetWithoutHostLock(
       ...(nativeSelection.endpointUrl && !nativeProviderAttachment?.custom
         ? { endpointUrl: nativeSelection.endpointUrl }
         : {}),
+      ...nativeCustomDepartureRegistryFields(departingCustom),
     });
+    customDepartureCommitted = customDetachAttempted;
     if (
       !deps.updateSandbox(
         sandboxName,
@@ -1824,8 +1997,10 @@ async function runInferenceSetWithoutHostLock(
         model,
         preferredInferenceApi,
         contextWindow,
-        nativeSelection.endpointUrl,
+        undefined,
+        undefined,
         selectingNative,
+        nativeSelection.endpointUrl,
         nativeNvidiaCredentialHandle,
       );
     } else {
@@ -1849,8 +2024,10 @@ async function runInferenceSetWithoutHostLock(
         provider,
         reasoningEffortRequest,
         true,
-        nativeSelection.endpointUrl,
+        undefined,
+        nativeNvidiaCredentialReference,
         selectingNative,
+        nativeSelection.endpointUrl,
       );
     }
 
@@ -1899,6 +2076,12 @@ async function runInferenceSetWithoutHostLock(
         `  Run '${CLI_NAME} ${sandboxName} rebuild' to finish applying the model inside the sandbox.`,
       );
     }
+    await retireSynchronizedNativeCustomDeparture(
+      inSandboxConfigSynced,
+      sandboxName,
+      expectedGatewayName,
+      deps,
+    );
     const sessionUpdated =
       agentName === "openclaw"
         ? updateMatchingOnboardSession(
@@ -1920,7 +2103,7 @@ async function runInferenceSetWithoutHostLock(
         // A new native attachment refreshes credentials for new processes only.
         // Restart on retries too: an earlier attempt may have committed the config.
         hermesGatewayRestart:
-          agentName === "hermes" && (selectingNative || previousNativeAttachment)
+          agentName === "hermes" && (selectingNative || previousNativeAttachment || departingCustom)
             ? { gatewayName: expectedGatewayName }
             : undefined,
         openClawPairingTarget:
@@ -1999,6 +2182,16 @@ async function runInferenceSetWithoutHostLock(
       sandboxName,
       error,
       deps,
+    });
+    await restoreNativeCustomDeparture({
+      customDetachAttempted,
+      departingCustom,
+      customDepartureCommitted,
+      deps,
+      sandboxName,
+      expectedGatewayName,
+      departureSnapshot,
+      rollbackPolicy: rollbackCustomPolicy,
     });
     if (!providerMutation) throw error;
     if (ambiguousInferenceSelection) throw error;

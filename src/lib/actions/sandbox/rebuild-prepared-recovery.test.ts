@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { registryPersistence } from "../../../../test/helpers/rebuild-flow-harness";
 import { expectNoSandboxDelete } from "../../../../test/helpers/rebuild-delete-assertions";
 import {
   createRebuildFlowHarness,
@@ -174,15 +175,17 @@ describe("prepared rebuild recovery", () => {
   });
 
   it("rejects same-agent registry configuration drift before deleting the sandbox (#6114)", async () => {
-    const harness = createRebuildFlowHarness({
-      preDeleteSandboxEntry: {
-        name: "alpha",
-        provider: "compatible-endpoint",
-        model: "new-model",
-        agent: null,
-        agentVersion: "0.1.0",
-        nemoclawVersion: "0.0.71",
-      },
+    const harness = createRebuildFlowHarness();
+    const loadSnapshot = vi.mocked(registryPersistence.load).getMockImplementation()!;
+    vi.mocked(registryPersistence.load).mockImplementation(() => {
+      const snapshot = loadSnapshot();
+      // The initial locked read remains stable; change the stored row only after
+      // authoritative preflight, when recovery captures its pre-delete snapshot.
+      snapshot.sandboxes.alpha.model =
+        harness.preflightAuthoritativeRebuildTargetSpy.mock.calls.length > 0
+          ? "new-model"
+          : snapshot.sandboxes.alpha.model;
+      return snapshot;
     });
 
     await expect(
@@ -192,6 +195,7 @@ describe("prepared rebuild recovery", () => {
       }),
     ).rejects.toThrow("Recovery registry configuration changed during preflight");
 
+    expect(harness.preflightAuthoritativeRebuildTargetSpy).toHaveBeenCalledOnce();
     expect(harness.backupSandboxStateSpy).not.toHaveBeenCalled();
     expectNoSandboxDelete(harness.runOpenshellSpy);
   });

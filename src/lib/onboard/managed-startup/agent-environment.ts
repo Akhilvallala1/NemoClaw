@@ -36,7 +36,8 @@ export interface ManagedStartupRootOwnedFileMaterial {
     | "NEMOCLAW_PROXY_HOST"
     | "NEMOCLAW_PROXY_PORT"
     | "NEMOCLAW_REASONING_EFFORT"
-    | "NEMOCLAW_UPSTREAM_PROVIDER";
+    | "NEMOCLAW_UPSTREAM_PROVIDER"
+    | "NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV";
   readonly path:
     | "/usr/local/share/nemoclaw/dcode-auto-approval"
     | "/usr/local/share/nemoclaw/dcode-inference-base-url"
@@ -44,6 +45,7 @@ export interface ManagedStartupRootOwnedFileMaterial {
     | "/usr/local/share/nemoclaw/dcode-proxy-port"
     | "/usr/local/share/nemoclaw/dcode-reasoning-effort"
     | "/usr/local/share/nemoclaw/dcode-upstream-provider"
+    | "/usr/local/share/nemoclaw/dcode-native-custom-credential-env"
     | "/usr/local/share/nemoclaw/pi-proxy-host"
     | "/usr/local/share/nemoclaw/pi-proxy-port";
   readonly contents: string;
@@ -509,6 +511,9 @@ function mapDcodeProfile(
       : profile.tuning.reasoningEffort;
   const configurationEnvironment: MutableEnvironment = {
     ...commonConfigurationEnvironment(profile),
+    ...(profile.inference.nativeCustomCredentialEnv
+      ? { NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: profile.inference.nativeCustomCredentialEnv }
+      : {}),
     NEMOCLAW_REASONING_EFFORT: reasoningEffort,
     NEMOCLAW_UPSTREAM_ENDPOINT_URL: profile.inference.upstreamEndpointUrl ?? "",
   };
@@ -523,6 +528,7 @@ function mapDcodeProfile(
   delete runtimeEnvironment.NEMOCLAW_INFERENCE_BASE_URL;
   delete runtimeEnvironment.NEMOCLAW_REASONING_EFFORT;
   delete runtimeEnvironment.NEMOCLAW_UPSTREAM_PROVIDER;
+  delete runtimeEnvironment.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV;
   for (const name of [
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -535,6 +541,11 @@ function mapDcodeProfile(
   }
   const materials: readonly ManagedStartupAgentMaterial[] = Object.freeze([
     corporateCaMaterial(profile),
+    rootOwnedFile(
+      "NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV",
+      "/usr/local/share/nemoclaw/dcode-native-custom-credential-env",
+      profile.inference.nativeCustomCredentialEnv ?? "none",
+    ),
     rootOwnedFile(
       "NEMOCLAW_DCODE_AUTO_APPROVAL",
       "/usr/local/share/nemoclaw/dcode-auto-approval",

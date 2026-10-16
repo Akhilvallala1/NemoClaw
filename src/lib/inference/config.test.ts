@@ -30,6 +30,7 @@ import {
   VLLM_LOCAL_CREDENTIAL_ENV,
 } from "./config";
 import { NVIDIA_HOSTED_NATIVE_ENDPOINT } from "./native-nvidia";
+import { customAttachmentFromPrepared, prepareNativeCustomProfile } from "./native-custom";
 
 describe("resolveAgentDefaultCloudModel", () => {
   it("uses the Deep Agents manifest default", () => {
@@ -667,4 +668,81 @@ it.each([
       agent,
     ).inferenceBaseUrl,
   ).toBe(expected);
+});
+
+describe("retained custom receipt routing", () => {
+  it.each(
+    (
+      [
+        ["compatible-endpoint", "openai-completions", "https://custom.example/team/v1"],
+        ["compatible-endpoint", "openai-responses", "https://custom.example/team/v1"],
+        ["compatible-anthropic-endpoint", "anthropic-messages", "https://custom.example/team"],
+        ["compatible-anthropic-endpoint", "openai-completions", "https://custom.example/team/v1"],
+        ["compatible-anthropic-endpoint", "openai-responses", "https://custom.example/team/v1"],
+      ] as const
+    ).flatMap(([provider, api, endpointUrl]) =>
+      (["valid", "empty-id", "endpoint", "pin", "provider", "api"] as const).map((variant) => ({
+        provider,
+        api,
+        endpointUrl,
+        variant,
+      })),
+    ),
+  )(
+    "checks $provider $api $variant authority across start and rebuild",
+    async ({ provider, api, endpointUrl, variant }) => {
+      const prepared = await prepareNativeCustomProfile({
+        sandboxName: "selected",
+        provider,
+        api,
+        endpointUrl,
+        lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      });
+      const receipt = customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "selected-provider-identity",
+      });
+      const receipts = {
+        valid: receipt,
+        "empty-id": { ...receipt, providerId: "" },
+        endpoint: { ...receipt, endpointUrl: "https://other.example/v1" },
+        pin: { ...receipt, addresses: ["127.0.0.1"] },
+        provider: receipt,
+        api: receipt,
+      };
+      const selectedProvider = variant === "provider" ? "openai-api" : provider;
+      const selectedApi =
+        variant === "api"
+          ? api === "openai-completions"
+            ? "openai-responses"
+            : "openai-completions"
+          : api;
+      const result = await Promise.resolve()
+        .then(() =>
+          getSandboxInferenceConfig(
+            "selected-model",
+            selectedProvider,
+            selectedApi,
+            receipts[variant],
+          ),
+        )
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error: String(error) }),
+        );
+      expect(result).toMatchObject(
+        variant === "valid"
+          ? {
+              value: {
+                inferenceBaseUrl: endpointUrl,
+                inferenceApi: api,
+                primaryModelRef: `${api === "anthropic-messages" ? "anthropic" : "inference"}/selected-model`,
+              },
+            }
+          : { error: expect.stringMatching(/attachment authority/) },
+      );
+    },
+  );
 });

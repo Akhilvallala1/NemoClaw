@@ -444,6 +444,39 @@ describe("managed startup agent environment", () => {
     ).toThrow(message);
   });
 
+  it("materializes DCode custom authority independently of mutable runtime environment", () => {
+    const profile = dcodeProfile();
+    const attached = {
+      ...profile,
+      inference: {
+        ...profile.inference!,
+        upstreamProvider: "compatible-endpoint",
+        routedBaseUrl: "http://host.openshell.internal:11438/route/" + "a".repeat(64) + "/v1",
+        nativeCustomCredentialEnv: "COMPATIBLE_API_KEY" as const,
+      },
+    };
+    const result = mapManagedStartupProfileToAgentEnvironment(attached);
+    expect(result.configurationEnvironment.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV).toBe(
+      "COMPATIBLE_API_KEY",
+    );
+    expect(result.runtimeEnvironment).not.toHaveProperty("NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV");
+    expect(result.materials).toContainEqual({
+      kind: "root-owned-file",
+      legacyInput: "NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV",
+      path: "/usr/local/share/nemoclaw/dcode-native-custom-credential-env",
+      contents: "COMPATIBLE_API_KEY\n",
+      owner: "root",
+      group: "root",
+      mode: 0o444,
+    });
+    expect(mapManagedStartupProfileToAgentEnvironment(profile).materials).toContainEqual(
+      expect.objectContaining({
+        legacyInput: "NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV",
+        contents: "none\n",
+      }),
+    );
+  });
+
   it("feeds an attached Hermes route into the existing config generator", () => {
     const profile = hermesProfile();
     const attached = {
@@ -659,6 +692,15 @@ describe("managed startup agent environment", () => {
         kind: "corporate-ca-handoff",
         legacyInput: "NEMOCLAW_CORPORATE_CA_B64",
         expectedSha256: CA_SHA256,
+      },
+      {
+        kind: "root-owned-file",
+        legacyInput: "NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV",
+        path: "/usr/local/share/nemoclaw/dcode-native-custom-credential-env",
+        contents: "none\n",
+        owner: "root",
+        group: "root",
+        mode: 0o444,
       },
       {
         kind: "root-owned-file",
@@ -921,7 +963,8 @@ describe("managed startup agent environment", () => {
           ...MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY[agent]
             .filter((affordance) =>
               affordance.optional
-                ? profile.inference?.nativeCustomCredentialEnv !== undefined
+                ? agent === "langchain-deepagents-code" ||
+                  profile.inference?.nativeCustomCredentialEnv !== undefined
                 : true,
             )
             .map((affordance) => affordance.input),

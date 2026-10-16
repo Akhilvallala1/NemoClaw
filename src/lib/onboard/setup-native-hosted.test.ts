@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi } from "vitest";
-import type { OpenShellProviderAdapter } from "../adapters/openshell/provider-adapter";
+import { expect, it, vi } from "vitest";
 import { customNativeProvider } from "../inference/native-provider/custom";
 import {
   HOSTED_NATIVE_PROVIDERS,
   type HostedProviderDefinition,
 } from "../inference/native-provider/hosted";
-import { createSetupInference, type SetupInferenceDeps } from "./setup-inference";
+import { nativeHostedOnboardFixture } from "../../../test/support/native-hosted-onboard-fixture";
 
 vi.mock("./sandbox-lifecycle", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./sandbox-lifecycle")>()),
@@ -34,11 +33,12 @@ const providers: HostedProviderDefinition[] = [
   ),
 ];
 
-describe.each(providers)("native $label onboarding", (provider) => {
-  const endpointModes = provider.custom
+const cases = providers.flatMap((provider) =>
+  (provider.custom
     ? [
         "explicit",
         "previous-provider",
+        "retained",
         ...(provider.api ===
         (provider.logicalProvider === "compatible-anthropic-endpoint"
           ? "anthropic-messages"
@@ -46,159 +46,132 @@ describe.each(providers)("native $label onboarding", (provider) => {
           ? ["default-api"]
           : []),
       ]
-    : ["explicit", "omitted"];
-  it.each(endpointModes)("uses %s native endpoint (#12589)", async (endpointMode) => {
-    const receipt = {
-      schemaVersion: 1,
-      profileId: provider.profileId,
-      providerName: provider.providerName,
-      providerId: "identity",
-      ...(provider.endpointUrl ? { endpointUrl: provider.endpointUrl } : {}),
-      ...(provider.allowedIps ? { allowedIps: provider.allowedIps } : {}),
-      ...(provider.custom ? { custom: provider.custom } : {}),
-    } as const;
-    const getProvider = vi
-      .fn<OpenShellProviderAdapter["getProvider"]>()
-      .mockResolvedValueOnce({
-        ok: false,
-        error: { kind: "command", reason: "not_found", message: "absent" },
-      })
-      .mockResolvedValue({
-        ok: true,
-        value: {
-          name: provider.providerName,
-          type: provider.profileId,
-          credentialKeys: [provider.credentialEnv],
-          configKeys: [],
-          revision: { id: "identity", resourceVersion: 1 },
-        },
-      });
-    const createProvider = vi.fn<OpenShellProviderAdapter["createProvider"]>(async () => ({
-      ok: true,
-    }));
-    const providerAdapter = {
-      getProvider,
-      createProvider,
-      importProviderProfile: vi.fn(async () => ({ ok: true })),
-      ensureProviderPolicyComposition: vi.fn(async () => ({ ok: true, value: undefined })),
-    } as unknown as OpenShellProviderAdapter;
-    const runOpenshell = vi.fn(() => ({ status: 0, stdout: "", stderr: "" }));
-    const verifyInferenceRoute = vi.fn();
-    const verifyOnboardInferenceSmoke = vi.fn(async () => undefined);
-    const updateSandbox = vi.fn(() => true);
-    const writeAuthority = vi.fn();
-    const recordMigratedProviderCredential = vi.fn();
-    const setup = createSetupInference({
-      checkGatewayRouteCompatibility: vi.fn(() => ({ ok: true })),
-      withSandboxMutationLock: async <T>(_name: string, fn: () => T | Promise<T>) => await fn(),
-      withGatewayRouteMutationLock: async <T>(_name: string, fn: () => T | Promise<T>) =>
-        await fn(),
-      step: vi.fn(),
-      getGatewayName: () => "gateway",
-      runOpenshell,
-      updateSandbox,
-      localInference: { loadPendingOllamaModelCleanup: () => [] },
-      withOllamaModelOwnershipLock: (operation: () => unknown) => operation(),
-      getNativeHostedProviderAuthority: () => undefined,
-      setNativeHostedProviderAuthority: writeAuthority,
-      getSandbox: () =>
-        endpointMode === "previous-provider"
-          ? {
-              name: "alpha",
-              provider: "openai-api",
-              pendingRouteReservation: true,
-              nativeHostedProviderAttachment: {
-                schemaVersion: 1,
-                profileId: HOSTED_NATIVE_PROVIDERS[0].profileId,
-                providerName: HOSTED_NATIVE_PROVIDERS[0].providerName,
-                providerId: "previous-provider-id",
-              },
-            }
-          : null,
-      resolveEndpointHost: async () => [{ address: "8.8.8.8", family: 4 }],
-      upsertProvider: vi.fn(),
-      recordMigratedProviderCredential,
-      verifyInferenceRoute,
-      verifyOnboardInferenceSmoke,
-      isNonInteractive: () => true,
-      hermesProviderAuth: {
-        HERMES_PROVIDER_NAME: "hermes-provider",
-        isHermesProviderRegistered: async () => false,
-        ensureHermesProviderApiKeyCredentials: async (
-          _name: string,
-          options: {
-            registerInferenceCredential: (input: {
-              apiKey: string;
-              credentialEnv: string;
-              baseUrl: string;
-            }) => Promise<unknown>;
-          },
-        ) => {
-          await options.registerInferenceCredential({
-            apiKey: "host-secret",
-            credentialEnv: "NOUS_API_KEY",
-            baseUrl: provider.endpoint,
-          });
-          return {
-            auth_method: "api_key",
-            credential_env: "OPENAI_API_KEY",
-            inference_base_url: provider.endpoint,
-          };
-        },
-      },
-      normalizeHermesAuthMethod: () => "api_key",
-      checkHermesProviderStoreReachable: () => ({ ok: true }),
-      resolveHermesNousApiKey: () => "host-secret",
-      hermesConstants: {
-        HERMES_NOUS_API_KEY_CREDENTIAL_ENV: "NOUS_API_KEY",
-        HERMES_AUTH_METHOD_API_KEY: "api_key",
-        HERMES_AUTH_METHOD_OAUTH: "oauth",
-      },
-      requireValue: (value: unknown) => value,
+    : ["explicit", "omitted"]
+  ).map((endpointMode) => ({ provider, endpointMode })),
+);
 
-      providerAdapter,
-      hydrateCredentialEnv: () => "host-secret",
-      redact: (s: string) => s,
-      compactText: (s: string) => s,
-      log: vi.fn(),
-      error: vi.fn(),
-      exitProcess: (code: number): never => {
-        throw new Error(`exit ${code}`);
-      },
-    } as unknown as SetupInferenceDeps);
-    await expect(
-      setup(
-        "alpha",
-        "supported-model",
+it.each(
+  cases.filter(({ provider, endpointMode }) => provider.custom && endpointMode !== "retained"),
+)(
+  "creates scoped custom authority for $provider.logicalProvider $provider.api $endpointMode",
+  async ({ provider, endpointMode }) => {
+    const {
+      run,
+      nativeCustom,
+      createProvider,
+      updateSandbox,
+      writeAuthority,
+      recordMigratedProviderCredential,
+      verifyOnboardInferenceSmoke,
+      verifyInferenceRoute,
+      runOpenshell,
+    } = nativeHostedOnboardFixture(provider, endpointMode);
+    await expect(run()).resolves.toMatchObject({ ok: true });
+    expect(nativeCustom.providerAdapter.createProvider).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        target: { kind: "named", gatewayName: "gateway" },
+        name: expect.stringMatching(/^nemoclaw-custom-/),
+        credentials: [
+          {
+            name:
+              provider.logicalProvider === "compatible-endpoint"
+                ? "COMPATIBLE_API_KEY"
+                : "COMPATIBLE_ANTHROPIC_API_KEY",
+            value: expect.stringMatching(/^token-/),
+          },
+        ],
+      }),
+    );
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(updateSandbox).toHaveBeenCalledWith(
+      "alpha",
+      expect.objectContaining({
+        nativeCustomProviderAttachment: expect.objectContaining({
+          sandboxName: "alpha",
+          api: provider.api,
+          transport: expect.objectContaining({ sourceEndpointUrl: provider.custom!.endpointUrl }),
+        }),
+      }),
+    );
+    expect(recordMigratedProviderCredential.mock.calls).toEqual([
+      [
         provider.logicalProvider,
-        endpointMode !== "omitted" ? (provider.custom?.endpointUrl ?? provider.endpoint) : null,
-        provider.custom?.credentialEnv ?? provider.credentialEnv,
-        null,
-        [],
-        {
-          revalidateSandboxIdentity: () => undefined,
-          preferredInferenceApi: endpointMode === "default-api" ? null : provider.api,
-        },
-      ),
-    ).resolves.toMatchObject({ ok: true });
+        provider.custom!.credentialEnv,
+        "host-secret",
+        expect.any(Function),
+      ],
+    ]);
+    expect(writeAuthority).not.toHaveBeenCalled();
+    expect(verifyOnboardInferenceSmoke.mock.calls).toEqual([
+      [
+        expect.objectContaining({
+          provider: provider.logicalProvider,
+          endpointUrl: provider.custom!.endpointUrl,
+        }),
+      ],
+    ]);
+
+    expect(verifyInferenceRoute).not.toHaveBeenCalled();
+    expect(runOpenshell).not.toHaveBeenCalled();
+    expect(JSON.stringify(updateSandbox.mock.calls)).not.toContain("host-secret");
+  },
+);
+it.each(cases.filter(({ endpointMode }) => endpointMode === "retained"))(
+  "retains existing custom authority for $provider.logicalProvider $provider.api",
+  async ({ provider, endpointMode }) => {
+    const {
+      run,
+      receipt,
+      createProvider,
+      getProvider,
+      updateSandbox,
+      writeAuthority,
+      recordMigratedProviderCredential,
+      verifyOnboardInferenceSmoke,
+      verifyInferenceRoute,
+      runOpenshell,
+    } = nativeHostedOnboardFixture(provider, endpointMode);
+    await expect(run()).resolves.toMatchObject({ ok: true });
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(getProvider).toHaveBeenCalled();
+    expect(writeAuthority).toHaveBeenCalledWith("gateway", provider.logicalProvider, receipt);
+    expect(updateSandbox).toHaveBeenCalledWith(
+      "alpha",
+      expect.objectContaining({
+        nativeHostedProviderAttachment: receipt,
+        provider: provider.logicalProvider,
+        preferredInferenceApi: provider.api,
+      }),
+    );
+    expect(recordMigratedProviderCredential.mock.calls).toEqual([]);
+    expect(verifyOnboardInferenceSmoke.mock.calls).toEqual([]);
+
+    expect(verifyInferenceRoute).not.toHaveBeenCalled();
+    expect(runOpenshell).not.toHaveBeenCalled();
+    expect(JSON.stringify(updateSandbox.mock.calls)).not.toContain("host-secret");
+  },
+);
+it.each(cases.filter(({ provider }) => !provider.custom))(
+  "creates fixed native authority for $provider.logicalProvider $endpointMode",
+  async ({ provider, endpointMode }) => {
+    const {
+      run,
+      receipt,
+      createProvider,
+      updateSandbox,
+      writeAuthority,
+      recordMigratedProviderCredential,
+      verifyOnboardInferenceSmoke,
+      verifyInferenceRoute,
+      runOpenshell,
+    } = nativeHostedOnboardFixture(provider, endpointMode);
+    await expect(run()).resolves.toMatchObject({ ok: true });
     expect(createProvider).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         name: provider.providerName,
         credentials: [{ name: provider.credentialEnv, value: "host-secret" }],
         type: provider.profileId,
       }),
-    );
-    expect(recordMigratedProviderCredential.mock.calls).toEqual(
-      provider.custom
-        ? [
-            [
-              provider.logicalProvider,
-              provider.custom.credentialEnv,
-              "host-secret",
-              expect.any(Function),
-            ],
-          ]
-        : [],
     );
     expect(writeAuthority).toHaveBeenCalledWith("gateway", provider.logicalProvider, receipt);
     expect(updateSandbox).toHaveBeenCalledWith(
@@ -209,8 +182,9 @@ describe.each(providers)("native $label onboarding", (provider) => {
         preferredInferenceApi: provider.api,
       }),
     );
+    expect(recordMigratedProviderCredential.mock.calls).toEqual([]);
     expect(verifyOnboardInferenceSmoke.mock.calls).toEqual(
-      provider.logicalProvider === "hermes-provider" || provider.custom
+      provider.logicalProvider === "hermes-provider"
         ? []
         : [
             [
@@ -221,8 +195,9 @@ describe.each(providers)("native $label onboarding", (provider) => {
             ],
           ],
     );
+
     expect(verifyInferenceRoute).not.toHaveBeenCalled();
     expect(runOpenshell).not.toHaveBeenCalled();
     expect(JSON.stringify(updateSandbox.mock.calls)).not.toContain("host-secret");
-  });
-});
+  },
+);

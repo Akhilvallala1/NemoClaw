@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  type NativeCustomProviderAttachment,
+  normalizeNativeCustomProviderAttachment,
+} from "../../inference/native-custom";
 import { nativeHostedAuthHeaderScript } from "../../inference/native-provider/contract";
 import { NATIVE_LOCAL_AUTH_HEADER_SCRIPT } from "../../inference/native-local/agent-config";
 import { NATIVE_NVIDIA_AUTH_HEADER_SCRIPT } from "../../inference/native-nvidia/contract";
@@ -49,6 +53,7 @@ import {
   executeSandboxExecCommand,
   type SandboxCommandResult,
   type SandboxExecCommandOptions,
+  type SandboxExecCommandExecutionOptions,
 } from "../../adapters/sandbox/command-transport";
 import { DCODE_AGENT_NAME } from "./rebuild-dcode-target";
 
@@ -63,6 +68,7 @@ export type SandboxInferenceInvocationInput = {
   nativeProvider?: boolean;
   nativeLocalProviderAttachment?: NativeLocalProviderAttachment;
   nativeEndpointUrl?: string;
+  nativeCustomProviderAttachment?: NativeCustomProviderAttachment;
 };
 
 export type SandboxInferenceInvocationResult =
@@ -115,6 +121,14 @@ function buildProbeRequest(input: SandboxInferenceInvocationInput): {
   headers: string[];
   payload: Record<string, unknown>;
 } {
+  if (
+    input.nativeCustomProviderAttachment &&
+    !normalizeNativeCustomProviderAttachment(
+      input.nativeCustomProviderAttachment,
+      input.sandboxName,
+    )
+  )
+    throw new Error("Native custom inference authority does not match the selected sandbox.");
   const local = normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment);
   if (
     input.nativeLocalProviderAttachment &&
@@ -128,7 +142,7 @@ function buildProbeRequest(input: SandboxInferenceInvocationInput): {
     input.model,
     input.provider,
     input.preferredInferenceApi,
-    input.nativeProvider ?? Boolean(local),
+    input.nativeCustomProviderAttachment ?? input.nativeProvider ?? Boolean(local),
     local?.endpointUrl ?? input.nativeEndpointUrl ?? null,
     input.agentName,
   );
@@ -143,7 +157,8 @@ function buildProbeRequest(input: SandboxInferenceInvocationInput): {
       ? NVIDIA_HOSTED_NATIVE_ENDPOINT
       : nativeHosted
         ? nativeHosted.endpoint
-        : isNativeNvidiaProvider(input.provider) || hosted
+        : !input.nativeCustomProviderAttachment &&
+            (isNativeNvidiaProvider(input.provider) || hosted)
           ? "https://inference.local/v1"
           : config.inferenceBaseUrl
   ).replace(/\/+$/u, "");
@@ -200,6 +215,19 @@ export function resolveSandboxInferenceInvocationEndpoint(
   return buildProbeRequest(input).endpoint;
 }
 
+/** Require an identity-bound supervisor placeholder; never accept a host secret or bare alias. */
+function nativeCustomAuthHeaderScript(receipt: NativeCustomProviderAttachment): string {
+  const authority = normalizeNativeCustomProviderAttachment(receipt);
+  if (!authority) throw new Error("Invalid native custom inference attachment authority.");
+  const key = authority.credentialEnv;
+  const prefix = authority.api === "anthropic-messages" ? "x-api-key: " : "Authorization: Bearer ";
+  return [
+    `case "\${${key}:-}" in *[!a-zA-Z0-9:_]*) exit 2 ;; esac`,
+    `printf '%s' "\${${key}:-}" | LC_ALL=C grep -Eq '^openshell:resolve:env:(v[0-9]{1,20}|s[a-f0-9]{64})_${key}$' || exit 2`,
+    `AUTH_HEADER="${prefix}\${${key}}"`,
+  ].join("; ");
+}
+
 export function buildSandboxInferenceInvocationCommand(
   input: SandboxInferenceInvocationInput,
 ): string {
@@ -209,13 +237,15 @@ export function buildSandboxInferenceInvocationCommand(
     normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment),
   );
   const nativeHosted = input.nativeProvider === true ? nativeProbeDefinition(input) : undefined;
-  const nativeAuth = useNativeNvidia
-    ? NATIVE_NVIDIA_AUTH_HEADER_SCRIPT
-    : useNativeLocal
-      ? NATIVE_LOCAL_AUTH_HEADER_SCRIPT
-      : nativeHosted
-        ? nativeHostedAuthHeaderScript(nativeHosted)
-        : undefined;
+  const nativeAuth = input.nativeCustomProviderAttachment
+    ? nativeCustomAuthHeaderScript(input.nativeCustomProviderAttachment)
+    : useNativeNvidia
+      ? NATIVE_NVIDIA_AUTH_HEADER_SCRIPT
+      : useNativeLocal
+        ? NATIVE_LOCAL_AUTH_HEADER_SCRIPT
+        : nativeHosted
+          ? nativeHostedAuthHeaderScript(nativeHosted)
+          : undefined;
   const headerArgs =
     ["Content-Type: application/json", ...request.headers]
       .map((header) => `-H ${shellQuote(header)}`)
@@ -304,9 +334,12 @@ export async function probeSandboxInferenceInvocation(
     result = await executeDcodeSandboxInferenceInvocation(input, deps, timeoutMs);
   } else {
     const execute = deps.execute ?? executeSandboxExecCommand;
-    const execOptions: SandboxExecCommandOptions = {
+    const execOptions: SandboxExecCommandExecutionOptions = {
       ...(input.gatewayName ? { gatewayName: input.gatewayName } : {}),
       ...(input.runtimeSelection ? { runtimeSelection: input.runtimeSelection } : {}),
+      ...(deps.commandExecutor
+        ? { commandExecutor: deps.commandExecutor, honorCallerTimeout: true }
+        : {}),
     };
     result = await execute(
       input.sandboxName,
@@ -335,7 +368,9 @@ export async function probeSandboxInferenceInvocation(
       input.model,
       input.provider,
       input.preferredInferenceApi,
-      input.nativeProvider ?? Boolean(input.nativeLocalProviderAttachment),
+      input.nativeCustomProviderAttachment ??
+        input.nativeProvider ??
+        Boolean(input.nativeLocalProviderAttachment),
       normalizeNativeLocalProviderAttachment(input.nativeLocalProviderAttachment)?.endpointUrl ??
         input.nativeEndpointUrl ??
         null,

@@ -29,11 +29,11 @@ function migrationHarness(value: string, overrides: Partial<SetupInferenceDeps> 
     ]),
     migratedLegacyKeys,
   });
-  const recordMigratedCredential = vi.fn(registration.recordMigratedCredential);
-  const harness = createHarness({ overrides: { recordMigratedCredential, ...overrides } });
+  const recordMigratedProviderCredential = vi.fn(registration.recordMigratedProviderCredential);
+  const harness = createHarness({ overrides: { recordMigratedProviderCredential, ...overrides } });
   return {
     migratedLegacyKeys,
-    recordMigratedCredential,
+    recordMigratedProviderCredential,
     setup: () =>
       harness.setupInference(
         "test-box",
@@ -54,9 +54,11 @@ it.each([
   await withProcessEnv({ COMPATIBLE_API_KEY: value }, async () => {
     const harness = migrationHarness(value);
     await expect(harness.setup()).resolves.toEqual({ ok: true });
-    expect(harness.recordMigratedCredential).toHaveBeenCalledExactlyOnceWith(
+    expect(harness.recordMigratedProviderCredential).toHaveBeenCalledExactlyOnceWith(
+      "compatible-endpoint",
       "COMPATIBLE_API_KEY",
       value,
+      expect.any(Function),
     );
     expect([...harness.migratedLegacyKeys]).toEqual(expected);
   });
@@ -83,7 +85,7 @@ it.each([
   await withProcessEnv({ COMPATIBLE_API_KEY: legacyValue }, async () => {
     const harness = migrationHarness(legacyValue, overrides);
     await expect(harness.setup()).rejects.toThrow();
-    expect(harness.recordMigratedCredential).not.toHaveBeenCalled();
+    expect(harness.recordMigratedProviderCredential).not.toHaveBeenCalled();
     expect([...harness.migratedLegacyKeys]).toEqual([]);
   });
 });

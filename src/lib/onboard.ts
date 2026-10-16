@@ -3140,6 +3140,8 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
             step,
             sandboxCommandExecutor: sandboxExec,
             gatewayName: GATEWAY_NAME!,
+            nativeCustomProviderAttachment: registry.getSandbox(finalFlowContext.sandboxName)
+              ?.nativeCustomProviderAttachment,
             startRecordedStep,
             recordStepComplete,
             recordStepFailed,
@@ -3208,9 +3210,13 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
               liveFinalFlowContext,
               registry.getSandbox(name),
             );
-            return verifyDeploymentModule.verifyDeployment(
+            return verifyDeploymentModule.verifyOnboardDeployment(
               name,
               chain,
+              {
+                ...liveFinalFlowContext,
+                ...inference.invocation,
+              },
               {
                 executeSandboxCommand: (sandbox: string, script: string) =>
                   executeSandboxCommandForVerification(sandbox, script, sandboxExec),
@@ -3218,16 +3224,6 @@ async function runOnboard(opts: OnboardOptions = {}): Promise<void> {
                 getMessagingChannels: () => liveFinalFlowContext.selectedMessagingChannels || [],
                 providerExistsInGateway: (providerName: string) =>
                   providerExistsInGateway(providerName),
-                probeInferenceInvocation: () =>
-                  verifyDeploymentModule.probeOnboardInferenceInvocation(inference.invocation),
-              },
-              {
-                diagnoseCustomOpenClawRuntime:
-                  verifyDeploymentModule.shouldDiagnoseCustomOpenClawRuntime(
-                    liveFinalFlowContext.fromDockerfile,
-                    agent?.name,
-                  ),
-                inferenceRouteContext: inference.route,
               },
             );
           },

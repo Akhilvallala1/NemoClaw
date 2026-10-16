@@ -9,11 +9,17 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
+import {
+  prepareNativeCustomProfile,
+  customAttachmentFromPrepared,
+} from "../../../src/lib/inference/native-custom/index.ts";
 import { customNativeProvider } from "../../../src/lib/inference/native-provider/custom.ts";
+import ts from "typescript";
 import type { SandboxClient } from "../fixtures/clients/sandbox.ts";
 
 import {
   buildFullE2eInferenceRequest,
+  fullE2eNativeAttachment,
   readFullE2eInferenceRoute,
   FULL_E2E_INFERENCE_EVIDENCE_LIMIT_BYTES,
   type FullE2eInferenceAttemptInput,
@@ -37,16 +43,85 @@ function completion(content: string, finishReason = "stop"): string {
   });
 }
 
-it.each([
-  ["owned-id", "none", true],
-  ["different-id", "none", false],
-  ["owned-id", "endpoint", false],
-  ["owned-id", "api", false],
-  ["owned-id", "credential", false],
-  ["owned-id", "model", false],
-] as const)(
-  "checks custom native provider identity %s and agent drift %s on the recorded gateway",
-  async (observedId, drift, expected) => {
+it.each(["scoped", "invalid", "ambiguous"] as const)(
+  "Hermes selected-route caller handles %s custom authority",
+  async (kind) => {
+    const prepared = await prepareNativeCustomProfile({
+      sandboxName: "hermes",
+      provider: "compatible-endpoint",
+      endpointUrl: "https://custom.example/team/v1",
+      api: "openai-completions",
+      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    });
+    const entry = {
+      name: "hermes",
+      provider: "compatible-endpoint",
+      nativeCustomProviderAttachment: customAttachmentFromPrepared(prepared, {
+        schemaVersion: 1,
+        profileId: prepared.profile.id,
+        providerName: prepared.providerName,
+        providerId: "owned-id",
+      }),
+    };
+    const source = fs.readFileSync(new URL("../live/hermes-e2e.test.ts", import.meta.url), "utf8");
+    const start = source.indexOf("    const chatSelection =");
+    const end = source.indexOf("    expect(sandboxChat.exitCode", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const exec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "{}", stderr: "" });
+    const code = ts.transpileModule(`(async () => {${source.slice(start, end)}})()`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    }).outputText;
+    const execution = runInNewContext(code, {
+      registryEntry: () => ({
+        ...entry,
+        ...(kind === "invalid" ? { nativeCustomProviderAttachment: {} } : {}),
+        ...(kind === "ambiguous" ? { nativeHostedProviderAttachment: {} } : {}),
+      }),
+      SANDBOX_NAME: "hermes",
+      fullE2eNativeAttachment,
+      buildSandboxInferenceChatCommand,
+      sandbox: { exec },
+      chatPayload: () => "{}",
+      inference: { model: "selected-model" },
+      commandEnv: () => ({}),
+      expect,
+    });
+    const result = await execution.then(
+      () => "dispatched",
+      () => "rejected",
+    );
+    expect(result).toBe(kind === "scoped" ? "dispatched" : "rejected");
+    expect(exec.mock.calls).toEqual(
+      kind === "scoped"
+        ? [
+            [
+              "hermes",
+              expect.arrayContaining(["https://custom.example/team/v1/chat/completions"]),
+              expect.objectContaining({ artifactName: "phase-5-selected-route-chat" }),
+            ],
+          ]
+        : [],
+    );
+  },
+);
+
+it.each(
+  ["hosted", "scoped"].flatMap((kind) =>
+    (
+      [
+        ["owned-id", "none", true],
+        ["different-id", "none", false],
+        ["owned-id", "endpoint", false],
+        ["owned-id", "api", false],
+        ["owned-id", "credential", false],
+        ["owned-id", "model", false],
+      ] as const
+    ).map(([observedId, drift, expected]) => [kind, observedId, drift, expected] as const),
+  ),
+)(
+  "checks %s custom native provider identity %s and agent drift %s on the recorded gateway",
+  async (kind, observedId, drift, expected) => {
     const definition = customNativeProvider({
       provider: "compatible-endpoint",
       endpointUrl: "https://custom.example/v1",
@@ -54,20 +129,34 @@ it.each([
       credentialEnv: "SOURCE_KEY",
       allowedIps: ["8.8.8.8"],
     });
+    const prepared = await prepareNativeCustomProfile({
+      sandboxName: "alpha",
+      provider: "compatible-endpoint",
+      endpointUrl: "https://custom.example/v1",
+      api: "openai-completions",
+      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    });
+    const scopedReceipt = customAttachmentFromPrepared(prepared, {
+      schemaVersion: 1,
+      profileId: prepared.profile.id,
+      providerName: prepared.providerName,
+      providerId: "owned-id",
+    });
+    const ownership = kind === "scoped" ? scopedReceipt : definition;
     const openshell = vi
       .fn()
       .mockResolvedValueOnce({
         exitCode: 0,
         stdout: [
-          `Name: ${definition.providerName}`,
+          `Name: ${ownership.providerName}`,
           `Id: ${observedId}`,
-          `Type: ${definition.profileId}`,
+          `Type: ${ownership.profileId}`,
           "Resource version: 1",
           "Credential keys: COMPATIBLE_API_KEY",
           "Config keys: <none>",
         ].join("\n"),
       })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: definition.providerName });
+      .mockResolvedValueOnce({ exitCode: 0, stdout: ownership.providerName });
     const handle = "openshell:resolve:env:v3_COMPATIBLE_API_KEY";
     const config = {
       agents: {
@@ -117,15 +206,19 @@ it.each([
       entry: {
         name: "alpha",
         gatewayName: "recorded-gateway",
-        nativeHostedProviderAttachment: {
-          schemaVersion: 1,
-          profileId: definition.profileId,
-          providerName: definition.providerName,
-          providerId: "owned-id",
-          endpointUrl: definition.endpointUrl,
-          allowedIps: definition.allowedIps,
-          custom: definition.custom,
-        },
+        ...(kind === "scoped"
+          ? { nativeCustomProviderAttachment: scopedReceipt }
+          : {
+              nativeHostedProviderAttachment: {
+                schemaVersion: 1,
+                profileId: definition.profileId,
+                providerName: definition.providerName,
+                providerId: "owned-id",
+                endpointUrl: definition.endpointUrl,
+                allowedIps: definition.allowedIps,
+                custom: definition.custom,
+              },
+            }),
       },
     });
     expect(result.ok).toBe(expected);
@@ -135,7 +228,7 @@ it.each([
       expect.objectContaining({ artifactName: "phase-3-native-custom-agent-route" }),
     );
     expect(openshell.mock.calls.map(([args]) => args)).toEqual([
-      ["provider", "get", "-g", "recorded-gateway", definition.providerName],
+      ["provider", "get", "-g", "recorded-gateway", ownership.providerName],
       ["sandbox", "provider", "list", "-g", "recorded-gateway", "alpha"],
     ]);
     expect(openshell).toHaveBeenNthCalledWith(
@@ -161,7 +254,12 @@ describe("full E2E sandbox inference probe", () => {
         const body = JSON.stringify({ prompt: 'literal $(exit 99) "quote"' });
         const [command, ...args] = buildSandboxInferenceChatCommand(body, provider, endpointUrl);
         const handle = `openshell:resolve:env:v3_${credentialEnv}`;
-        const env = { PATH: `${directory}:/usr/bin:/bin`, [credentialEnv]: handle };
+        const env = {
+          HOME: directory,
+          BASH_ENV: "/dev/null",
+          PATH: `${directory}:/usr/bin:/bin`,
+          [credentialEnv]: handle,
+        };
         const result = execFileSync(command, args, { env, encoding: "utf8" });
         expect(result.split("\n")).toEqual([
           "-fsS",
@@ -198,6 +296,8 @@ describe("full E2E sandbox inference probe", () => {
         const [, ...args] = buildSandboxInferenceChatCommand("{}", "nvidia-prod");
         const denied = spawnSync("/bin/bash", args, {
           env: {
+            HOME: directory,
+            BASH_ENV: "/dev/null",
             PATH: `${directory}:/usr/bin:/bin`,
             NVIDIA_INFERENCE_API_KEY: invalid,
             CURL_MARKER: marker,

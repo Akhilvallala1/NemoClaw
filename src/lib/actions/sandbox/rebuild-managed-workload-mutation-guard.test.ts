@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from "vitest";
+import { loadAgent } from "../../agent/defs";
 
 import { managedStartupE2eProfile } from "../../../../scripts/checks/generate-managed-startup-profile-fixture.mts";
 import {
@@ -30,6 +31,11 @@ const handoff = {
 
 describe("managed workload rebuild mutation guard", () => {
   it.each([
+    {
+      agent: "langchain-deepagents-code",
+      anthropicApi: "openai-completions",
+      anthropicBaseUrl: "https://messages.example.com/v1",
+    },
     {
       agent: "hermes",
       anthropicApi: "openai-completions",
@@ -86,13 +92,17 @@ describe("managed workload rebuild mutation guard", () => {
         prepareManagedRebuildProfileHandoff({
           catalogHandoff: { ...catalogHandoff, previousProfile: prior },
           targetConfig: {
-            agentDefinition: {},
+            agentDefinition: agent === "langchain-deepagents-code" ? loadAgent(agent) : {},
             resumeConfig: {
               provider,
               model: "test-model",
               preferredInferenceApi:
                 provider === "compatible-endpoint" ? "openai-completions" : "anthropic-messages",
               nativeCustomProviderAttachment,
+              endpointUrl:
+                nativeCustomProviderAttachment?.transport?.sourceEndpointUrl ??
+                nativeCustomProviderAttachment?.endpointUrl ??
+                null,
             },
             durableConfig: { webSearchConfig: null },
             hermesToolGateways: [],

@@ -822,7 +822,8 @@ async function onboardNativeDcode(
     apiKey,
     model,
     chatContent: "PONG",
-    host: "0.0.0.0",
+    // Credentialless backends must not bypass the authenticated host proxy.
+    host: authenticated ? "0.0.0.0" : "127.0.0.1",
     port: 8000,
     publicHost: "localhost",
     requireAuth: authenticated,

@@ -127,7 +127,7 @@ export function prepareManagedRebuildProfileHandoff(input: {
       inference: {
         routeProvider: inference.providerKey,
         upstreamProvider,
-        ...((agent === "hermes" || agent === "openclaw") &&
+        ...((agent === "hermes" || agent === "openclaw" || agent === "langchain-deepagents-code") &&
         resumeConfig.nativeCustomProviderAttachment
           ? { nativeCustomCredentialEnv: resumeConfig.nativeCustomProviderAttachment.credentialEnv }
           : {}),

@@ -25,6 +25,7 @@ import {
   ProviderResponseSchema,
 } from "./sdk-read-schema";
 import {
+  isManagedNativeProfileResponse,
   isManagedNativeNvidiaProfileResponse,
   isManagedNativeLocalProfileResponse,
 } from "./native-inference-profile-response";
@@ -33,6 +34,11 @@ import {
   isManagedNativeHostedProfileResponse,
 } from "./native-hosted-profile-response";
 
+import {
+  normalizeNativeCustomProviderAttachment,
+  profileFromCustomAttachment,
+  type NativeCustomProviderAttachment,
+} from "../../inference/native-custom";
 import { BUILD_ENDPOINT_URL } from "../../inference/provider-models";
 import {
   NVIDIA_HOSTED_NATIVE_ENDPOINT,
@@ -52,6 +58,7 @@ type ProfileContract =
   | ManagedProfileContract
   | "native-nvidia"
   | "native-hosted"
+  | Readonly<{ kind: "native-custom"; attachment: NativeCustomProviderAttachment }>
   | {
       kind: "native-local";
       binding: Parameters<typeof isManagedNativeLocalProfileResponse>[1] & { profileId: string };
@@ -107,7 +114,10 @@ async function readBuiltinNvidiaEndpoint(
 }
 
 function managedProfileId(contract: ProfileContract): string {
-  if (typeof contract === "object") return contract.binding.profileId;
+  if (typeof contract === "object")
+    return contract.kind === "native-custom"
+      ? contract.attachment.profileId
+      : contract.binding.profileId;
   return contract === "native-nvidia" ? NVIDIA_HOSTED_NATIVE_PROFILE_ID : contract;
 }
 
@@ -179,6 +189,45 @@ function validateNativeManagedProfileResponse(
   };
 }
 
+function validateCustomManagedProfileResponse(
+  response: unknown,
+  profileContract: Extract<ProfileContract, { kind: "native-custom" }>,
+  profileWorkspace: string,
+): NonNullable<Provider["managedProfile"]> {
+  const receipt = normalizeNativeCustomProviderAttachment(profileContract.attachment);
+  if (!receipt) throw new OpenShellReadError("schema");
+  const expected = profileFromCustomAttachment(receipt).profile;
+  const credential = expected.credentials[0];
+  const endpoint = expected.endpoints[0];
+  const authStyle = credential.auth_style;
+  if (authStyle !== "bearer" && authStyle !== "header") throw new OpenShellReadError("schema");
+  if (
+    !isManagedNativeProfileResponse(response, {
+      profileId: expected.id,
+      credentialEnv: credential.env_vars[0],
+      authStyle,
+      headerName: credential.header_name,
+      host: endpoint.host,
+      port: endpoint.port,
+      allowedIps: endpoint.allowed_ips,
+      path: endpoint.path,
+      rules: [
+        { method: "GET", path: endpoint.rules[0].allow.path },
+        { method: "POST", path: endpoint.rules[1].allow.path },
+      ],
+      binaries: expected.binaries,
+    }) ||
+    response.profile.scope !== (profileWorkspace === "" ? "platform" : "workspace")
+  )
+    throw new OpenShellReadError("schema");
+  return {
+    id: response.profile.id,
+    source: "user",
+    scope: response.profile.scope,
+    resourceVersion: String(response.profile.resourceVersion),
+  };
+}
+
 function validateManagedProfileResponse(
   response: unknown,
   profileContract: ProfileContract,
@@ -189,11 +238,9 @@ function validateManagedProfileResponse(
   nativeHostedCustom?: CustomNativeBinding,
 ): NonNullable<Provider["managedProfile"]> {
   if (typeof profileContract === "object")
-    return validateNativeManagedProfileResponse(
-      response,
-      profileWorkspace,
-      profileContract.binding,
-    );
+    return profileContract.kind === "native-custom"
+      ? validateCustomManagedProfileResponse(response, profileContract, profileWorkspace)
+      : validateNativeManagedProfileResponse(response, profileWorkspace, profileContract.binding);
   if (profileContract === "native-nvidia") {
     return validateNativeManagedProfileResponse(response, profileWorkspace);
   }
@@ -264,7 +311,10 @@ function managedInferenceEndpointFor(
   nativeHostedEndpoint?: string,
   nativeHostedCustom?: CustomNativeBinding,
 ): string | undefined {
-  if (typeof contract === "object") return contract.binding.endpointUrl;
+  if (typeof contract === "object")
+    return contract.kind === "native-custom"
+      ? contract.attachment.endpointUrl
+      : contract.binding.endpointUrl;
   return managedProfile?.id === NVIDIA_HOSTED_NATIVE_PROFILE_ID
     ? NVIDIA_HOSTED_NATIVE_ENDPOINT
     : hostedNativeProfile(managedProfile?.id ?? "", nativeHostedEndpoint, nativeHostedCustom)

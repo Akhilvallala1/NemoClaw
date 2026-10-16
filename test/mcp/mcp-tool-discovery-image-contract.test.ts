@@ -216,7 +216,7 @@ describe("MCP tool discovery image contract", () => {
   // source-shape-contract: security -- Exact reviewed runtime digests reject substituted executable and license artifacts before managed image construction.
   it.each([
     {
-      expectedHash: "299ce7168d4fee26dd2ee07e4ec7f4ee36036728b99e6f51fb8e1b5aa7ca78fa",
+      expectedHash: "9e99fb86071bccf03edcfc7dbbfbb2bcae85117dd1c9cf0bb887e0f228a55517",
       relativePath: "managed-startup-direct-image-runtime.bundle",
     },
     {
@@ -267,24 +267,25 @@ describe("MCP tool discovery image contract", () => {
       repoRoot,
       "tools/mcp-tool-discovery-runtime/reviewed-runtime-bundle/managed-startup-direct-image-runtime.bundle",
     );
-    const profiles = (["openclaw", "hermes"] as const).flatMap((agent) =>
-      (["COMPATIBLE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY"] as const).map((key) => {
-        const profile = managedStartupE2eProfile(agent);
-        return JSON.parse(
-          serializeManagedStartupProfile({
-            ...profile,
-            inference: {
-              ...profile.inference!,
-              nativeCustomCredentialEnv: key,
-              upstreamProvider:
-                key === "COMPATIBLE_API_KEY"
-                  ? "compatible-endpoint"
-                  : "compatible-anthropic-endpoint",
-              routedBaseUrl: "https://api.example.com/v1",
-            },
-          }),
-        );
-      }),
+    const profiles = (["openclaw", "hermes", "langchain-deepagents-code"] as const).flatMap(
+      (agent) =>
+        (["COMPATIBLE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY"] as const).map((key) => {
+          const profile = managedStartupE2eProfile(agent);
+          return JSON.parse(
+            serializeManagedStartupProfile({
+              ...profile,
+              inference: {
+                ...profile.inference!,
+                nativeCustomCredentialEnv: key,
+                upstreamProvider:
+                  key === "COMPATIBLE_API_KEY"
+                    ? "compatible-endpoint"
+                    : "compatible-anthropic-endpoint",
+                routedBaseUrl: "https://api.example.com/v1",
+              },
+            }),
+          );
+        }),
     );
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-native-profile-bundle-"));
     try {

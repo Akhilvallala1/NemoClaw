@@ -30,6 +30,7 @@ type Settings = {
   baseUrl: string;
   providerKey: string;
   upstreamProvider: string;
+  nativeCustomCredentialEnv: string | null;
   upstreamEndpointUrl: string | null;
   inferenceApi: string;
   reasoningEffort: ReasoningEffort | null;
@@ -67,6 +68,7 @@ function readSettings(env: NodeJS.ProcessEnv): Settings {
         "inference",
       "NEMOCLAW_UPSTREAM_PROVIDER",
     ),
+    nativeCustomCredentialEnv: env.NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV || null,
     upstreamEndpointUrl: normalizeManagedDcodeEndpointUrl(
       env.NEMOCLAW_UPSTREAM_ENDPOINT_URL,
       "NEMOCLAW_UPSTREAM_ENDPOINT_URL",
@@ -168,6 +170,7 @@ function providerConfigLines(
   baseUrl: string,
   reasoningEffort: ReasoningEffort | null,
   upstreamProvider: string,
+  nativeCustomCredentialEnv: string | null,
 ): string[] {
   const nativeHosted = nativeHostedAgentConfig(upstreamProvider, baseUrl);
   const customKey =
@@ -176,13 +179,21 @@ function providerConfigLines(
       : upstreamProvider === "compatible-anthropic-endpoint"
         ? "COMPATIBLE_ANTHROPIC_API_KEY"
         : null;
-  const apiKeyEnv = nativeLocalCredentialReference(upstreamProvider, baseUrl)
-    ? NATIVE_LOCAL_CREDENTIAL_ENV
-    : baseUrl === NVIDIA_HOSTED_NATIVE_ENDPOINT
-      ? ATTACHED_PROVIDER_API_KEY_ENV
-      : customKey && new URL(baseUrl).hostname !== "inference.local"
-        ? customKey
-        : (nativeHosted?.credentialEnv ?? MANAGED_INFERENCE_API_KEY_ENV);
+  if (
+    nativeCustomCredentialEnv &&
+    (nativeCustomCredentialEnv !== customKey || new URL(baseUrl).hostname === "inference.local")
+  ) {
+    throw new Error("Native custom credential does not match its compiled provider selection.");
+  }
+  const apiKeyEnv =
+    nativeCustomCredentialEnv ??
+    (nativeLocalCredentialReference(upstreamProvider, baseUrl)
+      ? NATIVE_LOCAL_CREDENTIAL_ENV
+      : baseUrl === NVIDIA_HOSTED_NATIVE_ENDPOINT
+        ? ATTACHED_PROVIDER_API_KEY_ENV
+        : customKey && new URL(baseUrl).hostname !== "inference.local"
+          ? customKey
+          : (nativeHosted?.credentialEnv ?? MANAGED_INFERENCE_API_KEY_ENV));
   return [
     `[models.providers.${provider}]`,
     `models = ${tomlArray([model])}`,
@@ -235,6 +246,7 @@ function buildConfig(settings: Settings): ManagedDeepAgentsConfig {
       settings.baseUrl,
       settings.reasoningEffort,
       settings.upstreamProvider,
+      settings.nativeCustomCredentialEnv,
     ),
     "",
     "[update]",

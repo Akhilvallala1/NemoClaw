@@ -26,6 +26,9 @@ _MCP_CONFIG_FILE = Path("/sandbox/.deepagents/.mcp.json")
 _INFERENCE_BASE_URL_FILE = Path(
     "/usr/local/share/nemoclaw/dcode-inference-base-url"
 )
+_NATIVE_CUSTOM_CREDENTIAL_FILE = Path(
+    "/usr/local/share/nemoclaw/dcode-native-custom-credential-env"
+)
 _UPSTREAM_PROVIDER_FILE = Path(
     "/usr/local/share/nemoclaw/dcode-upstream-provider"
 )
@@ -1094,7 +1097,8 @@ def managed_inference_api_key(base_url: str) -> str:
         # Keep the host-alias result above; every other non-IPv4 name remains untrusted.
         pass
     upstream_provider = _managed_upstream_provider()
-    if parsed.scheme == "http" and local_host and upstream_provider in {
+    custom_credential = _managed_native_custom_credential(upstream_provider, base_url)
+    if not custom_credential and parsed.scheme == "http" and local_host and upstream_provider in {
         "ollama-local", "vllm-local", "llama-cpp-local", "compatible-endpoint"
     }:
         value = os.environ.get("NEMOCLAW_LOCAL_INFERENCE_TOKEN", "")
@@ -1107,7 +1111,7 @@ def managed_inference_api_key(base_url: str) -> str:
     if urlsplit(base_url).hostname == "inference.local":
         return "nemoclaw-managed-inference"
     upstream = _managed_upstream_provider()
-    name = {
+    name = custom_credential or {
         "compatible-endpoint": "COMPATIBLE_API_KEY",
         "compatible-anthropic-endpoint": "COMPATIBLE_ANTHROPIC_API_KEY",
     }.get(upstream)
@@ -1220,6 +1224,23 @@ def _managed_fetch_proxy_url_from_files() -> str:
     ):
         raise RuntimeError("managed proxy port file has invalid contents")
     return f"http://{host}:{port}"
+
+
+def _managed_native_custom_credential(upstream_provider: str, base_url: str) -> str | None:
+    """Read explicit custom authority; legacy images keep their existing classification."""
+    path = _NATIVE_CUSTOM_CREDENTIAL_FILE
+    if not path.exists() and not path.is_symlink():
+        return None
+    value = _read_managed_file_value(path, "native custom credential")
+    if value == "none":
+        return None
+    expected = {
+        "compatible-endpoint": "COMPATIBLE_API_KEY",
+        "compatible-anthropic-endpoint": "COMPATIBLE_ANTHROPIC_API_KEY",
+    }.get(upstream_provider)
+    if value != expected or urlsplit(base_url).hostname == "inference.local":
+        raise RuntimeError("managed native custom credential does not match its route")
+    return value
 
 
 def _managed_upstream_provider() -> str:

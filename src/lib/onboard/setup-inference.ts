@@ -29,6 +29,15 @@ import {
 import type { NativeProviderAttachment } from "../inference/native-provider/contract";
 import type { OpenShellGatewayLifecycle } from "../adapters/openshell/gateway-lifecycle";
 import { canonicalEndpoint } from "../core/url-utils";
+import { getMatchingNativeCustomProviderAuthority } from "../state/registry/native-custom-provider-authority";
+import type { revokeHttpsPinRuntimeAdapterRoute } from "../inference/https-pin-runtime-adapter";
+import { getSandboxInferenceConfig } from "../inference/config";
+import {
+  prepareNativeCustomInference,
+  rollbackNativeCustomAdapterRoute,
+  restoreNativeCustomInference,
+  type NativeCustomTransportDeps,
+} from "../inference/native-custom/transport";
 import { isBedrockRuntimeEndpoint } from "../inference/bedrock-runtime";
 import {
   assertEndpointResolvesPublic,
@@ -46,6 +55,16 @@ import type {
   withModelRouterPortLifecycleLock,
 } from "../inference/gateway-route-mutation-lock";
 import { getManagedVllmProviderBinding, shouldFrontOllamaWithProxy } from "../inference/local";
+import {
+  NativeCustomEndpointAdmissionError,
+  isHostLocalCustomEndpoint,
+  customAttachmentFromPrepared,
+  isNativeCustomProvider,
+  withNativeCustomLifecycle,
+  normalizeNativeCustomProviderAttachment,
+  type NativeCustomProviderAttachment,
+  type NativeCustomProfile,
+} from "../inference/native-custom";
 import {
   ensureNativeNvidiaProvider,
   isNativeNvidiaProvider,
@@ -233,6 +252,8 @@ type ProviderBranchDeps = Pick<
   Pick<RoutedDeps, "reconcileModelRouter" | "routedInference">;
 
 export type SetupInferenceDeps = ProviderBranchDeps & {
+  nativeCustomTransportDeps?: Omit<NativeCustomTransportDeps, "admitProfile">;
+  revokeHttpsPinRuntimeAdapterRoute?: typeof revokeHttpsPinRuntimeAdapterRoute;
   recordMigratedProviderCredential?: (
     name: string,
     credentialEnv: string,
@@ -276,6 +297,8 @@ export type SetupInferenceDeps = ProviderBranchDeps & {
   clearNativeLocalProviderAuthority?: typeof import("../state/registry/native-local-provider-authority").clearNativeLocalProviderAuthority;
   getNativeHostedProviderAuthority?: typeof import("../state/registry").getNativeHostedProviderAuthority;
   setNativeHostedProviderAuthority?: typeof import("../state/registry").setNativeHostedProviderAuthority;
+  getNativeCustomProviderAuthority?: typeof import("../state/registry/native-custom-provider-authority").getNativeCustomProviderAuthority;
+  setNativeCustomProviderAuthority?: typeof import("../state/registry/native-custom-provider-authority").setNativeCustomProviderAuthority;
   getNativeNvidiaProviderAuthority?: typeof import("../state/registry").getNativeNvidiaProviderAuthority;
   setNativeNvidiaProviderAuthority?: typeof import("../state/registry").setNativeNvidiaProviderAuthority;
   unloadOllamaModels?: (onlyModels: readonly string[]) => OllamaUnloadResult | void;
@@ -683,6 +706,73 @@ function releaseSupersededOllamaModel(
   if (authorityRefusal) throw authorityRefusal;
 }
 
+function recoverNativeCustomEndpointAdmission(
+  error: unknown,
+  options: {
+    usesNativeCustom: boolean;
+    admittedNativeCustomAdapter: NativeCustomProfile | undefined;
+    nativeCustomProviderAttachment: NativeCustomProviderAttachment | undefined;
+    deps: Pick<SetupInferenceDeps, "error" | "redact" | "isNonInteractive" | "exitProcess">;
+  },
+): SetupInferenceResult {
+  if (
+    !options.usesNativeCustom ||
+    !(error instanceof NativeCustomEndpointAdmissionError) ||
+    options.admittedNativeCustomAdapter ||
+    options.nativeCustomProviderAttachment
+  )
+    throw error;
+  options.deps.error(`  Endpoint SSRF preflight failed: ${options.deps.redact(error.message)}`);
+  if (options.deps.isNonInteractive()) return options.deps.exitProcess(1);
+  return { retry: "selection" };
+}
+
+async function rollbackNativeCustomAdapterAfterSetupFailure(
+  admitted: NativeCustomProfile | undefined,
+  retained: NativeCustomProviderAttachment | undefined,
+  revokeRoute: typeof revokeHttpsPinRuntimeAdapterRoute | undefined,
+  setupError: unknown,
+): Promise<void> {
+  try {
+    await rollbackNativeCustomAdapterRoute(admitted, retained, revokeRoute);
+  } catch (rollbackError) {
+    throw new AggregateError(
+      [setupError, rollbackError],
+      "Native custom inference setup failed, and adapter route rollback was not confirmed.",
+      { cause: setupError },
+    );
+  }
+}
+
+function validatePreparedHostLocalReceipt(route: HostLocalInferenceStartupRoute): void {
+  const validated = normalizeHostLocalInferenceReceipt(route.prepared.validateBeforeCommit());
+  if (
+    serializeHostLocalInferenceReceipt(validated) !==
+    serializeHostLocalInferenceReceipt(route.receipt)
+  ) {
+    throw new Error(
+      "Host-local inference pre-commit validation returned a different receipt authority.",
+    );
+  }
+}
+
+function stagedNativeLocalResult(
+  source: SandboxEntry | undefined,
+  attachment: NativeLocalProviderAttachment | undefined,
+): SetupInferenceResult | undefined {
+  if (!source || !attachment) return undefined;
+  return { ok: true, stagedNativeLocalRecreation: { source, attachment } };
+}
+
+async function rejectNativeSetupFailure(
+  error: unknown,
+  custom: Parameters<typeof recoverNativeCustomEndpointAdmission>[1],
+  local: Omit<Parameters<typeof rejectNativeLocalSetupFailure>[0], "error">,
+): Promise<SetupInferenceResult> {
+  if (custom.usesNativeCustom) return recoverNativeCustomEndpointAdmission(error, custom);
+  return rejectNativeLocalSetupFailure({ ...local, error });
+}
+
 async function rejectNativeLocalSetupFailure(input: {
   error: unknown;
   attachment?: NativeLocalProviderAttachment;
@@ -1087,6 +1177,12 @@ export function createSetupInference(
     const routedProvider = deps.isRoutedInferenceProvider?.(provider) === true;
     const usesBedrockRuntimeAdapter =
       provider === "compatible-anthropic-endpoint" && isBedrockRuntimeEndpoint(endpointUrl);
+    let usesNativeCustom =
+      isNativeCustomProvider(provider) &&
+      credentialEnv !== deps.ollamaProxyCredentialEnv &&
+      Boolean(endpointUrl) &&
+      !isHostLocalCustomEndpoint(endpointUrl) &&
+      !options.hostLocalInference;
     let shouldLogSuccessfulRoute = false;
     const withInferenceMutationLocks = <T>(operation: () => Promise<T> | T): Promise<T> =>
       deps.withGatewayRouteMutationLock(gatewayName, () =>
@@ -1108,13 +1204,25 @@ export function createSetupInference(
         const {
           authority: hermesAuthority,
           selected: nativeHostedSelection,
-          custom: nativeCustomSelection,
+          custom: hostedCustomSelection,
           recordedSandbox,
         } = resolveHostedSelection({ provider, endpointUrl, sandboxName, gatewayName, deps });
+        // Preserve existing main-format custom receipts; new custom selections and
+        // Slice 3 recovery use the sandbox-scoped provider authority.
+        const nativeCustomSelection =
+          hostedCustomSelection && Boolean(recordedSandbox?.nativeHostedProviderAttachment?.custom);
+        usesNativeCustom =
+          usesNativeCustom &&
+          !nativeCustomSelection &&
+          Boolean(
+            hostedCustomSelection ||
+            recordedSandbox?.nativeCustomProviderAttachment ||
+            options.nativeCustomProviderAttachment,
+          );
         const selectedInferenceApi = resolveCustomNativeApi(
           provider,
           options.preferredInferenceApi,
-          nativeCustomSelection,
+          nativeCustomSelection || usesNativeCustom,
         );
         if (
           !(await gatewayRouteCompatible({
@@ -1125,7 +1233,7 @@ export function createSetupInference(
             gatewayName,
             sandboxName,
             preferredInferenceApi: selectedInferenceApi,
-            nativeHostedSelection,
+            nativeHostedSelection: nativeHostedSelection || usesNativeCustom,
             selectingNativeLocal,
             deps,
           }))
@@ -1147,6 +1255,7 @@ export function createSetupInference(
           (provider === "compatible-endpoint" || provider === "compatible-anthropic-endpoint") &&
           endpointUrl &&
           !usesBedrockRuntimeAdapter &&
+          !usesNativeCustom &&
           !usesOnboardEndpoint &&
           !endpointPinnedAddresses
         ) {
@@ -1210,6 +1319,13 @@ export function createSetupInference(
         let nativeHostedCredentialEnv: string | undefined;
         let nativeHostedProviderAttachment: NativeProviderAttachment | undefined;
         let retainedNativeHostedCredential = false;
+        let nativeCustomProviderAttachment: NativeCustomProviderAttachment | undefined;
+        let nativeCustomCredentialCustody: { key: string; value: string } | undefined;
+        let admittedNativeCustomAdapter: NativeCustomProfile | undefined;
+        let retainedNativeCustomAdapter: NativeCustomProviderAttachment | undefined;
+        let nativeCustomHostSmoke: Awaited<
+          ReturnType<typeof prepareNativeCustomInference>
+        >["hostSmoke"];
         let nativeNvidiaProviderAttachment: NativeNvidiaProviderAttachment | undefined;
         const reserveRoute = (name: string, selectedProvider: string, selectedModel: string) => {
           if (routeReserved || nativeLocalRecreationSource) return true;
@@ -1253,6 +1369,7 @@ export function createSetupInference(
             ...(nativeLocalProviderAttachment ? { nativeLocalProviderAttachment } : {}),
             ...(nativeNvidiaProviderAttachment ? { nativeNvidiaProviderAttachment } : {}),
             ...(nativeHostedProviderAttachment ? { nativeHostedProviderAttachment } : {}),
+            nativeCustomProviderAttachment,
             ...(hostLocalInferenceProvenance && hostLocalInferenceGatewayPortAuthority !== undefined
               ? { gatewayPort: hostLocalInferenceGatewayPortAuthority }
               : {}),
@@ -1456,6 +1573,174 @@ export function createSetupInference(
         }
 
         const setupSelectedProvider = async (): Promise<SetupInferenceResult | null> => {
+          if (usesNativeCustom && isNativeCustomProvider(provider) && endpointUrl) {
+            const adapter = deps.providerAdapter;
+            if (
+              !adapter ||
+              !deps.getNativeCustomProviderAuthority ||
+              !deps.setNativeCustomProviderAuthority
+            ) {
+              throw new Error(
+                "Native custom setup is missing its OpenShell adapter or durable authority store.",
+              );
+            }
+            const nativeCustomCredentialEnv =
+              credentialEnv ||
+              (provider === "compatible-endpoint"
+                ? "COMPATIBLE_API_KEY"
+                : "COMPATIBLE_ANTHROPIC_API_KEY");
+            const transportInput = {
+              sandboxName: sandboxName || "",
+              gatewayName,
+              provider,
+              endpointUrl,
+              api: selectedInferenceApi || getSandboxInferenceConfig(model, provider).inferenceApi,
+              lookup: deps.resolveEndpointHost ?? deps.lookup,
+              trustedPrivateHosts:
+                deps.trustedPrivateEndpointHosts ??
+                parseTrustedPrivateInferenceHostsFromEnv(process.env),
+              credentialValue: deps.hydrateCredentialEnv(nativeCustomCredentialEnv) || null,
+            };
+            const recorded = sandboxName ? deps.getSandbox?.(sandboxName) : null;
+            const recordedAttachment = normalizeNativeCustomProviderAttachment(
+              recorded?.nativeCustomProviderAttachment !== undefined
+                ? recorded.nativeCustomProviderAttachment
+                : options.nativeCustomProviderAttachment,
+              sandboxName || undefined,
+            );
+            if (options.nativeCustomProviderAttachment !== undefined) {
+              const handoff = getMatchingNativeCustomProviderAuthority(
+                gatewayName,
+                sandboxName || "",
+                options.nativeCustomProviderAttachment,
+                deps.getNativeCustomProviderAuthority,
+              );
+              if (
+                !recordedAttachment ||
+                JSON.stringify(handoff) !== JSON.stringify(recordedAttachment)
+              )
+                throw new Error("Native custom rebuild and sandbox authority disagree.");
+            }
+            if (
+              recorded &&
+              recorded.pendingRouteReservation !== true &&
+              isNativeCustomProvider(recorded.provider) &&
+              !recordedAttachment
+            ) {
+              throw new Error(
+                `Sandbox '${sandboxName}' predates native custom provider attachments. Recreate this beta sandbox; automatic migration is not supported.`,
+              );
+            }
+            if (!deps.nativeCustomTransportDeps)
+              throw new Error("Native custom setup is missing adapter network authority.");
+            const selection: Awaited<ReturnType<typeof prepareNativeCustomInference>> =
+              !transportInput.credentialValue &&
+              options.reuseGatewayCredentialWithoutLocalKey === true &&
+              recordedAttachment
+                ? {
+                    prepared: restoreNativeCustomInference(transportInput, recordedAttachment),
+                    credentialValue: null,
+                  }
+                : await prepareNativeCustomInference(transportInput, {
+                    ...deps.nativeCustomTransportDeps,
+                    admitProfile: async (candidate) => {
+                      revalidateSandboxIdentity?.("admit the native custom adapter profile");
+                      await withNativeCustomLifecycle(candidate, async (lifecycle) => {
+                        const target = { kind: "named", gatewayName } as const;
+                        await lifecycle.requireNativeProviderProfileBoundary(adapter, target);
+                        const observed = await lifecycle.inspectNativeProvider(adapter, target);
+                        const authority = deps.getNativeCustomProviderAuthority!(
+                          gatewayName,
+                          candidate.providerName,
+                        );
+                        const expected =
+                          authority ??
+                          (recordedAttachment?.providerName === candidate.providerName
+                            ? recordedAttachment
+                            : undefined);
+                        if (
+                          authority &&
+                          recordedAttachment?.providerName === candidate.providerName &&
+                          authority.providerId !== recordedAttachment.providerId
+                        )
+                          throw new Error("Native custom sandbox and gateway authority disagree.");
+                        if (observed) {
+                          const current = lifecycle.nativeProviderAttachmentFromMetadata(observed);
+                          if (!expected || expected.providerId !== current.providerId)
+                            throw new Error(
+                              "Native custom adapter provider ownership cannot be verified.",
+                            );
+                        } else if (expected)
+                          throw new Error("Recorded native custom adapter provider is missing.");
+                      });
+                      revalidateSandboxIdentity?.("prepare the admitted native custom adapter");
+                      admittedNativeCustomAdapter = candidate;
+                      retainedNativeCustomAdapter =
+                        deps.getNativeCustomProviderAuthority!(
+                          gatewayName,
+                          candidate.providerName,
+                        ) ?? recordedAttachment;
+                    },
+                  });
+            const prepared = selection.prepared;
+            endpointPinnedAddresses = selection.sourceAddresses
+              ? [...selection.sourceAddresses]
+              : undefined;
+            endpointTrustedPrivateCapability = selection.sourceTrustedPrivateCapability;
+            nativeCustomHostSmoke = selection.hostSmoke;
+            const authority = deps.getNativeCustomProviderAuthority(
+              gatewayName,
+              prepared.providerName,
+            );
+            if (
+              recordedAttachment &&
+              recordedAttachment.providerName === prepared.providerName &&
+              authority &&
+              recordedAttachment.providerId !== authority.providerId
+            ) {
+              throw new Error("Native custom sandbox and gateway provider authority disagree.");
+            }
+            const expected =
+              authority ??
+              (recordedAttachment?.providerName === prepared.providerName
+                ? recordedAttachment
+                : undefined);
+            nativeCustomProviderAttachment = await withNativeCustomLifecycle(
+              prepared,
+              async (lifecycle) => {
+                const receipt = customAttachmentFromPrepared(
+                  prepared,
+                  await lifecycle.ensureNativeProvider({
+                    adapter,
+                    target: { kind: "named", gatewayName },
+                    credentialValue: selection.credentialValue,
+                    reuseExistingCredential: options.reuseGatewayCredentialWithoutLocalKey === true,
+                    expected,
+                  }),
+                );
+                await lifecycle.persistNativeProviderAuthority({
+                  adapter,
+                  target: { kind: "named", gatewayName },
+                  gatewayName,
+                  receipt,
+                  existing: expected,
+                  readAuthority: (gateway) =>
+                    deps.getNativeCustomProviderAuthority!(gateway, prepared.providerName),
+                  writeAuthority: (gateway) =>
+                    deps.setNativeCustomProviderAuthority!(gateway, receipt),
+                });
+                return receipt;
+              },
+            );
+            if (transportInput.credentialValue) {
+              nativeCustomCredentialCustody = {
+                key: nativeCustomCredentialEnv,
+                value: transportInput.credentialValue,
+              };
+            }
+            return null;
+          }
+
           if (nativeCustomSelection) {
             if (
               !deps.providerAdapter ||
@@ -1814,7 +2099,8 @@ export function createSetupInference(
           if (
             !nativeNvidiaProviderAttachment &&
             !nativeHostedProviderAttachment &&
-            !nativeLocalProviderAttachment
+            !nativeLocalProviderAttachment &&
+            !nativeCustomProviderAttachment
           )
             commonDeps.verifyInferenceRoute(provider, model);
           if (hostLocalRoute) {
@@ -1840,34 +2126,24 @@ export function createSetupInference(
               pinnedAddresses: endpointPinnedAddresses,
               trustedPrivateCapability: endpointTrustedPrivateCapability,
               capabilityCache: options.inferenceCapabilityCache,
+              ...(nativeCustomHostSmoke ?? {}),
             });
           }
           if (sandboxName && !hostLocalRoute) {
+            // The registry may publish before throwing; retain provider authority for recovery.
+            admittedNativeCustomAdapter = undefined;
             commonDeps.registry.updateSandbox(sandboxName);
           }
           if (hostLocalRoute) {
             if (!hostLocalGatewayMutation || !hostLocalSelection) {
               throw new Error("Host-local inference commit authority is incomplete.");
             }
-            const validatePreparedReceipt = () => {
-              const validated = normalizeHostLocalInferenceReceipt(
-                hostLocalRoute.prepared.validateBeforeCommit(),
-              );
-              if (
-                serializeHostLocalInferenceReceipt(validated) !==
-                serializeHostLocalInferenceReceipt(hostLocalRoute.receipt)
-              ) {
-                throw new Error(
-                  "Host-local inference pre-commit validation returned a different receipt authority.",
-                );
-              }
-            };
-            validatePreparedReceipt();
+            validatePreparedHostLocalReceipt(hostLocalRoute);
             revalidateSandboxIdentity?.("commit the host-local inference provider route");
             await hostLocalGatewayMutation.commit();
             // The awaited gateway commit is the only async gap between provider
             // proof and publication. Close it before registry or receipt entry.
-            validatePreparedReceipt();
+            validatePreparedHostLocalReceipt(hostLocalRoute);
             if (sandboxName) {
               // The registry writer may complete its atomic replacement before
               // returning false or throwing. From entry onward there is no
@@ -1906,27 +2182,43 @@ export function createSetupInference(
             }
           }
           revalidateSandboxIdentity?.("report successful inference provider setup");
-          shouldLogSuccessfulRoute = true;
-          if (nativeLocalRecreationSource && nativeLocalProviderAttachment) {
-            return {
-              ok: true,
-              stagedNativeLocalRecreation: {
-                source: nativeLocalRecreationSource,
-                attachment: nativeLocalProviderAttachment,
-              },
-            };
+          if (nativeCustomCredentialCustody) {
+            deps.recordMigratedProviderCredential?.(
+              provider,
+              nativeCustomCredentialCustody.key,
+              nativeCustomCredentialCustody.value,
+              revalidateSandboxIdentity,
+            );
           }
-          return routeStager.successResult();
+          shouldLogSuccessfulRoute = true;
+          return (
+            stagedNativeLocalResult(nativeLocalRecreationSource, nativeLocalProviderAttachment) ??
+            routeStager.successResult()
+          );
         } catch (error) {
+          await rollbackNativeCustomAdapterAfterSetupFailure(
+            admittedNativeCustomAdapter,
+            retainedNativeCustomAdapter,
+            deps.revokeHttpsPinRuntimeAdapterRoute,
+            error,
+          );
           if (!hostLocalRoute || !hostLocalSelection) {
-            return rejectNativeLocalSetupFailure({
+            return rejectNativeSetupFailure(
               error,
-              attachment: nativeLocalProviderAttachment,
-              reservationEntered: nativeLocalReservationEntered,
-              sandboxName,
-              gatewayName,
-              deps,
-            });
+              {
+                usesNativeCustom,
+                admittedNativeCustomAdapter,
+                nativeCustomProviderAttachment,
+                deps,
+              },
+              {
+                attachment: nativeLocalProviderAttachment,
+                reservationEntered: nativeLocalReservationEntered,
+                sandboxName,
+                gatewayName,
+                deps,
+              },
+            );
           }
           await cleanupUnreservedNativeLocalAfterHostFailure({
             selectingNativeLocal,

@@ -3,6 +3,10 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  profileFromCustomAttachment,
+  type NativeCustomProviderAttachment,
+} from "../../../src/lib/inference/native-custom/index.ts";
+import {
   NVIDIA_HOSTED_LOGICAL_PROVIDER,
   NVIDIA_HOSTED_NATIVE_ENDPOINT,
 } from "../../../src/lib/inference/native-nvidia/contract.ts";
@@ -29,8 +33,14 @@ export async function withNativeModelCleanup<T>(
 export function buildNativeModelRestartFixture(
   model: string,
   logicalProvider?: string,
-  endpointUrl?: string,
+  endpointOrAttachment?: string | NativeCustomProviderAttachment,
 ) {
+  const attached =
+    typeof endpointOrAttachment === "object"
+      ? profileFromCustomAttachment(endpointOrAttachment)
+      : undefined;
+  const endpointUrl =
+    typeof endpointOrAttachment === "string" ? endpointOrAttachment : attached?.endpointUrl;
   const nativeCustom = logicalProvider === "compatible-endpoint" && endpointUrl;
   const nativeNvidia = logicalProvider === NVIDIA_HOSTED_LOGICAL_PROVIDER;
   const provider = `nemoclaw-e2e-native-${randomUUID()}`;

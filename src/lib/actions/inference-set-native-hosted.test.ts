@@ -95,7 +95,7 @@ function fixture(extraDefinitions: ReturnType<typeof hostedNativeProvider>[] = [
   deps.setNativeHostedProviderAuthority = (gateway, provider, receipt) => {
     authorities.set(`${gateway}/${receipt.custom ? receipt.providerName : provider}`, receipt);
   };
-  return { deps, calls, attached, authorities, entry };
+  return { deps, calls, attached, authorities, entry, existing };
 }
 
 it("rejects Pi runtime switching before changing its native attachment (#12589)", async () => {
@@ -529,9 +529,34 @@ describe("custom native inference selection", () => {
     endpointUrl: "https://1.1.1.1/team/v1",
     allowedIps: ["1.1.1.1"],
   });
-  it("switches a native sandbox, reuses its key for model changes and preserves rebuild authority", async () => {
-    const { deps, calls, entry, attached } = fixture([custom, replacement]);
-    await runInferenceSet({ provider: "openai-api", model: "first-model" }, deps);
+  // Main-format receipts already on disk must retain their owning lifecycle.
+  // Fixed-provider to new Slice 3 selections are exercised in native-custom-flow.
+  function retainedCustomFixture() {
+    const f = fixture([custom, replacement]);
+    const receipt: NativeProviderAttachment = {
+      schemaVersion: 1,
+      profileId: custom.profileId,
+      providerName: custom.providerName,
+      providerId: `id-${custom.providerName}`,
+      endpointUrl: custom.endpoint,
+      allowedIps: custom.allowedIps,
+      custom: custom.custom,
+    };
+    f.existing.add(custom.providerName);
+    f.attached.get("alpha")!.add(custom.providerName);
+    f.authorities.set(`nemoclaw/${custom.providerName}`, receipt);
+    Object.assign(f.entry, {
+      provider: custom.logicalProvider,
+      model: "first-model",
+      endpointUrl: custom.endpoint,
+      credentialEnv: custom.credentialEnv,
+      preferredInferenceApi: custom.api,
+      nativeHostedProviderAttachment: receipt,
+    });
+    return f;
+  }
+  it("retains an existing main-format custom receipt, reuses its key and preserves rebuild authority", async () => {
+    const { deps, calls, entry, attached } = retainedCustomFixture();
     await runInferenceSet(
       {
         provider: "compatible-endpoint",
@@ -569,8 +594,7 @@ describe("custom native inference selection", () => {
     expect(deps.inferenceRouteObserver.observeInferenceRoute).not.toHaveBeenCalled();
   });
   it("restores the prior attachment if a changed custom endpoint fails sandbox verification", async () => {
-    const { deps, calls, entry, attached, authorities } = fixture([custom, replacement]);
-    await runInferenceSet({ provider: "openai-api", model: "first-model" }, deps);
+    const { deps, calls, entry, attached, authorities } = retainedCustomFixture();
     await runInferenceSet(
       {
         provider: "compatible-endpoint",

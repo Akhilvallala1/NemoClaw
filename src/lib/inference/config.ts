@@ -19,6 +19,10 @@ import {
   LLAMA_CPP_PROVIDER_NAME,
 } from "./llama-cpp/contract";
 import { hostedNativeProvider, usesNativeHermesEndpoint } from "./native-provider/hosted";
+import {
+  normalizeNativeCustomProviderAttachment,
+  type NativeCustomProviderAttachment,
+} from "./native-custom";
 import { isCustomHostedProvider, resolveCustomNativeApi } from "./native-provider/hosted";
 import {
   isBedrockRuntimeEndpoint,
@@ -49,6 +53,8 @@ export {
   ensureNativeNvidiaProvider,
   ensureNativeNvidiaProviderAttached,
   isNativeNvidiaProvider,
+  isNativeNvidiaCredentialReference,
+  resolveNativeNvidiaCredentialReference,
   NVIDIA_HOSTED_CREDENTIAL_ENV,
   NVIDIA_HOSTED_NATIVE_ENDPOINT,
   normalizeNativeNvidiaProviderAttachment,
@@ -342,10 +348,14 @@ export function getSandboxInferenceConfig(
   model: string,
   provider: string | null = null,
   preferredInferenceApi: string | null = null,
-  nativeProvider?: boolean,
+  nativeProviderOrAttachment?: boolean | NativeCustomProviderAttachment,
   nativeEndpointUrl?: string | null,
   agentName?: string | null,
 ): SandboxInferenceConfig {
+  const nativeProvider =
+    typeof nativeProviderOrAttachment === "boolean" ? nativeProviderOrAttachment : undefined;
+  const nativeCustomProviderAttachment =
+    typeof nativeProviderOrAttachment === "object" ? nativeProviderOrAttachment : undefined;
   const nativeCustom =
     nativeProvider === true &&
     isCustomHostedProvider(provider) &&
@@ -390,7 +400,7 @@ export function getSandboxInferenceConfig(
       if (
         provider === "compatible-anthropic-endpoint" &&
         (inferenceApi === "openai-completions" ||
-          (nativeCustom && inferenceApi === "openai-responses"))
+          ((nativeCustom || nativeCustomProviderAttachment) && inferenceApi === "openai-responses"))
       ) {
         providerKey = MANAGED_PROVIDER_ID;
         primaryModelRef = `${MANAGED_PROVIDER_ID}/${model}`;
@@ -453,7 +463,19 @@ export function getSandboxInferenceConfig(
       break;
   }
 
-  if (
+  if (nativeCustomProviderAttachment) {
+    const receipt = normalizeNativeCustomProviderAttachment(nativeCustomProviderAttachment);
+    const expectedProvider =
+      receipt?.credentialEnv === "COMPATIBLE_API_KEY"
+        ? "compatible-endpoint"
+        : "compatible-anthropic-endpoint";
+    if (!receipt || provider !== expectedProvider || inferenceApi !== receipt.api)
+      throw new Error("Native custom selection disagrees with its endpoint attachment authority.");
+    inferenceBaseUrl =
+      receipt.api === "anthropic-messages" || receipt.endpointUrl.endsWith("/v1")
+        ? receipt.endpointUrl
+        : `${receipt.endpointUrl}/v1`;
+  } else if (
     useNativeProvider &&
     agentName === "langchain-deepagents-code" &&
     nativeEndpointUrl &&

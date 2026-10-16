@@ -21,6 +21,7 @@ import * as sandboxVersion from "../../sandbox/version";
 import type { Session } from "../../state/onboard-session";
 import * as onboardSession from "../../state/onboard-session";
 import * as registry from "../../state/registry";
+import * as registryPersistence from "../../state/registry/persistence";
 import * as sandboxState from "../../state/sandbox";
 import * as sandboxSession from "../../state/sandbox-session";
 import * as destroy from "./destroy";
@@ -225,6 +226,12 @@ describe("rebuild resume snapshot repair", () => {
         gatewayName: "nemoclaw",
         gatewayPort: 8080,
       } as never),
+      // The facade and direct persistence readers observe the same stored target.
+      vi.spyOn(registryPersistence, "load").mockImplementation(() => ({
+        sandboxes: { alpha: registry.getSandbox("alpha")! },
+        defaultSandbox: "alpha",
+        defaultSelectionRevision: 0,
+      })),
       vi.spyOn(registry, "updateSandbox").mockReturnValue(true),
       vi.spyOn(registry, "listSandboxes").mockReturnValue({ sandboxes: [] } as never),
       vi.spyOn(mcpBridgeProvider, "getMcpProviderInspectionRuntimeSelection").mockReturnValue({

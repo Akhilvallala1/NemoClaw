@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { canonicalObservedGatewayRegistration } from "./full-e2e-gateway-evidence.ts";
 import { approveOpenClawAdminScope } from "./openclaw-admin-scope.ts";
 import fs from "node:fs";
 import { buildSandboxInferenceChatCommand } from "../fixtures/inference-adapter.ts";
@@ -48,6 +49,7 @@ import {
 } from "../fixtures/openclaw-agent-output.ts";
 import { buildOpenClawFirstTurnLatencyEvidence } from "./agent-turn-latency-helpers.ts";
 import {
+  fullE2eNativeAttachment,
   readFullE2eInferenceRoute,
   FULL_E2E_INFERENCE_CAPTURE_LIMIT_BYTES,
   fullE2eInferenceProbeEvidence,
@@ -68,13 +70,13 @@ import {
   cleanupWhenOpenShellAvailable,
 } from "../fixtures/cleanup-resources.ts";
 import { getSandbox } from "../../../src/lib/state/registry.ts";
+import { type NativeCustomProviderAttachment } from "../../../src/lib/inference/native-custom/index.ts";
 import { buildNativeModelRestartFixture, withNativeModelCleanup } from "./full-e2e-native-model.ts";
 import {
   agentReplyContainsToken,
   parseOpenClawGatewayModelRun,
 } from "./openclaw-inference-switch-helpers.ts";
 import { createCliOpenShellGatewayReuseObserver } from "../../../src/lib/adapters/openshell/gateway-reuse-cli.ts";
-import type { OpenShellGatewayReuseObservation } from "../../../src/lib/adapters/openshell/gateway-reuse.ts";
 
 const SANDBOX_NAME = process.env.NEMOCLAW_SANDBOX_NAME ?? "e2e-full";
 const FULL_E2E_TARGET_ID = process.env.E2E_TARGET_ID ?? "full-e2e";
@@ -142,21 +144,6 @@ type GatewayRegistrationCapture = Readonly<{
   registration: string | null;
   healthy: boolean;
 }>;
-
-function canonicalObservedGatewayRegistration(
-  observation: OpenShellGatewayReuseObservation,
-  gatewayName: string,
-): string | null {
-  return observation.namedMetadata &&
-    observation.namedEndpoint &&
-    typeof observation.namedActive === "boolean"
-    ? JSON.stringify({
-        name: gatewayName,
-        endpoint: observation.namedEndpoint,
-        active: observation.namedActive,
-      })
-    : null;
-}
 
 async function captureGatewayRegistration(
   host: HostCliClient,
@@ -437,6 +424,7 @@ async function runOpenClawLaunchTurns(input: {
   model: string;
   logicalProvider: string;
   endpointUrl?: string;
+  nativeCustom?: NativeCustomProviderAttachment;
   redactionValues: string[];
   sandbox: SandboxClient;
 }): Promise<void> {
@@ -480,7 +468,7 @@ sha256sum /sandbox/.bashrc /sandbox/.profile > /tmp/nemoclaw-e2e-profiles.sha256
   const nativeModel = buildNativeModelRestartFixture(
     input.model,
     input.logicalProvider,
-    input.endpointUrl,
+    input.nativeCustom ?? input.endpointUrl,
   );
   const editNativeModel = await input.sandbox.exec(
     SANDBOX_NAME,
@@ -1212,12 +1200,14 @@ test(
       },
     );
 
-    const nativeEndpointUrl = getSandbox(SANDBOX_NAME)?.nativeHostedProviderAttachment?.endpointUrl;
+    const nativeEntry = getSandbox(SANDBOX_NAME);
+    const nativeCustom = nativeEntry?.nativeCustomProviderAttachment;
+    const nativeEndpointUrl = fullE2eNativeAttachment(nativeEntry, SANDBOX_NAME)?.endpointUrl;
     const inferenceRoute = await readFullE2eInferenceRoute({
       sandbox,
       sandboxName: SANDBOX_NAME,
       entry: getSandbox(SANDBOX_NAME),
-      logicalProvider: hosted.providerName,
+      logicalProvider: PORTABLE_PROFILE ? "portable" : hosted.providerName,
       model: hosted.model,
       env: env(),
       redactionValues,
@@ -1257,7 +1247,7 @@ test(
             SANDBOX_NAME,
             buildSandboxInferenceChatCommand(
               attempt.requestBody,
-              hosted.providerName,
+              PORTABLE_PROFILE ? "portable" : hosted.providerName,
               nativeEndpointUrl,
             ),
             {
@@ -1308,8 +1298,9 @@ test(
       ? runOpenClawLaunchTurns({
           host,
           model: hosted.model,
-          logicalProvider: hosted.providerName,
+          logicalProvider: PORTABLE_PROFILE ? "portable" : hosted.providerName,
           endpointUrl: nativeEndpointUrl,
+          nativeCustom,
           redactionValues,
           sandbox,
         })
@@ -1385,6 +1376,10 @@ test(
             [SANDBOX_NAME, "status"],
             "phase-7-status-after-retained-gateway-onboard",
           );
+          const retainedEndpoint = fullE2eNativeAttachment(
+            getSandbox(SANDBOX_NAME),
+            SANDBOX_NAME,
+          )?.endpointUrl;
           const inference = await runFullE2eInferenceProbe(hosted.model, async (attempt) =>
             runFullE2eInferenceCommand({
               onEvidence: (evidence) =>
@@ -1399,8 +1394,8 @@ test(
                   SANDBOX_NAME,
                   buildSandboxInferenceChatCommand(
                     attempt.requestBody,
-                    hosted.providerName,
-                    nativeEndpointUrl,
+                    PORTABLE_PROFILE ? "portable" : hosted.providerName,
+                    retainedEndpoint,
                   ),
                   {
                     artifactName: `retained-${attempt.artifactName}-availability-${availabilityAttempt}`,

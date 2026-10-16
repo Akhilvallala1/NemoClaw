@@ -69,6 +69,30 @@ function runGenerator(env: Record<string, string | undefined>): string {
 }
 
 describe("LangChain Deep Agents Code config generator", () => {
+  it("keeps explicit custom authority ahead of the local adapter hostname (#12636)", () => {
+    const endpoint = "http://host.openshell.internal:11438/route/" + "a".repeat(64) + "/v1";
+    const config = runGenerator({
+      NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+      NEMOCLAW_INFERENCE_BASE_URL: endpoint,
+      NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: "COMPATIBLE_API_KEY",
+    });
+    expect(config).toContain('api_key_env = "COMPATIBLE_API_KEY"');
+    expect(config).not.toContain("NEMOCLAW_LOCAL_INFERENCE_TOKEN");
+  });
+  it.each(["NVIDIA_INFERENCE_API_KEY", "COMPATIBLE_ANTHROPIC_API_KEY", "raw-secret"])(
+    "rejects mismatched custom credential %s",
+    (key) => {
+      expect(
+        runGeneratorProcess({
+          NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+          NEMOCLAW_INFERENCE_BASE_URL:
+            "http://host.openshell.internal:11438/route/" + "a".repeat(64) + "/v1",
+          NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV: key,
+        }).status,
+      ).not.toBe(0);
+    },
+  );
+
   it.each(["ollama-local", "vllm-local", "llama-cpp-local"])(
     "writes the selected native endpoint and credential reference for %s (#12558)",
     (provider) => {

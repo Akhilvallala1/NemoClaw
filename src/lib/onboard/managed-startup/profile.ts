@@ -602,6 +602,13 @@ export const MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY = {
     ...HOST_PROXY_AFFORDANCES,
   ],
   "langchain-deepagents-code": [
+    affordance(
+      "NEMOCLAW_NATIVE_CUSTOM_CREDENTIAL_ENV",
+      "inference.nativeCustomCredentialEnv",
+      "docker-arg",
+      "value",
+      true,
+    ),
     affordance("NEMOCLAW_MODEL", "inference.model"),
     affordance("NEMOCLAW_INFERENCE_PROVIDER_ID", "inference.routeProvider"),
     affordance("NEMOCLAW_UPSTREAM_PROVIDER", "inference.upstreamProvider"),
@@ -2144,7 +2151,7 @@ function validateInference(
   const routedBaseUrl = requireHttpUrl(inference.routedBaseUrl, "inference.routedBaseUrl");
   if (
     nativeCustomCredentialEnv !== undefined &&
-    ((agent !== "hermes" && agent !== "openclaw") ||
+    ((agent !== "hermes" && agent !== "openclaw" && agent !== "langchain-deepagents-code") ||
       upstreamProvider !==
         (nativeCustomCredentialEnv === "COMPATIBLE_API_KEY"
           ? "compatible-endpoint"

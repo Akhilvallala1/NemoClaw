@@ -13,7 +13,12 @@ import { recordedNativeProviderAttachment } from "../inference/native-provider/r
 import { fixedNativeProviderForAttachment } from "../inference/native-provider/fixed";
 import { nativeHostedAgentConfig } from "../inference/native-provider/agent-config";
 import { nativeProviderLifecycle } from "../inference/native-provider";
-import { probeSandboxInferenceInvocation } from "../actions/sandbox/inference-invocation-probe";
+import {
+  probeSandboxInferenceInvocation,
+  type SandboxInferenceInvocationInput,
+} from "../actions/sandbox/inference-invocation-probe";
+import { verifyNativeCustomStatusAttachment } from "../actions/sandbox/inference-route-health";
+import { resolveSandboxGatewayName } from "./gateway-binding/identity";
 import type { OpenShellSandboxBufferedCommandExecutor } from "../adapters/openshell/sandbox-command";
 import { createCliOpenShellProviderAdapter } from "../adapters/openshell/provider-adapter-cli";
 import { shellQuote } from "../core/shell-quote";
@@ -116,6 +121,9 @@ export async function verifyCompatibleEndpointSandboxSmoke(options: {
   sandboxName: string;
   provider: string;
   model: string;
+  gatewayName?: string;
+  environment?: NodeJS.ProcessEnv;
+  nativeCustomProviderAttachment?: SandboxInferenceInvocationInput["nativeCustomProviderAttachment"];
   runOpenshell: CompatibleEndpointSmokeRun;
   sandboxCommandExecutor: OpenShellSandboxBufferedCommandExecutor;
   redact: (value: string) => string;
@@ -138,6 +146,45 @@ export async function verifyCompatibleEndpointSandboxSmoke(options: {
   const local = normalizeNativeLocalProviderAttachment(options.nativeLocalProviderAttachment);
   if (options.nativeLocalProviderAttachment && !local)
     throw new Error("Invalid native local inference ownership receipt.");
+  if (options.nativeCustomProviderAttachment) {
+    try {
+      if (!options.gatewayName)
+        throw new Error("Native custom inference verification requires the recorded gateway.");
+      await verifyNativeCustomStatusAttachment({
+        gatewayName: options.gatewayName,
+        sandboxName: options.sandboxName,
+        expected: options.nativeCustomProviderAttachment,
+        environment: options.environment,
+      });
+      const result = await probeSandboxInferenceInvocation(
+        {
+          sandboxName: options.sandboxName,
+          gatewayName: options.gatewayName,
+          agentName: options.agent?.name ?? null,
+          provider: options.provider,
+          model: options.model,
+          preferredInferenceApi: options.nativeCustomProviderAttachment.api,
+          nativeCustomProviderAttachment: options.nativeCustomProviderAttachment,
+        },
+        {
+          commandExecutor: options.sandboxCommandExecutor,
+        },
+      );
+      if (!result.ok) throw new Error(result.detail);
+      options.beforeSuccess?.();
+      console.log("  \u2713 Attached native custom provider responds inside the sandbox");
+      return;
+    } catch (error) {
+      console.error("  Native custom sandbox inference verification failed.");
+      console.error(
+        compactText(options.redact(error instanceof Error ? error.message : String(error))).slice(
+          0,
+          1200,
+        ),
+      );
+      fail(1);
+    }
+  }
   if (
     !local &&
     options.forceCanonicalRoute !== true &&
@@ -158,7 +205,9 @@ export async function verifyCompatibleEndpointSandboxSmoke(options: {
 
   const target = local
     ? { kind: "named" as const, gatewayName: local.gatewayName }
-    : { kind: "selected" as const };
+    : options.gatewayName
+      ? { kind: "named" as const, gatewayName: options.gatewayName }
+      : { kind: "selected" as const };
   const adapter = createCliOpenShellProviderAdapter({
     run: (command, runOptions) => {
       const result = options.runOpenshell(command, runOptions);
@@ -328,7 +377,7 @@ export function createCompatibleEndpointSmoke(
   ) => ReturnType<CompatibleEndpointSmokeRun>,
   sandboxCommandExecutor: OpenShellSandboxBufferedCommandExecutor,
   redact: (value: string) => string,
-  getSandbox: (name: string) => SandboxEntry | null | undefined,
+  getSandbox: (name: string) => SandboxEntry | null | undefined = () => null,
 ) {
   type SmokeOptions = Parameters<typeof verifyCompatibleEndpointSandboxSmoke>[0];
   const nativeSelection = (
@@ -348,9 +397,18 @@ export function createCompatibleEndpointSmoke(
       options: Omit<SmokeOptions, "runOpenshell" | "sandboxCommandExecutor" | "redact">,
       run = runOpenshell,
     ): Promise<void> {
+      const sandbox = getSandbox(options.sandboxName);
+      const nativeCustomProviderAttachment =
+        options.nativeCustomProviderAttachment ?? sandbox?.nativeCustomProviderAttachment;
       return verifyCompatibleEndpointSandboxSmoke({
         ...options,
-        registeredSelection: getSandbox(options.sandboxName),
+        registeredSelection: sandbox,
+        nativeCustomProviderAttachment,
+        gatewayName:
+          options.gatewayName ??
+          (nativeCustomProviderAttachment && sandbox
+            ? resolveSandboxGatewayName(sandbox)
+            : undefined),
         ...nativeSelection(options),
         runOpenshell: run,
         sandboxCommandExecutor,
@@ -360,7 +418,12 @@ export function createCompatibleEndpointSmoke(
     verifyRebuilt(
       options: Pick<
         SmokeOptions,
-        "sandboxName" | "provider" | "model" | "endpointUrl" | "credentialEnv"
+        | "sandboxName"
+        | "provider"
+        | "model"
+        | "endpointUrl"
+        | "credentialEnv"
+        | "nativeCustomProviderAttachment"
       > & {
         environment: NodeJS.ProcessEnv;
         gatewayName?: string;
@@ -369,6 +432,8 @@ export function createCompatibleEndpointSmoke(
       const { environment, gatewayName, ...selection } = options;
       return verifyCompatibleEndpointSandboxSmoke({
         ...selection,
+        environment,
+        gatewayName,
         registeredSelection: getSandbox(selection.sandboxName),
         ...nativeSelection(selection),
         onFailure: (exitCode) => {
