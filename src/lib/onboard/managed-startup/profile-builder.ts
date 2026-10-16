@@ -68,7 +68,7 @@ const EXPECTED_AFFORDANCE_INVENTORY_SHA256 = {
   openclaw: "b4a3fa7060c7b7f5654c271513398666ccf52e36dcc2ff4ac8064b1d801841cf",
   hermes: "795c97be2dcb1921e06328a6d23b1f7389ebb2f6a085fa67b7aaa0f287ce88e0",
   "langchain-deepagents-code": "1aa0b36b1ba387a8ab67149af5cb549ca9ab729057a9fed51eb32ceb1427fc32",
-  pi: "6302d387182c596fd67ad18577ecf82107bad6271aeeb5e69714115f91557abb",
+  pi: "822d29b6c5d8309a676a47a2e6f5dc74854dd0e59d71e6b2c8c6d148a7e6f37c",
 } as const satisfies Record<ManagedStartupAgent, string>;
 
 const INVENTORY_INPUTS = new Set(

@@ -213,8 +213,6 @@ describe("buildManagedStartupProfile", () => {
           NEMOCLAW_CONTEXT_WINDOW: "262144",
           NEMOCLAW_MAX_TOKENS: "32000",
           NEMOCLAW_REASONING: "true",
-          NEMOCLAW_PROXY_HOST: "10.200.0.1",
-          NEMOCLAW_PROXY_PORT: "3128",
         },
       }),
     );

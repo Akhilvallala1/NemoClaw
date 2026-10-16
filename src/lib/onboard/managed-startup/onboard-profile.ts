@@ -43,13 +43,7 @@ const PROFILE_ENVIRONMENT_INPUTS = {
   ],
   hermes: ["NEMOCLAW_CONTEXT_WINDOW", "NEMOCLAW_PROXY_HOST", "NEMOCLAW_PROXY_PORT"],
   "langchain-deepagents-code": ["NEMOCLAW_REASONING_EFFORT"],
-  pi: [
-    "NEMOCLAW_CONTEXT_WINDOW",
-    "NEMOCLAW_MAX_TOKENS",
-    "NEMOCLAW_PROXY_HOST",
-    "NEMOCLAW_PROXY_PORT",
-    "NEMOCLAW_REASONING",
-  ],
+  pi: ["NEMOCLAW_CONTEXT_WINDOW", "NEMOCLAW_MAX_TOKENS", "NEMOCLAW_REASONING"],
 } as const satisfies Record<ManagedStartupAgent, readonly string[]>;
 
 const HOST_NO_PROXY_INPUTS = ["NO_PROXY", "no_proxy"] as const;

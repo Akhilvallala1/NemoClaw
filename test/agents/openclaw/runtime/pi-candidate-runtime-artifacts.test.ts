@@ -304,3 +304,104 @@ describe("Pi managed model catalog generation", () => {
     expect(fs.existsSync(path.join(home, ".pi", "agent", "models.json"))).toBe(false);
   });
 });
+
+const PI_PROXY_VARIABLES = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "ALL_PROXY",
+  "all_proxy",
+  "OPENAI_PROXY",
+  "grpc_proxy",
+  "GRPC_PROXY",
+  "NODE_USE_ENV_PROXY",
+  "NEMOCLAW_PROXY_HOST",
+  "NEMOCLAW_PROXY_PORT",
+];
+
+function piStartupFixture(directory: string): { script: string; runtimeEnv: string } {
+  const script = path.join(directory, "start.sh");
+  const runtimeEnv = path.join(directory, "runtime-env.sh");
+  const rlimits = path.join(directory, "sandbox-rlimits.sh");
+  fs.writeFileSync(
+    rlimits,
+    "harden_resource_limits() { :; }\nverify_resource_limits_exact() { :; }\n",
+  );
+  const source = fs
+    .readFileSync(path.join(root, "agents/pi/start.sh"), "utf8")
+    .replace(
+      "/usr/local/lib/nemoclaw/entrypoint-env-wrapper.sh",
+      path.join(root, "scripts/lib/entrypoint-env-wrapper.sh"),
+    )
+    .replace("/usr/local/lib/nemoclaw/sandbox-rlimits.sh", rlimits)
+    // Exercise the sandbox-user pass without changing host ownership or limits.
+    .replace('if [ "$(id -u)" -eq 0 ]; then', "if false; then")
+    .replace(
+      "/usr/local/share/nemoclaw/corporate-ca.pem",
+      path.join(directory, "absent-corporate-ca.pem"),
+    )
+    .replace("local target=/tmp/nemoclaw-proxy-env.sh", `local target="${runtimeEnv}"`)
+    .replace("/tmp/nemoclaw-proxy-env.XXXXXX", path.join(directory, "proxy-env.XXXXXX"));
+  fs.writeFileSync(script, source);
+  return { script, runtimeEnv };
+}
+
+describe("Pi native network mediation", () => {
+  it.each(["startup", "sourced shell"])(
+    "clears ambient proxy settings in %s and preserves TLS trust",
+    (mode) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-pi-start-"));
+      try {
+        const { script, runtimeEnv } = piStartupFixture(directory);
+        const trust = {
+          SSL_CERT_FILE: "/etc/openshell-tls/ca-bundle.pem",
+          CURL_CA_BUNDLE: "/etc/openshell-tls/ca-bundle.pem",
+          REQUESTS_CA_BUNDLE: "/etc/openshell-tls/ca-bundle.pem",
+          GIT_SSL_CAINFO: "/etc/openshell-tls/ca-bundle.pem",
+          NODE_EXTRA_CA_CERTS: "/etc/openshell-tls/ca-bundle.pem",
+        };
+        const ambient = {
+          PATH: process.env.PATH ?? "",
+          ...trust,
+          ...Object.fromEntries(
+            PI_PROXY_VARIABLES.map((name) => [name, "http://retired-proxy.invalid:3128"]),
+          ),
+        };
+        const started = spawnSync("/bin/bash", [script, "/usr/bin/env"], {
+          env: ambient,
+          encoding: "utf8",
+          timeout: 5_000,
+        });
+        expect(started.status, started.stderr).toBe(0);
+        const sourced = spawnSync(
+          "/bin/bash",
+          ["-c", 'source "$1"; exec /usr/bin/env', "pi-shell", runtimeEnv],
+          {
+            env: ambient,
+            encoding: "utf8",
+            timeout: 5_000,
+          },
+        );
+        expect(sourced.status, sourced.stderr).toBe(0);
+        const output = mode === "startup" ? started.stdout : sourced.stdout;
+        const environment = Object.fromEntries(
+          output
+            .trim()
+            .split("\n")
+            .map((line) => {
+              const separator = line.indexOf("=");
+              return [line.slice(0, separator), line.slice(separator + 1)];
+            }),
+        );
+        expect(PI_PROXY_VARIABLES.filter((name) => Object.hasOwn(environment, name))).toEqual([]);
+        expect(environment).toMatchObject({ ...trust, PI_OFFLINE: "1", PI_TELEMETRY: "0" });
+        expect(fs.statSync(runtimeEnv).mode & 0o777).toBe(0o444);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+});

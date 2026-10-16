@@ -177,6 +177,8 @@ describe("buildManagedStartupOnboardProfile", () => {
           NEMOCLAW_CONTEXT_WINDOW: "262144",
           NEMOCLAW_MAX_TOKENS: "32000",
           NEMOCLAW_REASONING: "true",
+          NEMOCLAW_PROXY_HOST: "retired-proxy.invalid",
+          NEMOCLAW_PROXY_PORT: "9999",
         },
       }),
     );

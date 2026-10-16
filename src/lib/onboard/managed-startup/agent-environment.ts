@@ -33,17 +33,13 @@ export interface ManagedStartupRootOwnedFileMaterial {
   readonly legacyInput:
     | "NEMOCLAW_DCODE_AUTO_APPROVAL"
     | "NEMOCLAW_INFERENCE_BASE_URL"
-    | "NEMOCLAW_PROXY_HOST"
-    | "NEMOCLAW_PROXY_PORT"
     | "NEMOCLAW_REASONING_EFFORT"
     | "NEMOCLAW_UPSTREAM_PROVIDER";
   readonly path:
     | "/usr/local/share/nemoclaw/dcode-auto-approval"
     | "/usr/local/share/nemoclaw/dcode-inference-base-url"
     | "/usr/local/share/nemoclaw/dcode-reasoning-effort"
-    | "/usr/local/share/nemoclaw/dcode-upstream-provider"
-    | "/usr/local/share/nemoclaw/pi-proxy-host"
-    | "/usr/local/share/nemoclaw/pi-proxy-port";
+    | "/usr/local/share/nemoclaw/dcode-upstream-provider";
   readonly contents: string;
   readonly owner: "root";
   readonly group: "root";
@@ -596,16 +592,6 @@ function mapPiProfile(
   }
   const materials: readonly ManagedStartupAgentMaterial[] = Object.freeze([
     corporateCaMaterial(profile),
-    rootOwnedFile(
-      "NEMOCLAW_PROXY_HOST",
-      "/usr/local/share/nemoclaw/pi-proxy-host",
-      profile.proxy.managedHost,
-    ),
-    rootOwnedFile(
-      "NEMOCLAW_PROXY_PORT",
-      "/usr/local/share/nemoclaw/pi-proxy-port",
-      String(profile.proxy.managedPort),
-    ),
   ]);
 
   return Object.freeze({

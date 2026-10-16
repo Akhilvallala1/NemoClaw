@@ -606,8 +606,6 @@ export const MANAGED_STARTUP_PROFILE_AFFORDANCE_INVENTORY = {
     affordance("NEMOCLAW_MAX_TOKENS", "tuning.maxTokens"),
     affordance("NEMOCLAW_REASONING", "tuning.reasoning"),
     affordance("NEMOCLAW_TOOL_DISCLOSURE", "tools.disclosure"),
-    affordance("NEMOCLAW_PROXY_HOST", "proxy.managedHost"),
-    affordance("NEMOCLAW_PROXY_PORT", "proxy.managedPort"),
     affordance(
       "NEMOCLAW_CORPORATE_CA_B64",
       "corporateCa.bundleSha256",

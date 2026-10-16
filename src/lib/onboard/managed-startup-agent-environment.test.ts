@@ -685,7 +685,7 @@ describe("managed startup agent environment", () => {
     ]);
   });
 
-  it("keeps the Pi managed route credential-free and confined to root-owned proxy files (#7930)", () => {
+  it("keeps Pi startup configuration credential-free without proxy files (#7930)", () => {
     const result = mapManagedStartupProfileToAgentEnvironment(piProfile());
 
     expect(result.configurationEnvironment).toEqual({
@@ -717,24 +717,6 @@ describe("managed startup agent environment", () => {
         kind: "corporate-ca-handoff",
         legacyInput: "NEMOCLAW_CORPORATE_CA_B64",
         expectedSha256: CA_SHA256,
-      },
-      {
-        kind: "root-owned-file",
-        legacyInput: "NEMOCLAW_PROXY_HOST",
-        path: "/usr/local/share/nemoclaw/pi-proxy-host",
-        contents: "10.200.0.1\n",
-        owner: "root",
-        group: "root",
-        mode: 0o444,
-      },
-      {
-        kind: "root-owned-file",
-        legacyInput: "NEMOCLAW_PROXY_PORT",
-        path: "/usr/local/share/nemoclaw/pi-proxy-port",
-        contents: "3128\n",
-        owner: "root",
-        group: "root",
-        mode: 0o444,
       },
     ]);
     expect(result.actions).toEqual([
@@ -793,11 +775,7 @@ describe("managed startup agent environment", () => {
       NEMOCLAW_MODEL: "openai/gpt-5.4",
       NEMOCLAW_UPSTREAM_PROVIDER: "openrouter",
     });
-    expect(after.materials).toEqual([
-      before.materials[0],
-      { ...before.materials[1], contents: "10.200.0.9\n" },
-      { ...before.materials[2], contents: "3129\n" },
-    ]);
+    expect(after.materials).toEqual(before.materials);
     const serialized = JSON.stringify(after);
     expect(serialized).not.toContain("https://inference.local/v1");
     expect(serialized).not.toContain("nvidia/nemotron-3-super-120b-a12b");
