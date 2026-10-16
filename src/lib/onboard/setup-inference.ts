@@ -1314,7 +1314,7 @@ export function createSetupInference(
                 !options.recreatePublishedSandbox ||
                 !options.deferPublishedRouteReservation ||
                 !options.reservationSessionId ||
-                recorded.agent !== "langchain-deepagents-code"
+                (recorded.agent !== "langchain-deepagents-code" && recorded.agent !== "openclaw")
               ) {
                 throw new Error("Recreate this beta sandbox before using native local inference.");
               }
@@ -1330,6 +1330,10 @@ export function createSetupInference(
               adapter: deps.providerAdapter,
               binding: {
                 provider: name as NativeLocalProvider,
+                ...((options.agentName ?? options.hostLocalInference?.request.application) ===
+                "openclaw"
+                  ? { agent: "openclaw" as const }
+                  : {}),
                 endpointUrl: hostReachableEndpoint,
                 authMode:
                   (name === "ollama-local" && value === "ollama") ||
