@@ -1000,48 +1000,81 @@ ${adminApprovalConnectScript("nemoclaw", "fixture-sandbox", "managed-cron", outp
     expect(ONBOARD_FAILURE_LOG_ARTIFACT_OPTIONS).toEqual({ persistArtifacts: true });
   });
 
-  it("redacts a copied failed-startup log before artifact publication", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-startup-diagnostics-"));
-    const secret = "supplied-startup-diagnostic-secret";
-    const containerId = "a".repeat(64);
-    const artifacts = new ArtifactSink(directory);
-    const command = vi.fn(async (executable: string, args: readonly string[]) => {
-      switch (`${executable}:${String(args[0])}`) {
-        case "docker:ps":
-          return {
-            exitCode: 0,
-            stdout: `${containerId}\tmanaged-container\timage\tExited\n`,
-            stderr: "",
-          };
-        case "docker:cp":
-          fs.writeFileSync(String(args[2]), `startup log contains ${secret}\n`);
-          break;
+  it.each([
+    {
+      kind: "regular",
+      create: (destination: string, secret: string) =>
+        fs.writeFileSync(destination, `startup log contains ${secret}\n`),
+      expected: { data: "startup log contains [REDACTED]\n" },
+    },
+    {
+      kind: "symlink",
+      create: (destination: string, secret: string, directory: string) => {
+        const target = path.join(directory, "outside-copy.txt");
+        fs.writeFileSync(target, `startup log contains ${secret}\n`);
+        fs.symlinkSync(target, destination);
+      },
+      expected: { error: "ENOENT" },
+    },
+    {
+      kind: "directory",
+      create: (destination: string) => fs.mkdirSync(destination),
+      expected: { error: "ENOENT" },
+    },
+    {
+      kind: "oversized",
+      create: (destination: string) =>
+        fs.writeFileSync(destination, "x".repeat(2 * 1024 * 1024 + 1)),
+      expected: { error: "ENOENT" },
+    },
+  ])(
+    "publishes only bounded regular startup logs with redaction: $kind",
+    async ({ create, expected }) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-startup-diagnostics-"));
+      const secret = "supplied-startup-diagnostic-secret";
+      const containerId = "a".repeat(64);
+      const artifacts = new ArtifactSink(directory);
+      const command = vi.fn(async (executable: string, args: readonly string[]) => {
+        switch (`${executable}:${String(args[0])}`) {
+          case "docker:ps":
+            return {
+              exitCode: 0,
+              stdout: `${containerId}\tmanaged-container\timage\tExited\n`,
+              stderr: "",
+            };
+          case "docker:cp":
+            create(String(args[2]), secret, directory);
+            break;
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+
+      try {
+        await collectOnboardFailureRuntimeDiagnostics(
+          artifacts,
+          { command } as never,
+          "openclaw",
+          "managed-openclaw",
+          {},
+          [secret],
+        );
+        const published = await fs.promises
+          .readFile(
+            artifacts.pathFor(
+              "managed-activation-onboard-failure-openclaw-container-1-nemoclaw-start.log",
+            ),
+            "utf8",
+          )
+          .then(
+            (data) => ({ data }),
+            (error: NodeJS.ErrnoException) => ({ error: error.code }),
+          );
+        expect(published).toEqual(expected);
+      } finally {
+        fs.rmSync(directory, { force: true, recursive: true });
       }
-      return { exitCode: 0, stdout: "", stderr: "" };
-    });
-
-    try {
-      await collectOnboardFailureRuntimeDiagnostics(
-        artifacts,
-        { command } as never,
-        "openclaw",
-        "managed-openclaw",
-        {},
-        [secret],
-      );
-
-      const published = fs.readFileSync(
-        artifacts.pathFor(
-          "managed-activation-onboard-failure-openclaw-container-1-nemoclaw-start.log",
-        ),
-        "utf8",
-      );
-      expect(published).toContain("[REDACTED]");
-      expect(published).not.toContain(secret);
-    } finally {
-      fs.rmSync(directory, { force: true, recursive: true });
-    }
-  });
+    },
+  );
 
   const diagnosticEvents = [
     "tail:-c",

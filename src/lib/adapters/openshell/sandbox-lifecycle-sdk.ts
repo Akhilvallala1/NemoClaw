@@ -61,7 +61,10 @@ export type SdkOpenShellSandboxStateLifecycleDeps = Readonly<{
   waitForStopPoll?: (signal: AbortSignal) => Promise<void>;
 }>;
 
-const DEFAULT_MUTATION_TIMEOUT_MS = 75_000;
+const DEFAULT_START_TIMEOUT_MS = 75_000;
+// OpenShell 0.1.3 stops two Podman containers sequentially (45s each), then
+// allows 50s to observe the workload exit. Reserve time for SDK connection too.
+const DEFAULT_STOP_TIMEOUT_MS = 150_000;
 
 function lifecycleError(
   error: unknown,
@@ -139,7 +142,7 @@ async function mutate(
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
-    request.timeoutMs ?? DEFAULT_MUTATION_TIMEOUT_MS,
+    request.timeoutMs ?? (action === "stop" ? DEFAULT_STOP_TIMEOUT_MS : DEFAULT_START_TIMEOUT_MS),
   );
   const aborted = new Promise<never>((_resolve, reject) => {
     controller.signal.addEventListener(

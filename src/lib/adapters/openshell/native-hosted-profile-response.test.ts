@@ -93,6 +93,16 @@ describe.each(HOSTED_NATIVE_PROVIDERS)("native $label profile read boundary", (d
     };
     expect(isManagedNativeHostedProfileResponse({ profile }, definition.profileId)).toBeUndefined();
   });
+  it.each(["/usr/bin/python3*", "/usr/bin/python3.12", "/unapproved"])(
+    "rejects replacing the Hermes interpreter with %s",
+    (path) => {
+      const value = response(definition);
+      value.profile.binaries = value.profile.binaries.map((binary) =>
+        binary.path === "/usr/bin/python3.13" ? { path } : binary,
+      );
+      expect(isManagedNativeHostedProfileResponse(value, definition.profileId)).toBeUndefined();
+    },
+  );
   it("rejects extra egress or executable access", () => {
     const value = response(definition);
     expect(

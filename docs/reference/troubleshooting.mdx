@@ -825,7 +825,12 @@ Rerunning onboarding with a different provider recreates the sandbox because the
 
 ### Sandbox containers cannot reach the gateway
 
-On native Linux Docker-driver hosts, `$$nemoclaw onboard` verifies the route that sandbox containers use to reach the OpenShell gateway. If a host firewall blocks that path, onboarding exits with output like:
+OpenShell `0.1.3` Docker supervisors use host networking, and their workloads have no direct network interface.
+Onboarding skips the legacy bridge-to-gateway probe for this runtime, even when an old `openshell-docker` network remains.
+This check does not remove the retained network or change firewall rules.
+
+For runtimes that use bridge-based gateway access, a host firewall can block the route.
+Apply the following guidance only when onboarding reports this bridge diagnostic:
 
 ```text
 ✗ Sandbox containers cannot reach the gateway at host.openshell.internal:8080.

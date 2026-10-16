@@ -940,12 +940,21 @@ export async function collectOnboardFailureRuntimeDiagnostics(
             },
           );
           if (copy.exitCode !== 0) return;
-          const stat = fs.lstatSync(copiedLog);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) return;
-          await artifacts.writeText(
-            `managed-activation-onboard-failure-${agent}-container-${index + 1}-nemoclaw-start.log`,
-            fs.readFileSync(copiedLog, "utf8"),
+          // Check and read the same file; sandbox output must not redirect the read through a symlink.
+          const fd = fs.openSync(
+            copiedLog,
+            fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
           );
+          try {
+            const stat = fs.fstatSync(fd);
+            if (!stat.isFile() || stat.size > 2 * 1024 * 1024) return;
+            await artifacts.writeText(
+              `managed-activation-onboard-failure-${agent}-container-${index + 1}-nemoclaw-start.log`,
+              fs.readFileSync(fd, "utf8"),
+            );
+          } finally {
+            fs.closeSync(fd);
+          }
         } finally {
           fs.rmSync(copyRoot, { recursive: true, force: true });
         }
@@ -1022,7 +1031,7 @@ export async function qualifyAgent(
     artifactName: `${agent}-public-stop`,
     env,
     redactionValues: [API_KEY],
-    timeoutMs: 120_000,
+    timeoutMs: 180_000,
   });
   if (stop.exitCode !== 0) {
     await collectOnboardFailureRuntimeDiagnostics(artifacts, host, agent, sandboxName, env);

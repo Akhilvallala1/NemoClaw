@@ -609,6 +609,7 @@ export async function prepareOnboardSandboxWorkloadLaunch(
       log,
       reverifyBridgeReachability: () =>
         verifySandboxBridgeGatewayReachableOrExit(true, {
+          gatewayRuntime,
           skip: false,
           port: input.gpu.gatewayPort,
           reachabilityImpl: (options) =>
