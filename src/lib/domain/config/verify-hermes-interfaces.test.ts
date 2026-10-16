@@ -183,7 +183,24 @@ describe("Hermes retained interface export", () => {
     },
   );
 
+  it.each([undefined, null, 18789, 19001, "18790"])(
+    "refuses an allocated disabled dashboard when registry dashboardPort is %s",
+    async (dashboardPort) => {
+      const source = onboardedTavilySnapshot(18790);
+      const registry = { ...source.registry };
+      Object.assign(registry, { dashboardPort });
+      const candidate = { ...source, registry };
+      expect(verify(candidate).kind).toBe("rejected");
+      const exported = await exportSnapshots([candidate]);
+      expect(exported.outcome.ok).toBe(false);
+      expect(exported.writeStdout).not.toHaveBeenCalled();
+      expect(exported.publish).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
+    { dashboardPort: 19001 },
+    { dashboardPort: null },
     { hermesDashboardEnabled: true },
     { hermesDashboardPort: 19000 },
     { hermesDashboardPort: false },
