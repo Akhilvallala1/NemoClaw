@@ -322,8 +322,6 @@ describe("managed startup agent environment", () => {
       NEMOCLAW_OPENCLAW_OTEL_SAMPLE_RATE: "0.5",
       NEMOCLAW_OPENCLAW_OTEL_SERVICE_NAME: "openclaw-gateway",
       NEMOCLAW_PRIMARY_MODEL_REF: "inference/nvidia/nemotron-3-ultra-550b-a55b",
-      NEMOCLAW_PROXY_HOST: "10.200.0.1",
-      NEMOCLAW_PROXY_PORT: "3128",
       NEMOCLAW_REASONING: "true",
       NEMOCLAW_REASONING_EFFORT: "high",
       NEMOCLAW_SERVING_PRESET: "",

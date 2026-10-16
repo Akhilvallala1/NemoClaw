@@ -122,7 +122,6 @@ export const HERMES_PORTABLE_BUILD_CONTEXT_FILES = [
   { path: "nemoclaw-blueprint/provider-profiles/tavily.yaml", mode: "100644" },
   { path: "nemoclaw-blueprint/router/llm-router", mode: "160000" },
   { path: "nemoclaw-blueprint/router/pool-config.yaml", mode: "100644" },
-  { path: "nemoclaw-blueprint/scripts/http-proxy-fix.js", mode: "100644" },
   { path: "nemoclaw-blueprint/scripts/nemotron-inference-fix.js", mode: "100644" },
   { path: "nemoclaw-blueprint/scripts/sandbox-safety-net.js", mode: "100644" },
   { path: "nemoclaw-blueprint/tsconfig.json", mode: "100644" },
@@ -225,14 +224,6 @@ export const HERMES_PORTABLE_BUILD_CONTEXT_FILES = [
   },
   {
     path: "src/lib/messaging/channels/googlechat/runtime/googlechat-outbound-auth.ts",
-    mode: "100644",
-  },
-  {
-    path: "src/lib/messaging/channels/googlechat/runtime/googlechat-trusted-proxy-fetch.test.ts",
-    mode: "100644",
-  },
-  {
-    path: "src/lib/messaging/channels/googlechat/runtime/googlechat-trusted-proxy-fetch.ts",
     mode: "100644",
   },
   { path: "src/lib/messaging/channels/googlechat/runtime/hermes-adapter.py", mode: "100644" },

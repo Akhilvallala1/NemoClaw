@@ -382,8 +382,6 @@ function mapOpenClawProfile(
     NEMOCLAW_OPENCLAW_OTEL_SAMPLE_RATE: String(profile.agentConfig.otel.sampleRate),
     NEMOCLAW_OPENCLAW_OTEL_SERVICE_NAME: profile.agentConfig.otel.serviceName,
     NEMOCLAW_PRIMARY_MODEL_REF: profile.inference?.primaryModelRef ?? "",
-    NEMOCLAW_PROXY_HOST: profile.proxy.managedHost,
-    NEMOCLAW_PROXY_PORT: String(profile.proxy.managedPort),
     NEMOCLAW_REASONING: String(profile.tuning.reasoning),
     NEMOCLAW_REASONING_EFFORT: profile.tuning.reasoningEffort,
     NEMOCLAW_SERVING_PRESET: profile.inference?.servingPreset ?? "",

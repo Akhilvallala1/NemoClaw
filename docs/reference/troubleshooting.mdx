@@ -2519,9 +2519,19 @@ Do not set `NEMOCLAW_PROXY_HOST` or `NEMOCLAW_PROXY_PORT` to repair this route.
 Rebuild an older Deep Agents sandbox to install the updated launchers.
 
 </AgentOnly>
-<AgentOnly variant="openclaw,hermes">
+<AgentOnly variant="openclaw">
 
-NemoClaw uses a default proxy address of `10.200.0.1:3128` (the OpenShell-injected gateway). If your environment uses a different proxy, set `NEMOCLAW_PROXY_HOST` and `NEMOCLAW_PROXY_PORT` before onboarding:
+For managed OpenClaw on OpenShell `0.1.3`, check the sandbox network policy and recent denial logs when an external request fails.
+OpenClaw starts without application proxy settings, and OpenShell mediates outbound requests.
+Normal sandbox startup clears inherited proxy variables and removes obsolete global and Telegram proxy settings from restored configuration.
+Do not set `NEMOCLAW_PROXY_HOST` or `NEMOCLAW_PROXY_PORT` to repair this route.
+If the gateway already runs OpenShell `0.1.3`, rebuild the OpenClaw sandbox to remove previous proxy settings.
+Rebuilding a registered sandbox on an OpenShell `0.0.x` gateway does not upgrade that gateway; follow [Update Sandboxes](../manage-sandboxes/operate-sandboxes/update-sandboxes#use-the-automatic-upgrade-path) before planning replacement.
+
+</AgentOnly>
+<AgentOnly variant="hermes">
+
+Hermes uses a default proxy address of `10.200.0.1:3128` (the OpenShell-injected gateway). If your environment uses a different proxy, set `NEMOCLAW_PROXY_HOST` and `NEMOCLAW_PROXY_PORT` before onboarding:
 
 ```bash
 export NEMOCLAW_PROXY_HOST=proxy.example.com
@@ -2541,7 +2551,7 @@ When a sandbox needs to call an HTTP service running on the host, use the normal
 
 Do not rely on `host.docker.internal` or `host.openshell.internal` as a general-purpose host-service path. Those names may appear in the sandbox's `/etc/hosts`, but in OpenShell's sandbox network they are not guaranteed to point at a reachable host gateway.
 
-<AgentOnly variant="openclaw,hermes">
+<AgentOnly variant="hermes">
 
 Bypassing the proxy with `--noproxy '*'` also bypasses network policy enforcement and audit.
 
