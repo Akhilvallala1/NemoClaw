@@ -97,6 +97,7 @@ type RebuildOwningRegistryDependencies = {
 
 type RebuildWorkerOptions = Readonly<{
   credentialEnvNames?: readonly string[];
+  gatewayStateDir?: string;
   terminationGraceMs?: number;
   timeoutMs?: number;
 }>;
@@ -116,14 +117,19 @@ const REBUILD_ENV_NAMES = [
   "NEMOCLAW_OPENSHELL_SANDBOX_BIN",
   "NEMOCLAW_REBUILD_VERBOSE",
   "NEMOCLAW_SANDBOX_BASE_IMAGE_REFRESH",
+  "NEMOCLAW_TELEMETRY_CONTEXT_DIR",
+  "NEMOCLAW_DISABLE_TELEMETRY",
 ] as const;
 // Non-secret settings that the destroy path reads. Forwarding them keeps the
-// ports, dashboard bind, gateway runtime and state directory, OpenShell
-// binaries, prompt mode, and CLI name of a delegated destroy equal to the caller's.
+// ports, dashboard bind, gateway runtime, OpenShell binaries, prompt mode,
+// telemetry context, and CLI name of a delegated destroy equal to the
+// caller's. The gateway state directory comes from the owning sandbox entry,
+// never the caller's override.
 const DESTROY_ENV_NAMES = [
   "NEMOCLAW_BEDROCK_RUNTIME_ADAPTER_PORT",
   "NEMOCLAW_DASHBOARD_BIND",
   "NEMOCLAW_DASHBOARD_PORT",
+  "NEMOCLAW_DISABLE_TELEMETRY",
   "NEMOCLAW_GATEWAY_RUNTIME",
   "NEMOCLAW_HTTPS_PIN_RUNTIME_ADAPTER_PORT",
   "NEMOCLAW_INVOKED_AS",
@@ -133,8 +139,8 @@ const DESTROY_ENV_NAMES = [
   "NEMOCLAW_OPENROUTER_RUNTIME_ADAPTER_PORT",
   "NEMOCLAW_OPENSHELL_BIN",
   "NEMOCLAW_OPENSHELL_GATEWAY_BIN",
-  "NEMOCLAW_OPENSHELL_GATEWAY_STATE_DIR",
   "NEMOCLAW_OPENSHELL_SANDBOX_BIN",
+  "NEMOCLAW_TELEMETRY_CONTEXT_DIR",
   "NEMOCLAW_VLLM_PORT",
 ] as const;
 
@@ -160,10 +166,32 @@ export function restoreRecordedRebuildGatewayStateDir(
   });
 }
 
+function resolveRecordedDestroyGatewayStateDir(
+  entry: SandboxEntry | null | undefined,
+  homeDir: string,
+  gatewayPort: number,
+): string | undefined {
+  if (entry?.openshellGatewayStateDir == null) return undefined;
+  const recorded = entry.openshellGatewayStateDir;
+  if (typeof recorded !== "string" || !recorded || path.resolve(recorded) !== recorded) {
+    throw new Error("Cannot destroy with an invalid recorded OpenShell gateway state directory.");
+  }
+  return resolveGatewayStateDirForPort({
+    configured: recorded,
+    home: homeDir,
+    port: registryEntryGatewayPort({
+      name: entry.name,
+      gatewayName: entry.gatewayName,
+      gatewayPort: entry.gatewayPort ?? gatewayPort,
+    }),
+  });
+}
+
 function owningRegistryWorkerEnv(
   operation: OwningRegistryWorkerInput["operation"],
   gatewayPort: number,
   credentialEnvNames: readonly string[],
+  gatewayStateDir?: string,
 ): Record<string, string> {
   const extra: Record<string, string> = {
     ...snapshotCredentialEnv(credentialEnvNames),
@@ -172,6 +200,9 @@ function owningRegistryWorkerEnv(
   for (const name of operation === "destroy" ? DESTROY_ENV_NAMES : REBUILD_ENV_NAMES) {
     const value = process.env[name];
     if (value !== undefined) extra[name] = value;
+  }
+  if (operation === "destroy" && gatewayStateDir !== undefined) {
+    extra.NEMOCLAW_OPENSHELL_GATEWAY_STATE_DIR = gatewayStateDir;
   }
   return buildSubprocessEnv(extra);
 }
@@ -339,9 +370,25 @@ async function runWorker(
   process.on("SIGINT", onSigint);
   process.on("SIGTERM", onSigterm);
   try {
+    const gatewayStateDir =
+      input.operation === "destroy"
+        ? (options.gatewayStateDir ??
+          (isValidName(input.sandboxName)
+            ? resolveRecordedDestroyGatewayStateDir(
+                findSandboxAcrossGatewayRoots(input.sandboxName, resolveHome(process.env))?.entry,
+                resolveHome(process.env),
+                gatewayPort,
+              )
+            : undefined))
+        : undefined;
     const child = spawn(process.execPath, [WORKER_PATH], {
       detached: dedicatedProcessGroup,
-      env: owningRegistryWorkerEnv(input.operation, gatewayPort, options.credentialEnvNames ?? []),
+      env: owningRegistryWorkerEnv(
+        input.operation,
+        gatewayPort,
+        options.credentialEnvNames ?? [],
+        gatewayStateDir,
+      ),
       stdio: ["inherit", "inherit", "inherit", "pipe", "pipe"],
     });
     const inputStream = child.stdio[3];
@@ -605,11 +652,17 @@ export async function delegateDestroyToOwningRegistry(
       `Cannot transfer destroy for '${input.sandboxName}' while another lifecycle command owns the host fence. Run '${cliName} ${input.sandboxName} destroy' directly.`,
     );
   }
+  const gatewayStateDir = resolveRecordedDestroyGatewayStateDir(
+    hit.entry,
+    homeDir,
+    hit.registryGatewayPort,
+  );
   const options = await confirm(input.options);
   if (!options) return true;
   await rebuildOwningRegistryDependencies.runWorker(
     { operation: "destroy", sandboxName: input.sandboxName, options },
     hit.registryGatewayPort,
+    ...(gatewayStateDir === undefined ? [] : [{ gatewayStateDir }]),
   );
   return true;
 }

@@ -49,6 +49,7 @@ export type DestroyHarness = {
   listHostGatewayRegistryEntriesSpy: MockInstance;
   logSpy: MockInstance;
   mcpRuntimeSelectionSpy: MockInstance;
+  migrateLegacyCloudflaredStateSpy: MockInstance;
   /** In-memory pending managed vLLM retirement record; null when none is recorded. */
   pendingVllmRetirement: { sandboxName: string | null };
   clearPendingVllmRetirementSpy: MockInstance;
@@ -710,6 +711,9 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
     requests: [],
   });
   const stopAllSpy = vi.spyOn(tunnelServices, "stopAll").mockImplementation(() => undefined);
+  const migrateLegacyCloudflaredStateSpy = vi
+    .spyOn(tunnelServices, "migrateLegacyCloudflaredState")
+    .mockReturnValue(false);
   const preparedServers = options.mcpAddState === "prepared" ? [] : (options.mcpServers ?? []);
   const resolvedMcpRuntimeSelection = options.mcpRuntimeSelection ?? {
     gatewayName: "nemoclaw-19080",
@@ -804,6 +808,7 @@ export function createDestroyHarness(options: DestroyHarnessOptions = {}): Destr
     listHostGatewayRegistryEntriesSpy,
     logSpy,
     mcpRuntimeSelectionSpy,
+    migrateLegacyCloudflaredStateSpy,
     pendingVllmRetirement,
     clearPendingVllmRetirementSpy,
     recordPendingVllmRetirementSpy,

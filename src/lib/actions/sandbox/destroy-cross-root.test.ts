@@ -11,10 +11,11 @@ import {
   createDestroyHarness,
   resetDestroyModuleCache,
 } from "../../../../test/helpers/destroy-flow-test-harness";
+import { testTimeoutOptions } from "../../../../test/helpers/timeouts";
 
 const SIBLING_PORT = 8245;
 
-describe("destroySandbox cross-root registry authority", () => {
+describe("destroySandbox cross-root registry authority", testTimeoutOptions(30_000), () => {
   let home: string;
 
   beforeEach(() => {
@@ -34,7 +35,10 @@ describe("destroySandbox cross-root registry authority", () => {
     fs.rmSync(home, { force: true, recursive: true });
   });
 
-  function writeSiblingRegistry(names: readonly string[]): string {
+  function writeSiblingRegistry(
+    names: readonly string[],
+    entryOverrides: Readonly<Record<string, unknown>> = {},
+  ): string {
     const registryDir = path.join(home, ".nemoclaw", "gateways", String(SIBLING_PORT));
     const registryFile = path.join(registryDir, "sandboxes.json");
     fs.mkdirSync(registryDir, { recursive: true });
@@ -53,6 +57,7 @@ describe("destroySandbox cross-root registry authority", () => {
               model: "nvidia/nemotron",
               gatewayName: `nemoclaw-${String(SIBLING_PORT)}`,
               gatewayPort: SIBLING_PORT,
+              ...entryOverrides,
             },
           ]),
         ),
@@ -213,5 +218,27 @@ describe("destroySandbox cross-root registry authority", () => {
       "Cannot transfer destroy for 'alpha' while another lifecycle command owns the host fence. Run 'nemohermes alpha destroy' directly.",
     );
     expect(harness.runOwningRegistryWorkerSpy).not.toHaveBeenCalled();
+  });
+
+  it("binds a sibling-root destroy worker to the owning entry's gateway state directory instead of the caller's override", async () => {
+    const callerStateDir = path.join(home, "caller-gateway-state");
+    const owningStateDir = path.join(home, "sibling-gateway-state");
+    vi.stubEnv("NEMOCLAW_OPENSHELL_GATEWAY_STATE_DIR", callerStateDir);
+    writeSiblingRegistry(["alpha"], { openshellGatewayStateDir: owningStateDir });
+    const harness = createDestroyHarness();
+
+    await expect(
+      harness.destroySandbox("alpha", { yes: true, cleanupGateway: false }),
+    ).resolves.toBeUndefined();
+
+    expect(harness.runOwningRegistryWorkerSpy).toHaveBeenCalledWith(
+      {
+        operation: "destroy",
+        sandboxName: "alpha",
+        options: { yes: true, cleanupGateway: false },
+      },
+      SIBLING_PORT,
+      { gatewayStateDir: owningStateDir },
+    );
   });
 });
