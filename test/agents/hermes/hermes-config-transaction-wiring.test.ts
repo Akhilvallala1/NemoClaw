@@ -13,32 +13,10 @@ const SOURCE_REQUIRE_HOOK = path.join(
   "onboard-script-mocks.cjs",
 );
 
-describe("Hermes host config transaction wiring", () => {
-  const handle = "openshell:resolve:env:v7_NEMOCLAW_LOCAL_INFERENCE_TOKEN";
-  it.each([
-    { update: "model", expected: { model: { default: "trusted-model-v2" } } },
-    {
-      update: "restored-native-local",
-      expected: {
-        model: { default: "trusted-model-v2", api_key: handle },
-        providers: { "vllm-local": { api_key: handle } },
-        custom_providers: [{ api_key: handle }],
-      },
-    },
-    {
-      update: "native-local",
-      expected: {
-        model: { default: "trusted-model-v2", api_key: handle },
-        providers: { "vllm-local": { api_key: handle } },
-        custom_providers: [{ api_key: handle }],
-      },
-    },
-  ])(
-    "passes the read digest and $update update to the sanitized write transaction",
-    ({ update, expected }) => {
-      const rawConfig = "model:\n  default: trusted-model\n";
-      const expectedDigest = createHash("sha256").update(rawConfig).digest("hex");
-      const script = String.raw`
+function runConfigWrite(mode: "sealed" | "native", update = "model") {
+  const rawConfig = "model:\n  default: trusted-model\n";
+  const expectedDigest = createHash("sha256").update(rawConfig).digest("hex");
+  const script = String.raw`
 const Module = require("node:module");
 const path = require("node:path");
 const root = process.cwd();
@@ -71,7 +49,7 @@ installMock(source("agent", "defs.js"), {
 });
 installMock(source("adapters", "openshell", "client.js"), {
   captureOpenshellCommand: () => ({ status: 0, output: rawConfig }),
-  runOpenshellCommand: () => ({ status: 0 }),
+  runOpenshellCommand: (_binary, argv, options) => { captured = { argv, options }; return { status: 0, stdout: "updated=1\\n".replace("\\n", "\n") }; },
 });
 installMock(source("sandbox", "privileged-exec.js"), {
   capturePrivilegedSandboxCommand: (sandboxName, command, options) => {
@@ -89,34 +67,66 @@ parsed.model.default = "trusted-model-v2";
 if (${JSON.stringify(update)} !== "model") {
   const { applyHermesManagedRoute } = require(source("hermes-managed-route.js"));
   applyHermesManagedRoute(parsed, {
-    model: "trusted-model-v2",
-    upstreamProvider: "vllm-local",
-    baseUrl: "http://host.openshell.internal:8000/v1",
-    inferenceApi: "openai-completions",
+    model: "trusted-model-v2", upstreamProvider: "vllm-local",
+    baseUrl: "http://host.openshell.internal:8000/v1", inferenceApi: "openai-completions",
     nativeCredentialHandle: "openshell:resolve:env:v7_NEMOCLAW_LOCAL_INFERENCE_TOKEN",
   });
 }
-config.writeSandboxConfig("alpha", target, parsed, ${JSON.stringify(update === "restored-native-local" ? { restoreNativeLocalCredential: true } : {})});
+config.writeSandboxConfig("alpha", target, parsed, ${mode === "native" ? JSON.stringify("selected-gateway") : JSON.stringify(update === "restored-native-local" ? { restoreNativeLocalCredential: true } : {})});
 process.stdout.write(JSON.stringify({ ...captured, privilegedExec: capturedPrivilegedExec }));
 `;
 
-      const result = spawnSync(process.execPath, ["--require", SOURCE_REQUIRE_HOOK, "-e", script], {
-        cwd: path.join(import.meta.dirname, "../../.."),
-        encoding: "utf-8",
-        env: { ...process.env, NODE_OPTIONS: "" },
-        timeout: 5000,
-      });
+  const result = spawnSync(process.execPath, ["--require", SOURCE_REQUIRE_HOOK, "-e", script], {
+    cwd: path.join(import.meta.dirname, "../../.."),
+    encoding: "utf-8",
+    env: { ...process.env, NODE_OPTIONS: "" },
+    timeout: 5000,
+  });
 
-      expect(result.status, result.stderr).toBe(0);
-      const captured = JSON.parse(result.stdout) as {
-        argv: string[];
-        options: { input: string; timeout: number; sanitizeEnvironment: boolean };
-        privilegedExec: { command: string[]; sanitizeEnvironment: boolean };
-      };
-      const digestFlag = captured.argv.indexOf("--expected-config-sha256");
+  expect(result.status, result.stderr).toBe(0);
+  const captured = JSON.parse(result.stdout) as {
+    argv: string[];
+    options: { input: string; timeout: number; sanitizeEnvironment: boolean };
+    privilegedExec: { command: string[]; sanitizeEnvironment: boolean };
+  };
+  return { captured, expectedDigest };
+}
+
+describe("Hermes host config transaction wiring", () => {
+  it("passes the read digest and serialized update to the native transaction", () => {
+    const { captured, expectedDigest } = runConfigWrite("native");
+
+    expect(captured.argv.slice(0, 6)).toEqual([
+      "-g",
+      "selected-gateway",
+      "sandbox",
+      "exec",
+      "--name",
+      "alpha",
+    ]);
+    expect(captured.argv.at(-1)).toBe(expectedDigest);
+    expect(captured.options.input).toContain("default: trusted-model-v2");
+    expect(captured.privilegedExec).toBeNull();
+  });
+  it.each(["model", "native-local", "restored-native-local"])(
+    "passes the read digest and %s update to the sealed transaction",
+    (update) => {
+      const { captured, expectedDigest } = runConfigWrite("sealed", update);
+      const handle = "openshell:resolve:env:v7_NEMOCLAW_LOCAL_INFERENCE_TOKEN";
       expect(captured.argv.includes("--restore-native-local-credential")).toBe(
         update === "restored-native-local",
       );
+      expect(yaml.load(captured.options.input)).toMatchObject(
+        update === "model"
+          ? { model: { default: "trusted-model-v2" } }
+          : {
+              model: { default: "trusted-model-v2", api_key: handle },
+              providers: { "vllm-local": { api_key: handle } },
+              custom_providers: [{ api_key: handle }],
+            },
+      );
+      expect(captured.argv.join(" ")).not.toContain(handle);
+      const digestFlag = captured.argv.indexOf("--expected-config-sha256");
       expect(captured.argv).toEqual(
         expect.arrayContaining([
           "timeout",
@@ -138,8 +148,6 @@ process.stdout.write(JSON.stringify({ ...captured, privilegedExec: capturedPrivi
       expect(digestFlag).toBeGreaterThanOrEqual(0);
       expect(captured.argv[digestFlag + 1]).toBe(expectedDigest);
       expect(captured.options.input).toContain("default: trusted-model-v2");
-      expect(yaml.load(captured.options.input)).toMatchObject(expected);
-      expect(captured.argv.join(" ")).not.toContain(handle);
       expect(captured.options.timeout).toBe(150000);
       expect(captured.options.sanitizeEnvironment).toBe(true);
       expect(captured.privilegedExec.sanitizeEnvironment).toBe(true);

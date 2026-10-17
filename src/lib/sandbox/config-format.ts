@@ -60,7 +60,10 @@ export function serializeConfig(config: ConfigObject, format: string): string {
 
 /** Include the Hermes upstream header in its serialized configuration. */
 export function composeSandboxConfigBody(config: ConfigObject, target: AgentConfigTarget): string {
-  const body = serializeConfig(config, target.format);
+  const body =
+    target.agentName === "hermes" && target.format === "yaml"
+      ? require("yaml").stringify(config, { compat: "yaml-1.1" })
+      : serializeConfig(config, target.format);
   if (target.agentName === "hermes" && target.format === "yaml") {
     return `${buildHermesUpstreamHeader(config as Record<string, unknown>)}${body}`;
   }

@@ -87,6 +87,60 @@ function baseOptions(
 }
 
 describe("handleAgentSetupState", () => {
+  it("initializes external-image Hermes inference before advancing to policies", async () => {
+    const initialize = vi.fn(async () => undefined);
+    const { deps, calls } = createDeps({ initializeExternalHermesInferenceRoute: initialize });
+    const identity = vi.fn();
+    await handleAgentSetupState({
+      ...baseOptions(deps, { name: "hermes", displayName: "Hermes" }),
+      initializeExternalHermesInference: true,
+      revalidateSandboxIdentity: identity,
+    });
+    expect(initialize).toHaveBeenCalledWith({
+      getSandbox: calls.context.mock.results[0]!.value.getSandbox,
+      sandboxName: "my-assistant",
+      gatewayName: "nemoclaw-19090",
+      model: "model",
+      provider: "provider",
+      preferredInferenceApi: "openai-completions",
+      revalidateSandboxIdentity: identity,
+    });
+    expect(calls.handleAgentSetup.mock.invocationCallOrder[0]).toBeLessThan(
+      initialize.mock.invocationCallOrder[0],
+    );
+    expect(initialize.mock.invocationCallOrder[0]).toBeLessThan(
+      calls.ensureDashboard.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("stops external-image Hermes setup without verified sandbox identity", async () => {
+    const { deps, calls } = createDeps();
+    await expect(
+      handleAgentSetupState({
+        ...baseOptions(deps, { name: "hermes", displayName: "Hermes" }),
+        initializeExternalHermesInference: true,
+      }),
+    ).rejects.toThrow("verified sandbox identity");
+    expect(calls.handleAgentSetup).not.toHaveBeenCalled();
+  });
+
+  it("does not advance after external-image Hermes route initialization fails", async () => {
+    const { deps, calls } = createDeps({
+      initializeExternalHermesInferenceRoute: vi.fn(async () => {
+        throw new Error("route failed");
+      }),
+    });
+    await expect(
+      handleAgentSetupState({
+        ...baseOptions(deps, { name: "hermes", displayName: "Hermes" }),
+        initializeExternalHermesInference: true,
+        revalidateSandboxIdentity: vi.fn(),
+      }),
+    ).rejects.toThrow("route failed");
+    expect(calls.ensureDashboard).not.toHaveBeenCalled();
+    expect(calls.skipped).not.toHaveBeenCalled();
+  });
+
   it("delegates non-OpenClaw agent setup and skips openclaw", async () => {
     const { deps, calls } = createDeps();
     const agent = { name: "hermes", displayName: "Hermes" };
@@ -108,9 +162,7 @@ describe("handleAgentSetupState", () => {
       true,
       session,
       {
-        ctx: true,
-        gatewayName: "nemoclaw-19090",
-        getSandbox: expect.any(Function),
+        ...calls.context.mock.results[0]!.value,
         revalidateSandboxIdentity,
         prepareHermesInferenceForward: expect.any(Function),
       },

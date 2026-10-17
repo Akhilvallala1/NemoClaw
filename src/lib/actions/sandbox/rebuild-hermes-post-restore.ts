@@ -785,6 +785,7 @@ export async function restoreExternalHermesInference(
       }
     },
   });
+}
 
 /** Rebind restored native references; the post-restore phase owns the restart. */
 export async function refreshRestoredHermesInferenceRoute(

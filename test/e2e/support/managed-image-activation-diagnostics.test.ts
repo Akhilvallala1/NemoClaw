@@ -99,16 +99,16 @@ describe("legacy managed volume fixture", () => {
       expect(commands().filter((args) => args[0] === "volume" && args[1] === "rm")).toEqual([
         ["volume", "rm", fixture.root.resourceIdentity],
       ]);
-      expect(commands().at(-1)).toEqual([
-        "volume",
-        "ls",
-        "--format",
-        "{{.Name}}",
-        ...Object.entries(fixture.root.ownershipLabels).flatMap(([key, value]) => [
-          "--filter",
-          `label=${key}=${value}`,
-        ]),
-      ]);
+      const failingCleanup = new CleanupRegistry();
+      createLegacyManagedVolumeFixture(failingCleanup).seed();
+      capture.mockImplementation((_operation, args) => ({
+        status: args[0] === "volume" && args[1] === "rm" ? 1 : 0,
+        stdout: "",
+        stderr: "volume is in use",
+      }));
+      const failedCleanup = await failingCleanup.runAll();
+      expect(failedCleanup.failures).toHaveLength(1);
+      expect(failedCleanup.failures[0]?.message).toContain("volume is in use");
     },
   );
 });

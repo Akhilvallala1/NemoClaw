@@ -134,6 +134,9 @@ export async function handleAgentSetupState<Agent>({
   };
 
   if (agent) {
+    if (initializeExternalHermesInference && !revalidateSandboxIdentity) {
+      throw new Error("Initial Hermes inference route requires verified sandbox identity.");
+    }
     let forwardHandoff: Promise<number> | undefined;
     const ensureForward = (): Promise<number> =>
       (forwardHandoff ??= (async () => {
@@ -158,11 +161,7 @@ export async function handleAgentSetupState<Agent>({
         }
       },
     });
-    await ensureForward();
     if (initializeExternalHermesInference) {
-      if (!revalidateSandboxIdentity) {
-        throw new Error("Initial Hermes inference route requires verified sandbox identity.");
-      }
       await (deps.initializeExternalHermesInferenceRoute ?? initializeExternalHermesInferenceRoute)(
         {
           sandboxName,
@@ -171,10 +170,11 @@ export async function handleAgentSetupState<Agent>({
           model,
           provider,
           preferredInferenceApi,
-          revalidateSandboxIdentity,
+          revalidateSandboxIdentity: revalidateSandboxIdentity!,
         },
       );
     }
+    await ensureForward();
     session = await deps.recordStepSkipped("openclaw");
     return { session, stateResult: advanceTo("policies", { metadata: { state: "agent_setup" } }) };
   }
