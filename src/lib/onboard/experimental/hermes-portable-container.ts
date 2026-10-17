@@ -65,7 +65,7 @@ if re.fullmatch(r"[0-9a-f]{64}", key) is None:
 def authenticated_health_status(port, timeout):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
-        connection.request("GET", "/health", headers={"Authorization": "Bearer " + key})
+        connection.request("GET", "/health/detailed", headers={"Authorization": "Bearer " + key})
         response = connection.getresponse()
         try:
             return response.status

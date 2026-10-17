@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -155,6 +156,66 @@ function activeReceipt(running = true): HermesPortableConfiguredReceipt {
 }
 
 describe("Hermes portable container authority", () => {
+  it.each([
+    ["200", "matching", "a"],
+    ["401", "incorrect", "b"],
+  ])(
+    "returns %s for the %s API key at the protected health endpoint",
+    (status, _case, serverKey) => {
+      const result = spawnSync(
+        "python3",
+        [
+          "-I",
+          "-c",
+          String.raw`
+import http.client, json, pathlib, sys
+from unittest.mock import patch
+
+inputs = json.load(sys.stdin)
+
+class Connection:
+    def __init__(self, host, port, timeout):
+        assert host == "127.0.0.1" and port == 8642 and timeout == 5
+    def request(self, method, target, headers):
+        assert method == "GET"
+        # The pinned Hermes API keeps /health public and protects /health/detailed.
+        if target == "/health":
+            self.status = 200
+        elif target == "/health/detailed":
+            self.status = 200 if headers.get("Authorization") == "Bearer " + inputs["serverKey"] else 401
+        else:
+            self.status = 404
+    def getresponse(self):
+        return self
+    def close(self):
+        pass
+
+with patch.object(pathlib.Path, "read_text", return_value="API_SERVER_KEY=" + "a" * 64):
+    with patch.object(http.client, "HTTPConnection", Connection):
+        exec(inputs["program"], {})
+`,
+        ],
+        {
+          encoding: "utf8",
+          input: JSON.stringify({
+            program: hermesPortableContainerInternals.authenticatedHealthScript,
+            serverKey: serverKey.repeat(64),
+          }),
+          timeout: 10_000,
+        },
+      );
+      expect({
+        status: result.status,
+        stdout: result.stdout.trim(),
+        stderr: result.stderr,
+      }).toEqual({
+        status: 0,
+        stdout: status,
+        stderr: "",
+      });
+    },
+  );
+
   it("enrolls a labelled workload while excluding its supervisor", () => {
     const workloadLabels = { ...LABELS, "openshell.ai/isolation-role": "sandbox" };
     const podman = vi
