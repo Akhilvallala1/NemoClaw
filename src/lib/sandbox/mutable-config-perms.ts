@@ -8,6 +8,7 @@ import {
   type SandboxGatewayBinding,
 } from "../onboard/gateway-binding/identity";
 import { withMcpLifecycleLockSync } from "../state/mcp-lifecycle-lock-acquisition";
+import { renderTerminalText } from "../policy/preset-scope-render";
 import { resolveAgentConfig, type AgentConfigTarget } from "./agent-config";
 
 export interface MutableHermesConfigVerification {
@@ -178,8 +179,14 @@ export function inspectMutableHermesConfigPerms(
         },
       );
       if (result.error || result.signal || result.status !== 0) {
+        const detail = [
+          result.error?.message ?? result.signal ?? `exit ${result.status}`,
+          result.stderr,
+        ]
+          .filter(Boolean)
+          .join(": ");
         throw new Error(
-          `Hermes config probe failed (${result.error?.message ?? result.signal ?? `exit ${result.status}`})`,
+          `Hermes config probe failed (${renderTerminalText(detail.trim()).slice(-4096)})`,
         );
       }
     });

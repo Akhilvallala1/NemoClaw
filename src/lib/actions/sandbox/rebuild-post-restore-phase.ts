@@ -709,7 +709,9 @@ export async function runRebuildPostRestorePhase(
   }
   if (
     targetAgentName === "hermes" &&
-    (hermesGatewayRestoreUnverified || mcpBridgeRestoreUnverified)
+    (hermesGatewayRestoreUnverified ||
+      mcpBridgeRestoreUnverified ||
+      !mutableConfigPermissionsVerified)
   ) {
     bail(`Hermes post-restore verification failed for '${sandboxName}'.`);
     return;

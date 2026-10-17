@@ -97,6 +97,31 @@ describe("mutable Hermes config permissions", () => {
     expect(inspectMutableHermesConfigPerms("hermes-demo", getSandbox).verified).toBe(false);
   });
 
+  it("retains bounded probe failure details with credentials redacted and controls escaped", () => {
+    captureSanitizedResolvedOpenshell.mockReturnValue({
+      status: 1,
+      output: "unused stdout",
+      stdout: "OPENAI_API_KEY=stdout-secret",
+      stderr:
+        "x".repeat(5000) +
+        "\nPermissionError: config.yaml remains read-only\n" +
+        "MSTEAMS_APP_PASSWORD=diagnostic-test-secret\n" +
+        "https://diagnostic-user:diagnostic-password@example.test/?token=diagnostic-token\n" +
+        "\u001b[2J\u009b\u202euntrusted output",
+    });
+
+    const verification = inspectMutableHermesConfigPerms("hermes-demo", getSandbox);
+    const message = verification.errors[0]!;
+
+    expect(verification.verified).toBe(false);
+    expect(message).toContain("PermissionError: config.yaml remains read-only");
+    expect(message).toContain("<REDACTED>");
+    expect(message).not.toMatch(/diagnostic-(?:test-secret|user|password|token)|stdout-secret/);
+    expect(message).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(message).toContain("\\u{001b}[2J");
+    expect(message.length).toBeLessThanOrEqual(4096 + "Hermes config probe failed ()".length);
+  });
+
   it.each([null, { gatewayName: "unregistered-gateway" }])(
     "rejects missing or invalid registry authority: %j",
     (entry) => {

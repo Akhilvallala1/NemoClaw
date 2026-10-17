@@ -1039,22 +1039,22 @@ describe("rebuild post-restore phase", () => {
   });
 
   it.each([false, true])(
-    "reports the failed Hermes write check and retry command with prepared recovery %s",
+    "rejects incomplete Hermes config verification with prepared recovery %s",
     async (preparedBackupRecovery) => {
       agentName = "hermes";
       vi.mocked(mutableConfigPerms.inspectMutableHermesConfigPerms).mockReturnValue({
         verified: false,
         errors: ["config.yaml remains read-only"],
       });
-      const args = { ...input(), preparedBackupRecovery };
+      const failure = new Error("Hermes verification failed");
+      const bail = vi.fn((): never => {
+        throw failure;
+      });
+      const args = { ...input(), preparedBackupRecovery, bail };
 
-      const verification = await runRebuildPostRestorePhase(args);
-
-      expect(args.bail).toHaveBeenCalledTimes(Number(preparedBackupRecovery));
-      expect(verification).toEqual(
-        preparedBackupRecovery
-          ? undefined
-          : { complete: false, mutableConfigPermissionsVerified: false },
+      await expect(runRebuildPostRestorePhase(args)).rejects.toBe(failure);
+      expect(args.bail).toHaveBeenCalledExactlyOnceWith(
+        "Hermes post-restore verification failed for 'alpha'.",
       );
       expect(args.log).toHaveBeenCalledWith(
         "Hermes mutable config posture was not verified: config.yaml remains read-only",
