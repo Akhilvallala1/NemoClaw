@@ -1623,8 +1623,10 @@ credential projection, but must not add the retired NemoClaw gateway controller.
 
 ### Hermes config reports a mutation already in progress
 
-Hermes host config writes and lifecycle seals use the same root-only mutation lock.
-A host-side config write binds to the SHA-256 digest of the matching read, installs fresh config inodes, refreshes both config hashes, and restores mutable access before releasing that lock.
+This diagnostic applies to legacy root-owned configuration and lifecycle transactions.
+Current host-side Hermes `config set` uses a guarded transaction as the sandbox user through the recorded OpenShell gateway.
+It binds the write to the matching read, refreshes the integrity hashes, and verifies a gateway reload; it does not use the legacy root-only seal.
+For transaction failure and rollback checks, refer to [Hermes Runtime Changes](../manage-sandboxes/configure-sandboxes/understand-runtime-changes#hermes-runtime-changes).
 If a concurrent command reports `Hermes config mutation is already in progress`, do not remove `/run/nemoclaw/hermes-config-mutation.lock` manually.
 Wait for the active config, recovery, or restart command to finish, then retry.
 

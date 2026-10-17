@@ -13,7 +13,10 @@ const SOURCE_REQUIRE_HOOK = path.join(
   "onboard-script-mocks.cjs",
 );
 
-function runConfigWrite(mode: "sealed" | "native", update = "model") {
+function runConfigWrite(
+  mode: "sealed" | "native" | "native-restored" | "public" | "missing-gateway" | "changed-target",
+  update = "model",
+) {
   const rawConfig = "model:\n  default: trusted-model\n";
   const expectedDigest = createHash("sha256").update(rawConfig).digest("hex");
   const script = String.raw`
@@ -33,9 +36,23 @@ function installMock(filename, exports) {
 const rawConfig = ${JSON.stringify(rawConfig)};
 let captured = null;
 let capturedPrivilegedExec = null;
+const reads = [];
+let selectionReads = 0;
+console.log = () => undefined;
 installMock(source("runner.js"), { validateName: () => undefined, ROOT: root });
 installMock(source("state", "registry.js"), {
-  getSandbox: () => ({ name: "alpha", agent: "hermes" }),
+  getSandbox: () => ({ name: "alpha", agent: "hermes", gatewayName: ${mode === "missing-gateway" ? "undefined" : JSON.stringify("selected-gateway")} }),
+});
+installMock(source("state", "audit", "operational.js"), { appendAuditEntry: () => undefined });
+installMock(source("state", "mcp-lifecycle-lock.js"), {
+  withSandboxMutationLock: (_name, callback) => callback(),
+});
+installMock(source("actions", "sandbox", "mcp-bridge-provider-inspection.js"), {
+  resolveSandboxConfigRuntimeSelection: () => {
+    if (${mode === "missing-gateway"}) throw new Error("Sandbox has no registered gateway.");
+    selectionReads += 1;
+    return { gatewayName: ${mode === "changed-target"} && selectionReads > 1 ? "changed-gateway" : "selected-gateway", workspace: "default" };
+  },
 });
 installMock(source("agent", "defs.js"), {
   loadAgent: () => ({
@@ -47,8 +64,14 @@ installMock(source("agent", "defs.js"), {
     },
   }),
 });
+const { buildSelectedOpenShellSubprocessEnv } = require(source("adapters", "openshell", "command-argv.js"));
+process.env.OPENSHELL_GATEWAY = "ambient-gateway";
+process.env.OPENSHELL_WORKSPACE = "ambient-workspace";
+process.env.OPENSHELL_LOCAL_TLS_DIR = "/ambient/tls";
+process.env.OPENSHELL_TOKEN = "ambient-token";
 installMock(source("adapters", "openshell", "client.js"), {
-  captureOpenshellCommand: () => ({ status: 0, output: rawConfig }),
+  buildSelectedOpenShellSubprocessEnv,
+  captureOpenshellCommand: (_binary, argv) => { reads.push(argv); return { status: 0, stdout: rawConfig, output: rawConfig }; },
   runOpenshellCommand: (_binary, argv, options) => { captured = { argv, options }; return { status: 0, stdout: "updated=1\\n".replace("\\n", "\n") }; },
 });
 installMock(source("sandbox", "privileged-exec.js"), {
@@ -61,6 +84,15 @@ installMock(source("sandbox", "privileged-exec.js"), {
 });
 
 const config = require(source("sandbox", "config.js"));
+async function run() {
+if (${mode === "public" || mode === "missing-gateway" || mode === "changed-target"}) {
+  let error = null;
+  try {
+    await config.configSet("alpha", { key: "model.max_tokens", value: "24577", acceptNewPath: true });
+  } catch (failure) { error = failure.message; }
+  process.stdout.write(JSON.stringify({ ...captured, reads, error, privilegedExec: capturedPrivilegedExec }));
+  return;
+}
 const target = config.resolveAgentConfig("alpha");
 const parsed = config.readSandboxConfig("alpha", target);
 parsed.model.default = "trusted-model-v2";
@@ -72,8 +104,10 @@ if (${JSON.stringify(update)} !== "model") {
     nativeCredentialHandle: "openshell:resolve:env:v7_NEMOCLAW_LOCAL_INFERENCE_TOKEN",
   });
 }
-config.writeSandboxConfig("alpha", target, parsed, ${mode === "native" ? JSON.stringify("selected-gateway") : JSON.stringify(update === "restored-native-local" ? { restoreNativeLocalCredential: true } : {})});
+config.writeSandboxConfig("alpha", target, parsed, ${JSON.stringify(mode === "native" ? "selected-gateway" : mode === "native-restored" ? { gatewayName: "selected-gateway", deferReload: true, restoreNativeLocalCredential: true } : update === "restored-native-local" ? { restoreNativeLocalCredential: true } : {})});
 process.stdout.write(JSON.stringify({ ...captured, privilegedExec: capturedPrivilegedExec }));
+}
+run().catch(error => { console.error(error); process.exitCode = 1; });
 `;
 
   const result = spawnSync(process.execPath, ["--require", SOURCE_REQUIRE_HOOK, "-e", script], {
@@ -86,13 +120,60 @@ process.stdout.write(JSON.stringify({ ...captured, privilegedExec: capturedPrivi
   expect(result.status, result.stderr).toBe(0);
   const captured = JSON.parse(result.stdout) as {
     argv: string[];
-    options: { input: string; timeout: number; sanitizeEnvironment: boolean };
+    options: {
+      input: string;
+      timeout: number;
+      sanitizeEnvironment: boolean;
+      env?: Record<string, string>;
+      replaceEnv?: boolean;
+    };
     privilegedExec: { command: string[]; sanitizeEnvironment: boolean };
+    reads: string[][];
+    error: string | null;
   };
   return { captured, expectedDigest };
 }
 
 describe("Hermes host config transaction wiring", () => {
+  it("writes public config through the sandbox owner on its registered gateway (#12603)", () => {
+    const { captured, expectedDigest } = runConfigWrite("public");
+    expect(captured.error).toBeNull();
+    expect(captured.privilegedExec).toBeNull();
+    expect(captured.reads).toHaveLength(2);
+    const target = ["-g", "selected-gateway", "sandbox", "exec", "--name", "alpha"];
+    expect([...captured.reads, captured.argv].map((argv) => argv.slice(0, 6))).toEqual([
+      target,
+      target,
+      target,
+    ]);
+    expect(captured.argv.at(-1)).toBe(expectedDigest);
+    expect(captured.options.input).toContain("max_tokens: 24577");
+    expect(captured.options).toMatchObject({
+      replaceEnv: true,
+      env: {
+        OPENSHELL_GATEWAY: "selected-gateway",
+        OPENSHELL_WORKSPACE: "default",
+      },
+    });
+    expect(captured.options.env).not.toHaveProperty("OPENSHELL_LOCAL_TLS_DIR");
+    expect(captured.options.env).not.toHaveProperty("OPENSHELL_TOKEN");
+  });
+
+  it("rejects public config writes without a registered gateway before reading or mutating (#12603)", () => {
+    const { captured } = runConfigWrite("missing-gateway");
+    expect(captured.error).toMatch(/registered gateway/);
+    expect(captured.reads).toEqual([]);
+    expect(captured.privilegedExec).toBeNull();
+    expect(captured.argv).toBeUndefined();
+  });
+  it("rejects a changed runtime target before the locked read or write (#12603)", () => {
+    const { captured } = runConfigWrite("changed-target");
+    expect(captured.error).toMatch(/runtime target changed/);
+    expect(captured.reads).toHaveLength(1);
+    expect(captured.privilegedExec).toBeNull();
+    expect(captured.argv).toBeUndefined();
+  });
+
   it("passes the read digest and serialized update to the native transaction", () => {
     const { captured, expectedDigest } = runConfigWrite("native");
 
@@ -107,6 +188,13 @@ describe("Hermes host config transaction wiring", () => {
     expect(captured.argv.at(-1)).toBe(expectedDigest);
     expect(captured.options.input).toContain("default: trusted-model-v2");
     expect(captured.privilegedExec).toBeNull();
+  });
+  it("routes restored credentials through the selected native runtime without reloading", () => {
+    const { captured, expectedDigest } = runConfigWrite("native-restored", "restored-native-local");
+    expect(captured.argv.slice(0, 2)).toEqual(["-g", "selected-gateway"]);
+    expect(captured.argv.slice(-2)).toEqual([expectedDigest, "restore-native-local"]);
+    expect(captured.privilegedExec).toBeNull();
+    expect(captured.argv.join(" ")).not.toContain("openshell:resolve:env:v7_");
   });
   it.each(["model", "native-local", "restored-native-local"])(
     "passes the read digest and %s update to the sealed transaction",

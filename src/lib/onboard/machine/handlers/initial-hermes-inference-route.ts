@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { usesNativeLocalInferenceForAgent } from "../../../inference/native-local/eligibility";
 import type { SandboxEntry } from "../../../state/registry";
 import { patchHermesInferenceConfig } from "../../../actions/inference-set";
 import {
@@ -53,6 +54,18 @@ export async function initializeExternalHermesInferenceRoute(
       "Initial Hermes inference route does not match its registered external-image selection.",
     );
   }
+  // The native-local initializer owns projection and credential-only restore.
+  // Do not replace its provider-bound reference with a shared-route sentinel.
+  if (
+    entry.nativeLocalProviderAttachment ||
+    usesNativeLocalInferenceForAgent(
+      "hermes",
+      provider,
+      entry.endpointUrl,
+      provider === "vllm-local" && Boolean(entry.nimContainer),
+    )
+  )
+    return;
   const target = deps.resolveAgentConfig(sandboxName);
   if (target.agentName !== "hermes")
     throw new Error("Initial Hermes inference route requires Hermes configuration.");

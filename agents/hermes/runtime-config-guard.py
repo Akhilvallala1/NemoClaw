@@ -2970,17 +2970,10 @@ def _recover_restored_native_local_source(state_file: str) -> None:
         os.close(parent_fd)
 
 
-def _adopt_restored_native_local_source(
-    hermes_dir: str, hash_file: str, state_file: str,
-    expected_config_sha256: str | None, candidate_bytes: bytes,
-    hermes_meta: dict[str, int], file_states: dict[str, dict[str, object]],
-) -> None:
-    """Accept only a restored mutable source for an exact local-reference update.
-
-    The namespace is already frozen by seal_restart. General config writes keep
-    their strict-anchor requirement; this operation cannot change route or user
-    settings and must validate the restored environment before adopting it.
-    """
+def _validate_restored_native_local_source(
+    hermes_dir: str, expected_config_sha256: str | None, candidate_bytes: bytes,
+) -> tuple[str, FileSnapshot, str, FileSnapshot]:
+    """Validate archived inputs and an exact three-slot credential replacement."""
     config_path = os.path.join(hermes_dir, "config.yaml")
     env_path = os.path.join(hermes_dir, ".env")
     source_text, config_snapshot = _read_text(config_path, MAX_CONFIG_INPUT_BYTES)
@@ -3034,6 +3027,25 @@ def _adopt_restored_native_local_source(
     if os.path.abspath(__file__) != INSTALLED_RUNTIME_CONFIG_GUARD:
         validator = os.path.join(os.path.dirname(os.path.abspath(__file__)), "validate-env-secret-boundary.py")
     _validate_env_text_with_boundary(env_text, validator, isolated=True)
+    return source_text, config_snapshot, env_text, env_snapshot
+
+
+def _adopt_restored_native_local_source(
+    hermes_dir: str, hash_file: str, state_file: str,
+    expected_config_sha256: str | None, candidate_bytes: bytes,
+    hermes_meta: dict[str, int], file_states: dict[str, dict[str, object]],
+) -> None:
+    """Accept only a restored mutable source for an exact local-reference update.
+
+    The namespace is already frozen by seal_restart. General config writes keep
+    their strict-anchor requirement; this operation cannot change route or user
+    settings and must validate the restored environment before adopting it.
+    """
+    config_path = os.path.join(hermes_dir, "config.yaml")
+    env_path = os.path.join(hermes_dir, ".env")
+    source_text, config_snapshot, env_text, env_snapshot = _validate_restored_native_local_source(
+        hermes_dir, expected_config_sha256, candidate_bytes,
+    )
     for path, expected_snapshot in ((config_path, config_snapshot), (env_path, env_snapshot)):
         opened = _open_regular(path)
         try:

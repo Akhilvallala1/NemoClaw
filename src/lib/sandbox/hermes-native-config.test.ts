@@ -44,6 +44,33 @@ describe("native Hermes configuration transport", () => {
     expect(options).toMatchObject({ input: content, stdio: "pipe", timeout: 650_000 });
   });
 
+  it("uses the supplied runtime environment without merging ambient selectors", () => {
+    vi.stubEnv("OPENSHELL_GATEWAY", "ambient-gateway");
+    vi.stubEnv("OPENSHELL_WORKSPACE", "ambient-workspace");
+    vi.stubEnv("OPENSHELL_LOCAL_TLS_DIR", "/ambient/tls");
+    vi.stubEnv("OPENSHELL_TOKEN", "ambient-token");
+    writeHermesConfigNatively(
+      "/pinned/openshell",
+      "hermes",
+      "recorded-gateway",
+      digest,
+      content,
+      execute,
+      { env: { OPENSHELL_GATEWAY: "recorded-gateway", OPENSHELL_WORKSPACE: "recorded-workspace" } },
+    );
+    const [, argv, options] = execute.mock.calls[0]!;
+    expect(argv.slice(0, 2)).toEqual(["-g", "recorded-gateway"]);
+    expect(options).toMatchObject({
+      replaceEnv: true,
+      env: {
+        OPENSHELL_GATEWAY: "recorded-gateway",
+        OPENSHELL_WORKSPACE: "recorded-workspace",
+      },
+    });
+    expect(options?.env).not.toHaveProperty("OPENSHELL_LOCAL_TLS_DIR");
+    expect(options?.env).not.toHaveProperty("OPENSHELL_TOKEN");
+  });
+
   it.each([
     { status: 1, stdout: "", stderr: "private-input" },
     { status: 0, stdout: "unexpected", stderr: "private-input" },
@@ -52,6 +79,8 @@ describe("native Hermes configuration transport", () => {
     execute.mockReturnValue({ signal: null, pid: 1, output: [], ...result });
     expect(() =>
       writeHermesConfigNatively("openshell", "hermes", "gateway", digest, content, execute),
-    ).toThrow("Native Hermes configuration transaction failed; onboarding remains incomplete.");
+    ).toThrow(
+      "Native Hermes configuration transaction failed; configuration application was not confirmed.",
+    );
   });
 });

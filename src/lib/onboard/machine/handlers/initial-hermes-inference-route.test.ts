@@ -53,6 +53,20 @@ function fixture() {
 }
 
 describe("external-image Hermes initial inference route", () => {
+  it.each(["vllm-local", "ollama-local", "llama-cpp-local"])(
+    "preserves the route owned by the %s initializer",
+    async (provider) => {
+      const f = fixture();
+      f.entry.provider = f.options.provider = provider;
+      f.entry.endpointUrl = "http://host.openshell.internal:8000/v1";
+      const before = structuredClone(f.config);
+      await initializeExternalHermesInferenceRoute(f.options, f.deps);
+      expect(f.deps.readSandboxConfig).not.toHaveBeenCalled();
+      expect(f.deps.writeSandboxConfig).not.toHaveBeenCalled();
+      expect(f.config).toEqual(before);
+    },
+  );
+
   it("uses the provider-bound NVIDIA handle from the selected gateway", async () => {
     const f = fixture();
     f.entry.provider = f.options.provider = "nvidia-prod";
