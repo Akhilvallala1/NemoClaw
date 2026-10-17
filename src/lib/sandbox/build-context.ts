@@ -133,6 +133,7 @@ function stageManagedStartupRuntimeSources(rootDir: string, buildCtx: string): v
     path.join("core", "json-types.ts"),
     path.join("core", "ports.ts"),
     path.join("core", "endpoint-url-safety.ts"),
+    path.join("core", "provider-endpoint.ts"),
     path.join("core", "url-utils.ts"),
     path.join("dashboard", "url.ts"),
     path.join("inference", "native-local", "agent-config.ts"),
