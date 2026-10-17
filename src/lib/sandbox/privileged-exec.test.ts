@@ -958,6 +958,8 @@ describe("privileged sandbox exec routing", () => {
           "unix:///run/user/1001/podman/podman.sock",
           "exec",
           "--env",
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "--env",
           "BASH_ENV=",
           "--env",
           "ENV=",

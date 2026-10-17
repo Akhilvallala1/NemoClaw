@@ -6,17 +6,20 @@
 // source loader; the codebase growth guard prevents adding another JS file.
 const Module = require("node:module");
 const path = require("node:path");
-const fs = require("node:fs");
-const YAML = require("yaml");
-const messagingProfile = YAML.parse(
-  fs.readFileSync(
-    path.resolve(
-      __dirname,
-      "../../nemoclaw-blueprint/provider-profiles/nemoclaw-messaging-v1.yaml",
+
+function readMessagingProfile() {
+  const fs = require("node:fs");
+  const YAML = require("yaml");
+  return YAML.parse(
+    fs.readFileSync(
+      path.resolve(
+        __dirname,
+        "../../nemoclaw-blueprint/provider-profiles/nemoclaw-messaging-v1.yaml",
+      ),
+      "utf8",
     ),
-    "utf8",
-  ),
-);
+  );
+}
 
 function installForwardAdapterReachabilityFixture(forwardCli, isReachable) {
   const originalCreate = forwardCli.createCliOpenShellForwardAdapter;
@@ -273,7 +276,8 @@ function mockEndpointlessProviderProfileRun(command, profileId, inferenceCapable
       status: 0,
       stdout: JSON.stringify({
         id: profileId,
-        credentials: profileId === "nemoclaw-messaging-v1" ? messagingProfile.credentials : [],
+        credentials:
+          profileId === "nemoclaw-messaging-v1" ? readMessagingProfile().credentials : [],
         endpoints: [],
         binaries: [],
         inference_capable: inferenceCapable,
@@ -319,7 +323,7 @@ function createStatefulMessagingProviderRunner({
   const providers = new Map(
     initialProviders.map(([name, type, credential]) => [name, { type, credential }]),
   );
-  const messagingProfileOutput = JSON.stringify(messagingProfile);
+  const messagingProfileOutput = JSON.stringify(readMessagingProfile());
   let messagingProfileImported = false;
   let lifecycleReleased = false;
   return (command, options = {}) => {

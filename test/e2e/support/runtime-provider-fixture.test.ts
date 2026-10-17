@@ -180,6 +180,7 @@ describe("configured E2E runtime provider fixture", () => {
         "--url",
         "unix:///run/user/1001/podman/podman.sock",
         "container",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "exec",
         "--user",
         "root",

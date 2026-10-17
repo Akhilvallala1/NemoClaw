@@ -12,6 +12,7 @@ export type RuntimeProviderSkip = (reason: string) => never;
 export type E2eRuntimeProviderId = "docker" | "podman";
 
 const SANITIZED_PRIVILEGED_ENVIRONMENT = [
+  "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
   "BASH_ENV=",
   "ENV=",
   "GCONV_PATH=",
