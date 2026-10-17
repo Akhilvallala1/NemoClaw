@@ -268,7 +268,7 @@ export async function requireNativeInferenceHealth(input: {
       (input.agentName === undefined || input.agentName === "openclaw")
         ? await retryUntilAsync(probe, {
             accept: (value) => value.ok || value.httpStatus !== 503,
-            retryDelaysMs: [2_000, 2_000],
+            retryDelaysMs: [8_000, 8_000],
             onRetry: (_value, delayMs, attempt) =>
               console.error(
                 `  Native local inference returned HTTP 503; checking again in ${delayMs / 1_000} seconds (attempt ${attempt + 1}/3)…`,

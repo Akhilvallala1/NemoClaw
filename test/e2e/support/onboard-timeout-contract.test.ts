@@ -141,7 +141,7 @@ describe("onboard final-handoff timeout contract", () => {
   });
 
   it("contains both native OpenClaw inference settlement windows in the start child", () => {
-    const boundedProbeWindowMs = 3 * 95_000 + 2 * 2_000;
+    const boundedProbeWindowMs = 3 * 95_000 + 2 * 8_000;
     expect(OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS).toBeGreaterThanOrEqual(
       2 * boundedProbeWindowMs + 7 * MINUTE_MS,
     );

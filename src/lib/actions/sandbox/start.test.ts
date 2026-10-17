@@ -843,7 +843,7 @@ describe("startSandbox persisted native inference selection", () => {
 
     await expect(startSandbox("my-sandbox", h.deps)).resolves.toEqual({ exitCode: 0 });
     expect(probeInferenceInvocation).toHaveBeenCalledTimes(2);
-    expect(delayInferenceInvocationProbe).toHaveBeenCalledExactlyOnceWith(2_000);
+    expect(delayInferenceInvocationProbe).toHaveBeenCalledExactlyOnceWith(8_000);
     expect(h.updateSandbox).toHaveBeenCalledWith("my-sandbox", { stopped: false });
   });
 
@@ -862,7 +862,7 @@ describe("startSandbox persisted native inference selection", () => {
       await expect(startSandbox("my-sandbox", h.deps)).resolves.toEqual({ exitCode: 1 });
       expect(probeInferenceInvocation).toHaveBeenCalledTimes(httpStatus === 503 ? 3 : 1);
       expect(delayInferenceInvocationProbe.mock.calls).toEqual(
-        httpStatus === 503 ? [[2_000], [2_000]] : [],
+        httpStatus === 503 ? [[8_000], [8_000]] : [],
       );
       expect(h.verifyGateway).toHaveBeenCalledOnce();
       expect(h.updateSandbox).not.toHaveBeenCalled();

@@ -8,14 +8,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { OpenShellSandboxBufferedCommandExecutor } from "../../adapters/openshell/sandbox-command";
 import { nativeLocalIdentity } from "../../inference/native-local/contract";
 import { loadAgent } from "../../agent/defs";
-import { nativeLocalIdentity } from "../../inference/native-local/contract";
 import type { SandboxEntry } from "../../state/registry";
 import {
   LaunchReadinessEvidenceError,
   LaunchReadinessObservationError,
   requireNativeInferenceHealth,
   requireLaunchSemanticHealth,
-  requireNativeInferenceHealth,
   type LaunchReadinessHealthDeps,
 } from "./launch-readiness/health";
 import {
@@ -357,7 +355,9 @@ it.each([
       testCase.succeeds ? { ok: true } : { ok: false, detail: `HTTP ${testCase.statuses.at(-1)}` },
     );
     expect(inferenceInvocationProbe).toHaveBeenCalledTimes(testCase.attempts);
-    expect(nativeLocalInferenceRetrySleep).toHaveBeenCalledTimes(testCase.delays);
+    expect(nativeLocalInferenceRetrySleep.mock.calls).toEqual(
+      testCase.delays ? Array.from({ length: testCase.delays }, () => [8_000]) : [],
+    );
     expect(verifyNativeLocalAttachment).toHaveBeenCalledOnce();
     expect(errorSpy).toHaveBeenCalledTimes(testCase.delays);
     expect(errorSpy.mock.calls.at(-1)?.[0]).toEqual(
