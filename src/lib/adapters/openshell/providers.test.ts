@@ -144,7 +144,10 @@ describe("OpenShell provider evidence", () => {
         },
       });
       expect(raw.getProviderProfile).toHaveBeenCalledExactlyOnceWith(
-        { id: profileContract, workspace: "default" },
+        {
+          id: profileContract,
+          workspaceScope: { selection: { case: "workspace", value: "default" } },
+        },
         { signal: input.signal },
       );
       expect(readCredential).not.toHaveBeenCalled();
@@ -245,7 +248,7 @@ describe("OpenShell provider evidence", () => {
       config: { OPENAI_BASE_URL: "https://api.example/v1" },
     });
     expect(raw.getProvider).toHaveBeenCalledWith(
-      { name: "alpha", workspace: "default" },
+      { name: "alpha", workspaceScope: { selection: { case: "workspace", value: "default" } } },
       { signal: input.signal },
     );
     expect(connect).toHaveBeenCalledWith(target);
@@ -316,7 +319,12 @@ describe("OpenShell provider evidence", () => {
         },
       });
       expect(raw.getProviderProfile).toHaveBeenCalledExactlyOnceWith(
-        { id: "brave", workspace: profileWorkspace },
+        {
+          id: "brave",
+          ...(profileWorkspace
+            ? { workspaceScope: { selection: { case: "workspace", value: profileWorkspace } } }
+            : {}),
+        },
         { signal: input.signal },
       );
       expect(readSecret).not.toHaveBeenCalled();
@@ -371,7 +379,12 @@ describe("OpenShell provider evidence", () => {
       });
       expect(result).toMatchObject({ profileWorkspace: workspace, managedProfile: null });
       expect(raw.getProviderProfile).toHaveBeenCalledWith(
-        { id: "openai", workspace },
+        {
+          id: "openai",
+          ...(workspace
+            ? { workspaceScope: { selection: { case: "workspace", value: workspace } } }
+            : {}),
+        },
         { signal: expect.any(AbortSignal) },
       );
     },
@@ -527,7 +540,12 @@ describe("OpenShell provider evidence", () => {
         builtinInferenceEndpoint: "https://integrate.api.nvidia.com/v1",
       });
       expect(raw.getProviderProfile).toHaveBeenCalledWith(
-        { id: "nvidia", workspace: profileWorkspace },
+        {
+          id: "nvidia",
+          ...(profileWorkspace
+            ? { workspaceScope: { selection: { case: "workspace", value: profileWorkspace } } }
+            : {}),
+        },
         { signal: input.signal },
       );
       expect(connect).toHaveBeenCalledExactlyOnceWith(target);
@@ -760,7 +778,7 @@ describe("OpenShell sandbox export evidence", () => {
     });
     expect(JSON.stringify(result)).not.toContain(canary);
     expect(raw.getSandbox).toHaveBeenCalledWith(
-      { name: "alpha", workspace: "default" },
+      { name: "alpha", workspaceScope: { selection: { case: "workspace", value: "default" } } },
       { signal: input.signal },
     );
   });
