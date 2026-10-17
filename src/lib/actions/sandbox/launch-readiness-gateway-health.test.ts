@@ -356,7 +356,7 @@ it.each([
     );
     expect(inferenceInvocationProbe).toHaveBeenCalledTimes(testCase.attempts);
     expect(nativeLocalInferenceRetrySleep.mock.calls).toEqual(
-      testCase.delays ? Array.from({ length: testCase.delays }, () => [8_000]) : [],
+      testCase.delays ? [[8_000], [32_000]].slice(0, testCase.delays) : [],
     );
     expect(verifyNativeLocalAttachment).toHaveBeenCalledOnce();
     expect(errorSpy).toHaveBeenCalledTimes(testCase.delays);

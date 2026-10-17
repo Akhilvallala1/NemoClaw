@@ -608,6 +608,34 @@ describe("OpenClaw native restart diagnostics", () => {
     expect(start.exitCode).toBe(1);
   });
 
+  it("captures a native local HTTP 503 from the final start check (#12975)", async () => {
+    vi.useFakeTimers();
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: "200" }));
+    const writeJson = vi.fn(async () => "artifact");
+    const diagnostic = captureNativeRestart503Diagnostic(
+      {
+        exitCode: 1,
+        stderr:
+          "The sandbox started but inference is not usable: sandbox inference invocation probe returned HTTP 503",
+      } as never,
+      {
+        owner: "owner",
+        model: "nemoclaw-openclaw-native-local",
+        apiKey: "sk-native-test-not-real",
+        attachment,
+        referenceProbe: vi.fn(async () => ({ ok: true as const })),
+        fake: { requests: vi.fn(() => []) } as never,
+        sandbox: { exec } as never,
+        host: { nemoclaw: vi.fn(async () => ({ exitCode: 0 })) } as never,
+        artifacts: { writeJson } as never,
+      },
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+    await diagnostic;
+    expect(exec).toHaveBeenCalledTimes(4);
+    expect(writeJson).toHaveBeenCalledOnce();
+  });
+
   it("retains completed status evidence when a later direct probe rejects (#12975)", async () => {
     vi.useFakeTimers();
     const apiKey = "sk-native-test-not-real";

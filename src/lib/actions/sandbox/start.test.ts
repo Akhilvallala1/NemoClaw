@@ -862,7 +862,7 @@ describe("startSandbox persisted native inference selection", () => {
       await expect(startSandbox("my-sandbox", h.deps)).resolves.toEqual({ exitCode: 1 });
       expect(probeInferenceInvocation).toHaveBeenCalledTimes(httpStatus === 503 ? 3 : 1);
       expect(delayInferenceInvocationProbe.mock.calls).toEqual(
-        httpStatus === 503 ? [[8_000], [8_000]] : [],
+        httpStatus === 503 ? [[8_000], [32_000]] : [],
       );
       expect(h.verifyGateway).toHaveBeenCalledOnce();
       expect(h.updateSandbox).not.toHaveBeenCalled();

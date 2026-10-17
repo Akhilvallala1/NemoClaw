@@ -59,7 +59,7 @@ export const INFERENCE_ROUTING_TARGET_TIMEOUT_MINUTES =
 // Keep its serial job below the hosted runner's maximum while preserving the
 // existing inference-routing target's reviewed timeout.
 // Start can observe two independent native-local inference checks. Each can
-// consume three 95-second requests and two 8-second delays, after lifecycle
+// consume three 95-second requests and 8- plus 32-second delays, after lifecycle
 // readiness. Keep the live child deadline outside that complete window.
 export const OPENCLAW_NATIVE_LOCAL_START_COMMAND_TIMEOUT_MS = 20 * MINUTE_MS;
 export const OPENCLAW_NATIVE_LOCAL_DIAGNOSTIC_PROBE_TIMEOUT_MS = 20_000;

@@ -98,7 +98,7 @@ export interface SandboxStartDeps extends StandardSandboxLifecycleDeps {
 
 const GATEWAY_PROCESS_SETTLEMENT_DELAY_MS = 2_000;
 const START_INFERENCE_SETTLEMENT_DELAYS_MS = [2_000, 2_000] as const;
-const OPENCLAW_NATIVE_LOCAL_INFERENCE_SETTLEMENT_DELAYS_MS = [8_000, 8_000] as const;
+const OPENCLAW_NATIVE_LOCAL_INFERENCE_SETTLEMENT_DELAYS_MS = [8_000, 32_000] as const;
 
 /** Observe native startup only after an intentional stop; never relaunch the agent here. */
 async function waitForStartedNativeGatewayProcess(

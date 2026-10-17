@@ -1732,7 +1732,7 @@ When that deadline expires, `start` keeps the existing container, exits non-zero
 <AgentOnly variant="openclaw">
   For native-local OpenClaw, gateway verification and the final agent inference check each
   send an inference request. If either check returns HTTP `503`, `start` waits 8 seconds
-  and tries that check again, for up to three attempts. Other failures stop the check
+  before a second attempt and 32 seconds before a third. Other failures stop the check
   immediately. A failed check exits non-zero and retains the intentional-stop record.
 </AgentOnly>
 
