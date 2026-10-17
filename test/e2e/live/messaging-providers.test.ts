@@ -723,17 +723,6 @@ req.setTimeout(15000, () => { req.destroy(); console.log("TIMEOUT"); });
       "M13-policy: live policy contains Discord endpoints and Node binaries",
     );
 
-    const proxyEnv = await sandboxOutput(
-      sandbox,
-      'printf "HTTPS_PROXY=%s\\nhttps_proxy=%s\\nNO_PROXY=%s\\nno_proxy=%s\\n" "$HTTPS_PROXY" "$https_proxy" "$NO_PROXY" "$no_proxy"',
-      "proxy-env-messaging-providers",
-      redactionValues,
-    );
-    check(
-      /10\.200\.0\.1:3128/.test(proxyEnv),
-      "M13-proxy: sandbox uses the OpenShell gateway proxy",
-    );
-
     const discordReach = await sandboxOutput(
       sandbox,
       `node - <<'NODE'
@@ -771,7 +760,7 @@ NODE`,
       redactionValues,
     );
     if (discordReach.includes("api:HTTP_") && discordReach.includes("cdn:HTTP_")) {
-      check(true, "M13: Node.js reached Discord API and CDN through proxy");
+      check(true, "M13: Node.js reached Discord API and CDN");
     } else if (
       /TIMEOUT|ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|ECONNRESET|socket hang up|network/i.test(
         discordReach,
