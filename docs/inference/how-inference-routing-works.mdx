@@ -55,6 +55,14 @@ Use `$$nemoclaw inference get` to inspect the selected sandbox's recorded route.
 `status`, `doctor`, and startup checks verify its recorded native provider identity before using a native attachment.
 Missing or conflicting ownership stops the operation instead of falling back to the shared route.
 
+<AgentOnly variant="hermes">
+Hermes native local provider profiles include the pinned image's resolved Python interpreter, `/usr/bin/python3.13`.
+An older imported profile that lacks this executable can conflict with the current profile definition.
+NemoClaw stops and leaves an incompatible existing profile unchanged.
+Preserve the profile and provider while a NemoClaw maintainer reviews their ownership and attached sandboxes and chooses an explicit replacement plan.
+Retry only after the profile conflict is resolved.
+</AgentOnly>
+
 ## Credential Boundary
 
 Provider credentials stay on the host and flow through the OpenShell provider system.
