@@ -6,6 +6,17 @@
 // source loader; the codebase growth guard prevents adding another JS file.
 const Module = require("node:module");
 const path = require("node:path");
+const fs = require("node:fs");
+const YAML = require("yaml");
+const messagingProfile = YAML.parse(
+  fs.readFileSync(
+    path.resolve(
+      __dirname,
+      "../../nemoclaw-blueprint/provider-profiles/nemoclaw-messaging-v1.yaml",
+    ),
+    "utf8",
+  ),
+);
 
 function installForwardAdapterReachabilityFixture(forwardCli, isReachable) {
   const originalCreate = forwardCli.createCliOpenShellForwardAdapter;
@@ -262,7 +273,7 @@ function mockEndpointlessProviderProfileRun(command, profileId, inferenceCapable
       status: 0,
       stdout: JSON.stringify({
         id: profileId,
-        credentials: [],
+        credentials: profileId === "nemoclaw-messaging-v1" ? messagingProfile.credentials : [],
         endpoints: [],
         binaries: [],
         inference_capable: inferenceCapable,
@@ -283,7 +294,7 @@ function mockEndpointlessProviderProfileRun(command, profileId, inferenceCapable
 }
 
 function mockManagedEndpointlessProviderProfileRun(command) {
-  return mockEndpointlessProviderProfileRun(command, "nemoclaw-mcp-v1", false);
+  return mockEndpointlessProviderProfileRun(command, "nemoclaw-messaging-v1", false);
 }
 
 function mockProviderPreparationRun(command, gatewayName, profileId, inferenceCapable) {
@@ -308,13 +319,7 @@ function createStatefulMessagingProviderRunner({
   const providers = new Map(
     initialProviders.map(([name, type, credential]) => [name, { type, credential }]),
   );
-  const messagingProfile = JSON.stringify({
-    id: "nemoclaw-mcp-v1",
-    credentials: [],
-    endpoints: [],
-    binaries: [],
-    inference_capable: false,
-  });
+  const messagingProfileOutput = JSON.stringify(messagingProfile);
   let messagingProfileImported = false;
   let lifecycleReleased = false;
   return (command, options = {}) => {
@@ -332,7 +337,7 @@ function createStatefulMessagingProviderRunner({
         args[profileActionIndex] === "-g" ? args[profileActionIndex + 2] : args[profileActionIndex];
       if (profileAction === "export") {
         return messagingProfileImported
-          ? { status: 0, stdout: messagingProfile, stderr: "" }
+          ? { status: 0, stdout: messagingProfileOutput, stderr: "" }
           : { status: 1, stdout: "", stderr: "provider profile not found" };
       }
       const fileIndex = args.indexOf("--file");

@@ -4555,7 +4555,13 @@ export TELEGRAM_BOT_TOKEN_AGENT_B=<bot-B-token>
 $$nemoclaw onboard --agent hermes
 ```
 
-For each entry, NemoClaw registers an OpenShell provider with the endpointless `nemoclaw-mcp-v1` profile. OpenShell resolves the named credential placeholder to the operator-supplied value at egress. The Hermes profile `.env` files are operator-owned: write `${TELEGRAM_BOT_TOKEN_AGENT_A}` (or the matching placeholder for each entry) into the per-profile `.env` so the in-sandbox Hermes process inherits the OpenShell placeholder instead of a raw token. NemoClaw never reads, writes, or rewrites these `.env` files; verify after onboarding that each profile's `.env` references the placeholder and that no raw bot token value sits on disk.
+NemoClaw adds each accepted extension to its canonical provider's credential set.
+The provider uses an immutable profile type derived from its base profile and credential names.
+That profile declares the selected keys and preserves the base profile's endpoint and executable permissions.
+Credential values do not determine the profile type.
+OpenShell resolves the named credential placeholder to the operator-supplied value at egress.
+The Hermes profile `.env` files are operator-owned: write `${TELEGRAM_BOT_TOKEN_AGENT_A}` (or the matching placeholder for each entry) into the per-profile `.env` so the in-sandbox Hermes process inherits the OpenShell placeholder instead of a raw token.
+NemoClaw never reads, writes, or rewrites these `.env` files; verify after onboarding that each profile's `.env` references the placeholder and that no raw bot token value sits on disk.
 
 Entries are split on whitespace and commas and must match `^[A-Z][A-Z0-9_]{0,127}$`. Each entry must extend a canonical channel envKey with a non-empty `_<suffix>` (for example `TELEGRAM_BOT_TOKEN_AGENT_A`); the canonical envKeys are `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `WECHAT_BOT_TOKEN`, `BRAVE_API_KEY`, and `TAVILY_API_KEY`. Bare canonical envKeys, the control env itself, and arbitrary host secret names (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `KUBECONFIG`, and similar) are refused so they cannot leak into the sandbox provider gateway. Duplicates are dropped silently. The list is capped at 32 entries per sandbox. Offending tokens emit one warning each and are skipped.
 
@@ -4563,6 +4569,10 @@ When NemoClaw creates the canonical provider, it omits an extension whose creden
 The primary credential is required to create that provider.
 An extension already stored in an existing provider remains available until that provider is replaced or removed.
 If the extension credential is absent from the credential store, export it before onboarding.
+
+Changing the credential names can require replacing the provider with a different profile type.
+NemoClaw refuses that replacement if any previously stored credential value is missing or the provider is attached to another sandbox.
+Preserve the existing provider until you can supply the complete credentials and resolve its attachment restrictions for an explicit replacement.
 
 </AgentOnly>
 
