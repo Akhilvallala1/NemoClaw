@@ -255,7 +255,14 @@ export function wipeAgentNativeHome(
     try {
       result = runPrivileged(command);
     } catch (error) {
-      if (clearStoppedNativeHome?.(nativeRoot, protectedEntries).cleared) return;
+      const stoppedCleanup = clearStoppedNativeHome?.(nativeRoot, protectedEntries);
+      if (stoppedCleanup?.cleared) return;
+      if (stoppedCleanup) {
+        throw new Error(
+          `Stopped native-home cleanup failed (${stoppedCleanup.failure}). ${redactDestroyError(error)}`,
+          { cause: error },
+        );
+      }
       throw error;
     }
     // Deep Agents' native tree contains both sandbox-owned state and root-owned
@@ -284,6 +291,10 @@ export function wipeAgentNativeHome(
   ) {
     const stoppedCleanup = clearStoppedNativeHome(nativeRoot, protectedEntries);
     if (stoppedCleanup.cleared) return;
+    result = {
+      ...result,
+      stderr: `Stopped native-home cleanup failed (${stoppedCleanup.failure}). ${String(result.stderr ?? "")}`,
+    };
   }
   if (result.status !== 0 || result.error) {
     const detail = `${String(result.stderr ?? "")}\n${String(result.stdout ?? "")}`

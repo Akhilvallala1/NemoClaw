@@ -254,7 +254,9 @@ function sameStateResource(
   return left.type === right.type && left.source === right.source && left.target === right.target;
 }
 
-function stateResourceMount(resource: StoppedSandboxStateTarget["stateResource"]): string[] {
+function stateResourceMountArgs(
+  resource: StoppedSandboxStateTarget["stateResource"],
+): readonly string[] {
   if (resource.type === "container") {
     throw new Error("Container writable layers cannot be mounted as cleanup resources.");
   }
@@ -410,7 +412,7 @@ function clearStoppedSandboxResourceWithEngine(
     `${CLEANUP_OWNER_LABEL}=${owner}`,
     "--label",
     `${CLEANUP_VOLUME_LABEL}=${stateResourceIdentity}`,
-    ...stateResourceMount(target.stateResource),
+    ...stateResourceMountArgs(target.stateResource),
     "--entrypoint",
     "/usr/local/bin/node",
     CLEANUP_IMAGE,

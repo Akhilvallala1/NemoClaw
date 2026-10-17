@@ -8,6 +8,12 @@ import { createRegisteredSandboxIdentityRevalidation } from "../../onboard/sandb
 import { initializeExternalHermesInferenceRoute } from "../../onboard/machine/handlers/initial-hermes-inference-route";
 import { CLI_NAME } from "../../cli/branding";
 import type { OpenShellRuntimeSelection } from "../../adapters/openshell/runtime";
+import { fingerprintOpenShellSandboxLiveIdentity } from "../../adapters/openshell/sandbox-identity";
+import { captureSanitizedResolvedOpenshell } from "../../adapters/openshell/sanitized-capture";
+import {
+  createInitialHermesInferenceRoute,
+  type InitialHermesInferenceRouteDeps,
+} from "../../onboard/hermes/initial-inference-route";
 import { isDirectSandboxFallbackUnavailableError } from "../../sandbox/privileged-exec";
 import type { GatewayRestartResult } from "./gateway-restart";
 import {
@@ -779,4 +785,55 @@ export async function restoreExternalHermesInference(
       }
     },
   });
+
+/** Rebind restored native references; the post-restore phase owns the restart. */
+export async function refreshRestoredHermesInferenceRoute(
+  sandboxName: string,
+  runtimeSelection: OpenShellRuntimeSelection | undefined,
+  getSandbox: InitialHermesInferenceRouteDeps["getSandbox"],
+  commandEnvironment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const entry = getSandbox(sandboxName);
+  if (!entry) throw new Error("Restored Hermes inference requires a registered sandbox.");
+  const revalidate = createRegisteredSandboxIdentityRevalidation(entry, {
+    readRegistration: (name) => getSandbox(name) ?? null,
+    observe: (name, gatewayName) => {
+      const result = captureSanitizedResolvedOpenshell(
+        ["sandbox", "get", "-g", gatewayName, name],
+        {
+          ignoreError: true,
+          includeStderr: true,
+          includeStreams: true,
+          maxBuffer: 1024 * 1024,
+          timeout: 30_000,
+          env: Object.fromEntries(
+            Object.entries(commandEnvironment).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string",
+            ),
+          ),
+          replaceEnv: true,
+        },
+      );
+      if (result.status !== 0 || result.error || result.signal) {
+        throw new Error("Restored Hermes live identity could not be verified.");
+      }
+      return {
+        state: "not_ready",
+        liveIdentityFingerprint: fingerprintOpenShellSandboxLiveIdentity(result.stdout ?? ""),
+      };
+    },
+  });
+  // The lifecycle lock is reentrant: rebuild's active lease remains the sole
+  // lock owner while the shared writer checks selection and live identity.
+  const project = createInitialHermesInferenceRoute(
+    { getSandbox },
+    { activation: "deferred", workload: "registered", projection: "credential" },
+  );
+  await project(
+    sandboxName,
+    entry.model ?? "",
+    entry.provider ?? "",
+    runtimeSelection?.gatewayName ?? entry.gatewayName ?? "",
+    revalidate,
+  );
 }

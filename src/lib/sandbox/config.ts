@@ -12,7 +12,6 @@
 // config set:          Validated host mutation for Hermes.
 // config rotate-token: Credential rotation via stdin or env var.
 
-import { writeHermesConfigNatively } from "./hermes-native-config";
 import type { AgentConfigTarget } from "./agent-config";
 import type { OpenShellRuntimeSelection } from "../adapters/openshell/client";
 import {
@@ -61,8 +60,11 @@ const {
   withPrivilegedSandboxExecutionLease,
 }: typeof import("./privileged-exec") = require("./privileged-exec");
 const {
+  buildHermesUpstreamHeader,
+}: typeof import("./hermes-upstream-header") = require("./hermes-upstream-header");
+const {
   parseConfig,
-  composeSandboxConfigBody,
+  serializeConfig,
 }: typeof import("./config-format") = require("./config-format");
 const {
   buildOpenClawNativeConfigBatchInvocation,
@@ -383,6 +385,22 @@ function classifyNewKeyGate(inputs: NewKeyGateInputs): NewKeyGate {
 }
 
 /**
+ * Pure body composition for {@link writeSandboxConfig}: serialize the config
+ * and prepend agent-specific headers. Extracted so unit tests can assert the
+ * exact byte sequence that lands in the sandbox without driving the
+ * privileged docker exec path.
+ */
+function composeSandboxConfigBody(config: ConfigObject, target: AgentConfigTarget): string {
+  if (target.agentName === "hermes" && target.format === "yaml") {
+    // Hermes/PyYAML reads YAML 1.1. Preserve strings such as tool_search's "on"
+    // when a credential-only restore writes a config sanitized as JSON.
+    const body = require("yaml").stringify(config, { compat: "yaml-1.1" });
+    return `${buildHermesUpstreamHeader(config as Record<string, unknown>)}${body}`;
+  }
+  return serializeConfig(config, target.format);
+}
+
+/**
  * Parse a CLI-provided config value as JSON when possible, otherwise keep it
  * as a string literal.
  */
@@ -520,7 +538,7 @@ function writeSandboxConfig(
   sandboxName: string,
   target: AgentConfigTarget,
   config: ConfigObject,
-  nativeGatewayName?: string,
+  options: { restoreNativeLocalCredential?: true } = {},
 ): void {
   if (target.agentName === "openclaw") {
     throw new Error(
@@ -536,17 +554,6 @@ function writeSandboxConfig(
       throw new Error(
         "Refusing Hermes config write without the digest from the matching sandbox read.",
       );
-    }
-    if (nativeGatewayName) {
-      writeHermesConfigNatively(
-        getOpenshellBinary(),
-        sandboxName,
-        nativeGatewayName,
-        expectedConfigSha256,
-        content,
-        runOpenshellCommand,
-      );
-      return;
     }
     try {
       privilegedSandboxExec(
@@ -568,6 +575,7 @@ function writeSandboxConfig(
           HERMES_RESTART_SEAL_STATE,
           "--expected-config-sha256",
           expectedConfigSha256,
+          ...(options.restoreNativeLocalCredential ? ["--restore-native-local-credential"] : []),
         ],
         { input: content, timeout: HERMES_CONFIG_GUARD_TIMEOUT_MS },
       );
