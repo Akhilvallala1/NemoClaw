@@ -1226,7 +1226,7 @@ During that lease, another `launch` still verifies these conditions:
 <AgentOnly variant="hermes,deepagents">
 
 - The recorded inference selection matches its provider path, and every configured route serves a valid response to a bounded request for the recorded model.
-  NVIDIA Endpoints, supported fixed hosted selections, and new Ollama, standalone vLLM, llama.cpp, hosted compatible, and qualifying host-local compatible selections verify their recorded sandbox-attached provider and request the model at its native endpoint without a shared-route models probe.
+  NVIDIA Endpoints, supported fixed hosted selections, and new Ollama, standalone vLLM, llama.cpp, Deep Agents Code hosted compatible, and qualifying host-local compatible selections verify their recorded sandbox-attached provider and request the model at its native endpoint without a shared-route models probe.
   Owned Local NVIDIA NIM, retained legacy routes, and other custom routes without an attachment use `inference.local`.
   Their models probe must return HTTP 2xx, except that a retained legacy `openrouter-api` shared route can return HTTP 404 for `GET /v1/models` when the bounded model request succeeds.
   A failed model request rejects readiness before the agent starts.

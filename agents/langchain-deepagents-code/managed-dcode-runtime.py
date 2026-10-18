@@ -1102,7 +1102,7 @@ def managed_inference_api_key(base_url: str) -> str:
         ) is None:
             raise RuntimeError("native local inference requires an issued OpenShell credential reference")
         return value
-    if base_url == "https://integrate.api.nvidia.com/v1":
+    if base_url == "https://integrate.api.nvidia.com/v1" and upstream_provider != "compatible-endpoint":
         name = "NVIDIA_INFERENCE_API_KEY"
         provider = "NVIDIA"
     elif base_url == "https://openrouter.ai/api/v1" and upstream_provider in (

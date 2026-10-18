@@ -79,7 +79,7 @@ Use a host-routable URL such as `http://localhost:8000/v1` when you want onboard
 To qualify for automatic rewriting, an HTTP endpoint URL must use the loopback host `localhost`, `127.0.0.1`, or `[::1]`.
 Automatic rewriting is limited to the port selected by `NEMOCLAW_VLLM_PORT` (`8000` by default) and ports `11434` and `11435`.
 NemoClaw validates the entered URL from the host.
-Shared selections use the OpenShell gateway route through `host.openshell.internal:<port>` for sandbox traffic; qualified host-local selections use a sandbox-attached provider for the recorded endpoint.
+Shared selections use `https://inference.local/v1` inside the sandbox. Qualified host-local selections use a sandbox-attached provider for the recorded endpoint, which may use `host.openshell.internal:<port>` to reach the host.
 <AgentOnly variant="openclaw">
 Sandbox inference requests continue to use the base `inference.local` policy, so the managed compatible-endpoint route does not require adding the `local-inference` preset.
 </AgentOnly>

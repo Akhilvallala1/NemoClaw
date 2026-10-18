@@ -230,7 +230,7 @@ def write_owned(file, value):
 write_owned(${JSON.stringify(providerFile)}, "compatible-endpoint")
 name = "COMPATIBLE_API_KEY"
 os.environ["NEMOCLAW_LOCAL_INFERENCE_TOKEN"] = "openshell:resolve:env:v42_NEMOCLAW_LOCAL_INFERENCE_TOKEN"
-for endpoint in ("https://inference-api.nvidia.com/v1", "https://compatible.example/v1"):
+for endpoint in ("https://inference-api.nvidia.com/v1", "https://integrate.api.nvidia.com/v1", "https://compatible.example/v1"):
     write_owned(${JSON.stringify(routeFile)}, endpoint)
     for reference in (
         "openshell:resolve:env:" + name,

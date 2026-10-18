@@ -383,14 +383,38 @@ references_attached_provider_placeholder_key() {
   grep -Eq 'api_key_env[[:space:]]*=[[:space:]]*"NVIDIA_INFERENCE_API_KEY"'
 }
 
+selected_openai_provider_scalar() {
+  local key="$1"
+  awk -v key="$key" '
+    /^\[[^]]+\][[:space:]]*$/ {
+      selected = ($0 == "[models.providers.openai]")
+      next
+    }
+    selected && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      pattern = "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*\"[^\"]*\"[[:space:]]*$"
+      if ($0 !~ pattern) {
+        invalid = 1
+        next
+      }
+      value = $0
+      sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*\"", "", value)
+      sub(/"[[:space:]]*$/, "", value)
+      count++
+    }
+    END {
+      if (count == 1 && !invalid) print value
+    }
+  '
+}
+
 references_native_compatible_route() {
   local configured_endpoint
-  configured_endpoint="$(sed -n 's/^[[:space:]]*base_url[[:space:]]*=[[:space:]]*"\([^"]*\)"[[:space:]]*$/\1/p')"
+  configured_endpoint="$(selected_openai_provider_scalar base_url)"
   [ "$configured_endpoint" = "$HOSTED_ENDPOINT" ]
 }
 
 references_compatible_provider_placeholder_key() {
-  grep -Eq 'api_key_env[[:space:]]*=[[:space:]]*"COMPATIBLE_API_KEY"'
+  [ "$(selected_openai_provider_scalar api_key_env)" = "COMPATIBLE_API_KEY" ]
 }
 
 configured_inference_route_contract() {
@@ -409,7 +433,6 @@ configured_inference_route_contract() {
     && printf '%s\n' "$config" | references_compatible_provider_placeholder_key \
     && ! printf '%s\n' "$config" | references_managed_inference_route \
     && ! printf '%s\n' "$config" | references_managed_placeholder_key \
-    && ! printf '%s\n' "$config" | references_native_nvidia_route \
     && ! printf '%s\n' "$config" | references_attached_provider_placeholder_key; then
     printf '%s\n' native-compatible
     return 0
