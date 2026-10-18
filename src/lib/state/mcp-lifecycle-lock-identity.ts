@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import { performance } from "node:perf_hooks";
@@ -39,6 +40,11 @@ export type McpLifecycleLockDisposition = "active" | "stale" | "wait";
 /** Injectable OS evidence keeps ownership classification deterministic under test. */
 export interface McpLifecycleLockIdentityProbes {
   localHostIdentity: string;
+  /**
+   * Earlier identities this same host may have recorded, such as the legacy
+   * `<platform>:<hostname>` form. Matching one proves the owner is local.
+   */
+  localHostIdentityAliases?: readonly string[];
   localPidNamespaceIdentity: string | null;
   processIsAlive(pid: number): boolean;
   readProcessIdentity(pid: number, fresh?: boolean): string | null;
@@ -159,7 +165,34 @@ export function readMcpLockProcessIdentity(pid: number, fresh = false): string |
   return identity;
 }
 
-/** Stable enough to distinguish independent hosts sharing a state directory. */
+/** The pre-stable-identity form. macOS can rename the host on its own. */
+export function readMcpLockLegacyHostIdentity(): string {
+  return `${process.platform}:${os.hostname() || "unknown-host"}`;
+}
+
+/** Parses IOPlatformUUID from `ioreg -rd1 -c IOPlatformExpertDevice` output. */
+export function parseIoregPlatformUuid(output: string): string | null {
+  const match = /"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]{36})"/.exec(output);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function readDarwinPlatformUuid(): string | null {
+  const result = spawnSync("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], {
+    encoding: "utf8",
+    env: buildSubprocessEnv(),
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 2_000,
+  });
+  return result.status === 0 && typeof result.stdout === "string"
+    ? parseIoregPlatformUuid(result.stdout)
+    : null;
+}
+
+/**
+ * Stable enough to distinguish independent hosts sharing a state directory.
+ * The hostname is only a last resort: macOS changes it on Bonjour/DHCP name
+ * conflicts, which would make every lock left by a dead local CLI look foreign.
+ */
 export function readMcpLockHostIdentity(): string {
   if (process.platform === "linux") {
     for (const candidate of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
@@ -171,7 +204,15 @@ export function readMcpLockHostIdentity(): string {
       }
     }
   }
-  return `${process.platform}:${os.hostname() || "unknown-host"}`;
+  if (process.platform === "darwin") {
+    const platformUuid = readDarwinPlatformUuid();
+    if (platformUuid) {
+      // Hash so the raw hardware UUID is not written to lock files.
+      const digest = createHash("sha256").update(platformUuid).digest("hex");
+      return `darwin:platform-uuid:${digest}`;
+    }
+  }
+  return readMcpLockLegacyHostIdentity();
 }
 
 /** A shared state directory does not make local PID checks safe across namespaces. */
@@ -185,10 +226,14 @@ export function readMcpLockPidNamespaceIdentity(): string | null {
 }
 
 const LOCAL_HOST_IDENTITY = readMcpLockHostIdentity();
+const LOCAL_LEGACY_HOST_IDENTITY = readMcpLockLegacyHostIdentity();
 const LOCAL_PID_NAMESPACE_IDENTITY = readMcpLockPidNamespaceIdentity();
 
 const LOCAL_IDENTITY_PROBES: McpLifecycleLockIdentityProbes = {
   localHostIdentity: LOCAL_HOST_IDENTITY,
+  // Locks written before the stable identity still name the current hostname.
+  localHostIdentityAliases:
+    LOCAL_LEGACY_HOST_IDENTITY === LOCAL_HOST_IDENTITY ? [] : [LOCAL_LEGACY_HOST_IDENTITY],
   localPidNamespaceIdentity: LOCAL_PID_NAMESPACE_IDENTITY,
   processIsAlive,
   readProcessIdentity: readMcpLockProcessIdentity,
@@ -229,7 +274,13 @@ export function classifyMcpLifecycleLock(
   // wait for operator/distributed-lease resolution instead of risking overlap.
   // Legacy or incomplete records have unknown provenance. Treat them as
   // foreign instead of using this host's PID table to reap them.
-  if (!owner.hostIdentity || owner.hostIdentity !== probes.localHostIdentity) return "active";
+  if (
+    !owner.hostIdentity ||
+    (owner.hostIdentity !== probes.localHostIdentity &&
+      !(probes.localHostIdentityAliases ?? []).includes(owner.hostIdentity))
+  ) {
+    return "active";
+  }
   if (
     (probes.localPidNamespaceIdentity !== null && !owner.pidNamespaceIdentity) ||
     (owner.pidNamespaceIdentity !== null &&
