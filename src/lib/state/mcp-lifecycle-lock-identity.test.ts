@@ -399,27 +399,37 @@ describe("MCP lifecycle lock identity properties", () => {
     expect(result).toBe("active");
   });
 
-  it("derives a hostname-independent macOS identity from IOPlatformUUID", () => {
-    const runningOnMac = process.platform === "darwin";
-    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    const hostname = vi.spyOn(os, "hostname");
-    try {
-      hostname.mockReturnValue("first-name.local");
-      const first = readMcpLockHostIdentity();
-      hostname.mockReturnValue("first-name-2.local");
-      const second = readMcpLockHostIdentity();
-      if (runningOnMac) {
+  it.runIf(process.platform === "darwin")(
+    "derives a hostname-independent macOS identity from IOPlatformUUID",
+    () => {
+      const hostname = vi.spyOn(os, "hostname");
+      try {
+        hostname.mockReturnValue("first-name.local");
+        const first = readMcpLockHostIdentity();
+        hostname.mockReturnValue("first-name-2.local");
+        const second = readMcpLockHostIdentity();
         expect(first).toMatch(/^darwin:platform-uuid:[0-9a-f]{64}$/);
         expect(second).toBe(first);
-      } else {
-        // No ioreg off macOS: the hostname fallback still applies.
-        expect(first).toBe("darwin:first-name.local");
+      } finally {
+        hostname.mockRestore();
       }
-    } finally {
-      hostname.mockRestore();
-      platform.mockRestore();
-    }
-  });
+    },
+  );
+
+  it.skipIf(process.platform === "darwin")(
+    "falls back to the hostname identity when ioreg is unavailable",
+    () => {
+      // Off macOS there is no ioreg, so a mocked darwin host uses the hostname.
+      const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      const hostname = vi.spyOn(os, "hostname").mockReturnValue("first-name.local");
+      try {
+        expect(readMcpLockHostIdentity()).toBe("darwin:first-name.local");
+      } finally {
+        hostname.mockRestore();
+        platform.mockRestore();
+      }
+    },
+  );
 
   it("parses IOPlatformUUID from ioreg output", () => {
     expect(
