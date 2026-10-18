@@ -537,6 +537,11 @@ The historical fixtures retain these version boundaries:
 | `openshell-gateway-upgrade` | Install the reviewed v0.0.89 and v0.0.123 x86-64 fixtures with pinned installer commits, digests, and OpenClaw archives. Attempt the 0.1.x cutover with registered sandboxes and require refusal. Verify the dashboard forward, sandbox phases, workspace marker, credential custody, and authenticated agent turns remain intact. Verify the old gateway service when the fixture provides it. |
 | `rebuild-openclaw` | Retain the reviewed old-base build in the target. Build and create the old sandbox before testing the candidate rebuild path. |
 
+The gateway-upgrade target observes the v0.0.89 forward through its legacy SSH registry.
+The v0.0.123 fixture uses a direct `ForwardTcp` service outside that registry.
+For that service, the target compares executable, complete arguments (gateway, workspace, sandbox, and ports),
+PID, start time, and listener before and after refusal to require the same process.
+
 These targets may restore the shared artifact for the candidate CLI.
 They must not replace a historical installer, package, image, or version boundary with that artifact.
 The gateway fixture already binds its remote historical inputs to immutable commits and cryptographic digests.

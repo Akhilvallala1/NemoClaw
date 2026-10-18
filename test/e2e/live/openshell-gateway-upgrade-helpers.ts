@@ -88,6 +88,139 @@ export async function captureLegacyGatewayForward(
   };
 }
 
+type ForwardObservation = Pick<ShellProbeResult, "exitCode" | "stdout" | "signal" | "timedOut">;
+
+function listenerPid(observation: ForwardObservation): string | null {
+  const pids = [...new Set(observation.stdout.trim().split(/\s+/))];
+  return observation.exitCode === 0 &&
+    !observation.signal &&
+    !observation.timedOut &&
+    pids.length === 1 &&
+    /^[1-9]\d*$/.test(pids[0]!)
+    ? pids[0]!
+    : null;
+}
+
+/** The v0.0.123 fixture launches ForwardTcp directly, outside the SSH forward registry. */
+export function legacyGatewayServiceForwardIdentity(
+  probes: readonly ForwardObservation[],
+  sandboxName: string,
+  port: string,
+): string | null {
+  if (
+    probes.length !== 8 ||
+    probes.some((probe) => probe.exitCode !== 0 || probe.signal || probe.timedOut)
+  )
+    return null;
+  const [
+    before,
+    command,
+    statBefore,
+    executable,
+    expectedExecutable,
+    commandLine,
+    statAfter,
+    after,
+  ] = probes;
+  const pid = listenerPid(before!);
+  if (!pid || listenerPid(after!) !== pid) return null;
+  const processStart = (raw: string): string | null => {
+    const end = raw.lastIndexOf(") ");
+    if (!raw.startsWith(`${pid} (`) || end < 0) return null;
+    const fields = raw
+      .slice(end + 2)
+      .trim()
+      .split(/\s+/);
+    return fields[0] !== "Z" && /^[1-9]\d*$/.test(fields[19] ?? "") ? fields[19]! : null;
+  };
+  const start = processStart(statBefore!.stdout);
+  const binary = executable!.stdout.trim();
+  const commandPath = command!.stdout.trim();
+  const argv = commandLine!.stdout.split("\0");
+  if (argv.at(-1) === "") argv.pop();
+  const expected = [
+    commandPath,
+    "--gateway",
+    "nemoclaw",
+    "--workspace",
+    "default",
+    "forward",
+    "service",
+    sandboxName,
+    "--target-port",
+    port,
+    "--target-host",
+    "127.0.0.1",
+    "--local",
+    `127.0.0.1:${port}`,
+  ];
+  if (
+    !start ||
+    processStart(statAfter!.stdout) !== start ||
+    !commandPath.startsWith("/") ||
+    !binary.startsWith("/") ||
+    binary !== expectedExecutable!.stdout.trim() ||
+    argv.length !== expected.length ||
+    argv.some((value, index) => value !== expected[index])
+  )
+    return null;
+  return `${pid}\t${start}\t${binary}\t${JSON.stringify(argv)}`;
+}
+
+export async function captureLegacyGatewayServiceForward(
+  host: Pick<HostCliClient, "command" | "openshellCommandPath">,
+  sandboxName: string,
+  port: string,
+  env: NodeJS.ProcessEnv,
+  phase: string,
+): Promise<{ identity: string | null; output: string }> {
+  const probe = (suffix: string, command: string, args: string[]) =>
+    host.command(command, args, {
+      artifactName: `${phase}-dashboard-service-${suffix}`,
+      env,
+      timeoutMs: 15_000,
+    });
+  const [before, command] = await Promise.all([
+    probe("listener-before", "lsof", ["-ti", `:${port}`, "-sTCP:LISTEN"]),
+    probe("command", "which", [host.openshellCommandPath]),
+  ]);
+  const pid = listenerPid(before);
+  const commandPath = command.stdout.trim();
+  if (
+    !pid ||
+    command.exitCode !== 0 ||
+    command.signal ||
+    command.timedOut ||
+    !commandPath.startsWith("/")
+  ) {
+    return { identity: null, output: [before, command].map(resultText).join("\n") };
+  }
+  const statBefore = await probe("stat-before", "cat", [`/proc/${pid}/stat`]);
+  const [executable, expectedExecutable, commandLine] = await Promise.all([
+    probe("executable", "readlink", ["-f", `/proc/${pid}/exe`]),
+    probe("expected-executable", "readlink", ["-f", commandPath]),
+    probe("argv", "cat", [`/proc/${pid}/cmdline`]),
+  ]);
+  const [statAfter, after] = await Promise.all([
+    probe("stat-after", "cat", [`/proc/${pid}/stat`]),
+    probe("listener-after", "lsof", ["-ti", `:${port}`, "-sTCP:LISTEN"]),
+  ]);
+  const probes = [
+    before,
+    command,
+    statBefore,
+    executable,
+    expectedExecutable,
+    commandLine,
+    statAfter,
+    after,
+  ];
+  return {
+    identity: legacyGatewayServiceForwardIdentity(probes, sandboxName, port),
+    output: probes.map(resultText).join("\n"),
+  };
+}
+
 /** Apply path spelling at the installer boundary, after login-shell startup. */
 export function gatewayUpgradeInstallerCommand(args: readonly string[], home?: string): string {
   const prefix = home

@@ -42,6 +42,7 @@ import type { ShellProbeResult } from "../fixtures/shell-probe.ts";
 import {
   captureGatewayUpgradeFailureDiagnostics,
   captureLegacyGatewayForward,
+  captureLegacyGatewayServiceForward,
   currentGatewayUpgradeInstallerArgs,
   currentNemoclawUpgradeRef,
   gatewayCredentialNonExposureScript,
@@ -122,6 +123,9 @@ const DASHBOARD_PORT = "18789";
 const GATEWAY_CREDENTIAL = "nemoclaw-gateway-upgrade-fixture-key";
 const VERIFY_SYSTEMD_UPGRADE =
   OLD_NEMOCLAW_COMMIT === REVIEWED_GATEWAY_REGISTRATION_UPGRADE_FIXTURE.nemoclawCommit;
+const captureFixtureGatewayForward = VERIFY_SYSTEMD_UPGRADE
+  ? captureLegacyGatewayServiceForward
+  : captureLegacyGatewayForward;
 const TEST_TIMEOUT_MS =
   REVIEWED_GATEWAY_UPGRADE_FIXTURE_FOR_REF.additionalStoppedSandboxes > 0
     ? 110 * 60_000
@@ -652,7 +656,7 @@ async function assertLegacyGatewayPreserved(
     await waitForSandboxPhase(host, sandboxName, "Stopped", `restored-${sandboxName}`);
   }
 
-  const forward = await captureLegacyGatewayForward(
+  const forward = await captureFixtureGatewayForward(
     host,
     SURVIVOR_SANDBOX,
     DASHBOARD_PORT,
@@ -801,7 +805,7 @@ runOpenShellGatewayUpgrade(
     );
 
     progress.phase("attempt the 0.1.x cutover and require refusal");
-    const legacyForward = await captureLegacyGatewayForward(
+    const legacyForward = await captureFixtureGatewayForward(
       host,
       SURVIVOR_SANDBOX,
       DASHBOARD_PORT,
