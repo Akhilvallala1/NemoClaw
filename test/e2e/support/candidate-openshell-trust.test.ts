@@ -36,14 +36,18 @@ afterEach(() =>
 );
 
 describe("reviewed candidate OpenShell trust", () => {
-  it("retains the previous 0.1.3 installer identity while revoking its execution", () => {
-    const previousTemplate = "0b9c65bcc255d97d2fbfef638fbb4b374d7617fb2aaaf6cb76b898ded74e498f";
+  it.each([
+    "0b9c65bcc255d97d2fbfef638fbb4b374d7617fb2aaaf6cb76b898ded74e498f",
+    "65da7bf3c9a930e11f4028b808d34cdbebc63d1a30672e98e1f2650f9d9a269d",
+  ])("retains previous installer identity %s while revoking its execution", (previousTemplate) => {
     const registry = readOpenShellTrustRegistry();
     const previous = structuredClone(registry);
     previous.revokedTemplateSha256 = [];
-    previous.releases.find((release) => release.version === "0.1.3")!.installerTemplateSha256 = [
-      previousTemplate,
-    ];
+    const previousRelease = previous.releases.find((release) => release.version === "0.1.3")!;
+    previousRelease.installerTemplateSha256 = previousRelease.installerTemplateSha256.slice(
+      0,
+      previousRelease.installerTemplateSha256.indexOf(previousTemplate) + 1,
+    );
     const releases = resolveOpenShellTrustRegistry(registry, previous);
     expect(
       releases.find((release) => release.version === "0.1.3")?.revokedTemplateSha256,
