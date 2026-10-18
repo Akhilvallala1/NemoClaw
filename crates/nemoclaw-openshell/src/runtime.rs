@@ -15,7 +15,7 @@ pub type ClusterGrants = BTreeMap<String, Vec<String>>;
 #[serde(deny_unknown_fields)]
 pub struct ImageRuntime {
     pub schema_version: u32,
-    /// Prefix prepended to a packaged bridge operation.
+    /// Fabric's `fabric-agent-ctl`, prepended to each operation.
     pub command: Vec<String>,
     pub environment: BTreeMap<String, String>,
     pub required_paths: Vec<String>,
@@ -91,17 +91,66 @@ pub struct RuntimeBinding {
     pub adapter_id: String,
 }
 
-/// Authored policy and deployment-owned endpoint grants before image resolution.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+/// How a sandbox starts and what its runtime needs from the policy, without
+/// knowledge of the agent runtime that produced it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PolicyInput {
-    pub explicit: Option<ExplicitPolicy>,
-    pub managed: BTreeMap<String, PolicyRule>,
-    /// Managed rule names whose exact addresses must come from verified Services.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub cluster_grants: BTreeSet<String>,
+pub struct Launch {
+    pub command: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+    /// The runtime's policy, used when no explicit policy is authored.
+    pub policy: ExplicitPolicy,
+    /// Executables that managed endpoint grants allow.
+    pub binaries: Vec<String>,
+    /// Opaque values for whoever produced the launch, kept with the sandbox.
+    pub metadata: BTreeMap<String, String>,
 }
-impl RuntimeBinding {
+
+/// Launch metadata naming the Fabric agent the sandbox runs.
+pub const LAUNCH_AGENT: &str = "nemoclaw.nvidia.com/agent";
+/// Launch metadata naming the agent runtime, such as `fabric`.
+pub const LAUNCH_AGENT_RUNTIME: &str = "nemoclaw.nvidia.com/agent-runtime";
+/// Launch metadata holding the Fabric runtime binding JSON.
+pub const LAUNCH_RUNTIME: &str = "nemoclaw.nvidia.com/runtime";
+
+impl Launch {
+    pub fn from_json(encoded: &str) -> Result<Self, ObservationError> {
+        let launch: Self =
+            serde_json::from_str(encoded).map_err(|_| ObservationError::Incomplete)?;
+        let valid = launch.command.first().is_some_and(|path| absolute(path))
+            && launch
+                .command
+                .iter()
+                .all(|part| !part.is_empty() && !part.contains('\0'))
+            && launch.environment.iter().all(|(key, value)| {
+                !key.is_empty() && !key.contains(['=', '\0']) && !value.contains('\0')
+            })
+            && !launch.binaries.is_empty()
+            && launch.binaries.iter().all(|path| absolute(path));
+        if !valid {
+            return Err(ObservationError::Incomplete);
+        }
+        Ok(launch)
+    }
+    /// The sandbox policy: the authored explicit policy or the runtime's,
+    /// plus managed grants that allow this launch's executables.
+    pub fn policy(&self, input: &PolicyInput) -> Result<proto::SandboxPolicy, ObservationError> {
+        let mut policy = input.explicit.as_ref().unwrap_or(&self.policy).clone();
+        for rule in &input.managed {
+            let name = &rule.name;
+            if policy.network_policies.contains_key(name) {
+                return Err(ObservationError::BindingMismatch);
+            }
+            let mut rule = rule.clone();
+            rule.binaries = self
+                .binaries
+                .iter()
+                .map(|path| PolicyBinary { path: path.clone() })
+                .collect();
+            policy.network_policies.insert(name.clone(), rule);
+        }
+        policy.to_proto().map_err(|_| ObservationError::Incomplete)
+    }
     /// Resolve only marked Service rules; all other authored policy bytes stay intact.
     pub fn granted_policy(
         &self,
@@ -133,7 +182,7 @@ impl RuntimeBinding {
                     return Err(ObservationError::BindingMismatch);
                 }
             }
-            if !input.managed.contains_key(name) {
+            if !input.managed.iter().any(|rule| rule.name == *name) {
                 return Err(ObservationError::BindingMismatch);
             }
             let rule = policy
@@ -146,6 +195,57 @@ impl RuntimeBinding {
             rule.endpoints[0].allowed_ips.clone_from(addresses);
         }
         Ok(policy)
+    }
+}
+
+/// Authored policy and deployment-owned endpoint grants before image resolution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyInput {
+    pub explicit: Option<ExplicitPolicy>,
+    /// Deployment-owned grants, each named by its rule; names are unique.
+    pub managed: Vec<PolicyRule>,
+    /// Managed rule names whose exact addresses must come from verified Services.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub cluster_grants: BTreeSet<String>,
+}
+impl PolicyInput {
+    /// Whether two managed grants share a name.
+    pub fn has_duplicate_grant(&self) -> bool {
+        let mut names = BTreeSet::new();
+        !self
+            .managed
+            .iter()
+            .all(|rule| names.insert(rule.name.as_str()))
+    }
+}
+impl RuntimeBinding {
+    /// The generic launch for `agent`: Fabric's `fabric-agent-ctl serve`,
+    /// its runtime's policy and executables, and this binding in metadata.
+    pub fn launch(&self, agent: &str) -> Launch {
+        Launch {
+            command: self.command("serve", &[]),
+            environment: self.environment(),
+            policy: self.runtime.policy.clone(),
+            binaries: self.binaries().to_vec(),
+            metadata: [
+                (LAUNCH_AGENT.to_owned(), agent.to_owned()),
+                (LAUNCH_AGENT_RUNTIME.to_owned(), "fabric".to_owned()),
+                (
+                    LAUNCH_RUNTIME.to_owned(),
+                    serde_json::to_string(self).expect("runtime binding serializes"),
+                ),
+            ]
+            .into(),
+        }
+    }
+    /// Resolve only marked Service rules; all other authored policy bytes stay intact.
+    pub fn granted_policy(
+        &self,
+        input: &PolicyInput,
+        grants: &ClusterGrants,
+    ) -> Result<proto::SandboxPolicy, ObservationError> {
+        self.launch("").granted_policy(input, grants)
     }
     pub fn from_json(encoded: &str) -> Result<Self, ObservationError> {
         let binding: Self =
@@ -166,37 +266,18 @@ impl RuntimeBinding {
             .chain(arguments.iter().map(|value| (*value).into()))
             .collect()
     }
-    pub fn environment(&self, name: &str) -> BTreeMap<String, String> {
-        let mut environment = self.runtime.environment.clone();
-        environment.insert("NEMOCLAW_AGENT_NAME".into(), name.into());
-        environment
+    pub fn environment(&self) -> BTreeMap<String, String> {
+        self.runtime.environment.clone()
     }
     pub fn binaries(&self) -> &[String] {
         &self.runtime.binaries[&self.adapter_id]
     }
     pub fn policy(&self, input: &PolicyInput) -> Result<proto::SandboxPolicy, ObservationError> {
-        let mut policy = input
-            .explicit
-            .as_ref()
-            .unwrap_or(&self.runtime.policy)
-            .clone();
-        let binaries = self
-            .runtime
+        self.runtime
             .binaries
             .get(&self.adapter_id)
             .ok_or(ObservationError::Incomplete)?;
-        for (name, rule) in &input.managed {
-            if policy.network_policies.contains_key(name) {
-                return Err(ObservationError::BindingMismatch);
-            }
-            let mut rule = rule.clone();
-            rule.binaries = binaries
-                .iter()
-                .map(|path| PolicyBinary { path: path.clone() })
-                .collect();
-            policy.network_policies.insert(name.clone(), rule);
-        }
-        policy.to_proto().map_err(|_| ObservationError::Incomplete)
+        self.launch("").policy(input)
     }
 }
 
@@ -246,7 +327,7 @@ mod tests {
     fn retained_image_layout_controls_launch_user_and_managed_executables() {
         let binding = RuntimeBinding::from_json(&serde_json::json!({
             "adapter_id":"org.fixture.bun", "runtime":{
-                "schema_version":1,"command":["/srv/python3.99","-I","/srv/bridge.py"],
+                "schema_version":1,"command":["/srv/fabric-agent-ctl"],
                 "environment":{"ADAPTER_PYTHON":"/srv/python3.99","HOME":"/work","PATH":"/srv"},
                 "required_paths":["/srv"],
                 "policy":{"version":1,"filesystem_policy":{"read_only":["/srv"],"read_write":["/work"]},"process":{"run_as_user":"1234","run_as_group":"1234"},"network_policies":{}},
@@ -254,19 +335,15 @@ mod tests {
             }
         }).to_string()).unwrap();
         assert_eq!(
-            binding.command("configure", &["main", "{}"]),
-            [
-                "/srv/python3.99",
-                "-I",
-                "/srv/bridge.py",
-                "configure",
-                "main",
-                "{}"
-            ]
+            binding.command("start", &["--agent", "main"]),
+            ["/srv/fabric-agent-ctl", "start", "--agent", "main"]
         );
-        assert_eq!(binding.environment("main")["HOME"], "/work");
-        assert_eq!(binding.environment("main")["NEMOCLAW_AGENT_NAME"], "main");
-        let input: PolicyInput = serde_json::from_value(serde_json::json!({"explicit":null,"managed":{"model":{"name":"model","endpoints":[{"host":"api.example.com","port":443}],"binaries":[]}}})).unwrap();
+        // The sandbox serves Fabric's bridge; the agent is named per operation.
+        let launch = binding.launch("main");
+        assert_eq!(launch.command, ["/srv/fabric-agent-ctl", "serve"]);
+        assert_eq!(launch.environment["HOME"], "/work");
+        assert!(!launch.environment.contains_key("NEMOCLAW_AGENT_NAME"));
+        let input: PolicyInput = serde_json::from_value(serde_json::json!({"explicit":null,"managed":[{"name":"model","endpoints":[{"host":"api.example.com","port":443}],"binaries":[]}]})).unwrap();
         let policy = binding.policy(&input).unwrap();
         assert_eq!(policy.process.unwrap().run_as_user, "1234");
         assert_eq!(policy.filesystem.unwrap().read_write, ["/work"]);

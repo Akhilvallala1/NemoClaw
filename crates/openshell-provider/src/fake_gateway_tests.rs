@@ -432,7 +432,7 @@ async fn sandbox_exec_uses_the_bound_workspace_and_rejects_substituted_identity(
     assert_ne!(binding["workspace"], "default");
     let command = vec!["fixture".into()];
     let mut incomplete = binding.clone();
-    incomplete.remove("runtime_json");
+    incomplete.remove("launch_json");
     assert!(
         client
             .exec_bound(&incomplete, command.clone(), Default::default(), 5)
@@ -561,7 +561,7 @@ async fn explicit_policy_reaches_the_gateway_and_detects_drift() {
         .spec
         .clone()
         .unwrap();
-    let expected = nemoclaw_openshell::runtime::RuntimeBinding::from_json(&sandbox["runtime_json"])
+    let expected = nemoclaw_openshell::runtime::Launch::from_json(&sandbox["launch_json"])
         .unwrap()
         .policy(&serde_json::from_str(&sandbox["policy_json"]).unwrap())
         .unwrap();
@@ -578,6 +578,25 @@ async fn explicit_policy_reaches_the_gateway_and_detects_drift() {
     fixture.state.lock().unwrap().active_policy = Some(image_policy());
     assert!(client.read("sandbox", &sandbox, false).await.is_err());
     fixture.state.lock().unwrap().active_policy = None;
+    // Once recorded, the loaded policy's hash must not change.
+    let recorded = client
+        .read("sandbox", &sandbox, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!recorded["policy_hash"].is_empty());
+    assert!(client.read("sandbox", &recorded, false).await.is_ok());
+    let mut widened = spec.policy.clone().unwrap();
+    widened
+        .filesystem
+        .as_mut()
+        .unwrap()
+        .read_only
+        .push("/opt/extra".into());
+    fixture.state.lock().unwrap().active_policy = Some(widened);
+    assert!(client.read("sandbox", &recorded, false).await.is_err());
+    fixture.state.lock().unwrap().active_policy = None;
+    assert!(client.read("sandbox", &recorded, false).await.is_ok());
     // A coherent but different policy is observed as drift and never overwritten.
     let edit = |change: &dyn Fn(&mut proto::SandboxSpec)| {
         let mut state = fixture.state.lock().unwrap();
@@ -602,9 +621,9 @@ async fn explicit_policy_reaches_the_gateway_and_detects_drift() {
     });
     assert!(client.read("sandbox", &sandbox, false).await.is_err());
     edit(&|current| *current = spec.clone());
-    assert!(client.remove("sandbox", &sandbox, false).await.is_err());
-    assert!(fixture.state.lock().unwrap().sandboxes.contains_key(&key));
-    assert!(client.remove("sandbox", &sandbox, true).await.is_ok());
+    // A sandbox is replaceable: removing it needs no teardown.
+    assert!(client.remove("sandbox", &sandbox, false).await.is_ok());
+    assert!(!fixture.state.lock().unwrap().sandboxes.contains_key(&key));
 }
 
 #[tokio::test]
