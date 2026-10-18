@@ -713,6 +713,10 @@ This preserves the locked dependency versions and avoids npm resolving a new pee
 Both jobs verify that the SDK connection API loads before running tests.
 This keeps the private optional dependency available for SDK-backed commands such as configuration export.
 
+For Docker, the shared fake messaging API fixture publishes its credential-free proxy on
+`127.0.0.1` for OpenShell 0.1.3 host networking. Podman retains `0.0.0.0` publication.
+The API container remains on an internal network without published ports.
+
 The `network-policy` target also owns live configuration-export evidence for #10938, #11854, and PR #11065.
 After restricted OpenClaw onboarding with two read-only agents, it invokes the candidate `config export` command through the real SDK connection.
 It requires the command to reject the secondary-agent roster without producing a document.

@@ -37,13 +37,6 @@ import { parseInstalledWechatProof } from "../live/messaging-providers-wechat-ru
 const FAKE_TELEGRAM_API = path.resolve(import.meta.dirname, "../lib/fake-telegram-api.cjs");
 const FAKE_SLACK_API = path.resolve(import.meta.dirname, "../lib/fake-slack-api.cjs");
 const FAKE_WECHAT_API = path.resolve(import.meta.dirname, "../lib/fake-wechat-api.mts");
-const OPENSHELL_BRIDGE_ADDRESS = "172.18.0.1";
-const OPENSHELL_NETWORK_INSPECT = JSON.stringify([
-  {
-    Driver: "bridge",
-    IPAM: { Config: [{ Subnet: "172.18.0.0/16", Gateway: OPENSHELL_BRIDGE_ADDRESS }] },
-  },
-]);
 const execFileAsync = promisify(execFile);
 
 it.each([
@@ -252,7 +245,6 @@ function fakeDockerHost(
     missingProxyControl?: MissingProxyControl;
     proxyEnvironment?: readonly string[];
     publishedAddress?: string;
-    networkInspect?: string;
     proxyRunning?: boolean;
     proxyReady?: boolean;
   } = {},
@@ -269,7 +261,6 @@ function fakeDockerHost(
   const commands: Array<{ command: string; args: string[] }> = [];
   const containers = new Set<string>();
   const networks = new Set<string>();
-  const networkInspect = options.networkInspect ?? OPENSHELL_NETWORK_INSPECT;
   let runtimeProviderId: "docker" | "podman" = "docker";
   let proxyRunning = options.proxyRunning !== false;
   const dockerCommand = (args: string[]) => {
@@ -285,7 +276,7 @@ function fakeDockerHost(
             );
             return successfulCommand(
               executedArgs[2] === "openshell-docker"
-                ? networkInspect
+                ? "[]"
                 : JSON.stringify([
                     runtimeProviderId === "podman"
                       ? {
@@ -803,7 +794,7 @@ describe("messaging provider installed-runtime proofs", () => {
     }
   });
 
-  it("rejects a fake API proxy port that Docker publishes beyond the OpenShell bridge", async () => {
+  it("rejects a fake API proxy port that Docker publishes beyond loopback", async () => {
     const { host } = fakeDockerHost({ publishedAddress: "0.0.0.0" });
     const cleanup: CleanupAction[] = [];
 
@@ -817,7 +808,7 @@ describe("messaging provider installed-runtime proofs", () => {
   });
 
   it("publishes the isolated proxy through rootless Podman without binding its bridge gateway", async () => {
-    const { calls, host } = fakeDockerHost({ networkInspect: "[]" });
+    const { calls, host } = fakeDockerHost();
     const cleanup: CleanupAction[] = [];
 
     try {
@@ -830,9 +821,6 @@ describe("messaging provider installed-runtime proofs", () => {
 
       expect(publications).toContain("0.0.0.0::8080");
       expect(publications).toContain(`0.0.0.0::${String(FAKE_API_PROXY_READINESS_PORT)}`);
-      expect(publications.some((entry) => entry.startsWith(`${OPENSHELL_BRIDGE_ADDRESS}::`))).toBe(
-        false,
-      );
       expect(calls).not.toContainEqual(["network", "inspect", "openshell-docker"]);
       expect(api.port).toBe("32100");
     } finally {
@@ -843,7 +831,6 @@ describe("messaging provider installed-runtime proofs", () => {
   it("rejects effective proxy capabilities reported by rootless Podman", async () => {
     const { host } = fakeDockerHost({
       missingProxyControl: "--cap-drop",
-      networkInspect: "[]",
     });
     const cleanup: CleanupAction[] = [];
 
@@ -859,35 +846,28 @@ describe("messaging provider installed-runtime proofs", () => {
     }
   });
 
-  it("rejects ambiguous OpenShell IPv4 gateways and cleans its temporary directory", async () => {
-    const networkInspect = JSON.stringify([
-      {
-        Driver: "bridge",
-        IPAM: {
-          Config: [
-            { Subnet: "172.18.0.0/16", Gateway: OPENSHELL_BRIDGE_ADDRESS },
-            { Subnet: "172.19.0.0/16", Gateway: "172.19.0.1" },
-          ],
-        },
-      },
-    ]);
-    const { calls, host } = fakeDockerHost({ networkInspect });
+  it("publishes the Docker proxy on loopback without an OpenShell bridge and cleans its resources", async () => {
+    const { calls, host, resources } = fakeDockerHost();
     const cleanup: CleanupAction[] = [];
-    let fixtureDir: string | undefined;
+    let captureFile: string | undefined;
 
     try {
-      await expect(startFakeDiscordApi(host, cleanup)).rejects.toThrow(
-        /exactly one IPv4 bridge gateway/u,
-      );
-      expect(calls).toEqual([["network", "inspect", "openshell-docker"]]);
-      expect(cleanup).toHaveLength(1);
-      fixtureDir = cleanup[0]!.name.replace(/^remove /u, "");
-      expect(fs.existsSync(fixtureDir)).toBe(true);
+      const api = await startFakeDiscordApi(host, cleanup);
+      captureFile = api.captureFile;
+      const proxyRun = calls.filter((args) => args[0] === "run").at(-1)!;
+      expect(optionValues(proxyRun, "-p")).toEqual([
+        `127.0.0.1::${String(FAKE_API_PROXY_READINESS_PORT)}`,
+        "127.0.0.1::8080",
+      ]);
+      expect(calls).not.toContainEqual(["network", "inspect", "openshell-docker"]);
+      expect(api.port).toBe("32100");
+      expect(fs.existsSync(captureFile)).toBe(true);
     } finally {
       await runCleanup(cleanup);
     }
-    expect(fixtureDir).toBeDefined();
-    expect(fs.existsSync(fixtureDir!)).toBe(false);
+    expect(resources()).toEqual({ containers: [], networks: [] });
+    expect(captureFile).toBeDefined();
+    expect(fs.existsSync(captureFile!)).toBe(false);
   });
 
   it("fails with proxy diagnostics when the detached proxy stops before readiness", async () => {

@@ -3,7 +3,6 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { isIPv4 } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -45,7 +44,6 @@ export const LIVE_TIMEOUT_MS = 90 * 60_000;
 export const OPENSHELL_EXEC_ARGUMENT_LIMIT_BYTES = 32_768;
 export const FAKE_API_IMAGE =
   "node:24.18.1-trixie-slim@sha256:ac39e4b5fcb2b1b34b20364fd58b2e898f3bb80731ee6f62a7536f9df3d6aadc";
-const DEFAULT_OPENSHELL_DOCKER_NETWORK = "openshell-docker";
 export const FAKE_API_PROXY_READINESS_PORT = 8079;
 export const FAKE_API_PROXY_SOURCE = String.raw`
 const net = require("node:net");
@@ -1035,52 +1033,9 @@ export async function startFakeDockerApi(
     await fs.promises.rm(dir, { recursive: true, force: true });
   });
 
-  let proxyPublishAddress = "0.0.0.0";
-  let proxyProbeAddress = "127.0.0.1";
-  if (runtimeProvider.id === "docker") {
-    const openshellNetwork =
-      options.env.OPENSHELL_DOCKER_NETWORK_NAME ??
-      process.env.OPENSHELL_DOCKER_NETWORK_NAME ??
-      DEFAULT_OPENSHELL_DOCKER_NETWORK;
-    const openshellNetworkInspect = await runtimeProvider.command(
-      ["network", "inspect", openshellNetwork],
-      {
-        artifactName: `inspect-fake-${options.kind}-openshell-network`,
-        env: options.env,
-        redactionValues: options.redactionValues,
-        timeoutMs: 30_000,
-      },
-    );
-    expectExitZero(openshellNetworkInspect, "inspect OpenShell Docker network");
-    let openshellNetworkRecords: unknown;
-    try {
-      openshellNetworkRecords = JSON.parse(openshellNetworkInspect.stdout);
-    } catch {
-      throw new Error("OpenShell Docker network inspection returned invalid JSON");
-    }
-    const openshellBridgeAddresses =
-      Array.isArray(openshellNetworkRecords) && openshellNetworkRecords.length === 1
-        ? ((
-            openshellNetworkRecords[0] as {
-              Driver?: unknown;
-              IPAM?: { Config?: Array<{ Gateway?: unknown }> };
-            }
-          ).IPAM?.Config?.flatMap((entry) =>
-            typeof entry.Gateway === "string" && isIPv4(entry.Gateway) ? [entry.Gateway] : [],
-          ) ?? [])
-        : [];
-    const openshellBridgeAddress =
-      openshellBridgeAddresses.length === 1 ? openshellBridgeAddresses[0] : undefined;
-    if (
-      (openshellNetworkRecords as Array<{ Driver?: unknown }> | undefined)?.[0]?.Driver !==
-        "bridge" ||
-      typeof openshellBridgeAddress !== "string"
-    ) {
-      throw new Error("OpenShell Docker network must expose exactly one IPv4 bridge gateway");
-    }
-    proxyPublishAddress = openshellBridgeAddress;
-    proxyProbeAddress = openshellBridgeAddress;
-  }
+  // The Docker supervisor uses host networking and pins its host alias to loopback.
+  const proxyPublishAddress = runtimeProvider.id === "docker" ? "127.0.0.1" : "0.0.0.0";
+  const proxyProbeAddress = "127.0.0.1";
 
   const networkCreate = await runtimeProvider.command(
     ["network", "create", "--internal", network],
