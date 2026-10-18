@@ -50,8 +50,10 @@ def require_private_topology():
     if result.returncode != 0 or result.stdout != b"same-uid-nonroot\n":
         raise RuntimeError("Private Hermes config requires an attested same-UID runtime; rebuild with the current Hermes image")
 
+metadata_fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_ctime_ns")
+
 def metadata(st):
-    return (st.st_dev, st.st_ino, st.st_uid, st.st_gid, st.st_mode, st.st_nlink, st.st_ctime_ns)
+    return tuple(getattr(st, name) for name in metadata_fields)
 
 def require_mutable_flags(descriptor, info):
     if hasattr(info, "st_flags"):
@@ -109,8 +111,13 @@ try:
 
     if private_root:
         require_private_topology()
-    if metadata(os.stat(config_dir, follow_symlinks=False)) != metadata(directory):
-        raise RuntimeError("Hermes config root changed during inspection")
+    current_directory = metadata(os.stat(config_dir, follow_symlinks=False))
+    initial_directory = metadata(directory)
+    if current_directory != initial_directory:
+        changed_fields = [name for name, before, after in
+                          zip(metadata_fields, initial_directory, current_directory)
+                          if before != after]
+        raise RuntimeError("Hermes config root changed during inspection: " + ", ".join(changed_fields))
 finally:
     os.close(directory_fd)
 `;

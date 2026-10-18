@@ -216,21 +216,32 @@ describe("mutable Hermes config permissions", () => {
   });
 
   it.each([
-    [0o3770, "unavailable", true],
-    [0o700, "verified", true],
-    [0o700, "unavailable", false],
-    [0o700, "changed", false],
-    [0o700, "directory-race", false],
-    [0o3770, "access-denied", false],
-    [0o3770, "append-only-root", false],
-    [0o3770, "immutable-artifact", false],
-    [0o750, "verified", false],
-    [0o3770, "root", false],
-    [0o3770, "wrong-user", false],
-    [0o3770, "wrong-group", false],
+    [0o3770, "unavailable", true, ""],
+    [0o700, "verified", true, ""],
+    [0o700, "unavailable", false, "Private Hermes config requires an attested same-UID runtime"],
+    [0o700, "changed", false, "Private Hermes config requires an attested same-UID runtime"],
+    [
+      0o700,
+      "directory-race",
+      false,
+      "Hermes config root changed during inspection: st_mode, st_ctime_ns",
+    ],
+    [
+      0o700,
+      "directory-timestamp",
+      false,
+      "Hermes config root changed during inspection: st_ctime_ns",
+    ],
+    [0o3770, "access-denied", false, "Hermes config root is not writable by the sandbox identity"],
+    [0o3770, "append-only-root", false, "Hermes config has immutable or append-only inode flags"],
+    [0o3770, "immutable-artifact", false, "Hermes config has immutable or append-only inode flags"],
+    [0o750, "verified", false, "Hermes config root does not have an allowed mutable mode"],
+    [0o3770, "root", false, "Hermes config probe requires the non-root sandbox identity"],
+    [0o3770, "wrong-user", false, "Hermes config probe requires the non-root sandbox identity"],
+    [0o3770, "wrong-group", false, "Hermes config probe requires the non-root sandbox identity"],
   ] as const)(
     "checks mode %s with %s topology without changing state",
-    (mode, topology, expected) => {
+    (mode, topology, expected, diagnostic) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-private-hermes-probe-"));
       const configDir = path.join(root, ".hermes");
       fs.mkdirSync(configDir, { mode });
@@ -288,6 +299,9 @@ def topology_response(args, **kwargs):
     assert args[3] == "inspect-private-mutable-topology"
     if topology == "directory-race" and calls == 2:
         os.chmod(config_dir, 0o750)
+    if topology == "directory-timestamp" and calls == 2:
+        info = os.stat(config_dir)
+        os.utime(config_dir, ns=(info.st_atime_ns, info.st_mtime_ns))
     success = topology != "unavailable" and not (topology == "changed" and calls == 2)
     return types.SimpleNamespace(returncode=0 if success else 1, stdout=b"same-uid-nonroot\\n")
 subprocess.run = topology_response
@@ -307,6 +321,7 @@ os.mkdir = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("probe m
         );
         expect(result.error).toBeUndefined();
         expect(result.status === 0, result.stderr).toBe(expected);
+        expect(result.stderr).toContain(diagnostic);
         expect(fs.readdirSync(configDir).sort()).toEqual([...names].sort());
         expect(fs.statSync(configDir).mtimeMs).toBe(before);
         expect(names.map((name) => fs.readFileSync(path.join(configDir, name), "utf8"))).toEqual([
