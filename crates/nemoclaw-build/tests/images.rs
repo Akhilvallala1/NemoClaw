@@ -66,35 +66,72 @@ target "reference" {
 }
 "#;
 
-#[test]
-fn harnesses_missing_from_the_selected_platform_name_the_platforms_that_build_them() {
-    // Plans with Bake's print mode only; nothing is built.
+/// A directory holding `PLATFORM_BAKE`, or `None` without `docker buildx`.
+/// These tests plan with Bake's print mode only; nothing is built. Each plan
+/// runs Bake twice, and one Docker CLI call can take seconds on Windows
+/// runners, so each test makes only a few plans.
+fn platform_bake() -> Option<tempfile::TempDir> {
     if !std::process::Command::new("docker")
         .args(["buildx", "version"])
         .output()
         .is_ok_and(|output| output.status.success())
     {
         eprintln!("skipping: docker buildx is unavailable");
-        return;
+        return None;
     }
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("docker-bake.hcl"), PLATFORM_BAKE).unwrap();
-    let root = directory.path();
-    let error = plan(root, "linux/amd64", &["shared".into(), "armonly".into()]).unwrap_err();
+    Some(directory)
+}
+
+fn planned(root: &Path, platform: &str, name: &str) -> Vec<String> {
+    plan(root, platform, &[name.into()])
+        .unwrap()
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect()
+}
+
+#[test]
+fn harnesses_missing_from_the_selected_platform_name_the_platforms_that_build_them() {
+    let Some(directory) = platform_bake() else {
+        return;
+    };
+    let error = plan(
+        directory.path(),
+        "linux/amd64",
+        &["shared".into(), "armonly".into()],
+    )
+    .unwrap_err();
     assert_eq!(
         error,
         "armonly is built only for linux/arm64; linux/amd64 builds shared (docs/build.md#build-agent-images)"
     );
-    let planned = |platform, name: &str| {
-        plan(root, platform, &[name.into()])
-            .unwrap()
-            .into_iter()
-            .map(|(target, _)| target)
-            .collect::<Vec<_>>()
+}
+
+#[test]
+fn each_platform_plans_the_harnesses_it_builds() {
+    let Some(directory) = platform_bake() else {
+        return;
     };
-    assert_eq!(planned("linux/amd64", "shared"), ["shared"]);
-    assert_eq!(planned("linux/arm64", "armonly"), ["armonly"]);
-    // Selections that are not harnesses keep Bake's own resolution.
-    assert_eq!(planned("linux/amd64", "reference"), ["reference"]);
-    assert!(plan(root, "linux/amd64", &["no-such-target".into()]).is_err());
+    assert_eq!(
+        planned(directory.path(), "linux/amd64", "shared"),
+        ["shared"]
+    );
+    assert_eq!(
+        planned(directory.path(), "linux/arm64", "armonly"),
+        ["armonly"]
+    );
+}
+
+#[test]
+fn selections_that_are_not_harnesses_keep_bakes_resolution() {
+    let Some(directory) = platform_bake() else {
+        return;
+    };
+    assert_eq!(
+        planned(directory.path(), "linux/amd64", "reference"),
+        ["reference"]
+    );
+    assert!(plan(directory.path(), "linux/amd64", &["no-such-target".into()]).is_err());
 }
