@@ -1364,7 +1364,8 @@ On Docker and rootless Podman, managed-image activation also adopts the
 published OpenClaw and Hermes digests through `--from-image`. It confirms
 OpenShell readiness, the durable external-image receipt, identity-drift
 rejection before replacement, rebuild from the recorded digest, NemoClaw
-destruction, and shared image retention.
+destruction, and shared image retention. If the rebuild fails or times out, the
+target attempts to capture bounded, redacted lifecycle diagnostics before cleanup.
 
 The same Docker and rootless Podman jobs run a separate legacy-volume refusal
 case before agent activation. It creates a disposable owned volume without

@@ -48,6 +48,7 @@ import {
 } from "../fixtures/fake-openai-compatible.ts";
 import { captureIssue4462FailureDiagnostics } from "../fixtures/issue-4462-diagnostics.ts";
 import { initializeGatewayForCleanup } from "../fixtures/gateway-runtime-start.ts";
+import { captureSandboxFailureDiagnostics } from "../fixtures/sandbox-failure-diagnostics.ts";
 import type { LifecyclePhaseFixture } from "../fixtures/phases/lifecycle.ts";
 import { pollUntil } from "../fixtures/polling.ts";
 import type { TestProgress } from "../fixtures/progress.ts";
@@ -1095,7 +1096,7 @@ export async function qualifyAgent(
   await verifyExactCleanup(host, sandbox, sandboxName, env);
 }
 
-async function qualifyExternalImage(
+export async function qualifyExternalImage(
   fixtures: RuntimeFixtures,
   guard: ContainerBuildGuard,
   containerEngine: ContainerEngine,
@@ -1207,6 +1208,12 @@ async function qualifyExternalImage(
     env,
     redactionValues: [API_KEY],
     timeoutMs: ONBOARD_TIMEOUT_MS,
+  });
+  await captureSandboxFailureDiagnostics(host, rebuild, {
+    sandboxName,
+    artifactPrefix: `external-image-${agent}-rebuild-failure`,
+    redactionValues: [API_KEY],
+    captureGatewayLog: true,
   });
   if (rebuild.exitCode === 0) {
     await lifecycle.waitForSandboxReadyAfterGatewayRestart(sandboxName, {
