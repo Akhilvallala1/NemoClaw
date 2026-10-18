@@ -790,44 +790,13 @@ For a non-interactive install, set `NEMOCLAW_CONFIRM_LEGACY_MANAGED_RECREATE` to
 The confirmation permits those legacy entries to recover onto the current managed image, but it does not override recorded custom-image evidence.
 After confirmed recovery, the installer skips generic onboarding unless DGX Station reconciliation remains necessary.
 Required DGX Station reconciliation still passes host admission before onboarding.
-For any registered-sandbox upgrade that you prepare manually, use the current release CLI.
-If the installer has not already reported that it prepared the current CLI, start the supported automatic flow first:
-
-```bash
-curl -fsSL https://www.nvidia.com/nemoclaw.sh | NEMOCLAW_ACCEPT_EXPERIMENTAL_OPENSHELL_UPGRADE=1 bash
-```
-
-That flow prepares the current CLI before it replaces OpenShell.
-If it completes, do not run the manual steps below.
-Continue manually only when the automatic flow stops after preparing the CLI or a support workflow directs you to this recovery path.
-Use the prepared current CLI to require strict backup and retire all applicable registered legacy forwards before you retire the old gateway.
-Do not retire an OpenShell `0.0.x` gateway with registered sandboxes through these manual commands; the installer cannot recover those sandboxes on OpenShell `0.1.3`.
-Strict backup can report a confirmed stranded registry sandbox without creating a backup for it because both the selected gateway and the container provider prove that no sandbox runtime remains.
-That record requires the cleanup or recreation action printed by `$$nemoclaw backup-all`, but it does not block a prepared upgrade after the strict command succeeds:
-
-```bash
-selected_port=8080
-gateway_name=nemoclaw
-retire_legacy_forwards_flag=--retire-legacy-forwards
-NEMOCLAW_GATEWAY_PORT="$selected_port" NEMOCLAW_REQUIRE_ALL_SANDBOX_BACKUPS=1 $$nemoclaw backup-all "$retire_legacy_forwards_flag" && \
-  openshell gateway destroy -g "$gateway_name"
-```
-
-For a non-default gateway, replace `8080` with its port and set `gateway_name` to `nemoclaw-<selected-port>`.
-If an older OpenShell release rejects the named destroy command for the default `nemoclaw` gateway, run `openshell gateway destroy` instead.
-Do not substitute `openshell gateway remove`: removal can unregister a gateway without stopping its process.
-Set `NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1` only after the command pipeline exits successfully.
-Confirm that the strict backup summary reports `0 failed, 0 skipped` and that the `Legacy dashboard forwards:` summary appears before gateway destruction.
-A confirmed stranded record has no backup to reuse; complete the reported cleanup or recreation action during recovery.
-If backup, forward retirement, or gateway retirement fails, resolve the failure while the completed backups remain intact.
-This environment variable asserts that strict backup, legacy-forward retirement, and gateway retirement are complete, so the installer skips that repeated preparation phase before it checks whether OpenShell is installed or whether its version is in range.
-For a non-default gateway, preserve the selected port on the `bash` side of the install pipeline.
-
-```bash
-curl -fsSL https://www.nvidia.com/nemoclaw.sh | NEMOCLAW_GATEWAY_PORT="$selected_port" NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1 bash
-```
-
-It reuses the latest backups, forces the pinned OpenShell installation, and starts recovery only after that installation succeeds. If the installation fails, rerun the same install-pipeline command to preserve `NEMOCLAW_GATEWAY_PORT` and `NEMOCLAW_OPENSHELL_UPGRADE_PREPARED`.
+Use `NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1` only to retry an eligible upgrade after the installer confirms completed strict backup, forward retirement, and gateway retirement.
+The installer checks the installed OpenShell version before it accepts this flag.
+When the selected gateway has registered sandboxes, an OpenShell `0.0.x`, missing, or unreadable version stops the upgrade even when backups exist.
+Do not retire a legacy gateway, delete its registration, or remove sandbox records to bypass that stop.
+Preserve the existing installation, sandbox data, and completed backups.
+Follow [Resume a Manually Prepared Upgrade](../manage-sandboxes/operate-sandboxes/update-sandboxes#resume-a-manually-prepared-upgrade) for the version check and retry command.
+This recovery flag does not change the runtime, GPU, or inference qualification requirements.
 
 The wizard prompts for a provider first, then collects the provider credential if needed. Supported non-experimental choices include NVIDIA Endpoints, OpenRouter, OpenAI, Anthropic, Google Gemini, and compatible OpenAI or Anthropic endpoints. Credentials are registered with the OpenShell gateway and never persisted to host disk. Refer to [Credential Storage](../security/credential-storage) for details on inspection, rotation, and migration from earlier releases. The legacy `$$nemoclaw setup` command is deprecated; use `$$nemoclaw onboard` instead.
 
@@ -3478,7 +3447,7 @@ A readiness, backup, or return failure marks that sandbox as failed, and `backup
 $$nemoclaw backup-all
 ```
 
-Before an OpenShell upgrade, the installer prepares the current release CLI and uses it to run `backup-all` in strict mode. Strict mode requires every registered sandbox that still has a runtime to produce a fresh backup and aborts before gateway changes if an ordinary sandbox is skipped or fails. When strict mode reports an ordinary skipped sandbox, start that sandbox or its container and rerun the installer or `$$nemoclaw backup-all`. A registry record that the selected gateway and container provider both prove has no remaining runtime is reported as confirmed stranded, produces no backup, and does not fail strict mode. Follow the reported cleanup or recreation action in [Resume a Manually Prepared Upgrade](../manage-sandboxes/operate-sandboxes/update-sandboxes#resume-a-manually-prepared-upgrade) before recovery.
+Before an OpenShell upgrade, the installer prepares the current release CLI and uses it to run `backup-all` in strict mode. Strict mode requires every registered sandbox that still has a runtime to produce a fresh backup and aborts before gateway changes if an ordinary sandbox is skipped or fails. When strict mode reports an ordinary skipped sandbox, start that sandbox or its container and rerun the installer or `$$nemoclaw backup-all`. A registry record that the selected gateway and container provider both prove has no remaining runtime is reported as confirmed stranded, produces no backup, and does not fail strict mode. Follow the reported cleanup or recreation action in [Interpret Automatic Recovery Results](../manage-sandboxes/operate-sandboxes/update-sandboxes#interpret-automatic-recovery-results) before recovery.
 
 A running sandbox whose in-sandbox SSH endpoint does not answer fails its backup and aborts the run. For a standalone `$$nemoclaw backup-all` run, set `NEMOCLAW_SKIP_UNREACHABLE_SANDBOX_BACKUP=1` exactly to skip such sandboxes instead of failing. Other values such as `true`, `yes`, or `0` are not accepted. This variable does not weaken the installer's strict pre-upgrade requirement. A skipped sandbox's uncommitted state is not included in its last successful backup.
 
@@ -4851,6 +4820,7 @@ The following flags change defaults for commands that manage existing sandboxes.
 </AgentOnly>
 | `NEMOCLAW_CONFIRM_LEGACY_MANAGED_RECREATE` | JSON array of sandbox names | Confirms to the installer that the listed set of pre-fingerprint OpenClaw or Hermes sandboxes used NemoClaw-managed images, allowing recovery onto the current managed image. The normalized names must exactly match the installer's printed array. Set it only after verifying every named sandbox. Recorded custom-image evidence remains blocked. |
 | `NEMOCLAW_DISABLE_INFERENCE_ROUTE_REPAIR` | `1` to enable | Skips automatic DNS-proxy mutation for stale `inference.local` routes during `$$nemoclaw <name> connect` and `$$nemoclaw <name> connect --probe-only`. The command still probes the route and exits non-zero when the provider-specific requirement fails. An `ollama-local` route still requires a healthy authenticated proxy and HTTP 2xx from `inference.local/v1/models`. Use only as a troubleshooting escape hatch. |
+| `NEMOCLAW_REQUIRE_ALL_SANDBOX_BACKUPS` | Exactly `1` to enable; unset by default | Enables strict `$$nemoclaw backup-all` checks. A failed backup or an ordinary skipped sandbox makes the command exit nonzero. A record confirmed absent from both the selected gateway and container provider produces no backup and does not fail strict mode. The installer sets this variable for pre-upgrade backups; it does not bypass the OpenShell `0.0.x` migration stop. |
 | `NEMOCLAW_SKIP_UNREACHABLE_SANDBOX_BACKUP` | Exactly `1` to opt in (`true`, `yes`, `0` are not accepted) | Applies to standalone `$$nemoclaw backup-all` runs. Skips running sandboxes whose in-sandbox SSH endpoint does not answer. It does not relax the installer's strict pre-upgrade backup, which still aborts if any registered sandbox is skipped or fails. Any uncommitted state since the last successful backup is not included in the skipped backup. |
 | `NEMOCLAW_UNINSTALL_ALL_GATEWAY_PORTS` | `1` to opt in | Makes `$$nemoclaw uninstall` remove every gateway port on the host instead of only the port `NEMOCLAW_GATEWAY_PORT` selects. Equivalent to passing the `--all-gateway-ports` flag; the whole-host `Proceed?` confirmation still applies unless `--yes` is also passed. Each port runs as its own uninstall, and the variable is dropped from those runs so the sweep cannot re-enter itself. |
 | `NEMOCLAW_UNINSTALL_DESTROY_USER_DATA` | `1` to opt in | Acknowledges data loss during `$$nemoclaw uninstall`, skips eligible fresh sandbox backups, and removes the otherwise-preserved entries (`rebuild-backups/`, `backups/`, `sandboxes.json`) in the selected gateway's state root. It does not select the explicit `--destroy-user-data` CLI-shim removal path; shim handling follows the ordinary selected-gateway scope. The global `Proceed?` confirmation still applies unless `--yes` is also passed. |
