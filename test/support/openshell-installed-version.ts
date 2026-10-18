@@ -61,7 +61,9 @@ export function runCommandWithInstalledVersion(
       | "metadata-link"
       | "metadata-directory"
       | "corrupt"
+      | "fixed-system"
       | "system";
+    legacyInventory?: unknown;
     missingCli?: boolean;
     missingNode?: boolean;
     systemGatewayDirectory?: string;
@@ -108,9 +110,11 @@ export function runCommandWithInstalledVersion(
     const retainedFiles = new Map<string, string>();
     if (options.legacyGateway) {
       const gatewayRoot =
-        options.legacyGateway === "system"
-          ? path.join(tmp, "system-openshell")
-          : path.join(configHome, "openshell");
+        options.legacyGateway === "fixed-system"
+          ? path.join(tmp, "fixed-system-openshell")
+          : options.legacyGateway === "system"
+            ? path.join(tmp, "system-openshell")
+            : path.join(configHome, "openshell");
       const gatewayDir = path.join(gatewayRoot, "gateways", "nemoclaw");
       fs.mkdirSync(gatewayDir, { recursive: true });
       if (!["retired", "metadata-directory"].includes(String(options.legacyGateway))) {
@@ -148,7 +152,7 @@ if [ "$*" = "gateway list -o json" ]; then
   exit 0
 fi
 if [ "$*" = "sandbox list -g nemoclaw -o json" ]; then
-  printf '%s\\n' ${shellQuote(options.legacyGateway === "empty" || options.legacyGateway === "stderr" ? "[]" : options.legacyGateway === "partial" ? '{"sandboxes":[],"next_page_token":"remaining"}' : options.legacyGateway === "invalid" ? "invalid JSON" : '[{"id":"11111111-1111-4111-8111-111111111111","name":"retained-box","phase":"Stopped","labels":{},"resource_version":1,"created_at":"2026-10-13T00:00:00Z","current_policy_version":1}]')}
+  printf '%s\\n' ${shellQuote(options.legacyInventory !== undefined ? JSON.stringify(options.legacyInventory) : options.legacyGateway === "empty" || options.legacyGateway === "stderr" ? "[]" : options.legacyGateway === "partial" ? '{"sandboxes":[],"next_page_token":"remaining"}' : options.legacyGateway === "invalid" ? "invalid JSON" : '[{"id":"11111111-1111-4111-8111-111111111111","name":"retained-box","phase":"Stopped","labels":{},"resource_version":1,"created_at":"2026-10-13T00:00:00Z","current_policy_version":1}]')}
   ${options.legacyGateway === "stderr" ? "echo 'inventory unavailable' >&2" : ":"}
   exit ${options.legacyGateway === "unreachable" ? 1 : 0}
 fi
@@ -318,7 +322,13 @@ exit 0`,
         : {};
     // Protected execution projects the installer without adjacent candidate helpers.
     const isolatedInstaller = path.join(tmp, "install-openshell.sh");
-    fs.copyFileSync(path.join(SCRIPTS, "install-openshell.sh"), isolatedInstaller);
+    // Map the fixed system path into the fixture; never read or mutate host registrations.
+    fs.writeFileSync(
+      isolatedInstaller,
+      fs
+        .readFileSync(path.join(SCRIPTS, "install-openshell.sh"), "utf8")
+        .replaceAll("/etc/openshell", path.join(tmp, "fixed-system-openshell")),
+    );
     if (options.entrypoint === "feature-check") {
       // Exercise the feature gate independently of the selected install version.
       const source = fs.readFileSync(isolatedInstaller, "utf8");

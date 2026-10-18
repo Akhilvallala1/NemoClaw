@@ -224,6 +224,7 @@ legacy_openshell_state_is_absent() {
   ! command -v openshell >/dev/null 2>&1 || return 1
   [[ "$config" = /* && "$system" = /* ]] || return 1
   gateway_registration_path_is_absent "$config/openshell/gateways" \
+    && gateway_registration_path_is_absent "/etc/openshell/gateways" \
     && gateway_registration_path_is_absent "$system/gateways"
 }
 
@@ -271,7 +272,8 @@ function gatewayNames() {
   if (!isAbsolute(config) || !isAbsolute(system))
     deny("gateway configuration paths are not absolute");
   const names = new Map();
-  for (const root of [join(config, "openshell", "gateways"), join(system, "gateways")]) {
+  // An alternate root does not prove that default system registrations were retired.
+  for (const root of new Set([join(config, "openshell", "gateways"), "/etc/openshell/gateways", join(system, "gateways")])) {
     let entries;
     try {
       entries = readdirSync(root, { withFileTypes: true });
@@ -330,13 +332,19 @@ function verify() {
   }
   for (const name of names) {
     const inventory = JSON.parse(query(binary, ["sandbox", "list", "-g", name, "-o", "json"]));
-    const empty = Array.isArray(inventory)
-      ? inventory.length === 0
+    const sandboxes = Array.isArray(inventory)
+      ? inventory
       : inventory !== null &&
         Array.isArray(inventory.sandboxes) &&
-        inventory.sandboxes.length === 0 &&
-        inventory.next_page_token === "";
-    if (!empty) deny("a legacy gateway has sandboxes or an incomplete inventory");
+        inventory.next_page_token === ""
+        ? inventory.sandboxes
+        : null;
+    if (!sandboxes || sandboxes.some((sandbox) =>
+      typeof sandbox?.name !== "string" || !sandbox.name.trim() || sandbox.name.length > 512
+    )) deny(`legacy gateway ${JSON.stringify(name)} has an invalid or incomplete sandbox inventory`);
+    if (sandboxes.length) {
+      deny(`legacy gateway ${JSON.stringify(name)} has sandboxes: ${sandboxes.map((sandbox) => JSON.stringify(sandbox.name)).join(", ")}`);
+    }
   }
 }
 

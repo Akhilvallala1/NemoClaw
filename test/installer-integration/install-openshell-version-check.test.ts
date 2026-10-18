@@ -116,6 +116,7 @@ describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
       );
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("legacy gateway");
+      expect(result.stderr).toContain('gateway "nemoclaw" has sandboxes: "retained-box"');
       expect(result.downloads, `${result.stdout}\n${result.stderr}`).toBe("");
       expect(result.retainedFilesUnchanged).toBe(true);
     },
@@ -152,6 +153,56 @@ describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
     expect(result.stderr).not.toContain("Cannot replace OpenShell");
     expect(result.retainedFilesUnchanged).toBe(true);
   });
+
+  it.each([false, true])(
+    "preserves default system gateway state with an empty override and missing CLI=%s",
+    (missingCli) => {
+      const result = runCommandWithInstalledVersion(
+        "0.0.116",
+        {},
+        {
+          legacyGateway: "fixed-system",
+          missingCli,
+          missingNode: missingCli,
+          driverBins: false,
+        },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(missingCli ? "Node.js is required" : 'gateway "nemoclaw"');
+      expect(result.downloads).toBe("");
+      expect(result.retainedFilesUnchanged).toBe(true);
+    },
+  );
+
+  it.each([
+    { legacyInventory: [{ name: "alpha" }, { name: "beta" }] },
+    { legacyInventory: { sandboxes: [{ name: "alpha" }, { name: "beta" }], next_page_token: "" } },
+  ])("names all sandboxes in a complete legacy inventory %#", ({ legacyInventory }) => {
+    const result = runCommandWithInstalledVersion(
+      "0.0.116",
+      {},
+      { legacyGateway: true, legacyInventory },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('gateway "nemoclaw" has sandboxes: "alpha", "beta"');
+    expect(result.downloads).toBe("");
+    expect(result.retainedFilesUnchanged).toBe(true);
+  });
+
+  it.each([[null], [{}], [{ name: "" }], [{ name: "a".repeat(513) }]])(
+    "refuses malformed sandbox names without replacing legacy state %#",
+    (...rows) => {
+      const result = runCommandWithInstalledVersion(
+        "0.0.116",
+        {},
+        { legacyGateway: true, legacyInventory: rows },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("invalid or incomplete sandbox inventory");
+      expect(result.downloads).toBe("");
+      expect(result.retainedFilesUnchanged).toBe(true);
+    },
+  );
 
   it.each([
     ["missing", { missingCli: true }],
@@ -238,7 +289,7 @@ describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
         { legacyGateway: true, driverBins: false, os, arch: "arm64" },
       );
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("a legacy gateway has sandboxes");
+      expect(result.stderr).toContain('legacy gateway "nemoclaw" has sandboxes');
       expect(result.downloads).toBe("");
       expect(result.retainedFilesUnchanged).toBe(true);
     },

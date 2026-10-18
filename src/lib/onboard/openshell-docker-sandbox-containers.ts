@@ -644,7 +644,17 @@ export function queryOpenShellDockerSandboxRuntimeSnapshot(
   );
   const deadlineMs = now() + totalTimeoutMs;
   const remainingTimeoutMs = () => Math.floor(deadlineMs - now());
-  const containers = queryOpenShellDockerSandboxContainers(sandboxName, deps, remainingTimeoutMs());
+  // OpenShell labels both the workload and its supervisor with the sandbox name.
+  // Snapshot identity and GPU state belong to the workload container.
+  const containers = queryDockerSandboxContainerIds(
+    [
+      ...sandboxContainerFilterArgs(sandboxName),
+      "--filter",
+      `label=${OPENSHELL_ISOLATION_ROLE_LABEL}=sandbox`,
+    ],
+    deps,
+    remainingTimeoutMs(),
+  );
   if (!containers.ok) return { ok: false, error: containers.error };
   const inspectTimeoutMs = remainingTimeoutMs();
   if (inspectTimeoutMs <= 0) {

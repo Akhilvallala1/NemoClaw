@@ -282,6 +282,51 @@ describe("captureOpenShellDockerSandboxFailureOutput (#13178)", () => {
 });
 
 describe("queryOpenShellDockerSandboxRuntimeSnapshot", () => {
+  it.each([
+    {
+      label: "one workload and its supervisor",
+      roles: ["sandbox", "supervisor"],
+      expected: { ok: true, containerId: "1".repeat(64) },
+      calls: 2,
+    },
+    {
+      label: "only a supervisor",
+      roles: ["supervisor"],
+      expected: { ok: false, error: "expected one labeled sandbox container, found 0" },
+      calls: 1,
+    },
+    {
+      label: "two workloads and a supervisor",
+      roles: ["sandbox", "sandbox", "supervisor"],
+      expected: { ok: false, error: "expected one labeled sandbox container, found 2" },
+      calls: 1,
+    },
+  ])("requires one workload when Docker contains $label", ({ roles, expected, calls }) => {
+    const containers = roles.map((role, index) => ({
+      id: String(index + 1).repeat(64),
+      labels: [
+        "openshell.ai/managed-by=openshell",
+        "openshell.ai/sandbox-name=alpha",
+        `openshell.ai/isolation-role=${role}`,
+      ],
+    }));
+    const dockerRun = vi
+      .fn()
+      .mockImplementationOnce((args: readonly string[]) => {
+        const labels = args.filter((arg) => arg.startsWith("label=")).map((arg) => arg.slice(6));
+        const ids = containers
+          .filter((container) => labels.every((label) => container.labels.includes(label)))
+          .map((container) => container.id);
+        return { status: 0, stdout: ids.join("\n"), stderr: "" };
+      })
+      .mockReturnValueOnce({ status: 0, stdout: JSON.stringify(EMPTY_RUNTIME_FIELDS), stderr: "" });
+
+    expect(queryOpenShellDockerSandboxRuntimeSnapshot("alpha", { dockerRun })).toMatchObject(
+      expected,
+    );
+    expect(dockerRun).toHaveBeenCalledTimes(calls);
+  });
+
   it("does not start container discovery after the shared deadline expires", () => {
     const dockerRun = vi.fn();
     const now = vi.fn().mockReturnValueOnce(1_000).mockReturnValue(1_001);
