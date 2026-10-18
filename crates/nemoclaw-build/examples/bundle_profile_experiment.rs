@@ -115,15 +115,15 @@ fn compatible_inventory(
     baseline: &serde_json::Value,
     candidate: &serde_json::Value,
 ) -> Result<(), String> {
-    for key in ["version", "rust", "opentofu"] {
+    for key in ["Version", "Rust", "OpenTofu"] {
         if baseline.get(key).is_none() || baseline[key] != candidate[key] {
             return Err(format!("bundle {key} changed between configurations"));
         }
     }
-    let old = baseline["files"]
+    let old = baseline["Files"]
         .as_object()
         .ok_or("baseline has no file inventory")?;
-    let new = candidate["files"]
+    let new = candidate["Files"]
         .as_object()
         .ok_or("candidate has no file inventory")?;
     if old.keys().collect::<Vec<_>>() != new.keys().collect::<Vec<_>>() {
@@ -524,15 +524,15 @@ fn experiment(root: &Path, packages: &[String], real_cargo: &OsString) -> AnyRes
         }
         let bundle = root.join("dist").join(PLATFORM);
         let manifest: Value = serde_json::from_slice(&fs::read(bundle.join("manifest.json"))?)?;
+        fs::write(
+            sample_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest)?,
+        )?;
         if let Some(original) = &baseline {
             compatible_inventory(original, &manifest)?;
         } else {
             baseline = Some(manifest.clone());
         }
-        fs::write(
-            sample_dir.join("manifest.json"),
-            serde_json::to_vec_pretty(&manifest)?,
-        )?;
         let mut sizes = BTreeMap::new();
         file_sizes(&bundle, &bundle, &mut sizes)?;
         report["samples"].as_array_mut().unwrap().push(serde_json::json!({
@@ -676,19 +676,32 @@ mod tests {
         .unwrap();
         assert!(workflow.is_object());
     }
+    #[cfg(feature = "sdk")]
+    #[test]
+    fn sdk_manifest_serializer_matches_the_checked_wire_contract() {
+        let manifest = nemoclaw_sdk::bundle::Manifest {
+            version: "0.1.0-dev.fixture".into(),
+            rust: "1.98.1".into(),
+            opentofu: "1.12.6".into(),
+            files: BTreeMap::from([("schemas/config.json".into(), "same".into())]),
+        };
+        let wire = serde_json::to_value(manifest).unwrap();
+        assert!(compatible_inventory(&wire, &wire).is_ok());
+    }
+
     #[test]
     fn profile_changes_preserve_bundle_identity_and_non_executable_payloads() {
-        let base = serde_json::json!({"version":"source-1","rust":"1.98.1","opentofu":"pinned","files":{"schema.json":"same","bin/tool.exe":"old"}});
+        let base = serde_json::json!({"Version":"source-1","Rust":"1.98.1","OpenTofu":"pinned","Files":{"schema.json":"same","bin/tool.exe":"old"}});
         let mut candidate = base.clone();
-        candidate["files"]["bin/tool.exe"] = serde_json::json!("new");
+        candidate["Files"]["bin/tool.exe"] = serde_json::json!("new");
         assert!(compatible_inventory(&base, &candidate).is_ok());
-        candidate["files"]["schema.json"] = serde_json::json!("different");
+        candidate["Files"]["schema.json"] = serde_json::json!("different");
         assert!(
             compatible_inventory(&base, &candidate).is_err(),
             "changing optimization must not change the schema payload"
         );
         candidate = base.clone();
-        candidate["version"] = serde_json::json!("different-source");
+        candidate["Version"] = serde_json::json!("different-source");
         assert!(compatible_inventory(&base, &candidate).is_err());
     }
 

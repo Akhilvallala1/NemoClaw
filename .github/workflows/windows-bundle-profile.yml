@@ -36,6 +36,10 @@ jobs:
         run: >-
           cargo test --locked --target-dir target/ci-runner -p nemoclaw-build
           --no-default-features --example bundle_profile_experiment
+      - name: Verify SDK manifest wire contract
+        run: >-
+          cargo test --locked -p nemoclaw-build
+          --example bundle_profile_experiment sdk_manifest_serializer_matches_the_checked_wire_contract
       - name: Compare complete bundle construction
         id: compare
         run: >-
