@@ -121,8 +121,9 @@ Keep the existing sandbox and volume available; refer to [Legacy Managed State V
 
 ## Resume a Manually Prepared Upgrade
 
-Use this recovery path only when the installer completed strict backup, forward retirement, and gateway retirement, then instructed you to retry with `NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1`.
-Use the current release CLI and preserve the completed backups.
+Use `NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1` only after the current release CLI completes strict backup and forward retirement, and the selected gateway is retired.
+Preparation can be completed manually or by the installer.
+Preserve the completed backups.
 
 <Warning>
 This flag does not enable migration of registered sandboxes from OpenShell `0.0.x` to `0.1.3`.
@@ -138,12 +139,13 @@ Before retrying, inspect the installed version:
 openshell --version
 ```
 
-Continue only if the installed version is verifiable and at least `0.1.0`, and the prior installer run confirmed that preparation completed.
+For registered sandboxes on the selected gateway, continue only if the installed version is verifiable and at least `0.1.0`.
+All preparation steps must have completed successfully.
 A successful manual backup alone does not establish those conditions.
 This flag does not change runtime, GPU, or inference qualification requirements.
 
-Preserve the gateway port from the failed installer run.
-Set `selected_port` to `8080` for the default gateway, or to the port of the gateway that the installer prepared:
+Preserve the gateway port used during preparation.
+Set `selected_port` to `8080` for the default gateway, or to the port of the selected gateway you prepared:
 
 ```bash
 selected_port=8080

@@ -790,7 +790,8 @@ For a non-interactive install, set `NEMOCLAW_CONFIRM_LEGACY_MANAGED_RECREATE` to
 The confirmation permits those legacy entries to recover onto the current managed image, but it does not override recorded custom-image evidence.
 After confirmed recovery, the installer skips generic onboarding unless DGX Station reconciliation remains necessary.
 Required DGX Station reconciliation still passes host admission before onboarding.
-Use `NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1` only to retry an eligible upgrade after the installer confirms completed strict backup, forward retirement, and gateway retirement.
+Use `NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1` only after the current release CLI completes strict backup and forward retirement, and the selected gateway is retired.
+Preparation can be completed manually or by the installer.
 The installer checks the installed OpenShell version before it accepts this flag.
 When the selected gateway has registered sandboxes, an OpenShell `0.0.x`, missing, or unreadable version stops the upgrade even when backups exist.
 Do not retire a legacy gateway, delete its registration, or remove sandbox records to bypass that stop.
