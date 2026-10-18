@@ -80,6 +80,8 @@ export function prepareNativeLocalProfile(input: NativeLocalBinding) {
               "/usr/bin/python3.13",
             ]
           : []),
+        // OpenShell 0.1.3 matches the Pi image's resolved smoke interpreter path.
+        ...(binding.agent === "pi" ? ["/usr/bin/python3.13"] : []),
         ...(binding.agent === "openclaw" || binding.agent === "pi"
           ? ["/usr/local/bin/node", "/usr/bin/node"]
           : ["/opt/venv/bin/python3"]),

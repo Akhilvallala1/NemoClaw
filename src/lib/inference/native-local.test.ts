@@ -463,8 +463,15 @@ describe("native local inference", () => {
     expect(openClawProfile.profileId).not.toBe(profile.profileId);
     expect(profile.document.binaries).not.toContain("/usr/local/bin/openclaw");
     const piProfile = prepareNativeLocalProfile({ ...binding, agent: "pi" });
-    expect(piProfile.document.binaries).toContain("/usr/local/bin/node");
-    expect(piProfile.document.binaries).toContain("/usr/bin/python3");
+    expect(piProfile.document.binaries).toEqual([
+      "/usr/bin/python3",
+      "/usr/bin/python3.13",
+      "/usr/local/bin/node",
+      "/usr/bin/node",
+      "/usr/local/bin/curl",
+      "/usr/bin/curl",
+    ]);
+    expect(piProfile.document.endpoints).toEqual(profile.document.endpoints);
     expect(piProfile.profileId).not.toBe(profile.profileId);
     expect(piProfile.profileId).not.toBe(openClawProfile.profileId);
     expect(profile.document.binaries).not.toContain("/opt/hermes/.venv/bin/python");
