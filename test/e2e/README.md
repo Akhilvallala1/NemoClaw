@@ -259,6 +259,8 @@ No matching successful run, invalid or duplicated run metadata, or incomplete, d
 Manual PR E2E does not fall back to local Dockerfile builds.
 
 PR image publication builds each shipped agent on native AMD64 and ARM64 runners.
+The workflow retains PR all-agent image contracts for seven days so manual PR E2E can bind them
+after review. An expired contract blocks live E2E before candidate execution.
 Each platform retains its own digest contract and runs the direct startup checks.
 For OpenClaw, those checks also run the shared agent-reload proof against the image's generated
 gateway policy and installed distribution. The proof checks live named-agent discovery, gateway
