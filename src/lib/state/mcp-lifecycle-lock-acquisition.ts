@@ -138,11 +138,11 @@ function createWaitNotifier(
   monotonicNow: () => number,
 ): (observation: LockObservation, heldPath?: string) => void {
   const noticeAfterMs = positiveInteger(options.waitNoticeMs, DEFAULT_WAIT_NOTICE_MS);
-  const emit = options.onWaitNotice ?? ((message: string) => process.stderr.write(`${message}\n`));
+  const emit = options.onWaitNotice;
   const startedAt = monotonicNow();
   let shown = false;
   return (observation, heldPath = lockPath) => {
-    if (shown || monotonicNow() - startedAt < noticeAfterMs) return;
+    if (!emit || shown || monotonicNow() - startedAt < noticeAfterMs) return;
     shown = true;
     emit(formatMcpLifecycleLockWaitNotice(sandboxName, heldPath, observation, Date.now()));
   };
