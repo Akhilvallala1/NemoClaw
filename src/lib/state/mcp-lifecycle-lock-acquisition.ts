@@ -52,7 +52,7 @@ export interface McpLifecycleLockOptions {
   monotonicNow?: () => number;
   /** How long to wait on a held lock before saying who holds it. */
   waitNoticeMs?: number;
-  /** Receives the one-time wait notice. Defaults to stderr. */
+  /** Receives the one-time wait notice. Omitted means no notice; adapters supply the sink. */
   onWaitNotice?: (message: string) => void;
 }
 
@@ -136,15 +136,15 @@ function createWaitNotifier(
   lockPath: string,
   options: McpLifecycleLockOptions,
   monotonicNow: () => number,
-): (observation: LockObservation) => void {
+): (observation: LockObservation, heldPath?: string) => void {
   const noticeAfterMs = positiveInteger(options.waitNoticeMs, DEFAULT_WAIT_NOTICE_MS);
   const emit = options.onWaitNotice ?? ((message: string) => process.stderr.write(`${message}\n`));
   const startedAt = monotonicNow();
   let shown = false;
-  return (observation) => {
+  return (observation, heldPath = lockPath) => {
     if (shown || monotonicNow() - startedAt < noticeAfterMs) return;
     shown = true;
-    emit(formatMcpLifecycleLockWaitNotice(sandboxName, lockPath, observation, Date.now()));
+    emit(formatMcpLifecycleLockWaitNotice(sandboxName, heldPath, observation, Date.now()));
   };
 }
 
@@ -275,6 +275,7 @@ async function acquireMcpLifecycleLock(
         );
         continue;
       }
+      notifyWaiting(reaperObservation, reaperPath);
       await sleep(pollIntervalMs);
       continue;
     }
@@ -393,6 +394,7 @@ function acquireMcpLifecycleLockSync(
         );
         continue;
       }
+      notifyWaiting(reaperObservation, reaperPath);
       sleepSync(pollIntervalMs);
       continue;
     }

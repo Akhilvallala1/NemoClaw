@@ -159,40 +159,41 @@ describe("sandbox mutation lock acquisition", () => {
     });
   });
 
-  it("names the holder of a lock it keeps waiting on", async () => {
-    const lockPath = getMcpLifecycleLockPath("alpha", stateDir);
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    const acquiredAt = new Date(Date.now() - 90_000).toISOString();
+  it.each([
+    { mode: "async", suffix: "" },
+    { mode: "sync", suffix: "" },
+    { mode: "async", suffix: ".reaper" },
+    { mode: "sync", suffix: ".reaper" },
+  ])("names the holder of a $suffix lock it keeps waiting on ($mode)", async ({ mode, suffix }) => {
+    const heldPath = `${getMcpLifecycleLockPath("alpha", stateDir)}${suffix}`;
+    fs.mkdirSync(path.dirname(heldPath), { recursive: true });
     fs.writeFileSync(
-      lockPath,
+      heldPath,
       JSON.stringify({
         ...createMcpLifecycleLockOwner("alpha", "foreign"),
         pid: 65483,
         hostIdentity: "darwin:old-name.local",
-        acquiredAt,
+        acquiredAt: new Date(Date.now() - 90_000).toISOString(),
       }),
     );
+    // Each clock read advances one tick, so the notice (5) always precedes the timeout (40).
+    let tick = 0;
     const notices: string[] = [];
-    const run = (sync: boolean) => {
-      const opts = {
-        ...options({ timeoutMs: 40, waitNoticeMs: 5 }),
-        onWaitNotice: (message: string) => notices.push(message),
-      };
-      return sync
+    const opts = {
+      ...options({ timeoutMs: 40, waitNoticeMs: 5 }),
+      monotonicNow: () => tick++,
+      onWaitNotice: (message: string) => notices.push(message),
+    };
+    const run =
+      mode === "sync"
         ? Promise.resolve().then(() => withMcpLifecycleLockSync("alpha", () => undefined, opts))
         : withMcpLifecycleLock("alpha", () => undefined, opts);
-    };
-    for (const sync of [false, true]) {
-      notices.length = 0;
-      await expect(run(sync)).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
-      expect(notices).toHaveLength(1);
-      expect(notices[0]).toContain("held by PID 65483 on host darwin:old-name.local");
-      expect(notices[0]).toMatch(/for (89|9\d)s\./);
-      expect(notices[0]).toContain(lockPath);
-    }
-    expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toMatchObject({
-      token: "foreign",
-    });
+    await expect(run).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain("held by PID 65483 on host darwin:old-name.local");
+    expect(notices[0]).toMatch(/for (89|9\d)s\./);
+    expect(notices[0]).toContain(`Lock file: ${heldPath}\n`);
+    expect(JSON.parse(fs.readFileSync(heldPath, "utf8"))).toMatchObject({ token: "foreign" });
   });
 
   it("stays quiet when the lock frees up before the notice delay", async () => {
