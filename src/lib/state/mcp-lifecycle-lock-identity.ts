@@ -50,9 +50,14 @@ export interface McpLifecycleLockIdentityProbes {
   readProcessIdentity(pid: number, fresh?: boolean): string | null;
 }
 
-const processIdentityCache = new Map<number, { checkedAt: number; identity: string | null }>();
+const processIdentityCache = new Map<
+  number,
+  { checkedAt: number; identity: string | null }
+>();
 
-export function isMcpLifecycleLockOwner(value: unknown): value is McpLifecycleLockOwner {
+export function isMcpLifecycleLockOwner(
+  value: unknown,
+): value is McpLifecycleLockOwner {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Record<string, unknown>;
   return (
@@ -60,7 +65,8 @@ export function isMcpLifecycleLockOwner(value: unknown): value is McpLifecycleLo
     typeof candidate.sandboxName === "string" &&
     Number.isSafeInteger(candidate.pid) &&
     (candidate.pid as number) > 0 &&
-    (candidate.processIdentity === null || typeof candidate.processIdentity === "string") &&
+    (candidate.processIdentity === null ||
+      typeof candidate.processIdentity === "string") &&
     (candidate.hostIdentity === undefined ||
       candidate.hostIdentity === null ||
       typeof candidate.hostIdentity === "string") &&
@@ -108,7 +114,10 @@ export function processIsAlive(pid: number): boolean {
  * process. Linux exposes the kernel boot id plus /proc start ticks; macOS and
  * other supported POSIX hosts fall back to ps(1)'s process start timestamp.
  */
-export function readMcpLockProcessIdentity(pid: number, fresh = false): string | null {
+export function readMcpLockProcessIdentity(
+  pid: number,
+  fresh = false,
+): string | null {
   const cached = processIdentityCache.get(pid);
   const now = performance.now();
   if (
@@ -136,7 +145,9 @@ export function readMcpLockProcessIdentity(pid: number, fresh = false): string |
         if (startTicks && /^\d+$/.test(startTicks)) {
           let bootIdentity = "unknown-boot";
           try {
-            bootIdentity = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+            bootIdentity = fs
+              .readFileSync("/proc/sys/kernel/random/boot_id", "utf8")
+              .trim();
           } catch {
             const bootTime = fs
               .readFileSync("/proc/stat", "utf8")
@@ -177,12 +188,16 @@ export function parseIoregPlatformUuid(output: string): string | null {
 }
 
 function readDarwinPlatformUuid(): string | null {
-  const result = spawnSync("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], {
-    encoding: "utf8",
-    env: buildSubprocessEnv(),
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 2_000,
-  });
+  const result = spawnSync(
+    "/usr/sbin/ioreg",
+    ["-rd1", "-c", "IOPlatformExpertDevice"],
+    {
+      encoding: "utf8",
+      env: buildSubprocessEnv(),
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2_000,
+    },
+  );
   return result.status === 0 && typeof result.stdout === "string"
     ? parseIoregPlatformUuid(result.stdout)
     : null;
@@ -226,14 +241,73 @@ export function readMcpLockPidNamespaceIdentity(): string | null {
 }
 
 const LOCAL_HOST_IDENTITY = readMcpLockHostIdentity();
-const LOCAL_LEGACY_HOST_IDENTITY = readMcpLockLegacyHostIdentity();
 const LOCAL_PID_NAMESPACE_IDENTITY = readMcpLockPidNamespaceIdentity();
+
+/** Highest numeric suffix macOS is expected to append on a Bonjour/DHCP name conflict. */
+const MAX_DARWIN_CONFLICT_SUFFIX = 9;
+
+/**
+ * Expands hostnames into the hostname-based identities this Mac may have
+ * written before the stable identity existed. macOS resolves a name conflict
+ * by appending "-2", "-3", ... and later drops the suffix again, so a lock
+ * written as `darwin:foo-2.local` must still be recognized after a rename back
+ * to `foo.local`, and vice versa. Matching is exact on the expanded set, and
+ * every match still goes through the PID-namespace, liveness and
+ * process-identity checks before a lock is reclaimed.
+ */
+export function deriveDarwinLegacyHostIdentityAliases(
+  hostnames: readonly (string | null | undefined)[],
+): string[] {
+  const aliases = new Set<string>();
+  for (const raw of hostnames) {
+    const name = raw?.trim();
+    if (!name) continue;
+    const bare = name.replace(/\.local$/i, "");
+    const base = bare.replace(/-\d+$/, "") || bare;
+    const variants = [bare, base];
+    for (let suffix = 2; suffix <= MAX_DARWIN_CONFLICT_SUFFIX; suffix++) {
+      variants.push(`${base}-${String(suffix)}`);
+    }
+    for (const variant of variants) {
+      aliases.add(`darwin:${variant}`);
+      aliases.add(`darwin:${variant}.local`);
+    }
+  }
+  return [...aliases];
+}
+
+function readDarwinScutilName(
+  key: "LocalHostName" | "HostName",
+): string | null {
+  const result = spawnSync("/usr/sbin/scutil", ["--get", key], {
+    encoding: "utf8",
+    env: buildSubprocessEnv(),
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1_000,
+  });
+  return result.status === 0 && typeof result.stdout === "string"
+    ? result.stdout.trim() || null
+    : null;
+}
+
+/** Hostname-based identities that still name this host. Excludes the current identity. */
+function readLocalLegacyHostIdentityAliases(): string[] {
+  const legacy = readMcpLockLegacyHostIdentity();
+  const aliases =
+    process.platform === "darwin" && LOCAL_HOST_IDENTITY !== legacy
+      ? deriveDarwinLegacyHostIdentityAliases([
+          os.hostname(),
+          readDarwinScutilName("LocalHostName"),
+          readDarwinScutilName("HostName"),
+        ])
+      : [legacy];
+  return aliases.filter((alias) => alias !== LOCAL_HOST_IDENTITY);
+}
 
 const LOCAL_IDENTITY_PROBES: McpLifecycleLockIdentityProbes = {
   localHostIdentity: LOCAL_HOST_IDENTITY,
-  // Locks written before the stable identity still name the current hostname.
-  localHostIdentityAliases:
-    LOCAL_LEGACY_HOST_IDENTITY === LOCAL_HOST_IDENTITY ? [] : [LOCAL_LEGACY_HOST_IDENTITY],
+  // Locks written before the stable identity name a (possibly renamed) hostname.
+  localHostIdentityAliases: readLocalLegacyHostIdentityAliases(),
   localPidNamespaceIdentity: LOCAL_PID_NAMESPACE_IDENTITY,
   processIsAlive,
   readProcessIdentity: readMcpLockProcessIdentity,
@@ -265,7 +339,8 @@ export function classifyMcpLifecycleLock(
 ): McpLifecycleLockDisposition {
   const { owner } = observation;
   if (!owner || owner.sandboxName !== sandboxName) {
-    return observation.reclaimable && nowMs - observation.mtimeMs >= corruptLockGraceMs
+    return observation.reclaimable &&
+      nowMs - observation.mtimeMs >= corruptLockGraceMs
       ? "stale"
       : "wait";
   }
@@ -282,7 +357,8 @@ export function classifyMcpLifecycleLock(
     return "active";
   }
   if (
-    (probes.localPidNamespaceIdentity !== null && !owner.pidNamespaceIdentity) ||
+    (probes.localPidNamespaceIdentity !== null &&
+      !owner.pidNamespaceIdentity) ||
     (owner.pidNamespaceIdentity !== null &&
       owner.pidNamespaceIdentity !== undefined &&
       owner.pidNamespaceIdentity !== probes.localPidNamespaceIdentity)
@@ -300,7 +376,10 @@ export function classifyMcpLifecycleLock(
     // PID identities are cached briefly. Confirm a mismatch without the cache
     // before reaping so rapid PID reuse cannot evict a newly live owner.
     const refreshedIdentity = probes.readProcessIdentity(owner.pid, true);
-    if (refreshedIdentity !== null && owner.processIdentity !== refreshedIdentity) {
+    if (
+      refreshedIdentity !== null &&
+      owner.processIdentity !== refreshedIdentity
+    ) {
       return "stale";
     }
   }
