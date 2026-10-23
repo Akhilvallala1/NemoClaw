@@ -154,7 +154,56 @@ describe("sandbox mutation lock acquisition", () => {
     await expect(
       withMcpLifecycleLock("alpha", () => undefined, options({ timeoutMs: 20 })),
     ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
-    expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toMatchObject({ token: "foreign" });
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toMatchObject({
+      token: "foreign",
+    });
+  });
+
+  it("names the holder of a lock it keeps waiting on", async () => {
+    const lockPath = getMcpLifecycleLockPath("alpha", stateDir);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    const acquiredAt = new Date(Date.now() - 90_000).toISOString();
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        ...createMcpLifecycleLockOwner("alpha", "foreign"),
+        pid: 65483,
+        hostIdentity: "darwin:old-name.local",
+        acquiredAt,
+      }),
+    );
+    const notices: string[] = [];
+    const run = (sync: boolean) => {
+      const opts = {
+        ...options({ timeoutMs: 40, waitNoticeMs: 5 }),
+        onWaitNotice: (message: string) => notices.push(message),
+      };
+      return sync
+        ? Promise.resolve().then(() => withMcpLifecycleLockSync("alpha", () => undefined, opts))
+        : withMcpLifecycleLock("alpha", () => undefined, opts);
+    };
+    for (const sync of [false, true]) {
+      notices.length = 0;
+      await expect(run(sync)).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("held by PID 65483 on host darwin:old-name.local");
+      expect(notices[0]).toMatch(/for (89|9\d)s\./);
+      expect(notices[0]).toContain(lockPath);
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toMatchObject({
+      token: "foreign",
+    });
+  });
+
+  it("stays quiet when the lock frees up before the notice delay", async () => {
+    const notices: string[] = [];
+    await expect(
+      withMcpLifecycleLock("alpha", () => "acquired", {
+        ...options({ waitNoticeMs: 60_000 }),
+        onWaitNotice: (message) => notices.push(message),
+      }),
+    ).resolves.toBe("acquired");
+    expect(notices).toEqual([]);
   });
 
   it("reclaims a continuously corrupt main generation after the grace period", async () => {
