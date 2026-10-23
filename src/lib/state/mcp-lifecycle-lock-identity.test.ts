@@ -420,15 +420,15 @@ describe("MCP lifecycle lock identity properties", () => {
       null,
       "",
     ]);
-    for (const expected of [
-      "darwin:Akhils-MacBook-Pro-2.local",
-      "darwin:Akhils-MacBook-Pro.local",
-      "darwin:Akhils-MacBook-Pro",
-      "darwin:Akhils-MacBook-Pro-3.local",
-      "darwin:Akhils-MacBook-Pro-9.local",
-    ]) {
-      expect(aliases).toContain(expected);
-    }
+    expect(aliases).toEqual(
+      expect.arrayContaining([
+        "darwin:Akhils-MacBook-Pro-2.local",
+        "darwin:Akhils-MacBook-Pro.local",
+        "darwin:Akhils-MacBook-Pro",
+        "darwin:Akhils-MacBook-Pro-3.local",
+        "darwin:Akhils-MacBook-Pro-9.local",
+      ]),
+    );
     expect(aliases).not.toContain("darwin:Akhils-MacBook-Air.local");
     expect(aliases).not.toContain("darwin:Akhils-MacBook-Pro-10.local");
     expect(deriveDarwinLegacyHostIdentityAliases([undefined, "  "])).toEqual(
