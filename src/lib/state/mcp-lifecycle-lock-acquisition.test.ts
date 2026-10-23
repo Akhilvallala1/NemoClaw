@@ -154,9 +154,7 @@ describe("sandbox mutation lock acquisition", () => {
     await expect(
       withMcpLifecycleLock("alpha", () => undefined, options({ timeoutMs: 20 })),
     ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
-    expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toMatchObject({
-      token: "foreign",
-    });
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toMatchObject({ token: "foreign" });
   });
 
   it.each([

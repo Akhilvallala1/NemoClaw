@@ -231,19 +231,10 @@ async function acquireMcpLifecycleLock(
   );
   const monotonicNow = options.monotonicNow ?? (() => performance.now());
   const lockPath = getMcpLifecycleLockPath(sandboxName, options.stateDir);
-  await fs.promises.mkdir(path.dirname(lockPath), {
-    recursive: true,
-    mode: 0o700,
-  });
+  await fs.promises.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = monotonicNow() + timeoutMs;
-  const corruptMainTracker: CorruptGenerationState = {
-    generation: null,
-    firstSeenAt: 0,
-  };
-  const corruptReaperTracker: CorruptGenerationState = {
-    generation: null,
-    firstSeenAt: 0,
-  };
+  const corruptMainTracker: CorruptGenerationState = { generation: null, firstSeenAt: 0 };
+  const corruptReaperTracker: CorruptGenerationState = { generation: null, firstSeenAt: 0 };
   let lastOwnerPid: number | null = null;
   const notifyWaiting = createWaitNotifier(sandboxName, lockPath, options, monotonicNow);
   const assertBeforeTimeout = () => {
@@ -317,10 +308,7 @@ async function acquireMcpLifecycleLock(
         monotonicNow(),
       );
       if (
-        decideMcpLifecycleAcquisition({
-          phase: "main-owner",
-          lock: mainDecision,
-        }).kind === "reap"
+        decideMcpLifecycleAcquisition({ phase: "main-owner", lock: mainDecision }).kind === "reap"
       ) {
         await tryReapStaleMainLock(
           lockPath,
@@ -355,14 +343,8 @@ function acquireMcpLifecycleLockSync(
   const lockPath = getMcpLifecycleLockPath(sandboxName, options.stateDir);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = monotonicNow() + timeoutMs;
-  const corruptMainTracker: CorruptGenerationState = {
-    generation: null,
-    firstSeenAt: 0,
-  };
-  const corruptReaperTracker: CorruptGenerationState = {
-    generation: null,
-    firstSeenAt: 0,
-  };
+  const corruptMainTracker: CorruptGenerationState = { generation: null, firstSeenAt: 0 };
+  const corruptReaperTracker: CorruptGenerationState = { generation: null, firstSeenAt: 0 };
   let lastOwnerPid: number | null = null;
   const notifyWaiting = createWaitNotifier(sandboxName, lockPath, options, monotonicNow);
   const assertBeforeTimeout = () => {
@@ -436,10 +418,7 @@ function acquireMcpLifecycleLockSync(
         monotonicNow(),
       );
       if (
-        decideMcpLifecycleAcquisition({
-          phase: "main-owner",
-          lock: mainDecision,
-        }).kind === "reap"
+        decideMcpLifecycleAcquisition({ phase: "main-owner", lock: mainDecision }).kind === "reap"
       ) {
         tryReapStaleMainLockSync(
           lockPath,
@@ -477,10 +456,7 @@ export function withMcpLifecycleLockSync<T>(
   const inherited = heldLocks.getStore();
   if (inherited?.get(lockPath)?.active) return operation();
 
-  const acquired = acquireMcpLifecycleLockSync(sandboxName, {
-    ...options,
-    stateDir,
-  });
+  const acquired = acquireMcpLifecycleLockSync(sandboxName, { ...options, stateDir });
   const lease: HeldLockLease = { active: true };
   const context = new Map(inherited ?? []);
   context.set(lockPath, lease);
@@ -503,10 +479,7 @@ export async function withMcpLifecycleLock<T>(
   const inherited = heldLocks.getStore();
   if (inherited?.get(lockPath)?.active) return await operation();
 
-  const acquired = await acquireMcpLifecycleLock(sandboxName, {
-    ...options,
-    stateDir,
-  });
+  const acquired = await acquireMcpLifecycleLock(sandboxName, { ...options, stateDir });
   const lease: HeldLockLease = { active: true };
   const context = new Map(inherited ?? []);
   context.set(lockPath, lease);
