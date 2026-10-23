@@ -177,12 +177,18 @@ describe("sandbox mutation lock acquisition", () => {
       }),
     );
     // Each clock read advances one tick, so the notice (5) always precedes the timeout (40).
+    const timeoutMs = 40;
+    const waitNoticeMs = 5;
     let tick = 0;
+    let noticeAt = -1;
     const notices: string[] = [];
     const opts = {
-      ...options({ timeoutMs: 40, waitNoticeMs: 5 }),
+      ...options({ timeoutMs, waitNoticeMs }),
       monotonicNow: () => tick++,
-      onWaitNotice: (message: string) => notices.push(message),
+      onWaitNotice: (message: string) => {
+        noticeAt = tick;
+        notices.push(message);
+      },
     };
     const run =
       mode === "sync"
@@ -190,6 +196,8 @@ describe("sandbox mutation lock acquisition", () => {
         : withMcpLifecycleLock("alpha", () => undefined, opts);
     await expect(run).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
     expect(notices).toHaveLength(1);
+    expect(noticeAt).toBeGreaterThanOrEqual(waitNoticeMs);
+    expect(noticeAt).toBeLessThan(timeoutMs);
     expect(notices[0]).toContain("held by PID 65483 on host darwin:old-name.local");
     expect(notices[0]).toMatch(/for (89|9\d)s\./);
     expect(notices[0]).toContain(`Lock file: ${heldPath}\n`);
